@@ -44,6 +44,8 @@ RUN pip install \
     guidance \
     huggingface_hub \
     hydra-core \
+    jupyter \
+    nbconvert \
     ninja \
     packaging \
     peft \
