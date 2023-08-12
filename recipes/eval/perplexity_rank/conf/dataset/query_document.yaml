@@ -1,0 +1,8 @@
+path: json
+data_files: data/query_document.json
+max_samples: 1000
+transform:
+  class: recipes.eval.perplexity_rank.transform.QueryDocument
+  query_column: query
+  document_column: document
+  score_column: score

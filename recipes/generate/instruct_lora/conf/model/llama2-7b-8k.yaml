@@ -1,0 +1,11 @@
+defaults:
+  - ../../../../common/conf/model/llama2-7b@_here_
+
+name: llama2-7b-8k
+
+flash_attention: False
+torch_dtype: float16
+
+rope_scaling:
+  type: dynamic
+  factor: 2.0

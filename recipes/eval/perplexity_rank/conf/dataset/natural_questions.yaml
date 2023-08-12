@@ -1,0 +1,7 @@
+huggingface_name: togethercomputer/Long-Data-Collections
+huggingface_revision: 64bec36
+data_files: fine-tune/natural_questions_10_200_docs.jsonl.zst
+max_samples: 1000
+transform:
+  class: recipes.eval.perplexity_rank.transform.NaturalQuestions
+  negatives: 10

@@ -1,0 +1,13 @@
+defaults:
+  - base
+  - model: llama2-7b
+
+working_dir: /mnt/text/model/${model.name}/dialogsum-samsum/0.1
+
+load_adapter: True
+prompt_prefix: "[INST] <<SYS>>\nYou are an assistant and you are tasked with writing text summaries. For each input text, provide a summary. The summary should be concise, accurate and truthful. Do not make up facts or answers.\n<</SYS>>\n\n"
+prompt_delimiter: "[/INST]\n"
+prompt: "${.prompt_prefix}${.input}\n\n${.prompt_delimiter}"
+input: "#Person1#: Welcome to my birthday party, I am so happy you can come. #Person2#: Thanks for inviting me. Here is the gift for you. Happy birthday, Francis! Many more happy and healthy years for you! #Person1#: Thank you, shall I open it now? #Person2#: Yes, please do. #Person1#: Wow, a remote car model and my favorite brand. I really like it. That is so nice of you. #Person2#: Yeah, I was really struggling whether I should give you this nice little car. It was the last one they had and I really like it so much myself. #Person1#: Typical you, always wanting to keep the best things for yourself. The more I appreciate the gift now."
+
+max_new_tokens: 1024

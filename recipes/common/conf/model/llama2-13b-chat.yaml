@@ -1,0 +1,24 @@
+name: ??
+
+huggingface_model_name: meta-llama/Llama-2-13b-chat-hf
+huggingface_model_revision: 7a4fd30
+pad_token: "<unk>"
+
+fireworks:
+  model_arch: llama
+  model_config_name: v2-13b-chat
+  checkpoint_format: huggingface
+  is_addon: True
+  conversation_config:
+    name: llama-2
+    system: "[INST] <<SYS>>\nYou are an assistant and you are tasked with writing text summaries. For each input text, provide a summary. The summary should be concise, accurate and truthful. Do not make up facts or answers.\n<</SYS>>\n\n"
+    roles:
+      - "[INST]"
+      - "[/INST]"
+    messages: []
+    offset: 0
+    sep_style: LLAMA2
+    sep: " "
+    sep2: " </s><s>",
+    stop_token_ids:
+    - 2

@@ -1,0 +1,6 @@
+defaults:
+  - dataset:
+    - dialogsum
+    - samsum
+
+name: dialogsum-samsum

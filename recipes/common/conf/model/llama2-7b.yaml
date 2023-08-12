@@ -1,0 +1,11 @@
+name: ??
+
+huggingface_model_name: meta-llama/Llama-2-7b-hf
+huggingface_model_revision: 3f025b6
+pad_token: "<unk>"
+
+fireworks:
+  model_arch: llama
+  model_config_name: v2-7b
+  checkpoint_format: huggingface
+  is_addon: True
