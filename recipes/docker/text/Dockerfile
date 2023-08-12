@@ -42,8 +42,8 @@ RUN pip install \
     evals \
     fire \
     guidance \
+    huggingface_hub \
     hydra-core \
-    jsonargparse[signatures,urls] \
     ninja \
     packaging \
     peft \
