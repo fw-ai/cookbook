@@ -23,6 +23,6 @@ Feel free to add a new config based on your custom needs.
 ## Running in Colab
 
 Fine tuning can be done in a [Colab notebook](https://colab.research.google.com/). Some recipes
-run in the free tier although keep in mind that any serious finetuning or reasonably sized
+run in the free tier although keep in mind that any serious fine tuning of reasonably sized
 models on real-world datasets may require an upgrade to a more powerful hardware to be
-practical. Here is a sample notebook that you can play with.
+practical. [Here is a sample notebook](https://drive.google.com/file/d/1KqmQXLYEupcYcgVGCJy67aGR29h4nzaw/view?usp=sharing) that you can play with.
