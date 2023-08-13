@@ -35,7 +35,7 @@ the `qlora` configurations, which implement aggressive quantization.
 
 Prior to executing any of the recipes, ensure that you have installed all the necessary
 dependencies on the host where you intend to execute the tuning job. To expedite this
-process, we provide a [Docker container](https://github.com/fw-ai-external/cookbook/tree/main/recipes/docker/text)
+process, we provide a [Docker container](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text)
 equipped with all the required dependencies.
 
 As fine-tuning can harness multiple devices, we recommend executing recipes via a distributed

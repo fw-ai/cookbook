@@ -10,26 +10,26 @@ Generative AI has seen unprecedented growth in recent times, spurring the creati
 The code in the repository is organized according to use-case, with some code serving multiple purposes. Our present emphasis is on Large Language Models (LLMs), however, we will incorporate more model classes in the future.
 
 ### Docker
-To enhance user convenience, we offer a Docker container inclusive of all the necessary dependencies to run the provided recipes. The Docker configuration is found under [`recipes/docker`](https://github.com/fw-ai-external/cookbook/tree/main/recipes/docker/text)
+To enhance user convenience, we offer a Docker container inclusive of all the necessary dependencies to run the provided recipes. The Docker configuration is found under [`recipes/docker`](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text)
 
 ### Shared libraries
-The codebase shared across recipes is situated in [`recipes/common`](https://github.com/fw-ai-external/cookbook/tree/main/recipes/common).
+The codebase shared across recipes is situated in [`recipes/common`](https://github.com/fw-ai/cookbook/tree/main/recipes/common).
 
 ### Recipes
 Recipes are categorized according to their respective use-cases. Here is the list of currently supported use-cases. Please note, most of the recipes come with dedicated README files providing more in-depth information.
 
 **Environment:**
-* [Docker container for LLM development](https://github.com/fw-ai-external/cookbook/tree/main/recipes/docker/text).
+* [Docker container for LLM development](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text).
 
 **Tuning:**
-* [LoRA instruction tuning](https://github.com/fw-ai-external/cookbook/tree/main/recipes/tune/instruct_lora).
+* [LoRA instruction tuning](https://github.com/fw-ai/cookbook/tree/main/recipes/tune/instruct_lora).
 
 **Evaluation:**
-* [Ranker leveraging perplexity for scoring](https://github.com/fw-ai-external/cookbook/tree/main/recipes/eval/perplexity_rank).
+* [Ranker leveraging perplexity for scoring](https://github.com/fw-ai/cookbook/tree/main/recipes/eval/perplexity_rank).
 
 **Generation:**
-* [Inference with a LoRA adapter](https://github.com/fw-ai-external/cookbook/tree/main/recipes/generate/instruct_lora),
-* [Constrained output generation in json format](https://github.com/fw-ai-external/cookbook/tree/main/recipes/generate/jsonformer).
+* [Inference with a LoRA adapter](https://github.com/fw-ai/cookbook/tree/main/recipes/generate/instruct_lora),
+* [Constrained output generation in json format](https://github.com/fw-ai/cookbook/tree/main/recipes/generate/jsonformer).
 
 ## Example Workflow
 To illustrate how to leverage the recipes for an end-to-end usecase, lets walk through the process of fine tuning a model, inspecting the results visually, and deploying the model to the Fireworks platform for inference.
@@ -47,7 +47,7 @@ docker run --privileged -it --gpus all -p 8888:8888 \
   fireworks_cb_text /bin/bash
 ```
 The following commands will run inside the container.
-For more details, go [here](https://github.com/fw-ai-external/cookbook/tree/main/recipes/docker/text).
+For more details, go [here](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text).
 ### Fine tune a model
 ```bash
 cd /workspace/cookbook/recipes/tune/instruct_lora
