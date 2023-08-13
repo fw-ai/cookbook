@@ -5,7 +5,7 @@ the model output to a json string.
 
 ## Running instructions
 
-We recommend running inside the preconfigured [Docker](https://github.com/fw-ai-external/cookbook/blob/main/recipes/docker/text/README.md) container.
+We recommend running inside the preconfigured [Docker](https://github.com/fw-ai/cookbook/blob/main/recipes/docker/text/README.md) container.
 
 ```bash
 pip install jsonformer
