@@ -19,3 +19,10 @@ The [`summarize`](https://github.com/fw-ai-external/cookbook/blob/main/recipes/t
 config in the above command defines the tuning job. It controls different aspects of the
 tuning process such as training data, base model, prompt format, and trainer flags.
 Feel free to add a new config based on your custom needs.
+
+## Running in Colab
+
+Fine tuning can be done in a [Colab notebook](https://colab.research.google.com/). Some recipes
+run in the free tier although keep in mind that any serious finetuning or reasonably sized
+models on real-world datasets may require an upgrade to a more powerful hardware to be
+practical. Here is a sample notebook that you can play with.

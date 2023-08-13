@@ -19,6 +19,6 @@ fireworks:
     offset: 0
     sep_style: LLAMA2
     sep: " "
-    sep2: " </s><s>",
+    sep2: " </s><s>"
     stop_token_ids:
     - 2
