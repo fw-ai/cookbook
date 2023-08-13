@@ -29,6 +29,7 @@ def load_train_model(config: DictConfig) -> PeftModel:
     if isinstance(base_model_class, str):
         base_model_class = hydra.utils.get_class(base_model_class)
 
+    kwargs = {}
     quantization_config = config.model.get("quantization_config")
     if quantization_config:
         quantization_config, unused = BitsAndBytesConfig.from_dict(
@@ -37,6 +38,7 @@ def load_train_model(config: DictConfig) -> PeftModel:
             raise ValueError(
                 f"unrecognized keys in quantization config: {unused}")
         print(f"using quantization config: {quantization_config.to_dict()}")
+        kwargs["quantization_config"] = quantization_config
     torch_dtype = config.model.torch_dtype
     if torch_dtype != "auto":
         torch_dtype = getattr(torch, config.model.torch_dtype)
@@ -44,15 +46,15 @@ def load_train_model(config: DictConfig) -> PeftModel:
     if rope_scaling:
         rope_scaling = dict(rope_scaling.items())
         print(f"using rope scaling config: {rope_scaling}")
+        kwargs["rope_scaling"] = rope_scaling
     model = base_model_class.from_pretrained(
         config.model.huggingface_model_name,
         revision=config.model.huggingface_model_revision,
         trust_remote_code=True,
         load_in_4bit=config.model.get("load_in_4bit", False),
         torch_dtype=torch_dtype,
-        quantization_config=quantization_config,
         device_map={"": torch.cuda.current_device()},
-        rope_scaling=rope_scaling,
+        **kwargs,
     )
     if config.model.gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -94,6 +96,7 @@ def load_inference_model(config: DictConfig, tokenizer: AutoTokenizer,
     if isinstance(base_model_class, str):
         base_model_class = hydra.utils.get_class(base_model_class)
 
+    kwargs = {}
     quantization_config = config.model.get("quantization_config", None)
     if quantization_config:
         quantization_config, unused = BitsAndBytesConfig.from_dict(
@@ -101,6 +104,8 @@ def load_inference_model(config: DictConfig, tokenizer: AutoTokenizer,
         if unused:
             raise ValueError(
                 f"unrecognized keys in quantization config: {unused}")
+        print(f"using quantization config: {quantization_config.to_dict()}")
+        kwargs["quantization_config"] = quantization_config
     torch_dtype = config.model.torch_dtype
     if torch_dtype != "auto":
         torch_dtype = getattr(torch, config.model.torch_dtype)
@@ -108,26 +113,21 @@ def load_inference_model(config: DictConfig, tokenizer: AutoTokenizer,
     if rope_scaling:
         rope_scaling = dict(rope_scaling.items())
         print(f"using rope scaling config: {rope_scaling}")
+        kwargs["rope_scaling"] = rope_scaling
     model = base_model_class.from_pretrained(
         config.model.huggingface_model_name,
         revision=config.model.huggingface_model_revision,
         trust_remote_code=True,
         load_in_4bit=config.model.get("load_in_4bit", False),
-        quantization_config=quantization_config,
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=True,
         device_map="auto",
-        rope_scaling=rope_scaling,
+        **kwargs,
         # pad_token_id=tokenizer.eos_token_id,
     )
-    # model = model.half()
     if config.load_adapter:
         model = PeftModel.from_pretrained(model, config.output_model_dir)
 
-    # model = model.merge_and_unload()
-    # model.save_pretrained("/tmp/merged")
-
-    # model.to(device=device)
     model.eval()
     return model
 
