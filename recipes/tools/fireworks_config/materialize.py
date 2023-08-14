@@ -2,7 +2,7 @@
 #
 # All Rights Reserved.
 
-# Run as: python instantiate.py
+# Run as: python materialize.py
 
 import glob
 import json
