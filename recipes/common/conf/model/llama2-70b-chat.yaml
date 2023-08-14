@@ -5,10 +5,7 @@ huggingface_model_revision: 3f9e9c9
 pad_token: "<unk>"
 
 fireworks:
-  model_arch: llama
-  model_config_name: v2-70b-chat
-  checkpoint_format: huggingface
-  is_addon: True
+  base_model: accounts/fireworks/models/llama-v2-70b-chat
   conversation_config:
     name: llama-2
     system: "[INST] <<SYS>>\nYou are an assistant and you are tasked with writing text summaries. For each input text, provide a summary. The summary should be concise, accurate and truthful. Do not make up facts or answers.\n<</SYS>>\n\n"
