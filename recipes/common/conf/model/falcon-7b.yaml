@@ -5,4 +5,4 @@ huggingface_model_revision: "3783374"
 pad_token: ">>SUFFIX<<"
 
 fireworks:
-  base_model: falcon-7b
+  base_model: accounts/fireworks/models/falcon-7b
