@@ -5,7 +5,4 @@ huggingface_model_revision: bff3f0e
 pad_token: "<unk>"
 
 fireworks:
-  model_arch: llama
-  model_config_name: v2-13b
-  checkpoint_format: huggingface
-  is_addon: True
+  base_model: accounts/fireworks/models/llama-v2-13b

@@ -5,7 +5,4 @@ huggingface_model_revision: "3783374"
 pad_token: ">>SUFFIX<<"
 
 fireworks:
-  model_arch: llama
-  model_config_name: 7B
-  checkpoint_format: huggingface
-  is_addon: True
+  base_model: falcon-7b
