@@ -1,0 +1,7 @@
+defaults:
+  - ../../../../common/conf/model/falcon-7b@_here_
+
+name: falcon-7b
+
+flash_attention: False
+torch_dtype: float16
