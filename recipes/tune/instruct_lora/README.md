@@ -26,3 +26,7 @@ Fine tuning can be done in a [Colab notebook](https://colab.research.google.com/
 run in the free tier although keep in mind that any serious fine tuning of reasonably sized
 models on real-world datasets may require an upgrade to a more powerful hardware to be
 practical. [Here is a sample notebook](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/recipes/tune/instruct_lora/colabtune.ipynb) that you can play with.
+
+## Running in local Jupyter
+
+See the [following instructions](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text#jupyter-notebooks) explaining how to run the notebook inside a Docker container.

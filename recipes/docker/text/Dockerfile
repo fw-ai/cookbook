@@ -37,6 +37,7 @@ RUN pip install --upgrade pip
 # keep alphabetical order
 RUN pip install \
     accelerate \
+    backoff \
     bitsandbytes \
     datasets \
     evals \

@@ -46,6 +46,20 @@ Use the relevant container name (something like `epic_spence`) to log into it in
 docker exec -it <container_name> bash
 ```
 
+## Jupyter notebooks
+
+You can run Jupyter notebooks inside the container.
+
+Make sure that your docker container was started with the `-p 8888:8888` flag.
+Start the notebook server with the following command `jupyter notebook -i 0.0.0.0`.
+Follow the url printed by the server but replace the host with `localhost` (or whatever
+is the name of the host where you run the container), e.g., `http://localhost:8888/?token=...`.
+
+If you are connected to the host remotely using VSCode, you may want to set up port forwarding
+for port 8888. The `PORTS` tab should be visible at the bottom of the editor window.
+If it's not, go to `Terminal` -> `New Terminal`. `PORTS` should appear as one of the tabs.
+
+
 ## You are all set!
 
 Now you can run the recipes inside the container that should have all the required dependencies. Have fun!
