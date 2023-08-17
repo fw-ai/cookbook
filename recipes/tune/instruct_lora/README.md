@@ -16,9 +16,11 @@ torchx run -s local_cwd dist.ddp -j 1x8 --script finetune.py -- \
 ```
 
 The [`summarize`](https://github.com/fw-ai/cookbook/blob/main/recipes/tune/instruct_lora/conf/summarize.yaml)
-config in the above command defines the tuning job. It controls different aspects of the
+config in the above command defines the tuning program. It controls different aspects of the
 tuning process such as training data, base model, prompt format, and trainer flags.
-Feel free to add a new config based on your custom needs.
+For a detailed description
+of the tuning recipe code layout, see [this section](https://github.com/fw-ai/cookbook/tree/main/recipes/tune#code-structure).
+The configs are meant to be customized. Feel free to update the existing configs or add new ones based on your needs.
 
 ## Running in Colab
 
