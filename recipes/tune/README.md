@@ -31,6 +31,16 @@ that different recipes or configurations may necessitate varying hardware capabi
 For example, if you are experiencing a shortage of GPU VRAM, consider opting for one of
 the `qlora` configurations, which implement aggressive quantization.
 
+## Finetuning data
+
+By default, the recipes pull the data from HuggingFace :hugs: hub. If you need to train on custom data,
+you may want to [upload](https://huggingface.co/docs/datasets/upload_dataset) it to a (possibly private) HuggingFace
+:hugs: dataset.
+Very soon we will be adding functionality to load the data from a local drive so stay tuned.
+The data and its transformation is defined in the dataset config. Dataset configs are stored inside the `conf` directory
+of a recipe. E.g., the datasets used by the [`instruct_lora`](https://github.com/fw-ai/cookbook/tree/main/recipes/tune/instruct_lora)
+recipe can be found [here](https://github.com/fw-ai/cookbook/tree/main/recipes/tune/instruct_lora/conf/data/dataset).
+
 ## Execution Guidelines
 
 Prior to executing any of the recipes, ensure that you have installed all the necessary
