@@ -1,3 +1,4 @@
+
 # Model Fine-Tuning
 
 ## Introduction
@@ -26,6 +27,36 @@ in its individual subdirectory. These recipes utilize the [Hydra](https://github
 framework to manage various configuration options. These configurations allow you to
 choose the appropriate base model and tuning dataset according to your requirements.
 
+Here is the config tree structure for a typical tuning recipe:
+```
+|-- conf
+|   |-- data
+|   |   |-- dataset
+|   |   |   |-- dataset1.yaml
+|   |   |   |-- dataset2.yaml
+|   |   |   `-- ...
+|   |   |-- data_collection1.yaml
+|   |   |-- data_collection2.yaml
+|   |   `-- ...
+|   |-- model
+|   |   |-- model1.yaml
+|   |   |-- model2.yaml
+|   |   `-- ...
+|   |-- tuning_program1.yaml
+|   |-- tuning_program2.yaml
+|   `-- ...
+|-- tuning_notebook.ipynb
+|-- tuning_command.py
+|-- README.md
+`-- ...
+```
+In the above structure:
+* **dataset/dataset.yaml** describes how to load and transform a single dataset,
+* **data/data_collection.yaml** is a bundle of datasets used by a tuning program,
+* **model/model.yaml** references a specific base model and defines the trainer parameters,
+* **conf/tuning_program.yaml** bundles all configs defining a single fine tuning job - i.e., each tuning program references a single config,
+* **tuning_[notebook|command]** are the program executors. Some recipes may come with different flavors of executors such as command line tools and notebooks.
+
 Feel free to modify or add configurations to suit your needs. Please bear in mind
 that different recipes or configurations may necessitate varying hardware capabilities.
 For example, if you are experiencing a shortage of GPU VRAM, consider opting for one of
@@ -37,9 +68,6 @@ By default, the recipes pull the data from HuggingFace :hugs: hub. If you need t
 you may want to [upload](https://huggingface.co/docs/datasets/upload_dataset) it to a (possibly private) HuggingFace
 :hugs: dataset.
 Very soon we will be adding functionality to load the data from a local drive so stay tuned.
-The data and its transformation is defined in the dataset config. Dataset configs are stored inside the `conf` directory
-of a recipe. E.g., the datasets used by the [`instruct_lora`](https://github.com/fw-ai/cookbook/tree/main/recipes/tune/instruct_lora)
-recipe can be found [here](https://github.com/fw-ai/cookbook/tree/main/recipes/tune/instruct_lora/conf/data/dataset).
 
 ## Execution Guidelines
 
