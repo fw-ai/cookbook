@@ -2,7 +2,9 @@
 #
 # All Rights Reserved.
 
+from functools import partial
 from importlib import import_module
+from typing import Any, Dict
 
 from datasets import DatasetDict, concatenate_datasets, load_dataset
 from omegaconf import DictConfig
@@ -10,8 +12,7 @@ from recipes.common.batch_transform import BatchTransform
 from transformers import AutoTokenizer
 
 
-def _create_transform(config: DictConfig,
-                      tokenizer: AutoTokenizer) -> BatchTransform:
+def _create_transform(config: DictConfig, tokenizer: AutoTokenizer) -> BatchTransform:
     """
     Creates a transform object from the provided config.
 
@@ -30,8 +31,39 @@ def _create_transform(config: DictConfig,
     return cls(config, tokenizer)
 
 
-def prepare_training_data(config: DictConfig,
-                          tokenizer: AutoTokenizer) -> DatasetDict:
+def _tokenize(
+    tokenizer: AutoTokenizer,
+    prompt_column: str,
+    completion_column: str,
+    max_length: int,
+    mask_prompt: bool,
+    row: Dict[str, Any],
+) -> Dict[str, Any]:
+    tokenized_row = tokenizer(
+        row[prompt_column] + row[completion_column],
+        truncation=True,
+        max_length=max_length,
+        padding=False,
+        return_tensors=None,
+    )
+    if not mask_prompt:
+        tokenized_row["labels"] = tokenized_row["input_ids"].copy()
+        return tokenized_row
+    tokenized_prompt = tokenizer(
+        row[prompt_column],
+        truncation=True,
+        max_length=max_length,
+        padding=False,
+        return_tensors=None,
+    )
+    prompt_len = len(tokenized_prompt["input_ids"])
+    tokenized_row["labels"] = [-100] * prompt_len + tokenized_row["input_ids"][
+        prompt_len:
+    ]
+    return tokenized_row
+
+
+def prepare_training_data(config: DictConfig, tokenizer: AutoTokenizer) -> DatasetDict:
     """
     Prepares training dataset by combining multiple HF datasets.
 
@@ -47,26 +79,33 @@ def prepare_training_data(config: DictConfig,
         split = spec.get("split", "train")
         data_files = spec.get("data_files")
         if spec.get("subset"):
-            dataset = load_dataset(spec.huggingface_name,
-                                   spec.subset,
-                                   revision=spec.huggingface_revision,
-                                   split=split,
-                                   data_files=data_files)
+            dataset = load_dataset(
+                spec.huggingface_name,
+                spec.subset,
+                revision=spec.huggingface_revision,
+                split=split,
+                data_files=data_files,
+            )
         else:
-            dataset = load_dataset(spec.huggingface_name,
-                                   revision=spec.huggingface_revision,
-                                   split=split)
+            dataset = load_dataset(
+                spec.huggingface_name, revision=spec.huggingface_revision, split=split
+            )
         print(f"loaded dataset {name} of size {len(dataset)}")
 
         transform = _create_transform(spec.transform, tokenizer)
         dataset.set_transform(transform.__call__)
-        key = transform.output_column
+        prompt_column = transform.prompt_column
+        completion_column = transform.completion_column
 
         max_length = config.model.cutoff_len
         print(f"using max length {max_length}")
         dataset = dataset.filter(
-            lambda row: len(tokenizer(row[key])["input_ids"]) <= max_length,
-            num_proc=16)
+            lambda row: len(
+                tokenizer(row[prompt_column] + row[completion_column])["input_ids"]
+            )
+            <= max_length,
+            num_proc=16,
+        )
         dataset = dataset.shuffle(seed=1234)
         max_samples = spec.get("max_samples")
         if max_samples is not None and max_samples > 0:
@@ -75,17 +114,21 @@ def prepare_training_data(config: DictConfig,
             print(f"truncated dataset {name} to size {len(dataset)}")
 
         for i in range(min(len(dataset), 3)):
-            print(f"sample prompt {i} for dataset {name}:\n{dataset[i][key]}")
+            row = dataset[i]
+            print(
+                f"sample prompt {i} for dataset {name}:\n{row[prompt_column] + row[completion_column]}"
+            )
 
         columns_to_remove = dataset.column_names
-        dataset = dataset.map(lambda row: tokenizer(
-            row[key],
-            truncation=True,
-            max_length=max_length,
-            padding="max_length",
-        ),
-                              remove_columns=columns_to_remove,
-                              num_proc=16)
+        tokenize = partial(
+            _tokenize,
+            tokenizer,
+            prompt_column,
+            completion_column,
+            max_length,
+            config.data.mask_prompt,
+        )
+        dataset = dataset.map(tokenize, remove_columns=columns_to_remove, num_proc=16)
 
         dataset.reset_format()
 

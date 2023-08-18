@@ -4,12 +4,14 @@ defaults:
 name: llama2-7b
 
 micro_batch_size: 2
-batch_size: 128
+batch_size: 16
 
-epochs: 13
-learning_rate: 3.e-5
-cutoff_len: 2048
-lora_r: 64
+lr_scheduler_type: cosine
+
+epochs: 5
+learning_rate: 3.e-4
+cutoff_len: 4096
+lora_r: 16
 lora_alpha: 16
 lora_dropout: 0.05
 lora_target_modules:

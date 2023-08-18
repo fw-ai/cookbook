@@ -4,3 +4,5 @@ defaults:
     - samsum
 
 name: dialogsum-samsum
+
+mask_prompt: False

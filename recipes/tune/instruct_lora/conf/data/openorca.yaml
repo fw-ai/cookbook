@@ -3,3 +3,5 @@ defaults:
     - openorca
 
 name: openorca
+
+mask_prompt: True
