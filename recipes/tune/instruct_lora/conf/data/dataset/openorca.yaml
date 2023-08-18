@@ -6,4 +6,5 @@ openorca:
   transform:
     class: recipes.common.batch_transform.StringTemplate
     system_prompt: "### System:\n{system_prompt}\n\n"
-    prompt_template: "${.system_prompt}### User:\n{question}\n\n### Assistant:\n{response}"
+    prompt_template: "${.system_prompt}### User:\n{question}\n\n### Assistant:\n"
+    completion_template: "{response}"

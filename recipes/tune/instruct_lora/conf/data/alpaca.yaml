@@ -3,3 +3,5 @@ defaults:
     - alpaca-cleaned
 
 name: alpaca
+
+mask_prompt: True
