@@ -6,7 +6,3 @@ name: stablebeluga-7b
 
 flash_attention: False
 torch_dtype: float16
-
-rope_scaling:
-  type: dynamic
-  factor: 2.0

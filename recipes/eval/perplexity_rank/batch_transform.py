@@ -18,15 +18,14 @@ class NaturalQuestions(BatchTransform):
     @staticmethod
     def _remove_document_prefix(document: str) -> str:
         separator = "] "
-        return document[document.find(separator) + len(separator):]
+        return document[document.find(separator) + len(separator) :]
 
     @staticmethod
     def _remove_answer_prefix(answer: str) -> str:
         prefix = "Answer: "
         if not answer.startswith(prefix):
-            raise ValueError(
-                f"answer should start with '{prefix}', found {answer}")
-        return answer[len(prefix):]
+            raise ValueError(f"answer should start with '{prefix}', found {answer}")
+        return answer[len(prefix) :]
 
     def __call__(self, row: Dict[str, Any]) -> Dict[str, Any]:
         queries = []
@@ -44,9 +43,8 @@ class NaturalQuestions(BatchTransform):
         # query
         prefix = "Question: "
         if not query.startswith(prefix):
-            raise ValueError(
-                f"Expected question to start with {prefix}, found {query}")
-        query = query[len(prefix):]
+            raise ValueError(f"Expected question to start with {prefix}, found {query}")
+        query = query[len(prefix) :]
 
         # ideal
         match = re.fullmatch(pattern, ideal)
@@ -57,7 +55,7 @@ class NaturalQuestions(BatchTransform):
         id = int(match.group(1))
         ideal_candidate = candidates[id - 1]  # document ids start from 1
         if not ideal_candidate.startswith(f"Document [{id}]"):
-            prefix = ideal_candidate[:ideal_candidate.find("]") + 1]
+            prefix = ideal_candidate[: ideal_candidate.find("]") + 1]
             raise ValueError(
                 f"Mismatch between expected document id {id} and document prefix {prefix}"
             )
@@ -70,10 +68,9 @@ class NaturalQuestions(BatchTransform):
         num_candidates = len(candidates)
         num_negatives = min(self._config.negatives, num_candidates)
         negative_indices = random.sample(range(num_candidates), num_negatives)
-        documents.extend([
-            self._remove_document_prefix(candidates[i])
-            for i in negative_indices
-        ])
+        documents.extend(
+            [self._remove_document_prefix(candidates[i]) for i in negative_indices]
+        )
         queries.extend([query] * num_negatives)
         answers.extend([answer] * num_negatives)
         scores.extend([1] * num_negatives)
@@ -81,13 +78,14 @@ class NaturalQuestions(BatchTransform):
         if [len(queries), len(answers), len(documents)] != [len(scores)] * 3:
             raise ValueError(
                 f"queries ({len(queries)}) answers ({len(answers)}), documents ({len(documents)}), "
-                f"and scores ({len(scores)}) should all have the same length")
+                f"and scores ({len(scores)}) should all have the same length"
+            )
 
         return {
             "query": queries,
             "answers": answers,
             "document": documents,
-            "score": scores
+            "score": scores,
         }
 
 
@@ -113,9 +111,8 @@ class QueryDocument(BatchTransform):
         # query
         prefix = "Question: "
         if not query.startswith(prefix):
-            raise ValueError(
-                f"Expected question to start with {prefix}, found {query}")
-        query = query[len(prefix):]
+            raise ValueError(f"Expected question to start with {prefix}, found {query}")
+        query = query[len(prefix) :]
 
         # ideal
         match = re.fullmatch(pattern, ideal)
@@ -126,7 +123,7 @@ class QueryDocument(BatchTransform):
         id = int(match.group(1))
         ideal_candidate = candidates[id - 1]  # document ids start from 1
         if not ideal_candidate.startswith(f"Document [{id}]"):
-            prefix = ideal_candidate[:ideal_candidate.find("]") + 1]
+            prefix = ideal_candidate[: ideal_candidate.find("]") + 1]
             raise ValueError(
                 f"Mismatch between expected document id {id} and document prefix {prefix}"
             )
@@ -139,10 +136,9 @@ class QueryDocument(BatchTransform):
         num_candidates = len(candidates)
         num_negatives = min(self._config.negatives, num_candidates)
         negative_indices = random.sample(range(num_candidates), num_negatives)
-        documents.extend([
-            self._remove_document_prefix(candidates[i])
-            for i in negative_indices
-        ])
+        documents.extend(
+            [self._remove_document_prefix(candidates[i]) for i in negative_indices]
+        )
         queries.extend([query] * num_negatives)
         answers.extend([answer] * num_negatives)
         scores.extend([1] * num_negatives)
@@ -150,11 +146,12 @@ class QueryDocument(BatchTransform):
         if [len(queries), len(answers), len(documents)] != [len(scores)] * 3:
             raise ValueError(
                 f"queries ({len(queries)}) answers ({len(answers)}), documents ({len(documents)}), "
-                f"and scores ({len(scores)}) should all have the same length")
+                f"and scores ({len(scores)}) should all have the same length"
+            )
 
         return {
             "query": queries,
             "answers": answers,
             "document": documents,
-            "score": scores
+            "score": scores,
         }

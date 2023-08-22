@@ -6,6 +6,7 @@ import abc
 from importlib import import_module
 import random
 import re
+import sys
 from typing import Any, Dict, Union
 import warnings
 
@@ -31,8 +32,8 @@ class DatasetTransform(abc.ABC):
 
     @abc.abstractmethod
     def __call__(
-            self, dataset: Union[Dataset,
-                                 DatasetDict]) -> Union[Dataset, DatasetDict]:
+        self, dataset: Union[Dataset, DatasetDict]
+    ) -> Union[Dataset, DatasetDict]:
         """
         Transforms a dataset.
 
@@ -45,8 +46,7 @@ class DatasetTransform(abc.ABC):
         raise NotImplementedError()
 
     @staticmethod
-    def create(config: DictConfig,
-               tokenizer: AutoTokenizer) -> "DatasetTransform":
+    def create(config: DictConfig, tokenizer: AutoTokenizer) -> "DatasetTransform":
         """
         Creates a transform object from the provided config.
 
@@ -87,7 +87,7 @@ class NaturalQuestions(DatasetTransform):
             document content without prefix.
         """
         separator = "] "
-        return document[document.find(separator) + len(separator):]
+        return document[document.find(separator) + len(separator) :]
 
     def _expand_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -114,9 +114,8 @@ class NaturalQuestions(DatasetTransform):
         # query
         prefix = "Question: "
         if not query.startswith(prefix):
-            raise ValueError(
-                f"Expected question to start with {prefix}, found {query}")
-        query = query[len(prefix):]
+            raise ValueError(f"Expected question to start with {prefix}, found {query}")
+        query = query[len(prefix) :]
 
         # ideal
         match = re.fullmatch(pattern, ideal)
@@ -127,7 +126,7 @@ class NaturalQuestions(DatasetTransform):
         id = int(match.group(1))
         ideal_candidate = candidates[id - 1]  # document ids start from 1
         if not ideal_candidate.startswith(f"Document [{id}]"):
-            prefix = ideal_candidate[:ideal_candidate.find("]") + 1]
+            prefix = ideal_candidate[: ideal_candidate.find("]") + 1]
             raise ValueError(
                 f"Mismatch between expected document id {id} and document prefix {prefix}"
             )
@@ -140,10 +139,9 @@ class NaturalQuestions(DatasetTransform):
         num_candidates = len(candidates)
         num_negatives = min(self._config.negatives, num_candidates)
         negative_indices = random.sample(range(num_candidates), num_negatives)
-        documents.extend([
-            self._remove_document_prefix(candidates[i])
-            for i in negative_indices
-        ])
+        documents.extend(
+            [self._remove_document_prefix(candidates[i]) for i in negative_indices]
+        )
         queries.extend([query] * num_negatives)
         answers.extend([answer] * num_negatives)
         scores.extend([1] * num_negatives)
@@ -151,13 +149,14 @@ class NaturalQuestions(DatasetTransform):
         if [len(queries), len(answers), len(documents)] != [len(scores)] * 3:
             raise ValueError(
                 f"queries ({len(queries)}) answers ({len(answers)}), documents ({len(documents)}), "
-                f"and scores ({len(scores)}) should all have the same length")
+                f"and scores ({len(scores)}) should all have the same length"
+            )
 
         return {
             "query": queries,
             "answer": answers,
             "document": documents,
-            "score": scores
+            "score": scores,
         }
 
     @staticmethod
@@ -189,20 +188,19 @@ class NaturalQuestions(DatasetTransform):
         """
         prefix = "Answer: "
         if not answer.startswith(prefix):
-            raise ValueError(
-                f"answer should start with '{prefix}', found {answer}")
-        return answer[len(prefix):]
+            raise ValueError(f"answer should start with '{prefix}', found {answer}")
+        return answer[len(prefix) :]
 
     def __call__(
-            self, dataset: Union[Dataset,
-                                 DatasetDict]) -> Union[Dataset, DatasetDict]:
+        self, dataset: Union[Dataset, DatasetDict]
+    ) -> Union[Dataset, DatasetDict]:
         """
         See the parent class.
         """
         columns_to_remove = dataset.column_names
-        dataset = dataset.map(self._expand_row,
-                              remove_columns=columns_to_remove,
-                              num_proc=16)
+        dataset = dataset.map(
+            self._expand_row, remove_columns=columns_to_remove, num_proc=16
+        )
         dataset = dataset.map(self._flatten_batch, batched=True)
 
         max_samples = self._config.get("max_samples")
@@ -222,13 +220,13 @@ class QueryDocument(DatasetTransform):
     """
 
     def __call__(
-            self, dataset: Union[Dataset,
-                                 DatasetDict]) -> Union[Dataset, DatasetDict]:
+        self, dataset: Union[Dataset, DatasetDict]
+    ) -> Union[Dataset, DatasetDict]:
         dataset = dataset.sort(self._config.query_column)
         queries = []
         documents = []
         scores = []
-        per_query_rows = self._config.get("per_query_rows")
+        docs_per_query = self._config.get("docs_per_query")
         i = 0
         num_queries = 0
         skipped_rows = 0
@@ -238,18 +236,16 @@ class QueryDocument(DatasetTransform):
 
             # process rows for a single query
             score_ids = []
-            while i < len(dataset) and dataset[i][
-                    self._config.query_column] == query:
-                score_ids.append(
-                    (int(dataset[i][self._config.score_column]), i))
+            while i < len(dataset) and dataset[i][self._config.query_column] == query:
+                score_ids.append((int(dataset[i][self._config.score_column]), i))
                 i += 1
             sorted_score_ids = sorted(score_ids, reverse=True)
-            if per_query_rows is not None:
-                if len(sorted_score_ids) < per_query_rows:
+            if docs_per_query is not None:
+                if len(sorted_score_ids) < docs_per_query:
                     skipped_rows += len(sorted_score_ids)
                     skipped_queries += 1
                     continue
-                sorted_score_ids = sorted_score_ids[:per_query_rows]
+                sorted_score_ids = sorted_score_ids[:docs_per_query]
             num_queries += 1
             for score, id in sorted_score_ids:
                 queries.append(dataset[id][self._config.query_column])
@@ -258,12 +254,72 @@ class QueryDocument(DatasetTransform):
         if skipped_rows > 0:
             warnings.warn(
                 f"{skipped_rows} / {len(dataset)} rows and {skipped_queries} / {skipped_queries + num_queries} "
-                f"were excluded due to the query size filter of {per_query_rows}"
+                f"queries were excluded due to the query size filter of {docs_per_query}"
             )
         print(f"extracted {num_queries} queries")
-        return Dataset.from_dict({
-            "query": queries,
-            "answer": [""] * len(queries),
-            "document": documents,
-            "score": scores,
-        })
+        return Dataset.from_dict(
+            {
+                "query": queries,
+                "answer": [""] * len(queries),
+                "document": documents,
+                "score": scores,
+            }
+        )
+
+
+class MsMarcoRank(DatasetTransform):
+    """
+    Transform processing data in MsMarco format.
+
+    Each input data row is a <query, [positives], [negatives]> tuple.
+    """
+
+    def __call__(
+        self, dataset: Union[Dataset, DatasetDict]
+    ) -> Union[Dataset, DatasetDict]:
+        queries = []
+        documents = []
+        scores = []
+        max_samples = self._config.get("max_samples", sys.maxsize)
+        if self._config.get("max_samples") is not None:
+            print(f"limiting to max samples {max_samples}")
+        docs_per_query = self._config.get("docs_per_query")
+        if docs_per_query is not None:
+            print(f"limiting to max docs per query {docs_per_query}")
+        num_queries = 0
+        skipped_queries = 0
+        for row in dataset:
+            query, positive, negative = row["query"], row["positive"], row["negative"]
+            if (
+                docs_per_query is not None
+                and len(positive) + len(negative) < docs_per_query
+            ):
+                skipped_queries += 1
+                continue
+            limit = docs_per_query if docs_per_query else len(positive) + len(negative)
+            for doc in positive[:limit]:
+                queries.append(query)
+                documents.append(doc)
+                scores.append(9)
+            for doc in negative[: limit - len(positive)]:
+                queries.append(query)
+                documents.append(doc)
+                scores.append(1)
+            num_queries += 1
+            if num_queries == max_samples:
+                break
+
+        if skipped_queries > 0:
+            warnings.warn(
+                f"{skipped_queries} / {skipped_queries + num_queries} queries "
+                f"were excluded due to the query size filter of {docs_per_query}"
+            )
+        print(f"extracted {len(queries)} queries")
+        return Dataset.from_dict(
+            {
+                "query": queries,
+                "answer": [""] * len(queries),
+                "document": documents,
+                "score": scores,
+            }
+        )
