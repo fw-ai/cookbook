@@ -1,0 +1,7 @@
+gcloud-log-query-request:
+  format: json
+  data_files: data/gcloud-log-sample.jsonl
+  transform:
+    class: recipes.common.batch_transform.StringTemplate
+    prompt_template: "### QUERY:\n{query}\n\n### SAMPLES:\n{sample}\n\n### REQUEST:\n"
+    completion_template: "{request}"

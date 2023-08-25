@@ -67,7 +67,7 @@ the `qlora` configurations, which implement aggressive quantization.
 By default, the recipes pull the data from HuggingFace :hugs: hub. If you need to train on custom data,
 you may want to [upload](https://huggingface.co/docs/datasets/upload_dataset) it to a (possibly private) HuggingFace
 :hugs: dataset.
-Very soon we will be adding functionality to load the data from a local drive so stay tuned.
+Alternatively, you can load the data from a local file. [Here](https://github.com/fw-ai/cookbook/blob/main/recipes/tune/instruct_lora/conf/data/dataset/gcloud-log-sample.yaml) is an example config illustrating a local data loading setup.
 
 ## Execution Guidelines
 

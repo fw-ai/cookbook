@@ -4,7 +4,7 @@
 
 # Example command:
 #
-#   python generate.py --config-name=summarize working_dir=/mnt/text/model/llama2-7b-8k/cnn_dailymail-dialogsum-samsum/0.1/
+#   python generate.py --config-name=summarize
 #
 # where --config-name corresponds to an app yaml file under ./conf and working_dir is an
 # override of one of the config values.
@@ -29,6 +29,7 @@ def _patch(config: DictConfig) -> None:
     if config.model.flash_attention:
         # flash attention may not have been installed
         from recipes.common.llama_patch import replace_llama_attn_with_flash_attn
+
         replace_llama_attn_with_flash_attn()
 
 
@@ -47,8 +48,9 @@ def _extract_response(config: DictConfig, output: str) -> str:
     return output.split(config.prompt_delimiter)[1]
 
 
-def _generate(config: DictConfig, tokenizer: AutoTokenizer, model: PeftModel,
-              device: torch.device) -> str:
+def _generate(
+    config: DictConfig, tokenizer: AutoTokenizer, model: PeftModel, device: torch.device
+) -> str:
     """
     Generates response to a given instruction.
 
@@ -65,9 +67,11 @@ def _generate(config: DictConfig, tokenizer: AutoTokenizer, model: PeftModel,
     prompt = config.prompt
     inputs = tokenizer(prompt, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    outputs = model.generate(input_ids=inputs["input_ids"],
-                             attention_mask=inputs["attention_mask"],
-                             max_new_tokens=config.max_new_tokens)
+    outputs = model.generate(
+        input_ids=inputs["input_ids"],
+        attention_mask=inputs["attention_mask"],
+        max_new_tokens=config.max_new_tokens,
+    )
     outputs = outputs.squeeze(0)
     try:
         index = outputs.tolist().index(tokenizer.eos_token_id)
@@ -96,8 +100,7 @@ def _app(config: DictConfig) -> None:
     RED = "\033[1;31m"
     GREEN = "\033[1;32m"
     RESET = "\033[0m"
-    print(
-        f"{GREEN}text:{RESET} {config.input}\n{RED}answer:{RESET} {response}")
+    print(f"{GREEN}text:{RESET} {config.input}\n{RED}answer:{RESET} {response}")
 
 
 if __name__ == "__main__":
