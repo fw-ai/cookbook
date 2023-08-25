@@ -77,19 +77,16 @@ def prepare_training_data(config: DictConfig, tokenizer: AutoTokenizer) -> Datas
     datasets = []
     for name, spec in config.data.dataset.items():
         split = spec.get("split", "train")
-        data_files = spec.get("data_files")
+        path = spec.get("huggingface_name", spec.get("format"))
+        kwargs = {}
+        if "data_files" in spec:
+            kwargs["data_files"] = spec["data_files"]
+        if "huggingface_revision" in spec:
+            kwargs["revision"] = spec["huggingface_revision"]
         if spec.get("subset"):
-            dataset = load_dataset(
-                spec.huggingface_name,
-                spec.subset,
-                revision=spec.huggingface_revision,
-                split=split,
-                data_files=data_files,
-            )
+            dataset = load_dataset(path, spec.subset, split=split, **kwargs)
         else:
-            dataset = load_dataset(
-                spec.huggingface_name, revision=spec.huggingface_revision, split=split
-            )
+            dataset = load_dataset(path, split=split, **kwargs)
         print(f"loaded dataset {name} of size {len(dataset)}")
 
         transform = _create_transform(spec.transform, tokenizer)
