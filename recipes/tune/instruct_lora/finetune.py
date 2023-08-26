@@ -10,6 +10,7 @@ import os
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from recipes.common.env import init_env, env
+from recipes.common.format import convert_fireworks_conf
 from recipes.common.hf_data import prepare_training_data
 from recipes.common.peft import load_train_model, peft_state_dict
 from recipes.common.tokenizer import load_tokenizer
@@ -26,6 +27,7 @@ def _patch(config: DictConfig) -> None:
     if config.model.flash_attention:
         # flash attention may not have been installed
         from recipes.common.llama_patch import replace_llama_attn_with_flash_attn
+
         replace_llama_attn_with_flash_attn()
         print("patched the llama model to use flash attention")
 
@@ -41,11 +43,10 @@ def _save_fireworks_conf(config: DictConfig) -> None:
         return
     fireworks_conf = config.model.get("fireworks")
     if fireworks_conf:
-        dict_conf = OmegaConf.to_container(fireworks_conf, resolve=True)
-        fireworks_file = os.path.join(config.output_model_dir,
-                                      "fireworks.json")
+        formatted = convert_fireworks_conf(fireworks_conf)
+        fireworks_file = os.path.join(config.output_model_dir, "fireworks.json")
         with open(fireworks_file, "w") as f:
-            json.dump(dict_conf, f, indent=4)
+            json.dump(formatted, f, indent=4)
         print(f"saved fireworks config to {fireworks_file}")
 
 
@@ -62,7 +63,8 @@ def _app(config: DictConfig) -> None:
         # tuning models is expensive. Do not overwrite existing
         # models to avoid accidental wipeouts.
         raise RuntimeError(
-            f"output directory {config.output_model_dir} already exists.")
+            f"output directory {config.output_model_dir} already exists."
+        )
     _patch(config)
     init_env()
     tokenizer = load_tokenizer(config)

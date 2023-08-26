@@ -7,12 +7,10 @@ pad_token: "<unk>"
 fireworks:
   base_model: accounts/fireworks/models/llama-v2-70b-chat
   conversation_config:
-    name: llama-2
     system: "[INST] <<SYS>>\nYou are an assistant and you are tasked with writing text summaries. For each input text, provide a summary. The summary should be concise, accurate and truthful. Do not make up facts or answers.\n<</SYS>>\n\n"
     roles:
       - "[INST]"
       - "[/INST]"
-    messages: []
     offset: 0
     sep_style: LLAMA2
     sep: " "

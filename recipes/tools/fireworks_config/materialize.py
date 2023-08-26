@@ -11,6 +11,8 @@ import os
 import fire
 from omegaconf import OmegaConf
 
+from recipes.common.format import convert_fireworks_conf
+
 
 def _materialize_configs(
     output_dir: str = os.path.join(os.path.dirname(__file__), "gen")
@@ -25,15 +27,16 @@ def _materialize_configs(
     config_files = os.path.join(current_file_dir, "../../common/conf/model/*.yaml")
     yaml_files = glob.glob(config_files)
     for file in yaml_files:
-        cfg = OmegaConf.load(file)
         basename = os.path.basename(file)
         model = os.path.splitext(basename)[0]
         output_model_dir = os.path.join(output_dir, model)
         os.makedirs(output_model_dir, exist_ok=True)
         output_file = os.path.join(output_model_dir, "fireworks.json")
         print(f"writing {output_file}")
+        cfg = OmegaConf.load(file).fireworks
+        formatted = convert_fireworks_conf(cfg)
         with open(output_file, "w") as f:
-            json.dump(OmegaConf.to_container(cfg)["fireworks"], f, indent=4)
+            json.dump(formatted, f, indent=4)
 
 
 if __name__ == "__main__":
