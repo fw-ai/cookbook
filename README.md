@@ -85,5 +85,5 @@ curl \
 ### Clean up
 ```bash
 firectl undeploy my-model
-firectl delete my-model
+firectl delete model my-model
 ```
