@@ -20,5 +20,5 @@ def convert_fireworks_conf(config: DictConfig) -> Dict[str, Any]:
     result = OmegaConf.to_container(config)
     conversation_config = result.get("conversation_config")
     if conversation_config:
-        result["conversation_config"] = json.dumps(conversation_config)
+        result["conversation_config"] = conversation_config
     return result
