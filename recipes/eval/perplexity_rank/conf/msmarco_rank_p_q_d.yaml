@@ -4,7 +4,8 @@
 
 defaults:
   - base
-  - model: stablebeluga-7b
+  - model: fw_llama2-7b
+  # - model: stablebeluga-7b
   - dataset: msmarco_rank
 
 working_dir: /tmp/generate
