@@ -11,7 +11,6 @@ from typing import Any, Dict, Union
 import warnings
 
 from omegaconf import DictConfig
-from transformers import AutoTokenizer
 from datasets import Dataset, DatasetDict
 
 
@@ -20,14 +19,12 @@ class DatasetTransform(abc.ABC):
     Transform processes a dataset.
     """
 
-    def __init__(self, config: DictConfig, tokenizer: AutoTokenizer) -> None:
+    def __init__(self, config: DictConfig) -> None:
         """
         Args:
-            config: dataset config,
-            tokenizer: the tokenizer to use for things like EOS token.
+            config: dataset config.
         """
         self._config = config
-        self._tokenizer = tokenizer
         self.output_column = None
 
     @abc.abstractmethod
@@ -46,14 +43,12 @@ class DatasetTransform(abc.ABC):
         raise NotImplementedError()
 
     @staticmethod
-    def create(config: DictConfig, tokenizer: AutoTokenizer) -> "DatasetTransform":
+    def create(config: DictConfig) -> "DatasetTransform":
         """
         Creates a transform object from the provided config.
 
         Args:
-            config: the config with transform parameters,
-            tokenizer: the tokenizer that can be used to customize the
-                transform.
+            config: the config with transform parameters.
 
         Returns:
             transform object.
@@ -62,7 +57,7 @@ class DatasetTransform(abc.ABC):
         module_name, class_name = clazz.rsplit(".", 1)
         module = import_module(module_name)
         cls = getattr(module, class_name)
-        return cls(config, tokenizer)
+        return cls(config)
 
 
 class NaturalQuestions(DatasetTransform):

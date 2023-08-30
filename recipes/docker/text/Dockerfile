@@ -42,6 +42,7 @@ RUN pip install \
     datasets \
     evals \
     fire \
+    fireworks-ai \
     guidance \
     huggingface_hub \
     hydra-core \

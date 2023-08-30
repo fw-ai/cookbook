@@ -10,17 +10,12 @@ import re
 from typing import Any, Dict, List, Tuple
 
 import hydra
-import torch
 from datasets import Dataset, load_dataset
 from omegaconf import DictConfig, OmegaConf
-from peft.peft_model import PeftModel
+from recipes.eval.perplexity_rank.client import Client
 from recipes.common.env import init_env
-from recipes.common.peft import load_inference_model
-from recipes.common.tokenizer import load_tokenizer
 from recipes.eval.perplexity_rank.transform import DatasetTransform
 from tqdm import tqdm
-
-from transformers import AutoTokenizer
 
 _global_stats = {
     "matched_completions": 0,
@@ -28,13 +23,12 @@ _global_stats = {
 }
 
 
-def _prepare_data(config: DictConfig, tokenizer: AutoTokenizer) -> Dataset:
+def _prepare_data(config: DictConfig) -> Dataset:
     """
     Prepares evaluation dataset.
 
     Args:
-        config: configuration parameters describing the dataset,
-        tokenizer: the tokenizer used to generate EOS token.
+        config: configuration parameters describing the dataset.
 
     Returns:
         loaded dataset.
@@ -48,7 +42,7 @@ def _prepare_data(config: DictConfig, tokenizer: AutoTokenizer) -> Dataset:
     )
     print(f"loaded dataset {path} of size {len(dataset)}")
 
-    transform = DatasetTransform.create(config.transform, tokenizer)
+    transform = DatasetTransform.create(config.transform)
     dataset = transform(dataset)
 
     return dataset
@@ -68,89 +62,43 @@ def _patch(config: DictConfig) -> None:
         replace_llama_attn_with_flash_attn()
 
 
-def _perplexity(
-    config: DictConfig,
-    tokenizer: AutoTokenizer,
-    model: PeftModel,
-    query: str,
-    document: str,
-    device: torch.device,
-) -> float:
+def _perplexity(config: DictConfig, client: Client, query: str, document: str) -> float:
     """
     Calculates perplexity of the generated completion.
 
     Args:
         config: config describing the evaluation task,
-        tokenizer: the tokenizer to use for encoding and decoding,
-        model: the sequence generation model,
+        client: the client interfacing with the model,
         query: the query to use in the prompt,
-        document: the document to include in the prompt,
-        device: the device where to run the inference.
+        document: the document to include in the prompt.
 
     Returns:
         perplexity calculated on the completion.
     """
     prompt = config.prompt_template.format(document=document, query=query)
-    num_document_tokens = len(tokenizer(prompt, return_tensors="pt")["input_ids"][0])
     completion = config.completion_template.format(document=document, query=query)
-    text = prompt + completion
-    input_ids = tokenizer(text, return_tensors="pt")["input_ids"].to(device)
-    num_target_tokens = len(input_ids[0]) - num_document_tokens
-    target_ids = input_ids.clone()
-    target_ids[:, :-num_target_tokens] = -100
-    with torch.no_grad():
-        outputs = model(input_ids, labels=target_ids)
-
-        # loss is calculated using CrossEntropyLoss which averages over valid labels
-        # N.B. the model only calculates loss over trg_len - 1 labels, because it internally shifts the labels
-        # to the left by 1.
-        neg_log_likelihood = outputs.loss
-
     _global_stats["matched_completions"] += 1
 
-    return neg_log_likelihood
+    return client.perplexity(prompt, completion)
 
 
 def _parse_completion(
-    config: DictConfig,
-    tokenizer: AutoTokenizer,
-    model: PeftModel,
-    query: str,
-    document: str,
-    device: torch.device,
+    config: DictConfig, client: Client, query: str, document: str
 ) -> float:
     """
     Scores completions w.r.t. a provided template.
 
     Args:
         config: config describing the evaluation task,
-        tokenizer: the tokenizer to use for encoding and decoding,
-        model: the sequence generation model,
+        client: the client interfacing with the model,
         query: the query to use in the prompt,
-        document: the document to include in the prompt,
-        device: the device where to run the inference.
+        document: the document to include in the prompt.
 
     Returns:
         0.0 if the completion matches the template, 1.0 otherwise.
     """
     prompt = config.prompt_template.format(document=document, query=query)
-    inputs = tokenizer(prompt, return_tensors="pt")
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-    outputs = model.generate(
-        input_ids=inputs["input_ids"],
-        attention_mask=inputs["attention_mask"],
-        max_new_tokens=512,
-    )
-    outputs = outputs.squeeze(0)
-    try:
-        index = outputs.tolist().index(tokenizer.eos_token_id)
-        outputs = outputs[:index]
-    except ValueError:
-        ...
-    outputs = outputs.unsqueeze(0)
-    decoded = tokenizer.batch_decode(outputs, skip_special_tokens=False)[0]
-    start = decoded.find(prompt) + len(prompt)
-    completion = decoded[start:].strip().lower()
+    completion = client.completion(prompt)
     positive_match = config.completion_positive_marker.format(
         document=document, query=query
     ).lower()
@@ -235,23 +183,14 @@ def _recall(
     return (recalls, baseline_recalls)
 
 
-def _evaluate(
-    config: DictConfig,
-    tokenizer: AutoTokenizer,
-    model: PeftModel,
-    dataset: Dataset,
-    device: torch.device,
-) -> Dict[str, float]:
+def _evaluate(config: DictConfig, client: Client, dataset: Dataset) -> Dict[str, float]:
     """
     Evaluates the data using perplexity scoring.
 
     Args:
         config: the configuration describing the evaluation program,
-        tokenizer: the tokenizer to use for encoding of the instruction and
-            decoding of the results,
-        model: the model generating responses,
-        dataset: the dataset to use for evaluation,
-        device: the default device where the eval should run.
+        client: the client interfacing with the model,
+        dataset: the dataset to use for evaluation.
 
     Returns:
         computed evaluation metrics.
@@ -279,7 +218,7 @@ def _evaluate(
 
         perplexities = []
         for document in documents:
-            perplexity = scoring_fn(config, tokenizer, model, query, document, device)
+            perplexity = scoring_fn(config, client, query, document)
             perplexities.append(perplexity)
 
         recalls, baseline_recalls = _recall(perplexities, scores, config.recall_limits)
@@ -317,11 +256,10 @@ def _app(config: DictConfig) -> None:
     """
     print(f"config: {OmegaConf.to_yaml(config, resolve=True)}")
     _patch(config)
-    env = init_env()
-    tokenizer = load_tokenizer(config)
-    dataset = _prepare_data(config.dataset, tokenizer)
-    model = load_inference_model(config, tokenizer, env.device)
-    stats = _evaluate(config, tokenizer, model, dataset, env.device)
+    init_env()
+    dataset = _prepare_data(config.dataset)
+    client = Client.create(config)
+    stats = _evaluate(config, client, dataset)
     print(f"eval stats: {stats}")
     print(f"global stats: {_global_stats}")
 

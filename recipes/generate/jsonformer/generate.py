@@ -25,11 +25,13 @@ def _patch(config: DictConfig) -> None:
     if config.model.flash_attention:
         # flash attention may not have been installed
         from recipes.common.llama_patch import replace_llama_attn_with_flash_attn
+
         replace_llama_attn_with_flash_attn()
 
 
-def _generate(config: DictConfig, tokenizer: AutoTokenizer, model: PeftModel,
-              device: torch.device) -> str:
+def _generate(
+    config: DictConfig, tokenizer: AutoTokenizer, model: PeftModel, device: torch.device
+) -> str:
     """
     Generates response to a given instruction.
 
@@ -61,14 +63,13 @@ def _app(config: DictConfig) -> None:
     print(f"config: {OmegaConf.to_yaml(config, resolve=True)}")
     _patch(config)
     env = init_env()
-    tokenizer = load_tokenizer(config)
-    model = load_inference_model(config, tokenizer, env.device)
+    tokenizer = load_tokenizer(config.model)
+    model = load_inference_model(config)
     response = _generate(config, tokenizer, model, env.device)
     RED = "\033[1;31m"
     GREEN = "\033[1;32m"
     RESET = "\033[0m"
-    print(
-        f"{GREEN}text:{RESET} {config.input}\n{RED}answer:{RESET} {response}")
+    print(f"{GREEN}text:{RESET} {config.input}\n{RED}answer:{RESET} {response}")
 
 
 if __name__ == "__main__":

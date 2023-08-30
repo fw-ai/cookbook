@@ -1,6 +1,8 @@
 defaults:
   - ../../../../common/conf/model/llama2-7b@_here_
 
+client_class: recipes.eval.perplexity_rank.client.LocalClient
+
 name: llama2-7b-8k
 
 flash_attention: False
