@@ -17,11 +17,14 @@ def load_tokenizer(config: DictConfig) -> AutoTokenizer:
         tokenizer loader from HF.
     """
     tokenizer = AutoTokenizer.from_pretrained(
-        config.model.huggingface_model_name,
-        revision=config.model.huggingface_model_revision,
-        padding_side="right")
+        config.huggingface_model_name,
+        revision=config.huggingface_model_revision,
+        padding_side="right",
+    )
     if tokenizer.pad_token_id is None:
-        tokenizer.add_special_tokens({
-            "pad_token": config.model.pad_token,
-        })
+        tokenizer.add_special_tokens(
+            {
+                "pad_token": config.pad_token,
+            }
+        )
     return tokenizer

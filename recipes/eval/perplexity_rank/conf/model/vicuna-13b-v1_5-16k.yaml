@@ -2,6 +2,8 @@ huggingface_model_name: lmsys/vicuna-13b-v1.5-16k
 huggingface_model_revision: 043a612
 pad_token: "<unk>"
 
+client_class: recipes.eval.perplexity_rank.client.LocalClient
+
 name: vicuna-13b-v1_5-16
 
 flash_attention: True

@@ -7,11 +7,9 @@ from typing import Dict
 import hydra
 import torch
 from omegaconf import DictConfig
-from peft import (LoraConfig, PeftModel, get_peft_model,
-                  prepare_model_for_kbit_training)
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from peft.tuners.lora import LoraLayer
-from transformers import (AutoModelForCausalLM, AutoTokenizer,
-                          BitsAndBytesConfig)
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 def load_train_model(config: DictConfig) -> PeftModel:
@@ -24,8 +22,7 @@ def load_train_model(config: DictConfig) -> PeftModel:
     Returns:
         model loaded from HF.
     """
-    base_model_class = config.model.get("base_model_class",
-                                        AutoModelForCausalLM)
+    base_model_class = config.model.get("base_model_class", AutoModelForCausalLM)
     if isinstance(base_model_class, str):
         base_model_class = hydra.utils.get_class(base_model_class)
 
@@ -33,10 +30,10 @@ def load_train_model(config: DictConfig) -> PeftModel:
     quantization_config = config.model.get("quantization_config")
     if quantization_config:
         quantization_config, unused = BitsAndBytesConfig.from_dict(
-            quantization_config, True)
+            quantization_config, True
+        )
         if unused:
-            raise ValueError(
-                f"unrecognized keys in quantization config: {unused}")
+            raise ValueError(f"unrecognized keys in quantization config: {unused}")
         print(f"using quantization config: {quantization_config.to_dict()}")
         kwargs["quantization_config"] = quantization_config
     torch_dtype = config.model.torch_dtype
@@ -75,15 +72,12 @@ def load_train_model(config: DictConfig) -> PeftModel:
     return peft_model
 
 
-def load_inference_model(config: DictConfig, tokenizer: AutoTokenizer,
-                         device: torch.device) -> PeftModel:
+def load_inference_model(config: DictConfig) -> PeftModel:
     """
     Loads pretrained model from HF and applies tuned adapter weights on top of it.
 
     Args:
-        config: configuration parameters describing the model to load,
-        tokenizer: the tokenizer to use when determining the EOS token,
-        device: the device where the model should be loaded.
+        config: configuration parameters describing the model to load.
 
     Returns:
         inference-ready model.
@@ -91,8 +85,7 @@ def load_inference_model(config: DictConfig, tokenizer: AutoTokenizer,
 
     print("loading model")
 
-    base_model_class = config.model.get("base_model_class",
-                                        AutoModelForCausalLM)
+    base_model_class = config.model.get("base_model_class", AutoModelForCausalLM)
     if isinstance(base_model_class, str):
         base_model_class = hydra.utils.get_class(base_model_class)
 
@@ -100,10 +93,10 @@ def load_inference_model(config: DictConfig, tokenizer: AutoTokenizer,
     quantization_config = config.model.get("quantization_config", None)
     if quantization_config:
         quantization_config, unused = BitsAndBytesConfig.from_dict(
-            quantization_config, True)
+            quantization_config, True
+        )
         if unused:
-            raise ValueError(
-                f"unrecognized keys in quantization config: {unused}")
+            raise ValueError(f"unrecognized keys in quantization config: {unused}")
         print(f"using quantization config: {quantization_config.to_dict()}")
         kwargs["quantization_config"] = quantization_config
     torch_dtype = config.model.torch_dtype
@@ -123,7 +116,6 @@ def load_inference_model(config: DictConfig, tokenizer: AutoTokenizer,
         low_cpu_mem_usage=True,
         device_map="auto",
         **kwargs,
-        # pad_token_id=tokenizer.eos_token_id,
     )
     if config.load_adapter:
         model = PeftModel.from_pretrained(model, config.output_model_dir)
@@ -132,8 +124,9 @@ def load_inference_model(config: DictConfig, tokenizer: AutoTokenizer,
     return model
 
 
-def peft_state_dict(model: torch.nn.Module,
-                    bias: str = "none") -> Dict[str, torch.Tensor]:
+def peft_state_dict(
+    model: torch.nn.Module, bias: str = "none"
+) -> Dict[str, torch.Tensor]:
     """
     Obtains a state dict that contains adapter params only.
 
@@ -162,8 +155,7 @@ def peft_state_dict(model: torch.nn.Module,
                 state_dict[n] = p.data
     elif bias == "lora_only":
         for n, m in model.named_modules():
-            if isinstance(m, LoraLayer) and hasattr(
-                    m, "bias") and m.bias is not None:
+            if isinstance(m, LoraLayer) and hasattr(m, "bias") and m.bias is not None:
                 state_dict[n + ".bias"] = m.bias
     else:
         raise NotImplementedError
