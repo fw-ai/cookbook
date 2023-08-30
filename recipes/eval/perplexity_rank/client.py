@@ -4,11 +4,15 @@
 
 import abc
 from importlib import import_module
-from omegaconf import DictConfig
+import math
+
+import fireworks.client
+import openai
 import torch
+from omegaconf import DictConfig
+from recipes.common.env import env
 from recipes.common.peft import load_inference_model
 from recipes.common.tokenizer import load_tokenizer
-from recipes.common.env import env
 
 
 class Client(abc.ABC):
@@ -94,7 +98,7 @@ class LocalClient(Client):
             # to the left by 1.
             neg_log_likelihood = outputs.loss
 
-        return neg_log_likelihood
+        return math.exp(neg_log_likelihood)
 
     def completion(self, prompt: str) -> str:
         inputs = self._tokenizer(prompt, return_tensors="pt")
@@ -113,4 +117,36 @@ class LocalClient(Client):
         outputs = outputs.unsqueeze(0)
         decoded = self._tokenizer.batch_decode(outputs, skip_special_tokens=False)[0]
         start = decoded.find(prompt) + len(prompt)
-        return decoded[start:].strip().lower()
+        return decoded[start:]
+
+
+class FireworksClient(Client):
+    def __init__(self, config: DictConfig) -> None:
+        super().__init__(config)
+        self._model = config.model.name
+        api_key = config.model.get("api_key")
+        if api_key:
+            fireworks.client.api_key = api_key
+
+    def perplexity(self, prompt: str, completion: str) -> float:
+        text = prompt + completion
+        # TODO(pawel): replace with fireworks.client.Completion.create
+        # after the client fix lands.
+        response = openai.Completion.create(
+            model=self._model,
+            prompt=text,
+            max_tokens=0,
+            logprobs=1,
+            echo=True,
+        )
+        logprobs = response.choices[0].logprobs
+        completion_start = logprobs.text_offset.index(len(prompt))
+        completion_logprobs = logprobs.token_logprobs[completion_start:]
+        return math.exp(-sum(completion_logprobs) / len(completion_logprobs))
+
+    def completion(self, prompt: str) -> str:
+        completion = fireworks.client.Completion.create(
+            model=self._model,
+            prompt=prompt,
+        )
+        return completion.choices[0].text

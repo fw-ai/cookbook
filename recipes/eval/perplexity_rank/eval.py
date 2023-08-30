@@ -55,7 +55,7 @@ def _patch(config: DictConfig) -> None:
     Args:
         config: the config describing patching behavior.
     """
-    if config.model.flash_attention:
+    if config.model.get("flash_attention"):
         # flash attention may not have been installed
         from recipes.common.llama_patch import replace_llama_attn_with_flash_attn
 
@@ -99,6 +99,7 @@ def _parse_completion(
     """
     prompt = config.prompt_template.format(document=document, query=query)
     completion = client.completion(prompt)
+    completion = completion.strip().lower()
     positive_match = config.completion_positive_marker.format(
         document=document, query=query
     ).lower()
