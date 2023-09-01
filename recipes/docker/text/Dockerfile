@@ -54,6 +54,7 @@ RUN pip install \
     py7zr \
     s3fs \
     sentencepiece \
+    sentence_transformers \
     torchx \
     transformers \
     zstandard
