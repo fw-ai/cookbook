@@ -44,11 +44,14 @@ def load_train_model(config: DictConfig) -> PeftModel:
         rope_scaling = dict(rope_scaling.items())
         print(f"using rope scaling config: {rope_scaling}")
         kwargs["rope_scaling"] = rope_scaling
+    load_in_4bit = config.model.get("load_in_4bit", False)
+    load_in_8bit = config.model.get("load_in_8bit", False)
     model = base_model_class.from_pretrained(
         config.model.huggingface_model_name,
         revision=config.model.huggingface_model_revision,
         trust_remote_code=True,
-        load_in_4bit=config.model.get("load_in_4bit", False),
+        load_in_4bit=load_in_4bit,
+        load_in_8bit=load_in_8bit,
         torch_dtype=torch_dtype,
         device_map={"": torch.cuda.current_device()},
         **kwargs,
@@ -56,7 +59,7 @@ def load_train_model(config: DictConfig) -> PeftModel:
     if config.model.gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
-    if quantization_config:
+    if quantization_config or load_in_4bit or load_in_8bit:
         model = prepare_model_for_kbit_training(model)
 
     lora_config = LoraConfig(
@@ -112,6 +115,7 @@ def load_inference_model(config: DictConfig) -> PeftModel:
         revision=config.model.huggingface_model_revision,
         trust_remote_code=True,
         load_in_4bit=config.model.get("load_in_4bit", False),
+        load_in_8bit=config.model.get("load_in_8bit", False),
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=True,
         device_map="auto",
