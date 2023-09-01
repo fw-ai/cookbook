@@ -103,12 +103,12 @@ def _parse_completion(
     positive_match = config.completion_positive_marker.format(
         document=document, query=query
     ).lower()
+    score = 0.0 if positive_match in completion else 1.0
     pattern = re.compile(config.completion_pattern)
     if pattern.match(completion):
         _global_stats["matched_completions"] += 1
     else:
         _global_stats["mismatched_completions"] += 1
-    score = 0.0 if positive_match in completion else 1.0
     return score
 
 
