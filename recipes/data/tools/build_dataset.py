@@ -12,9 +12,9 @@ import fire
 from datasets import load_dataset_builder
 
 
-def _build_dataset(data_files: Union[str, List[str]],
-                   output_dir: str,
-                   format: Optional[str] = None) -> None:
+def _build_dataset(
+    data_files: Union[str, List[str]], output_dir: str, format: Optional[str] = None
+) -> None:
     """
     Creates a dataset in HF datasets format and uploads it to a (remote)
     file system.
@@ -42,5 +42,5 @@ def _build_dataset(data_files: Union[str, List[str]],
     builder.download_and_prepare(output_dir, file_format="parquet")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     fire.Fire(_build_dataset)

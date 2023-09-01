@@ -37,6 +37,7 @@ class Env:
     def backend(self) -> str:
         return self._backend
 
+
 _env: Optional[Env] = None
 
 
