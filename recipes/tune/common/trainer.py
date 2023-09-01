@@ -39,11 +39,17 @@ def train(
     deepspeed_config = config.model.get("deepspeed_config", None)
     if deepspeed_config:
         print(f"Deepspeed config: {deepspeed_config}")
-    ddp_find_unused_parameters = not config.model.gradient_checkpointing
+    load_in_8bit = config.model.get("load_in_8bit", False)
+    ddp_find_unused_parameters = not (
+        config.model.gradient_checkpointing or load_in_8bit
+    )
     kwargs = {}
     lr_scheduler_type = config.model.get("lr_scheduler_type")
     if lr_scheduler_type:
         kwargs["lr_scheduler_type"] = lr_scheduler_type
+    optim = config.model.get("optim")
+    if optim:
+        kwargs["optim"] = optim
     warmup_steps = config.model.get("warmup_steps", 10)
     trainer = transformers.Trainer(
         model=model,
@@ -69,9 +75,6 @@ def train(
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
-        # data_collator=transformers.DataCollatorForLanguageModeling(
-        #     tokenizer, mlm=False
-        # ),
     )
     model.config.use_cache = False
     trainer.train(resume_from_checkpoint=False)
