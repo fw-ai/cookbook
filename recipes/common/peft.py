@@ -8,8 +8,9 @@ import hydra
 import torch
 from omegaconf import DictConfig
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+
 from peft.tuners.lora import LoraLayer
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
 
 def load_train_model(config: DictConfig) -> PeftModel:
@@ -56,6 +57,7 @@ def load_train_model(config: DictConfig) -> PeftModel:
         device_map={"": torch.cuda.current_device()},
         **kwargs,
     )
+
     if config.model.gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
