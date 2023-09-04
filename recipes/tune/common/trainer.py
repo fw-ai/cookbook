@@ -39,9 +39,10 @@ def train(
     deepspeed_config = config.model.get("deepspeed_config", None)
     if deepspeed_config:
         print(f"Deepspeed config: {deepspeed_config}")
-    load_in_8bit = config.model.get("load_in_8bit", False)
-    ddp_find_unused_parameters = not (
-        config.model.gradient_checkpointing or load_in_8bit
+    ddp_find_unused_parameters = (
+        not config.model.gradient_checkpointing
+        and not config.model.get("load_in_8bit", False)
+        and not config.model.get("load_in_4bit", False)
     )
     kwargs = {}
     lr_scheduler_type = config.model.get("lr_scheduler_type")
@@ -68,7 +69,7 @@ def train(
             gradient_checkpointing=config.model.gradient_checkpointing,
             ddp_find_unused_parameters=ddp_find_unused_parameters,
             group_by_length=False,
-            # max_steps=1,
+            # max_steps=50,
             report_to=None,
             **kwargs,
         ),
