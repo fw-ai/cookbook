@@ -63,7 +63,7 @@ def _app(config: DictConfig) -> None:
     print(f"config: {OmegaConf.to_yaml(config, resolve=True)}")
     _patch(config)
     env = init_env()
-    tokenizer = load_tokenizer(config.model)
+    tokenizer = load_tokenizer(config.model, add_eos_token=False)
     model = load_inference_model(config)
     response = _generate(config, tokenizer, model, env.device)
     RED = "\033[1;31m"
