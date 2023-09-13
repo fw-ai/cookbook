@@ -7,4 +7,4 @@ client_class: recipes.eval.perplexity_rank.client.LocalClient
 name: stablebeluga-7b
 
 flash_attention: False
-torch_dtype: float16
+torch_dtype: bfloat16
