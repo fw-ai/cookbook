@@ -13,8 +13,6 @@ from omegaconf import DictConfig
 from recipes.common.env import env
 from recipes.common.peft import load_inference_model
 from recipes.common.tokenizer import load_tokenizer
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 
 
 class Client(abc.ABC):
@@ -77,7 +75,7 @@ class Client(abc.ABC):
 class LocalClient(Client):
     def __init__(self, config: DictConfig) -> None:
         super().__init__(config)
-        self._tokenizer = load_tokenizer(config.model)
+        self._tokenizer = load_tokenizer(config.model, add_eos_token=False)
         self._model = load_inference_model(config)
         self._device = env().device
 
@@ -152,20 +150,3 @@ class FireworksClient(Client):
             prompt=prompt,
         )
         return completion.choices[0].text
-
-
-class SentenceTransformerClient(Client):
-    def __init__(self, config: DictConfig) -> None:
-        super().__init__(config)
-        device = env().device
-        self._model = SentenceTransformer(config.model.name, device=device)
-
-    def perplexity(self, prompt: str, completion: str) -> float:
-        prompt_embedding = self._model.encode(prompt, show_progress_bar=False)
-        completion_embedding = self._model.encode(completion, show_progress_bar=False)
-        similarity = cosine_similarity([prompt_embedding], [completion_embedding])[0][0]
-        similarity = min(similarity, 1.0)
-        return 1.0 - similarity
-
-    def completion(self, prompt: str) -> str:
-        raise NotImplementedError("completion is not supported by embedding models")

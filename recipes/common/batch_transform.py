@@ -60,10 +60,7 @@ class StringTemplate(BatchTransform):
             for key, values in batch.items():
                 row[key] = values[i]
             prompts.append(self._config.prompt_template.format(**row))
-            completions.append(
-                self._config.completion_template.format(**row)
-                + self._tokenizer.eos_token
-            )
+            completions.append(self._config.completion_template.format(**row))
         result = {self.prompt_column: prompts, self.completion_column: completions}
         return result
 
@@ -97,6 +94,6 @@ class Lambda(BatchTransform):
             for key, values in batch.items():
                 row[key] = values[i]
             prompts.append(prompt_lambda(row))
-            completions.append(completion_lambda(row) + self._tokenizer.eos_token)
+            completions.append(completion_lambda(row))
         result = {self.prompt_column: prompts, self.completion_column: completions}
         return result

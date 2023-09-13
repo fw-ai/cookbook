@@ -67,7 +67,7 @@ def _app(config: DictConfig) -> None:
         )
     _patch(config)
     init_env()
-    tokenizer = load_tokenizer(config.model)
+    tokenizer = load_tokenizer(config.model, add_eos_token=True)
     dataset = prepare_training_data(config, tokenizer)
     model = load_train_model(config)
     train(config, tokenizer, dataset, model)
