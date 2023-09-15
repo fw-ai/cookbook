@@ -12,7 +12,7 @@ The code in the repository is organized according to use-case, with some code se
 ### Docker
 For convenience, we offer a Docker container inclusive of all the necessary dependencies to run the provided recipes. The image also has the latest version of the cookbook checked out in `/workspace/cookbook`. However, you likely will need to modify the cookbook, so it's better to check out the repo outside of the container and mount it as described below.
 
-The latest version is available on DockerHub as [fwai/cookbook](https://hub.docker.com/r/fwai/cookbook).
+The latest version is available on [DockerHub as fwai/cookbook](https://hub.docker.com/r/fwai/cookbook). You can use `registry.hub.docker.com/fwai/cookbook:latest` to reference it.
 
 The Dockerfile is located under [`recipes/docker`](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text)
 
