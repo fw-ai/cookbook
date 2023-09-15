@@ -10,7 +10,11 @@ Generative AI has seen unprecedented growth in recent times, spurring the creati
 The code in the repository is organized according to use-case, with some code serving multiple purposes. Our present emphasis is on Large Language Models (LLMs), however, we will incorporate more model classes in the future.
 
 ### Docker
-To enhance user convenience, we offer a Docker container inclusive of all the necessary dependencies to run the provided recipes. The Docker configuration is found under [`recipes/docker`](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text)
+For convenience, we offer a Docker container inclusive of all the necessary dependencies to run the provided recipes. The image also has the latest version of the cookbook checked out in `/workspace/cookbook`. However, you likely will need to modify the cookbook, so it's better to check out the repo outside of the container and mount it as described below.
+
+The latest version is available on DockerHub as [fwai/cookbook](https://hub.docker.com/r/fwai/cookbook).
+
+The Dockerfile is located under [`recipes/docker`](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text)
 
 ### Shared libraries
 The codebase shared across recipes is situated in [`recipes/common`](https://github.com/fw-ai/cookbook/tree/main/recipes/common).
@@ -36,15 +40,16 @@ To illustrate how to leverage the recipes for an end-to-end usecase, lets walk t
 The instructions assume that the source code of the cookbook was checked out under `/workspace/cookbook`.
 ### Build and instantiate docker container
 ```bash
-cd /workspace/cookbook/recipes/docker/text
-docker build -t fireworks_cb_text .
 docker run --privileged -it --gpus all -p 8888:8888 \
   --mount type=bind,source="/workspace",target="/workspace" \
   --mount type=bind,source="$HOME/.cache/huggingface",target="/root/.cache/huggingface" \
   --mount type=bind,source="$HOME/.ssh",target="/root/.ssh" \
-  --mount type=bind,source="/mnt/text",target="/mnt/text" \
   --ipc=host --net=host --cap-add  SYS_NICE \
-  fireworks_cb_text /bin/bash
+  fwai/cookbook:latest
+
+# Or in case you want to rebuild it:
+cd cookbook/recipes/docker/text
+docker build -t fwai/cookbook:my .
 ```
 The following commands will run inside the container.
 For more details, go [here](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text).

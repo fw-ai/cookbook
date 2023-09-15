@@ -62,3 +62,8 @@ RUN pip install \
 RUN pip uninstall -y transformer-engine
 
 RUN pip install --upgrade flash-attn --no-build-isolation
+
+ARG recipes_commit=main
+RUN git clone https://github.com/fw-ai/cookbook /workspace/cookbook && \
+    cd /workspace/cookbook && \
+    git checkout ${recipes_commit}
