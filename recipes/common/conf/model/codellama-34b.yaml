@@ -1,7 +1,7 @@
 name: ??
 
 huggingface_model_name: codellama/CodeLlama-34b-hf
-huggingface_model_revision: bb33994
+huggingface_model_revision: fda6940
 pad_token: "<unk>"
 
 fireworks:
