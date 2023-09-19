@@ -56,7 +56,8 @@ def _tokenize(
         padding=False,
         return_tensors=None,
     )
-    prompt_len = len(tokenized_prompt["input_ids"])
+    # subtract 1 to account for EOS token
+    prompt_len = len(tokenized_prompt["input_ids"]) - 1
     tokenized_row["labels"] = [-100] * prompt_len + tokenized_row["input_ids"][
         prompt_len:
     ]
