@@ -39,6 +39,20 @@ def _tokenize(
     mask_prompt: bool,
     row: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """
+    Tokenizes a single row of data, optionally masking the prompt.
+
+    Args:
+        tokenizer: the tokenizer used for tokenization.
+        prompt_column: column name containing the prompt text.
+        completion_column: column name containing the completion text.
+        max_length: maximum allowed token length after tokenization.
+        mask_prompt: flag to determine if the prompt should be masked.
+        row: the data row to tokenize.
+
+    Returns:
+        Dictionary containing tokenized data.
+    """
     tokenized_row = tokenizer(
         row[prompt_column] + row[completion_column],
         truncation=True,
