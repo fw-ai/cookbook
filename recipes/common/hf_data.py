@@ -4,15 +4,16 @@
 
 from functools import partial
 from importlib import import_module
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from datasets import DatasetDict, concatenate_datasets, load_dataset
+from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
 from omegaconf import DictConfig
+from tqdm import tqdm
 from recipes.common.batch_transform import BatchTransform
 from transformers import AutoTokenizer
 
 
-def _create_transform(config: DictConfig, tokenizer: AutoTokenizer) -> BatchTransform:
+def create_transform(config: DictConfig, tokenizer: AutoTokenizer) -> BatchTransform:
     """
     Creates a transform object from the provided config.
 
@@ -78,6 +79,65 @@ def _tokenize(
     return tokenized_row
 
 
+def _pack(name: str, data: Dataset, max_length: int) -> Dataset:
+    """
+    Packs sequences from the dataset such that the total length of packed sequences
+    does not exceed the specified maximum length. Sequences are concatenated until
+    the max_length is reached or nearly reached.
+
+    Args:
+        name: name or description of the dataset, used for logging,
+        data: dataset containing sequences to pack,
+        max_length: maximum allowed length for the packed sequences.
+
+    Returns:
+        A new Dataset containing the packed sequences.
+    """
+    length = 0
+    input_ids, attention_mask, labels = [], [], []
+    result_input_ids, result_attention_mask, result_labels = [], [], []
+
+    def merge(l: List[List[int]]) -> List[int]:
+        return [item for sublist in l for item in sublist]
+
+    for row in tqdm(data, desc=f"packing dataset {name}"):
+        row_input_ids, row_attention_mask, row_labels = (
+            row["input_ids"],
+            row["attention_mask"],
+            row["labels"],
+        )
+        if length + len(row_input_ids) <= max_length:
+            input_ids.append(row_input_ids)
+            attention_mask.append(row_attention_mask)
+            labels.append(row_labels)
+        else:
+            result_input_ids.append(merge(input_ids))
+            result_attention_mask.append(merge(attention_mask))
+            result_labels.append(merge(labels))
+
+            input_ids, attention_mask, labels = (
+                [row_input_ids],
+                [row_attention_mask],
+                [row_labels],
+            )
+            length = 0
+
+        length += len(row_input_ids)
+
+    if input_ids:
+        result_input_ids.append(merge(input_ids))
+        result_attention_mask.append(merge(attention_mask))
+        result_labels.append(merge(labels))
+
+    return Dataset.from_dict(
+        {
+            "input_ids": result_input_ids,
+            "attention_mask": result_attention_mask,
+            "labels": result_labels,
+        }
+    )
+
+
 def prepare_training_data(config: DictConfig, tokenizer: AutoTokenizer) -> DatasetDict:
     """
     Prepares training dataset by combining multiple HF datasets.
@@ -104,7 +164,7 @@ def prepare_training_data(config: DictConfig, tokenizer: AutoTokenizer) -> Datas
             dataset = load_dataset(path, split=split, **kwargs)
         print(f"loaded dataset {name} of size {len(dataset)}")
 
-        transform = _create_transform(spec.transform, tokenizer)
+        transform = create_transform(spec.transform, tokenizer)
         dataset.set_transform(transform.__call__)
         prompt_column = transform.prompt_column
         completion_column = transform.completion_column
@@ -143,6 +203,9 @@ def prepare_training_data(config: DictConfig, tokenizer: AutoTokenizer) -> Datas
         dataset = dataset.map(tokenize, remove_columns=columns_to_remove, num_proc=16)
 
         dataset.reset_format()
+
+        if spec.get("pack", False):
+            dataset = _pack(name, dataset, max_length)
 
         datasets.append(dataset)
 
