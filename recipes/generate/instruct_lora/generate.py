@@ -16,7 +16,7 @@ from peft.peft_model import PeftModel
 from recipes.common.env import init_env
 from recipes.common.peft import load_inference_model
 from recipes.common.tokenizer import load_tokenizer
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, TextStreamer
 
 
 def _patch(config: DictConfig) -> None:
