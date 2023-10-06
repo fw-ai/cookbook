@@ -1,6 +1,6 @@
 defaults:
   - base
-  - model: llama2-7b
+  - model: mistral-7b
 
 working_dir: /mnt/text/model/${model.name}/dialogsum-samsum/0.1
 
