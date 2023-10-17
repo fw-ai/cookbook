@@ -35,6 +35,10 @@ practical. [Here is a sample notebook](https://colab.research.google.com/github/
 
 See the [following instructions](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text#jupyter-notebooks) explaining how to run the notebook inside a Docker container.
 
+## Metrics
+
+It is common to export the metrics to [Weights and Biases (wandb)](https://wandb.ai/) for persistance and visualization. To enable wandb, set `wandb_key` to your API key and `wandb_project` to the project the metrics should be exported to.
+
 ## Examples
 
 ### Dialog summarization with llama2 model

@@ -2,12 +2,14 @@
 #
 # All Rights Reserved.
 
+import os
 import torch
 import torch.distributed as dist
 from datasets import DatasetDict
 import transformers
 from transformers import AutoTokenizer
 from omegaconf import DictConfig
+import wandb
 
 
 def train(
@@ -28,6 +30,21 @@ def train(
     Returns:
         trained model.
     """
+    kwargs = {"report_to": []}
+
+    # weights and biases config
+    wandb_key = config.get("wandb_key")
+    if wandb_key:
+        wandb.login(key=wandb_key)
+        kwargs["report_to"] = "wandb"
+    wandb_project = config.get("wandb_project")
+    if wandb_project:
+        wandb.init(project=wandb_project, dir=config.working_dir)
+        kwargs["report_to"] = "wandb"
+    if kwargs["report_to"] != "wandb":
+        # HF tries to init wandb as long as the pip package is installed
+        os.environ["WANDB_DISABLED"] = "true"
+
     per_device_macro_batch_size = config.model.batch_size // dist.get_world_size()
     gradient_accumulation_steps = (
         per_device_macro_batch_size // config.model.micro_batch_size
@@ -44,7 +61,6 @@ def train(
         and not config.model.get("load_in_8bit", False)
         and not config.model.get("load_in_4bit", False)
     )
-    kwargs = {}
     lr_scheduler_type = config.model.get("lr_scheduler_type")
     if lr_scheduler_type:
         kwargs["lr_scheduler_type"] = lr_scheduler_type
@@ -70,7 +86,6 @@ def train(
             ddp_find_unused_parameters=ddp_find_unused_parameters,
             group_by_length=False,
             # max_steps=50,
-            report_to=None,
             **kwargs,
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
