@@ -57,6 +57,7 @@ RUN pip install \
     sentence_transformers \
     torchx \
     transformers \
+    wandb \
     zstandard
 
 RUN pip uninstall -y transformer-engine
