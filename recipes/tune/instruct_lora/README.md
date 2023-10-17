@@ -46,7 +46,7 @@ torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
 ### Dialog summarization with Mistral model
 ```bash
 torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
---config-name=summarize
+--config-name=summarize-mistral-7b
 ```
 
 ### Alpaca instruction tuning
