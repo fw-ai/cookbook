@@ -8,7 +8,9 @@ Install the required dependencies or build the [provided Docker image](https://g
 export PYTHONPATH=.:/workspace/cookbook
 ```
 
-## Example command
+## Running from the command line
+
+Here is a sample command kicking off tuning from a terminal:
 ```bash
 # run with 8 GPUs - adjust based on your hardware setup
 torchx run -s local_cwd dist.ddp -j 1x8 --script finetune.py -- \
@@ -32,3 +34,35 @@ practical. [Here is a sample notebook](https://colab.research.google.com/github/
 ## Running in local Jupyter
 
 See the [following instructions](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text#jupyter-notebooks) explaining how to run the notebook inside a Docker container.
+
+## Examples
+
+### Dialog summarization with llama2 model
+```bash
+torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+--config-name=summarize
+```
+
+### Dialog summarization with Mistral model
+```bash
+torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+--config-name=summarize
+```
+
+### Alpaca instruction tuning
+```bash
+torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+--config-name=instruct_alpaca
+```
+
+### Orca instruction tuning
+```bash
+torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+--config-name=instruct_orca
+```
+
+### API calls generation
+```bash
+torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+--config-name=lucene_queries
+```
