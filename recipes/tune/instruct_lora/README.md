@@ -12,8 +12,8 @@ export PYTHONPATH=.:/workspace/cookbook
 
 Here is a sample command kicking off tuning from a terminal:
 ```bash
-# run with 8 GPUs - adjust based on your hardware setup
-torchx run -s local_cwd dist.ddp -j 1x8 --script finetune.py -- \
+N_GPUS=8 # run with 8 GPUs - adjust based on your hardware setup
+torchx run -s local_cwd dist.ddp -j 1x${N_GPUS} --script finetune.py -- \
   --config-name=summarize
 ```
 
@@ -39,30 +39,30 @@ See the [following instructions](https://github.com/fw-ai/cookbook/tree/main/rec
 
 ### Dialog summarization with llama2 model
 ```bash
-torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+torchx  run  -s  local_cwd  dist.ddp  -j  1x${N_GPUS}  --script  finetune.py  --  \
 --config-name=summarize
 ```
 
 ### Dialog summarization with Mistral model
 ```bash
-torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+torchx  run  -s  local_cwd  dist.ddp  -j  1x${N_GPUS}  --script  finetune.py  --  \
 --config-name=summarize-mistral-7b
 ```
 
 ### Alpaca instruction tuning
 ```bash
-torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+torchx  run  -s  local_cwd  dist.ddp  -j  1x${N_GPUS}  --script  finetune.py  --  \
 --config-name=instruct_alpaca
 ```
 
 ### Orca instruction tuning
 ```bash
-torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+torchx  run  -s  local_cwd  dist.ddp  -j  1x${N_GPUS}  --script  finetune.py  --  \
 --config-name=instruct_orca
 ```
 
 ### API calls generation
 ```bash
-torchx  run  -s  local_cwd  dist.ddp  -j  1x8  --script  finetune.py  --  \
+torchx  run  -s  local_cwd  dist.ddp  -j  1x${N_GPUS}  --script  finetune.py  --  \
 --config-name=lucene_queries
 ```
