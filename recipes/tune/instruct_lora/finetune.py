@@ -17,21 +17,6 @@ from recipes.common.tokenizer import load_tokenizer
 from recipes.tune.common.trainer import train
 
 
-def _patch(config: DictConfig) -> None:
-    """
-    Applies module patches.
-
-    Args:
-        config: the config describing patching behavior.
-    """
-    if config.model.flash_attention:
-        # flash attention may not have been installed
-        from recipes.common.llama_patch import replace_llama_attn_with_flash_attn
-
-        replace_llama_attn_with_flash_attn()
-        print("patched the llama model to use flash attention")
-
-
 def _save_fireworks_conf(config: DictConfig) -> None:
     """
     Dumps fireworks config to a file.
@@ -65,7 +50,6 @@ def _app(config: DictConfig) -> None:
         raise RuntimeError(
             f"output directory {config.output_model_dir} already exists."
         )
-    _patch(config)
     init_env()
     tokenizer = load_tokenizer(config.model, add_eos_token=True)
     dataset = prepare_training_data(config, tokenizer)
