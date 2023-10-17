@@ -27,7 +27,6 @@ def load_tokenizer(
     tokenizer = AutoTokenizer.from_pretrained(
         config.huggingface_model_name,
         revision=config.huggingface_model_revision,
-        padding_side="right",
         **kwargs,
         # use_fast=False,
     )
