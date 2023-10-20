@@ -1,6 +1,8 @@
 name: docker
 on:
-  # disabled for now as it needs bigger runners in CI
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version:
@@ -10,7 +12,7 @@ on:
         default: "latest"
 jobs:
   docker-release:
-    runs-on: ubuntu-latest
+    runs-on: 4-core-runners-for-docker
     steps:
       -
         name: Checkout
