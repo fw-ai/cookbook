@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:23.07-py3 as efs-utils-build
+FROM nvcr.io/nvidia/pytorch:23.09-py3 as efs-utils-build
 
 WORKDIR /
 RUN apt-get update && apt-get -y install git binutils
@@ -6,7 +6,7 @@ RUN git clone https://github.com/aws/efs-utils
 WORKDIR /efs-utils
 RUN ./build-deb.sh
 
-FROM nvcr.io/nvidia/pytorch:23.07-py3
+FROM nvcr.io/nvidia/pytorch:23.09-py3
 
 WORKDIR /
 
