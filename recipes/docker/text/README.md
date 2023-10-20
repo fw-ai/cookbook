@@ -23,7 +23,7 @@ Throughout the documentation and code, the default location of the code is `/wor
 
 The docker container can be built by running the following command in this directory:
 ```
-docker build -t fireworks_cb_text .
+docker build -t fwai/cookbook:my .
 ```
 After the image built finishes, the container can be instantiated in interactive model with the following command:
 ```
@@ -33,7 +33,7 @@ docker run --privileged -it --gpus all -p 8888:8888 \
   --mount type=bind,source="$HOME/.ssh",target="/root/.ssh" \
   --mount type=bind,source="/mnt/text",target="/mnt/text" \
   --ipc=host --net=host --cap-add  SYS_NICE \
-  fireworks_cb_text /bin/bash
+  fwai/cookbook:my /bin/bash
 ```
 Feel free to update the mount locations based on your preferences.
 
