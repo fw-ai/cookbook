@@ -35,6 +35,9 @@ Recipes are categorized according to their respective use-cases. Here is the lis
 * [Inference with a LoRA adapter](https://github.com/fw-ai/cookbook/tree/main/recipes/generate/instruct_lora),
 * [Constrained output generation in json format](https://github.com/fw-ai/cookbook/tree/main/recipes/generate/jsonformer).
 
+### Examples 
+In order to facilitate users to build GenAI applications using fireworks offerings, we present example applications. Please see documentation inside the directory for more info.
+
 ## Example Workflow
 To illustrate how to leverage the recipes for an end-to-end usecase, lets walk through the process of fine tuning a model, inspecting the results visually, and deploying the model to the Fireworks platform for inference.
 The instructions assume that the source code of the cookbook was checked out under `/workspace/cookbook`.
