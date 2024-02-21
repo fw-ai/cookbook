@@ -1,5 +1,7 @@
 # Functional Chat Demo App
 
+[![Demo]({https://drive.google.com/file/d/1lUcnhh1EaqTRdI-x3-09b_FqwP29ccjY/view})]({https://drive.google.com/file/d/1d3Iu_LU_JwutPcXVAsjHMqIzFce1YR23/view} "Demo")
+
 ## Quick start
 
 If you need to install Node.js, follow [these instructions](https://github.com/fw-ai/forge/tree/main/apps/functional_chat#configuring-the-environment).
