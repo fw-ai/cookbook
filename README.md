@@ -6,4 +6,8 @@ Have fun!
 
 ## List of apps ( :construction: more apps coming soon)
 
-- [Functional chat](https://github.com/fw-ai/forge/tree/main/apps/functional_chat) an LLM powered chat with function calling capabilities.
+- [Functional chat](https://github.com/fw-ai/forge/tree/main/apps/functional_chat) - an LLM powered chat with function calling capabilities.
+
+## External apps leveraging Fireworks models
+
+- [VexaSearch](https://github.com/n4ze3m/vexasearch/tree/main) - a simple AI-powered search application designed to determine the actions to perform based on a function call.
