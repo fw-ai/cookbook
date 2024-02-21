@@ -1,6 +1,4 @@
-# Functional Chat Demo App
-
-### :rocket: [Try it!](http://functional-chat.fireworks.ai)
+# Functional Chat Demo App ( :rocket: [Try it!](http://functional-chat.fireworks.ai))
 
 https://github.com/fw-ai/forge/assets/5000576/ce83463e-e898-46a9-9e84-d13d4a12d474
 
