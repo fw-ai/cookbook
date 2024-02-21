@@ -1,6 +1,6 @@
 # Functional Chat Demo App
 
-[![Demo]({https://drive.google.com/file/d/1lUcnhh1EaqTRdI-x3-09b_FqwP29ccjY/view})]({https://drive.google.com/file/d/1d3Iu_LU_JwutPcXVAsjHMqIzFce1YR23/view} "Demo")
+[![Demo](https://img.youtube.com/vi/hFwdElqdE8w/0.jpg)](https://www.youtube.com/watch?v=hFwdElqdE8w)
 
 ## Quick start
 
