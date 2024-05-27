@@ -5,7 +5,7 @@ import { TrashIcon } from '@radix-ui/react-icons';
 import { useReducer, useState, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { ChatInput, ChatMessages } from '.';
-import { ChatMessage, ChatState } from '../common/types';
+import { ChatMessage, ChatState, FunctionCall } from '../common/types';
 import { stringifyObject } from '../common/utils';
 import { AlertDescription } from '../ui/alert';
 import { Button } from '../ui/button';
@@ -65,30 +65,37 @@ async function callFunctions(message: ChatMessage): Promise<ChatMessage | null> 
   if (message.toolCalls === undefined) {
     return null;
   }
-  const callId = message.toolCalls[0]?.id;
-  const func = message.toolCalls[0]?.function;
 
-  if (callId === undefined || func === undefined || func.name === undefined || func.arguments === undefined) {
-    return null;
-  }
+  const promises = message.toolCalls.map(async (toolCall) => {
+    const callId = toolCall?.id;
+    const func = toolCall?.function;
 
-  let content: string;
-  switch (func.name) {
-    // TODO: figure out a better way to handle this
-    case 'renderChart':
-    case 'generateImage':
-      content = await generateImage(func.name, func.arguments);
-      break;
-    default:
-      content = await callFunction(func.name, func.arguments);
-      break;
-  }
+    if (callId === undefined || func === undefined || func.name === undefined || func.arguments === undefined) {
+      return null;
+    }
+
+    let content: string;
+    switch (func.name) {
+      // TODO: figure out a better way to handle this
+      case 'renderChart':
+      case 'generateImage':
+        content = await generateImage(func.name, func.arguments);
+        break;
+      default:
+        content = await callFunction(func.name, func.arguments);
+        break;
+    }
+
+    return content;
+  });
+
+  const results = await Promise.all(promises);
+  const combinedContent = results.filter(content => content !== null).join('\n');
 
   return {
-    content: content,
+    content: combinedContent,
     id: uuidv4(),
     role: 'tool',
-    toolCallId: callId,
     metadata: {
       totalTokens: 0,
       firstTokenTime: 0,
@@ -182,9 +189,13 @@ export function ChatInferenceModule() {
         }
         var finalAssistantMessage = response as ChatMessage;
 
-        var functionCall;
+        let functionCalls: FunctionCall[] = [];
         if (assistantMessage.toolCalls && assistantMessage.toolCalls.length > 0) {
-          functionCall = assistantMessage.toolCalls[0]?.function;
+          assistantMessage.toolCalls.forEach(toolCall => {
+            if (toolCall.function) {
+              functionCalls.push(toolCall.function);
+            }
+          });
         }
         var functionResponse;
         if (toolMessage) {
@@ -194,7 +205,7 @@ export function ChatInferenceModule() {
           ...finalAssistantMessage,
           metadata: {
             ...finalAssistantMessage.metadata,
-            functionCall: functionCall,
+            functionCalls: functionCalls,
             functionResponse: functionResponse,
           }
         };

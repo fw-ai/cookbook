@@ -13,18 +13,20 @@ import { stringifyObject } from '../common/utils';
 
 export default function ChatMessage(chatMessage: ChatMessageInterface) {
   const { isCopied, copyToClipboard } = useCopyToClipboard({ timeout: 2000 });
-  const functionCall = chatMessage.metadata?.functionCall;
+  const functionCalls = chatMessage.metadata?.functionCalls;
   var functionCallContent;
-  if (functionCall) {
+  if (functionCalls && functionCalls.length > 0) {
     type FunctionCall = {
       name: string;
       arguments: { [key: string]: any };
     };
-    const parsed: FunctionCall = {
+
+    const parsedFunctionCalls: FunctionCall[] = functionCalls.map(functionCall => ({
       name: functionCall.name,
-      arguments: JSON.parse(functionCall.arguments)
-    };
-    functionCallContent = '```javascript\n' + stringifyObject(parsed) + '\n```';
+      arguments: JSON.parse(functionCall.arguments) // Ensure this parsing is safe
+    }));
+
+    functionCallContent = '```javascript\n' + stringifyObject(parsedFunctionCalls) + '\n```';
   }
   return (
     <div
