@@ -42,7 +42,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ...messages.map((m) => ({
         role: m.role,
         content: m.content,
-        ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}),
         ...(m.toolCalls ? { tool_calls: m.toolCalls } : {}),
       }))],
     tools: tools,

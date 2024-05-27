@@ -19,7 +19,6 @@ export interface ChatMessage {
   id: string;
   role: string;
   content: string;
-  toolCallId?: string;
   toolCalls?: ToolCall[];
   metadata?: {
     firstTokenTime?: number;
@@ -29,7 +28,7 @@ export interface ChatMessage {
     used?: boolean;
     hide?: boolean;
     loading?: boolean;
-    functionCall?: FunctionCall;
+    functionCalls?: FunctionCall[];
     functionResponse?: string;
   };
 }
