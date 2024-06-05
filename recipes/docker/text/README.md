@@ -27,10 +27,10 @@ docker build -t fwai/cookbook:my .
 ```
 After the image built finishes, the container can be instantiated in interactive model with the following command:
 ```
-docker run --privileged -it --gpus all -p 8888:8888 \
-  --mount type=bind,source="/workspace",target="/workspace" \
-  --mount type=bind,source="$HOME/.cache/huggingface",target="/root/.cache/huggingface" \
-  --mount type=bind,source="$HOME/.ssh",target="/root/.ssh" \
+docker run --privileged -it --gpus '"device=0,1,2,3,4,5,6,7"' -p 8899:8899 \
+  --mount type=bind,source="$HOME",target="/workspace" \
+  --mount type=bind,source="/fw/huggingface",target="/root/.cache/huggingface" \
+  --mount type=bind,source="/fw",target="/fw" \
   --mount type=bind,source="/mnt/text",target="/mnt/text" \
   --ipc=host --net=host --cap-add  SYS_NICE \
   fwai/cookbook:my /bin/bash
