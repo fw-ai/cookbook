@@ -43,11 +43,10 @@ To illustrate how to leverage the recipes for an end-to-end usecase, lets walk t
 The instructions assume that the source code of the cookbook was checked out under `/workspace/cookbook`.
 ### Build and instantiate docker container
 ```bash
-docker run --privileged -it --gpus '"device=0,1,2,3,4,5,6,7"' -p 8899:8899 \
-  --mount type=bind,source="$HOME",target="/workspace" \
-  --mount type=bind,source="/fw/huggingface",target="/root/.cache/huggingface" \
-  --mount type=bind,source="/fw",target="/fw" \
-  --mount type=bind,source="/mnt/text",target="/mnt/text" \
+docker run --privileged -it --gpus all -p 8888:8888 \
+  --mount type=bind,source="/workspace",target="/workspace" \
+  --mount type=bind,source="$HOME/.cache/huggingface",target="/root/.cache/huggingface" \
+  --mount type=bind,source="$HOME/.ssh",target="/root/.ssh" \
   --ipc=host --net=host --cap-add  SYS_NICE \
   fwai/cookbook:latest
 
