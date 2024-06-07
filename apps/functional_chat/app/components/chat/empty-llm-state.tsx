@@ -21,7 +21,7 @@ export function EmptyLLMOutput() {
             Click on "show available functions" link above to see the function schema.
           </div>
           <div className="m-4">
-            <ExclamationTriangleIcon className="inline w-4 h-4" /> Note that the model was not optimized for general chat or long multi-turn conversations.
+            <ExclamationTriangleIcon className="inline w-4 h-4" /> Note that the model was not optimized for nested function calling.
           </div>
           <div className="m-4">
             It's easy to build an app with custom functions! The instructions are <a href="https://github.com/fw-ai/forge/tree/main/apps/functional_chat" className="text-blue-500 hover:text-blue-700">here <ExternalLinkIcon className="inline w-4 h-4" /></a>.
