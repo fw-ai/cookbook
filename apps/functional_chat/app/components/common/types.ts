@@ -80,6 +80,5 @@ export interface ChatState {
   top_k: number;
   presence_penalty: number;
   frequency_penalty: number;
-  stop: string[];
   context_length_exceeded_behavior: 'truncate' | 'error';
 }

@@ -112,14 +112,10 @@ export function ChatInferenceModule() {
   const [requestStatus, setRequestStatus] = useState<string | null>(null);
   const [requestBody, setRequestBody] = useReducer(
     (state: ChatState, action: ChatAction<keyof ChatState>): ChatState => {
-      if (action.field === 'stop') {
-        return { ...state, [action.field]: (action.value as string[]).filter((v: string) => v.trim().length > 0) };
-      }
       return { ...state, [action.field]: action.value };
     },
     {
       messages: [] as ChatMessage[],
-      stop: [],
       top_p: 1,
       top_k: 50,
       presence_penalty: 0,
