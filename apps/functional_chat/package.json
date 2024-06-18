@@ -38,11 +38,13 @@
     "eslint": "8.36.0",
     "eslint-config-next": "latest",
     "eslint-plugin-node": "11.1.0",
-    "next": "14.0.4",
+    "lru-cache": "^10.2.2",
+    "next": "^14.2.4",
     "next-auth": "latest",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "react-hook-form": "7.49.3",
+    "react-icons": "^5.0.1",
     "react-intersection-observer": "9.5.3",
     "react-markdown": "^8.0.7",
     "react-syntax-highlighter": "15.5.0",
@@ -51,8 +53,7 @@
     "tailwindcss-animate": "1.0.7",
     "uuid": "9.0.0",
     "webpack": "5.76.3",
-    "yarn": "1.22.21",
-    "react-icons": "^5.0.1"
+    "yarn": "1.22.21"
   },
   "devDependencies": {
     "@next/bundle-analyzer": "13.4.19",

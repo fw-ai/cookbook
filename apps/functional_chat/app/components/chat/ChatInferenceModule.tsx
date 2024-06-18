@@ -39,15 +39,6 @@ async function callFunction(name: string, args: string): Promise<any> {
   return JSON.stringify(data);
 }
 
-async function fetchFunctionSpecs(): Promise<any> {
-  const response = await fetch("/api/functionSpecs");
-  if (!response.ok) {
-    const errorDetails = await response.text();
-    throw new Error(`Failed fetching function specs: ${response.status} ${response.statusText} - ${errorDetails}`);
-  }
-  return await response.json();
-}
-
 async function generateImage(name: string, args: string): Promise<string> {
   const response = await fetch(`/api/functions/${name}?action=call&args=${encodeURIComponent(args)}`);
   if (!response.ok) {
@@ -158,56 +149,61 @@ export function ChatInferenceModule() {
         return;
       }
 
-      const assistantMessage = response as ChatMessage;
+      var assistantMessage = response as ChatMessage;
       updatedMessages.push(assistantMessage);
 
-      const toolMessage = await callFunctions(assistantMessage);
-      if (toolMessage !== null) {
-        var lastMessage = updatedMessages.pop();
-        if (lastMessage !== undefined) {
-          lastMessage = {
-            ...lastMessage,
+      do {
+        const toolMessage = await callFunctions(assistantMessage);
+        if (toolMessage === null) {
+          break;
+        } else {
+          var lastMessage = updatedMessages.pop();
+          if (lastMessage !== undefined) {
+            lastMessage = {
+              ...lastMessage,
+              metadata: {
+                ...lastMessage.metadata,
+                hide: true,
+              }
+            };
+            updatedMessages.push(lastMessage);
+          }
+          updatedMessages.push(toolMessage);
+          const response = await chatCompletion(requestBody, updatedMessages);
+          if (response.error === true) {
+            setRequestStatus(JSON.stringify(response));
+            setIsLoading(false);
+            updatedMessages.pop();
+            setRequestBody({ field: 'messages', value: [...updatedMessages] });
+            return;
+          }
+          var finalAssistantMessage = response as ChatMessage;
+
+          let functionCalls: FunctionCall[] = [];
+          if (assistantMessage.toolCalls && assistantMessage.toolCalls.length > 0) {
+            assistantMessage.toolCalls.forEach(toolCall => {
+              if (toolCall.function) {
+                functionCalls.push(toolCall.function);
+              }
+            });
+          }
+          var functionResponse;
+          if (toolMessage) {
+            functionResponse = toolMessage.content;
+          }
+          finalAssistantMessage = {
+            ...finalAssistantMessage,
             metadata: {
-              ...lastMessage.metadata,
-              hide: true,
+              ...finalAssistantMessage.metadata,
+              functionCalls: functionCalls,
+              functionResponse: functionResponse,
             }
           };
-          updatedMessages.push(lastMessage);
-        }
-        updatedMessages.push(toolMessage);
-        const response = await chatCompletion(requestBody, updatedMessages);
-        if (response.error === true) {
-          setRequestStatus(JSON.stringify(response));
-          setIsLoading(false);
-          updatedMessages.pop();
-          setRequestBody({ field: 'messages', value: [...updatedMessages] });
-          return;
-        }
-        var finalAssistantMessage = response as ChatMessage;
 
-        let functionCalls: FunctionCall[] = [];
-        if (assistantMessage.toolCalls && assistantMessage.toolCalls.length > 0) {
-          assistantMessage.toolCalls.forEach(toolCall => {
-            if (toolCall.function) {
-              functionCalls.push(toolCall.function);
-            }
-          });
+          updatedMessages.push(finalAssistantMessage);
+          assistantMessage = finalAssistantMessage;
         }
-        var functionResponse;
-        if (toolMessage) {
-          functionResponse = toolMessage.content;
-        }
-        finalAssistantMessage = {
-          ...finalAssistantMessage,
-          metadata: {
-            ...finalAssistantMessage.metadata,
-            functionCalls: functionCalls,
-            functionResponse: functionResponse,
-          }
-        };
-
-        updatedMessages.push(finalAssistantMessage);
-      }
+      } while (true);
       setRequestBody({ field: 'messages', value: [...updatedMessages] });
 
       console.log('DEBUG: updatedMessages: ' + JSON.stringify(updatedMessages, null, 2) + '\n----------------------------------');

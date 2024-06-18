@@ -65,7 +65,9 @@
     ],
     "target": "ESNext",
     // Output Formatting
-    "noErrorTruncation": false
+    "noErrorTruncation": false,
+    "experimentalDecorators": true, // Enable experimental decorators
+    "emitDecoratorMetadata": true // Enable decorator metadata
   },
   "ts-node": {
     "transpileOnly": true,
