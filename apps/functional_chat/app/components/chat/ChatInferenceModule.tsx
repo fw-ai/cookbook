@@ -2,7 +2,7 @@
 'use client';
 import { Alert, AlertTitle } from '@mui/material';
 import { TrashIcon } from '@radix-ui/react-icons';
-import { useReducer, useState, useEffect } from 'react';
+import { useReducer, useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { ChatInput, ChatMessages } from '.';
 import { ChatMessage, ChatState, FunctionCall } from '../common/types';
@@ -101,6 +101,65 @@ export function ChatInferenceModule() {
   const [functionSpecs, setFunctionSpecs] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [requestStatus, setRequestStatus] = useState<string | null>(null);
+
+  const audioRecorder = useRef<MediaRecorder | null>(null); // Specify the type here
+  const [recording, setRecording] = useState(false);
+  const audioChunks = useRef<Blob[]>([]);
+
+  const handleAudioStart = async () => {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioRecorder.current = new MediaRecorder(stream);
+        audioChunks.current = [];
+
+        audioRecorder.current.ondataavailable = (event) => {
+          audioChunks.current.push(event.data);
+        };
+
+        audioRecorder.current.onstop = async () => {
+          const audioBlob = new Blob(audioChunks.current, { type: 'audio/mp3' });
+
+          try {
+            const response = await fetch('/api/audio-transcription', {
+              method: 'POST',
+              body: audioBlob,
+              headers: {
+                'Content-Type': 'audio/mp3',
+              },
+            });
+
+            if (!response.ok) {
+              throw new Error('Audio transcription failed');
+            }
+
+            const data = await response.json();
+            console.log("Transcription response:", data);
+
+            if (data && data.text) {
+              fetchChatCompletion(data.text);
+            }
+          } catch (error) {
+            console.error('Error transcribing audio:', error);
+          }
+
+          setRecording(false);
+        };
+
+        audioRecorder.current.start();
+        setRecording(true);
+
+      } catch (err) {
+        console.error('Error accessing the microphone', err);
+      }
+    }
+  };
+
+  const handleAudioStop = () => {
+    if (audioRecorder.current && recording) {
+      audioRecorder.current.stop();
+    }
+  };
   const [requestBody, setRequestBody] = useReducer(
     (state: ChatState, action: ChatAction<keyof ChatState>): ChatState => {
       return { ...state, [action.field]: action.value };
@@ -259,10 +318,18 @@ export function ChatInferenceModule() {
               ) : null}
             </ChatMessages>
 
-            <div className=" w-full justify-center pr-4">
-              <ChatInput onSubmit={fetchChatCompletion} multiModal={false} isLoading={isLoading} />
-              <ChatScrollAnchor trackVisibility={isLoading} />
+            <div className="w-full justify-center pr-4 flex items-center space-x-2">
+              <div className="flex-grow">
+                <ChatInput onSubmit={fetchChatCompletion} multiModal={false} isLoading={isLoading} />
+              </div>
+              <Button
+                onClick={recording ? handleAudioStop : handleAudioStart}
+                className="px-4 py-2 bg-red-500 text-white rounded whitespace-nowrap"
+              >
+                {recording ? 'Stop Recording' : 'Voice Search'}
+              </Button>
             </div>
+            <ChatScrollAnchor trackVisibility={isLoading} />
           </div>
         </Card>
       </div>
