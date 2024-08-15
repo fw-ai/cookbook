@@ -15,7 +15,7 @@ import fireworks.client
 # SurrealDB Vector Store SDK for LangChain
 from langchain_community.vectorstores import SurrealDBStore
 
-# HuggingFace's Embeddings SDK by LangChain
+# Fireworks Embeddings Integration via LangChain
 from langchain_fireworks import FireworksEmbeddings
 
 # Class representing the string of messages to be searched and embedded as system context.
