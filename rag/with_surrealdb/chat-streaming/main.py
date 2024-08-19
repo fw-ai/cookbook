@@ -15,8 +15,8 @@ import fireworks.client
 # SurrealDB Vector Store SDK for LangChain
 from langchain_community.vectorstores import SurrealDBStore
 
-# HuggingFace's Embeddings SDK by LangChain
-from langchain_community.embeddings import HuggingFaceEmbeddings
+# Fireworks Embeddings Integration via LangChain
+from langchain_fireworks import FireworksEmbeddings
 
 # Class representing the string of messages to be searched and embedded as system context.
 class LearningMessages(BaseModel):
@@ -34,8 +34,8 @@ class Messages(BaseModel):
 # Set the Fireworks API Key
 fireworks.client.api_key = os.getenv("FIREWORKS_API_KEY")
 
-# Load the sentence_transformers embedding models
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+# Load the nomic-embed-text-v1.5 embedding models via Langchain Fireworks Integration
+embeddings = FireworksEmbeddings(model="nomic-ai/nomic-embed-text-v1.5",fireworks_api_key=os.getenv("FIREWORKS_API_KEY"))
 
 
 dburl = "ws://localhost:4304/rpc"
