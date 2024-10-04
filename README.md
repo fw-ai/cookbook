@@ -1,4 +1,4 @@
-![Building, Deploying, and Fine-Tuning AI Workflows with Fireworks](./learn/images/fireworks-ai-banner.jpeg)
+![Building, Deploying, and Fine-Tuning AI Workflows with Fireworks](assets/hero-dark.svg)
 
 # Fireworks AI Examples
 
@@ -20,31 +20,6 @@ We appreciate your feedback and contributions! Please see our [contribution guid
 To get started with Fireworks AI, check out our [Getting Started Guide](./get_started.md) for a walkthrough of setting up and running your first example, including using Docker or setting up environments for local development.
 
 You can also dive into our [Quick Tour](./0_quick-tour) section for a guided overview of how to use Fireworks features.
-
-# Example Categories
-
-### **Production-Ready Examples:**
-- Inference
-- Fine-Tuning
-- Function Calling
-- Retrieval-Augmented Generation (RAG)
-- Evaluation
-- Agentic Systems
-- Compound AI Systems
-
-Production examples are available under [`./references`](./references).
-
-### **Learning and Exploration:**
-- Inference (with guided projects)
-- Fine-Tuning (with guided projects)
-- Function Calling (with guided projects)
-- Retrieval-Augmented Generation (with guided projects)
-- Evaluation (with guided projects)
-- Agentic Systems (with guided projects)
-- Compound AI Systems
-- LLMOps
-
-Explore our learning materials under [`./learn`](./learn), including detailed tutorials and walkthroughs for each example.
 
 # Contributing
 

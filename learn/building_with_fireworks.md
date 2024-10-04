@@ -1,7 +1,7 @@
 
 # Building with Fireworks
 
-This section contains examples optimized for learning and exploration of AI techniques. The projects here demonstrate patterns for building different kinds of applications using Fireworks AI. All examples are created and maintained by the Fireworks Developer Advocacy team, and each project will have its own Dockerfile and dependencies.
+This section contains examples optimized for learning and exploration of AI techniques. The projects here demonstrate patterns for building different kinds of applications using Fireworks AI. All examples are created and maintained by the Fireworks Developer Advocacy team, and each project will have its own instructions for installation and setup.
 
 Browse through the sections below to explore these learning projects and get hands-on with Fireworks AI.
 

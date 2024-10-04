@@ -1,6 +1,6 @@
 # Built with Fireworks
 
-The showcase section highlights user-contributed examples that demonstrate creative and innovative uses of Fireworks AI. Each project showcases the versatility of Fireworks in combination with different tools, libraries, and workflows. Browse through the sections below to find inspiration for your next project!
+The showcase section highlights user-contributed examples that demonstrate creative and innovative uses of Fireworks AI. Each project showcases the versatility of Fireworks in combination with different tools, libraries, and workflows. While some projects are directly contained within this repository, not all customer or user projects are hosted here. In such cases, we'll provide links to either the customer story on the Fireworks website or to the user's external repository. Browse through the sections below to find inspiration for your next project!
 
 ---
 
@@ -8,9 +8,9 @@ The showcase section highlights user-contributed examples that demonstrate creat
 
 Fireworks is used in these projects to power model inference, providing easy-to-integrate APIs for running models at scale and optimizing inference pipelines.
 
-| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
-|---------|----------------------|-------------|-------------|----------|------------------|
-|         |                      |             |             |          |                  |
+| Project | Additional Tools/Libraries Used | Fireworks Features & Products Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|----------------------------------|-------------|-------------|----------|------------------|
+|         |                      |                                  |             |             |          |                  |
 
 ---
 
@@ -18,9 +18,9 @@ Fireworks is used in these projects to power model inference, providing easy-to-
 
 Fireworks is used here to fine-tune models on custom datasets, offering built-in tools for managing data pipelines, model tuning, and evaluation.
 
-| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
-|---------|----------------------|-------------|-------------|----------|------------------|
-|         |                      |             |             |          |                  |
+| Project | Additional Tools/Libraries Used | Fireworks Features & Products Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|----------------------------------|-------------|-------------|----------|------------------|
+|         |                      |                                  |             |             |          |                  |
 
 ---
 
@@ -28,9 +28,9 @@ Fireworks is used here to fine-tune models on custom datasets, offering built-in
 
 Fireworks is employed to manage and deploy function-calling models, handling complex API calls and workflows for scalable and automated processes.
 
-| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
-|---------|----------------------|-------------|-------------|----------|------------------|
-|         |                      |             |             |          |                  |
+| Project | Additional Tools/Libraries Used | Fireworks Features & Products Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|----------------------------------|-------------|-------------|----------|------------------|
+|         |                      |                                  |             |             |          |                  |
 
 ---
 
@@ -38,29 +38,18 @@ Fireworks is employed to manage and deploy function-calling models, handling com
 
 In these projects, Fireworks powers RAG systems by integrating with external databases and providing retrieval mechanisms that augment the generation capabilities.
 
-| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
-|---------|----------------------|-------------|-------------|----------|------------------|
-|         |                      |             |             |          |                  |
+| Project | Additional Tools/Libraries Used | Fireworks Features & Products Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|----------------------------------|-------------|-------------|----------|------------------|
+|         |                      |                                  |             |             |          |                  |
 
----
-
-## Evaluation Projects
-
-Fireworks is used to set up model evaluation pipelines, helping to track performance, metrics, and continuous improvements.
-
-| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
-|---------|----------------------|-------------|-------------|----------|------------------|
-|         |                      |             |             |          |                  |
-
----
 
 ## Agentic Systems Projects
 
 Fireworks helps build agentic systems that leverage function-calling models and workflows to create autonomous decision-making processes.
 
-| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
-|---------|----------------------|-------------|-------------|----------|------------------|
-|         |                      |             |             |          |                  |
+| Project | Additional Tools/Libraries Used | Fireworks Features & Products Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|----------------------------------|-------------|-------------|----------|------------------|
+|         |                      |                                  |             |             |          |                  |
 
 ---
 
@@ -68,9 +57,9 @@ Fireworks helps build agentic systems that leverage function-calling models and 
 
 Fireworks helps in building compound systems where different models and processes interact in a cohesive workflow, automating large-scale, multi-modal tasks.
 
-| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
-|---------|----------------------|-------------|-------------|----------|------------------|
-|         |                      |             |             |          |                  |
+| Project | Additional Tools/Libraries Used | Fireworks Features & Products Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|----------------------------------|-------------|-------------|----------|------------------|
+|         |                      |                                  |             |             |          |                  |
 
 ---
 

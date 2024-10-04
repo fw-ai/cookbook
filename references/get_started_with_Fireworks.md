@@ -34,7 +34,7 @@ This section focuses on examples built entirely using Fireworks AI. These projec
 - **Video Link**: [Watch Video](#)
 
 ---
-
+ 
 ## RAG with Fireworks
 
 - **Project**: [RAG with Fireworks](./4_rag/README.md)
@@ -115,5 +115,5 @@ Follow the instructions in each project’s `README.md` for specific details and
 
 ## Resources
 
-For more resources and detailed documentation on Fireworks, visit the [Fireworks Documentation](https://docs.fireworks.ai) or join the discussions in the [community forum](https://community.fireworks.ai).
+For more resources and detailed documentation on Fireworks, visit the [Fireworks Documentation](https://docs.fireworks.ai) or join the discussions in the [Discord  forum](https://discord.gg/9nKGzdCk).
 
