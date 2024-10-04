@@ -31,7 +31,7 @@ We love hearing your feedback! If you run into issues, have questions, or find s
 
 For support and further reading, visit:
 - [Fireworks Documentation](https://docs.fireworks.ai)
-- [Community Forum](https://community.fireworks.ai)
+- [Discord](https://discord.gg/9nKGzdCk)
 
 # Showcasing Your Work
 
