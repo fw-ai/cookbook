@@ -1,29 +1,84 @@
-# Learning with Fireworks and Ecosystem Tools
 
-This section is designed to help you explore building AI systems using Fireworks AI in combination with tools from the broader AI ecosystem. Each project here demonstrates how Fireworks integrates seamlessly with various platforms, databases, and services to provide a comprehensive, real-world learning experience.
+# Building with Fireworks
 
-## Learning Projects with Ecosystem Tools
+This section contains examples optimized for learning and exploration of AI techniques. The projects here demonstrate patterns for building different kinds of applications using Fireworks AI. All examples are created and maintained by the Fireworks Developer Advocacy team, and each project will have its own Dockerfile and dependencies.
 
-### 1. **[Inference with Ecosystem Tools](./1_inference/Project_1.md)**
-   - Objective: Learn how to perform inference using Fireworks AI integrated with tools from the AI ecosystem.
-   - Topics Covered: Model loading with Fireworks, data processing using ecosystem tools.
-   - Getting Started: See detailed instructions in `Project_1.md`.
+Browse through the sections below to explore these learning projects and get hands-on with Fireworks AI.
 
-### 2. **[Fine-Tuning with Ecosystem Datasets](./2_fine-tuning/Project_2.md)**
-   - Objective: Understand how to fine-tune a model using Fireworks alongside datasets or tools from the AI ecosystem.
-   - Topics Covered: Dataset integration, configuration for model fine-tuning using ecosystem tools.
-   - Getting Started: Follow instructions in `Project_2.md`.
+---
 
-### 3. **[Function-Calling with Ecosystem APIs](./3_function-calling/Project_3.md)**
-   - Objective: Explore function-calling capabilities of Fireworks integrated with ecosystem APIs.
-   - Topics Covered: Deploying function-calling LLMs with API interactions.
-   - Getting Started: Instructions are in `Project_3.md`.
+## Inference Projects
 
-### 4. **[Retrieval-Augmented Generation (RAG) with Ecosystem Databases](./4_rag/Project_4.md)**
-   - Objective: Build a RAG system using Fireworks and ecosystem tools like vector databases (e.g., Pinecone).
-   - Topics Covered: Integrating vector databases with Fireworks for RAG workflows.
-   - Getting Started: Detailed guide available in `Project_4.md`.
+These projects focus on demonstrating how to perform model inference using Fireworks AI, showcasing various patterns and approaches for inference tasks.
 
-## Resources and Ecosystem Integrations
+| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|-------------|-------------|----------|------------------|
+|         |                      |             |             |          |                  |
 
-For additional resources, including specific ecosystem tool integrations, visit the [Fireworks Documentation](https://docs.fireworks.ai) or explore our [community forum](https://community.fireworks.ai).
+---
+
+## Fine-Tuning Projects
+
+These projects focus on fine-tuning models with Fireworks AI. Each project highlights different approaches and tools used to adjust and optimize models based on custom datasets.
+
+| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|-------------|-------------|----------|------------------|
+|         |                      |             |             |          |                  |
+
+---
+
+## Function-Calling Projects
+
+Here, you'll find projects that demonstrate how to implement function-calling capabilities using Fireworks AI, with different workflows for managing API calls and integrations.
+
+| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|-------------|-------------|----------|------------------|
+|         |                      |             |             |          |                  |
+
+---
+
+## Retrieval-Augmented Generation (RAG) Projects
+
+These examples showcase how to build RAG systems using Fireworks, focusing on the integration with external databases for enhanced document retrieval and response generation.
+
+| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|-------------|-------------|----------|------------------|
+|         |                      |             |             |          |                  |
+
+---
+
+## Evaluation Projects
+
+This section contains projects that explore how to use Fireworks for evaluating models and tracking their performance over time.
+
+| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|-------------|-------------|----------|------------------|
+|         |                      |             |             |          |                  |
+
+---
+
+## Agentic Systems Projects
+
+These projects explore agentic systems built with Fireworks, leveraging function-calling models to create autonomous decision-making workflows.
+
+| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|-------------|-------------|----------|------------------|
+|         |                      |             |             |          |                  |
+
+---
+
+## Compound Systems Projects
+
+In these projects, you’ll learn how to build compound systems using Fireworks, where different models and workflows interact to solve complex tasks in a unified architecture.
+
+| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
+|---------|----------------------|-------------|-------------|----------|------------------|
+|         |                      |             |             |          |                  |
+
+---
+
+## How to Submit Your Project
+
+If you've built an example that fits into this section, we'd love to feature it in our repository! To submit your project, follow our [Contribution Guide](../Contribution.md). Ensure that each project includes:
+- A `README.md` with setup and usage instructions.
+- A clear description of how Fireworks is used in the project.
