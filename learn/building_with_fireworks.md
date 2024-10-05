@@ -14,7 +14,7 @@ These projects focus on demonstrating how to perform model inference using Firew
 | Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links |
 |---------|----------------------|-------------|-------------|----------|------------------|
 | Fireworks Model Comparison App  | Streamlit, Fireworks Python API      | An interactive app for comparing LLMs hosted on Fireworks, with parameter tuning and LLM-as-a-Judge functionality.                  | @MMBazel        | Compare and evaluate multiple LLM outputs based on custom prompts and parameters. | [Project Link](learn/inference/project_llm-as-a-judge-streamlit-dashboard) |
-| Transcription Chat              | Next.js, Vercel, Google Fonts        | A Next.js app for transcription chat, utilizing Next.js features like font optimization and deployment via Vercel.                  | @@benjibc        | Build a transcription-based chat app using Next.js with real-time updates and smooth UI integration. | [Project Link](learn/inference/project_transcription_chat)      |
+| Transcription Chat              | Next.js, Vercel, Google Fonts        | A Next.js app for transcription chat, utilizing Next.js features like font optimization and deployment via Vercel.                  | @benjibc        | Build a transcription-based chat app using Next.js with real-time updates and smooth UI integration. | [Project Link](learn/inference/project_transcription_chat)      |
 
 ---
 
