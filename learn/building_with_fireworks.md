@@ -13,8 +13,8 @@ These projects focus on demonstrating how to perform model inference using Firew
 
 | Project | Tools/Libraries Used | Description | Contributor | Use Case         | Additional Links | Project Type |
 |---------|----------------------|-------------|-------------|------------------|------------------|--------------|
-| Fireworks Model Comparison App  | Streamlit, Fireworks Python API      | An interactive app for comparing LLMs hosted on Fireworks, with parameter tuning and LLM-as-a-Judge functionality.                  | @MMBazel        | Model Comparison, LLM Evaluation | [Project Link](learn/inference/project_llm-as-a-judge-streamlit-dashboard) | Notebook |
-| Transcription Chat              | Next.js, Vercel, Google Fonts        | A Next.js app for transcription chat, utilizing Next.js features like font optimization and deployment via Vercel.                  | @benjibc        | Chatbot, Real-time Transcription | [Project Link](learn/inference/project_transcription_chat)      | App |
+| Fireworks Model Comparison App  | Streamlit, Fireworks Python API      | An interactive app for comparing LLMs hosted on Fireworks, with parameter tuning and LLM-as-a-Judge functionality.                  | @MMBazel        | Model Comparison, LLM Evaluation | [Project Link](inference/project_llm-as-a-judge-streamlit-dashboard) | Notebook |
+| Transcription Chat              | Next.js, Vercel, Google Fonts        | A Next.js app for transcription chat, utilizing Next.js features like font optimization and deployment via Vercel.                  | @benjibc        | Chatbot, Real-time Transcription | [Project Link](inference/project_transcription_chat)      | App |
 
 ---
 
@@ -34,7 +34,7 @@ Here, you'll find projects that demonstrate how to implement function-calling ca
 
 | Project | Tools/Libraries Used | Description | Contributor | Use Case          | Additional Links | Project Type |
 |---------|----------------------|-------------|-------------|-------------------|------------------|--------------|
-| Functional Chat Demo App        | Node.js, Fireworks, AlphaVantage, Quickchart, SDXL | A demo chat app with function-calling capabilities, enabling multi-turn conversations where functions perform tasks based on user inputs, including stock quotes, chart generation, and image generation. | @pgarbacki @benjibc  | Chatbot, Function Calling, Stock Prices, Image Generation | [Project Link](learn/function-calling/project_functional_chat)  | App |
+| Functional Chat Demo App        | Node.js, Fireworks, AlphaVantage, Quickchart, SDXL | A demo chat app with function-calling capabilities, enabling multi-turn conversations where functions perform tasks based on user inputs, including stock quotes, chart generation, and image generation. | @pgarbacki @benjibc  | Chatbot, Function Calling, Stock Prices, Image Generation | [Project Link](function-calling/project_functional_chat)  | App |
 
 ---
 
@@ -44,8 +44,8 @@ These examples showcase how to build RAG systems using Fireworks, focusing on th
 
 | Project | Tools/Libraries Used | Description | Contributor | Use Case         | Additional Links | Project Type |
 |---------|----------------------|-------------|-------------|------------------|------------------|--------------|
-| Project RAG with SurrealDB      | SurrealDB, Fireworks, FastAPI, Astro, TailwindCSS | A RAG app using SurrealDB for vector storage and Fireworks for LLM inference, enabling real-time knowledge updates and custom responses. | @aravindputrevu               | RAG, Dynamic Knowledge Updates | [Project Link](learn/rag/project_rag_with_surrealdb)            | App |
-| Simple RAG with Chroma          | Chroma, Fireworks Python Client      | A simple Retrieval-Augmented Generation (RAG) system using Chroma as the vector store and Fireworks LLMs for embedding generation and context-aware responses. | @MMBazel        | RAG, Document Retrieval, Embedding Generation | [Project Link](learn/rag/project_simple-rag-with-chroma)         | Notebook |
+| Project RAG with SurrealDB      | SurrealDB, Fireworks, FastAPI, Astro, TailwindCSS | A RAG app using SurrealDB for vector storage and Fireworks for LLM inference, enabling real-time knowledge updates and custom responses. | @aravindputrevu               | RAG, Dynamic Knowledge Updates | [Project Link](rag/project_rag_with_surrealdb)            | App |
+| Simple RAG with Chroma          | Chroma, Fireworks Python Client      | A simple Retrieval-Augmented Generation (RAG) system using Chroma as the vector store and Fireworks LLMs for embedding generation and context-aware responses. | @MMBazel        | RAG, Document Retrieval, Embedding Generation | [Project Link](rag/project_simple-rag-with-chroma)         | Notebook |
 
 ---
 

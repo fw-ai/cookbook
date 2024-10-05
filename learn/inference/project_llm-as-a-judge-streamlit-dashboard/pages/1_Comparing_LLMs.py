@@ -14,8 +14,6 @@ st.cache_data.clear()
 # Specify the path to the .env file in the env/ directory
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', 'env', '.env')
 
-# dotenv_path = os.path.join(os.path.dirname(__file__), '..','..', 'env', '.env')
-
 # Load the .env file from the specified path
 load_dotenv(dotenv_path)
 

@@ -3,11 +3,17 @@
 ### Overview
 The **Fireworks Model Comparison App** is an interactive tool built using **Streamlit** that allows users to compare various Large Language Models (LLMs) hosted on **Fireworks AI**. Users can adjust key model parameters, provide custom prompts, and generate model outputs to compare their behavior and responses. Additionally, an LLM-as-a-Judge feature is available to evaluate the generated outputs and provide feedback on their quality.
 
+
 ### Objectives
 - **Compare Models**: Select different models from the Fireworks platform and compare their outputs based on a shared prompt.
 - **Modify Parameters**: Fine-tune parameters such as **Max Tokens**, **Temperature**, **Top-p**, and **Top-k** to observe how they influence model behavior.
 - **Evaluate Using LLM-as-a-Judge**: After generating responses, use a separate model to act as a judge and evaluate the outputs from the selected models.
   
+
+![Home Page Screenshot](img/home_page_1.png)
+![Home Page Screenshot](img/home_page_2.png)
+
+
 ### Features
 - **Streamlit UI**: A simple and intuitive interface where users can select models, input prompts, and adjust model parameters.
 - **LLM Comparison**: Select up to three different models, run a query with the same prompt, and view side-by-side responses.
@@ -20,11 +26,23 @@ The app consists of two main pages:
    - Compare the outputs of three selected LLMs from Fireworks AI by providing a prompt.
    - View the responses side-by-side for easy comparison.
    - A selected LLM acts as a judge to evaluate the generated responses.
+
+
+![Home Page Screenshot](img/page_1_empty.png)
+![Home Page Screenshot](img/page_1_a.png)
+![Home Page Screenshot](img/page_1_b.png)
+![Home Page Screenshot](img/page_1_c.png)
+
    
 2. **Parameter Exploration**:
    - Modify various parameters for the LLMs (e.g., Max Tokens, Temperature, Top-p) and observe how they affect the outputs.
    - Compare three different outputs generated with varying parameter configurations.
    - Use LLM-as-a-Judge to provide a final evaluation of the outputs.
+
+![Home Page Screenshot](img/page_2_empty.png)
+![Home Page Screenshot](img/page_2_a.png)
+![Home Page Screenshot](img/page_2_b.png)
+![Home Page Screenshot](img/page_2_c.png)
 
 ### Setup and Installation
 
