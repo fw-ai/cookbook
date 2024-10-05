@@ -33,6 +33,11 @@ For support and further reading, visit:
 - [Fireworks Documentation](https://docs.fireworks.ai)
 - [Discord](https://discord.gg/9nKGzdCk)
 
+## Additional Resources
+- [Fireworks AI Blog](https://fireworks.ai/blog)
+- [Fireworks AI YouTube](https://www.youtube.com/channel/UCHCffBTGYa1Ut72h03ldtGA)
+- [Fireworks AI Twitter](https://x.com/fireworksai_hq)
+
 # Showcasing Your Work
 
 Built something cool with Fireworks? We’d love to feature your project in our [Showcase](./showcase). If you have a project you'd like to contribute, check out the [Built with Fireworks guide](./built_with_fireworks.md) for how to submit your project!
