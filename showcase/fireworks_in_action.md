@@ -2,6 +2,11 @@
 
 The showcase section highlights user-contributed examples that demonstrate creative and innovative uses of Fireworks AI. Each project showcases the versatility of Fireworks in combination with different tools, libraries, and workflows. While some projects are directly contained within this repository, not all customer or user projects are hosted here. In such cases, we'll provide links to either the customer story on the Fireworks website or to the user's external repository. Browse through the sections below to find inspiration for your next project!
 
+# ⚠️ Note: Repo under construction  - Excuse our dust⚠️
+Real-world projects and examples of users building with Fireworks are incoming and being migrated. 
+In the meantime, have you been building something cool with Fireworks? Let us know either in Discord or by creating a PR!
+We're currently on the lookout for ambassadors and startup + OSS partners to sponsor. 
+
 ---
 
 ## Inference Projects

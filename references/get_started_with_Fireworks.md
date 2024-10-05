@@ -3,45 +3,49 @@
 
 This section focuses on examples built entirely using Fireworks AI. These projects demonstrate the core capabilities of Fireworks without external dependencies, giving you a straightforward path to mastering Fireworks.
 
+# ⚠️ Note: Repo under construction  - Excuse our dust⚠️
+These notebooks and projects are upcoming and scheduled! Stay tuned!
+Please feel free to contribute!
+
 ---
 
 ## Inference with Fireworks
 
-- **Project**: [Inference with Fireworks](./1_inference/README.md)
+- **Project**: `Inference with Fireworks`
 - **Objective**: Learn how to perform model inference using Fireworks AI.
 - **Topics Covered**: Loading Fireworks models, performing inference, and optimizing performance.
 - **Getting Started**: Detailed instructions can be found in the `1_inference` directory.
-- **Video Link**: [Watch Video](#)
+- **Video Link**: `Watch Video`
 
 ---
 
 ## Fine-Tuning with Fireworks
 
-- **Project**: [Fine-Tuning with Fireworks](./2_fine-tuning/README.md)
+- **Project**: `Fine-Tuning with Fireworks`
 - **Objective**: Learn how to fine-tune models using Fireworks AI.
 - **Topics Covered**: Dataset preparation, model fine-tuning techniques, and evaluation.
 - **Getting Started**: Instructions are available in the `2_fine-tuning` directory.
-- **Video Link**: [Watch Video](#)
+- **Video Link**: `Watch Video`
 
 ---
 
 ## Function-Calling with Fireworks
 
-- **Project**: [Function-Calling with Fireworks](./3_function-calling/README.md)
+- **Project**: `Function-Calling with Fireworks`
 - **Objective**: Explore Fireworks' function-calling capabilities and how to deploy function-calling LLMs.
 - **Topics Covered**: Function-call models, handling function requests, and workflows.
 - **Getting Started**: Instructions are in the `3_function-calling` directory.
-- **Video Link**: [Watch Video](#)
+- **Video Link**: `Watch Video`
 
 ---
  
 ## RAG with Fireworks
 
-- **Project**: [RAG with Fireworks](./4_rag/README.md)
+- **Project**: `RAG with Fireworks`
 - **Objective**: Learn how to build RAG systems entirely using Fireworks AI.
 - **Topics Covered**: Document retrieval, knowledge-base integration, and response generation.
 - **Getting Started**: Detailed guide available in the `4_rag` directory.
-- **Video Link**: [Watch Video](#)
+- **Video Link**: `Watch Video`
 
 ---
 
