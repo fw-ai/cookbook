@@ -55,4 +55,3 @@ Built something cool with Fireworks? We’d love to feature your project in our 
 # Integrations
 
 See how Fireworks integrates with partner platforms and services in the [`./integrations`](./integrations) folder. Interested in contributing an integration example? Contact us or check the contribution guide for details.
-
