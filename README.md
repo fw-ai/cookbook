@@ -4,6 +4,15 @@
 
 This repository contains sample applications, Jupyter Notebooks, and resources designed to help you get hands-on with Fireworks AI. You'll explore tools for building, deploying, and fine-tuning generative AI, function-calling workflows, Retrieval-Augmented Generation (RAG) systems, agentic systems, and more.
 
+# ⚠️ Note: Repo under construction  - Excuse our dust⚠️
+We are currently in the process of migrating tutorials, apps, and examples (and consolidating them here) from the following repos: 
+* [Cookbook V1](https://github.com/fw-ai/cookbook) - Contains an amalgamation of guides and tutorials.
+* [ai-starter-kits](https://github.com/fw-ai/ai-starter-kits) - Contains a couple E2E projects.
+* [forge](https://github.com/fw-ai/forge) - Contains demo apps illustrating the capabilities of large language and image models.
+
+While we'll try to get things cleaned up ASAP, there's a chance that you might still see some gaps. We'll try to address those as quickly as possible!
+And please feel free to contribute!
+
 # Repository Structure
 
 This repo contains several types of examples organized by their use cases and purpose:
@@ -20,6 +29,7 @@ We appreciate your feedback and contributions! Please see our [contribution guid
 To get started with Fireworks AI, check out our [Getting Started Guide](./get_started.md) for a walkthrough of setting up and running your first example, including using Docker or setting up environments for local development.
 
 You can also dive into our [Quick Tour](./0_quick-tour) section for a guided overview of how to use Fireworks features.
+
 
 # Contributing
 
