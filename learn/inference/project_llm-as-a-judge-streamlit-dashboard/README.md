@@ -34,46 +34,59 @@ The app consists of two main pages:
 - Install **Streamlit** and the **Fireworks Python Client**.
 
 #### Step-by-Step Setup
-1. **Clone the repository**:
-    ```bash
-    git clone <repository_url>
-    cd <repository_directory>
-    ```
+##### 1. Clone the Repository:
+   First, clone the repository from GitHub:
 
-2. **Set up a virtual environment (optional but recommended)**:
-    ```bash
-    python -m venv env
-    source env/bin/activate  # On macOS/Linux
-    .\env\Scripts\activate  # On Windows
-    ```
+   ```bash
+   git clone https://github.com/fw-ai/examples.git
+   ```
 
-3. **Install required dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
+##### 2. Navigate to the Specific Project Sub-directory:
+   After cloning the repository, navigate to the `project_llm-as-a-judge-streamlit-dashboard` sub-directory:
 
-4. **Set up your environment variables**:
-   - **Copy the `.env.template` file** into a new directory named `env`:
-     ```bash
-     mkdir env
-     cp .env.template env/.env
-     ```
-   - **Rename the file** to `.env`:
-     ```bash
-     mv env/.env.template env/.env  # On macOS/Linux
-     ren env\.env.template .env  # On Windows
-     ```
-   - **Fill in your Fireworks API key** in the `.env` file:
-     ```bash
-     FIREWORKS_API_KEY=<your_api_key>
-     ```
+   ```bash
+   cd learn/inference/project_llm-as-a-judge-streamlit-dashboard
+   ```
 
-5. **Run the Streamlit app**:
-    ```bash
-    streamlit run app.py
-    ```
+##### 3. Set up a Virtual Environment (Optional but Recommended):
+   Create and activate a Python virtual environment:
 
-6. **Explore the app**:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate  # On macOS/Linux
+   .\venv\Scripts\activate  # On Windows
+   ```
+
+##### 4. Install Required Dependencies:
+   Install the necessary Python dependencies using `pip3`:
+
+   ```bash
+   pip3 install -r requirements.txt
+   ```
+
+##### 5. Configure the `.env` File:
+   Copy the `.env.template` file and rename it to `.env` in the same project directory:
+
+   ```bash
+   mkdir env/
+   cp .env.template env/.env
+   ```
+
+   Open the `.env` file and add your **FIREWORKS_API_KEY**:
+
+   ```bash
+   FIREWORKS_API_KEY=<your_fireworks_api_key>
+   ```
+
+##### 6. Run the Streamlit App:
+   Finally, run the Streamlit app:
+
+   ```bash
+   streamlit run home.py
+   ```
+
+
+##### 7. **Explore the app**:
     - Open the app in your browser via the URL provided by Streamlit (typically `http://localhost:8501`).
     - Navigate between the pages to compare models and adjust parameters.
 
