@@ -1,4 +1,4 @@
-![Building, Deploying, and Fine-Tuning AI Workflows with Fireworks](./learn/images/fireworks-ai-banner.jpeg)
+![Building, Deploying, and Fine-Tuning AI Workflows with Fireworks](assets/hero-dark.svg)
 
 # Fireworks AI Examples
 
@@ -21,31 +21,6 @@ To get started with Fireworks AI, check out our [Getting Started Guide](./get_st
 
 You can also dive into our [Quick Tour](./0_quick-tour) section for a guided overview of how to use Fireworks features.
 
-# Example Categories
-
-### **Production-Ready Examples:**
-- Inference
-- Fine-Tuning
-- Function Calling
-- Retrieval-Augmented Generation (RAG)
-- Evaluation
-- Agentic Systems
-- Compound AI Systems
-
-Production examples are available under [`./references`](./references).
-
-### **Learning and Exploration:**
-- Inference (with guided projects)
-- Fine-Tuning (with guided projects)
-- Function Calling (with guided projects)
-- Retrieval-Augmented Generation (with guided projects)
-- Evaluation (with guided projects)
-- Agentic Systems (with guided projects)
-- Compound AI Systems
-- LLMOps
-
-Explore our learning materials under [`./learn`](./learn), including detailed tutorials and walkthroughs for each example.
-
 # Contributing
 
 We value your contributions to help improve and expand this repository! If you'd like to contribute, whether it's fixing a bug, adding an example, or improving existing ones, check out our [Contribution Guide](./Contribution.md). For more significant changes, please [open an issue](https://github.com/fireworks-ai/examples/issues/new) to discuss your proposal before starting.
@@ -56,7 +31,12 @@ We love hearing your feedback! If you run into issues, have questions, or find s
 
 For support and further reading, visit:
 - [Fireworks Documentation](https://docs.fireworks.ai)
-- [Community Forum](https://community.fireworks.ai)
+- [Discord](https://discord.gg/9nKGzdCk)
+
+## Additional Resources
+- [Fireworks AI Blog](https://fireworks.ai/blog)
+- [Fireworks AI YouTube](https://www.youtube.com/channel/UCHCffBTGYa1Ut72h03ldtGA)
+- [Fireworks AI Twitter](https://x.com/fireworksai_hq)
 
 # Showcasing Your Work
 
