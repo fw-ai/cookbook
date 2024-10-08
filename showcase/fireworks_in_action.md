@@ -1,6 +1,12 @@
 # Built with Fireworks
 
-The showcase section highlights user-contributed examples that demonstrate creative and innovative uses of Fireworks AI. Each project showcases the versatility of Fireworks in combination with different tools, libraries, and workflows. While some projects are directly contained within this repository, not all customer or user projects are hosted here. In such cases, we'll provide links to either the customer story on the Fireworks website or to the user's external repository. Browse through the sections below to find inspiration for your next project!
+The showcase section highlights user-contributed examples that demonstrate creative and innovative uses of Fireworks AI. 
+
+Each project showcases the versatility of Fireworks in combination with different tools, libraries, and workflows. 
+
+While some projects are directly contained within this repository, not all customer or user projects are hosted here. 
+
+In such cases, we'll provide links to either the customer story on the Fireworks website or to the user's external repository. Browse through the sections below to find inspiration for your next project!
 
 # ⚠️ Note: Repo under construction  - Excuse our dust⚠️
 Real-world projects and examples of users building with Fireworks are incoming and being migrated. 
@@ -73,7 +79,7 @@ Fireworks helps in building compound systems where different models and processe
 If you've built something cool with Fireworks, we'd love to feature your project in our showcase! To submit your project, follow our [Contribution Guide](../Contribution.md). Ensure that each project includes:
 - A `README.md` with setup and usage instructions.
 - A clear description of how Fireworks is used in the project.
-- The logline (or short description of the project) of the project.
+- The row summary (or short description of the project) of the project.
 
 <!-- Contributors: As part of your pull request (PR), you need to write a clear and concise description of your project to be added to this table. Make sure to fill in all relevant fields like tools used, contributor name, and the use case. -->
 

@@ -65,7 +65,7 @@ To run these projects locally, follow the instructions below to set up your envi
 Start by cloning the Fireworks repository:
 
 ```bash
-git clone https://github.com/fireworks-ai/examples.git
+git clone https://github.com/fw-ai/cookbook.git
 cd examples
 ```
 
@@ -76,18 +76,18 @@ Creating a virtual environment ensures that dependencies are isolated from your 
 1. **Create the virtual environment:**
 
     ```bash
-    python3 -m venv env
+    python3 -m venv venv
     ```
 
 2. **Activate the virtual environment:**
 
     - On **MacOS/Linux**:
       ```bash
-      source env/bin/activate
+      source venv/bin/activate
       ```
     - On **Windows**:
       ```bash
-      .\env\Scripts\activate
+      .\venv\Scripts\activate
       ```
 
 ### Step 3: Install Dependencies
@@ -95,13 +95,13 @@ Creating a virtual environment ensures that dependencies are isolated from your 
 Once the virtual environment is activated, install the dependencies for the project:
 
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 Each project may have additional dependencies specified in its own directory. After navigating to the respective project folder, install any extra requirements with:
 
 ```bash
-pip install -r <project_folder>/requirements.txt
+pip3 install -r <project_folder>/requirements.txt
 ```
 
 ### Step 4: Run the Projects

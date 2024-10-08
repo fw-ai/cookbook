@@ -1,6 +1,6 @@
 # Fireworks Integrations with Ecosystem Partners
 
-This section contains integration examples showcasing how Fireworks AI can be used with various platforms, databases, and tools contributed by our ecosystem partners and community. Each integration comes with its own setup instructions, Dockerfile, and required dependencies.
+This section contains integration examples showcasing how Fireworks AI can be used with various platforms, databases, and tools contributed by our ecosystem partners and community. Each integration comes with its own setup instructions and required dependencies.
 
 # ⚠️ Note: Repo under construction  - Excuse our dust⚠️
 Partner materials are being consolidated and migrated here. Stay tuned!
