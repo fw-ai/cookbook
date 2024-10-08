@@ -1,0 +1,9 @@
+alpaca-cleaned:
+  huggingface_name: yahma/alpaca-cleaned
+  huggingface_revision: 12567ca
+  transform:
+    class: recipes.common.batch_transform.Lambda
+    prompt_input: "'### Instruction:\\n' + row['instruction'] + '\\n\\n### Input:\\n' + row['input'] + '\\n\\n### Response:\\n'"
+    prompt_no_input: "'### Instruction:\\n' + row['instruction'] + '\\n\\n### Response:\\n'"
+    prompt_lambda: "lambda row: ${.prompt_input} if row['input'] else ${.prompt_no_input}"
+    completion_lambda: "lambda row: row['output']"

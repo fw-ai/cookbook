@@ -1,0 +1,6 @@
+defaults:
+  - base
+  - model: llama2-7b-gud
+  - data: gcloud-log-sample
+
+version: "0.1"

@@ -1,0 +1,7 @@
+defaults:
+  - ../../../../common/conf/model/llama2-7b@_here_
+
+name: llama2-7b
+
+flash_attention: False
+torch_dtype: float16

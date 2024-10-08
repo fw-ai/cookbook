@@ -1,0 +1,6 @@
+defaults:
+  - base
+  - model: llama2-7b
+  - data: dialogsum-samsum
+
+version: "0.1"

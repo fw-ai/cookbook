@@ -1,0 +1,7 @@
+huggingface_name: bigcode/the-stack-smol
+huggingface_revision: 4a6938c
+transform:
+  class: recipes.eval.perplexity.transform.FilterLength
+  samples: 3
+  column: content
+  length: 163840 # 32768 (tokens) * 5 (letters per token)

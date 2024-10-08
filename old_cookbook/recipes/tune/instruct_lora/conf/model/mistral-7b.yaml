@@ -1,0 +1,31 @@
+defaults:
+  - ../../../../common/conf/model/mistral-7b@_here_
+
+name: mistral-7b
+
+micro_batch_size: 2
+batch_size: 16
+
+lr_scheduler_type: cosine
+
+epochs: 1
+learning_rate: 3.e-4
+cutoff_len: 4096
+lora_r: 4
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - down_proj
+  - up_proj
+
+gradient_checkpointing: False
+flash_attention: True
+
+load_in_4bit: False
+torch_dtype: bfloat16
+bf16: True

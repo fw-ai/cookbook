@@ -1,7 +1,0 @@
-defaults:
-  - ../../../../common/conf/model/mistral-7b@_here_
-
-name: mistral-7b
-
-flash_attention: False
-torch_dtype: float16

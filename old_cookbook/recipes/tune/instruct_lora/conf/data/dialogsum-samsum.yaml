@@ -1,0 +1,8 @@
+defaults:
+  - dataset:
+    - dialogsum
+    - samsum
+
+name: dialogsum-samsum
+
+mask_prompt: False

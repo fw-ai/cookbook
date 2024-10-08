@@ -1,0 +1,57 @@
+{
+    "parser": "@typescript-eslint/parser",
+    "parserOptions": {
+        "project": [
+            "./tsconfig.json"
+        ]
+    },
+    "plugins": [
+        "@typescript-eslint"
+    ],
+    "extends": [
+        "plugin:@next/next/recommended"
+    ],
+    "settings": {
+        "next": {
+            "rootDir": "."
+        }
+    },
+    "rules": {
+        "import/unambiguous": "off",
+        "import/no-default-export": "off",
+        "promise/prefer-await-to-then": "off",
+        "padding-line-between-statements": "off",
+        "no-param-reassign": "off",
+        "no-empty": "off",
+        "class-methods-use-this": "off",
+        "unicorn/no-null": "off",
+        "import/extensions": "off",
+        "import/no-unassigned-import": "off",
+        "no-implicit-coercion": "off",
+        "line-comment-position": "off",
+        "no-inline-comments": "off",
+        "camelcase": "off",
+        "@typescript-eslint/prefer-nullish-coalescing": "off",
+        "@typescript-eslint/no-unsafe-argument": "off",
+        "@typescript-eslint/no-empty-interface": "warn",
+        "@typescript-eslint/strict-boolean-expressions": "off",
+        "@typescript-eslint/consistent-type-definitions": "off",
+        "import/no-extraneous-dependencies": "off",
+        "@typescript-eslint/no-floating-promises": "off",
+        "@typescript-eslint/no-unnecessary-type-arguments": "off",
+        "@typescript-eslint/no-unnecessary-condition": "off",
+        "@typescript-eslint/no-explicit-any": "off",
+        "@typescript-eslint/no-unsafe-assignment": "off",
+        "@typescript-eslint/no-use-before-define": "off",
+        "@typescript-eslint/no-unsafe-member-access": "off",
+        "@typescript-eslint/no-unsafe-call": "off",
+        "@typescript-eslint/no-unsafe-return": "off",
+        "@typescript-eslint/non-nullable-type-assertion-style": "off",
+        "@typescript-eslint/no-misused-promises": [
+            "error",
+            {
+                "checksVoidReturn": false
+            }
+        ]
+    }
+}

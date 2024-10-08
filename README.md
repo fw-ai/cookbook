@@ -1,97 +1,57 @@
+![Building, Deploying, and Fine-Tuning AI Workflows with Fireworks](assets/hero-dark.svg)
 
-# Fireworks Cookbook
+# Fireworks AI Examples
 
-Fireworks cookbook is a collection of recipes designed to assist in the development, evaluation, and deployment of Generative AI (GenAI) models.
+This repository contains sample applications, Jupyter Notebooks, and resources designed to help you get hands-on with Fireworks AI. You'll explore tools for building, deploying, and fine-tuning generative AI, function-calling workflows, Retrieval-Augmented Generation (RAG) systems, agentic systems, and more.
 
-## Motivation
-Generative AI has seen unprecedented growth in recent times, spurring the creation of novel models and techniques. However, the information required to recreate these models and implement the latest modeling techniques is dispersed across various repositories, online forums, and research papers. The Fireworks Cookbook provides a set of comprehensive, ready-to-use recipes, enabling users to run and adapt them for diverse needs and applications. These recipes encompass a wide range of popular use-cases, including fine-tuning, generation, and evaluation. The cookbook is routinely updated to include recipes based on the latest advancements in the field.
+# ⚠️ Note: Repo under construction  - Excuse our dust⚠️
+We are currently in the process of migrating tutorials, apps, and examples (and consolidating them here) from the following repos: 
+* [Cookbook V1](https://github.com/fw-ai/cookbook) - Contains an amalgamation of guides and tutorials.
+* [ai-starter-kits](https://github.com/fw-ai/ai-starter-kits) - Contains a couple E2E projects.
+* [forge](https://github.com/fw-ai/forge) - Contains demo apps illustrating the capabilities of large language and image models.
 
-## Code organization
-The code in the repository is organized according to use-case, with some code serving multiple purposes. Our present emphasis is on Large Language Models (LLMs), however, we will incorporate more model classes in the future.
+While we'll try to get things cleaned up ASAP, there's a chance that you might still see some gaps. We'll try to address those as quickly as possible!
+And please feel free to contribute!
 
-### Docker
-For convenience, we offer a Docker container inclusive of all the necessary dependencies to run the provided recipes. The image also has the latest version of the cookbook checked out in `/workspace/cookbook`. However, you likely will need to modify the cookbook, so it's better to check out the repo outside of the container and mount it as described below.
+# Repository Structure
 
-The latest version is available on [DockerHub as fwai/cookbook](https://hub.docker.com/r/fwai/cookbook). You can use `registry.hub.docker.com/fwai/cookbook:latest` to reference it.
+This repo contains several types of examples organized by their use cases and purpose:
 
-The Dockerfile is located under [`recipes/docker`](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text)
+1. **Production-ready examples** in [`./references`](./references): These projects receive regular review and support from the Fireworks engineering team. Each example is production-ready, focusing on specific Fireworks features and abstractions, and shares common dependencies.
+2. **Learning-focused examples** in [`./learn`](./learn): These projects are optimized for learning and exploration of AI techniques. Each example is built with experimentation in mind, allowing you to explore patterns for building AI applications. Each project has its own dependencies and Dockerfile for easy setup.
+3. **Showcase projects** in [`./showcase`](./showcase): User-contributed examples of Fireworks in action! These are community-driven projects that may not always follow production standards but demonstrate creative ways to use Fireworks.
+4. **Integration examples** in [`./integrations`](./integrations): Examples provided by Fireworks partners, illustrating how to integrate with external services or platforms (e.g., MongoDB). Each integration example includes dedicated resources and documentation from the contributing partners.
 
-### Shared libraries
-The codebase shared across recipes is situated in [`recipes/common`](https://github.com/fw-ai/cookbook/tree/main/recipes/common).
+We appreciate your feedback and contributions! Please see our [contribution guide](./Contribution.md) for more information on how to contribute to this repository.
 
-### Recipes
-Recipes are categorized according to their respective use-cases. Here is the list of currently supported use-cases. Please note, most of the recipes come with dedicated README files providing more in-depth information.
+# Getting Started
 
-**Environment:**
-* [Docker container for LLM development](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text).
+To get started with Fireworks AI, check out our [Getting Started Guide](./references/get_started_with_Fireworks.md) for a walkthrough of setting up and running your first example, including using Docker or setting up environments for local development.
 
-**Tuning:**
-* [LoRA instruction tuning](https://github.com/fw-ai/cookbook/tree/main/recipes/tune/instruct_lora).
+You can also dive into our [Quick Tour](./0_quick-tour) section for a guided overview of how to use Fireworks features.
 
-**Evaluation:**
-* [Ranker leveraging perplexity for scoring](https://github.com/fw-ai/cookbook/tree/main/recipes/eval/perplexity_rank).
 
-**Generation:**
-* [Inference with a LoRA adapter](https://github.com/fw-ai/cookbook/tree/main/recipes/generate/instruct_lora),
-* [Constrained output generation in json format](https://github.com/fw-ai/cookbook/tree/main/recipes/generate/jsonformer).
+# Contributing
 
-### Examples 
-In order to facilitate users to build GenAI applications using fireworks offerings, we present example applications. Please see documentation inside the directory for more info.
+We value your contributions to help improve and expand this repository! If you'd like to contribute, whether it's fixing a bug, adding an example, or improving existing ones, check out our [Contribution Guide](./Contribution.md). For more significant changes, please [open an issue](https://github.com/fireworks-ai/examples/issues/new) to discuss your proposal before starting.
 
-## Example Workflow
-To illustrate how to leverage the recipes for an end-to-end usecase, lets walk through the process of fine tuning a model, inspecting the results visually, and deploying the model to the Fireworks platform for inference.
-The instructions assume that the source code of the cookbook was checked out under `/workspace/cookbook`.
-### Build and instantiate docker container
-```bash
-docker run --privileged -it --gpus all -p 8888:8888 \
-  --mount type=bind,source="/workspace",target="/workspace" \
-  --mount type=bind,source="$HOME/.cache/huggingface",target="/root/.cache/huggingface" \
-  --mount type=bind,source="$HOME/.ssh",target="/root/.ssh" \
-  --ipc=host --net=host --cap-add  SYS_NICE \
-  fwai/cookbook:latest
+# Feedback & Support
 
-# Or in case you want to rebuild it:
-cd cookbook/recipes/docker/text
-docker build -t fwai/cookbook:my .
-```
-The following commands will run inside the container.
-For more details, go [here](https://github.com/fw-ai/cookbook/tree/main/recipes/docker/text).
-### Fine tune a model
-```bash
-cd /workspace/cookbook/recipes/tune/instruct_lora
-export PYTHONPATH=.:/workspace/cookbook
-export N_GPUS=`nvidia-smi --query-gpu=gpu_name --format=csv,noheader | wc -l`
-torchx run -s local_cwd dist.ddp -j 1x${N_GPUS} --script finetune.py -- \
-  --config-name=summarize
-```
-### Test the model locally
-```bash
-cd /workspace/cookbook/recipes/generate/instruct_lora
-python generate.py
-```
-### Upload the model to Fireworks
-Follow the [quick start instructions](https://fireworksai.readme.io/docs/quickstart) to set up your account with Fireworks and generate the API key.
-```
-firectl signin
-firectl create model my-model \
-  /mnt/text/model/llama2-7b/dialogsum-samsum/0.1/final
-firectl deploy my-model
-```
-For more details, see this [guide](https://fireworksai.readme.io/docs/model-upload).
-### Test the model
+We love hearing your feedback! If you run into issues, have questions, or find something confusing, please [open an issue](https://github.com/fireworks-ai/examples/issues/new) and let us know.
 
-```bash
-export API_KEY=...
-export ACCOUNT_ID=...
-export PROMPT="[INST] <<SYS>>\nYou are an assistant and you are tasked with writing text summaries. For each input text, provide a summary. The summary should be concise, accurate and truthful. Do not make up facts or answers.\n<</SYS>>\n\n#Person1#: Welcome to my birthday party, I am so happy you can come. #Person2#: Thanks for inviting me. Here is the gift for you. Happy birthday, Francis! Many more happy and healthy years for you! #Person1#: Thank you, shall I open it now? #Person2#: Yes, please do. #Person1#: Wow, a remote car model and my favorite brand. I really like it. That is so nice of you. #Person2#: Yeah, I was really struggling whether I should give you this nice little car. It was the last one they had and I really like it so much myself. #Person1#: Typical you, always wanting to keep the best things for yourself. The more I appreciate the gift now.[/INST]\n"
-curl \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "accounts/${ACCOUNT_ID}/models/my-model", "prompt": "${PROMPT}"}' \
-  https://api.fireworks.ai/inference/v1/completions
-```
-### Clean up
-```bash
-firectl undeploy my-model
-firectl delete model my-model
-```
+For support and further reading, visit:
+- [Fireworks Documentation](https://docs.fireworks.ai)
+- [Discord](https://discord.gg/9nKGzdCk)
+
+## Additional Resources
+- [Fireworks AI Blog](https://fireworks.ai/blog)
+- [Fireworks AI YouTube](https://www.youtube.com/channel/UCHCffBTGYa1Ut72h03ldtGA)
+- [Fireworks AI Twitter](https://x.com/fireworksai_hq)
+
+# Showcasing Your Work
+
+Built something cool with Fireworks? We’d love to feature your project in our [Showcase](./showcase). If you have a project you'd like to contribute, check out the [Built with Fireworks guide](./built_with_fireworks.md) for how to submit your project!
+
+# Integrations
+
+See how Fireworks integrates with partner platforms and services in the [`./integrations`](./integrations) folder. Interested in contributing an integration example? Contact us or check the contribution guide for details.

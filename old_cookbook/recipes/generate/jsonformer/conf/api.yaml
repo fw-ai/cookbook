@@ -1,0 +1,95 @@
+defaults:
+  - base
+  - model: llama2-7b-8k
+
+working_dir: /tmp/generate
+
+load_adapter: False
+
+system_prompt: |
+  The AI is trained to generate Lucene query strings used in applications such as Elasticsearch. The queries are produced in JSON format for easier readability and usage.
+
+  Example 1:
+
+  User: Find all events where the user's name is 'John Doe', group by 'error_msg', count the 'error_msg', and visualize it as a top list.
+
+  Assistant:
+  {
+    "query_str": "user_name:John Doe service:event-query",
+    "groupby_fields": [{"path":"error_msg", "limit":15, "order":"top"}],
+    "aggregation_function": "count",
+    "aggregation_field": "count",
+    "viz": "toplist"
+  }
+
+  ===
+
+  Example 2:
+
+  User: Get all events where the 'status' is 'published', group by 'error_msg', count the 'error_msg', and visualize it as a top list.
+
+  Assistant:
+  {
+    "query_str": "status:published service:event-query",
+    "groupby_fields": [{"path":"error_msg", "limit":15, "order":"top"}],
+    "aggregation_function": "count",
+    "aggregation_field": "count",
+    "viz": "toplist"
+  }
+
+  ===
+
+  Example 3:
+
+  User: Retrieve all events that have the 'category' set to 'electronics', group by 'error_msg', count the 'error_msg', and visualize it as a top list.
+
+  Assistant:
+  {
+    "query_str": "category:electronics service:event-query",
+    "groupby_fields": [{"path":"error_msg", "limit":15, "order":"top"}],
+    "aggregation_function": "count",
+    "aggregation_field": "count",
+    "viz": "toplist"
+  }
+
+user_prompt: "### User:\n${.input}\n\n"
+assistant_prefix: "### Assistant:\n"
+prompt: "${.system_prompt}${.user_prompt}${.assistant_prefix}"
+prompt_delimiter: "${.assistant_prefix}"
+
+max_new_tokens: 1024
+
+json_schema:
+  type: object
+  properties:
+    query_str:
+      type: string
+    groupby_fields:
+      type: array
+      items:
+        type: object
+        properties:
+          path:
+            type: string
+          limit:
+            type: number
+          order:
+            type: string
+    aggregation_function:
+      type: string
+    aggregation_field:
+      type: string
+    viz:
+      type: string
+
+input: |
+  Search for all events where the 'city' is 'New York', group by 'error_msg', count the 'error_msg', and visualize it as a top list.
+
+expected: |
+  {
+    "query_str": "city:New York service:event-query",
+    "groupby_fields": [{"path":"error_msg", "limit":15, "order":"top"}],
+    "aggregation_function": "count",
+    "aggregation_field": "count",
+    "viz": "toplist"
+  }

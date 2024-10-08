@@ -1,6 +1,0 @@
-working_dir: ??
-output_model_dir: ${working_dir}/final
-
-hydra:
-  run:
-    dir: ${working_dir}/conf/${now:%Y-%m-%d}_${now:%H-%M-%S}

@@ -1,0 +1,6 @@
+defaults:
+  - base
+  - model: llama2-13b-8k
+  - data: alpaca
+
+version: "0.2"

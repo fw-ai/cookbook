@@ -1,7 +1,0 @@
-defaults:
-  - dataset:
-    - openorca
-
-name: openorca
-
-mask_prompt: True

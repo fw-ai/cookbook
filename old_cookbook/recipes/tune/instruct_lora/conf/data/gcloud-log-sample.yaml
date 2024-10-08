@@ -1,0 +1,7 @@
+defaults:
+  - dataset:
+    - gcloud-log-sample
+
+name: gcloud-log-sample
+
+mask_prompt: True

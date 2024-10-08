@@ -1,9 +1,0 @@
-defaults:
-  - dataset:
-    - cnn_dailymail
-    - dialogsum
-    - samsum
-
-name: cnn_dailymail-dialogsum-samsum
-
-mask_prompt: False

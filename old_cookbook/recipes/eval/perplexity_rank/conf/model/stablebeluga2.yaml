@@ -1,0 +1,10 @@
+huggingface_model_name: stabilityai/StableBeluga2
+huggingface_model_revision: 2e16a9f
+pad_token: "<unk>"
+
+client_class: recipes.eval.perplexity_rank.client.LocalClient
+
+name: stablebeluga2
+
+flash_attention: True
+torch_dtype: float16

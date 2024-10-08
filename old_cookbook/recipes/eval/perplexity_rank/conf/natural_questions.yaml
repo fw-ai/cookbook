@@ -1,0 +1,35 @@
+defaults:
+  - base
+  - model: stablebeluga-7b
+  - dataset: natural_questions
+
+working_dir: /tmp/generate
+
+load_adapter: False
+
+recall_limits:
+  - 1
+  - 10
+  - 20
+  - 30
+
+query_prompt_template: |
+  ### System:
+  Generate a passage that contains answer to the provided question.
+
+  ### User:
+  Question: {query}
+
+  ### Assistant:
+  Passage with an answer to the Question:
+
+
+prompt_template: |
+  ### System:
+  You are an assistant who is helping the user with question generation. Help as much as you can and do not make things up.
+
+  ### User:
+  Generate a question asking about a specific fact included in the following document. Do not use any prior knowledge you may have, only the content of the provided document:
+  "{document}"
+
+  ### Assistant:
