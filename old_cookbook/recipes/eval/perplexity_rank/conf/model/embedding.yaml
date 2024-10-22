@@ -1,0 +1,4 @@
+# {1: 0.4, 5: 0.765, 10: 0.895, 20: 0.94, 30: 0.975, 40: 0.975, 50: 0.985, 60: 0.99, 70: 1.0, 80: 1.0, 90: 1.0, 100: 1.0}
+name: all-MiniLM-L6-v2
+
+client_class: recipes.eval.perplexity_rank.client.SentenceTransformerClient

@@ -1,0 +1,41 @@
+# Rank query-document pairs by estimating P(query | document).
+# Sample recalls:
+# {1: 0.44, 5: 0.675, 10: 0.79, 20: 0.89, 30: 0.945, 40: 0.965, 50: 0.985, 60: 0.99, 70: 0.99, 80: 1.0, 90: 1.0, 100: 1.0}
+
+defaults:
+  - base
+  - model: fw_llama2-7b
+  # - model: stablebeluga-7b
+  - dataset: msmarco_rank
+
+working_dir: /tmp/generate
+
+load_adapter: False
+
+recall_limits:
+  - 1
+  - 5
+  - 10
+  - 20
+  - 30
+  - 40
+  - 50
+  - 60
+  - 70
+  - 80
+  - 90
+  - 100
+
+scoring: perplexity
+
+# P(question|document)
+prompt_template: |
+  ### System:
+  Generate a question asking about a specific fact in the provided document.
+
+  ### User:
+  Document: "{document}"
+
+  ### Assistant:
+  Question asking about a fact in the Document:
+completion_template: "{query}"

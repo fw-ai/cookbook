@@ -1,0 +1,7 @@
+defaults:
+  - dataset:
+    - alpaca-cleaned
+
+name: alpaca
+
+mask_prompt: True

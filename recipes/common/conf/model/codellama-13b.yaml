@@ -1,8 +1,0 @@
-name: ??
-
-huggingface_model_name: codellama/CodeLlama-13b-hf
-huggingface_model_revision: 9e3ca34
-pad_token: "<unk>"
-
-fireworks:
-  base_model: accounts/fireworks/models/llama-v2-13b-code

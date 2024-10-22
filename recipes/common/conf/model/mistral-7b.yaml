@@ -1,8 +1,0 @@
-name: ??
-
-huggingface_model_name: mistralai/Mistral-7B-v0.1
-huggingface_model_revision: ae9d75c
-pad_token: "<unk>"
-
-fireworks:
-  base_model: accounts/fireworks/models/mistral-7b

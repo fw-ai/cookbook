@@ -1,0 +1,8 @@
+name: ??
+
+huggingface_model_name: tiiuae/falcon-7b
+huggingface_model_revision: "3783374"
+pad_token: ">>SUFFIX<<"
+
+fireworks:
+  base_model: accounts/fireworks/models/falcon-7b

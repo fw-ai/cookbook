@@ -1,0 +1,24 @@
+defaults:
+  - ../../../../common/conf/model/llama2-7b-chat@_here_
+
+name: llama2-7b-chat
+
+micro_batch_size: 2
+batch_size: 128
+
+epochs: 8
+learning_rate: 2.e-5
+cutoff_len: 2048
+lora_r: 4
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+
+gradient_checkpointing: True
+flash_attention: False
+
+torch_dtype: bfloat16
+bf16: True

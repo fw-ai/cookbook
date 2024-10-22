@@ -1,6 +1,0 @@
-huggingface_name: fireworks-ai/msmarco_rank
-huggingface_revision: 061d1e8
-transform:
-  class: recipes.eval.perplexity_rank.transform.MsMarcoRank
-  max_samples: 100
-  docs_per_query: 100
