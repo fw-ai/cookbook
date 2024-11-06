@@ -28,8 +28,6 @@ We appreciate your feedback and contributions! Please see our [contribution guid
 
 To get started with Fireworks AI, check out our [Getting Started Guide](./references/get_started_with_Fireworks.md) for a walkthrough of setting up and running your first example, including using Docker or setting up environments for local development.
 
-You can also dive into our [Quick Tour](./0_quick-tour) section for a guided overview of how to use Fireworks features.
-
 
 # Contributing
 
