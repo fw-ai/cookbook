@@ -1,4 +1,9 @@
-<!--
+---
+title: "[Partner Name] Integration"
+description: "Overview of integrating [Partner Name] with Fireworks for enhanced generative AI capabilities."
+---
+
+``` Delete this
 Instructions for Fireworks Integration Partners:
 
 If you’re a company interested in creating an integration with Fireworks, please follow these steps:
@@ -10,11 +15,7 @@ If you’re a company interested in creating an integration with Fireworks, plea
 5. Submit as a Pull Request: Once complete, submit your folder, examples, and the filled-out template as a PR to the Fireworks Cookbook repository.
 6. Review Process: A member of the Fireworks Developer Relations or Engineering team will review your submission, and pull relevant content into the official Fireworks documentation repository.
 -->
-
----
-title: "[Partner Name] Integration"
-description: "Overview of integrating [Partner Name] with Fireworks for enhanced generative AI capabilities."
----
+```
 
 # [Partner Name] and Fireworks AI Integration
 
