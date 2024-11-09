@@ -1,17 +1,10 @@
 ![Building, Deploying, and Fine-Tuning AI Workflows with Fireworks](assets/hero-dark.svg)
 
-# Fireworks AI Examples
+# Fireworks AI Cookbook
 
 This repository contains sample applications, Jupyter Notebooks, and resources designed to help you get hands-on with Fireworks AI. You'll explore tools for building, deploying, and fine-tuning generative AI, function-calling workflows, Retrieval-Augmented Generation (RAG) systems, agentic systems, and more.
 
-# ⚠️ Note: Repo under construction  - Excuse our dust⚠️
-We are currently in the process of migrating tutorials, apps, and examples (and consolidating them here) from the following repos: 
-* [Cookbook V1](https://github.com/fw-ai/cookbook) - Contains an amalgamation of guides and tutorials.
-* [ai-starter-kits](https://github.com/fw-ai/ai-starter-kits) - Contains a couple E2E projects.
-* [forge](https://github.com/fw-ai/forge) - Contains demo apps illustrating the capabilities of large language and image models.
-
-While we'll try to get things cleaned up ASAP, there's a chance that you might still see some gaps. We'll try to address those as quickly as possible!
-And please feel free to contribute!
+This is a living-repo, so please check back as we continuously add new examples, tutorials and reference projects.
 
 # Repository Structure
 
@@ -28,16 +21,16 @@ We appreciate your feedback and contributions! Please see our [contribution guid
 
 To get started with Fireworks AI, check out our [Getting Started Guide](./references/get_started_with_Fireworks.md) for a walkthrough of setting up and running your first example, including using Docker or setting up environments for local development.
 
-You can also dive into our [Quick Tour](./0_quick-tour) section for a guided overview of how to use Fireworks features.
+You can also dive into our [Quick Tour](./references/quick-tour/) section for a guided overview of how to use Fireworks features.
 
 
 # Contributing
 
-We value your contributions to help improve and expand this repository! If you'd like to contribute, whether it's fixing a bug, adding an example, or improving existing ones, check out our [Contribution Guide](./Contribution.md). For more significant changes, please [open an issue](https://github.com/fireworks-ai/examples/issues/new) to discuss your proposal before starting.
+We value your contributions to help improve and expand this repository! If you'd like to contribute, whether it's fixing a bug, adding an example, or improving existing ones, check out our [Contribution Guide](./Contribution.md). For more significant changes, please [open an issue](https://github.com/fw-ai/cookbook/issues/new) to discuss your proposal before starting.
 
 # Feedback & Support
 
-We love hearing your feedback! If you run into issues, have questions, or find something confusing, please [open an issue](https://github.com/fireworks-ai/examples/issues/new) and let us know.
+We love hearing your feedback! If you run into issues, have questions, or find something confusing, please [open an issue](https://github.com/fw-ai/cookbook/issues/new) and let us know.
 
 For support and further reading, visit:
 - [Fireworks Documentation](https://docs.fireworks.ai)
@@ -50,7 +43,7 @@ For support and further reading, visit:
 
 # Showcasing Your Work
 
-Built something cool with Fireworks? We’d love to feature your project in our [Showcase](./showcase). If you have a project you'd like to contribute, check out the [Built with Fireworks guide](./built_with_fireworks.md) for how to submit your project!
+Built something cool with Fireworks? We’d love to feature your project in our [Showcase](./showcase). If you have a project you'd like to contribute, check out the [Fireworks-In-Action guide](./showcase/fireworks_in_action.md) for how to submit your project!
 
 # Integrations
 
