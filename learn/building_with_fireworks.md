@@ -53,18 +53,7 @@ These examples showcase how to build RAG systems using Fireworks, focusing on th
 |---------|----------------------|-------------|-------------|------------------|------------------|--------------|
 | Project RAG with SurrealDB      | SurrealDB, Fireworks, FastAPI, Astro, TailwindCSS | A RAG app using SurrealDB for vector storage and Fireworks for LLM inference, enabling real-time knowledge updates and custom responses. | @aravindputrevu               | RAG, Dynamic Knowledge Updates | [Project Link](rag/project_rag_with_surrealdb)            | App |
 | Simple RAG with Chroma          | Chroma, Fireworks Python Client      | A simple Retrieval-Augmented Generation (RAG) system using Chroma as the vector store and Fireworks LLMs for embedding generation and context-aware responses. | @omarsar        | RAG, Document Retrieval, Embedding Generation | [Project Link](rag/project_simple-rag-with-chroma)         | Notebook |
-
----
-
-## Evaluation Projects
-
-This section contains projects that explore how to use Fireworks for evaluating models and tracking their performance over time.
-
-| Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links | Project Type |
-|---------|----------------------|-------------|-------------|----------|------------------|--------------|
-|         |                      |             |             |          |                  |              |
-
----
+| MongoDB RAG Movie Recommender  | Fireworks Python Client, MongoDB Atlas, OpenAI API | An agentic movie recommendation system using Fireworks' function-calling models for personalized, real-time recommendations based on user queries and MongoDB vector search. | @aravindputrevu    | Personalized Recommendations, Real-time Query Handling | [Project Link](../integrations/MongoDB/project_rag_with_mongodb/README.md) | Notebook     |
 
 ## Agentic Systems Projects
 
@@ -83,8 +72,6 @@ In these projects, you’ll learn how to build compound systems using Fireworks,
 | Project | Tools/Libraries Used | Description | Contributor | Use Case | Additional Links | Project Type |
 |---------|----------------------|-------------|-------------|----------|------------------|--------------|
 |         |                      |             |             |          |                  |              |
-
-
 
 ---
 
