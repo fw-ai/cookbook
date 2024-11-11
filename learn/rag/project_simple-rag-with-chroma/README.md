@@ -1,5 +1,5 @@
 
-# Part 2: Deploying an LLM with Retrieval-Augmented Generation (RAG)
+# Part 2: Deploying an LLM with Retrieval-Augmented Generation (RAG) - League of Legends
 
 ## Objectives:
 In this part of the workshop, you will:
