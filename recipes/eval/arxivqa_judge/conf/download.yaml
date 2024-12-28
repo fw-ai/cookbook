@@ -1,0 +1,19 @@
+# input
+huggingface_dataset: taesiri/arxiv_qa
+document_id_column: paper_id
+split: train
+
+# output
+output_path: ${oc.env:HOME}/.cache/fireworks/eval/arxivqa_judge/data
+
+# processing
+concurrency: 4
+url_template: https://arxiv.org/pdf/{document_id}
+batch_size: 100
+request_timeout: 60
+tolerance: 0.1
+
+working_dir: /tmp/fireworks/eval/arxivqa_judge
+hydra:
+  run:
+    dir: ${working_dir}/conf/${now:%Y-%m-%d}_${now:%H-%M-%S}

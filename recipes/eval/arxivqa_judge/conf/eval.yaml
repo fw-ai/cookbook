@@ -1,0 +1,76 @@
+dataset:
+  huggingface_name: taesiri/arxiv_qa
+  huggingface_revision: f3066b2
+  split: train
+  overfetch_factor: 10
+  max_samples: 10
+  max_pages: 15
+  max_size: 20000000
+  tokenizer: meta-llama/Llama-3.3-70B-Instruct
+  transform:
+    class: recipes.eval.common.batch_transform.Jinja
+    mode: generate
+    passthrough_columns:
+      - paper_id
+      - question
+    templates:
+      path: '${oc.env:HOME}/.cache/fireworks/eval/arxivqa_judge/data/{{ paper_id }}.pdf'
+
+generate_a:
+  concurrency: 4
+  base_url: https://api.fireworks.ai/inference/v1
+  api_key: ${oc.env:FW_API_KEY}
+  # model: accounts/fireworks/models/llama-v3p3-70b-instruct
+  model: accounts/fireworks/models/qwen2p5-72b-instruct
+  # model: accounts/fireworks/models/qwen2-vl-72b-instruct
+  # account: arxiv_qa_a
+  user_message: "Please answer the following question using the provided document for context:\n{question}"
+  transform: inline
+
+# generate_b:
+#   concurrency: 4
+#   base_url: https://api.fireworks.ai/inference/v1
+#   api_key: ${oc.env:FW_API_KEY}
+#   model: accounts/fireworks/models/qwen2-vl-72b-instruct
+#   # account: arxiv_qa_b
+#   user_message: "Please answer the following question using the provided document for context:\n{question}"
+
+generate_b:
+  concurrency: 4
+  base_url: https://api.openai.com/v1
+  api_key: ${oc.env:OPENAI_API_KEY}
+  model: gpt-4o
+  user_message: "Please answer the following question using the provided document for context:\n{question}"
+  # detail: high
+
+judge:
+  concurrency: 2
+  api_key: ${oc.env:ANTHROPIC_API_KEY}
+  model: claude-3-5-sonnet-latest
+  max_tokens: 1024
+  user_message: |-
+    Please act as an impartial judge and evaluate the quality of the responses provided by two AI assistants to the user question displayed below.
+    User question is asked in the context of the provided document.
+    You should choose the assistant that follows the user's instructions and answers the user's question better given the document.
+    Your evaluation should consider factors such as the helpfulness, relevance, accuracy, depth, creativity, and level of detail of their responses.
+    Avoid any position biases and ensure that the order in which the responses were presented does not influence your decision.
+    Do not allow the length of the responses to influence your evaluation. Do not favor certain names of the assistants.
+    Be as objective as possible.
+    Output your final verdict by responding: "A>B" if assistant A is better, "B>A" if assistant B is better, and "A=B" for a tie. Do not include any other text.
+
+    [User Question]
+    {question}
+
+    [The Start of Assistant A's Answer]
+    {answer_a}
+    [The End of Assistant A's Answer]
+
+    [The Start of Assistant B's Answer]
+    {answer_b}
+    [The End of Assistant B's Answer]
+
+working_dir: /tmp/fireworks/eval/arxivqa_judge
+
+hydra:
+  run:
+    dir: ${working_dir}/conf/${now:%Y-%m-%d}_${now:%H-%M-%S}
