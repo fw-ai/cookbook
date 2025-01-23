@@ -21,9 +21,6 @@ We appreciate your feedback and contributions! Please see our [contribution guid
 
 To get started with Fireworks AI, check out our [Getting Started Guide](./references/get_started_with_Fireworks.md) for a walkthrough of setting up and running your first example, including using Docker or setting up environments for local development.
 
-You can also dive into our [Quick Tour](./references/quick-tour/) section for a guided overview of how to use Fireworks features.
-
-
 # Contributing
 
 We value your contributions to help improve and expand this repository! If you'd like to contribute, whether it's fixing a bug, adding an example, or improving existing ones, check out our [Contribution Guide](./Contribution.md). For more significant changes, please [open an issue](https://github.com/fw-ai/cookbook/issues/new) to discuss your proposal before starting.
