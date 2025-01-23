@@ -78,7 +78,34 @@ async function main() {
       }, 50); // 50ms interval
     });
 
-    // 5. Handle incoming messages with real-time transcription
+    /*
+      5. Handle incoming messages with real-time transcription.
+      Segments state dictionary works helps to keep track of the segments and their updates.
+      
+      For example:
+      1. Segments before an update:
+
+        {
+          "0": "sentence0",
+          "1": "sentence1",
+          "2": "sentence2",
+        }
+
+      2. A new message with an update is received (on_message):
+
+        {
+            "1": "sentence1",
+            "2": "sentence2_updated",
+        }
+
+      3. Segments state after the update:
+
+        {
+            "0": "sentence0",
+            "1": "sentence1",
+            "2": "sentence2_updated",
+        }
+    */ 
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data);
