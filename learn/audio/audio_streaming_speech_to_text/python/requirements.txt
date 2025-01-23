@@ -1,0 +1,4 @@
+requests
+torch
+torchaudio
+websocket-client
