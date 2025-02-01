@@ -16,6 +16,10 @@ These projects focus on demonstrating how to perform model inference using Firew
 | Transcription Chat              | Next.js, Vercel, Google Fonts        | A Next.js app for transcription chat, utilizing Next.js features like font optimization and deployment via Vercel.                  | @benjibc        | Chatbot, Real-time Transcription | [Project Link](./inference/project_transcription_chat/README.md)     | App |
 | Structured Response with Llama 3.1 | Fireworks Python Client, Pydantic | Demonstrates the use of structured responses in Llama 3.1, including Grammar Mode (GBNF) and JSON Mode for generating validated, consistent outputs for tasks like sentiment analysis and health records. | @aravindputrevu | Structured Data Generation, JSON Responses, Schema Validation | [Project Link](./structured_response/structured_response_llama_3_1.ipynb) | Notebook |
 | Llama 3.1 Synthetic Data Generation | Fireworks Python Client, Pydantic | Demonstrates the use of Llama 3.1 models for generating synthetic data, including API usage and creating structured outputs for tasks like geography quizzes. | @aravindputrevu | Inference, Synthetic Data Generation | [Project Link](./synthetic_data/Llama_3_1_Synthetic_Data.ipynb) | Notebook |
+|---------|----------------------|-------------|-------------|----------|------------------|--------------|
+| **Structured Healthcare Records (DeepSeek v3 & R1)** | Fireworks Python Client, Pydantic | Demonstrates structured response generation for healthcare records using DeepSeek v3 & R1 with Grammar Mode and Reasoning JSON Mode. | @MMBazel | Healthcare, Structured Data Generation | [Project Link](./structured_response/structured_healthcare_records.ipynb) | Notebook |
+| **Computer Specification Generation (DeepSeek v3 & R1)** | Fireworks Python Client, Pydantic | Generates structured PC build recommendations with reasoning explanations using DeepSeek v3 & R1, Grammar Mode, and Reasoning JSON Mode. | @MMBazel | Automated PC Builds, Hardware Recommendations | [Project Link](./structured_response/computer_specs_with_reasoning.ipynb) | Notebook |
+
 
 ---
 
