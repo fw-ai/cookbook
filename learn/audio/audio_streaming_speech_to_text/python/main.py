@@ -80,7 +80,7 @@ for audio_chunk_tensor in audio_chunk_tensors:
 # }
 
 lock = threading.Lock()
-segments = {}
+state = {}
 
 
 def on_open(ws):
@@ -104,14 +104,11 @@ def on_message(ws, message):
     if message.get("checkpoint_id") == "final":
         ws.close()
         return
-    
-    updated_segments = {
-        segment["id"]: segment["text"]
-        for segment in message["segments"]
-    }
+
+    update = {s["id"]: s["text"] for s in message["segments"]}
     with lock:
-        segments.update(updated_segments)
-        print("\n".join(f" - {k}: {v}" for k, v in segments.items()))
+        state.update(update)
+        print("\n".join(f" - {k}: {v}" for k, v in state.items()))
 
 
 url = "ws://audio-streaming.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions/streaming"
