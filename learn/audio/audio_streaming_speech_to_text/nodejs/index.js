@@ -48,8 +48,6 @@ async function main() {
     console.log(`Split into ${audioChunks.length} chunks of ~50ms each.`);
 
     // 4. Open WebSocket to the Fireworks streaming endpoint
-    const segments = {};
-
     const ws = new WebSocket(
       "ws://audio-streaming.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions/streaming?language=en",
       {
@@ -70,52 +68,65 @@ async function main() {
           i++;
         } else {
           clearInterval(interval);
-          // Allow some time for final processing on server side
-          setTimeout(() => {
-            ws.close();
-          }, 2000);
+          ws.send(JSON.stringify({ checkpoint_id: "final" }));
         }
-      }, 50); // 50ms interval
+      }, 50);
     });
 
     /*
-      5. Handle incoming messages with real-time transcription.
-      Segments state dictionary works helps to keep track of the segments and their updates.
-      
-      For example:
-      1. Segments before an update:
+      5. Handle incoming messages.
 
-        {
-          "0": "sentence0",
-          "1": "sentence1",
-          "2": "sentence2",
-        }
+      The client maintains a state dictionary, starting with an empty
+      dictionary `{}`. When the server sends the first transcription message,
+      it contains a list of segments. Each segment has an `id`and `text`:
 
-      2. A new message with an update is received (on_message):
+      Server initial message:
+      {
+          "segments": [
+              {"id": "0", "text": "This is the first sentence"},
+              {"id": "1", "text": "This is the second sentence"}
+          ]
+      }
 
-        {
-            "1": "sentence1",
-            "2": "sentence2_updated",
-        }
+      Client initial state:
+      {
+          "0": "This is the first sentence",
+          "1": "This is the second sentence",
+      }
 
-      3. Segments state after the update:
+      When the server sends the next updates to the transcription, the client
+      updates the state dictionary based on the segment `id`:
 
-        {
-            "0": "sentence0",
-            "1": "sentence1",
-            "2": "sentence2_updated",
-        }
+      Server continuous message:
+      {
+          "segments": [
+              {"id": "1", "text": "This is the second sentence modified"},
+              {"id": "2", "text": "This is the third sentence"}
+          ]
+      }
+
+      Client updated state:
+      {
+          "0": "This is the first sentence",
+          "1": "This is the second sentence modified",   # overwritten
+          "2": "This is the third sentence",             # new
+      }
     */ 
+    const state = {};
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data);
+        if (message.checkpoint_id === "final") {
+          ws.close();
+          return;
+        }
         if (message.segments) {
           message.segments.forEach(segment => {
-            segments[segment.id] = segment.text;
+            state[segment.id] = segment.text;
           });
         }
         console.clear();
-        for (const [segmentId, text] of Object.entries(segments)) {
+        for (const [segmentId, text] of Object.entries(state)) {
           console.log(` - ${segmentId}: ${text}`);
         }
       } catch (err) {

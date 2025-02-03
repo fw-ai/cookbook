@@ -43,30 +43,41 @@ for audio_chunk_tensor in audio_chunk_tensors:
         (audio_chunk_tensor * 32768.0).to(torch.int16).numpy().tobytes())
 
 
-# Segments state dictionary works helps to keep track of the segments and their updates. For example:
+# The client maintains a state dictionary, starting with an empty
+# dictionary `{}`. When the server sends the first transcription message,
+# it contains a list of segments. Each segment has an `id`and `text`:
 #
-# 1. Segments before an update:
+# Server initial message:
+# {
+#     "segments": [
+#         {"id": "0", "text": "This is the first sentence"},
+#         {"id": "1", "text": "This is the second sentence"}
+#     ]
+# }
 #
-#     {
-#         "0": "sentence0",
-#         "1": "sentence1",
-#         "2": "sentence2",
-#     }
+# Client initial state:
+# {
+#     "0": "This is the first sentence",
+#     "1": "This is the second sentence",
+# }
 #
-# 2. A new message with an update is received (on_message):
+# When the server sends the next updates to the transcription, the client
+# updates the state dictionary based on the segment `id`:
 #
-#     {
-#         "1": "sentence1",
-#         "2": "sentence2_updated",
-#     }
+# Server continuous message:
+# {
+#     "segments": [
+#         {"id": "1", "text": "This is the second sentence modified"},
+#         {"id": "2", "text": "This is the third sentence"}
+#     ]
+# }
 #
-# 3. Segments state after the update:
-#
-#     {
-#         "0": "sentence0",
-#         "1": "sentence1",
-#         "2": "sentence2_updated",
-#     }
+# Client updated state:
+# {
+#     "0": "This is the first sentence",
+#     "1": "This is the second sentence modified",   # overwritten
+#     "2": "This is the third sentence",             # new
+# }
 
 lock = threading.Lock()
 segments = {}
@@ -78,8 +89,8 @@ def on_open(ws):
             ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
             time.sleep(chunk_size_ms / 1000)
 
-        time.sleep(2)  # Custom post-processing
-        ws.close()
+        final_checkpoint = json.dumps({"checkpoint_id": "final"})
+        ws.send(final_checkpoint, opcode=websocket.ABNF.OPCODE_TEXT)
 
     threading.Thread(target=stream_audio, args=(ws,)).start()
 
@@ -89,9 +100,14 @@ def on_error(ws, error):
 
 
 def on_message(ws, message):
+    message = json.loads(message)
+    if message.get("checkpoint_id") == "final":
+        ws.close()
+        return
+    
     updated_segments = {
         segment["id"]: segment["text"]
-        for segment in json.loads(message)["segments"]
+        for segment in message["segments"]
     }
     with lock:
         segments.update(updated_segments)
