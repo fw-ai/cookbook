@@ -78,7 +78,7 @@ async function main() {
 
       The client maintains a state dictionary, starting with an empty
       dictionary `{}`. When the server sends the first transcription message,
-      it contains a list of segments. Each segment has an `id`and `text`:
+      it contains a list of segments. Each segment has an `id` and `text`:
 
       Server initial message:
       {
