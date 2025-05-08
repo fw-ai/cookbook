@@ -12,6 +12,7 @@ Please feel free to contribute!
 | Integration | Description | Partner | What the Partner Does | Key Features | Setup Instructions | Link to Notebooks |
 |-------------|-------------|---------|-----------------------|--------------|--------------------|-------------------|
 | MongoDB Atlas | Integration with MongoDB Atlas for Retrieval-Augmented Generation (RAG) applications using vector search. | MongoDB | Provides a scalable, cloud-based database solution with built-in vector search capabilities. | - Native vector search support for fast, efficient retrieval. <br> - Secure, scalable cloud database. <br> - Integration with Fireworks for embedding generation and LLM inference. | [MongoDB Atlas Setup Guide](https://fireworks.ai/blog/optimizing-rag-with-mongodb-atlas-and-fireworks) | [Materials](./MongoDB) | 
+| Langfuse | Open-source LLM engineering platform (GitHub) that helps teams collaboratively debug, analyze, and iterate on their LLM applications. | Langfuse | Tracing, evaluation and debugging of applications built with Fireworks AI | - Tracing & Observability <br> - Prompt Management <br> - Evaluations | [Integration Guide](./Langfuse) | 
 
 ## How to Contribute an Integration
 
