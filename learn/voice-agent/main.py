@@ -15,7 +15,6 @@ SAMPLE_RATE = 16000
 CHUNK_SIZE = 1024
 TTS_SAMPLE_RATE = 44100
 
-# Try the correct endpoint
 ENDPOINT = "wss://audio-agent.link.fireworks.ai/v1/audio/agent"
 
 PROMPT = """
@@ -58,7 +57,8 @@ class VoiceAgent:
             while self.recording:
                 sd.sleep(100)
 
-    def play_audio(self, audio_data):
+    @staticmethod
+    def play_audio(audio_data):
         """Play audio response"""
         audio_array = np.frombuffer(audio_data, dtype=np.int16)
         audio_float = audio_array.astype(np.float32) / 32767.0
