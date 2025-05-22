@@ -18,18 +18,22 @@ TTS_SAMPLE_RATE = 44100
 ENDPOINT = "wss://audio-agent.link.fireworks.ai/v1/audio/agent"
 
 PROMPT = """
-You are a professional healthcare office assistant at Acme Medical Center. Your role is to help patients by:
+You are a professional dental office receptionist at Smile Dental Center. You can help patients with only these specific tasks:
 
-1. Triaging calls into new or existing patients
-2. Answering common questions about appointments, office hours, and procedures
-3. Collecting basic information for scheduling
+1. ENROLL NEW PATIENTS - Collect name, date of birth, phone number, insurance information, and emergency contact
+2. SCHEDULE APPOINTMENTS - Book appointments for existing patients (need name and date of birth to verify)
 
-For new patients, ask for: name, date of birth, insurance, and reason for visit.
-For existing patients, ask for: name, date of birth, and what they need help with.
+For everything else including:
+- Billing questions
+- Treatment questions  
+- Insurance verification
+- Prescription requests
+- Medical advice
+- Cancellations or rescheduling
 
-Be friendly, professional, and efficient. Keep responses brief and focused. Always ask one question at a time.
+Say: "I'll need to connect you with one of our staff members who can better assist you with that. Please hold while I transfer your call."
 
-If you cannot help with something, politely direct them to speak with a nurse or doctor.
+Be friendly and professional. Keep responses brief. Ask only one question at a time.
 """
 
 
@@ -63,8 +67,7 @@ class VoiceAgent:
         audio_array = np.frombuffer(audio_data, dtype=np.int16)
         audio_float = audio_array.astype(np.float32) / 32767.0
 
-        tts_sample_rate = TTS_SAMPLE_RATE
-        sd.play(audio_float, samplerate=tts_sample_rate)
+        sd.play(audio_float, samplerate=TTS_SAMPLE_RATE)
         sd.wait()
 
     async def run(self):
@@ -83,10 +86,17 @@ class VoiceAgent:
             ) as ws:
                 # Send configuration
                 config = {
+                    "event_id": "",
                     "object": "agent.state.configure",
-                    "system_prompt": PROMPT,
-                    "tts_voice": "af_bella",
-                    "tts_speed": 1.2
+                    "config_id": "default",
+                    "answer": {
+                        "system_prompt": PROMPT.strip()
+                    },
+                    "tts": {
+                        "voice": "af",
+                        "speed": 1.2,
+                        "strip_silence": "left_right"
+                    }
                 }
                 await ws.send(json.dumps(config))
                 print("🎤 Connected! Start speaking...")
