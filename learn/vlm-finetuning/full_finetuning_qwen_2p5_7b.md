@@ -83,8 +83,18 @@ CHECKPOINT=sft-qwen2p5-vl-7b-instruct-YOUR_OUTPUT_DIR
 # You can also use a checkpoint
 # e.g., CHECKPOINT=sft-qwen2p5-vl-7b-instruct-2025-05-22_16-00/checkpoint-500
 
-# You can also create a model from a checkpoint
-firectl create model sft-qwen2p5-vl-7b-instruct sft-qwen2p5-vl-7b-instruct-{REPLACE_WITH_CHECKPOINT_DATETIME}/checkpoint-500 --use-hf-apply-chat-template
+# Verify checkpoint exists
+stat $CHECKPOINT/config.json
+
+# Newer trl versions break backwards compatibility with existing config files
+# So we use existing config files from base model
+huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct \
+  --local-dir ./qwen2p5-vl-7b-instruct \
+  --exclude "*.safetensors"
+python rename_safe_tensors.py --input_dir $CHECKPOINT --output_dir ./qwen2p5-vl-7b-instruct
+
+# Create model
+firectl create model sft-qwen2p5-vl-7b-instruct $CHECKPOINT
 
 # Create a 1 GPU deployment with the new model
 firectl-admin create deployment accounts/{YOUR_ACCOUNT_ID}/models/sft-qwen2p5-vl-7b-instruct \
