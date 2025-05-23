@@ -87,7 +87,7 @@ CHECKPOINT=sft-qwen2p5-vl-7b-instruct-YOUR_OUTPUT_DIR
 # Verify checkpoint exists
 stat $CHECKPOINT/config.json
 
-# Newer trl versions break backwards compatibility with existing config files
+# Newer trl versions have different config files from previous versions
 # So we use existing config files from base model
 huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct \
   --local-dir ./qwen2p5-vl-7b-instruct \
@@ -108,7 +108,11 @@ firectl create deployment accounts/aidan-0d49e1/models/sft-qwen2p5-vl-7b-instruc
 # Wait until deployment is ready
 watch -c "firectl -a $ACCOUNT_ID list deployments --order-by='create_time desc'"
 
-
+# After deployment is ready, you can run the following to get the endpoint
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": [{"type": "text", "text": "What's in this image?"}, {"type": "image", "image": "data:image/png;base64,$(cat ice_cream.jpg | base64)"}]}]}' \
+  https://api.fireworks.ai/v1/accounts/aidan-0d49e1/deployments/sft-qwen2p5-vl-7b-instruct/invoke
 ```
 
 ### Thanks for trying Fireworks
