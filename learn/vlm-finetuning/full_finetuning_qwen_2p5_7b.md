@@ -100,7 +100,8 @@ firectl create model sft-qwen2p5-vl-7b-instruct qwen2p5-vl-7b-instruct
 # Create a 1 GPU deployment with the new model
 # You can run firectl whoami to get your account ID
 echo "Enter your account ID: " && read ACCOUNT_ID
-firectl create deployment accounts/aidan-0d49e1/models/sft-qwen2p5-vl-7b-instruct \
+
+firectl create deployment accounts/$ACCOUNT_ID/models/sft-qwen2p5-vl-7b-instruct \
   --accelerator-type="NVIDIA_H100_80GB" \
   --min-replica-count 1 \
   --accelerator-count 1
@@ -111,9 +112,15 @@ watch -c "firectl -a $ACCOUNT_ID list deployments --order-by='create_time desc'"
 # After deployment is ready, you can run the following to get the endpoint
 curl -X POST \
   -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": [{"type": "text", "text": "What's in this image?"}, {"type": "image", "image": "data:image/png;base64,$(cat ice_cream.jpg | base64)"}]}]}' \
+  -d "{
+    \"model\": \"accounts/$ACCOUNT_ID/models/sft-qwen2p5-vl-7b-instruct\", \
+    \"messages\": [ \
+      {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"What's in this image?\"}, \
+      {\"type\": \"image\", \"image\": \"data:image/png;base64,$(cat icecream.png | base64)\"}]}]}" \
   https://api.fireworks.ai/v1/accounts/aidan-0d49e1/deployments/sft-qwen2p5-vl-7b-instruct/invoke
 ```
+
+You should get a response that contains `<think>...</think>` tags.
 
 ### Thanks for trying Fireworks
 
