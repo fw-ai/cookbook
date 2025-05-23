@@ -94,16 +94,15 @@ huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct \
 python rename_safe_tensors.py --input_dir $CHECKPOINT --output_dir ./qwen2p5-vl-7b-instruct
 
 # Create model
-firectl create model sft-qwen2p5-vl-7b-instruct $CHECKPOINT
+firectl create model sft-qwen2p5-vl-7b-instruct qwen2p5-vl-7b-instruct
 
 # Create a 1 GPU deployment with the new model
-firectl-admin create deployment accounts/{YOUR_ACCOUNT_ID}/models/sft-qwen2p5-vl-7b-instruct \
+ACCOUNT_ID=YOUR_ACCOUNT_ID \
+firectl create deployment accounts/$ACCOUNT_ID/models/sft-qwen2p5-vl-7b-instruct \
   --accelerator-type="NVIDIA_H100_80GB" \
   --min-replica-count 1 \
   --accelerator-count 1
 
-
-firectl get model accounts/{YOUR_ACCOUNT_ID}/models/sft-qwen2p5-vl-7b-instruct
 ```
 
 ### Thanks for trying Fireworks
