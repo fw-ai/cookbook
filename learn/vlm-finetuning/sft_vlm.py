@@ -39,7 +39,7 @@ For meta-llama/Llama-3.2-11B-Vision-Instruct, use: (requires transformers>=4.45.
 
 import torch
 from datasets import load_dataset
-from transformers import AutoModelForVision2Seq, AutoProcessor, LlavaForConditionalGeneration
+from transformers import AutoModelForVision2Seq, AutoProcessor, LlavaForConditionalGeneration, Qwen2_5_VLProcessor
 import base64
 from io import BytesIO
 import os
@@ -58,7 +58,6 @@ from dataclasses import dataclass, field
 from datasets import Dataset, DatasetDict
 import json
 from typing import Dict, Any, List, Union, Generator
-from qwen_vl_utils import process_vision_info
 
 @dataclass
 class ScriptArguments:
@@ -95,41 +94,48 @@ def collate_fn(examples, processor, dataset_path):
     images = []
     
     for example in examples:
-        
-        messages = example["messages"]
-        
-        # Apply chat template
-        text = processor.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=False
-        )
-        
         example_images = []
-        for msg in messages:
+        cleaned_messages = []
+        
+        for msg in example["messages"]:
             if isinstance(msg["content"], list):
+                # Handle mixed content (text + images)
+                text_parts = []
                 for item in msg["content"]:
                     if item["type"] == "image":
                         # Load image (handles both base64 and file paths)
                         try:
                             img = load_image(item["image"], dataset_path)
                             example_images.append(img)
+                            if isinstance(processor, Qwen2_5_VLProcessor):
+                                # TODO - Hack to get the image to work with the Qwen2.5-VL processor.
+                                # For some reason, image placeholders aren't being added properly using apply_chat_template.
+                                text_parts.append("<|vision_start|><|image_pad|><|vision_end|>")  # Placeholder for image
+                            else:
+                                text_parts.append("<image>")
+
                         except Exception as e:
                             print(f"WARNING: Failed to load image: {e}")
                             # Skip this image but continue processing
                             continue
+                    elif item["type"] == "text":
+                        text_parts.append(item["text"])
+                
+                cleaned_messages.append({
+                    "role": msg["role"],
+                    "content": " ".join(text_parts)
+                })
+            else:
+                # Plain text message
+                cleaned_messages.append(msg)
         
         # Apply chat template to get formatted text
-        print(text)
-        print(example_images)
-        print("--------------------------------")
-        texts.append(text)
+        formatted_text = processor.apply_chat_template(cleaned_messages, tokenize=False)
+        texts.append(formatted_text)
         images.append(example_images)
     
     # Tokenize texts and process images
     batch = processor(text=texts, images=images, return_tensors="pt", padding=True)
-
-    print(batch)
     
     # Create labels for training (input_ids with padding masked)
     labels = batch["input_ids"].clone()
