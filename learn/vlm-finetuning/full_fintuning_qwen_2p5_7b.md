@@ -9,9 +9,17 @@
 
 ```bash
 # TODO(aidan) change to FW AI main
+# Clone this repository E.g.,
+git clone -b aidan-finetunine-guide-1 https://github.com/aidando73/cookbook.git
+# Or
 git clone -b aidan-finetunine-guide-1 git@github.com:aidando73/cookbook.git
 
 cd cookbook/learn/vlm-finetuning
+
+conda create --name vlm-finetune-env python=3.10 -y
+conda activate vlm-finetune-env
+pip install uv
+uv pip install trl==0.17.0 pillow==10.4.0 torchvision==0.21.0 deepspeed==0.16.8
 ```
 
 ### Prepare dataset
@@ -28,7 +36,7 @@ Where `image` can be:
 - A relative path to an image file: `path/to/image.jpg` (relative to the dataset directory)
 - An absolute path to an image file: `/path/to/image.jpg`
 
-For this example, we'll use a synthetic dataset `train_sample.jsonl` file in the current directory. It uses base64 encoded images and contains assistant responses that reason in `<think>...</think>` tags before classifying food images. These responses were generated from Qwen 2.5 VL 32B Instruct.
+For this example, we'll use a synthetic dataset `train_sample.jsonl` file in the current directory. It contains 50 rows, of images of food (base64 encoded) and contains assistant responses that reason in `<think>...</think>` tags before classifying them. These responses were generated from Qwen 2.5 VL 32B Instruct.
 
 ### Running training
 ```bash
@@ -42,7 +50,7 @@ accelerate launch \
     --output_dir sft-qwen2p5-vl-7b-instruct-$(date +%Y-%m-%d_%H-%M) \
     --bf16 \
     --torch_dtype bfloat16 \
-    --max_steps 1 \
+    --num_epochs 2 \
     --gradient_checkpointing
 ```
 
