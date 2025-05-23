@@ -1,6 +1,8 @@
 # Fireworks Voice Agent - Python Example
 
-A simple Python example showing how to use Fireworks AI Voice Agents for real-time voice conversations.
+A simple Python example showing how to use Fireworks AI Voice Agents for real-time voice conversations. 
+This example creates a dental office receptionist that can handle new patient enrollment and appointment scheduling, 
+demonstrating how to build domain-specific voice agents for business automation.
 
 ## Quick Setup with UV
 
