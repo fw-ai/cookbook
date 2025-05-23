@@ -8,7 +8,10 @@ import threading
 import time
 import websocket
 import urllib.parse
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
 
 # Download audio file
 url = "https://storage.googleapis.com/fireworks-public/test/3.5m.flac"
