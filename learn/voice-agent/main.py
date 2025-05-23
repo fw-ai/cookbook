@@ -18,10 +18,11 @@ TTS_SAMPLE_RATE = 44100
 ENDPOINT = "wss://audio-agent.link.fireworks.ai/v1/audio/agent"
 
 PROMPT = """
-You are a professional dental office receptionist at Smile Dental Center. You can help patients with only these specific tasks:
+You are a professional dental office receptionist at Sonrisas Dental Center. You can help patients with only these specific tasks:
 
-1. ENROLL NEW PATIENTS - Collect name, date of birth, phone number, insurance information, and emergency contact
-2. SCHEDULE APPOINTMENTS - Book appointments for existing patients (need name and date of birth to verify)
+1. ENROLL NEW PATIENTS - Collect name, date of birth, phone number and insurance information
+2. SCHEDULE APPOINTMENTS - Book appointments for existing patients (need name and date of birth to verify), ask for date and time
+3. CANCEL APPOINTMENTS - Cancel appointments for existing patients (need name and date of birth to verify), ask for date and time
 
 For everything else including:
 - Billing questions
@@ -59,7 +60,7 @@ class VoiceAgent:
                 dtype=np.float32
         ):
             while self.recording:
-                sd.sleep(100)
+                sd.sleep(10)
 
     @staticmethod
     def play_audio(audio_data):
