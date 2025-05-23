@@ -74,9 +74,15 @@ See https://huggingface.co/docs/transformers/en/main_classes/trainer#transformer
 
 Pre-requisite:
 - Install [firectl](https://docs.fireworks.ai/tools-sdks/firectl/firectl)
-- Login to fireworks: `firectl set-api-key YOUR_API_KEY`
 
 ```bash
+# Go to https://fireworks.ai/settings/users/api-keys for your API key
+firectl set-api-key fw_3ZNctaaxcq75a6qKZKcrjDR9
+
+CHECKPOINT=sft-qwen2p5-vl-7b-instruct-YOUR_OUTPUT_DIR
+# You can also use a checkpoint
+# e.g., CHECKPOINT=sft-qwen2p5-vl-7b-instruct-2025-05-22_16-00/checkpoint-500
+
 # You can also create a model from a checkpoint
 firectl create model sft-qwen2p5-vl-7b-instruct sft-qwen2p5-vl-7b-instruct-{REPLACE_WITH_CHECKPOINT_DATETIME}/checkpoint-500 --use-hf-apply-chat-template
 
