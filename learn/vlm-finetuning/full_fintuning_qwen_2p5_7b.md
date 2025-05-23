@@ -50,7 +50,7 @@ accelerate launch \
     --output_dir sft-qwen2p5-vl-7b-instruct-$(date +%Y-%m-%d_%H-%M) \
     --bf16 \
     --torch_dtype bfloat16 \
-    --num_epochs 2 \
+    --num_train_epochs 2 \
     --gradient_checkpointing
 ```
 

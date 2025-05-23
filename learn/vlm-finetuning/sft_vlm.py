@@ -55,6 +55,10 @@ from trl import (
     get_quantization_config,
 )
 from dataclasses import dataclass, field
+from datasets import Dataset, DatasetDict
+import json
+from typing import Dict, Any, List, Union, Generator
+from qwen_vl_utils import process_vision_info
 
 @dataclass
 class ScriptArguments:
@@ -64,65 +68,10 @@ class ScriptArguments:
         )
     })
 
-if __name__ == "__main__":
-    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig,))
-    script_args, training_args, model_args = parser.parse_args_and_config()
-    training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
-    training_args.remove_unused_columns = False
-    training_args.dataset_kwargs = {"skip_prepare_dataset": True}
-
-    ################
-    # Model, Tokenizer & Processor
-    ################
-    torch_dtype = (
-        model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
-    )
-    quantization_config = get_quantization_config(model_args)
-    model_kwargs = dict(
-        revision=model_args.model_revision,
-        attn_implementation=model_args.attn_implementation,
-        torch_dtype=torch_dtype,
-        device_map=get_kbit_device_map() if quantization_config is not None else None,
-        quantization_config=quantization_config,
-    )
-    processor = AutoProcessor.from_pretrained(
-        model_args.model_name_or_path, trust_remote_code=model_args.trust_remote_code
-    )
-
-    model = AutoModelForVision2Seq.from_pretrained(
-        model_args.model_name_or_path, trust_remote_code=model_args.trust_remote_code, **model_kwargs
-    )
-
-    ################
-    # Dataset
-    ################
-    dataset = load_dataset("json", data_files=script_args.dataset_path)
-
-    ################
-    # Training
-    ################
-    trainer = SFTTrainer(
-        model=model,
-        args=training_args,
-        data_collator=create_collate_fn(processor, script_args.dataset_name),
-        train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None,
-        processing_class=processor.tokenizer,
-        peft_config=get_peft_config(model_args),
-    )
-
-    trainer.train()
-
-    # Save and push to hub
-    trainer.save_model(training_args.output_dir)
-    if training_args.push_to_hub:
-        trainer.push_to_hub(dataset_name=script_args.dataset_name)
-        if trainer.accelerator.is_main_process:
-            processor.push_to_hub(training_args.hub_model_id)
-
 def create_collate_fn(processor, dataset_path):
-    def collate_fn(examples):
+    def fn(examples):
         return collate_fn(examples, processor, dataset_path)
+    return fn
 
 def collate_fn(examples, processor, dataset_path):
     """
@@ -146,42 +95,41 @@ def collate_fn(examples, processor, dataset_path):
     images = []
     
     for example in examples:
-        example_images = []
-        cleaned_messages = []
         
-        for msg in example["messages"]:
+        messages = example["messages"]
+        
+        # Apply chat template
+        text = processor.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=False
+        )
+        
+        example_images = []
+        for msg in messages:
             if isinstance(msg["content"], list):
-                # Handle mixed content (text + images)
-                text_parts = []
                 for item in msg["content"]:
                     if item["type"] == "image":
                         # Load image (handles both base64 and file paths)
                         try:
                             img = load_image(item["image"], dataset_path)
                             example_images.append(img)
-                            text_parts.append("<image>")  # Placeholder for image
                         except Exception as e:
                             print(f"WARNING: Failed to load image: {e}")
                             # Skip this image but continue processing
                             continue
-                    elif item["type"] == "text":
-                        text_parts.append(item["text"])
-                
-                cleaned_messages.append({
-                    "role": msg["role"],
-                    "content": " ".join(text_parts)
-                })
-            else:
-                # Plain text message
-                cleaned_messages.append(msg)
         
         # Apply chat template to get formatted text
-        formatted_text = processor.apply_chat_template(cleaned_messages, tokenize=False)
-        texts.append(formatted_text)
+        print(text)
+        print(example_images)
+        print("--------------------------------")
+        texts.append(text)
         images.append(example_images)
     
     # Tokenize texts and process images
     batch = processor(text=texts, images=images, return_tensors="pt", padding=True)
+
+    print(batch)
     
     # Create labels for training (input_ids with padding masked)
     labels = batch["input_ids"].clone()
@@ -242,3 +190,111 @@ def load_image(image_data, dataset_path):
         
     except Exception as e:
         raise ValueError(f"Failed to load image from '{image_data[:50]}...': {str(e)}")
+
+
+def jsonl_generator(file_path: str) -> Generator[Dict[str, Any], None, None]:
+    """
+    Huggingface Dataset doesn't like when "content" is a string and can be an array.
+    Memory-efficient generator that yields one parsed JSON object at a time.
+    Handles mixed content formats (string vs array) in messages.
+    
+    Args:
+        file_path (str): Path to the JSONL file
+        standardize_to_array (bool): If True, convert all content to array format.
+                                   If False, convert all content to string format.
+        
+    Yields:
+        Dict[str, Any]: Parsed JSON object from each line with standardized content
+    """
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if line:  # Skip empty lines
+                try:
+                    data = json.loads(line)
+                    
+                    # Standardize content fields in messages if they exist
+                    if 'messages' in data and isinstance(data['messages'], list):
+                        for message in data['messages']:
+                            if 'content' in message:
+                                message['content'] = standardize_content(message['content'])
+                    yield data
+                except json.JSONDecodeError as e:
+                    print(f"Warning: Error parsing line {line_num}: {e}")
+                    continue
+                except Exception as e:
+                    print(f"Warning: Error processing line {line_num}: {e}")
+                    continue
+
+def standardize_content(content: Union[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """
+    Standardize content field to always be an array format.
+    
+    Args:
+        content: Either a string or array of content objects
+        
+    Returns:
+        List[Dict[str, Any]]: Standardized content as array of objects
+    """
+    if isinstance(content, str):
+        # Convert string to array format
+        return [{"type": "text", "text": content}]
+    elif isinstance(content, list):
+        # Already in array format, return as-is
+        return content
+    else:
+        raise Error("Unexpected content type: " + type(content))
+
+
+if __name__ == "__main__":
+    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig,))
+    script_args, training_args, model_args = parser.parse_args_and_config()
+    training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
+    training_args.remove_unused_columns = False
+    training_args.dataset_kwargs = {"skip_prepare_dataset": True}
+
+    ################
+    # Model, Tokenizer & Processor
+    ################
+    torch_dtype = (
+        model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
+    )
+    quantization_config = get_quantization_config(model_args)
+    model_kwargs = dict(
+        revision=model_args.model_revision,
+        attn_implementation=model_args.attn_implementation,
+        torch_dtype=torch_dtype,
+        device_map=get_kbit_device_map() if quantization_config is not None else None,
+        quantization_config=quantization_config,
+    )
+    processor = AutoProcessor.from_pretrained(
+        model_args.model_name_or_path, trust_remote_code=model_args.trust_remote_code
+    )
+
+    model = AutoModelForVision2Seq.from_pretrained(
+        model_args.model_name_or_path, trust_remote_code=model_args.trust_remote_code, **model_kwargs
+    )
+
+    ################
+    # Dataset
+    ################
+    dataset = Dataset.from_generator(
+        jsonl_generator, 
+        gen_kwargs={"file_path": script_args.dataset_path}
+    )
+
+    ################
+    # Training
+    ################
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        data_collator=create_collate_fn(processor, script_args.dataset_path),
+        train_dataset=dataset,
+        processing_class=processor.tokenizer,
+        peft_config=get_peft_config(model_args),
+    )
+
+    trainer.train()
+
+    trainer.save_model(training_args.output_dir)
