@@ -2,3 +2,4 @@ requests
 torch
 torchaudio
 websocket-client
+python-dotenv
