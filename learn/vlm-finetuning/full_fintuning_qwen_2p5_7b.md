@@ -7,23 +7,32 @@
 
 ### Prepare dataset
 
-TODO
-- dataset should look like this: https://huggingface.co/datasets/HuggingFaceH4/llava-instruct-mix-vsft
-- I'm pretty sure we can use jsonl instead to this script - but still need to check.
+Dataset should be in a .jsonl standard OpenAI chat format. E.g.,
+
+```jsonl
+{"messages": [{"role": "user", "content": [{"type": "text", "text": "What's in these two images?"}, {"type": "image", "image": "data:image/jpeg;base64,..."}, {"type": "image", "image": "data:image/jpeg;base64,..."}]}, {"role": "assistant", "content": [{"type": "text", "text": "There are two images of a cat and a dog."}]}]}
+{"messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": [{"type": "text", "text": "What's in this image?"}, {"type": "image", "image": "data:image/jpeg;base64,..."}]}, {"role": "assistant", "content": [{"type": "text", "text": "There is a cat in the image."}]}]}
+```
+
+Where `image` can be:
+- A base64 encoded image: `data:image/jpeg;base64,...`/`data:image/png;base64,...`
+- A relative path to an image file: `path/to/image.jpg` (relative to the dataset directory)
+- An absolute path to an image file: `/path/to/image.jpg`
+
+For this example, we'll use a synthetic dataset `train_sample.jsonl` file in the current directory. It uses base64 encoded images and contains assistant responses that reason in `<think>...</think>` tags before classifying food images. These responses were generated from Qwen 2.5 VL 32B Instruct.
 
 ### Running training
 ```bash
 accelerate launch \
-    --config_file=examples/accelerate_configs/deepspeed_zero2.yaml \
-    examples/scripts/sft_vlm.py \
-    --dataset_name HuggingFaceH4/llava-instruct-mix-vsft \
+    --config_file=deepspeed_zero2.yaml \
+    sft_vlm.py \
+    --dataset_path train_sample.jsonl \
     --model_name_or_path Qwen/Qwen2.5-VL-7B-Instruct \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 2 \
     --output_dir sft-qwen2p5-vl-7b-instruct-$(date +%Y-%m-%d_%H-%M) \
     --bf16 \
     --torch_dtype bfloat16 \
-    --report_to wandb \
     --max_steps 1 \
     --gradient_checkpointing
 ```
