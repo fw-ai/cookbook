@@ -5,6 +5,15 @@
   - Or anyway to create a python 3.10 environment
 - 1 8xH100 node (1 8xA100 should should work too)
 
+### Setup
+
+```bash
+# TODO(aidan) change to FW AI main
+git clone -b aidan-finetunine-guide-1 git@github.com:aidando73/cookbook.git
+
+cd cookbook/learn/vlm-finetuning
+```
+
 ### Prepare dataset
 
 Dataset should be in a .jsonl standard OpenAI chat format. E.g.,
