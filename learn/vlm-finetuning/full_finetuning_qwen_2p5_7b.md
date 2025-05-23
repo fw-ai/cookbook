@@ -112,12 +112,15 @@ watch -c "firectl -a $ACCOUNT_ID list deployments --order-by='create_time desc'"
 # After deployment is ready, you can run the following to get the endpoint
 curl -X POST \
   -H "Content-Type: application/json" \
+  --url https://api.fireworks.ai/inference/v1/chat/completions \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $FIREWORKS_API_KEY" \
   -d "{
     \"model\": \"accounts/$ACCOUNT_ID/models/sft-qwen2p5-vl-7b-instruct\", \
     \"messages\": [ \
       {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"What's in this image?\"}, \
-      {\"type\": \"image\", \"image\": \"data:image/png;base64,$(cat icecream.png | base64)\"}]}]}" \
-  https://api.fireworks.ai/v1/accounts/aidan-0d49e1/deployments/sft-qwen2p5-vl-7b-instruct/invoke
+      {\"type\": \"image\", \"image\": \"data:image/png;base64,$(cat icecream.png | base64)\"}]}]}"
 ```
 
 You should get a response that contains `<think>...</think>` tags.
