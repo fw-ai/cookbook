@@ -77,7 +77,8 @@ Pre-requisite:
 
 ```bash
 # Go to https://fireworks.ai/settings/users/api-keys for your API key
-firectl set-api-key fw_3ZNctaaxcq75a6qKZKcrjDR9
+echo "Enter your API key: " && read FIREWORKS_API_KEY
+firectl set-api-key $FIREWORKS_API_KEY
 
 CHECKPOINT=sft-qwen2p5-vl-7b-instruct-YOUR_OUTPUT_DIR
 # You can also use a checkpoint
@@ -97,11 +98,16 @@ python rename_safe_tensors.py --input_dir $CHECKPOINT --output_dir ./qwen2p5-vl-
 firectl create model sft-qwen2p5-vl-7b-instruct qwen2p5-vl-7b-instruct
 
 # Create a 1 GPU deployment with the new model
-ACCOUNT_ID=YOUR_ACCOUNT_ID \
-firectl create deployment accounts/$ACCOUNT_ID/models/sft-qwen2p5-vl-7b-instruct \
+# You can run firectl whoami to get your account ID
+echo "Enter your account ID: " && read ACCOUNT_ID
+firectl create deployment accounts/aidan-0d49e1/models/sft-qwen2p5-vl-7b-instruct \
   --accelerator-type="NVIDIA_H100_80GB" \
   --min-replica-count 1 \
   --accelerator-count 1
+
+# Wait until deployment is ready
+watch -c "firectl -a $ACCOUNT_ID list deployments --order-by='create_time desc'"
+
 
 ```
 
