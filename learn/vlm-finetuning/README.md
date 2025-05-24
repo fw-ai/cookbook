@@ -67,3 +67,62 @@ axolotl train 2p5-7b.yaml
 ```
 
 The final model will be saved in `outputs/out` and checkpoints will be saved in `outputs/out/checkpoint-<step>`.
+
+### Deploying on Fireworks
+
+**Pre-requisite:**
+- Install [firectl](https://docs.fireworks.ai/tools-sdks/firectl/firectl)
+
+### Deployment
+
+1. This requires a few variables to be set so we'll keep them in a file called `deploy_vars.sh` and load them when we run commands. First create this file:
+
+```bash
+cp deploy_vars.sh.example deploy_vars.sh
+```
+
+2. Next open `deploy_vars.sh` and add your account ID and API key.
+3. Validate `ACCOUNT_ID` and `FIREWORKS_API_KEY` are correct.
+
+```bash
+source deploy_vars.sh && firectl -a $ACCOUNT_ID list models --api-key $FIREWORKS_API_KEY # You should see either an empty list or all your current models
+ls $CHECKPOINT/config.json $CHECKPOINT/model-*-of-*.safetensors # You should see config.json and *.safetensors files
+```
+
+4. Next we create the model:
+
+```bash
+# For some reason axolotl checkpoints are missing a few config files
+# So download them from the base model (we exclude weights)
+huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct --local-dir $CHECKPOINT --exclude "*.safetensors" "model.safetensors.index.json"
+
+# Load variables before running firectl commands
+source deploy_vars.sh && firectl -a $ACCOUNT_ID create model $MODEL_NAME $CHECKPOINT --api-key $FIREWORKS_API_KEY
+```
+
+Next we create the deployment:
+
+```bash
+source deploy_vars.sh && firectl -a $ACCOUNT_ID create deployment accounts/$ACCOUNT_ID/models/$MODEL_NAME \
+  --accelerator-type="NVIDIA_H100_80GB" \
+  --min-replica-count 1 \
+  --accelerator-count 1 \
+  --api-key $FIREWORKS_API_KEY \
+  --deployment-id $MODEL_NAME # We set the deployment ID to the model name
+```
+
+Wait until the deployment is ready.
+
+```bash
+watch -c "firectl -a $ACCOUNT_ID list deployments --order-by='create_time desc' --api-key $FIREWORKS_API_KEY"
+```
+
+Then you can test the deployment:
+
+```bash
+source deploy_vars.sh && python fw_req.py --model accounts/$ACCOUNT_ID/models/$MODEL_NAME#accounts/$ACCOUNT_ID/deployments/$MODEL_NAME --api-key $FIREWORKS_API_KEY
+```
+
+### Thanks for trying Fireworks
+
+Please email me at aidan@fireworks.ai if you have any questions/feedback. Or [drop something in my calendar](https://calendar.google.com/calendar/u/0/appointments/schedules/AcZssZ2iKVtCNOXAOLoYRcGh4ppHL_ztUU-osdlrAeR8dyvoZY2V-pMMMu_ozOjvTVeLg65Erkuu0UET).

@@ -10,6 +10,7 @@ export ACCOUNT_ID=
 
 
 # This is the directory where the checkpoint is stored
+# You can also point this at checkpoints like outputs/out/checkpoint-1000
 export CHECKPOINT=outputs/out
 # Model name
 export MODEL_NAME=sft-qwen2p5-vl-7b-instruct
