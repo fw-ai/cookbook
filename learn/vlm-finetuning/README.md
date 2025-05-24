@@ -65,3 +65,5 @@ To finetune, run:
 ```bash
 axolotl train 2p5-7b.yaml
 ```
+
+The final model will be saved in `outputs/out` and checkpoints will be saved in `outputs/out/checkpoint-<step>`.

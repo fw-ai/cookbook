@@ -47,7 +47,7 @@ eager_attention:
 warmup_ratio: 0.1
 weight_decay: 0.0
 
-deepspeed: deepspeed_configs/zero1.json # multi-gpu only
+deepspeed: deepspeed_configs/zero1_torch_compile.json # multi-gpu only
 
 # Save a checkpoint every 1000 steps
 save_strategy: # Set to `"no"` to skip checkpoint saves, `"epoch"` at end of each epoch, `"best"` when better result is achieved, leave empty to infer from `save_steps`.
