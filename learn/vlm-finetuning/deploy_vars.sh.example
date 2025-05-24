@@ -1,0 +1,15 @@
+# Input required 👇
+# You can get your API key at https://fireworks.ai/settings/users/api-keys
+export FIREWORKS_API_KEY=
+# (After you set your API key) You can get your account ID by running
+# source deploy_vars.sh && firectl get account --api-key $FIREWORKS_API_KEY
+export ACCOUNT_ID=
+
+
+
+
+
+# This is the directory where the checkpoint is stored
+export CHECKPOINT=outputs/out
+# Model name
+export MODEL_NAME=sft-qwen2p5-vl-7b-instruct
