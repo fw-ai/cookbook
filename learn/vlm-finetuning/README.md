@@ -41,7 +41,7 @@ Dataset should be in a .jsonl format similar to (but not exactly the same as) Op
 
 ```json
 {"messages": [{"role": "user", "content": [{"type": "text", "text": "What's in these two images?"}, {"type": "image", "base64": "data:image/jpeg;base64,..."}, {"type": "image", "path": "path/to/image/relative/to/where/command/is/being/executed.jpg"}]}, {"role": "assistant", "content": [{"type": "text", "text": "There are two images of a cat and a dog."}]}]}
-{"messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": [{"type": "text", "text": "What's in this image?"}, {"type": "image", "url": "https://example.com/cat.jpg"}]}, {"role": "assistant", "content": [{"type": "text", "text": "There is a cat in the image."}]}]}
+{"messages": [{"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant."}]}, {"role": "user", "content": [{"type": "text", "text": "What's in this image?"}, {"type": "image", "url": "https://example.com/cat.jpg"}]}, {"role": "assistant", "content": [{"type": "text", "text": "There is a cat in the image."}]}]}
 ```
 
 Reference the [axolotl multimodal docs](https://docs.axolotl.ai/docs/multimodal.html#dataset-format) for more details.
