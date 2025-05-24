@@ -119,4 +119,4 @@ You should get a response that contains `<think>...</think>` tags.
 
 ### Thanks for trying Fireworks
 
-Please email me at aidan@fireworks.ai if you have any questions/feedback. Or file an issue and tag me @aidando73.
+Please email me at aidan@fireworks.ai if you have any questions/feedback. Or [drop something in my calendar](https://calendar.google.com/calendar/u/0/appointments/schedules/AcZssZ2iKVtCNOXAOLoYRcGh4ppHL_ztUU-osdlrAeR8dyvoZY2V-pMMMu_ozOjvTVeLg65Erkuu0UET).
