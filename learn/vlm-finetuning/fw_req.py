@@ -47,7 +47,6 @@ def main():
         
         response.raise_for_status()
         result = response.json()
-        # print(json.dumps(result, indent=2))
         print(result['choices'][0]['message']['content'])        
     except requests.exceptions.RequestException as e:
         print(f"Error making request: {e}", file=sys.stderr)
