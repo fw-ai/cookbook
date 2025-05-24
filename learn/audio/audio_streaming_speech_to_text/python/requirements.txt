@@ -2,3 +2,6 @@ requests
 torch
 torchaudio
 websocket-client
+python-dotenv
+numpy
+soundfile
