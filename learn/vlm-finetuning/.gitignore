@@ -2,5 +2,5 @@ donotcommit/
 examples/
 deepspeed_configs/
 outputs/
-images/
+!sample_data/images/
 deploy_vars.sh
