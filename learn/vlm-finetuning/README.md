@@ -56,12 +56,12 @@ pyarrow.lib.ArrowInvalid: JSON parse error: Column(/messages/[]/content) changed
 ```
 - If using relative image path, paths should be relative to where axolotl is called from. E.g., for path `image_dir/image.jpg` if you are in `vlm-finetuning` directory, then the path to the image should be `vlm-finetuning/image_dir/image.jpg`.
 
+### Training
+
+An already prepared axolotl config file is provided in [2p5-7b.yaml](2p5-7b.yaml).
+
+To finetune, run:
+
 ```bash
 axolotl train 2p5-7b.yaml
-
-# See here for the config files:
-# https://docs.axolotl.ai/docs/config.html
-
-# See here for dataset format:
-# https://docs.axolotl.ai/docs/multimodal.html
 ```
