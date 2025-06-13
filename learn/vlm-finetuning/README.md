@@ -21,7 +21,7 @@ conda activate axolotl-env
 
 # Install dependencies
 pip install uv
-uv pip install -U packaging==23.2 setuptools==75.8.0 wheel==0.45.1 ninja==1.11.1.4 requests==2.32.3 "huggingface-hub[cli]==0.31.0"
+uv pip install -U packaging==23.2 setuptools==75.8.0 wheel==0.45.1 ninja==1.11.1.4 requests==2.32.3 "huggingface-hub[cli]==0.31.0" torch==2.5.1
 uv pip install --no-build-isolation "axolotl[flash-attn,deepspeed]==0.9.2"
 ```
 
@@ -45,6 +45,7 @@ Dataset should be in a .jsonl format similar to (but not exactly the same as) Op
 ```
 
 Reference the [axolotl multimodal docs](https://docs.axolotl.ai/docs/multimodal.html#dataset-format) for more details.
+You can ask Claude/Cursor/ChatGPT to generate a script to format your dataset if you give it a few samples of your data.
 
 For this tutorial, we'll be using a sample synthetic dataset [sample_data/train.jsonl](sample_data/train.jsonl) dataset. It contains 50 rows, of images of food (specified by path) and contains assistant responses that reason in `<think>...</think>` tags before classifying them. These responses were generated from Qwen 2.5 VL 32B Instruct. Images were downloaded from https://huggingface.co/datasets/ethz/food101.
 
