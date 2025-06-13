@@ -46,6 +46,7 @@ Dataset should be in a .jsonl format similar to (but not exactly the same as) Op
 
 Reference the [axolotl multimodal docs](https://docs.axolotl.ai/docs/multimodal.html#dataset-format) for more details.
 You can ask Claude/Cursor/ChatGPT to generate a script to format your dataset if you give it a few samples of your data.
+It's recommended to avoid using "url" for images, as network conditions could cause your training run to fail.
 
 For this tutorial, we'll be using a sample synthetic dataset [sample_data/train.jsonl](sample_data/train.jsonl) dataset. It contains 50 rows, of images of food (specified by path) and contains assistant responses that reason in `<think>...</think>` tags before classifying them. These responses were generated from Qwen 2.5 VL 32B Instruct. Images were downloaded from https://huggingface.co/datasets/ethz/food101.
 
