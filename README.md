@@ -30,7 +30,7 @@ We value your contributions to help improve and expand this repository! If you'd
 We love hearing your feedback! If you run into issues, have questions, or find something confusing, please [open an issue](https://github.com/fw-ai/cookbook/issues/new) and let us know.
 
 For support and further reading, visit:
-- [Fireworks Documentation](https://docs.fireworks.ai)
+- [Fireworks Documentation](https://fireworks.ai/docs)
 - [Discord](https://discord.gg/9nKGzdCk)
 
 ## Additional Resources
