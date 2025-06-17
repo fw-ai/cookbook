@@ -222,7 +222,7 @@ class VoiceAgent:
                     "answer": {
                         "system_prompt": PROMPT.strip(),
                         "max_tokens": 150,  # Shorter responses for better flow
-                        "temperature": 0.7,  # More natural but consistent
+                        "temperature": 0.2,
                         "tool_config": {
                             "system_prompt": "Use the available functions when patients need scheduling help. Be efficient and direct.",
                             "tools": [
@@ -302,8 +302,8 @@ class VoiceAgent:
                         }
                     },
                     "intent": {
-                        "min_delay": 0.5,  # Faster response trigger
-                        "max_interrupt_delay": 1.5,  # Allow quicker interruptions
+                        "min_delay": 0.3,  # Faster response trigger
+                        "max_interrupt_delay": 1.0,  # Allow quicker interruptions
                         "max_follow_up_delay": 8.0  # Shorter follow-up window
                     },
                     "audio": {
