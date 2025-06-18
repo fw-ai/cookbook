@@ -8,6 +8,7 @@ import threading
 from queue import Queue
 from datetime import datetime
 from dotenv import load_dotenv
+import datetime as dt
 
 load_dotenv()
 
@@ -16,9 +17,11 @@ SAMPLE_RATE = 16000
 CHUNK_SIZE = 1024
 TTS_SAMPLE_RATE = 44100
 
+TODAY = dt.date.today().strftime("%Y-%m-%d")
+
 ENDPOINT = "wss://audio-agent.link.fireworks.ai/v1/audio/agent"
 
-PROMPT = """
+PROMPT = f"""
 You are a professional dental office receptionist at Sonrisas Dental Center. You can help patients with:
 
 1. ENROLL NEW PATIENTS - Collect name and phone number
@@ -27,21 +30,17 @@ You are a professional dental office receptionist at Sonrisas Dental Center. You
 4. CHECK AVAILABILITY - Show available appointment slots
 
 Use the available functions to help patients. Be friendly and professional. Keep responses brief and conversational.
+
+The date today is {TODAY}.
 """
 
 
-def cancel_appointment(patient_name: str, date: str, time: str) -> dict:
-    """Cancel an appointment for a patient"""
-    return {
-        "patient_name": patient_name,
-        "date": date,
-        "time": time,
-        "status": "cancelled",
-        "message": f"Appointment for {patient_name} on {date} at {time} has been cancelled successfully"
-    }
+def enroll_new_patients(name: str, phone_number: str) -> dict:
+    # Mock patient enrollment - in real implementation, this would update your patient database
+    return {"message": f"{name} has enrolled new patients."}
 
 
-def schedule_appointment(patient_name: str, date: str, time: str, service: str = "General Checkup") -> dict:
+def schedule_appointment(name: str, date: str, time: str, service: str = "General Checkup") -> dict:
     """Schedule an appointment for a patient"""
     try:
         appointment_date = datetime.strptime(date, "%Y-%m-%d").date()
@@ -51,12 +50,12 @@ def schedule_appointment(patient_name: str, date: str, time: str, service: str =
 
         return {
             "appointment_id": appointment_id,
-            "patient_name": patient_name,
+            "name": name,
             "date": appointment_date.strftime("%Y-%m-%d"),
             "time": time,
             "service": service,
             "status": "confirmed",
-            "message": f"Appointment scheduled successfully for {patient_name} on {date} at {time}"
+            "message": f"Appointment scheduled successfully for {name} on {date} at {time}"
         }
     except ValueError:
         return {"error": "Invalid date format. Please use YYYY-MM-DD format."}
@@ -128,13 +127,6 @@ class VoiceAgent:
                 stream.write(audio_float.reshape(-1, 1))
         except Exception as e:
             print(f"⚠️  Audio playback error: {e}")
-            try:
-                audio_array = np.frombuffer(audio_data, dtype=np.int16)
-                audio_float = audio_array.astype(np.float32) / 32767.0
-                sd.play(audio_float, samplerate=TTS_SAMPLE_RATE)
-                sd.wait()
-            except:
-                pass  # Silently handle audio errors
 
     @staticmethod
     def print_conversation_turn(user_text=None, assistant_text=None):
@@ -162,19 +154,18 @@ class VoiceAgent:
 
                 # Route to appropriate function
                 if function_name == "check_availability":
-                    result = check_availability(arguments.get("date"))
+                    result = check_availability(date=arguments.get("date"))
                 elif function_name == "schedule_appointment":
                     result = schedule_appointment(
-                        arguments.get("patient_name"),
-                        arguments.get("date"),
-                        arguments.get("time"),
-                        arguments.get("service", "General Checkup")
+                        name=arguments.get("name"),
+                        date=arguments.get("date"),
+                        time=arguments.get("time"),
+                        service=arguments.get("service", "General Checkup")
                     )
-                elif function_name == "cancel_appointment":
-                    result = cancel_appointment(
-                        arguments.get("patient_name"),
-                        arguments.get("date"),
-                        arguments.get("time")
+                elif function_name == "enroll_new_patients":
+                    result = enroll_new_patients(
+                        name=arguments.get("name"),
+                        phone_number=arguments.get("phone_number")
                     )
                 else:
                     result = {"error": f"Unknown function: {function_name}"}
@@ -229,6 +220,27 @@ class VoiceAgent:
                                 {
                                     "type": "function",
                                     "function": {
+                                        "name": "enroll_new_patients",
+                                        "description": "Enroll a new patient with name and phone number, only call this function after patient has provided full name and phone number",
+                                        "parameters": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {
+                                                    "type": "string",
+                                                    "description": "Name of the patient to enroll"
+                                                },
+                                                "phone_number": {
+                                                    "type": "string",
+                                                    "description": "Phone number of the patient to enroll"
+                                                }
+                                            },
+                                            "required": ["name", "phone_number"]
+                                        }
+                                    }
+                                },
+                                {
+                                    "type": "function",
+                                    "function": {
                                         "name": "check_availability",
                                         "description": "Check available appointment slots for a specific date",
                                         "parameters": {
@@ -251,7 +263,7 @@ class VoiceAgent:
                                         "parameters": {
                                             "type": "object",
                                             "properties": {
-                                                "patient_name": {
+                                                "name": {
                                                     "type": "string",
                                                     "description": "Full name of the patient"
                                                 },
@@ -269,32 +281,7 @@ class VoiceAgent:
                                                     "default": "General Checkup"
                                                 }
                                             },
-                                            "required": ["patient_name", "date", "time"]
-                                        }
-                                    }
-                                },
-                                {
-                                    "type": "function",
-                                    "function": {
-                                        "name": "cancel_appointment",
-                                        "description": "Cancel an existing appointment",
-                                        "parameters": {
-                                            "type": "object",
-                                            "properties": {
-                                                "patient_name": {
-                                                    "type": "string",
-                                                    "description": "Full name of the patient"
-                                                },
-                                                "date": {
-                                                    "type": "string",
-                                                    "description": "Appointment date (YYYY-MM-DD format)"
-                                                },
-                                                "time": {
-                                                    "type": "string",
-                                                    "description": "Appointment time (e.g., '10:30 AM')"
-                                                }
-                                            },
-                                            "required": ["patient_name", "date", "time"]
+                                            "required": ["name", "date", "time"]
                                         }
                                     }
                                 }
@@ -316,8 +303,12 @@ class VoiceAgent:
                     },
                     "tts": {
                         "voice": "af_heart",  # More natural voice
-                        "speed": 1.25,  # Slightly faster for efficiency
-                        "strip_silence": "left_right"
+                        "speed": 1.2,  # Slightly faster for efficiency
+                        "strip_silence": "left_right",
+                        "audio_stream": {
+                            "sample_rate": TTS_SAMPLE_RATE,
+                            "channels": 1,
+                        }
                     }
                 }
                 await ws.send(json.dumps(config))
@@ -342,28 +333,24 @@ class VoiceAgent:
                                 data = json.loads(message)
                                 message_type = data.get("object")
 
-                                # Handle key message types with clean logging
                                 if message_type == "agent.output.transcript":
-                                    # Store transcript but don't print immediately (wait for final version)
+                                    sd.stop() # Stop any playing audio when we get a transcript
                                     transcript = data.get("transcript", "")
                                     if transcript:
                                         self.current_transcript = transcript
 
                                 elif message_type == "agent.output.generating":
-                                    # Print final user transcript when agent starts generating
                                     if self.current_transcript and self.current_transcript.strip():
                                         self.print_conversation_turn(user_text=self.current_transcript)
-                                        self.current_transcript = ""  # Clear after printing
+                                        self.current_transcript = ""
 
                                 elif message_type == "agent.output.done":
-                                    # Print final assistant response
                                     response_text = data.get("text", "")
                                     if response_text != self.last_response:
                                         self.last_response = response_text
                                         self.print_conversation_turn(assistant_text=response_text)
 
                                 elif message_type == "agent.output.tool_call":
-                                    # Handle function calls
                                     tool_calls = data.get("tool_calls", [])
                                     tool_results = await self.handle_tool_call(tool_calls)
                                     await self.send_tool_result(tool_results)
@@ -371,7 +358,6 @@ class VoiceAgent:
                                 elif message_type == "agent.state.configured":
                                     print("✅ Agent configured and ready!")
 
-                                # Skip logging for noisy message types
                                 elif message_type not in [
                                     "agent.output.waiting",
                                     "agent.output.generating",
