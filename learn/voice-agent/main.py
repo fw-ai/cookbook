@@ -221,7 +221,7 @@ class VoiceAgent:
                                     "type": "function",
                                     "function": {
                                         "name": "enroll_new_patients",
-                                        "description": "Enroll a new patient with name and phone number, only call this function after patient has provided full name and phone number",
+                                        "description": "Enroll a new patient in the dental practice system. Call this function only after collecting both the patient's full name and phone number.",
                                         "parameters": {
                                             "type": "object",
                                             "properties": {
