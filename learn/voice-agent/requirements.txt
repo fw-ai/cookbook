@@ -1,4 +1,6 @@
-websockets
-sounddevice
-numpy
-python-dotenv
+cffi==1.17.1
+numpy==2.2.6
+pycparser==2.22
+python-dotenv==1.1.0
+sounddevice==0.5.2
+websockets==15.0.1
