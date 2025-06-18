@@ -17,7 +17,7 @@ SAMPLE_RATE = 16000
 CHUNK_SIZE = 1024
 TTS_SAMPLE_RATE = 44100
 
-TODAY = dt.date.today().strftime("%Y-%m-%d")
+NOW = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 ENDPOINT = "wss://audio-agent.link.fireworks.ai/v1/audio/agent"
 
@@ -31,7 +31,7 @@ You are a professional dental office receptionist at Sonrisas Dental Center. You
 
 Use the available functions to help patients. Be friendly and professional. Keep responses brief and conversational.
 
-The date today is {TODAY}.
+The current data and time is {NOW}.
 """
 
 
@@ -357,6 +357,9 @@ class VoiceAgent:
 
                                 elif message_type == "agent.state.configured":
                                     print("✅ Agent configured and ready!")
+
+                                elif message_type == "agent.output.error":
+                                    raise Exception(data.get("error"))
 
                                 elif message_type not in [
                                     "agent.output.waiting",
