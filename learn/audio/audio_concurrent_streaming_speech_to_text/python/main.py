@@ -162,31 +162,33 @@ def run_websocket_client(stream_id: int, audio_stream: Iterator[Tuple[bytes, flo
         # Register this WebSocket for shutdown
         with websocket_lock:
             active_websockets.append(ws)
-        
+
         def stream_audio(websocket_conn):
-            # Stream each chunk, then sleep for chunk duration
-            for chunk_idx, (audio_chunk, duration) in enumerate(audio_stream):
+            """Stream audio chunks to the WebSocket."""
+
+            for i, chunk in enumerate(audio_stream):
                 if shutdown_event.is_set():
                     break
-                    
-                websocket_conn.send(audio_chunk, opcode=websocket.ABNF.OPCODE_BINARY)
+                ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
                 
                 # Send latency trace every 10 chunks
-                if (chunk_idx % 10) == 0:
+                if (i % 10) == 0:
                     trace = json.dumps({"event_id": "test", "object": "stt.input.trace", "trace_id": str(time.time())})
                     websocket_conn.send(trace, opcode=websocket.ABNF.OPCODE_TEXT)
-                
-                time.sleep(duration)
+                                
+                time.sleep(CHUNK_SIZE_MS / 1000)  # Maintain real-time pace
 
-            # Send final trace if not shutting down
             if not shutdown_event.is_set():
-                trace = json.dumps({"event_id": "test", "object": "stt.input.trace", "trace_id": "final"})
-                websocket_conn.send(trace, opcode=websocket.ABNF.OPCODE_TEXT)
+                final_trace = json.dumps({
+                    "event_id": "streaming_complete",
+                    "object": "stt.input.trace",
+                    "trace_id": "final"
+                })
+                ws.send(final_trace, opcode=websocket.ABNF.OPCODE_TEXT)
                 
-                # Give the server some time to finalize any last transcription segments
+                print("Audio streaming complete - final trace sent")
                 time.sleep(10)
-            
-            # Close WebSocket
+
             websocket_conn.close()
 
         threading.Thread(target=stream_audio, args=(websocket_conn,)).start()
@@ -232,6 +234,7 @@ def run_websocket_client(stream_id: int, audio_stream: Iterator[Tuple[bytes, flo
             text_queue.put_nowait((stream_id, text[-LAST_N_CHARS:]))
 
     def on_close(websocket_conn, close_status_code, close_msg):
+        print(f"Stream {stream_id}: closed")
         with stats_lock:
             stats['completed'] += 1
         
