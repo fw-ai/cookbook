@@ -45,7 +45,7 @@ def download_audio(url):
     print(f"Downloaded audio file size: {len(audio_bytes)} bytes")
     return audio_bytes
 
-def process_audio(self, audio_bytes):
+def process_audio(audio_bytes):
     """Convert audio to the required format and chunk it."""
     print("Processing audio...")
 
@@ -73,7 +73,6 @@ def process_audio(self, audio_bytes):
         chunk_bytes = (chunk_tensor * 32768.0).to(torch.int16).numpy().tobytes()
         audio_chunks.append(chunk_bytes)
 
-    self.audio_chunks = audio_chunks
     return audio_chunks
 
 # Global stats
@@ -271,7 +270,8 @@ def run_websocket_client(stream_id: int, audio_stream: Iterator[Tuple[bytes, flo
 
 def main():
     
-    audio_chunks = process_audio(AUDIO_URL)
+    audio_bytes = download_audio(AUDIO_URL)
+    audio_chunks = process_audio(audio_bytes)
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, shutdown)
