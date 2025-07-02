@@ -81,7 +81,6 @@ class TranscriptionClient:
             if (i + 1) % 20 == 0:  # Progress update every second
                 print(f"Streamed {i + 1}/{len(self.audio_chunks)} chunks")
 
-        # Send final trace using the new format
         final_trace = json.dumps({
             "event_id": "streaming_complete",
             "object": "stt.input.trace",
@@ -106,24 +105,16 @@ class TranscriptionClient:
         try:
             data = json.loads(message)
 
-            # Check for final trace completion using new format
+            # Check for final trace completion
             if data.get("trace_id") == "final":
                 print("\nTranscription complete!")
                 ws.close()
                 return
 
-            # Backward compatibility: still handle deprecated checkpoint_id
-            if data.get("checkpoint_id") == "final":
-                print("\nTranscription complete (deprecated format)!")
-                ws.close()
-                return
-
             # Update transcription state
             if "segments" in data:
-                updates = {segment["id"]: segment["text"] for segment in data["segments"]}
-
                 with self.lock:
-                    self.state.update(updates)
+                    self.state = {segment["id"]: segment["text"] for segment in data["segments"]}
                     self.display_transcription()
 
         except json.JSONDecodeError:
