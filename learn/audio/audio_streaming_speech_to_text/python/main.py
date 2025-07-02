@@ -81,10 +81,14 @@ class TranscriptionClient:
             if (i + 1) % 20 == 0:  # Progress update every second
                 print(f"Streamed {i + 1}/{len(self.audio_chunks)} chunks")
 
-        # Send final checkpoint
-        final_message = json.dumps({"checkpoint_id": "final"})
-        ws.send(final_message, opcode=websocket.ABNF.OPCODE_TEXT)
-        print("Audio streaming complete")
+        # Send final trace using the new format
+        final_trace = json.dumps({
+            "event_id": "streaming_complete",
+            "object": "stt.input.trace",
+            "trace_id": "final"
+        })
+        ws.send(final_trace, opcode=websocket.ABNF.OPCODE_TEXT)
+        print("Audio streaming complete - final trace sent")
 
     def on_websocket_open(self, ws):
         """Handle WebSocket connection opening."""
@@ -102,9 +106,15 @@ class TranscriptionClient:
         try:
             data = json.loads(message)
 
-            # Check for final checkpoint
-            if data.get("checkpoint_id") == "final":
+            # Check for final trace completion using new format
+            if data.get("trace_id") == "final":
                 print("\nTranscription complete!")
+                ws.close()
+                return
+
+            # Backward compatibility: still handle deprecated checkpoint_id
+            if data.get("checkpoint_id") == "final":
+                print("\nTranscription complete (deprecated format)!")
                 ws.close()
                 return
 
