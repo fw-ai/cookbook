@@ -4,6 +4,7 @@ import requests
 import mimetypes
 from pathlib import Path
 from typing import Dict, Any
+import sys
 
 def download_and_encode_image(url: str, timeout: int = 30) -> str:
     """
@@ -134,19 +135,18 @@ def convert_dataset_urls_to_base64(input_file: str, output_file: str = None):
     print(f"  - Errors: {error_count}")
     print(f"  - Output saved to: {output_file}")
 
-# Usage: python convert_urls_to_base64.py input_file.jsonl [output_file.jsonl]
+# Usage: python download_images_and_encode_to_b64.py --input_file input_file.jsonl [--output_file output_file.jsonl]
 if __name__ == "__main__":
-    import sys
+    import argparse
     
-    if len(sys.argv) < 2:
-        print("Usage: python download_images_and_encode_to_b64.py <input_file.jsonl> [output_file.jsonl]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Convert image URLs in JSONL dataset to base64 encoded strings")
+    parser.add_argument("--input_file", required=True, help="Input JSONL file with image URLs")
+    parser.add_argument("--output_file", help="Output JSONL file (default: adds '_base64' suffix to input filename)")
     
-    input_file = sys.argv[1]
-    output_file = sys.argv[2] if len(sys.argv) > 2 else None
+    args = parser.parse_args()
     
     try:
-        convert_dataset_urls_to_base64(input_file, output_file)
+        convert_dataset_urls_to_base64(args.input_file, args.output_file)
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
