@@ -118,7 +118,6 @@ def main():
         "SM_NUM_GPUS": json.dumps(int(num_gpus_per_replica)),
         
         # NVIDIA Forward Compatibility Settings
-        # These are critical for running CUDA 12.8 containers on SageMaker with driver 535
         "LD_LIBRARY_PATH": "/usr/local/cuda/compat:/usr/local/cuda-12.8/compat:/usr/local/cuda-12/compat:$LD_LIBRARY_PATH",
         
         # Force CUDA forward compatibility mode
