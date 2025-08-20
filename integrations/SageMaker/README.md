@@ -38,6 +38,22 @@ integrations/SageMaker/
 - An ECR image containing the Fireworks inference container.
 - An S3 URI to a `model.tar.gz` for your model artifacts.
 
+### Quick environment setup
+
+Use the helper script to prepare a local Python environment for running the deploy/test scripts:
+
+```bash
+cd integrations/SageMaker
+bash env_setup.sh
+# then activate when needed
+source .venv/bin/activate
+```
+
+What the script does:
+- Installs `uv` if not already available (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
+- Creates a virtual environment `.venv` with Python 3.12 in `integrations/SageMaker/`.
+- Activates the venv and installs `sagemaker` and `boto3`.
+
 ### Usage (deploy)
 
 Multi-GPU, replicated (fixed 1 GPU per replica):
