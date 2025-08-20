@@ -8,6 +8,8 @@ For a broader integration guide, see the Fireworks documentation here: [Firework
 
 ```text
 integrations/SageMaker/
+  ├─ README.md                      # This document
+  ├─ env_setup.sh                   # One-click local environment setup script
   ├─ deployment_scripts/
   │  ├─ deploy_multi_gpu_replicated.py # n replicas × 1 GPU each (fixed)
   │  └─ deploy_multi_gpu_sharded.py    # n replicas × k GPUs each (model sharded)
