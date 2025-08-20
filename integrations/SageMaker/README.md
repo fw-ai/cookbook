@@ -1,0 +1,82 @@
+## Fireworks AI on Amazon SageMaker
+
+This directory contains example scripts to deploy Fireworks-powered LLM inference on Amazon SageMaker and test the endpoints.
+
+For a broader integration guide, see the Fireworks documentation here: [Fireworks × SageMaker Integration](https://fireworks.ai/docs/ecosystem/integrations/sagemaker).
+
+### Directory layout
+
+```text
+integrations/SageMaker/
+  ├─ deployment_scripts/
+  │  ├─ deploy_multi_gpu_replicated.py # n replicas × 1 GPU each (fixed)
+  │  └─ deploy_multi_gpu_sharded.py    # n replicas × k GPUs each (model sharded)
+  │
+  └─ testing_scripts/
+     └─ test_endpoint.py      # Uses AWS runtime client directly
+```
+
+### What’s included
+
+- Deployment automation using the SageMaker SDK with sensible defaults and early validations:
+  - Parses the AWS region from your ECR image URI (you can override with `--region`).
+  - Verifies your S3 model bucket is in the same region as the deployment.
+  - Sets CUDA forward-compatibility env vars to ease NVIDIA driver mismatches.
+
+- Two deployment modes:
+  - Multi-replica (replicated): multiple isolated replicas, each fixed at 1 GPU.
+  - Multi-GPU (sharded): multiple replicas, each with k GPUs to shard large models.
+
+- A lightweight test script:
+  - `test_endpoint.py` can be used to test your endpoint is working correctly.
+
+### Prerequisites
+
+- Fireworks AI Docker image and metering key; please see [this guide](https://fireworks.ai/docs/ecosystem/integrations/sagemaker) for more information.
+- An AWS account with permissions/quota to create SageMaker models/endpoints.
+- An IAM role ARN for SageMaker (e.g., `arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME]`).
+- An ECR image containing the Fireworks inference container.
+- An S3 URI to a `model.tar.gz` for your model artifacts.
+
+### Usage (deploy)
+
+Multi-GPU, replicated (fixed 1 GPU per replica):
+
+```bash
+uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_replicated.py \
+  --s3-model-path s3://[BUCKET_NAME]/[PATH]/model.tar.gz \
+  --ecr-image-uri [YOUR_AWS_ACCOUNT_ID].dkr.ecr.[YOUR_REGION].amazonaws.com/[IMAGE]:[TAG] \
+  --sagemaker-role-arn arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME] \
+  --num-replicas 8
+# Optional: --endpoint-name, --instance-type, --num-cpus-per-replica, --memory-per-replica, --max-batch-size, --region
+```
+
+Multi-GPU, sharded (k GPUs per replica):
+
+```bash
+uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_sharded.py \
+  --s3-model-path s3://[BUCKET_NAME]/[PATH]/model.tar.gz \
+  --ecr-image-uri [YOUR_AWS_ACCOUNT_ID].dkr.ecr.[YOUR_REGION].amazonaws.com/[IMAGE]:[TAG] \
+  --sagemaker-role-arn arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME] \
+  --num-replicas 2 \
+  --num-gpus-per-replica 4
+# Optional: --endpoint-name, --instance-type, --num-cpus-per-replica, --memory-per-replica, --max-batch-size, --region
+```
+
+Notes:
+- The scripts fail fast on cross‑region mismatches (e.g., ECR image in `us-west-2` but attempting to deploy in `us-east-1`).
+- By default, the region is parsed from the ECR image URI; you can explicitly override with `--region`.
+
+### Usage (test)
+
+```bash
+uv run integrations/SageMaker/testing_scripts/test_endpoint.py \
+  --endpoint-name [YOUR_ENDPOINT_NAME] \
+  --region [YOUR_REGION]
+```
+
+### Learn more
+
+For end‑to‑end guidance, visit the Fireworks documentation: [Fireworks × SageMaker Integration](https://fireworks.ai/docs/ecosystem/integrations/sagemaker).
+
+
