@@ -14,6 +14,8 @@ import signal
 import sys
 from typing import Dict
 from dotenv import load_dotenv
+import pickle
+from tqdm import trange
 
 load_dotenv()
 
@@ -27,15 +29,134 @@ LANGUAGE = "en"
 
 
 NUM_CONCURRENT_STREAMS = 50
-EXPAND_DELAY_S = 1 # Delay between starting streams
+EXPAND_DELAY_S = 0.2  # Delay between starting streams
 LAST_N_CHARS = 50
+
+
+def run_websocket_client_worker(stream_id: int):
+    """
+    Standalone function for ProcessPoolExecutor to run WebSocket client.
+    This function needs to be picklable.
+    """
+    import json
+    import time
+    import urllib.parse
+    import websocket
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    recent_latencies = []
+    ws = None
+    shutdown_event = threading.Event()
+
+    audio_chunks = pickle.load(open("audio_chunks.pkl", "rb"))
+
+    def on_open(websocket_conn):
+        nonlocal ws
+        ws = websocket_conn
+
+        def stream_audio(websocket_conn):
+            """Stream audio chunks to the WebSocket."""
+
+            for i, chunk in enumerate(audio_chunks):
+                if shutdown_event.is_set():
+                    break
+                ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
+
+                # Send latency trace every 10 chunks
+                if (i % 10) == 0:
+                    trace = json.dumps({"event_id": "test", "object": "stt.input.trace", "trace_id": str(time.time())})
+                    websocket_conn.send(trace, opcode=websocket.ABNF.OPCODE_TEXT)
+
+                time.sleep(CHUNK_SIZE_MS / 1000)  # Maintain real-time pace
+
+            if not shutdown_event.is_set():
+                final_trace = json.dumps(
+                    {"event_id": "streaming_complete", "object": "stt.input.trace", "trace_id": "final"}
+                )
+                ws.send(final_trace, opcode=websocket.ABNF.OPCODE_TEXT)
+
+                print(f"Stream {stream_id}: Audio streaming complete - final trace sent")
+                time.sleep(10)
+
+            websocket_conn.close()
+
+        threading.Thread(target=stream_audio, args=(websocket_conn,)).start()
+
+    def on_error(websocket_conn, error):
+        print(f"Stream {stream_id}: Error: {error}")
+
+    def on_message(websocket_conn, message):
+        recv_time = time.time()
+        try:
+            response = json.loads(message)
+        except:
+            return  # Skip malformed messages
+
+        # Handle application error
+        if "error" in response:
+            return
+
+        # Handle control trace
+        if response.get("object") == "stt.output.trace":
+            if response.get("trace_id") == "final":
+                pass
+            else:
+                # Process latency trace
+                start = float(response.get("trace_id"))
+                recent_latencies.append(recv_time - start)
+                if len(recent_latencies) > 10:
+                    recent_latencies.pop(0)
+
+                if recent_latencies:
+                    avg_latency = sum(recent_latencies) / len(recent_latencies)
+                    print(f"Stream {stream_id}: Latency {avg_latency:.3f}")
+            return
+
+        # text = response.get("text", "")
+        # if text:
+        #     print(f"Stream {stream_id}: {text[-LAST_N_CHARS:]}")
+
+    def on_close(websocket_conn, close_status_code, close_msg):
+        print(f"Stream {stream_id}: closed")
+
+    params = {
+        "language": LANGUAGE,
+        "response_format": "verbose_json",
+        "timestamp_granularities": ["segment", "word"],
+        "diarize": True,
+    }
+    params = urllib.parse.urlencode(params, doseq=True)
+    full_url = f"{WEBSOCKET_URL}?{params}"
+
+    api_key = os.environ.get("FIREWORKS_API_KEY")
+    if not api_key:
+        raise ValueError("FIREWORKS_API_KEY environment variable not set")
+
+    websocket.setdefaulttimeout(60)
+    ws = websocket.WebSocketApp(
+        full_url,
+        header={"Authorization": f"Bearer {api_key}"},
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+    )
+
+    try:
+        ws.run_forever()
+    except Exception as e:
+        print(f"Stream {stream_id}: Connection failed: {e}")
+
 
 class AudioStreaming:
     """Handles concurrent real-time audio transcription via WebSocket streaming."""
 
     def __init__(self):
         # Global stats
-        self.stats = {'completed': 0, 'failed': 0}
+        self.stats = {"completed": 0, "failed": 0}
         self.stats_lock = threading.Lock()
 
         # Non-blocking data collection
@@ -48,7 +169,6 @@ class AudioStreaming:
         self.shutdown_event = threading.Event()
         self.active_websockets = []
         self.websocket_lock = threading.Lock()
-
 
     @staticmethod
     def download_audio(url):
@@ -69,9 +189,7 @@ class AudioStreaming:
         print(f"Loaded audio: shape={audio_tensor.shape}, sample_rate={sample_rate}")
 
         if sample_rate != TARGET_SAMPLE_RATE:
-            audio_tensor = torchaudio.functional.resample(
-                audio_tensor, sample_rate, TARGET_SAMPLE_RATE
-            )
+            audio_tensor = torchaudio.functional.resample(audio_tensor, sample_rate, TARGET_SAMPLE_RATE)
             print(f"Resampled to {TARGET_SAMPLE_RATE}Hz: shape={audio_tensor.shape}")
 
         if audio_tensor.shape[0] > 1:
@@ -90,27 +208,29 @@ class AudioStreaming:
             audio_chunks.append(chunk_bytes)
 
         self.audio_chunks = audio_chunks
+        # Save audio_chunks to a pickle file for later use
+        with open("audio_chunks.pkl", "wb") as f:
+            pickle.dump(audio_chunks, f)
         return audio_chunks
-
 
     def print_streams(self, period: float = 1):
         while not self.shutdown_event.is_set():
             time.sleep(period)
-            
+
             try:
                 while True:
                     stream_id, latency = self.latency_queue.get_nowait()
                     self.display_latencies[stream_id] = latency
             except queue.Empty:
                 pass
-                
+
             try:
                 while True:
                     stream_id, text = self.text_queue.get_nowait()
                     self.display_texts[stream_id] = text
             except queue.Empty:
                 pass
-            
+
             # Only print if there are active streams
             if self.display_latencies:
                 print(f"\n{'='*80}")
@@ -127,12 +247,11 @@ class AudioStreaming:
                         print(f"[Stream {stream_id:>3d}] [Latency   ---] [Not started]")
                 print(f"{'='*80}")
 
-
     def shutdown(self, signum, frame):
         """Handle shutdown on signal."""
         print(f"\nReceived signal {signum}. Starting shutdown...")
         self.shutdown_event.set()
-        
+
         # Close all active WebSocket connections
         with self.websocket_lock:
             print(f"Closing {len(self.active_websockets)} active WebSocket connections...")
@@ -141,7 +260,7 @@ class AudioStreaming:
                     ws.close()
                 except Exception as e:
                     print(f"Error closing WebSocket: {e}")
-        
+
         # Wait for connections to close
         time.sleep(2)
         print("Shutdown completed.")
@@ -157,7 +276,7 @@ class AudioStreaming:
         def on_open(websocket_conn):
             nonlocal ws
             ws = websocket_conn
-            
+
             # Register this WebSocket for shutdown
             with self.websocket_lock:
                 self.active_websockets.append(ws)
@@ -169,22 +288,22 @@ class AudioStreaming:
                     if self.shutdown_event.is_set():
                         break
                     ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
-                    
+
                     # Send latency trace every 10 chunks
                     if (i % 10) == 0:
-                        trace = json.dumps({"event_id": "test", "object": "stt.input.trace", "trace_id": str(time.time())})
+                        trace = json.dumps(
+                            {"event_id": "test", "object": "stt.input.trace", "trace_id": str(time.time())}
+                        )
                         websocket_conn.send(trace, opcode=websocket.ABNF.OPCODE_TEXT)
-                                    
+
                     time.sleep(CHUNK_SIZE_MS / 1000)  # Maintain real-time pace
 
                 if not self.shutdown_event.is_set():
-                    final_trace = json.dumps({
-                        "event_id": "streaming_complete",
-                        "object": "stt.input.trace",
-                        "trace_id": "final"
-                    })
+                    final_trace = json.dumps(
+                        {"event_id": "streaming_complete", "object": "stt.input.trace", "trace_id": "final"}
+                    )
                     ws.send(final_trace, opcode=websocket.ABNF.OPCODE_TEXT)
-                    
+
                     print("Audio streaming complete - final trace sent")
                     time.sleep(10)
 
@@ -194,8 +313,9 @@ class AudioStreaming:
 
         def on_error(websocket_conn, error):
             with self.stats_lock:
-                self.stats['failed'] += 1
-            
+                self.stats["failed"] += 1
+            print(f"Connection failed: {error}")
+
             # Remove from active list
             with self.websocket_lock:
                 if websocket_conn in self.active_websockets:
@@ -207,11 +327,11 @@ class AudioStreaming:
                 response = json.loads(message)
             except:
                 return  # Skip malformed messages
-            
+
             # Handle application error
             if "error" in response:
                 return
-            
+
             # Handle control trace
             if response.get("object") == "stt.output.trace":
                 if response.get("trace_id") == "final":
@@ -222,12 +342,12 @@ class AudioStreaming:
                     recent_latencies.append(recv_time - start)
                     if len(recent_latencies) > 10:
                         recent_latencies.pop(0)
-                    
+
                     if recent_latencies:
                         avg_latency = sum(recent_latencies) / len(recent_latencies)
                         self.latency_queue.put_nowait((stream_id, avg_latency))
                 return
-            
+
             text = response.get("text", "")
             if text:
                 self.text_queue.put_nowait((stream_id, text[-LAST_N_CHARS:]))
@@ -235,36 +355,42 @@ class AudioStreaming:
         def on_close(websocket_conn, close_status_code, close_msg):
             print(f"Stream {stream_id}: closed")
             with self.stats_lock:
-                self.stats['completed'] += 1
-            
+                self.stats["completed"] += 1
+
             # Remove from active list
             with self.websocket_lock:
                 if websocket_conn in self.active_websockets:
                     self.active_websockets.remove(websocket_conn)
-        
-        params = urllib.parse.urlencode({"language": LANGUAGE})
+
+        params = {
+            "language": LANGUAGE,
+            "response_format": "verbose_json",
+            "timestamp_granularities": ["segment", "word"],
+            "diarize": True,
+        }
+        params = urllib.parse.urlencode(params, doseq=True)
         full_url = f"{WEBSOCKET_URL}?{params}"
 
         api_key = os.environ.get("FIREWORKS_API_KEY")
         if not api_key:
             raise ValueError("FIREWORKS_API_KEY environment variable not set")
-        
+
         websocket.setdefaulttimeout(60)
         ws = websocket.WebSocketApp(
             full_url,
-            header={"Authorization": api_key},
+            header={"Authorization": f"Bearer {api_key}"},
             on_open=on_open,
             on_message=on_message,
             on_error=on_error,
             on_close=on_close,
         )
-        
+
         try:
             ws.run_forever()
         except Exception as e:
             print(f"Stream {stream_id}: Connection failed: {e}")
             with self.stats_lock:
-                self.stats['failed'] += 1
+                self.stats["failed"] += 1
             with self.websocket_lock:
                 if ws in self.active_websockets:
                     self.active_websockets.remove(ws)
@@ -276,30 +402,29 @@ class AudioStreaming:
 
         signal.signal(signal.SIGINT, self.shutdown)
         signal.signal(signal.SIGTERM, self.shutdown)
-        
+
         threading.Thread(target=self.print_streams, daemon=True).start()
-        
+
         print(f"Starting {num_concurrent_streams} streams...")
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_concurrent_streams) as executor:
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_concurrent_streams) as executor:
             futures = []
-            
+
             # Start all streams gradually with delays
-            for i in range(num_concurrent_streams):
-                if i > 0:  
+            for i in trange(num_concurrent_streams):
+                if i > 0:
                     time.sleep(expand_delay_s)
-                future = executor.submit(self.run_websocket_client, i)
+                future = executor.submit(run_websocket_client_worker, i)
                 futures.append(future)
-            
+
             try:
                 for future in concurrent.futures.as_completed(futures):
                     future.result()
             except KeyboardInterrupt:
                 print("\nKeyboard interrupt received. Starting shutdown...")
                 self.shutdown_event.set()
-            
-            print(f"\nFinal: {self.stats['completed']} completed, {self.stats['failed']} failed")
 
+            print(f"\nFinal: {self.stats['completed']} completed, {self.stats['failed']} failed")
 
 
 def main():
@@ -309,6 +434,7 @@ def main():
 
     client = AudioStreaming()
     client.run(num_concurrent_streams=NUM_CONCURRENT_STREAMS, expand_delay_s=EXPAND_DELAY_S)
+
 
 if __name__ == "__main__":
     main()
