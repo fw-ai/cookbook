@@ -181,7 +181,7 @@ When you use Fireworks with Maxim instrumentation, the following information is 
 - **Cost Tracking**: Estimated costs based on Fireworks' pricing
 - **Error Handling**: Any API errors or failures with detailed context
 
-![Maxim <> Fireworks](/assets/fw-maxim.png)
+![Maxim <> Fireworks](https://cdn.getmaxim.ai/public/images/fireworks.gif)
 
 ## Resources
 
