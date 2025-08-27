@@ -84,6 +84,10 @@ uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_sharded.py \
 Notes:
 - The scripts fail fast on cross‑region mismatches (e.g., ECR image in `us-west-2` but attempting to deploy in `us-east-1`).
 - By default, the region is parsed from the ECR image URI; you can explicitly override with `--region`.
+- The Fireworks inference engine can keep processing incoming requests asynchronously by default
+- General heuristics for settings:
+-- To improve performance for high-concurrency, high-throughput workloads, try increasing `--max-batch-size` and/or the number of replicas
+-- More information on how to enable speculative decoding will be coming soon
 
 ### Usage (test)
 
