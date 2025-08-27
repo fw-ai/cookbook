@@ -33,7 +33,7 @@ def parse_args():
         "--s3-model-path",
         dest="s3_model_path",
         required=True,
-        help="S3 URI to model tarball (e.g., s3://<prefix>-<account_id>/<model_name>/model.tar.gz)",
+        help="S3 URI to model dir (e.g., s3://<prefix>-<account_id>/<model_name>)",
     )
     parser.add_argument(
         "--ecr-image-uri",
@@ -205,13 +205,23 @@ def main():
     print("  - Dedicated CPU and memory resources per replica")
     print("  - Independent failure isolation")
 
+    # Append a trailing slash to the S3 model path if it doesn't exist
+    if not s3_model_path.endswith('/'):
+        s3_model_path += '/'
+
     model = Model(
         image_uri=ecr_image_uri,
-        model_data=s3_model_path,
+        model_data={
+            "S3DataSource": {
+                "S3Uri": s3_model_path,
+                "S3DataType": "S3Prefix",
+                "CompressionType": "None"
+          }
+        },
         role=sagemaker_role_arn,
         env=fireworks_config,
         sagemaker_session=sagemaker_session,
-        name=f'fireworks-model-{endpoint_name}'  # Explicitly set model name
+        name=f"fireworks-model-{endpoint_name}"  # Explicitly set model name
     )
 
     print(f"\nDeploying endpoint '{endpoint_name}' with {num_replicas} replicas...")
