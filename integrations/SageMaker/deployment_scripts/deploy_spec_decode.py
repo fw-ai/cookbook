@@ -10,10 +10,11 @@ Optional flags (defaults applied if omitted and logged):
   --num-gpus-per-replica, --num-cpus-per-replica, --memory-per-replica,
   --max-batch-size
 
-Speculative decoding flags (optional):
+Speculative decoding flags (must be provided to enable speculative decoding):
   --enable-speculation
   --num-draft-tokens
   --draft-local-path
+Note: `--draft-local-path` is optional and will default to `/opt/ml/model/draft` if omitted.
 """
 
 import argparse
