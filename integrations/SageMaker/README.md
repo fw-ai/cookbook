@@ -12,7 +12,8 @@ integrations/SageMaker/
   ├─ env_setup.sh                   # One-click local environment setup script
   ├─ deployment_scripts/
   │  ├─ deploy_multi_gpu_replicated.py # n replicas × 1 GPU each (fixed)
-  │  └─ deploy_multi_gpu_sharded.py    # n replicas × k GPUs each (model sharded)
+  │  ├─ deploy_multi_gpu_sharded.py    # n replicas × k GPUs each (model sharded)
+  │  └─ deploy_spec_decode.py          # sharded with optional speculative decoding (using draft model)
   │
   └─ testing_scripts/
      └─ test_endpoint.py      # Uses AWS runtime client directly
@@ -38,7 +39,7 @@ integrations/SageMaker/
 - An AWS account with permissions/quota to create SageMaker models/endpoints.
 - An IAM role ARN for SageMaker (e.g., `arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME]`).
 - An ECR image containing the Fireworks inference container.
-- An S3 URI to a `model.tar.gz` for your model artifacts.
+- An S3 URI to your model files.
 
 ### Quick environment setup
 
@@ -62,7 +63,7 @@ Multi-GPU, replicated (fixed 1 GPU per replica):
 
 ```bash
 uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_replicated.py \
-  --s3-model-path s3://[BUCKET_NAME]/[PATH]/model.tar.gz \
+  --s3-model-path s3://[BUCKET_NAME]/[PATH] \
   --ecr-image-uri [YOUR_AWS_ACCOUNT_ID].dkr.ecr.[YOUR_REGION].amazonaws.com/[IMAGE]:[TAG] \
   --sagemaker-role-arn arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME] \
   --num-replicas 8
@@ -73,12 +74,26 @@ Multi-GPU, sharded (k GPUs per replica):
 
 ```bash
 uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_sharded.py \
-  --s3-model-path s3://[BUCKET_NAME]/[PATH]/model.tar.gz \
+  --s3-model-path s3://[BUCKET_NAME]/[PATH] \
   --ecr-image-uri [YOUR_AWS_ACCOUNT_ID].dkr.ecr.[YOUR_REGION].amazonaws.com/[IMAGE]:[TAG] \
   --sagemaker-role-arn arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME] \
   --num-replicas 2 \
   --num-gpus-per-replica 4
 # Optional: --endpoint-name, --instance-type, --num-cpus-per-replica, --memory-per-replica, --max-batch-size, --region
+```
+
+Multi-GPU, sharded with speculative decoding (using draft model):
+
+```bash
+uv run integrations/SageMaker/deployment_scripts/deploy_spec_decode.py \
+  --s3-model-path s3://[BUCKET_NAME]/[PATH] \
+  --ecr-image-uri [YOUR_AWS_ACCOUNT_ID].dkr.ecr.[YOUR_REGION].amazonaws.com/[IMAGE]:[TAG] \
+  --sagemaker-role-arn arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME] \
+  --num-replicas 2 \
+  --num-gpus-per-replica 2 \
+  --enable-speculation \
+  --num-draft-tokens 3
+# Optional: --endpoint-name, --instance-type, --num-cpus-per-replica, --memory-per-replica, --max-batch-size, --region, --draft-local-path
 ```
 
 Notes:
@@ -87,7 +102,8 @@ Notes:
 - The Fireworks inference engine can keep processing incoming requests asynchronously by default
 - General heuristics for settings:
 -- To improve performance for high-concurrency, high-throughput workloads, try increasing `--max-batch-size` and/or the number of replicas
--- More information on how to enable speculative decoding will be coming soon
+-- Speculative decoding tends to have larger speedups on larger models (≈8B+)
+-- Tune `--num-draft-tokens` (start with 2–4) to balance speedup and quality
 
 ### Usage (test)
 
