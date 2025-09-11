@@ -20,7 +20,7 @@ load_dotenv()
 
 # Configuration
 AUDIO_URL = "https://storage.googleapis.com/fireworks-public/test/3.5m.flac"
-WEBSOCKET_URL = "ws://audio-streaming.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions/streaming"
+WEBSOCKET_URL = "wss://audio-streaming.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions/streaming"
 TARGET_SAMPLE_RATE = 16000
 CHUNK_SIZE_MS = 50
 LANGUAGE = "en"
