@@ -33,16 +33,28 @@ def _resolve_inference_component_name(sm_client, endpoint_name: str, debug: bool
                 break
         if not ics:
             return None
-        name = ics[0].get("InferenceComponentName")
+
+        # Prefer components that are InService; fall back to the most recently created otherwise
+        def sort_key(ic: dict):
+            # CreationTime is a datetime; if missing, use 0
+            return (
+                ic.get("InferenceComponentStatus") == "InService",
+                ic.get("CreationTime") or 0,
+            )
+
+        ics_sorted = sorted(ics, key=sort_key, reverse=True)
+        chosen = ics_sorted[0]
+        name = chosen.get("InferenceComponentName")
         if name and debug:
-            print(f"[debug] Using inference component: {name}")
+            status = chosen.get("InferenceComponentStatus")
+            print(f"[debug] Using inference component: {name} (status={status})")
         return name
     except Exception as exc:
         if debug:
             print(f"[debug] Could not list inference components: {exc}. Assuming non-IC endpoint.")
         return None
 
-def invoke_endpoint(runtime, endpoint_name: str, prompt: str, max_tokens: int = 100, temperature: float = 0.7, inference_component_name: str | None = None) -> Dict[str, Any]:
+def invoke_endpoint(runtime, sm_client, endpoint_name: str, prompt: str, max_tokens: int = 100, temperature: float = 0.7, inference_component_name: str | None = None) -> Dict[str, Any]:
     """
     Invoke the SageMaker endpoint with a single prompt.
     """
@@ -55,24 +67,26 @@ def invoke_endpoint(runtime, endpoint_name: str, prompt: str, max_tokens: int = 
         "presence_penalty": 0.0
     }
     
+    # Use the provided IC name (resolved once in main)
+    ic_to_use = inference_component_name
+    
     try:
         kwargs = {
             "EndpointName": endpoint_name,
             "ContentType": 'application/json',
             "Body": json.dumps(payload),
         }
-        if inference_component_name:
-            kwargs["InferenceComponentName"] = inference_component_name
+        if ic_to_use:
+            kwargs["InferenceComponentName"] = ic_to_use
 
         response = runtime.invoke_endpoint(**kwargs)
-        
         result = json.loads(response['Body'].read().decode())
         return result
     except Exception as e:
         print(f"Error invoking endpoint: {str(e)}")
         return None
 
-def invoke_chat_endpoint(runtime, endpoint_name: str, messages: List[Dict[str, str]], max_tokens: int = 100, temperature: float = 0.7, inference_component_name: str | None = None) -> Dict[str, Any]:
+def invoke_chat_endpoint(runtime, sm_client, endpoint_name: str, messages: List[Dict[str, str]], max_tokens: int = 100, temperature: float = 0.7, inference_component_name: str | None = None) -> Dict[str, Any]:
     """
     Invoke the SageMaker endpoint using chat format.
     """
@@ -83,24 +97,26 @@ def invoke_chat_endpoint(runtime, endpoint_name: str, messages: List[Dict[str, s
         "top_p": 0.9
     }
     
+    # Use the provided IC name (resolved once in main)
+    ic_to_use = inference_component_name
+
     try:
         kwargs = {
             "EndpointName": endpoint_name,
             "ContentType": 'application/json',
             "Body": json.dumps(payload),
         }
-        if inference_component_name:
-            kwargs["InferenceComponentName"] = inference_component_name
+        if ic_to_use:
+            kwargs["InferenceComponentName"] = ic_to_use
 
         response = runtime.invoke_endpoint(**kwargs)
-        
         result = json.loads(response['Body'].read().decode())
         return result
     except Exception as e:
         print(f"Error invoking endpoint: {str(e)}")
         return None
 
-def test_completions_api(runtime, endpoint_name: str, inference_component_name: str | None) -> tuple[int, int]:
+def test_completions_api(runtime, sm_client, endpoint_name: str, inference_component_name: str | None) -> tuple[int, int]:
     """
     Test the completions API with various prompts.
     """
@@ -123,7 +139,7 @@ def test_completions_api(runtime, endpoint_name: str, inference_component_name: 
         print("-" * 30)
         
         start_time = time.time()
-        result = invoke_endpoint(runtime, endpoint_name, prompt, max_tokens=50, inference_component_name=inference_component_name)
+        result = invoke_endpoint(runtime, sm_client, endpoint_name, prompt, max_tokens=50, inference_component_name=inference_component_name)
         elapsed_time = time.time() - start_time
         
         if result:
@@ -141,7 +157,7 @@ def test_completions_api(runtime, endpoint_name: str, inference_component_name: 
 
     return successes, failures
 
-def test_chat_api(runtime, endpoint_name: str, inference_component_name: str | None) -> tuple[int, int]:
+def test_chat_api(runtime, sm_client, endpoint_name: str, inference_component_name: str | None) -> tuple[int, int]:
     """
     Test the chat completions API with conversation.
     """
@@ -171,7 +187,7 @@ def test_chat_api(runtime, endpoint_name: str, inference_component_name: str | N
         print(f"Messages: {json.dumps(messages, indent=2)}")
         
         start_time = time.time()
-        result = invoke_chat_endpoint(runtime, endpoint_name, messages, max_tokens=100, inference_component_name=inference_component_name)
+        result = invoke_chat_endpoint(runtime, sm_client, endpoint_name, messages, max_tokens=100, inference_component_name=inference_component_name)
         elapsed_time = time.time() - start_time
         
         if result:
@@ -199,13 +215,13 @@ def main():
 
     runtime = boto3.client('runtime.sagemaker', region_name=args.region)
     sm_client = boto3.client('sagemaker', region_name=args.region)
-    ic_name = _resolve_inference_component_name(sm_client, args.endpoint_name)
+    ic_name = _resolve_inference_component_name(sm_client, args.endpoint_name, debug=True)
     if ic_name:
-        print(f"[info] Using inference component: {ic_name}")
+        print(f"[info] Initial inference component: {ic_name}")
 
-    # Run tests
-    comp_ok, comp_fail = test_completions_api(runtime, args.endpoint_name, ic_name)
-    chat_ok, chat_fail = test_chat_api(runtime, args.endpoint_name, ic_name)
+    # Run tests with the resolved IC name
+    comp_ok, comp_fail = test_completions_api(runtime, sm_client, args.endpoint_name, ic_name)
+    chat_ok, chat_fail = test_chat_api(runtime, sm_client, args.endpoint_name, ic_name)
 
     total_ok = comp_ok + chat_ok
     total_fail = comp_fail + chat_fail
