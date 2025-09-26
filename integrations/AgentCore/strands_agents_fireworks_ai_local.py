@@ -1,12 +1,12 @@
 from strands import Agent, tool
 from strands_tools import file_read, file_write
+import argparse
+import json
 # NOTE: FireworksAI is compatible with OpenAI sdk
 from strands.models.openai import OpenAIModel
 from dotenv import load_dotenv
 import os
-from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-app = BedrockAgentCoreApp()
 load_dotenv()
 
 FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY")
@@ -52,9 +52,10 @@ model = OpenAIModel(
         "api_key": FIREWORKS_API_KEY,
         "base_url": "https://api.fireworks.ai/inference/v1",
     },
+    # **model_config
     model_id="accounts/fireworks/models/kimi-k2-instruct-0905",
     params={
-        "max_tokens": 5000,
+        "max_tokens": 3000,
         "temperature": 0.0,
     }
 )
@@ -65,7 +66,6 @@ agent = Agent(
     system_prompt="You are a software engineer. You can read files, write files and generate python code."
 )
 
-@app.entrypoint
 def strands_agent_fireworks_ai(payload):
     """
     Invoke the agent with a payload
@@ -74,6 +74,9 @@ def strands_agent_fireworks_ai(payload):
     response = agent(user_input)
     return response.message['content'][0]['text']
 
-
 if __name__ == "__main__":
-    app.run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("payload", type=str)
+    args = parser.parse_args()
+    response = strands_agent_fireworks_ai(json.loads(args.payload))
+    print(response)
