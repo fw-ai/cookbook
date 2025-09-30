@@ -9,6 +9,7 @@ AgentCore/
 ├── Makefile                                      # Setup and environment management
 ├── requirements.txt                              # Python dependencies
 ├── runtime_with_strands_and_fireworksai_models.ipynb  # Main deployment notebook
+├── strands-agent-advanced-data-analysis-code-interpreter.ipynb  # Code interpreter notebook
 ├── strands_agents_fireworks_ai.py              # AgentCore deployment script
 └── strands_agents_fireworks_ai_local.py        # Local testing script
 ```

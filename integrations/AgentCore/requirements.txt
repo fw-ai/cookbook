@@ -9,3 +9,5 @@ setuptools
 bedrock-agentcore
 jupyter
 bedrock-agentcore-starter-toolkit
+pandas
+kagglehub[pandas-datasets]
