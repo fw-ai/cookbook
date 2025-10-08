@@ -1,0 +1,6 @@
+donotcommit/
+examples/
+deepspeed_configs/
+outputs/
+!sample_data/images/
+deploy_vars.sh

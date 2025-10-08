@@ -1,0 +1,77 @@
+base_model: Qwen/Qwen2.5-VL-7B-Instruct
+processor_type: AutoProcessor
+
+# these 3 lines are needed for now to handle vision chat templates w images
+skip_prepare_dataset: true
+remove_unused_columns: false
+sample_packing: false
+
+# Qwen 2.5 uses the same chat template as Qwen 2.0
+# In fact Qwen 2.5 template has been known to have bugs with images.
+# https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/discussions/11
+chat_template: qwen2_vl
+datasets:
+  - path: sample_data/train.jsonl
+    type: chat_template
+    ds_type: json
+    split: train
+    field_messages: messages
+dataset_prepared_path: last_run_prepared
+val_set_size: 0.0
+output_dir: ./outputs/out
+
+adapter:
+lora_model_dir:
+
+sequence_len: 8192
+pad_to_sequence_len: false
+
+wandb_project:
+wandb_entity:
+wandb_watch:
+wandb_name:
+wandb_log_model:
+
+gradient_accumulation_steps: 4
+micro_batch_size: 8
+num_epochs: 1
+optimizer: adamw_bnb_8bit
+lr_scheduler: cosine
+learning_rate: 0.0002
+
+gradient_checkpointing: true
+logging_steps: 1
+flash_attention: true
+eager_attention:
+
+warmup_ratio: 0.1
+weight_decay: 0.0
+
+deepspeed: deepspeed_configs/zero1_torch_compile.json # multi-gpu only
+
+# Save a checkpoint every 1000 steps
+save_strategy: # Set to `"no"` to skip checkpoint saves, `"epoch"` at end of each epoch, `"best"` when better result is achieved, leave empty to infer from `save_steps`.
+save_steps: 1000
+evals_per_epoch:
+saves_per_epoch:
+# Save only the last 5 checkpoints
+save_total_limit: 5
+
+lora_r:
+lora_alpha:
+lora_dropout:
+lora_target_modules:
+
+bf16: true
+fp16:
+tf32: true
+
+plugins:
+  - axolotl.integrations.liger.LigerPlugin
+liger_rope: true
+liger_rms_norm: true
+liger_glu_activation: true
+liger_layer_norm: true
+liger_fused_linear_cross_entropy: true
+
+max_steps: 10
