@@ -1,0 +1,6 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+# Benchmark results
+llm_bench/results/
+.env
+env/
