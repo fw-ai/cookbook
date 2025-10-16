@@ -155,3 +155,67 @@ locust --config locust-grafana.conf ...
 This starts the load test locally and pushes results into Grafana in real-time. Besides the actual requests, we push additional metrics (e.g. time per token) as separate fake requests to get stats aggregation. Make sure to remove them from aggregation when viewing the graphs.
 
 Other settings for Locust are in `./locust.conf`. You may start Locust in non-headless mode, but its UI is very basic and misses advanced stats aggregation capabilities.
+
+## Simplified Fireworks AI Load Testing with `run_load_test.py`
+
+For easier testing of Fireworks AI deployments, use the `run_load_test.py` wrapper script. It simplifies the command-line interface and automatically configures the correct endpoints and model formats for Fireworks AI.
+
+### What it does
+
+- Automatically constructs Fireworks model identifiers: `{model-path}#{deployment-path}`
+  - Example: `accounts/myaccount/models/qwen3-reranker-4b#accounts/myaccount/deployments/12345`
+- Sets up the correct Fireworks API endpoint (`https://api.fireworks.ai/inference`)
+- Generates prompts of specified length using the limericks dataset
+- Runs load tests with either fixed QPS or fixed concurrency
+- Saves results to timestamped CSV files in a `results/` directory
+- Provides clean output with test configuration summary
+
+### Quick example
+
+```bash
+# Basic QPS test
+python run_load_test.py \
+    --model accounts/fireworks/models/llama-v3p1-8b-instruct \
+    --deployment accounts/myaccount/deployments/12345 \
+    --api-key $FIREWORKS_API_KEY \
+    --prompt-length 512 \
+    --output-length 128 \
+    --qps 10 \
+    --duration 5min \
+    --stream \
+    --chat
+
+# High concurrency test
+python run_load_test.py \
+    --model accounts/myaccount/models/qwen3-reranker-4b \
+    --deployment accounts/myaccount/deployments/67890 \
+    --api-key $FIREWORKS_API_KEY \
+    --prompt-length 512 \
+    --output-length 128 \
+    --concurrency 50 \
+    --duration 10min \
+    --stream
+```
+
+### Key parameters
+
+- `--model`: Full model path (e.g., `accounts/fireworks/models/llama-v3p1-8b-instruct`)
+- `--deployment`: Full deployment path (e.g., `accounts/myaccount/deployments/12345`)
+- `--api-key`: Your Fireworks API key
+- `--prompt-length`: Input prompt length in tokens
+- `--output-length`: Output generation length in tokens
+- `--qps N`: Run at N queries per second (or use `--concurrency N` for fixed parallel requests)
+- `--duration`: Test duration (e.g., `5min`, `30s`, `1h`)
+- `--stream`: Enable streaming for TTFT and per-token latency metrics
+- `--chat`: Use chat completions API
+
+Run `python run_load_test.py --help` for all options.
+
+### Results
+
+Results are automatically saved to CSV files in the `results/` directory with descriptive filenames like:
+```
+loadtest_llama-v3p1-8b-instruct_12345_qps10_p512_o128_20231016_143052.csv
+```
+
+These CSV files contain detailed metrics including latency percentiles (p50, p90, p95, p99), throughput, TTFT, and per-token latency, which can be imported into spreadsheets or Jupyter notebooks for analysis.
