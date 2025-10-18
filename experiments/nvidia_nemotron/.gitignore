@@ -1,0 +1,26 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data directories
+benchmark/data/
+benchmark/results/
+benchmark/logs/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+#Private
+*Private.ipynb
+*Nemotron_on_Fireworks.md
+
