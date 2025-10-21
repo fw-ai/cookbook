@@ -2,3 +2,5 @@ openai
 pillow
 requests
 python-dotenv
+datasets
+jupyter
