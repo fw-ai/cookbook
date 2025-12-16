@@ -2,7 +2,6 @@ import json
 import time
 import requests
 import os
-import random
 import argparse
 import config
 

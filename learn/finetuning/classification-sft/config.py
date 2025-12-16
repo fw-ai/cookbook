@@ -62,7 +62,8 @@ def wait_for_model_ready():
         "messages": [{"role": "user", "content": "Warmup request"}],
     }
 
-    print("\n⏳ Triggering warm-up... (Initial failures are expected while GPU loads)")
+    print("\n⏳ Triggering warm-up... (Initial failures are expected while replicas warm up)")
+    print("\n⏳ Over the course of a few minutes, you should see 404 ERR -> 504 ERR -> 200 OK.")
     start_time = time.time()
 
     while True:
@@ -130,6 +131,35 @@ def find_deployments_for_model(model_id):
         pass
 
     return matches
+
+
+def cleanup_resources(model_id, dataset_ids):
+    """
+    Deletes deployments, the model, and specified datasets.
+    """
+    print(f"\n🧹 Cleaning up resources for {model_id}...")
+
+    # 1. Deployments
+    deps = find_deployments_for_model(model_id)
+    if deps:
+        for d in deps:
+            print(f"   Deleting deployment: {d}")
+            run_cmd(["firectl", "delete", "deployment", d, "--ignore-checks"], check=False)
+        print("   Waiting for deployments to terminate...")
+        time.sleep(5)
+    else:
+        # Try blind delete by model ID (alias) just in case, silently
+        run_cmd(["firectl", "delete", "deployment", model_id, "--ignore-checks"], check=False, capture_output=True)
+
+    # 2. Model
+    print(f"   Deleting model: {model_id}")
+    run_cmd(["firectl", "delete", "model", model_id], check=False)
+
+    # 3. Datasets
+    if dataset_ids:
+        print(f"   Deleting datasets: {', '.join(dataset_ids)}")
+        for ds_id in dataset_ids:
+            run_cmd(["firectl", "delete", "dataset", ds_id], check=False)
 
 
 def run_cmd(cmd_list, check=True, capture_output=False, text=True):

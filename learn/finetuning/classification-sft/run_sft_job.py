@@ -1,7 +1,6 @@
 import json
 import time
 import requests
-import os
 import config
 
 
@@ -14,39 +13,9 @@ def main():
         return
 
     # 0. Cleanup previous run resources to avoid conflicts
-    print("🧹 Cleaning up previous resources...")
-    config.run_cmd(
-        ["firectl", "delete", "dataset", config.DATASET_ID_TRAIN],
-        check=False,
-        capture_output=True,
-    )
-    config.run_cmd(
-        ["firectl", "delete", "dataset", config.DATASET_ID_VAL],
-        check=False,
-        capture_output=True,
-    )
-
-    full_model_id = config.FULL_MODEL_ID
-
-    # Smart cleanup for deployments
-    deps = config.find_deployments_for_model(full_model_id)
-    if deps:
-        for d in deps:
-            config.run_cmd(
-                ["firectl", "delete", "deployment", d, "--ignore-checks"],
-                check=False,
-                capture_output=True,
-            )
-        time.sleep(3)
-    else:
-        config.run_cmd(
-            ["firectl", "delete", "deployment", full_model_id, "--ignore-checks"],
-            check=False,
-            capture_output=True,
-        )
-
-    config.run_cmd(
-        ["firectl", "delete", "model", full_model_id], check=False, capture_output=True
+    config.cleanup_resources(
+        config.FULL_MODEL_ID, 
+        [config.DATASET_ID_TRAIN, config.DATASET_ID_VAL]
     )
 
     # 1. Upload Dataset
@@ -112,6 +81,8 @@ def main():
     # Extract ID (handling different API versions)
     job_id = job_data.get("name", "").split("/")[-1] or job_data.get("id")
     print(f"✅ Job started! ID: {job_id}")
+    if config.WANDB_PROJECT and config.WANDB_ENTITY:
+        print(f"📈 WANDB Run: https://wandb.ai/{config.WANDB_ENTITY}/{config.WANDB_PROJECT}")
 
     # 3. Monitor Loop
     monitor_url = f"https://api.fireworks.ai/v1/accounts/{config.ACCOUNT_ID}/supervisedFineTuningJobs/{job_id}"
