@@ -49,8 +49,30 @@ DEPLOYMENT_ARGS = [
 
 def print_deployment_cmd(model_id):
     """Prints the suggested deployment command."""
-    print(f"\npython deploy.py")
+    print(f"\n📋 NEXT STEP: Deploy your model")
+    print(f"python deploy.py")
     print(f"(This script creates the deployment and waits for it to be ready)")
+
+
+def print_training_cmd():
+    """Prints the suggested training command."""
+    print(f"\n📋 NEXT STEP: Train your model")
+    print(f"python run_sft_job.py")
+    print(f"(This script uploads data, launches SFT job, and monitors progress)")
+
+
+def print_eval_cmd():
+    """Prints the suggested evaluation command."""
+    print(f"\n📋 NEXT STEP: Evaluate your model")
+    print(f"python eval_model.py")
+    print(f"(This script runs comprehensive evaluation on validation data)")
+
+
+def print_cleanup_cmd():
+    """Prints the suggested cleanup command."""
+    print(f"\n📋 NEXT STEP: Clean up resources (optional)")
+    print(f"python cleanup.py")
+    print(f"(This script deletes all datasets, models, and deployments)")
 
 
 def wait_for_model_ready():
@@ -63,7 +85,7 @@ def wait_for_model_ready():
     }
 
     print("\n⏳ Triggering warm-up... (Initial failures are expected while replicas warm up)")
-    print("\n⏳ Over the course of a few minutes, you should see 404 ERR -> 504 ERR -> 200 OK.")
+    print("\n⏳ Over the course of a few minutes, you should see 404 ERR <-> 504/503 ERR -> 200 OK.")
     start_time = time.time()
 
     while True:
@@ -72,6 +94,7 @@ def wait_for_model_ready():
 
             if resp.status_code == 200:
                 print(f"\n✨ Model is READY! (Took {time.time() - start_time:.1f}s)")
+                print_eval_cmd()
                 return
 
             elapsed = time.time() - start_time

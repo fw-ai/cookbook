@@ -100,7 +100,6 @@ def main():
             if state == "JOB_STATE_COMPLETED":
                 print("\n✨ Training Complete!")
                 print(f"New Model ID: {config.FULL_MODEL_ID}")
-                print("\n📋 NEXT STEP: Deploy your model")
                 config.print_deployment_cmd(config.FULL_MODEL_ID)
                 break
             elif state in ["JOB_STATE_FAILED", "JOB_STATE_CANCELLED"]:

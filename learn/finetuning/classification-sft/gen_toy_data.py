@@ -60,7 +60,7 @@ def generate_sample():
         "messages": [
             {
                 "role": "system",
-                "content": "Classify this support ticket into: billing, hardware, or software.",
+                "content": "Avoid formatting or special characters. Answer in one word. Classify this support ticket into: billing, hardware, or software.",
             },
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": category},
@@ -90,6 +90,7 @@ def main():
 
     print(f"✅ Generated {len(train_data)} training samples -> {OUTPUT_FILE_TRAIN}")
     print(f"✅ Generated {len(val_data)} validation samples -> {OUTPUT_FILE_VAL}")
+    config.print_training_cmd()
 
 
 if __name__ == "__main__":

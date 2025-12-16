@@ -147,6 +147,7 @@ def run_full_eval():
             f"{'MACRO AVG':<15} | {macro_p/n_classes:.4f}     | {macro_r/n_classes:.4f}     | {macro_f1/n_classes:.4f}     | {len(data):<5}"
         )
     print("=" * 65)
+    config.print_cleanup_cmd()
 
 
 def main():

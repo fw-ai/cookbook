@@ -6,6 +6,8 @@ The workflow covers data generation, training, deployment, and **post-training e
 
 ## Workflow Steps
 
+*Note: Each successful script execution will print the next recommended command to run.*
+
 1. **Setup Environment**
 
    **Install Tools**:
@@ -41,7 +43,7 @@ The workflow covers data generation, training, deployment, and **post-training e
    ```bash
    python run_sft_job.py
    ```
-   *Wait for the job to complete (~5-10 mins). The script will print the next steps when finished.*
+   *Wait for the job to complete (~5-10 mins). The script will print the next steps when finished. If WANDB credentials are configured, it will also print a link to monitor training progress.*
 
 4. **Deploy**
    Deploy the fine-tuned model. We provide a script that creates the deployment and polls it until the model is fully loaded on the GPU (warm start).
@@ -68,6 +70,7 @@ The workflow covers data generation, training, deployment, and **post-training e
    ```bash
    python cleanup.py
    ```
+   *This script will ask for confirmation by requiring you to type 'delete' before proceeding.*
 
 ## Configuration
 All constants (Model IDs, file names, deployment settings) are centralized in `config.py`.
