@@ -1,4 +1,8 @@
 import os
+import subprocess
+import json
+import time
+import requests
 
 # --- Environment Variables ---
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
@@ -28,23 +32,72 @@ LEARNING_RATE = "1e-5"
 
 # --- Deployment Config ---
 DEPLOYMENT_ARGS = [
-    "--deployment-shape", "fast",
-    "--min-replica-count", "1",
-    "--max-replica-count", "1",
-    "--scale-up-window", "30s",
-    "--scale-down-window", "5m",
-    "--scale-to-zero-window", "5m",
-    "--wait"
+    "--deployment-shape",
+    "fast",
+    "--min-replica-count",
+    "1",
+    "--max-replica-count",
+    "1",
+    "--scale-up-window",
+    "30s",
+    "--scale-down-window",
+    "5m",
+    "--scale-to-zero-window",
+    "5m",
 ]
+
 
 def print_deployment_cmd(model_id):
     """Prints the suggested deployment command."""
-    print(f"\nfirectl create deployment {model_id} \\")
-    for i in range(0, len(DEPLOYMENT_ARGS), 2):
-        flag = DEPLOYMENT_ARGS[i]
-        val = DEPLOYMENT_ARGS[i+1] if i+1 < len(DEPLOYMENT_ARGS) else ""
-        if flag == "--wait":
-            print(f"  {flag}")
-        else:
-            print(f"  {flag} {val} \\")
+    print(f"\npython deploy.py")
+    print(f"(This script creates the deployment and waits for it to be ready)")
 
+
+def wait_for_model_ready():
+    """Polls the inference endpoint until it returns a valid response."""
+    url = "https://api.fireworks.ai/inference/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": FULL_MODEL_ID,
+        "messages": [{"role": "user", "content": "Warmup request"}],
+    }
+
+    print("\n⏳ Triggering warm-up... (Initial failures are expected while GPU loads)")
+    start_time = time.time()
+
+    while True:
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=10)
+
+            if resp.status_code == 200:
+                print(f"\n✨ Model is READY! (Took {time.time() - start_time:.1f}s)")
+                return
+
+            elapsed = time.time() - start_time
+            print(f"   [{elapsed:.0f}s] Warming up... ({resp.status_code})")
+
+        except requests.exceptions.RequestException as e:
+            elapsed = time.time() - start_time
+            print(f"   [{elapsed:.0f}s] Connecting... ({e})")
+
+        time.sleep(15)
+
+
+def handle_deployment_failure(resp):
+    """Checks if the response indicates a missing deployment and prints instructions."""
+    if "Model not found" in resp.text or "not deployed" in resp.text:
+        print(f"\n❌ Model not deployed. Please run:")
+        print_deployment_cmd(FULL_MODEL_ID)
+        exit(1)
+
+
+def run_cmd(cmd_list, check=True, capture_output=False, text=True):
+    """Executes a shell command and prints it."""
+    print(f"Running: {' '.join(cmd_list)}")
+    try:
+        return subprocess.run(
+            cmd_list, check=check, capture_output=capture_output, text=text
+        )
+    except subprocess.CalledProcessError as e:
+        # Re-raise or handle, but printing was the main goal
+        raise e

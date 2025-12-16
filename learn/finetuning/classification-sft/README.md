@@ -44,32 +44,26 @@ The workflow covers data generation, training, deployment, and **post-training e
    *Wait for the job to complete (~5-10 mins). The script will print the next steps when finished.*
 
 4. **Deploy**
-   Deploy the fine-tuned model for inference. We use `min-replica-count 1` to ensure the model loads immediately (warm start).
+   Deploy the fine-tuned model. We provide a script that creates the deployment and polls it until the model is fully loaded on the GPU (warm start).
    ```bash
-   firectl create deployment accounts/${ACCOUNT_ID}/models/gpt-oss-20b-toy-classifier \
-       --deployment-shape fast \
-       --min-replica-count 1 \
-       --max-replica-count 1 \
-       --scale-up-window 30s \
-       --scale-down-window 5m \
-       --scale-to-zero-window 5m \
-       --wait
+   python deploy.py
    ```
-   **Note:** The `--wait` flag confirms the deployment configuration is valid, but **it may take a few minutes for the GPU to spin up and the model to load**. If inference fails immediately, wait 1-2 minutes and try again.
+   *This script sets `min-replica-count 1` and waits until the inference endpoint successfully returns a response.*
 
-5. **Verify (Quick Check)**
-   Run a simple sanity check with a few test cases.
+5. **Evaluate**
+   Run the evaluation script to calculate metrics on the validation set (`toy_support_data_val.jsonl`).
+
    ```bash
    python eval_model.py
    ```
+   *This prints detailed one-vs-rest Precision/Recall/F1 metrics.*
 
-6. **Detailed Evaluation**
-   Calculate one-vs-rest Precision, Recall, and F1 scores using the validation set.
+   You can also test a specific prompt:
    ```bash
-   python calc_metrics.py
+   python eval_model.py "My login is broken"
    ```
 
-7. **Cleanup**
+6. **Cleanup**
    Remove all datasets, models, and deployments created by this demo.
    ```bash
    python cleanup.py

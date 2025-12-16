@@ -1,36 +1,19 @@
 import os
-import subprocess
 import time
 import json
 import config
 
-# --- CONFIG ---
-# Imported from config.py
-
-def run_cmd(cmd_list, ignore_error=False, capture_json=False):
-    """Executes a shell command."""
-    try:
-        print(f"Running: {' '.join(cmd_list)}")
-        res = subprocess.run(cmd_list, check=True, capture_output=True, text=True)
-        if capture_json:
-            return json.loads(res.stdout)
-        print("✅ Success")
-        return res.stdout
-    except subprocess.CalledProcessError as e:
-        if not ignore_error:
-            print(f"❌ Failed: {e.stderr.strip()}")
-        else:
-            print(f"ℹ️  (Ignored): {e.stderr.strip()}")
-        return None
 
 def find_deployments_for_model(model_id):
     """Finds all deployments associated with a given model ID."""
     print(f"🔍 Searching for deployments of {model_id}...")
     matches = []
-    
+
     # Method 1: Try JSON output
     try:
-        res = subprocess.run(["firectl", "list", "deployments", "-o", "json"], capture_output=True, text=True)
+        res = config.run_cmd(
+            ["firectl", "list", "deployments", "-o", "json"], capture_output=True
+        )
         if res.returncode == 0:
             deployments = json.loads(res.stdout)
             for d in deployments:
@@ -47,22 +30,32 @@ def find_deployments_for_model(model_id):
     # Method 2: Text fallback (grep)
     print("🔄 Retrying with text-based search...")
     try:
-        res = subprocess.run(["firectl", "list", "deployments"], capture_output=True, text=True, check=True)
+        res = config.run_cmd(["firectl", "list", "deployments"], capture_output=True)
         lines = res.stdout.splitlines()
-        # Header is usually first line, skip it if needed, but simple containment check works
+
+        found = False
         for line in lines:
-            if model_id in line:
+            # Check for full ID or short name
+            if model_id in line or config.MODEL_NAME in line:
                 # Assuming ID is the first column
                 parts = line.split()
                 if parts:
                     dep_id = parts[0]
-                    # Validate it looks like an ID (alphanumeric)
-                    if len(dep_id) > 5:
+                    # Validate it looks like an ID (alphanumeric, e.g. 'r50t3gzx')
+                    if len(dep_id) > 5 and not dep_id.startswith("ID"):
                         matches.append(dep_id)
+                        found = True
+
+        if not found:
+            print("⚠️  No matches found in text output. Raw output snippet:")
+            # Print first few lines to debug
+            print("\n".join(lines[:10]))
+
         return matches
     except Exception as e:
         print(f"⚠️  Text list failed: {e}")
         return []
+
 
 def main():
     if not config.ACCOUNT_ID:
@@ -72,7 +65,7 @@ def main():
     print("⚠️  WARNING: This will delete the following resources:")
     print(f"   - Datasets: {config.DATASET_ID_TRAIN}, {config.DATASET_ID_VAL}")
     print(f"   - Model: {config.FULL_MODEL_ID}")
-    
+
     confirm = input("\nType 'delete' to confirm: ")
     if confirm != "delete":
         print("Aborted.")
@@ -81,28 +74,41 @@ def main():
     print("\n--- 1. Deleting Deployments ---")
     # Find active deployments first
     deployment_ids = find_deployments_for_model(config.FULL_MODEL_ID)
-    
+
     if not deployment_ids:
         print("No active deployments found for this model.")
         # Fallback: try deleting by model name just in case it was created with alias
-        run_cmd(["firectl", "delete", "deployment", config.FULL_MODEL_ID, "--ignore-checks"], ignore_error=True)
+        config.run_cmd(
+            [
+                "firectl",
+                "delete",
+                "deployment",
+                config.FULL_MODEL_ID,
+                "--ignore-checks",
+            ],
+            check=False,
+        )
     else:
         for dep_id in deployment_ids:
             print(f"Found deployment: {dep_id}")
-            run_cmd(["firectl", "delete", "deployment", dep_id, "--ignore-checks"], ignore_error=True)
+            config.run_cmd(
+                ["firectl", "delete", "deployment", dep_id, "--ignore-checks"],
+                check=False,
+            )
 
     # Wait loop to ensure deployment is actually gone
     print("Waiting for deployments to terminate...")
-    time.sleep(5) 
+    time.sleep(5)
 
     print("\n--- 2. Deleting Model ---")
-    run_cmd(["firectl", "delete", "model", config.FULL_MODEL_ID], ignore_error=True)
+    config.run_cmd(["firectl", "delete", "model", config.FULL_MODEL_ID], check=False)
 
     print("\n--- 3. Deleting Datasets ---")
     for ds_id in [config.DATASET_ID_TRAIN, config.DATASET_ID_VAL]:
-        run_cmd(["firectl", "delete", "dataset", ds_id], ignore_error=True)
+        config.run_cmd(["firectl", "delete", "dataset", ds_id], check=False)
 
     print("\n✨ Cleanup Complete!")
+
 
 if __name__ == "__main__":
     main()
