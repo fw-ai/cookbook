@@ -60,7 +60,7 @@ def generate_sample():
         "messages": [
             {
                 "role": "system",
-                "content": "Avoid formatting or special characters. Answer in one word. Classify this support ticket into: billing, hardware, or software.",
+                "content": config.CLASSIFICATION_SYSTEM_PROMPT,
             },
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": category},

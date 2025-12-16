@@ -5,11 +5,7 @@ import config
 
 
 def main():
-    if not config.API_KEY:
-        print("❌ Please set FIREWORKS_API_KEY environment variable.")
-        return
-    if not config.ACCOUNT_ID:
-        print("❌ Please set ACCOUNT_ID environment variable.")
+    if not config.require_env("FIREWORKS_API_KEY", "ACCOUNT_ID"):
         return
 
     # 0. Cleanup previous run resources to avoid conflicts
@@ -86,7 +82,7 @@ def main():
 
     # 3. Monitor Loop
     monitor_url = f"https://api.fireworks.ai/v1/accounts/{config.ACCOUNT_ID}/supervisedFineTuningJobs/{job_id}"
-    headers = {"Authorization": f"Bearer {config.API_KEY}"}
+    headers = config.auth_headers()
 
     print("📡 Monitoring progress (Ctrl+C to stop watching, job will continue)...")
     while True:

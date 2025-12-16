@@ -11,6 +11,54 @@ WANDB_PROJECT = os.getenv("WANDB_PROJECT")
 WANDB_ENTITY = os.getenv("WANDB_ENTITY")
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 
+# --- Inference / Prompt Constants ---
+INFERENCE_CHAT_COMPLETIONS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+CLASSIFICATION_SYSTEM_PROMPT = (
+    "Avoid formatting or special characters. Answer in one word. "
+    "Classify this support ticket into: billing, hardware, or software."
+)
+
+
+def require_env(*names):
+    """
+    Validates required environment variables are set.
+    Returns True if all present, otherwise prints missing vars and returns False.
+    """
+    missing = [n for n in names if not os.getenv(n)]
+    if not missing:
+        return True
+    if len(missing) == 1:
+        print(f"❌ Please set {missing[0]} environment variable.")
+    else:
+        print(f"❌ Please set environment variables: {', '.join(missing)}")
+    return False
+
+
+def auth_headers(include_content_type=False):
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+    if include_content_type:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def build_classification_messages(user_text):
+    return [
+        {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
+
+
+def chat_completions(messages, model_id=None, temperature=None, timeout=10):
+    payload = {"model": model_id or FULL_MODEL_ID, "messages": messages}
+    if temperature is not None:
+        payload["temperature"] = temperature
+    return requests.post(
+        INFERENCE_CHAT_COMPLETIONS_URL,
+        headers=auth_headers(include_content_type=True),
+        json=payload,
+        timeout=timeout,
+    )
+
 # --- Model & Dataset Configuration ---
 BASE_MODEL_ID = "accounts/fireworks/models/gpt-oss-20b"
 MODEL_NAME = "gpt-oss-20b-toy-classifier"
@@ -77,20 +125,16 @@ def print_cleanup_cmd():
 
 def wait_for_model_ready():
     """Polls the inference endpoint until it returns a valid response."""
-    url = "https://api.fireworks.ai/inference/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": FULL_MODEL_ID,
-        "messages": [{"role": "user", "content": "Warmup request"}],
-    }
-
     print("\n⏳ Triggering warm-up... (Initial failures are expected while replicas warm up)")
     print("\n⏳ Over the course of a few minutes, you should see 404 ERR <-> 504/503 ERR -> 200 OK.")
     start_time = time.time()
 
     while True:
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=10)
+            resp = chat_completions(
+                [{"role": "user", "content": "Warmup request"}],
+                timeout=10,
+            )
 
             if resp.status_code == 200:
                 print(f"\n✨ Model is READY! (Took {time.time() - start_time:.1f}s)")

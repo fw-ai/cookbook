@@ -22,8 +22,7 @@ def create_deployment():
 
 
 def main():
-    if not config.ACCOUNT_ID or not config.API_KEY:
-        print("❌ Please set ACCOUNT_ID and FIREWORKS_API_KEY environment variables.")
+    if not config.require_env("ACCOUNT_ID", "FIREWORKS_API_KEY"):
         return
 
     create_deployment()

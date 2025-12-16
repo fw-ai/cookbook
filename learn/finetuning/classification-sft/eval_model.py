@@ -7,25 +7,12 @@ import config
 
 
 def query_model(prompt):
-    url = "https://api.fireworks.ai/inference/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {config.API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": config.FULL_MODEL_ID,
-        "messages": [
-            {
-                "role": "system",
-                "content": "Classify this support ticket into: billing, hardware, or software.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.0,  # Deterministic for eval
-    }
-
     start = time.time()
-    resp = requests.post(url, headers=headers, json=payload)
+    resp = config.chat_completions(
+        config.build_classification_messages(prompt),
+        temperature=0.0,  # Deterministic for eval
+        timeout=30,
+    )
     latency = time.time() - start
 
     if resp.status_code != 200:
@@ -162,8 +149,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if not config.ACCOUNT_ID or not config.API_KEY:
-        print("❌ Please set ACCOUNT_ID and FIREWORKS_API_KEY environment variables.")
+    if not config.require_env("ACCOUNT_ID", "FIREWORKS_API_KEY"):
         return
 
     if args.prompt:

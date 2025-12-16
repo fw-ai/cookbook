@@ -36,7 +36,7 @@ The workflow covers data generation, training, deployment, and **post-training e
    ```bash
    python gen_toy_data.py
    ```
-   *This creates a 90/10 split: `toy_support_data_train.jsonl` and `toy_support_data_val.jsonl`.*
+   *This creates an 80/20 split: `toy_support_data_train.jsonl` and `toy_support_data_val.jsonl`.*
 
 3. **Train**
    Launch the fine-tuning job. This script automatically handles resource cleanup, dataset uploads, and launches the job.
