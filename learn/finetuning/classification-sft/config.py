@@ -91,6 +91,47 @@ def handle_deployment_failure(resp):
         exit(1)
 
 
+def find_deployments_for_model(model_id):
+    """Finds all deployments associated with a given model ID."""
+    print(f"🔍 Searching for deployments of {model_id}...")
+    matches = []
+    # Method 1: JSON
+    try:
+        res = subprocess.run(
+            ["firectl", "list", "deployments", "-o", "json"],
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode == 0:
+            deployments = json.loads(res.stdout)
+            for d in deployments:
+                d_model = d.get("model", "")
+                d_base = d.get("base_model", "")
+                if d_model == model_id or d_base == model_id:
+                    matches.append(d["name"])
+            return matches
+    except:
+        pass
+
+    # Method 2: Text fallback
+    try:
+        res = subprocess.run(
+            ["firectl", "list", "deployments"], capture_output=True, text=True
+        )
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                if model_id in line or MODEL_NAME in line:
+                    parts = line.split()
+                    if parts:
+                        dep_id = parts[0]
+                        if len(dep_id) > 5 and not dep_id.startswith("ID"):
+                            matches.append(dep_id)
+    except:
+        pass
+
+    return matches
+
+
 def run_cmd(cmd_list, check=True, capture_output=False, text=True):
     """Executes a shell command and prints it."""
     print(f"Running: {' '.join(cmd_list)}")

@@ -1,52 +1,8 @@
-import subprocess
 import json
 import time
 import requests
 import os
 import config
-
-
-def run_cmd(cmd_list):
-    """Executes a shell command and returns stdout."""
-    try:
-        # Using config.run_cmd to ensure printing
-        result = config.run_cmd(cmd_list, capture_output=True)
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Command failed: {e.stderr}")
-        exit(1)
-
-
-def find_deployments_for_model(model_id):
-    """Finds all deployments associated with a given model ID."""
-    matches = []
-    # Method 1: JSON
-    try:
-        res = config.run_cmd(
-            ["firectl", "list", "deployments", "-o", "json"], capture_output=True
-        )
-        deployments = json.loads(res.stdout)
-        for d in deployments:
-            d_model = d.get("model", "")
-            d_base = d.get("base_model", "")
-            if d_model == model_id or d_base == model_id:
-                matches.append(d["name"])
-        return matches
-    except:
-        pass
-
-    # Method 2: Text fallback
-    try:
-        res = config.run_cmd(["firectl", "list", "deployments"], capture_output=True)
-        for line in res.stdout.splitlines():
-            if model_id in line:
-                parts = line.split()
-                if parts:
-                    matches.append(parts[0])
-    except:
-        pass
-
-    return matches
 
 
 def main():
@@ -73,7 +29,7 @@ def main():
     full_model_id = config.FULL_MODEL_ID
 
     # Smart cleanup for deployments
-    deps = find_deployments_for_model(full_model_id)
+    deps = config.find_deployments_for_model(full_model_id)
     if deps:
         for d in deps:
             config.run_cmd(
@@ -95,7 +51,7 @@ def main():
 
     # 1. Upload Dataset
     print(f"📦 Uploading {config.DATA_FILE_TRAIN} as {config.DATASET_ID_TRAIN}...")
-    run_cmd(
+    config.run_cmd(
         [
             "firectl",
             "create",
@@ -106,7 +62,7 @@ def main():
     )
 
     print(f"📦 Uploading {config.DATA_FILE_VAL} as {config.DATASET_ID_VAL}...")
-    run_cmd(
+    config.run_cmd(
         ["firectl", "create", "dataset", config.DATASET_ID_VAL, config.DATA_FILE_VAL]
     )
 
@@ -148,7 +104,9 @@ def main():
             ]
         )
 
-    sft_output = run_cmd(cmd)
+    # Using config.run_cmd and getting stdout manually
+    res = config.run_cmd(cmd, capture_output=True)
+    sft_output = res.stdout.strip()
 
     job_data = json.loads(sft_output)
     # Extract ID (handling different API versions)

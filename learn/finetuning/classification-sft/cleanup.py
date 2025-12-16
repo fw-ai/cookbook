@@ -1,60 +1,5 @@
-import os
 import time
-import json
 import config
-
-
-def find_deployments_for_model(model_id):
-    """Finds all deployments associated with a given model ID."""
-    print(f"🔍 Searching for deployments of {model_id}...")
-    matches = []
-
-    # Method 1: Try JSON output
-    try:
-        res = config.run_cmd(
-            ["firectl", "list", "deployments", "-o", "json"], capture_output=True
-        )
-        if res.returncode == 0:
-            deployments = json.loads(res.stdout)
-            for d in deployments:
-                d_model = d.get("model", "")
-                d_base = d.get("base_model", "")
-                if d_model == model_id or d_base == model_id:
-                    matches.append(d["name"])
-            return matches
-        else:
-            print(f"⚠️  JSON list failed (code {res.returncode}): {res.stderr.strip()}")
-    except Exception as e:
-        print(f"⚠️  JSON parsing failed: {e}")
-
-    # Method 2: Text fallback (grep)
-    print("🔄 Retrying with text-based search...")
-    try:
-        res = config.run_cmd(["firectl", "list", "deployments"], capture_output=True)
-        lines = res.stdout.splitlines()
-
-        found = False
-        for line in lines:
-            # Check for full ID or short name
-            if model_id in line or config.MODEL_NAME in line:
-                # Assuming ID is the first column
-                parts = line.split()
-                if parts:
-                    dep_id = parts[0]
-                    # Validate it looks like an ID (alphanumeric, e.g. 'r50t3gzx')
-                    if len(dep_id) > 5 and not dep_id.startswith("ID"):
-                        matches.append(dep_id)
-                        found = True
-
-        if not found:
-            print("⚠️  No matches found in text output. Raw output snippet:")
-            # Print first few lines to debug
-            print("\n".join(lines[:10]))
-
-        return matches
-    except Exception as e:
-        print(f"⚠️  Text list failed: {e}")
-        return []
 
 
 def main():
@@ -73,7 +18,7 @@ def main():
 
     print("\n--- 1. Deleting Deployments ---")
     # Find active deployments first
-    deployment_ids = find_deployments_for_model(config.FULL_MODEL_ID)
+    deployment_ids = config.find_deployments_for_model(config.FULL_MODEL_ID)
 
     if not deployment_ids:
         print("No active deployments found for this model.")
