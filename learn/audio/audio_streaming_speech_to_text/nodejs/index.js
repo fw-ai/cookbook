@@ -49,7 +49,7 @@ async function main() {
 
     // 4. Open WebSocket to the Fireworks streaming endpoint
     const ws = new WebSocket(
-      "wss://audio-streaming.us-virginia-1.direct.fireworks.ai/v1/audio/transcriptions/streaming?language=en",
+      "wss://audio-streaming.api.fireworks.ai/v1/audio/transcriptions/streaming?language=en",
       {
         headers: {
           "Authorization": process.env.FIREWORKS_API_KEY
