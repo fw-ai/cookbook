@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """DPO training loop with concurrent reference caching and pipelined training.
 
-Optimisations (imported from tinker-cookbook where applicable):
+Optimisations:
 
-  - **Concurrent ref caching**: ``gather_with_progress`` from tinker-cookbook
-    computes reference logprobs for all pairs in parallel instead of
-    sequentially.
+  - **Concurrent ref caching**: ``gather_with_progress`` computes reference
+    logprobs for all pairs in parallel instead of sequentially.
   - **Pipelined training**: ``forward_backward_custom`` and ``optim_step``
     futures are issued back-to-back so they land on the same trainer
     clock cycle, matching tinker-cookbook's ``train_step`` pattern.
@@ -26,12 +25,12 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
-from typing import Any
+from typing import Any, TypeVar, Awaitable, Iterable
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
 import tinker
-from tinker_cookbook.rl.train import gather_with_progress
+from tqdm import tqdm
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.cookbook.utils import (
@@ -60,6 +59,33 @@ from fireworks.training.sdk.weight_syncer import WeightSyncer
 from fireworks.training.cookbook.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+
+async def gather_with_progress(
+    awaitables: Iterable[Awaitable[_T]],
+    *,
+    desc: str,
+) -> list[_T]:
+    """Await a collection of awaitables while showing a progress bar."""
+    tasks = [asyncio.create_task(awaitable) for awaitable in awaitables]
+    if not tasks:
+        return []
+
+    results: list[_T] = []
+    try:
+        with tqdm(total=len(tasks), desc=desc) as pbar:
+            for task in asyncio.as_completed(tasks):
+                results.append(await task)
+                pbar.update(1)
+    except Exception:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    return results
 
 # ---------------------------------------------------------------------------
 # Config
