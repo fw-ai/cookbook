@@ -1,4 +1,5 @@
 fireworks-ai[training]
+tinker-cookbook
 tqdm
 torch
 datasets
