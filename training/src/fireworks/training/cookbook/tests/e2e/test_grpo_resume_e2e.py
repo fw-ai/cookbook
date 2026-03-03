@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import re
-import time
 import logging
 
 import pytest
@@ -64,13 +63,7 @@ class TestGRPOResumeE2E:
 
         grpo_mod.reward_fn = _gsm8k_reward
 
-        existing_deploy_id = os.environ.get("GRPO_RESUME_DEPLOYMENT_ID")
-        if existing_deploy_id:
-            deployment_id = existing_deploy_id
-            create_deployment = False
-        else:
-            deployment_id = f"grpo-resume-e2e-{int(time.time())}"
-            create_deployment = True
+        deployment_id = os.environ.get("GRPO_RESUME_DEPLOYMENT_ID")
 
         shared_infra = InfraConfig(
             region=e2e_region,
@@ -96,7 +89,6 @@ class TestGRPOResumeE2E:
             infra=shared_infra,
             deployment=DeployConfig(
                 deployment_id=deployment_id,
-                create_deployment=create_deployment,
                 deployment_shape=e2e_deployment_shape,
                 deployment_region=e2e_region,
                 tokenizer_model=e2e_tokenizer_model,
@@ -138,7 +130,6 @@ class TestGRPOResumeE2E:
             infra=shared_infra,
             deployment=DeployConfig(
                 deployment_id=deployment_id,
-                create_deployment=False,
                 tokenizer_model=e2e_tokenizer_model,
             ),
             hotload=HotloadConfig(

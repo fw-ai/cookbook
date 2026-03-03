@@ -53,9 +53,6 @@ def resolve_and_apply_shape(
             dsv = profile.deployment_shape_version
             shape_name = re.sub(r"/versions/[^/]+$", "", dsv)
             deploy_cfg.deployment_shape = shape_name
-        if not deploy_cfg.deployment_id:
-            model_short = base_model.rsplit("/", 1)[-1]
-            deploy_cfg.deployment_id = f"{model_short}-{int(time.time())}"
 
     return profile
 
@@ -112,17 +109,31 @@ def setup_deployment(
     deploy_cfg: DeployConfig,
     base_model: str,
     infra: InfraConfig,
-) -> DeploymentInfo | None:
-    """Create or get a deployment. Returns None if no deployment configured."""
-    if not deploy_cfg.create_deployment or not deploy_cfg.deployment_id:
-        if deploy_cfg.deployment_id:
-            return deploy_mgr.get(deploy_cfg.deployment_id)
-        return None
-    dep_config = deploy_cfg.to_deployment_config(base_model, infra)
-    info = deploy_mgr.create_or_get(dep_config)
+) -> DeploymentInfo:
+    """Set up an inference deployment.
+
+    * If ``deploy_cfg.deployment_id`` is set, the existing deployment is
+      fetched and waited on until READY.
+    * If ``deploy_cfg.deployment_id`` is ``None``, a new deployment is
+      created with an auto-generated ID derived from the model name.
+    """
+    if deploy_cfg.deployment_id:
+        info = deploy_mgr.get(deploy_cfg.deployment_id)
+        if not info:
+            raise RuntimeError(
+                f"Deployment '{deploy_cfg.deployment_id}' not found. "
+                f"Remove deployment_id to auto-create a new deployment, "
+                f"or verify the ID is correct."
+            )
+    else:
+        model_short = base_model.rsplit("/", 1)[-1]
+        deploy_cfg.deployment_id = f"{model_short}-{int(time.time())}"
+        dep_config = deploy_cfg.to_deployment_config(base_model, infra)
+        info = deploy_mgr.create_or_get(dep_config)
+
     if info.state != "READY":
         info = deploy_mgr.wait_for_ready(
-            dep_config.deployment_id,
+            deploy_cfg.deployment_id,
             timeout_s=deploy_cfg.deployment_timeout_s,
         )
     return info

@@ -53,7 +53,8 @@ class DeployConfig:
     """Inference deployment settings."""
 
     deployment_id: str | None = None
-    create_deployment: bool = True
+    """If set, use this existing deployment.  If ``None``, a new deployment
+    is auto-created (ID derived from the base model name)."""
     deployment_shape: str | None = None
     deployment_region: str | None = None
     deployment_accelerator_type: str | None = None
@@ -62,7 +63,12 @@ class DeployConfig:
     deployment_extra_args: list[str] | None = None
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).
-    Required for recipes that use client-side tokenization (GRPO)."""
+    Required when ``use_chat_completions`` is False (client-side tokenization)."""
+    use_chat_completions: bool = False
+    """Use ``/v1/chat/completions`` with server-side tokenization instead of
+    the TITO ``/inference/v1/completions`` path.  When True, ``tokenizer_model``
+    is not required for sampling (but may still be needed for reward computation
+    or other purposes)."""
     sample_timeout: int = 600
     """HTTP read timeout in seconds for sampling completions (default 10 min).
     Increase for R3 + long completions where responses can be very large."""

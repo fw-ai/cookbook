@@ -79,7 +79,6 @@ class TestGRPOE2E:
             ),
             deployment=DeployConfig(
                 deployment_id=f"grpo-e2e-{ts}",
-                create_deployment=True,
                 deployment_shape=e2e_deployment_shape,
                 deployment_region=e2e_region,
                 tokenizer_model=e2e_tokenizer_model,

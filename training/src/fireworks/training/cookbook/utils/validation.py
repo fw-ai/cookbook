@@ -52,8 +52,8 @@ def validate_config(
             format_sdk_error(
                 "Hotload requires a deployment",
                 f"hot_load_interval={hotload.hot_load_interval} but no deployment_id is configured.",
-                "Set deployment_id in DeployConfig when using hotload.\n"
-                "  Example: DeployConfig(deployment_id='my-deployment', create_deployment=True)",
+                "Set deployment_id in DeployConfig to use an existing deployment,\n"
+                "  or leave it unset and call setup_deployment() to auto-create one.",
                 docs_url=DOCS_HOTLOAD,
             )
         )
@@ -65,16 +65,6 @@ def validate_config(
                 "Cannot hotload before training without a deployment_id.",
                 "Set deployment_id in DeployConfig.",
                 docs_url=DOCS_HOTLOAD,
-            )
-        )
-
-    if deploy.create_deployment and not deploy.deployment_id:
-        errors.append(
-            format_sdk_error(
-                "create_deployment requires a deployment_id",
-                "Cannot create a deployment without specifying an ID.",
-                "Set deployment_id in DeployConfig.",
-                docs_url=DOCS_DEPLOYMENTS,
             )
         )
 
@@ -224,7 +214,6 @@ def validate_preflight(
         ),
         deploy=DeployConfig(
             deployment_id=getattr(args, "hot_load_deployment_id", None),
-            create_deployment=getattr(args, "create_deployment", False),
         ),
         infra=InfraConfig(),
     )

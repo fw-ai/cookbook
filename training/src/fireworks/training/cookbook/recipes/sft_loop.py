@@ -68,7 +68,7 @@ class Config:
     lora_rank: int = 0
 
     infra: InfraConfig = field(default_factory=InfraConfig)
-    deployment: DeployConfig = field(default_factory=lambda: DeployConfig(create_deployment=False))
+    deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=lambda: HotloadConfig(hot_load_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
     resume: ResumeConfig = field(default_factory=ResumeConfig)
@@ -114,7 +114,8 @@ def main(
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, account_id=account, base_url=base_url)
 
-    setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+    if cfg.deployment.deployment_id:
+        setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
     endpoint = create_trainer_job(
         rlor_mgr,

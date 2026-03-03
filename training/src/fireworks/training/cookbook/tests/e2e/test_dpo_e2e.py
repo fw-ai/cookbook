@@ -78,7 +78,7 @@ class TestDPOE2E:
                     accelerator_type=e2e_training_accelerator,
                     custom_image_tag=custom_image_tag,
                 ),
-                deployment=DeployConfig(create_deployment=False),
+                deployment=DeployConfig(),
                 hotload=HotloadConfig(hot_load_interval=0),
             )
 

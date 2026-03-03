@@ -16,7 +16,6 @@ def _cfg(**overrides):
         dataset="data/test.jsonl",
         hot_load_interval=0,
         hot_load_deployment_id=None,
-        create_deployment=False,
         hot_load_before_training=False,
     )
     defaults.update(overrides)
@@ -55,11 +54,6 @@ class TestCredentialChecks:
 class TestHotloadConfig:
     def test_hot_load_interval_without_deployment_id_raises(self):
         args = _cfg(hot_load_interval=5, hot_load_deployment_id=None)
-        with pytest.raises(RuntimeError, match="deployment_id"):
-            validate_preflight(args, fw_api_key="k", fw_account_id="a")
-
-    def test_create_deployment_without_deployment_id_raises(self):
-        args = _cfg(create_deployment=True, hot_load_deployment_id=None)
         with pytest.raises(RuntimeError, match="deployment_id"):
             validate_preflight(args, fw_api_key="k", fw_account_id="a")
 

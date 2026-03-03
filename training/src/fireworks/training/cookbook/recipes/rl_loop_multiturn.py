@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""GRPO training loop with concurrent rollout.
+"""GRPO training loop using server-side tokenization (chat completions).
 
-A readable, modifiable RL training loop using the Fireworks RLOR API.
-Fork this script and customise the reward function, loss, or sampling
-strategy to fit your task.
+Variant of ``rl_loop.py`` that uses ``/v1/chat/completions`` with
+``return_token_ids=True`` instead of client-side TITO tokenization.
+No local HuggingFace tokenizer is required for sampling.
 
-The training loop streams samples from an inference deployment, fires
-``fwd_bwd`` calls in greedy batches (capped by
-``max_samples_per_fwd_bwd``), and runs ``optim_step`` after collecting
-``prompt_groups_per_step`` valid groups per optimizer step.
+This script demonstrates multi-turn conversation support: each dataset
+row contains a full ``messages`` list, and all non-assistant turns are
+sent to the deployment for completion.
 
 Usage:
     export FIREWORKS_API_KEY=...
     export FIREWORKS_ACCOUNT_ID=...
-    python cookbook/recipes/rl_loop.py
+    python cookbook/recipes/rl_loop_multiturn.py
 """
 
 from __future__ import annotations
@@ -61,7 +60,6 @@ from fireworks.training.cookbook.utils.rl.cispo import CISPOConfig
 from fireworks.training.cookbook.utils.rl.train import MinibatchTrainFns, run_rl_loop
 from fireworks.training.cookbook.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from fireworks.training.cookbook.utils.rl.metrics import compute_step_metrics
-from fireworks.training.cookbook.utils.rl.router_replay import build_r3_routing_matrices
 
 logger = logging.getLogger(__name__)
 
@@ -89,22 +87,8 @@ class Config:
     """Number of prompt groups per optimizer step."""
 
     min_samples_per_fwd_bwd: int | None = None
-    """Min samples to trigger a ``fwd_bwd`` call.
-
-    When the buffer reaches this threshold, ``fwd_bwd`` fires immediately
-    instead of waiting for the full optimizer step. Defaults to
-    ``max_samples_per_fwd_bwd``.
-    """
-
     max_samples_per_fwd_bwd: int = 256
-    """Max samples per fwd_bwd call.  Controls gradient
-    accumulation granularity -- fewer, larger calls reduce RPC overhead."""
-
     max_concurrent: int = 32
-    """Cap on concurrent in-flight sampling requests to the inference server."""
-
-    router_replay: bool = False
-    router_replay_completion_only: bool = True
 
     policy_loss: str = "grpo"
     """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
@@ -116,9 +100,11 @@ class Config:
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
 
     infra: InfraConfig = field(default_factory=InfraConfig)
-    deployment: DeployConfig = field(default_factory=DeployConfig)
+    deployment: DeployConfig = field(
+        default_factory=lambda: DeployConfig(use_chat_completions=True),
+    )
     hotload: HotloadConfig = field(default_factory=HotloadConfig)
-    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
+    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-multiturn"))
     resume: ResumeConfig = field(default_factory=ResumeConfig)
 
 
@@ -150,11 +136,7 @@ def reward_fn(completion: str, row: dict) -> float:
 
 
 def should_accept(pg: PromptGroup) -> bool:
-    """Reject groups where all rewards are identical (zero-variance).
-
-    Passed to ``run_rl_loop`` as a pluggable filter.  Replace with your
-    own logic (e.g. minimum reward threshold, response length filter).
-    """
+    """Reject groups where all rewards are identical (zero-variance)."""
     return len(set(pg.rewards)) > 1
 
 
@@ -191,12 +173,6 @@ def main(
         1,
         -(-prompt_groups_per_step // min_prompt_groups_per_fwd_bwd),
     )
-    if not cfg.deployment.use_chat_completions and not cfg.deployment.tokenizer_model:
-        raise ValueError(
-            "deployment.tokenizer_model is required for client-side tokenization. "
-            "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B'), "
-            "or set use_chat_completions=True to use server-side tokenization."
-        )
     setup_wandb(
         cfg.wandb,
         {
@@ -217,11 +193,6 @@ def main(
         rlor_mgr = TrainerJobManager(api_key=api_key, account_id=account, base_url=base_url)
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, account_id=account, base_url=base_url)
-
-    # -- Resolve training shapes -----------------------------------------------
-    # Policy shape is resolved first (also populates deploy_cfg).
-    # Ref shape is resolved separately if it differs from the policy shape.
-    # With skip_validations, shapes still provide defaults but user args override.
 
     profile = None
     if cfg.infra.training_shape_id:
@@ -250,19 +221,6 @@ def main(
 
     dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
-    logger.info(
-        "Streaming schedule: prompt_groups_per_step=%d | "
-        "min_prompt_groups_per_fwd_bwd=%d (%d samples) | "
-        "max_prompt_groups_per_fwd_bwd=%d (%d samples) | "
-        "server_grad_accum_steps=%d",
-        prompt_groups_per_step,
-        min_prompt_groups_per_fwd_bwd,
-        min_samples_per_fwd_bwd,
-        max_prompt_groups_per_fwd_bwd,
-        max_samples_per_fwd_bwd,
-        server_grad_accum_steps,
-    )
-
     with ThreadPoolExecutor(max_workers=2) as pool:
         pol_fut = pool.submit(
             create_trainer_job, rlor_mgr,
@@ -286,13 +244,9 @@ def main(
     reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
 
     inference_model = dep_info.inference_model if dep_info else cfg.base_model
-    tokenizer = None
-    if cfg.deployment.tokenizer_model:
-        import transformers
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
     sampler = DeploymentSampler(
         inference_url=deploy_mgr.inference_url,
-        model=inference_model, api_key=api_key, tokenizer=tokenizer,
+        model=inference_model, api_key=api_key,
     )
     weight_syncer = WeightSyncer(
         policy_client=policy.inner, deploy_mgr=deploy_mgr,
@@ -331,27 +285,26 @@ def main(
         max_tokens=cfg.max_completion_tokens, temperature=cfg.temperature,
         max_seq_len=cfg.max_seq_len,
         http_timeout=cfg.deployment.sample_timeout,
+        logprobs=True,
     )
-    if cfg.router_replay:
-        sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
-    sample_kwargs["logprobs"] = True
 
-    # -- Sample one prompt (VISIBLE -- customise this) ----------------------
+    # -- Sample one prompt (server-side tokenization) -----------------------
 
     async def sample_one_prompt(row: dict) -> PromptGroup | None:
-        """Sample completions for one prompt and return a PromptGroup."""
+        """Sample completions for one prompt via chat completions API.
+
+        Sends the full multi-turn message history (minus any assistant
+        turns) to ``/v1/chat/completions``.  The server handles
+        tokenization and returns token IDs alongside the text.
+        """
         messages = row.get("messages", [])
         input_messages = [m for m in messages if m.get("role") != "assistant"]
         if not input_messages:
             return None
 
         try:
-            sample_fn = (
-                sampler.sample_chat_completions if cfg.deployment.use_chat_completions
-                else sampler.sample_with_tokens
-            )
             sampled = await asyncio.to_thread(
-                sample_fn,
+                sampler.sample_chat_completions,
                 messages=input_messages,
                 n=completions_per_prompt,
                 **sample_kwargs,
@@ -378,16 +331,8 @@ def main(
                 continue
             model_input_len = len(tokens) - 1
 
-            rm = None
-            if cfg.router_replay:
-                rm = build_r3_routing_matrices(
-                    s.routing_matrices, s.prompt_len, model_input_len,
-                    completion_only=cfg.router_replay_completion_only,
-                )
-
-            # Policy path keeps router replay matrices; reference path stays token-only.
             policy_datum = tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),
+                model_input=tinker.ModelInput.from_ints(tokens[:-1]),
                 loss_fn_inputs={
                     "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
                 },
@@ -408,10 +353,7 @@ def main(
                     f"Ensure the deployment returns logprobs."
                 )
             response_start = max(0, prompt_len - 1)
-            echoed = getattr(s, "logprobs_echoed", False)
-            aligned = (
-                list(s.inference_logprobs) if echoed else [0.0] * response_start + list(s.inference_logprobs)
-            )
+            aligned = [0.0] * response_start + list(s.inference_logprobs)
             inf_logprobs_aligned.append(aligned)
 
         if not policy_data:
@@ -427,10 +369,9 @@ def main(
             completion_lens=comp_lens, truncated=trunc,
         )
 
-    # -- Streaming callbacks (per-group / per-minibatch / per-step) ----------
+    # -- Streaming callbacks ------------------------------------------------
 
     def ref_forward_batch(groups: list[PromptGroup]) -> None:
-        """Compute reference logprobs for a batch of prompt groups (one call)."""
         all_ref_data = [d for pg in groups for d in pg.ref_data]
         ref_fwd = reference.forward(all_ref_data, "cross_entropy")
         idx = 0
@@ -442,7 +383,6 @@ def main(
             idx += n
 
     def fwd_bwd_one(sub: list[PromptGroup]):
-        """Run forward_backward_custom on one micro-batch."""
         data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
         return policy.forward_backward_custom(data, loss_builder(adv, ref_lp, prompt_lens, inf_lp))
 
@@ -453,7 +393,6 @@ def main(
         n_accum: int,
         loop_stats: dict | None = None,
     ) -> tuple[int, dict]:
-        """optim_step + hotload + metrics. Called after all fwd_bwd complete."""
         import time as _t
         t0 = _t.time()
         optim_result = policy.optim_step(adam_params)
@@ -498,7 +437,6 @@ def main(
     # -- Run ----------------------------------------------------------------
 
     def _loop_metrics_callback(loop_metrics: dict) -> None:
-        """Called by run_rl_loop after each train step with loop-level metrics."""
         wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
     minibatch_fns = MinibatchTrainFns(

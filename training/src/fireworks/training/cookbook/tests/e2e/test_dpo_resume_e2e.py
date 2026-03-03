@@ -84,7 +84,7 @@ class TestDPOResumeE2E:
                 max_seq_len=4096,
                 max_pairs=8,
                 infra=shared_infra,
-                deployment=DeployConfig(create_deployment=False),
+                deployment=DeployConfig(),
                 hotload=HotloadConfig(hot_load_interval=0, dcp_save_interval=2),
             )
 
@@ -112,7 +112,7 @@ class TestDPOResumeE2E:
                 max_seq_len=4096,
                 max_pairs=8,
                 infra=shared_infra,
-                deployment=DeployConfig(create_deployment=False),
+                deployment=DeployConfig(),
                 hotload=HotloadConfig(hot_load_interval=0),
                 resume=ResumeConfig(resume_from=dcp_name, resume_job_id=phase1_job_id),
             )

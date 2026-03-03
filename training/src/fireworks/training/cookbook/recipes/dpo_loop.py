@@ -110,7 +110,7 @@ class Config:
     """Max concurrent reference forward passes during cache warm-up."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
-    deployment: DeployConfig = field(default_factory=lambda: DeployConfig(create_deployment=False))
+    deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=lambda: HotloadConfig(hot_load_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     resume: ResumeConfig = field(default_factory=ResumeConfig)
@@ -350,7 +350,8 @@ def main(
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, account_id=account, base_url=base_url)
 
-    setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+    if cfg.deployment.deployment_id:
+        setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
     ref_extra = list(cfg.infra.extra_args or [])
     if "--forward-only" not in ref_extra:
