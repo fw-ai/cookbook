@@ -1,2 +1,7 @@
 fireworks-ai[training]
 tqdm
+torch
+datasets
+tiktoken
+numpy
+wandb
