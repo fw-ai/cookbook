@@ -10,6 +10,7 @@ from __future__ import annotations
 import torch
 import pytest
 
+from training.utils.losses import make_batch_dpo_loss_fn
 from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
 from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
@@ -172,6 +173,86 @@ class TestGRPOLossBatched:
 
         assert "inference_diff" in metrics
         assert "inference_kld" in metrics
+
+
+class TestBatchDPOLoss:
+    """Tests for ``make_batch_dpo_loss_fn``."""
+
+    def _make_ref_logprobs(self, seq_len: int, seed: int = 0) -> list[float]:
+        torch.manual_seed(seed)
+        return torch.randn(seq_len).tolist()
+
+    def test_single_pair_produces_valid_loss(self):
+        """Batched loss with 1 pair should produce a valid scalar loss."""
+        ref_c = self._make_ref_logprobs(10, seed=0)
+        ref_r = self._make_ref_logprobs(10, seed=1)
+        rs = 3
+        beta = 0.1
+
+        lp_c = _make_dummy_logprobs(10, seed=10)
+        lp_r = _make_dummy_logprobs(10, seed=11)
+
+        fn = make_batch_dpo_loss_fn([ref_c], [ref_r], [rs], beta)
+        loss, met = fn([], [lp_c.clone(), lp_r.clone()])
+
+        assert loss.dim() == 0
+        assert met["batch_pairs"] == 1
+        assert "dpo_loss" in met
+        assert "margin" in met
+        assert met["accuracy"] in (0.0, 1.0)
+
+    def test_multi_pair_averages_correctly(self):
+        """Batched loss with 2 pairs == average of two single-pair calls."""
+        ref_c0 = self._make_ref_logprobs(8, seed=0)
+        ref_r0 = self._make_ref_logprobs(8, seed=1)
+        ref_c1 = self._make_ref_logprobs(12, seed=2)
+        ref_r1 = self._make_ref_logprobs(12, seed=3)
+        rs0, rs1 = 2, 5
+        beta = 0.1
+
+        lp_c0 = _make_dummy_logprobs(8, seed=10)
+        lp_r0 = _make_dummy_logprobs(8, seed=11)
+        lp_c1 = _make_dummy_logprobs(12, seed=12)
+        lp_r1 = _make_dummy_logprobs(12, seed=13)
+
+        fn0 = make_batch_dpo_loss_fn([ref_c0], [ref_r0], [rs0], beta)
+        fn1 = make_batch_dpo_loss_fn([ref_c1], [ref_r1], [rs1], beta)
+        loss0, _ = fn0([], [lp_c0.clone(), lp_r0.clone()])
+        loss1, _ = fn1([], [lp_c1.clone(), lp_r1.clone()])
+        expected_avg = (loss0 + loss1) / 2
+
+        fn_batch = make_batch_dpo_loss_fn(
+            [ref_c0, ref_c1], [ref_r0, ref_r1], [rs0, rs1], beta,
+        )
+        loss_b, met_b = fn_batch(
+            [], [lp_c0.clone(), lp_r0.clone(), lp_c1.clone(), lp_r1.clone()],
+        )
+
+        assert torch.allclose(expected_avg, loss_b, atol=1e-5), (
+            f"Batched {loss_b.item()} != average {expected_avg.item()}"
+        )
+        assert met_b["batch_pairs"] == 2
+
+    def test_wrong_logprobs_count_raises(self):
+        """Passing wrong number of logprobs should raise."""
+        fn = make_batch_dpo_loss_fn([[0.0]], [[0.0]], [0], 0.1)
+        lp = _make_dummy_logprobs(1, seed=0)
+        with pytest.raises(AssertionError, match="Expected 2 logprobs"):
+            fn([], [lp])
+
+    def test_gradient_flows(self):
+        """Gradients should propagate through the batched loss."""
+        ref_c = self._make_ref_logprobs(6, seed=0)
+        ref_r = self._make_ref_logprobs(6, seed=1)
+        fn = make_batch_dpo_loss_fn([ref_c], [ref_r], [2], 0.1)
+
+        lp_c = torch.randn(6, requires_grad=True)
+        lp_r = torch.randn(6, requires_grad=True)
+        loss, _ = fn([], [lp_c, lp_r])
+        loss.backward()
+
+        assert lp_c.grad is not None
+        assert lp_r.grad is not None
 
 
 class TestTISWeights:
