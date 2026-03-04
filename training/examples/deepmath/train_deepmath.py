@@ -64,7 +64,7 @@ class TrainArgs:
     kl_beta: float = 0.001
     temperature: float = 1.0
     max_completion_tokens: int = 16 * 1024
-    prompt_groups_per_step: int = 8
+    prompt_groups_per_step: int = 32
     min_samples_per_fwd_bwd: int = 8
     router_replay: bool = False
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))

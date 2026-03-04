@@ -164,6 +164,7 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
+    cleanup_on_exit: bool = False,
 ):
     cfg = config
 
@@ -240,304 +241,331 @@ def main(
     import time as _time
     _infra_start = _time.time()
 
-    dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+    policy_job_id: str | None = None
+    reference_job_id: str | None = None
 
-    logger.info(
-        "Streaming schedule: prompt_groups_per_step=%d | "
-        "min_prompt_groups_per_fwd_bwd=%d (%d samples) | "
-        "server_grad_accum_steps=%d",
-        prompt_groups_per_step,
-        min_prompt_groups_per_fwd_bwd,
-        min_samples_per_fwd_bwd,
-        server_grad_accum_steps,
-    )
+    try:
+        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
-    if use_reference:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(
-                create_trainer_job, rlor_mgr,
+        logger.info(
+            "Streaming schedule: prompt_groups_per_step=%d | "
+            "min_prompt_groups_per_fwd_bwd=%d (%d samples) | "
+            "server_grad_accum_steps=%d",
+            prompt_groups_per_step,
+            min_prompt_groups_per_fwd_bwd,
+            min_samples_per_fwd_bwd,
+            server_grad_accum_steps,
+        )
+
+        if use_reference:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pol_fut = pool.submit(
+                    create_trainer_job, rlor_mgr,
+                    base_model=cfg.base_model, infra=cfg.infra, profile=profile,
+                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                    learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                    display_name="grpo-policy",
+                    hot_load_deployment_id=cfg.deployment.deployment_id,
+                )
+                ref_fut = pool.submit(
+                    create_trainer_job, rlor_mgr,
+                    base_model=cfg.base_model, infra=cfg.infra, profile=ref_profile,
+                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                    learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                    display_name="grpo-reference", forward_only=True,
+                )
+                policy_ep = pol_fut.result()
+                policy_job_id = policy_ep.job_id
+                reference_ep = ref_fut.result()
+                reference_job_id = reference_ep.job_id
+        else:
+            policy_ep = create_trainer_job(
+                rlor_mgr,
                 base_model=cfg.base_model, infra=cfg.infra, profile=profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
                 display_name="grpo-policy",
                 hot_load_deployment_id=cfg.deployment.deployment_id,
             )
-            ref_fut = pool.submit(
-                create_trainer_job, rlor_mgr,
-                base_model=cfg.base_model, infra=cfg.infra, profile=ref_profile,
-                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                display_name="grpo-reference", forward_only=True,
-            )
-            policy_ep = pol_fut.result()
-            reference_ep = ref_fut.result()
-    else:
-        policy_ep = create_trainer_job(
-            rlor_mgr,
-            base_model=cfg.base_model, infra=cfg.infra, profile=profile,
-            lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-            display_name="grpo-policy",
-            hot_load_deployment_id=cfg.deployment.deployment_id,
+            policy_job_id = policy_ep.job_id
+            reference_ep = None
+
+        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
+        reference = (
+            ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+            if reference_ep else None
         )
-        reference_ep = None
 
-    policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
-    reference = (
-        ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
-        if reference_ep else None
-    )
+        import transformers
 
-    import transformers
+        inference_model = dep_info.inference_model if dep_info else cfg.base_model
+        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
+        sampler = DeploymentSampler(
+            inference_url=deploy_mgr.inference_url,
+            model=inference_model, api_key=api_key, tokenizer=tokenizer,
+        )
+        weight_syncer = WeightSyncer(
+            policy_client=policy.inner, deploy_mgr=deploy_mgr,
+            deployment_id=cfg.deployment.deployment_id, base_model=cfg.base_model,
+            hotload_timeout=cfg.hotload.hot_load_timeout,
+            first_checkpoint_type=cfg.hotload.first_checkpoint_type,
+            dcp_timeout=cfg.hotload.dcp_timeout,
+        )
 
-    inference_model = dep_info.inference_model if dep_info else cfg.base_model
-    tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
-    sampler = DeploymentSampler(
-        inference_url=deploy_mgr.inference_url,
-        model=inference_model, api_key=api_key, tokenizer=tokenizer,
-    )
-    weight_syncer = WeightSyncer(
-        policy_client=policy.inner, deploy_mgr=deploy_mgr,
-        deployment_id=cfg.deployment.deployment_id, base_model=cfg.base_model,
-        hotload_timeout=cfg.hotload.hot_load_timeout,
-        first_checkpoint_type=cfg.hotload.first_checkpoint_type,
-        dcp_timeout=cfg.hotload.dcp_timeout,
-    )
+        infra_boot_time = _time.time() - _infra_start
+        boot_metrics: dict = {
+            "train/step": 0,
+            "infra/total_boot_time": infra_boot_time,
+        }
+        if deploy_mgr.boot_time_s is not None:
+            boot_metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
+        wandb_log(boot_metrics, step=0)
 
-    infra_boot_time = _time.time() - _infra_start
-    boot_metrics: dict = {
-        "train/step": 0,
-        "infra/total_boot_time": infra_boot_time,
-    }
-    if deploy_mgr.boot_time_s is not None:
-        boot_metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
-    wandb_log(boot_metrics, step=0)
+        step_offset, _ = setup_resume(policy, cfg.resume)
+        if cfg.hotload.hot_load_before_training and cfg.deployment.deployment_id:
+            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
+            weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
-    step_offset, _ = setup_resume(policy, cfg.resume)
-    if cfg.hotload.hot_load_before_training and cfg.deployment.deployment_id:
-        name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-        weight_syncer.save_and_hotload(name, checkpoint_type="base")
+        # -- Prepare sampling and training --------------------------------------
 
-    # -- Prepare sampling and training --------------------------------------
+        dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        loss_builder = build_loss_fn(
+            policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
+            tis_enabled=cfg.tis_enabled, tis_config=cfg.tis,
+            dapo_config=cfg.dapo, gspo_config=cfg.gspo,
+            cispo_config=cfg.cispo,
+        )
 
-    dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
-    adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-    loss_builder = build_loss_fn(
-        policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
-        tis_enabled=cfg.tis_enabled, tis_config=cfg.tis,
-        dapo_config=cfg.dapo, gspo_config=cfg.gspo,
-        cispo_config=cfg.cispo,
-    )
+        sample_kwargs: dict = dict(
+            max_tokens=cfg.max_completion_tokens, temperature=cfg.temperature,
+            max_seq_len=cfg.max_seq_len,
+            http_timeout=cfg.deployment.sample_timeout,
+        )
+        if cfg.router_replay:
+            sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
+        sample_kwargs["logprobs"] = True
 
-    sample_kwargs: dict = dict(
-        max_tokens=cfg.max_completion_tokens, temperature=cfg.temperature,
-        max_seq_len=cfg.max_seq_len,
-        http_timeout=cfg.deployment.sample_timeout,
-    )
-    if cfg.router_replay:
-        sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
-    sample_kwargs["logprobs"] = True
+        # -- Sample one prompt (VISIBLE -- customise this) ----------------------
 
-    # -- Sample one prompt (VISIBLE -- customise this) ----------------------
+        async def sample_one_prompt(row: dict) -> PromptGroup | None:
+            """Sample completions for one prompt and return a PromptGroup."""
+            messages = row.get("messages", [])
+            input_messages = [m for m in messages if m.get("role") != "assistant"]
+            if not input_messages:
+                return None
 
-    async def sample_one_prompt(row: dict) -> PromptGroup | None:
-        """Sample completions for one prompt and return a PromptGroup."""
-        messages = row.get("messages", [])
-        input_messages = [m for m in messages if m.get("role") != "assistant"]
-        if not input_messages:
-            return None
-
-        try:
-            sampled = await asyncio.to_thread(
-                sampler.sample_with_tokens,
-                messages=input_messages,
-                n=completions_per_prompt,
-                **sample_kwargs,
-            )
-        except Exception as e:
-            logger.warning("Sampling failed: %s", e)
-            return None
-
-        if not sampled or len(sampled) < completions_per_prompt:
-            return None
-
-        rewards = [reward_fn(s.text, row) for s in sampled]
-        advantages = compute_advantages(rewards)
-
-        prompt_len = sampled[0].prompt_len
-        policy_data: List[tinker.Datum] = []
-        reference_data: List[tinker.Datum] = []
-        adv_filtered: List[float] = []
-        inf_logprobs_aligned: List[List[float]] = []
-
-        for idx, s in enumerate(sampled):
-            tokens = s.full_tokens
-            if len(tokens) < 2:
-                continue
-            model_input_len = len(tokens) - 1
-
-            rm = None
-            if cfg.router_replay:
-                rm = build_r3_routing_matrices(
-                    s.routing_matrices, s.prompt_len, model_input_len,
-                    completion_only=cfg.router_replay_completion_only,
+            try:
+                sampled = await asyncio.to_thread(
+                    sampler.sample_with_tokens,
+                    messages=input_messages,
+                    n=completions_per_prompt,
+                    **sample_kwargs,
                 )
+            except Exception as e:
+                logger.warning("Sampling failed: %s", e)
+                return None
 
-            policy_datum = tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),
-                loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
-                },
-            )
-            policy_data.append(policy_datum)
+            if not sampled or len(sampled) < completions_per_prompt:
+                return None
 
-            if use_reference:
-                reference_datum = tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+            rewards = [reward_fn(s.text, row) for s in sampled]
+            advantages = compute_advantages(rewards)
+
+            prompt_len = sampled[0].prompt_len
+            policy_data: List[tinker.Datum] = []
+            reference_data: List[tinker.Datum] = []
+            adv_filtered: List[float] = []
+            inf_logprobs_aligned: List[List[float]] = []
+
+            for idx, s in enumerate(sampled):
+                tokens = s.full_tokens
+                if len(tokens) < 2:
+                    continue
+                model_input_len = len(tokens) - 1
+
+                rm = None
+                if cfg.router_replay:
+                    rm = build_r3_routing_matrices(
+                        s.routing_matrices, s.prompt_len, model_input_len,
+                        completion_only=cfg.router_replay_completion_only,
+                    )
+
+                policy_datum = tinker.Datum(
+                    model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),
                     loss_fn_inputs={
                         "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
                     },
                 )
-                reference_data.append(reference_datum)
+                policy_data.append(policy_datum)
 
-            adv_filtered.append(advantages[idx])
+                if use_reference:
+                    reference_datum = tinker.Datum(
+                        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+                        loss_fn_inputs={
+                            "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
+                        },
+                    )
+                    reference_data.append(reference_datum)
 
-            if not s.inference_logprobs:
-                raise RuntimeError(
-                    f"Inference logprobs required but sample {idx} has none. "
-                    f"Ensure the deployment returns logprobs."
+                adv_filtered.append(advantages[idx])
+
+                if not s.inference_logprobs:
+                    raise RuntimeError(
+                        f"Inference logprobs required but sample {idx} has none. "
+                        f"Ensure the deployment returns logprobs."
+                    )
+                response_start = max(0, prompt_len - 1)
+                echoed = getattr(s, "logprobs_echoed", False)
+                aligned = (
+                    list(s.inference_logprobs) if echoed else [0.0] * response_start + list(s.inference_logprobs)
                 )
-            response_start = max(0, prompt_len - 1)
-            echoed = getattr(s, "logprobs_echoed", False)
-            aligned = (
-                list(s.inference_logprobs) if echoed else [0.0] * response_start + list(s.inference_logprobs)
+                inf_logprobs_aligned.append(aligned)
+
+            if not policy_data:
+                return None
+
+            comp_lens = [len(s.full_tokens) - s.prompt_len for s in sampled]
+            trunc = [s.finish_reason == "length" for s in sampled]
+
+            return PromptGroup(
+                data=policy_data, ref_data=reference_data,
+                advantages=adv_filtered, ref_logprobs=[],
+                prompt_len=prompt_len, rewards=rewards, inf_logprobs=inf_logprobs_aligned,
+                completion_lens=comp_lens, truncated=trunc,
             )
-            inf_logprobs_aligned.append(aligned)
 
-        if not policy_data:
-            return None
+        # -- Streaming callbacks (per-group / per-minibatch / per-step) ----------
 
-        comp_lens = [len(s.full_tokens) - s.prompt_len for s in sampled]
-        trunc = [s.finish_reason == "length" for s in sampled]
+        def ref_forward_batch(groups: list[PromptGroup]) -> None:
+            """Compute reference logprobs for a batch of prompt groups (one call)."""
+            if not use_reference:
+                return
+            all_ref_data = [d for pg in groups for d in pg.ref_data]
+            ref_fwd = reference.forward(all_ref_data, "cross_entropy")
+            idx = 0
+            for pg in groups:
+                n = len(pg.ref_data)
+                pg.ref_logprobs = [
+                    ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
+                ]
+                idx += n
 
-        return PromptGroup(
-            data=policy_data, ref_data=reference_data,
-            advantages=adv_filtered, ref_logprobs=[],
-            prompt_len=prompt_len, rewards=rewards, inf_logprobs=inf_logprobs_aligned,
-            completion_lens=comp_lens, truncated=trunc,
+        def fwd_bwd_one(sub: list[PromptGroup]):
+            """Run forward_backward_custom on one micro-batch."""
+            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
+            return policy.forward_backward_custom(data, loss_builder(adv, ref_lp, prompt_lens, inf_lp))
+
+        def finish_step(
+            step: int,
+            prompt_groups: list[PromptGroup],
+            fwd_bwd_results: list,
+            n_accum: int,
+            loop_stats: dict | None = None,
+        ) -> tuple[int, dict]:
+            """optim_step + hotload + metrics. Called after all fwd_bwd complete."""
+            import time as _t
+            t0 = _t.time()
+            optim_result = policy.optim_step(adam_params)
+            step += 1
+            logger.info("[step %d] optim_step: done (%.1fs)", step, _t.time() - t0)
+
+            if cfg.hotload.hot_load_interval > 0 and step % cfg.hotload.hot_load_interval == 0:
+                logger.info("[step %d] hotload: saving + loading...", step)
+                t0 = _t.time()
+                with timer("weight_sync"):
+                    weight_syncer.save_and_hotload(f"step-{step}")
+                logger.info("[step %d] hotload: done (%.1fs)", step, _t.time() - t0)
+            if cfg.hotload.dcp_save_interval > 0 and step % cfg.hotload.dcp_save_interval == 0:
+                logger.info("[step %d] dcp_save...", step)
+                t0 = _t.time()
+                with timer("dcp_save"):
+                    weight_syncer.save_dcp(f"step-{step}")
+                logger.info("[step %d] dcp_save: done (%.1fs)", step, _t.time() - t0)
+
+            metrics = compute_step_metrics(
+                prompt_groups=prompt_groups,
+                fwd_bwd_results=fwd_bwd_results,
+                optim_result=optim_result,
+                n_accum=n_accum,
+                timing_metrics=flush_timing(),
+                loop_stats=loop_stats,
+                completions_per_prompt=completions_per_prompt,
+            )
+            metrics["train/step"] = step
+
+            avg_reward = metrics.get("rollout/reward", 0.0)
+            avg_acc = metrics.get("rollout/accuracy", 0.0)
+            avg_kl = metrics.get("train/mean_kl", 0.0)
+            logger.info(
+                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
+                step, avg_reward, avg_acc * 100, avg_kl,
+            )
+            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
+            wandb_log(metrics, step)
+            return step, metrics
+
+        # -- Run ----------------------------------------------------------------
+
+        def _loop_metrics_callback(loop_metrics: dict) -> None:
+            """Called by run_rl_loop after each train step with loop-level metrics."""
+            wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
+
+        minibatch_fns = MinibatchTrainFns(
+            ref_forward_batch=ref_forward_batch,
+            fwd_bwd_one=fwd_bwd_one,
+            finish_step=finish_step,
         )
 
-    # -- Streaming callbacks (per-group / per-minibatch / per-step) ----------
+        all_rows = dataset * cfg.epochs
 
-    def ref_forward_batch(groups: list[PromptGroup]) -> None:
-        """Compute reference logprobs for a batch of prompt groups (one call)."""
-        if not use_reference:
-            return
-        all_ref_data = [d for pg in groups for d in pg.ref_data]
-        ref_fwd = reference.forward(all_ref_data, "cross_entropy")
-        idx = 0
-        for pg in groups:
-            n = len(pg.ref_data)
-            pg.ref_logprobs = [
-                ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
-            ]
-            idx += n
-
-    def fwd_bwd_one(sub: list[PromptGroup]):
-        """Run forward_backward_custom on one micro-batch."""
-        data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
-        return policy.forward_backward_custom(data, loss_builder(adv, ref_lp, prompt_lens, inf_lp))
-
-    def finish_step(
-        step: int,
-        prompt_groups: list[PromptGroup],
-        fwd_bwd_results: list,
-        n_accum: int,
-        loop_stats: dict | None = None,
-    ) -> tuple[int, dict]:
-        """optim_step + hotload + metrics. Called after all fwd_bwd complete."""
-        import time as _t
-        t0 = _t.time()
-        optim_result = policy.optim_step(adam_params)
-        step += 1
-        logger.info("[step %d] optim_step: done (%.1fs)", step, _t.time() - t0)
-
-        if cfg.hotload.hot_load_interval > 0 and step % cfg.hotload.hot_load_interval == 0:
-            logger.info("[step %d] hotload: saving + loading...", step)
-            t0 = _t.time()
-            with timer("weight_sync"):
-                weight_syncer.save_and_hotload(f"step-{step}")
-            logger.info("[step %d] hotload: done (%.1fs)", step, _t.time() - t0)
-        if cfg.hotload.dcp_save_interval > 0 and step % cfg.hotload.dcp_save_interval == 0:
-            logger.info("[step %d] dcp_save...", step)
-            t0 = _t.time()
-            with timer("dcp_save"):
-                weight_syncer.save_dcp(f"step-{step}")
-            logger.info("[step %d] dcp_save: done (%.1fs)", step, _t.time() - t0)
-
-        metrics = compute_step_metrics(
-            prompt_groups=prompt_groups,
-            fwd_bwd_results=fwd_bwd_results,
-            optim_result=optim_result,
-            n_accum=n_accum,
-            timing_metrics=flush_timing(),
-            loop_stats=loop_stats,
+        global_step = asyncio.run(run_rl_loop(
+            sample_fns=(sample_one_prompt(row) for row in all_rows),
+            minibatch_fns=minibatch_fns,
+            prompt_groups_per_step=prompt_groups_per_step,
+            max_concurrent=cfg.max_concurrent,
+            dynamic_filter_fn=None,
+            global_step=step_offset,
+            metrics_callback=_loop_metrics_callback,
+            min_prompt_groups_per_fwd_bwd=min_prompt_groups_per_fwd_bwd,
             completions_per_prompt=completions_per_prompt,
-        )
-        metrics["train/step"] = step
+        ))
 
-        avg_reward = metrics.get("rollout/reward", 0.0)
-        avg_acc = metrics.get("rollout/accuracy", 0.0)
-        avg_kl = metrics.get("train/mean_kl", 0.0)
-        logger.info(
-            "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
-            step, avg_reward, avg_acc * 100, avg_kl,
-        )
-        log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
-        wandb_log(metrics, step)
-        return step, metrics
+        # -- Final checkpoint ----------------------------------------------------
 
-    # -- Run ----------------------------------------------------------------
+        if global_step > step_offset:
+            try:
+                policy.save_state(f"step-{global_step}", timeout=cfg.hotload.dcp_timeout)
+            except Exception as e:
+                logger.warning("Failed to save final checkpoint: %s", e)
 
-    def _loop_metrics_callback(loop_metrics: dict) -> None:
-        """Called by run_rl_loop after each train step with loop-level metrics."""
-        wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
-
-    minibatch_fns = MinibatchTrainFns(
-        ref_forward_batch=ref_forward_batch,
-        fwd_bwd_one=fwd_bwd_one,
-        finish_step=finish_step,
-    )
-
-    all_rows = dataset * cfg.epochs
-
-    global_step = asyncio.run(run_rl_loop(
-        sample_fns=(sample_one_prompt(row) for row in all_rows),
-        minibatch_fns=minibatch_fns,
-        prompt_groups_per_step=prompt_groups_per_step,
-        max_concurrent=cfg.max_concurrent,
-        dynamic_filter_fn=None,
-        global_step=step_offset,
-        metrics_callback=_loop_metrics_callback,
-        min_prompt_groups_per_fwd_bwd=min_prompt_groups_per_fwd_bwd,
-        completions_per_prompt=completions_per_prompt,
-    ))
-
-    # -- Final checkpoint ----------------------------------------------------
-
-    if global_step > step_offset:
-        try:
-            policy.save_state(f"step-{global_step}", timeout=cfg.hotload.dcp_timeout)
-        except Exception as e:
-            logger.warning("Failed to save final checkpoint: %s", e)
-
-    logger.info("Training complete: %d steps", global_step)
-    wandb_finish()
-    return {
-        "steps": global_step,
-        "policy_job_id": policy.job_id,
-        "reference_job_id": reference.job_id if reference else None,
-    }
+            logger.info("Training complete: %d steps", global_step)
+            return {
+                "steps": global_step,
+                "policy_job_id": policy_job_id,
+                "reference_job_id": reference_job_id,
+            }
+    finally:
+        wandb_finish()
+        if cleanup_on_exit:
+            if policy_job_id:
+                try:
+                    logger.info("Cleanup: deleting policy trainer job %s", policy_job_id)
+                    rlor_mgr.delete(policy_job_id)
+                except Exception as e:
+                    logger.warning("Cleanup: failed to delete policy job %s: %s", policy_job_id, e)
+            if reference_job_id:
+                try:
+                    logger.info("Cleanup: deleting reference trainer job %s", reference_job_id)
+                    rlor_mgr.delete(reference_job_id)
+                except Exception as e:
+                    logger.warning("Cleanup: failed to delete reference job %s: %s", reference_job_id, e)
+            if cfg.deployment.deployment_id:
+                try:
+                    logger.info("Cleanup: scaling deployment to zero %s", cfg.deployment.deployment_id)
+                    deploy_mgr.scale_to_zero(cfg.deployment.deployment_id)
+                except Exception as e:
+                    logger.warning("Cleanup: failed to scale deployment %s: %s", cfg.deployment.deployment_id, e)
 
 
 if __name__ == "__main__":
