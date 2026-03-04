@@ -83,7 +83,7 @@ def create_trainer_job(
     if job_id:
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
-    using_shape = bool(infra.training_shape_id and not infra.skip_validations)
+    using_shape = bool(infra.training_shape_id)
     node_count = infra.node_count if infra.node_count is not None else 1
     logger.info("Creating trainer job '%s' (nodes=%d, shape=%s, forward_only=%s)...", display_name, node_count, using_shape, forward_only)
     return rlor_mgr.create_and_wait(

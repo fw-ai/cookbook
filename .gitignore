@@ -293,3 +293,4 @@ cython_debug/
 # Desktop Services Store for MacOS
 .DS_Store
 .idea/
+wandb/
