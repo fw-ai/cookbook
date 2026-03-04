@@ -6,9 +6,23 @@ Each recipe is a single Python file you can fork and customize.
 ## Install
 
 ```bash
-cd cookbook
-pip install -e .
+git clone https://github.com/fw-ai/cookbook.git
+cd cookbook/training
 
+# Install uv (skip if already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create and activate a virtual environment
+uv venv --python 3.12
+source .venv/bin/activate
+
+## For the training sdk need to install -pre version
+uv pip install --pre "fireworks-ai[training]" tinker-cookbook
+# Install the package in editable mode
+uv pip install -e .
+
+
+# Set your Fireworks credentials
 export FIREWORKS_API_KEY="..."
 export FIREWORKS_ACCOUNT_ID="..."
 ```
@@ -90,6 +104,6 @@ All recipes use composable dataclass configs:
 ## Tests
 
 ```bash
-pip install -e ".[dev]"
-pytest training/tests/
+uv pip install -e ".[dev]"
+pytest tests/
 ```
