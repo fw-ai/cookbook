@@ -10,7 +10,7 @@ Dataset format (JSONL, OpenAI chat format):
 Usage:
     export FIREWORKS_API_KEY=...
     export FIREWORKS_ACCOUNT_ID=...
-    python cookbook/recipes/sft_loop.py --dataset /path/to/chat_data.jsonl
+    python -m recipes.sft_loop
 """
 
 from __future__ import annotations
@@ -22,6 +22,10 @@ from dataclasses import field, dataclass
 
 import torch
 import tinker
+
+import json
+import transformers
+from dotenv import load_dotenv
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
@@ -42,10 +46,12 @@ from training.utils import (
     create_trainer_job,
     make_batch_sft_loss_fn,
 )
+from training.utils.timer import timer, flush_timing
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
-from training.utils.timer import timer, flush_timing
 
+
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -117,6 +123,13 @@ def main(
     if cfg.deployment.deployment_id:
         setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
+    profile = None
+    if cfg.infra.training_shape_id:
+        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+
+    if profile and cfg.max_seq_len is None:
+        cfg.max_seq_len = profile.max_supported_context_length
+        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
     if cfg.max_seq_len is None:
         raise ValueError(
             "max_seq_len is required. Set it in Config, or use a training shape "
@@ -127,6 +140,7 @@ def main(
         rlor_mgr,
         base_model=cfg.base_model,
         infra=cfg.infra,
+        profile=profile,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
         learning_rate=cfg.learning_rate,
@@ -146,11 +160,6 @@ def main(
     )
 
     # -- Prepare data ------------------------------------------------------
-
-    import json
-
-    import transformers
-
     tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
 
     raw_data: List[Dict[str, Any]] = []
@@ -304,4 +313,13 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config())
+    cfg = Config(
+        dataset="kimi2_deid_sample_100_formatted.jsonl",
+        tokenizer_model="Qwen/Qwen3-8B",
+        max_seq_len=4096,
+        max_examples=10,
+        infra=InfraConfig(
+            training_shape_id="your-training-shape",
+        ),
+    )
+    main(cfg)

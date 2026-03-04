@@ -17,7 +17,7 @@ Architecture:
 Usage:
     export FIREWORKS_API_KEY=...
     export FIREWORKS_ACCOUNT_ID=...
-    python cookbook/recipes/dpo_loop.py --dataset /path/to/preference_data.jsonl
+    python -m recipes.dpo_loop
 """
 
 from __future__ import annotations

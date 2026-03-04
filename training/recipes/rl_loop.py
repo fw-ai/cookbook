@@ -11,7 +11,7 @@ then runs a single ``forward_backward_custom`` + ``optim_step`` (1:1 ratio).
 Usage:
     export FIREWORKS_API_KEY=...
     export FIREWORKS_ACCOUNT_ID=...
-    python cookbook/recipes/rl_loop.py
+    python -m recipes.rl_loop
 """
 
 from __future__ import annotations
