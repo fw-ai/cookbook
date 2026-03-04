@@ -13,7 +13,7 @@ The training loop streams samples from an inference deployment, fires
 Usage:
     export FIREWORKS_API_KEY=...
     export FIREWORKS_ACCOUNT_ID=...
-    python cookbook/recipes/rl_loop.py
+    python -m training_cookbook.recipes.rl_loop
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@ Dataset format (JSONL, OpenAI chat format):
 Usage:
     export FIREWORKS_API_KEY=...
     export FIREWORKS_ACCOUNT_ID=...
-    python cookbook/recipes/sft_loop.py --dataset /path/to/chat_data.jsonl
+    python -m training_cookbook.recipes.sft_loop
 """
 
 from __future__ import annotations

@@ -29,7 +29,37 @@ All recipes compose these dataclasses from `utils/config.py`:
 - `WandBConfig`: optional experiment logging.
 - `ISConfig`, `DAPOConfig`, `GSPOConfig`, `CISPOConfig`: per-algorithm tuning knobs (see source for fields and defaults).
 
-## Minimal usage
+## Prerequisites
+
+Set the following environment variables (or add them to a `.env` file):
+
+```bash
+export FIREWORKS_API_KEY=...        # Your Fireworks API key
+export FIREWORKS_ACCOUNT_ID=...     # Your Fireworks account ID
+```
+
+## Minimal usage — SFT
+
+```python
+from training_cookbook.recipes.sft_loop import Config, main
+from training_cookbook.utils import InfraConfig
+
+cfg = Config(
+    dataset="path/to/chat_data.jsonl",
+    tokenizer_model="Qwen/Qwen3-8B",
+    base_model="accounts/fireworks/models/qwen3-8b",
+    infra=InfraConfig(region="US_OHIO_1"),
+)
+
+main(cfg)
+```
+
+Dataset format (JSONL, OpenAI chat format):
+```json
+{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+```
+
+## Minimal usage — GRPO
 
 ```python
 from training_cookbook.recipes.rl_loop import Config, main
