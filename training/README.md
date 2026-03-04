@@ -6,7 +6,8 @@ Each recipe is a single Python file you can fork and customize.
 ## Install
 
 ```bash
-pip install -r requirements.txt
+cd cookbook
+pip install -e .
 
 export FIREWORKS_API_KEY="..."
 export FIREWORKS_ACCOUNT_ID="..."
@@ -15,18 +16,34 @@ export FIREWORKS_ACCOUNT_ID="..."
 ## Quick start (GRPO)
 
 ```python
-from fireworks.training.cookbook.recipes.rl_loop import Config, main
-from fireworks.training.cookbook.utils import DeployConfig, HotloadConfig
+from training.recipes.rl_loop import Config, main
+from training.utils import InfraConfig, DeployConfig, HotloadConfig, WandBConfig
 
 cfg = Config(
     base_model="accounts/fireworks/models/qwen3-8b",
-    dataset="https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl",
+    dataset="path/to/your_data.jsonl",
     completions_per_prompt=4,
     policy_loss="grpo",
     deployment=DeployConfig(
         tokenizer_model="Qwen/Qwen3-8B",
+        # deployment_id="my-existing-deploy",    # omit to auto-create
+        # deployment_region="US_OHIO_1",
+        # sample_timeout=600,
+    ),
+    infra=InfraConfig(
+        training_shape_id="your-training-shape",
+        # ref_training_shape_id="your-ref-shape",  # if different from policy
+        # region="US_OHIO_1",
+        # skip_validations=False,
     ),
     hotload=HotloadConfig(hot_load_interval=1),
+    # learning_rate=1e-5,
+    # kl_beta=0.001,                              # set 0 to skip reference model
+    # temperature=1.0,
+    # max_completion_tokens=1024,
+    # epochs=1,
+    # lora_rank=0,
+    # wandb=WandBConfig(project="my-project"),
 )
 
 main(cfg)
@@ -58,7 +75,7 @@ tests/              Unit and end-to-end tests
 All recipes use composable dataclass configs:
 
 - **`DeployConfig`** -- inference deployment. Set `deployment_id` to use an existing deployment, or leave it unset to auto-create one.
-- **`InfraConfig`** -- region, accelerators, training shapes.
+- **`InfraConfig`** -- region, accelerators, training shapes. When `training_shape_id` is set, config is auto-derived from the shape.
 - **`HotloadConfig`** -- weight sync cadence and checkpoint settings.
 - **`WandBConfig`** -- optional Weights & Biases logging.
 - **`ResumeConfig`** -- resume training from a checkpoint.
@@ -73,6 +90,6 @@ All recipes use composable dataclass configs:
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt
-pytest tests/
+pip install -e ".[dev]"
+pytest training/tests/
 ```

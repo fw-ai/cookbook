@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fireworks-training-cookbook"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fireworks-ai[training]",
+    "tinker-cookbook>=0.1.0",
+    "tqdm",
+    "torch",
+    "datasets",
+    "tiktoken",
+    "numpy",
+    "wandb",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "math-verify",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["training*"]
+
+[tool.pytest.ini_options]
+testpaths = ["training/tests"]
