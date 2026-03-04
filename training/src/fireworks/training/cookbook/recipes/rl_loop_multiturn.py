@@ -194,6 +194,10 @@ def main(
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, account_id=account, base_url=base_url)
 
+    use_reference = cfg.kl_beta != 0
+    if not use_reference:
+        logger.info("kl_beta=0: skipping reference model creation")
+
     profile = None
     if cfg.infra.training_shape_id:
         profile = resolve_and_apply_shape(rlor_mgr, cfg.base_model, cfg.infra, cfg.deployment)
@@ -206,42 +210,55 @@ def main(
             prompt_groups_per_step,
         )
 
-    if cfg.infra.ref_training_shape_id:
+    ref_infra = cfg.infra
+    if use_reference and cfg.infra.ref_training_shape_id:
         logger.info("Using separate ref training shape: %s", cfg.infra.ref_training_shape_id)
         ref_infra = InfraConfig(
             training_shape_id=cfg.infra.ref_training_shape_id,
             region=cfg.infra.region,
         )
         resolve_and_apply_shape(rlor_mgr, cfg.base_model, ref_infra)
-    else:
-        ref_infra = cfg.infra
 
     import time as _time
     _infra_start = _time.time()
 
     dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        pol_fut = pool.submit(
-            create_trainer_job, rlor_mgr,
+    if use_reference:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pol_fut = pool.submit(
+                create_trainer_job, rlor_mgr,
+                base_model=cfg.base_model, infra=cfg.infra,
+                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                display_name="grpo-policy",
+                hot_load_deployment_id=cfg.deployment.deployment_id,
+            )
+            ref_fut = pool.submit(
+                create_trainer_job, rlor_mgr,
+                base_model=cfg.base_model, infra=ref_infra,
+                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                display_name="grpo-reference", forward_only=True,
+            )
+            policy_ep = pol_fut.result()
+            reference_ep = ref_fut.result()
+    else:
+        policy_ep = create_trainer_job(
+            rlor_mgr,
             base_model=cfg.base_model, infra=cfg.infra,
             lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
             display_name="grpo-policy",
             hot_load_deployment_id=cfg.deployment.deployment_id,
         )
-        ref_fut = pool.submit(
-            create_trainer_job, rlor_mgr,
-            base_model=cfg.base_model, infra=ref_infra,
-            lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-            display_name="grpo-reference", forward_only=True,
-        )
-        policy_ep = pol_fut.result()
-        reference_ep = ref_fut.result()
+        reference_ep = None
 
     policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
-    reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+    reference = (
+        ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+        if reference_ep else None
+    )
 
     inference_model = dep_info.inference_model if dep_info else cfg.base_model
     sampler = DeploymentSampler(
@@ -337,14 +354,16 @@ def main(
                     "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
                 },
             )
-            reference_datum = tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(tokens[:-1]),
-                loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
-                },
-            )
             policy_data.append(policy_datum)
-            reference_data.append(reference_datum)
+
+            if use_reference:
+                reference_datum = tinker.Datum(
+                    model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+                    loss_fn_inputs={
+                        "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
+                    },
+                )
+                reference_data.append(reference_datum)
             adv_filtered.append(advantages[idx])
 
             if not s.inference_logprobs:
@@ -372,6 +391,8 @@ def main(
     # -- Streaming callbacks ------------------------------------------------
 
     def ref_forward_batch(groups: list[PromptGroup]) -> None:
+        if not use_reference:
+            return
         all_ref_data = [d for pg in groups for d in pg.ref_data]
         ref_fwd = reference.forward(all_ref_data, "cross_entropy")
         idx = 0
@@ -470,7 +491,11 @@ def main(
 
     logger.info("Training complete: %d steps", global_step)
     wandb_finish()
-    return {"steps": global_step, "policy_job_id": policy.job_id, "reference_job_id": reference.job_id}
+    return {
+        "steps": global_step,
+        "policy_job_id": policy.job_id,
+        "reference_job_id": reference.job_id if reference else None,
+    }
 
 
 if __name__ == "__main__":
