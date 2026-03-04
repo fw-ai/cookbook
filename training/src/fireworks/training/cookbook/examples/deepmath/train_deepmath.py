@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GRPO training on DeepMath-Probability-Hard with Qwen3-30B-A3B-Instruct.
+"""GRPO training on DeepMath-Probability-Hard with Qwen3-30B-A3B-Instruct/or model passed by args.
 
 Run prepare_data.py first, then: python train_deepmath.py
 """
@@ -68,6 +68,7 @@ class TrainArgs:
     prompt_groups_per_step: int = 8
     min_samples_per_fwd_bwd: int = 8
     max_samples_per_fwd_bwd: int = 256
+    router_replay: bool = False
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
 
@@ -111,6 +112,7 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--min-samples-per-fwd-bwd", type=int, default=8)
     parser.add_argument("--max-samples-per-fwd-bwd", type=int, default=256)
 
+    parser.add_argument("--router-replay", action="store_true", default=False)
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
     parser.add_argument(
         "--wandb-project",
@@ -262,11 +264,12 @@ def main():
         max_samples_per_fwd_bwd=args.max_samples_per_fwd_bwd,
         tis_enabled=True,
         tis=ISConfig(clip_high=2.0, clip_low=0.0),
-        router_replay=True,
-        router_replay_completion_only=True,
+        router_replay=args.router_replay,
+        router_replay_completion_only=args.router_replay,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,
+            skip_validations=True,
         ),
         deployment=DeployConfig(
             deployment_id=args.deployment_id,
@@ -312,7 +315,12 @@ def main():
     )
 
     rl_loop.reward_fn = deepmath_reward
-    metrics = rl_loop.main(config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+    metrics = rl_loop.main(
+        config,
+        rlor_mgr=rlor_mgr,
+        deploy_mgr=deploy_mgr,
+        cleanup_on_exit=True,
+    )
 
     logger.info("Training complete. Final metrics: %s", metrics)
 
