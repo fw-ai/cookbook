@@ -25,8 +25,12 @@ else
     echo "Virtual environment already exists at $VENV_DIR"
 fi
 
-# Install dependencies
-echo "Installing dependencies..."
+# Install the Fireworks SDK with training extras (pre-release required)
+echo "Installing fireworks-ai[training] (pre-release)..."
+uv pip install --pre 'fireworks-ai[training]'
+
+# Install the cookbook and remaining dependencies
+echo "Installing training-cookbook..."
 uv pip install -e ".[dev]"
 
 echo ""

@@ -19,7 +19,9 @@ source .venv/bin/activate
 python -c "from training_cookbook.recipes.sft_loop import Config; print('OK')"
 ```
 
-`setup.sh` handles everything: installs [uv](https://docs.astral.sh/uv/) if it isn't already on your PATH, creates a `.venv` virtualenv, and runs `uv pip install -e ".[dev]"` to install the package in editable mode with dev dependencies (pytest, math-verify).
+`setup.sh` handles everything: installs [uv](https://docs.astral.sh/uv/) if it isn't already on your PATH, creates a `.venv` virtualenv, installs the pre-release Fireworks SDK with training extras (`fireworks-ai[training]`), and installs the cookbook in editable mode with dev dependencies.
+
+> **Note:** The training SDK (`fireworks.training.sdk`) is currently in pre-release. `setup.sh` installs it automatically via `pip install --pre fireworks-ai[training]`.
 
 ## Environment variables
 
