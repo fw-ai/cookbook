@@ -10,7 +10,7 @@ Dataset format (JSONL, OpenAI chat format):
 Usage:
     export FIREWORKS_API_KEY=...
     export FIREWORKS_ACCOUNT_ID=...
-    python cookbook/recipes/sft_loop.py --dataset /path/to/chat_data.jsonl
+    python -m recipes.sft_loop
 """
 
 from __future__ import annotations
@@ -22,6 +22,10 @@ from dataclasses import field, dataclass
 
 import torch
 import tinker
+
+import json
+import transformers
+from dotenv import load_dotenv
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
@@ -42,10 +46,12 @@ from training.utils import (
     create_trainer_job,
     make_batch_sft_loss_fn,
 )
+from training.utils.timer import timer, flush_timing
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
-from training.utils.timer import timer, flush_timing
 
+
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -147,11 +153,6 @@ def main(
     )
 
     # -- Prepare data ------------------------------------------------------
-
-    import json
-
-    import transformers
-
     tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
 
     raw_data: List[Dict[str, Any]] = []
