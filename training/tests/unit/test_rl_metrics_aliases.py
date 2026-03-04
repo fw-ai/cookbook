@@ -62,7 +62,6 @@ class TestComputeStepMetrics:
                 "sample_wait_time": 3.0,
                 "step_wall_time": 4.0,
                 "all_raw_rewards": [1.0, 0.0],
-                "fwd_bwd_group_counts": [2, 4],
             },
             completions_per_prompt=8,
         )
@@ -71,10 +70,6 @@ class TestComputeStepMetrics:
         assert metrics["rollout/samples_completed"] == 1
         assert metrics["rollout/filter_reject_ratio"] == 1 / 7
         assert metrics["rollout/sample_fail_count"] == 2
-        assert metrics["batch/mean_prompt_groups_per_fwd_bwd"] == 3.0
-        assert metrics["batch/max_prompt_groups_per_fwd_bwd"] == 4
-        assert metrics["batch/min_prompt_groups_per_fwd_bwd"] == 2
-        assert metrics["batch/mean_samples_per_fwd_bwd"] == 24.0
         assert metrics["perf/sample_wait_time"] == 3.0
         assert metrics["perf/wait_time_ratio"] == 0.75
         assert metrics["perf/overlap_ratio"] == 0.25

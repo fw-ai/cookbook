@@ -17,7 +17,7 @@ __all__ = [
     "make_tis_weights_fn",
     # Training loop
     "DynamicFilterFn",
-    "MinibatchTrainFns",
+    "TrainStepFns",
     "run_rl_loop",
     # Metrics helpers
     "add_response_length_stats",
@@ -33,7 +33,7 @@ from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
 from training.utils.rl.train import (
     DynamicFilterFn,
-    MinibatchTrainFns,
+    TrainStepFns,
     run_rl_loop,
 )
 from training.utils.rl.losses import PromptGroup

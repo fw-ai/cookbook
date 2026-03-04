@@ -68,33 +68,6 @@ def validate_config(
         raise RuntimeError("\n\n".join(errors))
 
 
-def validate_streaming_config(
-    prompt_groups_per_step: int,
-    completions_per_prompt: int,
-    min_samples_per_fwd_bwd: int | None = None,
-) -> None:
-    """Validate streaming / batching parameters before creating resources."""
-    errors: list[str] = []
-
-    if completions_per_prompt < 1:
-        errors.append(
-            f"completions_per_prompt must be >= 1, got {completions_per_prompt}"
-        )
-    if prompt_groups_per_step < 1:
-        errors.append(
-            f"prompt_groups_per_step must be >= 1, got {prompt_groups_per_step}"
-        )
-
-    effective_min = min_samples_per_fwd_bwd or (prompt_groups_per_step * completions_per_prompt)
-    if completions_per_prompt > 0 and effective_min < completions_per_prompt:
-        errors.append(
-            f"min_samples_per_fwd_bwd ({effective_min}) must be >= completions_per_prompt ({completions_per_prompt})"
-        )
-
-    if errors:
-        raise ValueError("\n".join(errors))
-
-
 def validate_preflight(
     args,
     fw_api_key: str | None,

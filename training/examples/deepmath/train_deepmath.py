@@ -52,73 +52,58 @@ class TrainArgs:
     base_model: str = "accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
     tokenizer_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     dataset_path: str = field(
-        default_factory=lambda: os.path.join(os.path.dirname(__file__), "deepmath_103k.jsonl")
+        default_factory=lambda: os.path.join(os.path.dirname(__file__), "dataset.jsonl")
     )
     training_shape: str = field(default_factory=lambda: os.environ.get("TRAINING_SHAPE", ""))
     deployment_id: str | None = None
     """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "US_OHIO_1"
     deployment_region: str = "US_VIRGINIA_1"
-    max_rows: int = 500
+    max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8
     learning_rate: float = 1e-5
     kl_beta: float = 0.001
     temperature: float = 1.0
-    max_completion_tokens: int = 16 * 1024
-    prompt_groups_per_step: int = 8
-    min_samples_per_fwd_bwd: int = 8
+    max_completion_tokens: int = 30 * 1024
+    prompt_groups_per_step: int = 32
     router_replay: bool = False
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
 
 
 def parse_args() -> TrainArgs:
+    """Parse CLI args into TrainArgs. Defaults come from the dataclass above."""
+    defaults = TrainArgs()
     parser = argparse.ArgumentParser(
         description="Train GRPO on DeepMath-Probability-Hard"
     )
-    parser.add_argument(
-        "--base-model",
-        default="accounts/fireworks/models/qwen3-30b-a3b-instruct-2507",
-    )
-    parser.add_argument(
-        "--tokenizer-model",
-        default="Qwen/Qwen3-30B-A3B-Instruct-2507",
-    )
-    parser.add_argument(
-        "--dataset-path",
-        default=os.path.join(os.path.dirname(__file__), "deepmath_103k.jsonl"),
-    )
-    parser.add_argument(
-        "--training-shape",
-        default=os.environ.get("TRAINING_SHAPE", ""),
-    )
+    parser.add_argument("--base-model")
+    parser.add_argument("--tokenizer-model")
+    parser.add_argument("--dataset-path")
+    parser.add_argument("--training-shape")
     parser.add_argument(
         "--deployment-id",
-        default=None,
         help="Existing deployment ID to reuse; omit to auto-create",
     )
-    parser.add_argument("--region", default="US_OHIO_1")
-    parser.add_argument("--deployment-region", default="US_VIRGINIA_1")
+    parser.add_argument("--region")
+    parser.add_argument("--deployment-region")
 
-    parser.add_argument("--max-rows", type=int, default=500)
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--completions-per-prompt", type=int, default=8)
-    parser.add_argument("--learning-rate", type=float, default=1e-5)
-    parser.add_argument("--kl-beta", type=float, default=0.001)
-    parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--max-completion-tokens", type=int, default=16 * 1024)
+    parser.add_argument("--max-rows", type=int)
+    parser.add_argument("--epochs", type=int)
+    parser.add_argument("--completions-per-prompt", type=int)
+    parser.add_argument("--learning-rate", type=float)
+    parser.add_argument("--kl-beta", type=float)
+    parser.add_argument("--temperature", type=float)
+    parser.add_argument("--max-completion-tokens", type=int)
 
-    parser.add_argument("--prompt-groups-per-step", type=int, default=8)
-    parser.add_argument("--min-samples-per-fwd-bwd", type=int, default=8)
+    parser.add_argument("--prompt-groups-per-step", type=int)
 
-    parser.add_argument("--router-replay", action="store_true", default=False)
-    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
-    parser.add_argument(
-        "--wandb-project",
-        default=os.environ.get("WANDB_PROJECT", "grpo-tinker"),
-    )
-    return cast(TrainArgs, parser.parse_args(namespace=TrainArgs()))
+    parser.add_argument("--router-replay", action="store_true")
+    parser.add_argument("--wandb-entity")
+    parser.add_argument("--wandb-project")
+
+    return cast(TrainArgs, parser.parse_args(namespace=defaults))
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +244,6 @@ def main():
         epochs=args.epochs,
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
-        min_samples_per_fwd_bwd=args.min_samples_per_fwd_bwd,
         tis_enabled=True,
         tis=ISConfig(clip_high=2.0, clip_low=0.0),
         router_replay=args.router_replay,
@@ -306,9 +290,8 @@ def main():
         args.kl_beta,
     )
     logger.info(
-        "stream mode: prompt_groups_per_step=%d | min_samples_per_fwd_bwd=%d",
+        "prompt_groups_per_step=%d",
         args.prompt_groups_per_step,
-        args.min_samples_per_fwd_bwd,
     )
 
     rl_loop.reward_fn = deepmath_reward

@@ -19,7 +19,7 @@ SYSTEM_PROMPT = (
     "showing your reasoning. Put your final answer inside \\boxed{}."
 )
 
-OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "deepmath_103k.jsonl")
+OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "dataset.jsonl")
 
 
 def main():

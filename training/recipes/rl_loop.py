@@ -5,9 +5,8 @@ A readable, modifiable RL training loop using the Fireworks RLOR API.
 Fork this script and customise the reward function, loss, or sampling
 strategy to fit your task.
 
-The training loop streams samples from an inference deployment, fires
-``fwd_bwd`` calls in greedy batches, and runs ``optim_step`` after collecting
-``prompt_groups_per_step`` valid groups per optimizer step.
+Each optimizer step samples ``prompt_groups_per_step`` prompts concurrently,
+then runs a single ``forward_backward_custom`` + ``optim_step`` (1:1 ratio).
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -55,7 +54,7 @@ from training.utils.timer import timer, flush_timing
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import MinibatchTrainFns, run_rl_loop
+from training.utils.rl.train import TrainStepFns, run_rl_loop
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -87,15 +86,10 @@ class Config:
     lora_rank: int = 0
 
     prompt_groups_per_step: int = 1
-    """Number of prompt groups per optimizer step."""
+    """Number of prompt groups per optimizer step.
 
-    min_samples_per_fwd_bwd: int | None = None
-    """Min samples to trigger a ``fwd_bwd`` call.
-
-    When the buffer reaches this threshold, ``fwd_bwd`` fires immediately
-    instead of waiting for the full optimizer step.  Defaults to
-    ``prompt_groups_per_step * completions_per_prompt``.
-    """
+    All groups are collected before a single ``forward_backward_custom`` +
+    ``optim_step`` pair fires (1:1 ratio)."""
 
     max_concurrent: int = 32
     """Cap on concurrent in-flight sampling requests to the inference server."""
@@ -171,13 +165,6 @@ def main(
     validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
-    total_samples_per_step = prompt_groups_per_step * completions_per_prompt
-    min_samples_per_fwd_bwd = cfg.min_samples_per_fwd_bwd or total_samples_per_step
-    min_prompt_groups_per_fwd_bwd = max(1, min_samples_per_fwd_bwd // completions_per_prompt)
-    server_grad_accum_steps = max(
-        1,
-        -(-prompt_groups_per_step // min_prompt_groups_per_fwd_bwd),
-    )
     if not cfg.deployment.tokenizer_model:
         raise ValueError(
             "deployment.tokenizer_model is required for client-side tokenization. "
@@ -248,13 +235,9 @@ def main(
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
         logger.info(
-            "Streaming schedule: prompt_groups_per_step=%d | "
-            "min_prompt_groups_per_fwd_bwd=%d (%d samples) | "
-            "server_grad_accum_steps=%d",
+            "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
             prompt_groups_per_step,
-            min_prompt_groups_per_fwd_bwd,
-            min_samples_per_fwd_bwd,
-            server_grad_accum_steps,
+            completions_per_prompt,
         )
 
         if use_reference:
@@ -263,7 +246,7 @@ def main(
                     create_trainer_job, rlor_mgr,
                     base_model=cfg.base_model, infra=cfg.infra, profile=profile,
                     lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                    learning_rate=cfg.learning_rate,
                     display_name="grpo-policy",
                     hot_load_deployment_id=cfg.deployment.deployment_id,
                 )
@@ -271,7 +254,7 @@ def main(
                     create_trainer_job, rlor_mgr,
                     base_model=cfg.base_model, infra=cfg.infra, profile=ref_profile,
                     lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                    learning_rate=cfg.learning_rate,
                     display_name="grpo-reference", forward_only=True,
                 )
                 policy_ep = pol_fut.result()
@@ -283,7 +266,7 @@ def main(
                 rlor_mgr,
                 base_model=cfg.base_model, infra=cfg.infra, profile=profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                learning_rate=cfg.learning_rate,
                 display_name="grpo-policy",
                 hot_load_deployment_id=cfg.deployment.deployment_id,
             )
@@ -435,10 +418,10 @@ def main(
                 completion_lens=comp_lens, truncated=trunc,
             )
 
-        # -- Streaming callbacks (per-group / per-minibatch / per-step) ----------
+        # -- Training callbacks ----------------------------------------------------
 
-        def ref_forward_batch(groups: list[PromptGroup]) -> None:
-            """Compute reference logprobs for a batch of prompt groups (one call)."""
+        def ref_forward(groups: list[PromptGroup]) -> None:
+            """Compute reference logprobs for all prompt groups (one call)."""
             if not use_reference:
                 return
             all_ref_data = [d for pg in groups for d in pg.ref_data]
@@ -451,20 +434,25 @@ def main(
                 ]
                 idx += n
 
-        def fwd_bwd_one(sub: list[PromptGroup]):
-            """Run forward_backward_custom on one micro-batch."""
-            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
-            return policy.forward_backward_custom(data, loss_builder(adv, ref_lp, prompt_lens, inf_lp))
-
-        def finish_step(
+        def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
-            fwd_bwd_results: list,
-            n_accum: int,
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """optim_step + hotload + metrics. Called after all fwd_bwd complete."""
+            """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
             import time as _t
+
+            t0 = _t.time()
+            ref_forward(prompt_groups)
+            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _t.time() - t0)
+
+            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
+            t0 = _t.time()
+            fwd_bwd_result = policy.forward_backward_custom(
+                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp),
+            )
+            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _t.time() - t0)
+
             t0 = _t.time()
             optim_result = policy.optim_step(adam_params)
             step += 1
@@ -485,9 +473,9 @@ def main(
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
-                fwd_bwd_results=fwd_bwd_results,
+                fwd_bwd_results=[fwd_bwd_result],
                 optim_result=optim_result,
-                n_accum=n_accum,
+                n_accum=1,
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
@@ -511,24 +499,18 @@ def main(
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
-        minibatch_fns = MinibatchTrainFns(
-            ref_forward_batch=ref_forward_batch,
-            fwd_bwd_one=fwd_bwd_one,
-            finish_step=finish_step,
-        )
+        train_fns = TrainStepFns(train_step=train_step)
 
         all_rows = dataset * cfg.epochs
 
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(row) for row in all_rows),
-            minibatch_fns=minibatch_fns,
+            train_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
             max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
             global_step=step_offset,
             metrics_callback=_loop_metrics_callback,
-            min_prompt_groups_per_fwd_bwd=min_prompt_groups_per_fwd_bwd,
-            completions_per_prompt=completions_per_prompt,
         ))
 
         # -- Final checkpoint ----------------------------------------------------

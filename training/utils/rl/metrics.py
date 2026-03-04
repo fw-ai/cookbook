@@ -186,16 +186,4 @@ def compute_step_metrics(
         if raw_rewards:
             metrics["rollout/raw_reward"] = sum(raw_rewards) / len(raw_rewards)
 
-        fwd_bwd_group_counts = loop_stats["fwd_bwd_group_counts"]
-        if fwd_bwd_group_counts:
-            mean_group_count = sum(fwd_bwd_group_counts) / len(fwd_bwd_group_counts)
-            max_group_count = max(fwd_bwd_group_counts)
-            min_group_count = min(fwd_bwd_group_counts)
-            metrics["batch/mean_prompt_groups_per_fwd_bwd"] = mean_group_count
-            metrics["batch/max_prompt_groups_per_fwd_bwd"] = max_group_count
-            metrics["batch/min_prompt_groups_per_fwd_bwd"] = min_group_count
-            metrics["batch/mean_samples_per_fwd_bwd"] = (
-                mean_group_count * completions_per_prompt
-            )
-
     return metrics
