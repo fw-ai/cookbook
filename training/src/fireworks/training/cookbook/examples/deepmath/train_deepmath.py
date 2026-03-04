@@ -6,10 +6,14 @@ Run prepare_data.py first, then: python train_deepmath.py
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
 import logging
+import time
+from dataclasses import dataclass, field
+from typing import cast
 
 _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
 if _SRC not in sys.path:
@@ -42,30 +46,77 @@ FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
 FIREWORKS_ACCOUNT_ID = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
 FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
-BASE_MODEL = "accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
-TOKENIZER_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-DATASET_PATH = os.path.join(os.path.dirname(__file__), "deepmath_103k.jsonl")
 
-TRAINING_SHAPE = "ts-qwen3-30b-a3b-instruct-32k-rft-dev-cp1-v1"
-DEPLOYMENT_SHAPE = "accounts/pyroworks/deploymentShapes/rft-dev-qwen3-30b-a3b-throughput-moe-stats-v1"
-DEPLOYMENT_ID = f"deepmath-{int(__import__('time').time()) % 100000}"
-REGION = "US_OHIO_1"
+@dataclass
+class TrainArgs:
+    base_model: str = "accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
+    tokenizer_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    dataset_path: str = field(
+        default_factory=lambda: os.path.join(os.path.dirname(__file__), "deepmath_103k.jsonl")
+    )
+    training_shape: str = field(default_factory=lambda: os.environ.get("TRAINING_SHAPE", ""))
+    deployment_id: str = field(default_factory=lambda: f"deepmath-{int(time.time()) % 100000}")
+    region: str = "US_OHIO_1"
+    max_rows: int = 500
+    epochs: int = 3
+    completions_per_prompt: int = 8
+    learning_rate: float = 1e-5
+    kl_beta: float = 0.001
+    temperature: float = 1.0
+    max_completion_tokens: int = 16 * 1024
+    max_seq_len: int = 32 * 1024
+    prompt_groups_per_step: int = 8
+    min_samples_per_fwd_bwd: int = 8
+    max_samples_per_fwd_bwd: int = 256
+    wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
+    wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
 
-MAX_ROWS = 500
-EPOCHS = 3
-COMPLETIONS_PER_PROMPT = 8
-LEARNING_RATE = 1e-5
-KL_BETA = 0.001
-TEMPERATURE = 1.0
-MAX_COMPLETION_TOKENS = 16 * 1024
-MAX_SEQ_LEN = 32 * 1024
 
-PROMPT_GROUPS_PER_STEP = 8
-MIN_SAMPLES_PER_FWD_BWD = 8
-MAX_SAMPLES_PER_FWD_BWD = 256
+def parse_args() -> TrainArgs:
+    parser = argparse.ArgumentParser(
+        description="Train GRPO on DeepMath-Probability-Hard"
+    )
+    parser.add_argument(
+        "--base-model",
+        default="accounts/fireworks/models/qwen3-30b-a3b-instruct-2507",
+    )
+    parser.add_argument(
+        "--tokenizer-model",
+        default="Qwen/Qwen3-30B-A3B-Instruct-2507",
+    )
+    parser.add_argument(
+        "--dataset-path",
+        default=os.path.join(os.path.dirname(__file__), "dataset.jsonl"),
+    )
+    parser.add_argument(
+        "--training-shape",
+        default=os.environ.get("TRAINING_SHAPE", ""),
+    )
+    parser.add_argument(
+        "--deployment-id",
+        default=f"deepmath-{int(time.time()) % 100000}",
+    )
+    parser.add_argument("--region", default="US_OHIO_1")
 
-WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "")
-WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "grpo-tinker")
+    parser.add_argument("--max-rows", type=int, default=500)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--completions-per-prompt", type=int, default=8)
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--kl-beta", type=float, default=0.001)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--max-completion-tokens", type=int, default=16 * 1024)
+    parser.add_argument("--max-seq-len", type=int, default=32 * 1024)
+
+    parser.add_argument("--prompt-groups-per-step", type=int, default=8)
+    parser.add_argument("--min-samples-per-fwd-bwd", type=int, default=8)
+    parser.add_argument("--max-samples-per-fwd-bwd", type=int, default=256)
+
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
+    parser.add_argument(
+        "--wandb-project",
+        default=os.environ.get("WANDB_PROJECT", "grpo-tinker"),
+    )
+    return cast(TrainArgs, parser.parse_args(namespace=TrainArgs()))
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +221,13 @@ def deepmath_reward(completion: str, row: dict) -> float:
 
 
 def main():
+    args = parse_args()
+
     logger.info("GRPO DeepMath-Probability-Hard training with Qwen3-30B-A3B-Instruct")
 
-    if not os.path.exists(DATASET_PATH):
+    if not os.path.exists(args.dataset_path):
         raise FileNotFoundError(
-            f"Dataset not found at {DATASET_PATH}. Run prepare_data.py first."
+            f"Dataset not found at {args.dataset_path}. Run prepare_data.py first."
         )
 
     os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
@@ -194,32 +247,31 @@ def main():
     )
 
     config = rl_loop.Config(
-        base_model=BASE_MODEL,
-        dataset=DATASET_PATH,
-        learning_rate=LEARNING_RATE,
-        kl_beta=KL_BETA,
-        completions_per_prompt=COMPLETIONS_PER_PROMPT,
-        max_completion_tokens=MAX_COMPLETION_TOKENS,
-        temperature=TEMPERATURE,
-        epochs=EPOCHS,
-        max_rows=MAX_ROWS,
-        max_seq_len=MAX_SEQ_LEN,
-        prompt_groups_per_step=PROMPT_GROUPS_PER_STEP,
-        min_samples_per_fwd_bwd=MIN_SAMPLES_PER_FWD_BWD,
-        max_samples_per_fwd_bwd=MAX_SAMPLES_PER_FWD_BWD,
+        base_model=args.base_model,
+        dataset=args.dataset_path,
+        learning_rate=args.learning_rate,
+        kl_beta=args.kl_beta,
+        completions_per_prompt=args.completions_per_prompt,
+        max_completion_tokens=args.max_completion_tokens,
+        temperature=args.temperature,
+        epochs=args.epochs,
+        max_rows=args.max_rows,
+        max_seq_len=args.max_seq_len,
+        prompt_groups_per_step=args.prompt_groups_per_step,
+        min_samples_per_fwd_bwd=args.min_samples_per_fwd_bwd,
+        max_samples_per_fwd_bwd=args.max_samples_per_fwd_bwd,
         tis_enabled=True,
         tis=ISConfig(clip_high=2.0, clip_low=0.0),
         router_replay=True,
         router_replay_completion_only=True,
         infra=InfraConfig(
-            training_shape_id=TRAINING_SHAPE,
-            region=REGION,
+            training_shape_id=args.training_shape,
+            region=args.region,
         ),
         deployment=DeployConfig(
-            deployment_id=DEPLOYMENT_ID,
-            deployment_shape=DEPLOYMENT_SHAPE,
+            deployment_id=args.deployment_id,
             deployment_region="US_VIRGINIA_1",
-            tokenizer_model=TOKENIZER_MODEL,
+            tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
         ),
         hotload=HotloadConfig(
@@ -231,30 +283,32 @@ def main():
             hot_load_timeout=600,
         ),
         wandb=WandBConfig(
-            entity=WANDB_ENTITY,
-            project=WANDB_PROJECT,
-            run_name=DEPLOYMENT_ID,
+            entity=args.wandb_entity,
+            project=args.wandb_project,
+            run_name=args.deployment_id,
         ),
     )
 
     logger.info(
-        "model=%s | training_shape=%s | deployment_shape=%s | region=%s",
-        BASE_MODEL, TRAINING_SHAPE, DEPLOYMENT_SHAPE, REGION,
+        "model=%s | training_shape=%s | deployment_shape=(parsed from training shape) | region=%s",
+        args.base_model,
+        args.training_shape,
+        args.region,
     )
     logger.info(
         "max_rows=%d | epochs=%d | completions_per_prompt=%d | temp=%.1f | lr=%g | kl_beta=%g",
-        MAX_ROWS,
-        EPOCHS,
-        COMPLETIONS_PER_PROMPT,
-        TEMPERATURE,
-        LEARNING_RATE,
-        KL_BETA,
+        args.max_rows,
+        args.epochs,
+        args.completions_per_prompt,
+        args.temperature,
+        args.learning_rate,
+        args.kl_beta,
     )
     logger.info(
         "stream mode: prompt_groups_per_step=%d | min_samples_per_fwd_bwd=%d | max_samples_per_fwd_bwd=%d",
-        PROMPT_GROUPS_PER_STEP,
-        MIN_SAMPLES_PER_FWD_BWD,
-        MAX_SAMPLES_PER_FWD_BWD,
+        args.prompt_groups_per_step,
+        args.min_samples_per_fwd_bwd,
+        args.max_samples_per_fwd_bwd,
     )
 
     rl_loop.reward_fn = deepmath_reward
