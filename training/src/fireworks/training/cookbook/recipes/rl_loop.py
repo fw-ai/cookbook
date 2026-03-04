@@ -194,11 +194,10 @@ def main(
         1,
         -(-prompt_groups_per_step // min_prompt_groups_per_fwd_bwd),
     )
-    if not cfg.deployment.use_chat_completions and not cfg.deployment.tokenizer_model:
+    if not cfg.deployment.tokenizer_model:
         raise ValueError(
             "deployment.tokenizer_model is required for client-side tokenization. "
-            "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B'), "
-            "or set use_chat_completions=True to use server-side tokenization."
+            "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
     setup_wandb(
         cfg.wandb,
@@ -309,11 +308,10 @@ def main(
         if reference_ep else None
     )
 
+    import transformers
+
     inference_model = dep_info.inference_model if dep_info else cfg.base_model
-    tokenizer = None
-    if cfg.deployment.tokenizer_model:
-        import transformers
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
     sampler = DeploymentSampler(
         inference_url=deploy_mgr.inference_url,
         model=inference_model, api_key=api_key, tokenizer=tokenizer,
@@ -370,12 +368,8 @@ def main(
             return None
 
         try:
-            sample_fn = (
-                sampler.sample_chat_completions if cfg.deployment.use_chat_completions
-                else sampler.sample_with_tokens
-            )
             sampled = await asyncio.to_thread(
-                sample_fn,
+                sampler.sample_with_tokens,
                 messages=input_messages,
                 n=completions_per_prompt,
                 **sample_kwargs,

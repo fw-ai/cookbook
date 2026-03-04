@@ -16,7 +16,7 @@ export FIREWORKS_ACCOUNT_ID="..."
 
 ```python
 from fireworks.training.cookbook.recipes.rl_loop import Config, main
-from fireworks.training.cookbook.utils import InfraConfig, DeployConfig, HotloadConfig
+from fireworks.training.cookbook.utils import DeployConfig, HotloadConfig
 
 cfg = Config(
     base_model="accounts/fireworks/models/qwen3-8b",
@@ -35,28 +35,11 @@ main(cfg)
 When no `deployment_id` is provided, a new inference deployment is created automatically.
 To reuse an existing deployment, pass `deployment_id="my-deploy"`.
 
-### Server-side tokenization (no local tokenizer)
-
-```python
-from fireworks.training.cookbook.recipes.rl_loop_multiturn import Config, main
-
-cfg = Config(
-    base_model="accounts/fireworks/models/qwen3-8b",
-    dataset="path/to/multiturn.jsonl",
-)
-
-main(cfg)
-```
-
-This variant uses `/v1/chat/completions` with `return_token_ids=True` --
-the server handles tokenization, so no `tokenizer_model` is needed for sampling.
-
 ## Recipes
 
 | Recipe | File | Description |
 | --- | --- | --- |
 | GRPO / DAPO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"dapo"`, `"gspo"`, or `"cispo"`. |
-| GRPO (server-side tokenization) | `recipes/rl_loop_multiturn.py` | Same RL loop using chat completions API. No local tokenizer required. |
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
 | SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
@@ -75,7 +58,6 @@ tests/              Unit and end-to-end tests
 All recipes use composable dataclass configs:
 
 - **`DeployConfig`** -- inference deployment. Set `deployment_id` to use an existing deployment, or leave it unset to auto-create one.
-  Set `use_chat_completions=True` for server-side tokenization.
 - **`InfraConfig`** -- region, accelerators, training shapes.
 - **`HotloadConfig`** -- weight sync cadence and checkpoint settings.
 - **`WandBConfig`** -- optional Weights & Biases logging.

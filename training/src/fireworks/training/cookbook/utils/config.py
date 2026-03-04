@@ -63,12 +63,7 @@ class DeployConfig:
     deployment_extra_args: list[str] | None = None
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).
-    Required when ``use_chat_completions`` is False (client-side tokenization)."""
-    use_chat_completions: bool = False
-    """Use ``/v1/chat/completions`` with server-side tokenization instead of
-    the TITO ``/inference/v1/completions`` path.  When True, ``tokenizer_model``
-    is not required for sampling (but may still be needed for reward computation
-    or other purposes)."""
+    Required for client-side tokenization (GRPO)."""
     sample_timeout: int = 600
     """HTTP read timeout in seconds for sampling completions (default 10 min).
     Increase for R3 + long completions where responses can be very large."""
