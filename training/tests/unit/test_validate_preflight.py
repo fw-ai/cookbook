@@ -52,10 +52,10 @@ class TestCredentialChecks:
 
 
 class TestHotloadConfig:
-    def test_hot_load_interval_without_deployment_id_raises(self):
+    def test_hot_load_interval_without_deployment_id_ok(self):
+        """Hotload without deployment_id is fine -- setup_deployment auto-creates."""
         args = _cfg(hot_load_interval=5, hot_load_deployment_id=None)
-        with pytest.raises(RuntimeError, match="deployment_id"):
-            validate_preflight(args, fw_api_key="k", fw_account_id="a")
+        validate_preflight(args, fw_api_key="k", fw_account_id="a")
 
     def test_hot_load_interval_with_deployment_id_ok(self):
         args = _cfg(hot_load_interval=5, hot_load_deployment_id="dep-1")

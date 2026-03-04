@@ -47,27 +47,6 @@ def validate_config(
             )
         )
 
-    if hotload.hot_load_interval > 0 and not deploy.deployment_id:
-        errors.append(
-            format_sdk_error(
-                "Hotload requires a deployment",
-                f"hot_load_interval={hotload.hot_load_interval} but no deployment_id is configured.",
-                "Set deployment_id in DeployConfig to use an existing deployment,\n"
-                "  or leave it unset and call setup_deployment() to auto-create one.",
-                docs_url=DOCS_HOTLOAD,
-            )
-        )
-
-    if hotload.hot_load_before_training and not deploy.deployment_id:
-        errors.append(
-            format_sdk_error(
-                "hot_load_before_training requires a deployment",
-                "Cannot hotload before training without a deployment_id.",
-                "Set deployment_id in DeployConfig.",
-                docs_url=DOCS_HOTLOAD,
-            )
-        )
-
     if resume and resume.resume_from and not resume.resume_from.startswith(("gs://", "/")):
         if resume.resume_job_id is None:
             logger.warning(
