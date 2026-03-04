@@ -451,10 +451,22 @@ def main(
                 ]
                 idx += n
 
+        def policy_forward_batch_fn(groups: list[PromptGroup]) -> None:
+            """Compute learner logprobs via a gradient-free policy forward pass."""
+            all_ref_data = [d for pg in groups for d in pg.ref_data]
+            pol_fwd = policy.forward(all_ref_data, "cross_entropy")
+            idx = 0
+            for pg in groups:
+                n = len(pg.ref_data)
+                pg.learner_logprobs = [
+                    pol_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
+                ]
+                idx += n
+
         def fwd_bwd_one(sub: list[PromptGroup]):
             """Run forward_backward_custom on one micro-batch."""
-            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
-            return policy.forward_backward_custom(data, loss_builder(adv, ref_lp, prompt_lens, inf_lp))
+            data, adv, ref_lp, prompt_lens, inf_lp, learner_lp = combine_prompt_groups(sub)
+            return policy.forward_backward_custom(data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, learner_lp))
 
         def finish_step(
             step: int,
@@ -515,6 +527,7 @@ def main(
             ref_forward_batch=ref_forward_batch,
             fwd_bwd_one=fwd_bwd_one,
             finish_step=finish_step,
+            policy_forward_batch=policy_forward_batch_fn if cfg.tis_enabled else None,
         )
 
         all_rows = dataset * cfg.epochs

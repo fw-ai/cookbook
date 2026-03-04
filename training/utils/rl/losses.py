@@ -20,6 +20,8 @@ class PromptGroup:
     ref_data: List[tinker.Datum] = field(default_factory=list)
     """Reference-only datums (no routing matrices)."""
     inf_logprobs: List[List[float]] = field(default_factory=list)
+    learner_logprobs: List[List[float]] = field(default_factory=list)
+    """Per-sample learner logprobs from a gradient-free policy forward pass."""
     completion_lens: List[int] = field(default_factory=list)
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
@@ -28,16 +30,17 @@ class PromptGroup:
 
 def combine_prompt_groups(
     groups: List[PromptGroup],
-) -> Tuple[List[tinker.Datum], List[float], List[List[float]], List[int], List[List[float]]]:
+) -> Tuple[List[tinker.Datum], List[float], List[List[float]], List[int], List[List[float]], List[List[float]]]:
     """Flatten a list of PromptGroups into combined arrays for a fwd_bwd call.
 
-    Returns (data, advantages, ref_logprobs, prompt_lens, inf_logprobs).
+    Returns (data, advantages, ref_logprobs, prompt_lens, inf_logprobs, learner_logprobs).
     """
     data: List[tinker.Datum] = []
     advantages: List[float] = []
     ref_logprobs: List[List[float]] = []
     prompt_lens: List[int] = []
     inf_logprobs: List[List[float]] = []
+    learner_logprobs: List[List[float]] = []
 
     for pg in groups:
         data.extend(pg.data)
@@ -45,17 +48,18 @@ def combine_prompt_groups(
         ref_logprobs.extend(pg.ref_logprobs)
         prompt_lens.extend([pg.prompt_len] * len(pg.data))
         inf_logprobs.extend(pg.inf_logprobs)
+        learner_logprobs.extend(pg.learner_logprobs)
 
-    return data, advantages, ref_logprobs, prompt_lens, inf_logprobs
+    return data, advantages, ref_logprobs, prompt_lens, inf_logprobs, learner_logprobs
 
 
 LossFnBuilder = Callable[
-    [List[float], List[List[float]], List[int], List[List[float]]],
+    [List[float], List[List[float]], List[int], List[List[float]], List[List[float]]],
     Any,
 ]
 """Signature for the loss builder returned by ``build_loss_fn``.
 
-``(advantages, ref_logprobs, prompt_lens, inf_logprobs) -> loss_fn_value``
+``(advantages, ref_logprobs, prompt_lens, inf_logprobs, learner_logprobs) -> loss_fn_value``
 """
 
 
@@ -84,10 +88,14 @@ def build_loss_fn(
         ref_logprobs: List[List[float]],
         prompt_lens: List[int],
         inf_logprobs: List[List[float]],
+        learner_logprobs: List[List[float]] | None = None,
     ) -> Any:
         tis_wf = None
         if tis_enabled and tis_config is not None:
-            tis_wf = make_tis_weights_fn(inf_logprobs, prompt_lens, tis_config)
+            tis_wf = make_tis_weights_fn(
+                inf_logprobs, prompt_lens, tis_config,
+                learner_logprobs=learner_logprobs or [],
+            )
 
         if policy_loss == "dapo":
             return make_dapo_loss_fn(

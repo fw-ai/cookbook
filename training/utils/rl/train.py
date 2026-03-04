@@ -61,6 +61,10 @@ class MinibatchTrainFns:
     loop_stats) -> (new_step, metrics).  ``loop_stats`` contains
     valid_prompt_groups, total_sampled, filter_drops, sample_fails."""
 
+    policy_forward_batch: Callable[[list[PromptGroup]], None] | None = None
+    """Compute learner logprobs via a gradient-free policy forward pass.
+    Called after ``ref_forward_batch`` and before ``fwd_bwd_one`` when set."""
+
 
 # -- Main entry point -------------------------------------------------------
 
@@ -169,6 +173,13 @@ async def _stream_loop(
             Timer().add("ref_forward", time.time() - t0)
             logger.info("[step %d] ref_forward_batch: done (%.1fs)", step_num, time.time() - t0)
 
+            if fns.policy_forward_batch is not None:
+                logger.info("[step %d] policy_forward_batch: %d groups, %d datums...", step_num, len(minibatch_prompt_groups), n_datums)
+                t0 = time.time()
+                await asyncio.to_thread(fns.policy_forward_batch, minibatch_prompt_groups)
+                Timer().add("policy_forward", time.time() - t0)
+                logger.info("[step %d] policy_forward_batch: done (%.1fs)", step_num, time.time() - t0)
+
             logger.info("[step %d] fwd_bwd %d: %d groups, %d samples...", step_num, fwd_bwd_call_count + 1, len(minibatch_prompt_groups), len(minibatch_prompt_groups) * completions_per_prompt)
             t0 = time.time()
             result = await asyncio.to_thread(fns.fwd_bwd_one, minibatch_prompt_groups)
@@ -266,6 +277,13 @@ async def _stream_loop(
                 await asyncio.to_thread(fns.ref_forward_batch, batch)
                 Timer().add("ref_forward", time.time() - t0)
                 logger.info("[step %d] ref_forward_batch: done (%.1fs)", step_num, time.time() - t0)
+
+                if fns.policy_forward_batch is not None:
+                    logger.info("[step %d] policy_forward_batch: %d groups, %d datums...", step_num, len(batch), n_datums)
+                    t0 = time.time()
+                    await asyncio.to_thread(fns.policy_forward_batch, batch)
+                    Timer().add("policy_forward", time.time() - t0)
+                    logger.info("[step %d] policy_forward_batch: done (%.1fs)", step_num, time.time() - t0)
 
                 fwd_bwd_prompt_group_counts.append(len(batch))
                 logger.info("[step %d] fwd_bwd %d: %d groups, %d samples...", step_num, fwd_bwd_call_count + 1, len(batch), len(batch) * completions_per_prompt)
