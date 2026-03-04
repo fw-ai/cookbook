@@ -48,7 +48,7 @@ from training.utils import (
     wandb_finish,
     validate_config,
     log_metrics_json,
-    make_dpo_loss_fn,
+    make_batch_dpo_loss_fn,
     setup_deployment,
     create_trainer_job,
     load_preference_dataset,
@@ -101,6 +101,8 @@ class Config:
     beta: float = 0.1
     learning_rate: float = 1e-5
     epochs: int = 1
+    batch_size: int = 1
+    """Number of preference pairs per forward_backward_custom call."""
     grad_accum: int = 4
     max_seq_len: int | None = None
     max_pairs: int | None = None
@@ -108,6 +110,8 @@ class Config:
 
     ref_cache_concurrency: int = 16
     """Max concurrent reference forward passes during cache warm-up."""
+    ref_cache_batch_size: int = 1
+    """Number of preference pairs per reference forward call during caching."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -121,75 +125,106 @@ class Config:
 # ---------------------------------------------------------------------------
 
 
+def _tokenize_pair(
+    example: dict[str, Any],
+    tokenizer: Any,
+    max_seq_len: int,
+) -> dict[str, Any] | None:
+    """Tokenize a single preference pair. Returns None if invalid, 'filtered' if too long."""
+    chosen_text = extract_text(example["chosen"])
+    rejected_text = extract_text(example["rejected"])
+    if not chosen_text or not rejected_text:
+        return None
+
+    chosen_tokens = tokenizer.encode(chosen_text)
+    rejected_tokens = tokenizer.encode(rejected_text)
+    if len(chosen_tokens) > max_seq_len or len(rejected_tokens) > max_seq_len:
+        return "filtered"
+    if len(chosen_tokens) < 2 or len(rejected_tokens) < 2:
+        return None
+
+    prompt_len = find_common_prefix_length(chosen_tokens, rejected_tokens)
+    return {
+        "chosen_tokens": chosen_tokens,
+        "rejected_tokens": rejected_tokens,
+        "prompt_len": prompt_len,
+    }
+
+
+def _make_datum(tokens: list[int]) -> tinker.Datum:
+    return tinker.Datum(
+        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(
+                data=tokens[1:], dtype="int64", shape=[len(tokens) - 1]
+            )
+        },
+    )
+
+
 async def _cache_ref_logprobs(
     raw_data: list[dict[str, Any]],
     reference: ReconnectableClient,
     tokenizer: Any,
     max_seq_len: int,
     concurrency: int = 16,
+    batch_size: int = 1,
 ) -> tuple[dict[int, dict[str, Any]], int]:
     """Compute reference logprobs concurrently using ``gather_with_progress``.
 
+    When ``batch_size > 1``, multiple pairs are sent in a single reference
+    forward call (2 * batch_size datums), reducing per-call overhead.
+
     Returns ``(ref_cache, filtered_count)``.
     """
+    tokenized: list[tuple[int, dict[str, Any]]] = []
+    filtered_count = 0
+    for i, example in enumerate(raw_data):
+        result = _tokenize_pair(example, tokenizer, max_seq_len)
+        if result == "filtered":
+            filtered_count += 1
+        elif result is not None:
+            tokenized.append((i, result))
+
+    batches: list[list[tuple[int, dict[str, Any]]]] = []
+    for start in range(0, len(tokenized), batch_size):
+        batches.append(tokenized[start : start + batch_size])
+
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def _process_pair(i: int, example: dict) -> tuple[int, dict[str, Any] | None]:
-        chosen_text = extract_text(example["chosen"])
-        rejected_text = extract_text(example["rejected"])
-        if not chosen_text or not rejected_text:
-            return i, None
-
-        chosen_tokens = tokenizer.encode(chosen_text)
-        rejected_tokens = tokenizer.encode(rejected_text)
-        if len(chosen_tokens) > max_seq_len or len(rejected_tokens) > max_seq_len:
-            return i, "filtered"
-        if len(chosen_tokens) < 2 or len(rejected_tokens) < 2:
-            return i, None
-
-        prompt_len = find_common_prefix_length(chosen_tokens, rejected_tokens)
-        chosen_datum = tinker.Datum(
-            model_input=tinker.ModelInput.from_ints(chosen_tokens[:-1]),
-            loss_fn_inputs={
-                "target_tokens": tinker.TensorData(
-                    data=chosen_tokens[1:], dtype="int64", shape=[len(chosen_tokens) - 1]
-                )
-            },
-        )
-        rejected_datum = tinker.Datum(
-            model_input=tinker.ModelInput.from_ints(rejected_tokens[:-1]),
-            loss_fn_inputs={
-                "target_tokens": tinker.TensorData(
-                    data=rejected_tokens[1:], dtype="int64", shape=[len(rejected_tokens) - 1]
-                )
-            },
-        )
+    async def _process_batch(
+        batch: list[tuple[int, dict[str, Any]]],
+    ) -> list[tuple[int, dict[str, Any]]]:
+        datums: list[tinker.Datum] = []
+        for _, pair_data in batch:
+            datums.append(_make_datum(pair_data["chosen_tokens"]))
+            datums.append(_make_datum(pair_data["rejected_tokens"]))
 
         async with semaphore:
             fwd = await asyncio.to_thread(
-                lambda: reference.forward([chosen_datum, rejected_datum], "cross_entropy")
+                lambda d=datums: reference.forward(d, "cross_entropy")
             )
 
-        return i, {
-            "chosen_tokens": chosen_tokens,
-            "rejected_tokens": rejected_tokens,
-            "ref_chosen": fwd.loss_fn_outputs[0]["logprobs"].data,
-            "ref_rejected": fwd.loss_fn_outputs[1]["logprobs"].data,
-            "prompt_len": prompt_len,
-        }
+        results: list[tuple[int, dict[str, Any]]] = []
+        for j, (idx, pair_data) in enumerate(batch):
+            results.append((idx, {
+                "chosen_tokens": pair_data["chosen_tokens"],
+                "rejected_tokens": pair_data["rejected_tokens"],
+                "ref_chosen": fwd.loss_fn_outputs[2 * j]["logprobs"].data,
+                "ref_rejected": fwd.loss_fn_outputs[2 * j + 1]["logprobs"].data,
+                "prompt_len": pair_data["prompt_len"],
+            }))
+        return results
 
-    results = await gather_with_progress(
-        (_process_pair(i, ex) for i, ex in enumerate(raw_data)),
+    batch_results = await gather_with_progress(
+        (_process_batch(b) for b in batches),
         desc="Caching reference logprobs",
     )
 
     ref_cache: dict[int, dict[str, Any]] = {}
-    filtered_count = 0
-    for idx, result in results:
-        if result == "filtered":
-            filtered_count += 1
-        elif result is not None:
-            ref_cache[idx] = result
+    for batch_result in batch_results:
+        for idx, pair_data in batch_result:
+            ref_cache[idx] = pair_data
 
     return ref_cache, filtered_count
 
@@ -197,6 +232,34 @@ async def _cache_ref_logprobs(
 # ---------------------------------------------------------------------------
 # Pipelined training loop
 # ---------------------------------------------------------------------------
+
+
+def _flush_batch(
+    batch_pairs: list[dict[str, Any]],
+    policy: ReconnectableClient,
+    beta: float,
+) -> Any:
+    """Send a batch of pairs through forward_backward_custom.
+
+    Arranges datums as [chosen_0, rejected_0, chosen_1, rejected_1, ...].
+    """
+    datums: list[tinker.Datum] = []
+    ref_chosen_list: list[list[float]] = []
+    ref_rejected_list: list[list[float]] = []
+    response_starts: list[int] = []
+
+    for cached in batch_pairs:
+        response_start = max(0, cached["prompt_len"] - 1)
+        datums.append(_make_datum(cached["chosen_tokens"]))
+        datums.append(_make_datum(cached["rejected_tokens"]))
+        ref_chosen_list.append(cached["ref_chosen"])
+        ref_rejected_list.append(cached["ref_rejected"])
+        response_starts.append(response_start)
+
+    loss_fn = make_batch_dpo_loss_fn(
+        ref_chosen_list, ref_rejected_list, response_starts, beta,
+    )
+    return policy.forward_backward_custom(datums, loss_fn)
 
 
 async def _train_loop(
@@ -208,100 +271,92 @@ async def _train_loop(
     cfg: Config,
     step_offset: int,
 ) -> int:
-    """DPO training with pipelined forward_backward + optim_step.
+    """DPO training with batched forward_backward + optim_step.
 
-    Issues forward_backward_custom and optim_step as back-to-back futures
-    so they land on the same trainer clock cycle, matching tinker-cookbook's
-    ``train_step`` pipeline pattern.
+    Accumulates ``batch_size`` pairs into a single ``forward_backward_custom``
+    call (matching SFT's batching pattern), then runs ``grad_accum`` such
+    micro-batches before each ``optim_step``.
     """
+    batch_size = cfg.batch_size
     step = step_offset
-    total_steps = len(valid_indices) * cfg.epochs // cfg.grad_accum
+    total_steps = len(valid_indices) * cfg.epochs // (cfg.grad_accum * batch_size)
     accum_count = 0
     agg: dict[str, float] = {"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.0, "count": 0}
 
     fwd_bwd_futures: list[Any] = []
 
+    def _do_optim_step(epoch: int) -> None:
+        nonlocal step, accum_count, agg, fwd_bwd_futures
+
+        optim_result = policy.optim_step(adam_params)
+
+        step_metrics: dict[str, Any] = {}
+        for result in fwd_bwd_futures:
+            fwd_metrics = result.metrics
+            agg["dpo_loss"] += fwd_metrics["dpo_loss"]
+            agg["margin"] += fwd_metrics["margin"]
+            agg["accuracy"] += fwd_metrics["accuracy"]
+            agg["count"] += 1
+        fwd_bwd_futures = []
+        step += 1
+        accum_count = 0
+
+        if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
+            for k, v in optim_result.metrics.items():
+                step_metrics[f"train/{k}"] = v
+
+        hl = cfg.hotload
+        if hl.hot_load_interval > 0 and step % hl.hot_load_interval == 0:
+            with timer("weight_sync"):
+                weight_syncer.save_and_hotload(f"step-{step}")
+        if hl.dcp_save_interval > 0 and step % hl.dcp_save_interval == 0:
+            with timer("dcp_save"):
+                weight_syncer.save_dcp(f"step-{step}")
+
+        step_metrics.update(flush_timing())
+
+        n = agg["count"]
+        if n > 0:
+            avg_loss = agg["dpo_loss"] / n
+            avg_margin = agg["margin"] / n
+            avg_acc = agg["accuracy"] / n
+            logger.info(
+                "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%%",
+                step, total_steps, avg_loss, avg_margin, avg_acc * 100,
+            )
+            log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc)
+            step_metrics.update({
+                "train/step": step,
+                "train/dpo_loss": avg_loss,
+                "train/margin": avg_margin,
+                "train/accuracy": avg_acc,
+                "train/epoch": epoch + 1,
+            })
+            wandb_log(step_metrics, step)
+
+        agg = {"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.0, "count": 0}
+
     for epoch in range(cfg.epochs):
-        for _pair_idx, idx in enumerate(valid_indices):
-            cached = ref_cache[idx]
-            response_start = max(0, cached["prompt_len"] - 1)
-            chosen_tokens = cached["chosen_tokens"]
-            rejected_tokens = cached["rejected_tokens"]
+        batch_buffer: list[dict[str, Any]] = []
+        for idx in valid_indices:
+            batch_buffer.append(ref_cache[idx])
 
-            chosen_datum = tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(chosen_tokens[:-1]),
-                loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(
-                        data=chosen_tokens[1:], dtype="int64", shape=[len(chosen_tokens) - 1]
-                    )
-                },
-            )
-            rejected_datum = tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(rejected_tokens[:-1]),
-                loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(
-                        data=rejected_tokens[1:], dtype="int64", shape=[len(rejected_tokens) - 1]
-                    )
-                },
-            )
+            if len(batch_buffer) >= batch_size:
+                with timer("fwd_bwd"):
+                    fwd_bwd_result = _flush_batch(batch_buffer, policy, cfg.beta)
+                fwd_bwd_futures.append(fwd_bwd_result)
+                batch_buffer = []
+                accum_count += 1
 
-            loss_fn = make_dpo_loss_fn(
-                cached["ref_chosen"], cached["ref_rejected"], response_start, cfg.beta,
-            )
-            fwd_bwd_result = policy.forward_backward_custom(
-                [chosen_datum, rejected_datum], loss_fn,
-            )
+                if accum_count >= cfg.grad_accum:
+                    _do_optim_step(epoch)
+
+        if batch_buffer:
+            with timer("fwd_bwd"):
+                fwd_bwd_result = _flush_batch(batch_buffer, policy, cfg.beta)
             fwd_bwd_futures.append(fwd_bwd_result)
+            batch_buffer = []
             accum_count += 1
-
-            if accum_count >= cfg.grad_accum:
-                optim_result = policy.optim_step(adam_params)
-
-                step_metrics: dict[str, Any] = {}
-                for result in fwd_bwd_futures:
-                    fwd_metrics = result.metrics
-                    agg["dpo_loss"] += fwd_metrics["dpo_loss"]
-                    agg["margin"] += fwd_metrics["margin"]
-                    agg["accuracy"] += fwd_metrics["accuracy"]
-                    agg["count"] += 1
-                fwd_bwd_futures = []
-                step += 1
-                accum_count = 0
-
-                if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
-                    for k, v in optim_result.metrics.items():
-                        step_metrics[f"train/{k}"] = v
-
-                hl = cfg.hotload
-                if hl.hot_load_interval > 0 and step % hl.hot_load_interval == 0:
-                    with timer("weight_sync"):
-                        weight_syncer.save_and_hotload(f"step-{step}")
-                if hl.dcp_save_interval > 0 and step % hl.dcp_save_interval == 0:
-                    with timer("dcp_save"):
-                        weight_syncer.save_dcp(f"step-{step}")
-
-                step_metrics.update(flush_timing())
-
-                n = agg["count"]
-                if n > 0:
-                    avg_loss = agg["dpo_loss"] / n
-                    avg_margin = agg["margin"] / n
-                    avg_acc = agg["accuracy"] / n
-                    logger.info(
-                        "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%%",
-                        step, total_steps, avg_loss, avg_margin, avg_acc * 100,
-                    )
-                    log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc)
-                    step_metrics.update({
-                        "train/step": step,
-                        "train/dpo_loss": avg_loss,
-                        "train/margin": avg_margin,
-                        "train/accuracy": avg_acc,
-                        "train/epoch": epoch + 1,
-                    })
-                    wandb_log(step_metrics, step)
-
-                agg = {"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.0, "count": 0}
 
         if accum_count > 0:
             for result in fwd_bwd_futures:
@@ -337,7 +392,13 @@ def main(
             "Config.tokenizer_model is required for client-side tokenization. "
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
-    setup_wandb(cfg.wandb, {"beta": cfg.beta, "lr": cfg.learning_rate, "epochs": cfg.epochs})
+    setup_wandb(cfg.wandb, {
+        "beta": cfg.beta,
+        "lr": cfg.learning_rate,
+        "epochs": cfg.epochs,
+        "batch_size": cfg.batch_size,
+        "grad_accum": cfg.grad_accum,
+    })
 
     # -- Setup infrastructure ----------------------------------------------
 
@@ -424,6 +485,7 @@ def main(
         _cache_ref_logprobs(
             raw_data, reference, tokenizer, cfg.max_seq_len,
             concurrency=cfg.ref_cache_concurrency,
+            batch_size=cfg.ref_cache_batch_size,
         )
     )
 

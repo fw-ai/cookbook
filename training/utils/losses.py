@@ -12,42 +12,6 @@ import tinker
 import torch.nn.functional as F
 
 
-def make_dpo_loss_fn(
-    ref_chosen: List[float],
-    ref_rejected: List[float],
-    response_start: int,
-    beta: float,
-) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
-    """DPO loss: -log(sigmoid(beta * margin))."""
-    ref_chosen_t = torch.tensor(ref_chosen, dtype=torch.float32)
-    ref_rejected_t = torch.tensor(ref_rejected, dtype=torch.float32)
-
-    def loss_fn(
-        data: List[tinker.Datum],
-        logprobs_list: List[torch.Tensor],
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        assert len(logprobs_list) == 2
-        pi_chosen = logprobs_list[0][response_start:].sum()
-        pi_rejected = logprobs_list[1][response_start:].sum()
-        rc = ref_chosen_t[response_start:].sum()
-        rr = ref_rejected_t[response_start:].sum()
-
-        margin = (pi_chosen - rc) - (pi_rejected - rr)
-        dpo_loss = -F.logsigmoid(beta * margin)
-
-        with torch.no_grad():
-            metrics = {
-                "dpo_loss": dpo_loss.item(),
-                "margin": margin.item(),
-                "accuracy": 1.0 if margin.item() > 0 else 0.0,
-                "chosen_reward": beta * (pi_chosen.item() - rc.item()),
-                "rejected_reward": beta * (pi_rejected.item() - rr.item()),
-            }
-        return dpo_loss, metrics
-
-    return loss_fn
-
-
 def _log1mexp(x: torch.Tensor) -> torch.Tensor:
     """Numerically stable log(1 - exp(x)) for x < 0.
 
@@ -127,6 +91,78 @@ def make_orpo_loss_fn(
                 "accuracy": 1.0 if log_odds_ratio.item() > 0 else 0.0,
             }
         return orpo_loss, metrics
+
+    return loss_fn
+
+
+def make_batch_dpo_loss_fn(
+    ref_chosen_list: List[List[float]],
+    ref_rejected_list: List[List[float]],
+    response_starts: List[int],
+    beta: float,
+) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
+    """Batched DPO loss over multiple preference pairs.
+
+    Expects ``2 * N`` datums arranged as
+    ``[chosen_0, rejected_0, chosen_1, rejected_1, ...]`` and computes the
+    mean DPO loss across all pairs.
+
+    Args:
+        ref_chosen_list: Per-pair reference logprobs for chosen sequences.
+        ref_rejected_list: Per-pair reference logprobs for rejected sequences.
+        response_starts: Per-pair token index where the response begins.
+        beta: DPO temperature parameter.
+    """
+    n_pairs = len(ref_chosen_list)
+    assert len(ref_rejected_list) == n_pairs
+    assert len(response_starts) == n_pairs
+
+    ref_chosen_ts = [torch.tensor(r, dtype=torch.float32) for r in ref_chosen_list]
+    ref_rejected_ts = [torch.tensor(r, dtype=torch.float32) for r in ref_rejected_list]
+
+    def loss_fn(
+        data: List[tinker.Datum],
+        logprobs_list: List[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        assert len(logprobs_list) == 2 * n_pairs, (
+            f"Expected {2 * n_pairs} logprobs (2 per pair), got {len(logprobs_list)}"
+        )
+
+        total_loss = torch.tensor(0.0)
+        total_margin = 0.0
+        total_accuracy = 0.0
+        total_chosen_reward = 0.0
+        total_rejected_reward = 0.0
+
+        for i in range(n_pairs):
+            rs = response_starts[i]
+            pi_chosen = logprobs_list[2 * i][rs:].sum()
+            pi_rejected = logprobs_list[2 * i + 1][rs:].sum()
+            rc = ref_chosen_ts[i][rs:].sum()
+            rr = ref_rejected_ts[i][rs:].sum()
+
+            margin = (pi_chosen - rc) - (pi_rejected - rr)
+            pair_loss = -F.logsigmoid(beta * margin)
+            total_loss = total_loss + pair_loss
+
+            with torch.no_grad():
+                total_margin += margin.item()
+                total_accuracy += 1.0 if margin.item() > 0 else 0.0
+                total_chosen_reward += beta * (pi_chosen.item() - rc.item())
+                total_rejected_reward += beta * (pi_rejected.item() - rr.item())
+
+        avg_loss = total_loss / n_pairs
+
+        with torch.no_grad():
+            metrics = {
+                "dpo_loss": avg_loss.item(),
+                "margin": total_margin / n_pairs,
+                "accuracy": total_accuracy / n_pairs,
+                "chosen_reward": total_chosen_reward / n_pairs,
+                "rejected_reward": total_rejected_reward / n_pairs,
+                "batch_pairs": n_pairs,
+            }
+        return avg_loss, metrics
 
     return loss_fn
 
