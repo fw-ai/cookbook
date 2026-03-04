@@ -1,8 +1,0 @@
-fireworks-ai[training]
-tinker-cookbook
-tqdm
-torch
-datasets
-tiktoken
-numpy
-wandb
