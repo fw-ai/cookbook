@@ -57,7 +57,8 @@ class TrainArgs:
     training_shape: str = field(
         default_factory=lambda: os.environ.get("TRAINING_SHAPE", "ts-qwen3-30b-a3b-instruct-64k-rft-dev-cp8ep8-v1")
     )
-    deployment_id: str = field(default_factory=lambda: f"deepmath-{int(time.time()) % 100000}")
+    deployment_id: str | None = None
+    """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "AP_TOKYO_2"
     deployment_region: str = "US_VIRGINIA_1"
     max_rows: int = 100
@@ -96,7 +97,8 @@ def parse_args() -> TrainArgs:
     )
     parser.add_argument(
         "--deployment-id",
-        default=f"deepmath-{int(time.time()) % 100000}",
+        default=None,
+        help="Existing deployment ID to reuse; omit to auto-create",
     )
     parser.add_argument("--region", default="AP_TOKYO_2")
     parser.add_argument("--deployment-region", default="US_VIRGINIA_1")
@@ -286,7 +288,7 @@ def main():
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            run_name=args.deployment_id,
+            run_name=args.deployment_id or f"deepmath-{int(time.time()) % 100000}",
         ),
     )
 
