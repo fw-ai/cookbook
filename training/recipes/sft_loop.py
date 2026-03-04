@@ -306,4 +306,10 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config())
+    cfg = Config(
+        dataset="kimi2_deid_sample_100_formatted.jsonl",
+        tokenizer_model="Qwen/Qwen3-8B",
+        max_seq_len=4096,
+        max_examples=10,
+    )
+    main(cfg)
