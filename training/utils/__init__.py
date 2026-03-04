@@ -38,7 +38,6 @@ __all__ = [
     "timer",
     "validate_config",
     "validate_preflight",
-    "validate_streaming_config",
     "wandb_finish",
     "wandb_log",
 ]
@@ -83,4 +82,4 @@ from training.utils.logging import (
     log_metrics_json,
     compute_pass_at_k,
 )
-from training.utils.validation import validate_config, validate_preflight, validate_streaming_config
+from training.utils.validation import validate_config, validate_preflight

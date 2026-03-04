@@ -130,7 +130,6 @@ def main(
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
         learning_rate=cfg.learning_rate,
-        grad_accum=cfg.grad_accum,
         display_name="sft-trainer",
         hot_load_deployment_id=cfg.deployment.deployment_id,
     )

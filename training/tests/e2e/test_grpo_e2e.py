@@ -66,7 +66,6 @@ class TestGRPOE2E:
             completions_per_prompt=4,
             max_rows=10,
             epochs=1,
-            grad_accum=2,
             router_replay=True,
             tis_enabled=True,
             tis=ISConfig(clip_high=10.0),

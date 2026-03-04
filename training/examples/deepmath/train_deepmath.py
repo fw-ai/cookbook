@@ -67,7 +67,6 @@ class TrainArgs:
     temperature: float = 1.0
     max_completion_tokens: int = 30 * 1024
     prompt_groups_per_step: int = 32
-    min_samples_per_fwd_bwd: int = 8
     router_replay: bool = False
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
@@ -99,7 +98,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--max-completion-tokens", type=int)
 
     parser.add_argument("--prompt-groups-per-step", type=int)
-    parser.add_argument("--min-samples-per-fwd-bwd", type=int)
 
     parser.add_argument("--router-replay", action="store_true")
     parser.add_argument("--wandb-entity")
@@ -246,7 +244,6 @@ def main():
         epochs=args.epochs,
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
-        min_samples_per_fwd_bwd=args.min_samples_per_fwd_bwd,
         tis_enabled=True,
         tis=ISConfig(clip_high=2.0, clip_low=0.0),
         router_replay=args.router_replay,
@@ -293,9 +290,8 @@ def main():
         args.kl_beta,
     )
     logger.info(
-        "stream mode: prompt_groups_per_step=%d | min_samples_per_fwd_bwd=%d",
+        "prompt_groups_per_step=%d",
         args.prompt_groups_per_step,
-        args.min_samples_per_fwd_bwd,
     )
 
     rl_loop.reward_fn = deepmath_reward
