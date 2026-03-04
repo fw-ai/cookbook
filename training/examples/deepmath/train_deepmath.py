@@ -64,7 +64,6 @@ class TrainArgs:
     kl_beta: float = 0.001
     temperature: float = 1.0
     max_completion_tokens: int = 16 * 1024
-    max_seq_len: int = 32 * 1024
     prompt_groups_per_step: int = 8
     min_samples_per_fwd_bwd: int = 8
     max_samples_per_fwd_bwd: int = 256
@@ -258,7 +257,6 @@ def main():
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=args.max_rows,
-        max_seq_len=args.max_seq_len,
         prompt_groups_per_step=args.prompt_groups_per_step,
         min_samples_per_fwd_bwd=args.min_samples_per_fwd_bwd,
         max_samples_per_fwd_bwd=args.max_samples_per_fwd_bwd,
