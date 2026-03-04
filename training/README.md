@@ -3,7 +3,18 @@
 Ready-to-run training recipes for reinforcement learning, preference optimization, and supervised fine-tuning on [Fireworks](https://fireworks.ai).
 Each recipe is a single Python file you can fork and customize.
 
-## Install
+## Recipes
+
+| Recipe | File | Description |
+| --- | --- | --- |
+| GRPO / DAPO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"dapo"`, `"gspo"`, or `"cispo"`. |
+| DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
+| ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
+| SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
+
+## Getting started
+
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/fw-ai/cookbook.git
@@ -16,64 +27,119 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12
 source .venv/bin/activate
 
-## For the training sdk need to install -pre version
+# Install the Fireworks training SDK (pre-release) and tinker
 uv pip install --pre "fireworks-ai[training]" tinker-cookbook
-# Install the package in editable mode
+
+# Install this package in editable mode
 uv pip install -e .
+```
 
+### 2. Set your credentials
 
-# Set your Fireworks credentials
+Create a `.env` file in the `training/` directory (picked up automatically via `python-dotenv`):
+
+```bash
+FIREWORKS_API_KEY="your-api-key"
+FIREWORKS_ACCOUNT_ID="your-account-id"
+```
+
+Or export them directly:
+
+```bash
 export FIREWORKS_API_KEY="..."
 export FIREWORKS_ACCOUNT_ID="..."
 ```
 
-## Quick start (GRPO)
+### 3. Configure your recipe
 
-```python
-from training.recipes.rl_loop import Config, main
-from training.utils import InfraConfig, DeployConfig, HotloadConfig, WandBConfig
+Each recipe has a `Config` dataclass at the top of the file. Open the recipe you want to run and edit the `if __name__ == "__main__"` block at the bottom. Here are the fields you **must** set:
 
-cfg = Config(
-    base_model="accounts/fireworks/models/qwen3-8b",
-    dataset="path/to/your_data.jsonl",
-    completions_per_prompt=4,
-    policy_loss="grpo",
-    deployment=DeployConfig(
-        tokenizer_model="Qwen/Qwen3-8B",
-        # deployment_id="my-existing-deploy",    # omit to auto-create
-        # deployment_region="US_OHIO_1",
-        # sample_timeout=600,
-    ),
-    infra=InfraConfig(
-        training_shape_id="your-training-shape",
-        # ref_training_shape_id="your-ref-shape",  # if different from policy
-        # region="US_OHIO_1",
-        # skip_validations=False,
-    ),
-    hotload=HotloadConfig(hot_load_interval=1),
-    # learning_rate=1e-5,
-    # kl_beta=0.001,                              # set 0 to skip reference model
-    # temperature=1.0,
-    # max_completion_tokens=1024,
-    # epochs=1,
-    # lora_rank=0,
-    # wandb=WandBConfig(project="my-project"),
-)
+**All recipes:**
 
-main(cfg)
+| Field | What to set |
+| --- | --- |
+| `dataset` | Path to your JSONL training data |
+| `base_model` | Fireworks model ID (e.g. `"accounts/fireworks/models/qwen3-8b"`) |
+| `max_seq_len` | Max token length for training examples |
+| `infra` | `InfraConfig(training_shape_id="your-shape")` for GPU provisioning |
+
+**SFT** (`recipes/sft_loop.py`) -- also requires:
+
+| Field | What to set |
+| --- | --- |
+| `tokenizer_model` | HuggingFace model name matching your base model (e.g. `"Qwen/Qwen3-8B"`) |
+
+**RL** (`recipes/rl_loop.py`) -- also requires:
+
+| Field | What to set |
+| --- | --- |
+| `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
+| `hotload` | `HotloadConfig(hot_load_interval=1)` to sync weights to the deployment |
+
+**DPO / ORPO** -- also requires:
+
+| Field | What to set |
+| --- | --- |
+| `tokenizer_model` | HuggingFace model name matching your base model |
+
+### 4. Run
+
+```bash
+cd cookbook/training
+python -m recipes.sft_loop      # or whichever recipe you configured
 ```
 
-When no `deployment_id` is provided, a new inference deployment is created automatically.
-To reuse an existing deployment, pass `deployment_id="my-deploy"`.
+## Example: SFT quick start
 
-## Recipes
+```python
+# At the bottom of recipes/sft_loop.py, edit the __main__ block:
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    cfg = Config(
+        base_model="accounts/fireworks/models/qwen3-8b",
+        dataset="path/to/your_data.jsonl",
+        tokenizer_model="Qwen/Qwen3-8B",
+        max_seq_len=4096,
+        max_examples=100,                           # optional: limit for testing
+        infra=InfraConfig(
+            training_shape_id="your-training-shape",
+        ),
+        # learning_rate=1e-4,
+        # epochs=3,
+        # batch_size=32,
+        # lora_rank=0,                              # set > 0 for LoRA
+        # wandb=WandBConfig(project="my-sft"),
+    )
+    main(cfg)
+```
 
-| Recipe | File | Description |
-| --- | --- | --- |
-| GRPO / DAPO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"dapo"`, `"gspo"`, or `"cispo"`. |
-| DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
-| ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
-| SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
+Then run:
+
+```bash
+python -m recipes.sft_loop
+```
+
+## Dataset format
+
+All recipes expect JSONL files with OpenAI chat format:
+
+```json
+{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+```
+
+- **SFT**: trains on assistant response tokens only (prompt tokens are masked).
+- **DPO / ORPO**: each row needs `chosen` and `rejected` message lists.
+- **RL**: each row needs a `messages` list with at least a user prompt; the reward function scores completions.
+
+## Configuration reference
+
+All recipes use composable dataclass configs:
+
+- **`InfraConfig`** -- region, accelerators, training shapes. When `training_shape_id` is set, `max_seq_len` and GPU config are auto-derived.
+- **`DeployConfig`** -- inference deployment for RL rollouts. Set `deployment_id` to reuse an existing deployment, or omit to auto-create.
+- **`HotloadConfig`** -- weight sync cadence and checkpoint settings.
+- **`WandBConfig`** -- optional Weights & Biases logging.
+- **`ResumeConfig`** -- resume training from a checkpoint.
 
 ## Directory layout
 
@@ -83,23 +149,6 @@ utils/              Shared config, data loading, loss functions, metrics
 examples/deepmath/  Worked example: math reasoning with GRPO
 tests/              Unit and end-to-end tests
 ```
-
-## Configuration
-
-All recipes use composable dataclass configs:
-
-- **`DeployConfig`** -- inference deployment. Set `deployment_id` to use an existing deployment, or leave it unset to auto-create one.
-- **`InfraConfig`** -- region, accelerators, training shapes. When `training_shape_id` is set, config is auto-derived from the shape.
-- **`HotloadConfig`** -- weight sync cadence and checkpoint settings.
-- **`WandBConfig`** -- optional Weights & Biases logging.
-- **`ResumeConfig`** -- resume training from a checkpoint.
-
-## What to customize
-
-1. **Reward function** -- `reward_fn` in `recipes/rl_loop.py`. Replace with your task-specific reward logic.
-2. **Dataset format** -- each row needs a `messages` list (OpenAI chat format) and any fields your reward function reads.
-3. **Loss tuning** -- adjust `kl_beta`, `temperature`, `completions_per_prompt`, or switch `policy_loss`.
-4. **Infrastructure** -- set `InfraConfig(training_shape_id="...")` to use pre-configured training shapes.
 
 ## Tests
 
