@@ -16,6 +16,8 @@ dependencies = [
     "tiktoken",
     "numpy",
     "wandb",
+    "python-dotenv",
+    "transformers",
 ]
 
 [project.optional-dependencies]
