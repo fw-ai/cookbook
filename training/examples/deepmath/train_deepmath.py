@@ -54,17 +54,20 @@ class TrainArgs:
     dataset_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "deepmath_103k.jsonl")
     )
-    training_shape: str = field(default_factory=lambda: os.environ.get("TRAINING_SHAPE", ""))
+    training_shape: str = field(
+        default_factory=lambda: os.environ.get("TRAINING_SHAPE", "ts-qwen3-30b-a3b-instruct-64k-rft-dev-cp8ep8-v1")
+    )
     deployment_id: str = field(default_factory=lambda: f"deepmath-{int(time.time()) % 100000}")
-    region: str = "US_OHIO_1"
-    max_rows: int = 500
-    epochs: int = 3
-    completions_per_prompt: int = 8
+    region: str = "AP_TOKYO_2"
+    deployment_region: str = "US_VIRGINIA_1"
+    max_rows: int = 100
+    epochs: int = 1
+    completions_per_prompt: int = 4
     learning_rate: float = 1e-5
     kl_beta: float = 0.001
     temperature: float = 1.0
     max_completion_tokens: int = 16 * 1024
-    prompt_groups_per_step: int = 8
+    prompt_groups_per_step: int = 4
     min_samples_per_fwd_bwd: int = 8
     router_replay: bool = False
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
@@ -89,23 +92,24 @@ def parse_args() -> TrainArgs:
     )
     parser.add_argument(
         "--training-shape",
-        default=os.environ.get("TRAINING_SHAPE", ""),
+        default=os.environ.get("TRAINING_SHAPE", "ts-qwen3-30b-a3b-instruct-64k-rft-dev-cp8ep8-v1"),
     )
     parser.add_argument(
         "--deployment-id",
         default=f"deepmath-{int(time.time()) % 100000}",
     )
-    parser.add_argument("--region", default="US_OHIO_1")
+    parser.add_argument("--region", default="AP_TOKYO_2")
+    parser.add_argument("--deployment-region", default="US_VIRGINIA_1")
 
-    parser.add_argument("--max-rows", type=int, default=500)
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--completions-per-prompt", type=int, default=8)
+    parser.add_argument("--max-rows", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--completions-per-prompt", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--kl-beta", type=float, default=0.001)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-completion-tokens", type=int, default=16 * 1024)
 
-    parser.add_argument("--prompt-groups-per-step", type=int, default=8)
+    parser.add_argument("--prompt-groups-per-step", type=int, default=4)
     parser.add_argument("--min-samples-per-fwd-bwd", type=int, default=8)
 
     parser.add_argument("--router-replay", action="store_true", default=False)
@@ -267,7 +271,7 @@ def main():
         ),
         deployment=DeployConfig(
             deployment_id=args.deployment_id,
-            deployment_region="US_VIRGINIA_1",
+            deployment_region=args.deployment_region,
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
         ),
