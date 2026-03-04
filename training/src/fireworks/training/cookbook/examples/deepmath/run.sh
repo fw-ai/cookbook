@@ -1,3 +1,7 @@
+HERE=$(dirname $(realpath $0))
+echo $HERE
+export PYTHONPATH=$PYTHONPATH:$HERE/../../../
+echo $PYTHONPATH
 python train_deepmath.py \
     --base-model accounts/fireworks/models/qwen3-4b \
     --tokenizer-model Qwen/Qwen3-4b \
