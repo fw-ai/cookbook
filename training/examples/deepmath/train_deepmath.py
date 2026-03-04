@@ -59,14 +59,14 @@ class TrainArgs:
     """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "US_OHIO_1"
     deployment_region: str = "US_VIRGINIA_1"
-    max_rows: int = 500
+    max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8
     learning_rate: float = 1e-5
     kl_beta: float = 0.001
     temperature: float = 1.0
-    max_completion_tokens: int = 16 * 1024
-    prompt_groups_per_step: int = 8
+    max_completion_tokens: int = 30 * 1024
+    prompt_groups_per_step: int = 32
     min_samples_per_fwd_bwd: int = 8
     router_replay: bool = False
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
