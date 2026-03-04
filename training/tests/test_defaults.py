@@ -16,7 +16,7 @@ def test_grpo_max_completion_tokens():
 
 
 def test_tis_clip_high():
-    from training.utils.importance_sampling import ISConfig
+    from training.utils.rl.importance_sampling import ISConfig
 
     assert ISConfig().clip_high == 2.0
 

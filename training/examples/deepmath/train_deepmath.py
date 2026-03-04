@@ -66,7 +66,6 @@ class TrainArgs:
     max_completion_tokens: int = 16 * 1024
     prompt_groups_per_step: int = 8
     min_samples_per_fwd_bwd: int = 8
-    max_samples_per_fwd_bwd: int = 256
     router_replay: bool = False
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
@@ -105,11 +104,9 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--kl-beta", type=float, default=0.001)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-completion-tokens", type=int, default=16 * 1024)
-    parser.add_argument("--max-seq-len", type=int, default=32 * 1024)
 
     parser.add_argument("--prompt-groups-per-step", type=int, default=8)
     parser.add_argument("--min-samples-per-fwd-bwd", type=int, default=8)
-    parser.add_argument("--max-samples-per-fwd-bwd", type=int, default=256)
 
     parser.add_argument("--router-replay", action="store_true", default=False)
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
@@ -259,7 +256,6 @@ def main():
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
         min_samples_per_fwd_bwd=args.min_samples_per_fwd_bwd,
-        max_samples_per_fwd_bwd=args.max_samples_per_fwd_bwd,
         tis_enabled=True,
         tis=ISConfig(clip_high=2.0, clip_low=0.0),
         router_replay=args.router_replay,
@@ -306,10 +302,9 @@ def main():
         args.kl_beta,
     )
     logger.info(
-        "stream mode: prompt_groups_per_step=%d | min_samples_per_fwd_bwd=%d | max_samples_per_fwd_bwd=%d",
+        "stream mode: prompt_groups_per_step=%d | min_samples_per_fwd_bwd=%d",
         args.prompt_groups_per_step,
         args.min_samples_per_fwd_bwd,
-        args.max_samples_per_fwd_bwd,
     )
 
     rl_loop.reward_fn = deepmath_reward

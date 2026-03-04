@@ -6,8 +6,7 @@ Fork this script and customise the reward function, loss, or sampling
 strategy to fit your task.
 
 The training loop streams samples from an inference deployment, fires
-``fwd_bwd`` calls in greedy batches (capped by
-``max_samples_per_fwd_bwd``), and runs ``optim_step`` after collecting
+``fwd_bwd`` calls in greedy batches, and runs ``optim_step`` after collecting
 ``prompt_groups_per_step`` valid groups per optimizer step.
 
 Usage:
@@ -47,7 +46,6 @@ from training.utils import (
     compute_advantages,
     create_trainer_job,
     load_jsonl_dataset,
-    validate_streaming_config,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import ISConfig, PromptGroup
@@ -95,13 +93,9 @@ class Config:
     """Min samples to trigger a ``fwd_bwd`` call.
 
     When the buffer reaches this threshold, ``fwd_bwd`` fires immediately
-    instead of waiting for the full optimizer step. Defaults to
-    ``max_samples_per_fwd_bwd``.
+    instead of waiting for the full optimizer step.  Defaults to
+    ``prompt_groups_per_step * completions_per_prompt``.
     """
-
-    max_samples_per_fwd_bwd: int = 256
-    """Max samples per fwd_bwd call.  Controls gradient
-    accumulation granularity -- fewer, larger calls reduce RPC overhead."""
 
     max_concurrent: int = 32
     """Cap on concurrent in-flight sampling requests to the inference server."""
@@ -174,22 +168,11 @@ def main(
     cfg = config
 
     validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
-    validate_streaming_config(
-        prompt_groups_per_step=cfg.prompt_groups_per_step,
-        completions_per_prompt=cfg.completions_per_prompt,
-        max_samples_per_fwd_bwd=cfg.max_samples_per_fwd_bwd,
-        min_samples_per_fwd_bwd=cfg.min_samples_per_fwd_bwd,
-    )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
-    max_samples_per_fwd_bwd = cfg.max_samples_per_fwd_bwd
-    min_samples_per_fwd_bwd = (
-        cfg.min_samples_per_fwd_bwd
-        if cfg.min_samples_per_fwd_bwd is not None
-        else max_samples_per_fwd_bwd
-    )
+    total_samples_per_step = prompt_groups_per_step * completions_per_prompt
+    min_samples_per_fwd_bwd = cfg.min_samples_per_fwd_bwd or total_samples_per_step
     min_prompt_groups_per_fwd_bwd = max(1, min_samples_per_fwd_bwd // completions_per_prompt)
-    max_prompt_groups_per_fwd_bwd = max(1, max_samples_per_fwd_bwd // completions_per_prompt)
     server_grad_accum_steps = max(
         1,
         -(-prompt_groups_per_step // min_prompt_groups_per_fwd_bwd),
@@ -262,13 +245,10 @@ def main(
     logger.info(
         "Streaming schedule: prompt_groups_per_step=%d | "
         "min_prompt_groups_per_fwd_bwd=%d (%d samples) | "
-        "max_prompt_groups_per_fwd_bwd=%d (%d samples) | "
         "server_grad_accum_steps=%d",
         prompt_groups_per_step,
         min_prompt_groups_per_fwd_bwd,
         min_samples_per_fwd_bwd,
-        max_prompt_groups_per_fwd_bwd,
-        max_samples_per_fwd_bwd,
         server_grad_accum_steps,
     )
 
@@ -540,7 +520,6 @@ def main(
         global_step=step_offset,
         metrics_callback=_loop_metrics_callback,
         min_prompt_groups_per_fwd_bwd=min_prompt_groups_per_fwd_bwd,
-        max_prompt_groups_per_fwd_bwd=max_prompt_groups_per_fwd_bwd,
         completions_per_prompt=completions_per_prompt,
     ))
 

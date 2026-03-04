@@ -75,7 +75,6 @@ async def run_rl_loop(
     global_step: int = 0,
     metrics_callback: Callable[[dict[str, Any]], None] | None = None,
     min_prompt_groups_per_fwd_bwd: int | None = None,
-    max_prompt_groups_per_fwd_bwd: int | None = None,
     completions_per_prompt: int = 1,
 ) -> int:
     """Run the streaming RL training loop.
@@ -83,27 +82,17 @@ async def run_rl_loop(
     Launches all sampling coroutines concurrently (capped by
     ``max_concurrent``).  Prompt groups accumulate until
     ``min_prompt_groups_per_fwd_bwd`` is reached, then ``fwd_bwd_one`` fires
-    (with at most ``max_prompt_groups_per_fwd_bwd`` groups).
+    with all available groups.
     ``optim_step`` runs after ``prompt_groups_per_step`` groups are collected.
-
-    Args:
-        min_prompt_groups_per_fwd_bwd: Minimum prompt groups to trigger a
-            ``fwd_bwd_one`` call.
-        max_prompt_groups_per_fwd_bwd: Max prompt groups per ``fwd_bwd_one``
-            call.
-        completions_per_prompt: Completions per prompt (for logging and batch
-            stats).
     """
     coros = list(sample_fns)
 
-    if max_prompt_groups_per_fwd_bwd is None:
-        max_prompt_groups_per_fwd_bwd = prompt_groups_per_step
     if min_prompt_groups_per_fwd_bwd is None:
-        min_prompt_groups_per_fwd_bwd = max_prompt_groups_per_fwd_bwd
+        min_prompt_groups_per_fwd_bwd = prompt_groups_per_step
 
     return await _stream_loop(
         coros, minibatch_fns, prompt_groups_per_step, global_step,
-        min_prompt_groups_per_fwd_bwd, max_prompt_groups_per_fwd_bwd,
+        min_prompt_groups_per_fwd_bwd,
         completions_per_prompt, max_concurrent,
         dynamic_filter_fn, metrics_callback,
     )
@@ -118,7 +107,6 @@ async def _stream_loop(
     prompt_groups_per_step: int,
     global_step: int,
     min_prompt_groups_per_fwd_bwd: int,
-    max_prompt_groups_per_fwd_bwd: int,
     completions_per_prompt: int,
     max_concurrent: int,
     dynamic_filter_fn: DynamicFilterFn | None,
@@ -268,8 +256,8 @@ async def _stream_loop(
             pbar.set_postfix(sampled=total_sampled, failed=sample_fails, filtered=filter_drops)
 
             if len(minibatch_prompt_groups) >= min_prompt_groups_per_fwd_bwd:
-                batch = minibatch_prompt_groups[:max_prompt_groups_per_fwd_bwd]
-                minibatch_prompt_groups = minibatch_prompt_groups[max_prompt_groups_per_fwd_bwd:]
+                batch = minibatch_prompt_groups
+                minibatch_prompt_groups = []
                 n_datums = sum(len(pg.ref_data) for pg in batch)
                 step_num = global_step + 1
 

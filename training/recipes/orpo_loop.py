@@ -27,7 +27,7 @@ Config args:
     learning_rate    Adam learning rate (default: 1e-5)
     epochs           Number of passes over the dataset (default: 1)
     grad_accum       Gradient accumulation steps (default: 4)
-    max_seq_len      Max token length per sequence (default: 128000)
+    max_seq_len      Max token length per sequence (auto from training shape)
     lora_rank        LoRA rank, 0 for full fine-tuning (default: 0)
 
 Infrastructure defaults target Qwen3-235B on 2 nodes with CP=16, EP=8.
