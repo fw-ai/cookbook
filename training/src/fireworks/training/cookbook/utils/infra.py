@@ -25,34 +25,70 @@ def resolve_and_apply_shape(
     infra: InfraConfig,
     deploy_cfg: DeployConfig | None = None,
 ) -> TrainingShapeProfile:
-    """Fetch training shape and populate unset fields on *infra* (and *deploy_cfg* if given)."""
+    """Fetch a training shape and apply its values to *infra* and *deploy_cfg*.
+
+    The shape provides authoritative defaults for accelerator, image, node
+    count, and deployment shape.  When ``skip_validations=True``, user-provided
+    values take priority and a warning is logged for each override.
+    """
     if not infra.training_shape_id:
         raise ValueError("training_shape_id is required for shape resolution")
     profile = rlor_mgr.resolve_training_profile(
         training_shape_id=infra.training_shape_id,
     )
     logger.info(
-        "Resolved training shape: %s (accel=%s, image=%s, pp=%d)",
+        "Resolved training shape: %s (accel=%s×%d, image=%s, pp=%d, max_ctx=%d)",
         profile.training_shape_version,
         profile.accelerator_type,
+        profile.accelerator_count,
         profile.trainer_image_tag,
         profile.pipeline_parallelism,
+        profile.max_supported_context_length,
     )
 
-    if not infra.accelerator_type and profile.accelerator_type and profile.accelerator_type != "ACCELERATOR_TYPE_UNSPECIFIED":
-        infra.accelerator_type = profile.accelerator_type
-    if not infra.accelerator_count and profile.accelerator_count:
-        infra.accelerator_count = profile.accelerator_count
-    if not infra.custom_image_tag and profile.trainer_image_tag:
-        infra.custom_image_tag = profile.trainer_image_tag
-    if profile.node_count and profile.node_count > infra.node_count:
-        infra.node_count = profile.node_count
+    overrides: list[str] = []
 
-    if deploy_cfg is not None:
-        if not deploy_cfg.deployment_shape and profile.deployment_shape_version:
-            dsv = profile.deployment_shape_version
-            shape_name = re.sub(r"/versions/[^/]+$", "", dsv)
+    def _apply(field_name: str, shape_val, default_val=None):
+        """Apply *shape_val* to ``infra.<field_name>``.
+
+        If the user already set a non-default value that differs from the
+        shape and ``skip_validations`` is on, keep the user's value and
+        record the override.  Otherwise the shape value wins.
+        """
+        if shape_val is None or shape_val == default_val:
+            return
+        current = getattr(infra, field_name)
+        is_user_set = current is not None and current != default_val and current != shape_val
+        if is_user_set and infra.skip_validations:
+            overrides.append(f"{field_name}={current} (shape: {shape_val})")
+        else:
+            setattr(infra, field_name, shape_val)
+
+    accel = profile.accelerator_type
+    if accel == "ACCELERATOR_TYPE_UNSPECIFIED":
+        accel = None
+    _apply("accelerator_type", accel)
+    _apply("accelerator_count", profile.accelerator_count, default_val=0)
+    _apply("custom_image_tag", profile.trainer_image_tag, default_val="")
+    _apply("node_count", profile.node_count, default_val=0)
+
+    if deploy_cfg is not None and profile.deployment_shape_version:
+        dsv = profile.deployment_shape_version
+        shape_name = re.sub(r"/versions/[^/]+$", "", dsv)
+        if deploy_cfg.deployment_shape and deploy_cfg.deployment_shape != shape_name:
+            if infra.skip_validations:
+                overrides.append(f"deployment_shape={deploy_cfg.deployment_shape} (shape: {shape_name})")
+            else:
+                deploy_cfg.deployment_shape = shape_name
+        else:
             deploy_cfg.deployment_shape = shape_name
+
+    if overrides:
+        logger.warning(
+            "Training shape '%s' values overridden (skip_validations=True): %s",
+            infra.training_shape_id,
+            "; ".join(overrides),
+        )
 
     return profile
 
