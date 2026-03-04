@@ -78,7 +78,7 @@ class Config:
     learning_rate: float = 1e-5
     epochs: int = 1
     grad_accum: int = 4
-    max_seq_len: int = 128_000
+    max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
 
@@ -132,6 +132,12 @@ def main(
     if rlor_mgr is None:
         rlor_mgr = TrainerJobManager(
             api_key=api_key, account_id=account, base_url=base_url
+        )
+
+    if cfg.max_seq_len is None:
+        raise ValueError(
+            "max_seq_len is required. Set it in Config, or use a training shape "
+            "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
     endpoint = create_trainer_job(

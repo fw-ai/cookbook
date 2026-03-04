@@ -102,7 +102,7 @@ class Config:
     learning_rate: float = 1e-5
     epochs: int = 1
     grad_accum: int = 4
-    max_seq_len: int = 4096
+    max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
 
@@ -352,6 +352,12 @@ def main(
 
     if cfg.deployment.deployment_id:
         setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+
+    if cfg.max_seq_len is None:
+        raise ValueError(
+            "max_seq_len is required. Set it in Config, or use a training shape "
+            "(InfraConfig.training_shape_id) to auto-populate it."
+        )
 
     ref_extra = list(cfg.infra.extra_args or [])
     if "--forward-only" not in ref_extra:

@@ -80,7 +80,9 @@ class Config:
     temperature: float = 1.0
     epochs: int = 1
     max_rows: int = 100
-    max_seq_len: int = 4096
+    max_seq_len: int | None = None
+    """Auto-populated from the training shape's ``max_supported_context_length``
+    when using shapes.  Set manually when not using shapes."""
     lora_rank: int = 0
 
     prompt_groups_per_step: int = 1
@@ -208,6 +210,15 @@ def main(
             "PP recommendation: set prompt_groups_per_step=%d for optimal efficiency (current=%d)",
             pp_rec.recommended_prompts_per_step,
             prompt_groups_per_step,
+        )
+
+    if profile and cfg.max_seq_len is None:
+        cfg.max_seq_len = profile.max_supported_context_length
+        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
+    if cfg.max_seq_len is None:
+        raise ValueError(
+            "max_seq_len is required. Set it in Config, or use a training shape "
+            "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
     ref_infra = cfg.infra

@@ -62,7 +62,6 @@ class TestSFTE2E:
                 learning_rate=1e-4,
                 epochs=2,
                 grad_accum=2,
-                max_seq_len=4096,
                 max_examples=10,
                 infra=InfraConfig(
                     region=e2e_region,

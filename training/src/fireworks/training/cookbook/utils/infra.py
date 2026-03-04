@@ -63,7 +63,7 @@ def create_trainer_job(
     base_model: str,
     infra: InfraConfig,
     lora_rank: int = 0,
-    max_seq_len: int = 4096,
+    max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
     grad_accum: int = 4,
     display_name: str = "trainer",
@@ -87,7 +87,7 @@ def create_trainer_job(
         TrainerJobConfig(
             base_model=base_model,
             lora_rank=lora_rank,
-            max_context_length=max_seq_len,
+            max_context_length=max_seq_len if not using_shape else None,
             learning_rate=learning_rate,
             gradient_accumulation_steps=grad_accum,
             node_count=node_count,
