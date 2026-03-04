@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 import logging
 
@@ -19,85 +18,12 @@ from fireworks.training.cookbook.utils.config import InfraConfig, DeployConfig
 logger = logging.getLogger(__name__)
 
 
-def resolve_and_apply_shape(
-    rlor_mgr: TrainerJobManager,
-    base_model: str,
-    infra: InfraConfig,
-    deploy_cfg: DeployConfig | None = None,
-) -> TrainingShapeProfile:
-    """Fetch a training shape and apply its values to *infra* and *deploy_cfg*.
-
-    The shape provides authoritative defaults for accelerator, image, node
-    count, and deployment shape.  When ``skip_validations=True``, user-provided
-    values take priority and a warning is logged for each override.
-    """
-    if not infra.training_shape_id:
-        raise ValueError("training_shape_id is required for shape resolution")
-    profile = rlor_mgr.resolve_training_profile(
-        training_shape_id=infra.training_shape_id,
-    )
-    logger.info(
-        "Resolved training shape: %s (accel=%s×%d, image=%s, pp=%d, max_ctx=%d)",
-        profile.training_shape_version,
-        profile.accelerator_type,
-        profile.accelerator_count,
-        profile.trainer_image_tag,
-        profile.pipeline_parallelism,
-        profile.max_supported_context_length,
-    )
-
-    overrides: list[str] = []
-
-    def _apply(field_name: str, shape_val, default_val=None):
-        """Apply *shape_val* to ``infra.<field_name>``.
-
-        If the user already set a non-default value that differs from the
-        shape and ``skip_validations`` is on, keep the user's value and
-        record the override.  Otherwise the shape value wins.
-        """
-        if shape_val is None or shape_val == default_val:
-            return
-        current = getattr(infra, field_name)
-        is_user_set = current is not None and current != default_val and current != shape_val
-        if is_user_set and infra.skip_validations:
-            overrides.append(f"{field_name}={current} (shape: {shape_val})")
-        else:
-            setattr(infra, field_name, shape_val)
-
-    accel = profile.accelerator_type
-    if accel == "ACCELERATOR_TYPE_UNSPECIFIED":
-        accel = None
-    _apply("accelerator_type", accel)
-    _apply("accelerator_count", profile.accelerator_count, default_val=0)
-    _apply("custom_image_tag", profile.trainer_image_tag, default_val="")
-    _apply("node_count", profile.node_count, default_val=0)
-
-    if deploy_cfg is not None and profile.deployment_shape_version:
-        dsv = profile.deployment_shape_version
-        shape_name = re.sub(r"/versions/[^/]+$", "", dsv)
-        if deploy_cfg.deployment_shape and deploy_cfg.deployment_shape != shape_name:
-            if infra.skip_validations:
-                overrides.append(f"deployment_shape={deploy_cfg.deployment_shape} (shape: {shape_name})")
-            else:
-                deploy_cfg.deployment_shape = shape_name
-        else:
-            deploy_cfg.deployment_shape = shape_name
-
-    if overrides:
-        logger.warning(
-            "Training shape '%s' values overridden (skip_validations=True): %s",
-            infra.training_shape_id,
-            "; ".join(overrides),
-        )
-
-    return profile
-
-
 def create_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,
     base_model: str,
     infra: InfraConfig,
+    profile: TrainingShapeProfile | None = None,
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
@@ -110,34 +36,39 @@ def create_trainer_job(
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
-    *forward_only* sets ``forwardOnly`` on the API request so the CP
-    resolves FORWARD_ONLY training shapes and appends the runtime flags.
+    When *profile* is provided, ``TrainerJobConfig.apply_shape`` is called
+    to populate config from the training shape.  Override warnings and
+    ``skip_validations`` logic are handled by the SDK.
     """
     if job_id:
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
-    using_shape = bool(infra.training_shape_id and not infra.skip_validations)
-    node_count = infra.node_count if infra.node_count is not None else 1
-    logger.info("Creating trainer job '%s' (nodes=%d, shape=%s, forward_only=%s)...", display_name, node_count, using_shape, forward_only)
-    return rlor_mgr.create_and_wait(
-        TrainerJobConfig(
-            base_model=base_model,
-            lora_rank=lora_rank,
-            max_context_length=max_seq_len if not using_shape else None,
-            learning_rate=learning_rate,
-            gradient_accumulation_steps=grad_accum,
-            node_count=node_count,
-            display_name=display_name,
-            hot_load_deployment_id=hot_load_deployment_id,
-            region=infra.region,
-            custom_image_tag=infra.custom_image_tag if not using_shape else None,
-            extra_args=(extra_args or infra.extra_args) if not using_shape else None,
-            accelerator_type=infra.accelerator_type if not using_shape else None,
-            accelerator_count=infra.accelerator_count if not using_shape else None,
-            skip_validations=infra.skip_validations,
-            forward_only=forward_only,
-        )
+    config = TrainerJobConfig(
+        base_model=base_model,
+        lora_rank=lora_rank,
+        max_context_length=max_seq_len,
+        learning_rate=learning_rate,
+        gradient_accumulation_steps=grad_accum,
+        node_count=infra.node_count if infra.node_count is not None else 1,
+        display_name=display_name,
+        hot_load_deployment_id=hot_load_deployment_id,
+        region=infra.region,
+        custom_image_tag=infra.custom_image_tag,
+        extra_args=extra_args or infra.extra_args,
+        accelerator_type=infra.accelerator_type,
+        accelerator_count=infra.accelerator_count,
+        skip_validations=infra.skip_validations,
+        forward_only=forward_only,
     )
+
+    if profile is not None:
+        config.apply_shape(profile)
+
+    logger.info(
+        "Creating trainer job '%s' (forward_only=%s)...",
+        display_name, forward_only,
+    )
+    return rlor_mgr.create_and_wait(config)
 
 
 def setup_deployment(

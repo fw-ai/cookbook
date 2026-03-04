@@ -19,7 +19,6 @@ __all__ = [
     "compute_advantages",
     "compute_pass_at_k",
     "create_trainer_job",
-    "resolve_and_apply_shape",
     "encode_text",
     "extract_text",
     "find_common_prefix_length",
@@ -56,7 +55,6 @@ from fireworks.training.cookbook.utils.infra import (
     setup_deployment,
     create_trainer_job,
     setup_training_client,
-    resolve_and_apply_shape,
 )
 from fireworks.training.cookbook.utils.timer import timed, timer, flush_timing
 from fireworks.training.cookbook.utils.client import ReconnectableClient

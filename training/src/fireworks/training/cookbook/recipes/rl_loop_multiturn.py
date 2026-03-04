@@ -46,7 +46,6 @@ from fireworks.training.cookbook.utils import (
     compute_advantages,
     create_trainer_job,
     load_jsonl_dataset,
-    resolve_and_apply_shape,
     validate_streaming_config,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
@@ -202,7 +201,9 @@ def main(
 
     profile = None
     if cfg.infra.training_shape_id:
-        profile = resolve_and_apply_shape(rlor_mgr, cfg.base_model, cfg.infra, cfg.deployment)
+        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+        if profile.deployment_shape and not cfg.deployment.deployment_shape:
+            cfg.deployment.deployment_shape = profile.deployment_shape
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
@@ -221,14 +222,10 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    ref_infra = cfg.infra
+    ref_profile = profile
     if use_reference and cfg.infra.ref_training_shape_id:
         logger.info("Using separate ref training shape: %s", cfg.infra.ref_training_shape_id)
-        ref_infra = InfraConfig(
-            training_shape_id=cfg.infra.ref_training_shape_id,
-            region=cfg.infra.region,
-        )
-        resolve_and_apply_shape(rlor_mgr, cfg.base_model, ref_infra)
+        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
 
     import time as _time
     _infra_start = _time.time()
@@ -239,7 +236,7 @@ def main(
         with ThreadPoolExecutor(max_workers=2) as pool:
             pol_fut = pool.submit(
                 create_trainer_job, rlor_mgr,
-                base_model=cfg.base_model, infra=cfg.infra,
+                base_model=cfg.base_model, infra=cfg.infra, profile=profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
                 display_name="grpo-policy",
@@ -247,7 +244,7 @@ def main(
             )
             ref_fut = pool.submit(
                 create_trainer_job, rlor_mgr,
-                base_model=cfg.base_model, infra=ref_infra,
+                base_model=cfg.base_model, infra=cfg.infra, profile=ref_profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
                 display_name="grpo-reference", forward_only=True,
@@ -257,7 +254,7 @@ def main(
     else:
         policy_ep = create_trainer_job(
             rlor_mgr,
-            base_model=cfg.base_model, infra=cfg.infra,
+            base_model=cfg.base_model, infra=cfg.infra, profile=profile,
             lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
             display_name="grpo-policy",
