@@ -123,6 +123,13 @@ def main(
     if cfg.deployment.deployment_id:
         setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
+    profile = None
+    if cfg.infra.training_shape_id:
+        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+
+    if profile and cfg.max_seq_len is None:
+        cfg.max_seq_len = profile.max_supported_context_length
+        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
     if cfg.max_seq_len is None:
         raise ValueError(
             "max_seq_len is required. Set it in Config, or use a training shape "
@@ -133,6 +140,7 @@ def main(
         rlor_mgr,
         base_model=cfg.base_model,
         infra=cfg.infra,
+        profile=profile,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
         learning_rate=cfg.learning_rate,
@@ -311,5 +319,8 @@ if __name__ == "__main__":
         tokenizer_model="Qwen/Qwen3-8B",
         max_seq_len=4096,
         max_examples=10,
+        infra=InfraConfig(
+            training_shape_id="your-training-shape",
+        ),
     )
     main(cfg)
