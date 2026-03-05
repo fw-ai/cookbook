@@ -67,8 +67,7 @@ class TestGRPOE2E:
             max_rows=10,
             epochs=1,
             router_replay=True,
-            tis_enabled=True,
-            tis=ISConfig(clip_high=10.0),
+            is_correction=ISConfig(tis_cap=10.0),
             infra=InfraConfig(
                 region=e2e_region,
                 skip_validations=True,

@@ -244,8 +244,7 @@ def main():
         epochs=args.epochs,
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
-        tis_enabled=True,
-        tis=ISConfig(clip_high=2.0, clip_low=0.0),
+        is_correction=ISConfig(tis_cap=2.0),
         router_replay=args.router_replay,
         router_replay_completion_only=args.router_replay,
         infra=InfraConfig(
