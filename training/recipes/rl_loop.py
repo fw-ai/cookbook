@@ -48,6 +48,7 @@ from training.utils import (
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import ISConfig, PromptGroup
+from training.utils.rl.importance_sampling import DecoupledConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
@@ -106,6 +107,11 @@ class Config:
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
+
+    decoupled: DecoupledConfig | None = None
+    """AReaL-style decoupled IS correction.  When set, splits the IS ratio
+    into PPO off-policy ratio + behavioral IS weight.  Auto-enabled when
+    ``async_config`` is set and ``decoupled`` is not explicitly ``None``."""
 
     async_config: AsyncConfig | None = None
     """Set to enable async off-policy mode.  None = sync on-policy (default).
@@ -319,11 +325,18 @@ def main(
 
         dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+
+        effective_decoupled = cfg.decoupled
+        if cfg.async_config is not None and effective_decoupled is None:
+            effective_decoupled = DecoupledConfig()
+            logger.info("Auto-enabling decoupled IS correction for async mode")
+
         loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
             tis_enabled=cfg.tis_enabled, tis_config=cfg.tis,
             dapo_config=cfg.dapo, gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
+            decoupled_config=effective_decoupled,
         )
 
         sample_kwargs: dict = dict(
@@ -452,10 +465,10 @@ def main(
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _t.time() - t0)
 
-            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
+            data, adv, ref_lp, prompt_lens, inf_lp, gen_steps = combine_prompt_groups(prompt_groups)
             t0 = _t.time()
             fwd_bwd_result = policy.forward_backward_custom(
-                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp),
+                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, gen_steps, step),
             )
             logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _t.time() - t0)
 

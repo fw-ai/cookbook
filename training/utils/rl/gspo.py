@@ -45,6 +45,7 @@ def make_gspo_loss_fn(
     prompt_len: Union[int, List[int]],
     gspo_config: GSPOConfig | None = None,
     tis_weights_fn: Callable | None = None,
+    decoupled_fn: Callable | None = None,
 ) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Build a GSPO loss closure.
 
@@ -58,6 +59,7 @@ def make_gspo_loss_fn(
     ``inf_logprobs`` is required (rollout/old-policy logprobs for ratio).
 
     Pass *tis_weights_fn* to apply TIS correction on top.
+    Pass *decoupled_fn* to use AReaL-style decoupled IS corrections.
     """
     if gspo_config is None:
         gspo_config = GSPOConfig()
@@ -79,6 +81,7 @@ def make_gspo_loss_fn(
         clip_frac_sum = 0.0
         clip_frac_count = 0
         agg_tis: Dict[str, float] = {}
+        agg_decoupled: Dict[str, float] = {}
 
         for i, pi_logprobs in enumerate(logprobs_list):
             adv = advantages[i]
@@ -119,31 +122,40 @@ def make_gspo_loss_fn(
             total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
             inf_num_samples += 1
 
-            log_ratio = resp_pi - resp_inf
-            seq_log_ratio = log_ratio.mean()
-            log_seq_ratio = resp_pi - resp_pi.detach() + seq_log_ratio.detach()
-            log_seq_ratio = torch.clamp(log_seq_ratio, max=gspo_config.seq_ratio_log_cap)
-            seq_ratio = torch.exp(log_seq_ratio)
+            if decoupled_fn is not None:
+                ppo_ratio, ppo_clipped, behave_weight, dec_metrics = decoupled_fn(resp_pi, resp_inf, i)
+                adv_t = torch.as_tensor(adv, dtype=resp_pi.dtype, device=resp_pi.device)
+                surr1 = -ppo_ratio * adv_t
+                surr2 = -ppo_clipped * adv_t
+                per_token_loss = torch.maximum(surr1, surr2) * behave_weight
+                for k, v in dec_metrics.items():
+                    agg_decoupled[k] = agg_decoupled.get(k, 0.0) + v
+            else:
+                log_ratio = resp_pi - resp_inf
+                seq_log_ratio = log_ratio.mean()
+                log_seq_ratio = resp_pi - resp_pi.detach() + seq_log_ratio.detach()
+                log_seq_ratio = torch.clamp(log_seq_ratio, max=gspo_config.seq_ratio_log_cap)
+                seq_ratio = torch.exp(log_seq_ratio)
 
-            clipped_seq_ratio = torch.clamp(
-                seq_ratio,
-                min=1.0 - clip_low,
-                max=1.0 + clip_high,
-            )
-            clip_frac_sum += (clipped_seq_ratio != seq_ratio).float().mean().item()
-            clip_frac_count += 1
+                clipped_seq_ratio = torch.clamp(
+                    seq_ratio,
+                    min=1.0 - clip_low,
+                    max=1.0 + clip_high,
+                )
+                clip_frac_sum += (clipped_seq_ratio != seq_ratio).float().mean().item()
+                clip_frac_count += 1
 
-            adv_t = torch.as_tensor(adv, dtype=resp_pi.dtype, device=resp_pi.device)
-            surr1 = -seq_ratio * adv_t
-            surr2 = -clipped_seq_ratio * adv_t
-            per_token_loss = torch.maximum(surr1, surr2)
+                adv_t = torch.as_tensor(adv, dtype=resp_pi.dtype, device=resp_pi.device)
+                surr1 = -seq_ratio * adv_t
+                surr2 = -clipped_seq_ratio * adv_t
+                per_token_loss = torch.maximum(surr1, surr2)
 
-            if tis_weights_fn:
-                weights, tis_metrics = tis_weights_fn(pi_detached, i)
-                per_token_loss = per_token_loss * weights
-                total_rho += weights.sum().item()
-                for k, v in tis_metrics.items():
-                    agg_tis[k] = agg_tis.get(k, 0.0) + v
+                if tis_weights_fn:
+                    weights, tis_metrics = tis_weights_fn(pi_detached, i)
+                    per_token_loss = per_token_loss * weights
+                    total_rho += weights.sum().item()
+                    for k, v in tis_metrics.items():
+                        agg_tis[k] = agg_tis.get(k, 0.0) + v
 
             total_loss = total_loss + per_token_loss.sum()
             total_kl += (pi_detached - resp_ref).sum().item()
@@ -156,10 +168,14 @@ def make_gspo_loss_fn(
         if inf_num_samples > 0:
             metrics["inference_diff"] = total_inf_diff / inf_num_samples
             metrics["inference_kld"] = total_inf_kld / inf_num_samples
-        if tis_weights_fn:
+        if tis_weights_fn and not decoupled_fn:
             metrics["mean_importance_ratio"] = total_rho / num_tokens if num_tokens > 0 else 1.0
             n_samples = len(logprobs_list) or 1
             for k, v in agg_tis.items():
+                metrics[k] = v / n_samples
+        if decoupled_fn:
+            n_samples = len(logprobs_list) or 1
+            for k, v in agg_decoupled.items():
                 metrics[k] = v / n_samples
         return total_loss, metrics
 

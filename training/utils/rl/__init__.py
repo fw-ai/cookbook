@@ -4,6 +4,7 @@ __all__ = [
     # Losses & algorithms
     "CISPOConfig",
     "DAPOConfig",
+    "DecoupledConfig",
     "GSPOConfig",
     "ISConfig",
     "PPBatchRecommendation",
@@ -47,4 +48,4 @@ from training.utils.rl.metrics import (
     add_response_length_stats,
 )
 from training.utils.rl.router_replay import build_r3_routing_matrices
-from training.utils.rl.importance_sampling import ISConfig, make_tis_weights_fn
+from training.utils.rl.importance_sampling import DecoupledConfig, ISConfig, make_tis_weights_fn

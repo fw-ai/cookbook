@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Union, Callable
+from typing import Dict, List, Tuple, Union, Callable, Any
 
 import torch
 import tinker
@@ -17,6 +17,7 @@ def make_grpo_loss_fn(
     inf_logprobs: List[List[float]],
     kl_beta: float = 0.001,
     tis_weights_fn: Callable | None = None,
+    decoupled_fn: Callable | None = None,
 ) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """GRPO policy-gradient loss with KL penalty against a reference model.
 
@@ -26,6 +27,11 @@ def make_grpo_loss_fn(
 
     Pass *tis_weights_fn* (from :func:`make_tis_weights_fn`) to apply
     TIS train-inference mismatch correction on top of the base loss.
+
+    Pass *decoupled_fn* to use AReaL-style decoupled IS corrections
+    (PPO-clipped ratio + behavioral IS weight).  When set, replaces
+    the REINFORCE gradient with a PPO clipped surrogate.  Mutually
+    exclusive with *tis_weights_fn*.
     """
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
 
@@ -41,6 +47,7 @@ def make_grpo_loss_fn(
         inf_num_samples = 0
         num_tokens = 0
         agg_tis: Dict[str, float] = {}
+        agg_decoupled: Dict[str, float] = {}
 
         for i, pi_logprobs in enumerate(logprobs_list):
             adv = advantages[i]
@@ -59,15 +66,6 @@ def make_grpo_loss_fn(
                 device=resp_pi.device,
             )
             pi_detached = resp_pi.detach()
-
-            per_token_loss = (-adv + kl_beta) * resp_pi
-
-            if tis_weights_fn:
-                weights, tis_metrics = tis_weights_fn(pi_detached, i)
-                per_token_loss = per_token_loss * weights
-                total_rho += weights.sum().item()
-                for k, v in tis_metrics.items():
-                    agg_tis[k] = agg_tis.get(k, 0.0) + v
 
             if not inf_lp:
                 raise ValueError(
@@ -89,6 +87,27 @@ def make_grpo_loss_fn(
             total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
             inf_num_samples += 1
 
+            if decoupled_fn is not None:
+                ppo_ratio, ppo_clipped, behave_weight, dec_metrics = decoupled_fn(resp_pi, resp_inf, i)
+                adv_t = torch.as_tensor(adv, dtype=resp_pi.dtype, device=resp_pi.device)
+                surr1 = -ppo_ratio * adv_t
+                surr2 = -ppo_clipped * adv_t
+                per_token_loss = torch.maximum(surr1, surr2)
+                per_token_loss = per_token_loss * behave_weight
+                kl_penalty = kl_beta * (pi_detached - resp_ref)
+                per_token_loss = per_token_loss + kl_penalty
+                for k, v in dec_metrics.items():
+                    agg_decoupled[k] = agg_decoupled.get(k, 0.0) + v
+            else:
+                per_token_loss = (-adv + kl_beta) * resp_pi
+
+                if tis_weights_fn:
+                    weights, tis_metrics = tis_weights_fn(pi_detached, i)
+                    per_token_loss = per_token_loss * weights
+                    total_rho += weights.sum().item()
+                    for k, v in tis_metrics.items():
+                        agg_tis[k] = agg_tis.get(k, 0.0) + v
+
             total_loss = total_loss + per_token_loss.sum()
             total_kl += (pi_detached - resp_ref).sum().item()
             num_tokens += resp_len
@@ -99,10 +118,14 @@ def make_grpo_loss_fn(
         if inf_num_samples > 0:
             metrics["inference_diff"] = total_inf_diff / inf_num_samples
             metrics["inference_kld"] = total_inf_kld / inf_num_samples
-        if tis_weights_fn:
+        if tis_weights_fn and not decoupled_fn:
             metrics["mean_importance_ratio"] = total_rho / num_tokens if num_tokens > 0 else 1.0
             n_samples = len(logprobs_list) or 1
             for k, v in agg_tis.items():
+                metrics[k] = v / n_samples
+        if decoupled_fn:
+            n_samples = len(logprobs_list) or 1
+            for k, v in agg_decoupled.items():
                 metrics[k] = v / n_samples
         return total_loss, metrics
 
