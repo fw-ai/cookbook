@@ -223,6 +223,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
         request_params: Optional[Dict[str, Any]] = None,
         allow_plaintext_action_fallback: bool = False,
         logprobs: bool = True,
+        enable_thinking: Optional[bool] = False,
     ):
         self.model_id = model_id
         self.tokenizer_name_or_path = tokenizer_name_or_path
@@ -235,6 +236,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
         self.request_params = dict(request_params or {})
         self.allow_plaintext_action_fallback = allow_plaintext_action_fallback
         self.logprobs = logprobs
+        self.enable_thinking = enable_thinking
 
     def __call__(self, rows: List[EvaluationRow], config: RolloutProcessorConfig) -> List[asyncio.Task[EvaluationRow]]:
         completion_params = dict(config.completion_params or {})
@@ -305,6 +307,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                 max_tokens=max_tokens,
                 request_params=request_params,
                 logprobs=self.logprobs,
+                enable_thinking=self.enable_thinking,
                 tool_call_parser=tool_call_parser,
                 default_tools=FROZEN_LAKE_TOOLS,
             )
