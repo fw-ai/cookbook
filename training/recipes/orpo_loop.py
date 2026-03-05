@@ -48,11 +48,9 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     WandBConfig,
-    ResumeConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     log_metrics_json,
     make_orpo_loss_fn,
@@ -60,6 +58,7 @@ from training.utils import (
     load_preference_dataset,
     find_common_prefix_length,
 )
+from training.utils.checkpoint_utils import resolve_resume, load_dcp
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +84,14 @@ class Config:
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
     )
+    log_path: str = "training_logs"
+    init_from_dcp: str | None = None
+
     wandb: WandBConfig = field(
         default_factory=lambda: WandBConfig(
             project="dsv3-training",
         )
     )
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +155,9 @@ def main(
     )
 
     job_id = endpoint.job_id
-    step_offset, _ = setup_resume(client, cfg.resume)
+    state = resolve_resume(cfg.log_path, cfg.init_from_dcp)
+    load_dcp(client, state)
+    step_offset = state.step
     adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
     # -- Data ----------------------------------------------------------------

@@ -33,12 +33,10 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     HotloadConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     validate_config,
     log_metrics_json,
@@ -49,6 +47,14 @@ from training.utils import (
 from training.utils.timer import timer, flush_timing
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
+from training.utils.checkpoint_utils import (
+    resolve_resume,
+    load_dcp,
+    save_loop_state,
+    dataset_fingerprint,
+    validate_dataset,
+    validate_training_shape,
+)
 
 
 load_dotenv()
@@ -73,11 +79,19 @@ class Config:
     max_examples: int | None = None
     lora_rank: int = 0
 
+    log_path: str = "training_logs"
+    """Persistent directory for local_checkpoint_state.jsonl and training state.
+    Must persist across runs (e.g. GCS-backed, NFS, or stable local path)."""
+
+    init_from_dcp: str | None = None
+    """Load weights from this DCP checkpoint but start dataset from row 0.
+    Only used when local_checkpoint_state.jsonl is empty (fresh run with
+    pretrained weights).  For cross-job resume, use ``"source_job_id:checkpoint_name"``."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=lambda: HotloadConfig(hot_load_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +106,7 @@ def main(
 ):
     cfg = config
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
+    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
     setup_wandb(
         cfg.wandb,
         {
@@ -205,14 +219,28 @@ def main(
     if not training_data:
         raise RuntimeError("No valid training examples after tokenization")
 
-    step_offset, _ = setup_resume(client, cfg.resume)
+    # -- Resume ----------------------------------------------------------------
+
+    state = resolve_resume(cfg.log_path, cfg.init_from_dcp)
+    dcp_load_time = load_dcp(client, state)
+    wandb_log({"perf/dcp_load_time": dcp_load_time}, step=state.step)
+
+    ds_fp = dataset_fingerprint(training_data) if training_data else None
+    validate_dataset(state.dataset_fingerprint, ds_fp, state.data_consumed)
+    validate_training_shape(state.training_shape_id, cfg.infra.training_shape_id)
+    logger.info("Dataset fingerprint: %s (%d examples)", ds_fp, len(training_data))
+
     adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
     # -- Training loop (batched) -------------------------------------------
 
     batch_size = cfg.batch_size
-    step = step_offset
-    total_steps = len(training_data) * cfg.epochs // (cfg.grad_accum * batch_size)
+    step = state.step
+    data_consumed = state.data_consumed
+    n_examples = len(training_data)
+    start_epoch = data_consumed // n_examples if n_examples > 0 else 0
+    start_batch_offset = data_consumed % n_examples if n_examples > 0 else 0
+    total_steps = n_examples * cfg.epochs // (cfg.grad_accum * batch_size)
     accum = 0
     agg_loss_sum = 0.0
     agg_resp_tokens = 0
@@ -254,6 +282,13 @@ def main(
             if hl.dcp_save_interval > 0 and step % hl.dcp_save_interval == 0:
                 with timer("dcp_save"):
                     weight_syncer.save_dcp(f"step-{step}")
+                save_loop_state(cfg.log_path, {
+                    "step": step,
+                    "data_consumed": data_consumed,
+                    "dcp_name": f"step-{step}",
+                    "dataset_fingerprint": ds_fp,
+                    "training_shape_id": cfg.infra.training_shape_id,
+                })
 
             step_metrics: Dict[str, Any] = flush_timing()
 
@@ -284,10 +319,14 @@ def main(
 
         return step, accum
 
-    for _epoch in range(cfg.epochs):
+    for epoch_idx in range(start_epoch, cfg.epochs):
+        epoch_data = training_data[start_batch_offset:] if epoch_idx == start_epoch else training_data
+        start_batch_offset = 0
+
         batch_buffer: list[dict] = []
-        for ex in training_data:
+        for ex in epoch_data:
             batch_buffer.append(ex)
+            data_consumed += 1
             if len(batch_buffer) >= batch_size:
                 step, accum = _flush_batch(batch_buffer, step, accum)
                 batch_buffer = []
@@ -301,8 +340,15 @@ def main(
 
     # -- Final checkpoint --------------------------------------------------
 
-    if step > step_offset:
+    if step > state.step:
         weight_syncer.save_dcp(f"step-{step}")
+        save_loop_state(cfg.log_path, {
+            "step": step,
+            "data_consumed": data_consumed,
+            "dcp_name": f"step-{step}",
+            "dataset_fingerprint": ds_fp,
+            "training_shape_id": cfg.infra.training_shape_id,
+        })
     if cfg.hotload.hot_load_interval > 0 or cfg.deployment.deployment_id:
         weight_syncer.save_and_hotload(f"final-step-{step}")
 

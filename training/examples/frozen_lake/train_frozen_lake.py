@@ -50,18 +50,17 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     HotloadConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     log_metrics_json,
     setup_deployment,
     create_trainer_job,
     compute_advantages,
 )
+from training.utils.checkpoint_utils import resolve_resume, load_dcp
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
@@ -507,7 +506,9 @@ def main():
         infra_boot_time = time.time() - _infra_start
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
-        step_offset, _ = setup_resume(policy, ResumeConfig())
+        state = resolve_resume("training_logs")
+        load_dcp(policy, state)
+        step_offset = state.step
         if hotload_cfg.hot_load_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")

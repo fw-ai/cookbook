@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from fireworks.training.sdk.errors import DOCS_HOTLOAD, DOCS_API_KEYS, DOCS_DEPLOYMENTS, format_sdk_error
-from training.utils.config import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
+from training.utils.config import InfraConfig, DeployConfig, HotloadConfig
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,6 @@ def validate_config(
     hotload: HotloadConfig,
     deploy: DeployConfig,
     infra: InfraConfig,
-    resume: ResumeConfig | None = None,
 ) -> None:
     """Pre-flight validation. Catches misconfiguration before provisioning GPUs."""
     errors: list[str] = []
@@ -46,14 +45,6 @@ def validate_config(
                 "Set dataset to a local path or URL to a JSONL file.",
             )
         )
-
-    if resume and resume.resume_from and not resume.resume_from.startswith(("gs://", "/")):
-        if resume.resume_job_id is None:
-            logger.warning(
-                "resume_from='%s' looks like a checkpoint name, not a full path. "
-                "If resuming from a different job, set resume_job_id.",
-                resume.resume_from,
-            )
 
     if infra.node_count < 1:
         errors.append(
