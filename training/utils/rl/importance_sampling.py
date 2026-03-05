@@ -1,102 +1,80 @@
-"""Truncated Importance Sampling (TIS) for train-inference mismatch correction.
+"""Decoupled importance sampling corrections for RL training.
 
-Provides per-token importance weighting that can be composed with **any**
-base policy loss (GRPO, DAPO, GSPO, etc.).  The architecture follows
-an orthogonal design: base loss computes per-token loss, TIS
-multiplies by clipped importance weights, then the result is summed.
+AReaL-style two-correction approach (https://arxiv.org/abs/2505.24298):
 
-Usage::
+* **PPO off-policy ratio** between current policy (pi_theta) and
+  proximal policy (pi_prox), with PPO-style clipping.  The proximal
+  logprobs are pre-computed via a real forward pass before the training
+  loop (like VERL's ``compute_log_prob``).
 
-    Config(policy_loss="grpo", tis_enabled=True, tis=ISConfig(clip_high=10.0))
-    Config(policy_loss="dapo", tis_enabled=True)
-    Config(policy_loss="gspo", tis_enabled=True)
+* **Behavioral IS weight** between proximal policy and rollout
+  (pi_old / inf_logprobs), with capping.  Corrects for the
+  train-inference numerical gap (FP8, quantization, etc.).
 
-To write your own TIS, replace ``make_tis_weights_fn`` with a function
-that returns the same ``(pi_detached, sample_idx) -> (weights, metrics)``
-signature and pass it to the loss via ``tis_weights_fn=``.
+With ``ppo_n_minibatches=1``, ``pi_prox == pi_theta`` so the PPO ratio
+is 1 and only the behavioral weight matters.  With ``ppo_n_minibatches>1``,
+weights drift across minibatches and the PPO ratio becomes non-trivial.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Union, Callable
 from dataclasses import dataclass
 
 import torch
-
-from training.utils.rl.common import _normalize_prompt_lens
 
 SAFETY_CLAMP = 20.0
 """Clamp log-ratio to [-SAFETY_CLAMP, SAFETY_CLAMP] before exp() to
 prevent inf/NaN.  Matches VERL's ``SAFETY_BOUND``."""
 
-TISWeightsFn = Callable[
-    [torch.Tensor, int],
-    Tuple[torch.Tensor, Dict[str, float]],
-]
-"""Per-sample TIS weights function: ``(pi_detached, sample_idx) -> (weights, metrics)``."""
-
 
 @dataclass
-class ISConfig:
-    """TIS (Truncated Importance Sampling) configuration."""
+class DecoupledConfig:
+    """AReaL-style decoupled IS correction configuration.
 
-    clip_high: float = 2.0
-    clip_low: float = 0.0
-
-
-def make_tis_weights_fn(
-    inf_logprobs: List[List[float]],
-    prompt_len: Union[int, List[int]],
-    tis_config: ISConfig | None = None,
-) -> TISWeightsFn:
-    """Create a per-sample TIS weights function (vanilla clamped IS).
-
-    Computes ``weights = clamp(exp(train_lp - rollout_lp), low, high)``
-    per response token -- the same formula used in common open-source RL stacks.
-
-    ``prompt_len`` may be a single int or a per-datum list for multi-prompt
-    batched calls.
-
-    Returns a callable ``(pi_detached, sample_idx) -> (weights, metrics)``
-    suitable for passing to any loss function's ``tis_weights_fn`` parameter.
+    Controls the behavioral IS weight between proximal and rollout logprobs.
+    The PPO ratio clipping is configured per-loss (DAPO, GSPO, CISPO configs).
+    For GRPO, the PPO clip bounds are ``eps_clip`` / ``eps_clip_high``.
     """
-    if tis_config is None:
-        tis_config = ISConfig()
-    prompt_lens = _normalize_prompt_lens(prompt_len, len(inf_logprobs))
 
-    def weights_fn(
-        pi_detached: torch.Tensor,
-        sample_idx: int,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        inf_lp = inf_logprobs[sample_idx]
-        if not inf_lp:
-            raise ValueError(
-                f"TIS requires inference logprobs for sample {sample_idx} but got empty list. "
-                f"Ensure logprobs=True is set when tis_enabled=True."
-            )
-        response_start = max(0, prompt_lens[sample_idx] - 1)
-        resp_len = len(pi_detached)
-        if len(inf_lp) < response_start + resp_len:
-            raise ValueError(
-                f"TIS requires at least {response_start + resp_len} inference logprobs "
-                f"for sample {sample_idx}, got {len(inf_lp)}."
-            )
-        resp_inf = torch.tensor(
-            inf_lp[response_start : response_start + resp_len],
-            dtype=pi_detached.dtype,
-            device=pi_detached.device,
+    eps_clip: float = 0.2
+    """Symmetric PPO clip epsilon for the off-policy ratio (used by GRPO)."""
+    eps_clip_high: float | None = None
+    """Asymmetric upper clip bound for GRPO.  When set, lower=eps_clip, upper=eps_clip_high."""
+    behave_cap: float = 5.0
+    """Upper cap for the behavioral IS weight."""
+    behave_mode: str = "token_truncate"
+    """'token_truncate': clamp to [0, cap].  'token_mask': zero out where > cap."""
+
+
+def compute_behave_weight(
+    resp_prox: torch.Tensor,
+    resp_inf: torch.Tensor,
+    config: DecoupledConfig,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Compute the behavioral IS weight: exp(prox - inf), capped.
+
+    Args:
+        resp_prox: proximal policy logprobs (response tokens only)
+        resp_inf: inference/rollout logprobs (response tokens only)
+        config: capping configuration
+
+    Returns:
+        (behave_weight, metrics) where behave_weight is detached.
+    """
+    behave_log = torch.clamp(resp_prox - resp_inf, min=-SAFETY_CLAMP, max=SAFETY_CLAMP)
+    behave_raw = torch.exp(behave_log)
+    if config.behave_mode == "token_mask":
+        behave_weight = torch.where(
+            behave_raw > config.behave_cap,
+            torch.zeros_like(behave_raw),
+            behave_raw,
         )
+    else:
+        behave_weight = torch.clamp(behave_raw, min=0.0, max=config.behave_cap)
+    clip_frac = (behave_weight != behave_raw).float().mean().item()
 
-        log_ratio = torch.clamp(pi_detached - resp_inf, min=-SAFETY_CLAMP, max=SAFETY_CLAMP)
-        rho = torch.exp(log_ratio)
-        weights = torch.clamp(rho, min=tis_config.clip_low, max=tis_config.clip_high)
-        clip_frac = (weights != rho).float().mean().item()
-
-        metrics = {
-            "tis_mean_ratio": rho.mean().item(),
-            "tis_max_ratio": rho.max().item(),
-            "tis_clip_frac": clip_frac,
-        }
-        return weights, metrics
-
-    return weights_fn
+    metrics = {
+        "behave/weight_mean": behave_weight.mean().item(),
+        "behave/clip_frac": clip_frac,
+    }
+    return behave_weight, metrics

@@ -47,7 +47,8 @@ from training.utils import (
     load_jsonl_dataset,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
-from training.utils.rl import ISConfig, PromptGroup
+from training.utils.rl import PromptGroup
+from training.utils.rl.importance_sampling import DecoupledConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
@@ -55,6 +56,7 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train_async import AsyncConfig
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -100,11 +102,23 @@ class Config:
     policy_loss: str = "grpo"
     """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
 
-    tis_enabled: bool = False
-    tis: ISConfig = field(default_factory=ISConfig)
+    ppo_n_minibatches: int = 1
+    """Number of forward_backward passes per optimizer step.
+    With N=1: prox_logprobs == pi_theta, PPO ratio is 1, only behavioral
+    weight matters (train-inference correction).
+    With N>1: proper multi-minibatch PPO where policy drifts across
+    minibatches (like AReaL/VERL)."""
+
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
+    decoupled: DecoupledConfig = field(default_factory=DecoupledConfig)
+    """AReaL-style decoupled IS correction: PPO ratio + behavioral weight."""
+
+    async_config: AsyncConfig | None = None
+    """Set to enable async off-policy mode.  None = sync on-policy (default).
+    When set, ``groups_per_batch`` controls the batch size instead of
+    ``prompt_groups_per_step``."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -315,10 +329,11 @@ def main(
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
-            tis_enabled=cfg.tis_enabled, tis_config=cfg.tis,
             dapo_config=cfg.dapo, gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
+            decoupled_config=cfg.decoupled,
         )
+        n_minibatches = cfg.ppo_n_minibatches
 
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens, temperature=cfg.temperature,
@@ -447,11 +462,28 @@ def main(
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _t.time() - t0)
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
+
             t0 = _t.time()
-            fwd_bwd_result = policy.forward_backward_custom(
-                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp),
-            )
-            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _t.time() - t0)
+            prox_fwd = policy.forward(data, "cross_entropy")
+            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+            logger.info("[step %d] prox_forward: done (%.1fs)", step + 1, _t.time() - t0)
+
+            t0 = _t.time()
+            chunk_size = max(1, len(data) // n_minibatches)
+            fwd_bwd_results = []
+            for chunk_start in range(0, len(data), chunk_size):
+                chunk_end = min(chunk_start + chunk_size, len(data))
+                chunk_data = data[chunk_start:chunk_end]
+                chunk_loss = loss_builder(
+                    adv[chunk_start:chunk_end],
+                    ref_lp[chunk_start:chunk_end],
+                    prompt_lens[chunk_start:chunk_end],
+                    inf_lp[chunk_start:chunk_end],
+                    prox_lp[chunk_start:chunk_end],
+                )
+                fwd_bwd_results.append(policy.forward_backward_custom(chunk_data, chunk_loss))
+            fwd_bwd_result = fwd_bwd_results[-1]
+            logger.info("[step %d] fwd_bwd (%d minibatches): done (%.1fs)", step + 1, len(fwd_bwd_results), _t.time() - t0)
 
             t0 = _t.time()
             optim_result = policy.optim_step(adam_params)
@@ -473,9 +505,9 @@ def main(
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
-                fwd_bwd_results=[fwd_bwd_result],
+                fwd_bwd_results=fwd_bwd_results,
                 optim_result=optim_result,
-                n_accum=1,
+                n_accum=len(fwd_bwd_results),
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
@@ -503,15 +535,33 @@ def main(
 
         all_rows = dataset * cfg.epochs
 
-        global_step = asyncio.run(run_rl_loop(
-            sample_fns=(sample_one_prompt(row) for row in all_rows),
-            train_fns=train_fns,
-            prompt_groups_per_step=prompt_groups_per_step,
-            max_concurrent=cfg.max_concurrent,
-            dynamic_filter_fn=should_accept,
-            global_step=step_offset,
-            metrics_callback=_loop_metrics_callback,
-        ))
+        if cfg.async_config is not None:
+            from training.utils.rl.train_async import run_rl_loop_async
+
+            logger.info(
+                "Async mode: groups_per_batch=%d, max_steps_off_policy=%d",
+                cfg.async_config.groups_per_batch,
+                cfg.async_config.max_steps_off_policy,
+            )
+            global_step = asyncio.run(run_rl_loop_async(
+                sample_fn=sample_one_prompt,
+                rows=all_rows,
+                train_fns=train_fns,
+                async_config=cfg.async_config,
+                dynamic_filter_fn=should_accept,
+                global_step=step_offset,
+                metrics_callback=_loop_metrics_callback,
+            ))
+        else:
+            global_step = asyncio.run(run_rl_loop(
+                sample_fns=(sample_one_prompt(row) for row in all_rows),
+                train_fns=train_fns,
+                prompt_groups_per_step=prompt_groups_per_step,
+                max_concurrent=cfg.max_concurrent,
+                dynamic_filter_fn=should_accept,
+                global_step=step_offset,
+                metrics_callback=_loop_metrics_callback,
+            ))
 
         # -- Final checkpoint ----------------------------------------------------
 

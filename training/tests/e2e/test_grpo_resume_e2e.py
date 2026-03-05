@@ -22,7 +22,7 @@ import logging
 import pytest
 
 from training.utils import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
-from training.utils.rl import ISConfig
+from training.utils.rl import DecoupledConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
 
@@ -82,8 +82,7 @@ class TestGRPOResumeE2E:
             max_rows=8,
             epochs=1,
             router_replay=True,
-            tis_enabled=True,
-            tis=ISConfig(clip_high=10.0),
+            decoupled=DecoupledConfig(behave_cap=10.0),
             infra=shared_infra,
             deployment=DeployConfig(
                 deployment_id=deployment_id,
@@ -121,8 +120,7 @@ class TestGRPOResumeE2E:
             max_rows=6,
             epochs=1,
             router_replay=True,
-            tis_enabled=True,
-            tis=ISConfig(clip_high=10.0),
+            decoupled=DecoupledConfig(behave_cap=10.0),
             infra=shared_infra,
             deployment=DeployConfig(
                 deployment_id=deployment_id,
