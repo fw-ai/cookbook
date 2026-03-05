@@ -5,10 +5,9 @@ export PYTHONPATH=$PYTHONPATH:$HERE/../../../../../
 echo $PYTHONPATH
 python train_deepmath.py \
     --base-model accounts/fireworks/models/qwen3-4b \
-    --tokenizer-model Qwen/Qwen3-4b \
+    --tokenizer-model Qwen/Qwen3-4B \
     --dataset-path dataset.jsonl \
     --training-shape qwen3-4b-minimum-h200 \
-    # --deployment-id <Existing deployment ID to reuse; omit to auto-create> \
     --region US_VIRGINIA_1 \
     --max-rows 500 \
     --epochs 3 \
