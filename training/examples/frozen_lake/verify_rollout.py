@@ -31,6 +31,7 @@ from eval_protocol.pytest.types import RolloutProcessorConfig
 from eval_protocol.dataset_logger import default_logger
 
 from training.examples.frozen_lake.frozen_lake_rollout import FrozenLakeToolRolloutProcessor
+from training.examples.frozen_lake.masking import compute_model_output_spans, build_ui_token_mask
 
 DEFAULT_SYSTEM_PROMPT = (
     "/no_think\n"
@@ -129,15 +130,6 @@ def enrich_rows(results: list[EvaluationRow], tokenizer_name: str):
             trace["prompt_len"] = len(prompt_ids)
             trace["completion_len"] = len(completion_ids)
 
-        # Build full-episode view matching the trainer's corrected masking.
-        #
-        # Only model-generated tokens (assistant completions) get gradients.
-        # Environment tokens (tool responses, chat template separators) are
-        # masked even though they appear after first_prompt_len.
-        #
-        # For each turn k, model output in full_tokens spans:
-        #   [prompt_start[k], prompt_start[k] + assistant_turn_len[k])  (intermediate)
-        #   [prompt_start[-1], prompt_start[-1] + len(completion_ids[-1]))  (last turn)
         if token_turn_traces:
             last = token_turn_traces[-1]
             full_ids = [int(x) for x in last["prompt_ids"]] + [int(x) for x in last["completion_ids"]]
@@ -147,27 +139,13 @@ def enrich_rows(results: list[EvaluationRow], tokenizer_name: str):
             mrt = extra.get("model_request_traces") or []
             num_turns = len(token_turn_traces)
 
-            # mask: 0 = masked (prompt/env), >0 = turn index (model output)
-            mask = [0] * full_len
-            logprobs_arr: list[float | None] = [None] * full_len
+            spans = compute_model_output_spans(token_turn_traces, mrt)
+            mask = build_ui_token_mask(spans, full_len)
 
+            logprobs_arr: list[float | None] = [None] * full_len
             for k in range(num_turns):
                 turn_prompt_len = len(token_turn_traces[k].get("prompt_ids") or [])
-                if k < num_turns - 1:
-                    mrt_k = mrt[k] if k < len(mrt) else {}
-                    model_output_len = int(mrt_k.get("assistant_turn_len") or 0)
-                else:
-                    model_output_len = len(token_turn_traces[k].get("completion_ids") or [])
-                if model_output_len == 0:
-                    model_output_len = len(token_turn_traces[k].get("completion_ids") or [])
-
-                turn_idx = k + 1
-                for j in range(model_output_len):
-                    pos = turn_prompt_len + j
-                    if 0 <= pos < full_len:
-                        mask[pos] = turn_idx
-
-                turn_lp = (token_turn_traces[k].get("completion_logprobs") or []) if k < num_turns else []
+                turn_lp = token_turn_traces[k].get("completion_logprobs") or []
                 for j, lp in enumerate(turn_lp):
                     pos = turn_prompt_len + j
                     if pos < full_len:

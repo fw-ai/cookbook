@@ -36,6 +36,10 @@ from eval_protocol.pytest.types import RolloutProcessorConfig
 
 from training.examples.frozen_lake.frozen_lake_env import build_frozen_lake_tool_env
 from training.examples.frozen_lake.frozen_lake_rollout import FrozenLakeToolRolloutProcessor
+from training.examples.frozen_lake.masking import (
+    compute_model_output_spans,
+    build_training_loss_mask,
+)
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -230,33 +234,9 @@ def evaluation_row_to_training_data(
 
     model_input_len = len(full_tokens) - 1
 
-    # Build per-position loss_mask: 1.0 for model-generated completion tokens,
-    # 0.0 for prompt / environment (tool response) tokens.
-    #
-    # For each turn k, model output in full_tokens spans:
-    #   [prompt_start[k], prompt_start[k] + assistant_turn_len[k])  (intermediate)
-    #   [prompt_start[-1], prompt_start[-1] + len(completion_ids[-1]))  (last turn)
-    #
-    # In logprobs coordinate (shifted by 1): position p corresponds to
-    # predicting full_tokens[p+1], so mask[p]=1 when full_tokens[p+1] is
-    # model-generated.
     model_request_traces = extra.get("model_request_traces") or []
-    loss_mask = [0.0] * model_input_len
-    num_turns = len(token_turn_traces)
-
-    for k in range(num_turns):
-        turn_prompt_len = len(token_turn_traces[k].get("prompt_ids") or [])
-        if k < num_turns - 1:
-            mrt_k = model_request_traces[k] if k < len(model_request_traces) else {}
-            model_output_len = int(mrt_k.get("assistant_turn_len") or 0)
-        else:
-            model_output_len = len(last_completion_ids)
-        if model_output_len == 0:
-            model_output_len = len(token_turn_traces[k].get("completion_ids") or [])
-        for j in range(model_output_len):
-            pos = turn_prompt_len - 1 + j
-            if 0 <= pos < model_input_len:
-                loss_mask[pos] = 1.0
+    spans = compute_model_output_spans(token_turn_traces, model_request_traces)
+    loss_mask = build_training_loss_mask(spans, model_input_len)
 
     datum = tinker.Datum(
         model_input=tinker.ModelInput.from_ints(full_tokens[:-1]),
