@@ -60,7 +60,13 @@ def create_trainer_job(
     )
 
     if profile is not None:
-        config.apply_shape(profile)
+        config.training_shape = profile.training_shape_version
+        # When training_shape is set, the server auto-configures accelerator,
+        # image tag, and node count from the shape. Clear any manually set
+        # values to avoid conflicts.
+        config.accelerator_type = None
+        config.accelerator_count = None
+        config.custom_image_tag = None
 
     logger.info(
         "Creating trainer job '%s' (forward_only=%s)...",
@@ -96,7 +102,7 @@ def setup_deployment(
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
         info = deploy_mgr.create_or_get(dep_config)
 
-    if info.state != "READY":
+    if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
             deploy_cfg.deployment_id,
             timeout_s=deploy_cfg.deployment_timeout_s,
