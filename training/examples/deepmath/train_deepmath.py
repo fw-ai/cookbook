@@ -7,10 +7,10 @@ Run prepare_data.py first, then: python train_deepmath.py
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import sys
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import cast
@@ -19,16 +19,12 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from math_verify import parse as math_parse, verify as math_verify
+from fireworks.training.sdk import DeploymentManager, TrainerJobManager
+from math_verify import parse as math_parse
+from math_verify import verify as math_verify
 
 import training.recipes.rl_loop as rl_loop
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
-from training.utils import (
-    InfraConfig,
-    WandBConfig,
-    DeployConfig,
-    HotloadConfig,
-)
+from training.utils import DeployConfig, HotloadConfig, InfraConfig, WandBConfig
 from training.utils.rl import ISConfig
 
 logging.basicConfig(
@@ -51,6 +47,7 @@ FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks
 class TrainArgs:
     base_model: str = "accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
     tokenizer_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    max_seq_len: int = 2048
     dataset_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "dataset.jsonl")
     )
@@ -238,6 +235,7 @@ def main():
         dataset=args.dataset_path,
         learning_rate=args.learning_rate,
         kl_beta=args.kl_beta,
+        max_seq_len=args.max_seq_len,
         completions_per_prompt=args.completions_per_prompt,
         max_completion_tokens=args.max_completion_tokens,
         temperature=args.temperature,

@@ -8,7 +8,7 @@ python train_deepmath.py \
     --tokenizer-model Qwen/Qwen3-4b \
     --dataset-path dataset.jsonl \
     --training-shape qwen3-4b-minimum-h200 \
-    --deployment-id deepmath-qwen3-4b-$(date +%s) \
+    # --deployment-id <Existing deployment ID to reuse; omit to auto-create> \
     --region US_VIRGINIA_1 \
     --max-rows 500 \
     --epochs 3 \
