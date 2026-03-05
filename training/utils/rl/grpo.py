@@ -52,6 +52,9 @@ def make_grpo_loss_fn(
         total_inf_kld = 0.0
         inf_num_samples = 0
         num_tokens = 0
+        num_total_resp_tokens = 0
+        total_adv_term = 0.0
+        total_kl_term = 0.0
         clip_frac_sum = 0.0
         ppo_ratio_mean_sum = 0.0
         tis_metrics_agg: Dict[str, float] = {}
@@ -129,14 +132,24 @@ def make_grpo_loss_fn(
             per_token_loss = (per_token_loss + kl_penalty) * resp_mask
 
             total_loss = total_loss + per_token_loss.sum()
-            total_kl += ((pi_detached - resp_ref) * resp_mask).sum().item()
+            kl_per_token = (pi_detached - resp_ref) * resp_mask
+            total_kl += kl_per_token.sum().item()
+            total_adv_term += (-adv * resp_pi * resp_mask).sum().item()
+            total_kl_term += (kl_beta * resp_pi * resp_mask).sum().item()
             num_tokens += active_count
+            num_total_resp_tokens += resp_len
 
         n_samples = max(inf_num_samples, 1)
         metrics: Dict[str, float] = {
             "mean_kl": total_kl / num_tokens if num_tokens > 0 else 0.0,
             "ppo_clip_frac": clip_frac_sum / n_samples,
             "ppo_ratio_mean": ppo_ratio_mean_sum / n_samples,
+            "active_tokens": num_tokens,
+            "total_resp_tokens": num_total_resp_tokens,
+            "mask_ratio": num_tokens / num_total_resp_tokens if num_total_resp_tokens > 0 else 0.0,
+            "mean_adv_loss": total_adv_term / num_tokens if num_tokens > 0 else 0.0,
+            "mean_kl_penalty": total_kl_term / num_tokens if num_tokens > 0 else 0.0,
+            "mean_loss": total_loss.item() / num_tokens if num_tokens > 0 else 0.0,
         }
         if inf_num_samples > 0:
             metrics["inference_diff"] = total_inf_diff / inf_num_samples

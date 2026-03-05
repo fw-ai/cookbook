@@ -26,10 +26,11 @@ FROZEN_LAKE_DIR = Path(__file__).resolve().parent
 COOKBOOK_DIR = FROZEN_LAKE_DIR.parent.parent
 sys.path.insert(0, str(COOKBOOK_DIR))
 
-from eval_protocol.integrations.frozen_lake_tool_rollout_processor import FrozenLakeToolRolloutProcessor
 from eval_protocol.models import EvaluateResult, EvaluationRow, InputMetadata, Status
 from eval_protocol.pytest.types import RolloutProcessorConfig
 from eval_protocol.dataset_logger import default_logger
+
+from training.examples.frozen_lake.frozen_lake_rollout import FrozenLakeToolRolloutProcessor
 
 DEFAULT_SYSTEM_PROMPT = (
     "/no_think\n"

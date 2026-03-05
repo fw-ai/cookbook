@@ -31,10 +31,11 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from eval_protocol.integrations.frozen_lake_tool_rollout_processor import FrozenLakeToolRolloutProcessor
-from eval_protocol.integrations.frozen_lake_tool_env import build_frozen_lake_tool_env
 from eval_protocol.models import EvaluationRow, InputMetadata, Message
 from eval_protocol.pytest.types import RolloutProcessorConfig
+
+from training.examples.frozen_lake.frozen_lake_env import build_frozen_lake_tool_env
+from training.examples.frozen_lake.frozen_lake_rollout import FrozenLakeToolRolloutProcessor
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -684,18 +685,27 @@ def main():
                 completions_per_prompt=completions_per_prompt,
             )
             metrics["train/step"] = step
+            if loop_stats:
+                metrics["rollout/sample_fail_count"] = loop_stats.get("sample_fails", 0)
+                metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
+                metrics["perf/sample_idle_time"] = loop_stats.get("sample_idle_time", 0)
 
             avg_reward = metrics.get("rollout/reward", 0.0)
             avg_kl = metrics.get("train/mean_kl", 0.0)
-            logger.info("Step %d | Reward: %.3f | KL: %.4f", step, avg_reward, avg_kl)
+            mean_loss = metrics.get("train/mean_loss", 0.0)
+            adv_loss = metrics.get("train/mean_adv_loss", 0.0)
+            kl_pen = metrics.get("train/mean_kl_penalty", 0.0)
+            mask_r = metrics.get("train/mask_ratio", 0.0)
+            inf_kld = metrics.get("train/inference_kld", 0.0)
+            logger.info(
+                "Step %d | Reward: %.3f | KL: %.4f | Loss: %.4f "
+                "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
+                step, avg_reward, avg_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
+            )
             log_metrics_json(step, reward=avg_reward, kl=avg_kl)
-            wandb_log(metrics, step)
+            _wandb_step[0] = max(_wandb_step[0] + 1, step)
+            wandb_log(metrics, _wandb_step[0])
             return step, metrics
-
-        # -- Run loop -------------------------------------------------------
-
-        def _loop_metrics_callback(loop_metrics: dict) -> None:
-            wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
         minibatch_fns = MinibatchTrainFns(
             ref_forward_batch=ref_forward_batch,
@@ -714,6 +724,12 @@ def main():
             completions_per_prompt, prompt_groups_per_step,
         )
 
+        _wandb_step = [step_offset]
+
+        def _filtered_step_callback(loop_metrics: dict) -> None:
+            _wandb_step[0] += 1
+            wandb_log(loop_metrics, step=_wandb_step[0])
+
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
             minibatch_fns=minibatch_fns,
@@ -721,7 +737,7 @@ def main():
             max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
             global_step=step_offset,
-            metrics_callback=_loop_metrics_callback,
+            metrics_callback=_filtered_step_callback,
             min_prompt_groups_per_fwd_bwd=min_prompt_groups_per_fwd_bwd,
             completions_per_prompt=completions_per_prompt,
         ))

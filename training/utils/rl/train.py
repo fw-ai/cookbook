@@ -19,7 +19,6 @@ from tqdm import tqdm
 
 from training.utils.timer import Timer
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.metrics import build_loop_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -190,20 +189,12 @@ async def _stream_loop(
             "all_raw_rewards": list(all_raw_rewards),
             "fwd_bwd_group_counts": fwd_bwd_prompt_group_counts,
         }
-        global_step, _ = await asyncio.to_thread(
+        sample_idle_time = time.time() - idle_start
+        loop_stats["sample_idle_time"] = sample_idle_time
+        global_step, step_metrics = await asyncio.to_thread(
             fns.finish_step, global_step, step_prompt_groups,
             fwd_bwd_results, fwd_bwd_call_count, loop_stats,
         )
-
-        sample_idle_time = time.time() - idle_start
-
-        if metrics_callback is not None:
-            loop_metrics = build_loop_metrics(
-                train_step=global_step,
-                sample_fails=sample_fails,
-            )
-            loop_metrics["perf/sample_idle_time"] = sample_idle_time
-            metrics_callback(loop_metrics)
 
         minibatch_prompt_groups = []
         step_prompt_groups = []
