@@ -68,6 +68,9 @@ class TrainArgs:
     max_completion_tokens: int = 30 * 1024
     prompt_groups_per_step: int = 32
     router_replay: bool = False
+    trajectory_dir: str | None = None
+    """Directory to save per-step trajectory JSONL files."""
+    deployment_extra_values: dict[str, str] | None = None
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
 
@@ -99,11 +102,33 @@ def parse_args() -> TrainArgs:
 
     parser.add_argument("--prompt-groups-per-step", type=int)
 
+    parser.add_argument("--trajectory-dir",
+                        help="Directory to save per-step trajectory JSONL files")
     parser.add_argument("--router-replay", action="store_true")
+    parser.add_argument(
+        "--deployment-extra-values",
+        nargs="*",
+        default=None,
+        help="Extra Helm values for the deployment as key=value pairs "
+             "(e.g. --deployment-extra-values priorityClass=deployment)",
+    )
     parser.add_argument("--wandb-entity")
     parser.add_argument("--wandb-project")
 
-    return cast(TrainArgs, parser.parse_args(namespace=defaults))
+    parsed = parser.parse_args(namespace=defaults)
+    # Convert --deployment-extra-values key=value pairs to a dict.
+    raw = getattr(parsed, "deployment_extra_values", None)
+    if raw:
+        ev = {}
+        for item in raw:
+            k, _, v = item.partition("=")
+            if not v:
+                parser.error(f"--deployment-extra-values: expected key=value, got '{item}'")
+            ev[k] = v
+        parsed.deployment_extra_values = ev
+    else:
+        parsed.deployment_extra_values = None
+    return cast(TrainArgs, parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +269,7 @@ def main():
         epochs=args.epochs,
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
+        trajectory_dir=args.trajectory_dir,
         tis_enabled=True,
         tis=ISConfig(clip_high=2.0, clip_low=0.0),
         router_replay=args.router_replay,
@@ -258,6 +284,7 @@ def main():
             deployment_region=args.deployment_region,
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
+            extra_values=args.deployment_extra_values,
         ),
         hotload=HotloadConfig(
             hot_load_interval=1,

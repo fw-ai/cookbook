@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import time
 import logging
+from typing import Any
+
+import requests as _requests
 
 from fireworks.training.sdk.client import FiretitanServiceClient, FiretitanTrainingClient
 from fireworks.training.sdk.trainer import (
@@ -12,7 +15,12 @@ from fireworks.training.sdk.trainer import (
     TrainingShapeProfile,
     TrainerServiceEndpoint,
 )
-from fireworks.training.sdk.deployment import DeploymentInfo, DeploymentManager
+from fireworks.training.sdk.deployment import (
+    DeploymentConfig,
+    DeploymentInfo,
+    DeploymentManager,
+    request_with_retries,
+)
 from training.utils.config import InfraConfig, DeployConfig
 
 logger = logging.getLogger(__name__)
@@ -35,9 +43,8 @@ def create_trainer_job(
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
-    When *profile* is provided, ``TrainerJobConfig.apply_shape`` is called
-    to populate config from the training shape.  Override warnings and
-    ``skip_validations`` logic are handled by the SDK.
+    When *profile* is provided, shape fields (image tag, node count,
+    accelerator type/count, context length) are applied to the config.
     """
     if job_id:
         return _reuse_or_resume_job(rlor_mgr, job_id)
@@ -60,7 +67,16 @@ def create_trainer_job(
     )
 
     if profile is not None:
-        config.apply_shape(profile)
+        if profile.trainer_image_tag:
+            config.custom_image_tag = profile.trainer_image_tag
+        if profile.node_count:
+            config.node_count = profile.node_count
+        # Do NOT set accelerator_type/count — the server auto-configures
+        # these from the training shape.
+        config.accelerator_type = None
+        config.accelerator_count = None
+        if profile.max_supported_context_length and max_seq_len is None:
+            config.max_context_length = profile.max_supported_context_length
 
     logger.info(
         "Creating trainer job '%s' (forward_only=%s)...",
@@ -82,19 +98,19 @@ def setup_deployment(
     * If ``deploy_cfg.deployment_id`` is ``None``, a new deployment is
       created with an auto-generated ID derived from the model name.
     """
-    if deploy_cfg.deployment_id:
-        info = deploy_mgr.get(deploy_cfg.deployment_id)
-        if not info:
-            raise RuntimeError(
-                f"Deployment '{deploy_cfg.deployment_id}' not found. "
-                f"Remove deployment_id to auto-create a new deployment, "
-                f"or verify the ID is correct."
-            )
-    else:
+    if not deploy_cfg.deployment_id:
         model_short = base_model.rsplit("/", 1)[-1]
         deploy_cfg.deployment_id = f"{model_short}-{int(time.time())}"
+
+    info = deploy_mgr.get(deploy_cfg.deployment_id)
+    if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
-        info = deploy_mgr.create_or_get(dep_config)
+        if deploy_cfg.extra_values:
+            info = _create_deployment_with_extra_values(
+                deploy_mgr, dep_config, deploy_cfg.extra_values,
+            )
+        else:
+            info = deploy_mgr.create_or_get(dep_config)
 
     if info.state != "READY":
         info = deploy_mgr.wait_for_ready(
@@ -102,6 +118,55 @@ def setup_deployment(
             timeout_s=deploy_cfg.deployment_timeout_s,
         )
     return info
+
+
+def _create_deployment_with_extra_values(
+    deploy_mgr: DeploymentManager,
+    config: DeploymentConfig,
+    extra_values: dict[str, str],
+) -> DeploymentInfo:
+    """Create a deployment with ``extraValues`` injected into the API body.
+
+    The SDK's ``DeploymentManager`` doesn't support ``extraValues`` natively,
+    so we replicate the essential creation logic here.
+    """
+    url = (
+        f"{deploy_mgr.base_url}/v1/accounts/{deploy_mgr.account_id}"
+        f"/deployments?deploymentId={config.deployment_id}"
+        f"&skipShapeValidation={'true' if config.skip_shape_validation else 'false'}"
+    )
+    if config.disable_speculative_decoding:
+        url += "&disableSpeculativeDecoding=true"
+
+    body: dict[str, Any] = {
+        "baseModel": config.base_model,
+        "minReplicaCount": config.min_replica_count,
+        "maxReplicaCount": config.max_replica_count,
+        "enableHotLoad": True,
+        "placement": {"region": config.region},
+        "extraValues": extra_values,
+    }
+    if config.hot_load_bucket_type:
+        body["hotLoadBucketType"] = config.hot_load_bucket_type
+    if config.deployment_shape:
+        body["deploymentShape"] = config.deployment_shape
+    if config.accelerator_type:
+        body["acceleratorType"] = config.accelerator_type
+    if config.extra_args:
+        flat: list[str] = []
+        for arg in config.extra_args:
+            flat.extend(arg.split()) if " " in arg else flat.append(arg)
+        body["extraArgs"] = flat
+
+    headers = deploy_mgr._headers()
+    logger.info("Creating deployment with extra_values: %s", config.deployment_id)
+    resp = request_with_retries(
+        _requests.post, url, headers=headers, json=body, timeout=60,
+        verify=deploy_mgr._verify_ssl,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return deploy_mgr._parse_deployment_info(config.deployment_id, data)
 
 
 def setup_training_client(

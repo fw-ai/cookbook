@@ -294,3 +294,4 @@ cython_debug/
 .DS_Store
 .idea/
 wandb/
+*_dev.sh

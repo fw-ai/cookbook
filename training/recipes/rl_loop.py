@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 import re
+import json
+import signal
 import asyncio
 import logging
 from typing import List, Optional
@@ -106,6 +108,10 @@ class Config:
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
 
+    trajectory_dir: str | None = None
+    """Directory to save per-step trajectory JSONL files.  Each file contains
+    prompts, completions, and rewards for every prompt group in that step."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=HotloadConfig)
@@ -150,6 +156,37 @@ def should_accept(pg: PromptGroup) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Trajectory logging
+# ---------------------------------------------------------------------------
+
+
+def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptGroup]) -> None:
+    """Write per-step trajectory JSONL: one line per individual completion."""
+    os.makedirs(trajectory_dir, exist_ok=True)
+    path = os.path.join(trajectory_dir, f"step_{step:04d}.jsonl")
+    n_records = 0
+    with open(path, "w") as f:
+        for pg_idx, pg in enumerate(prompt_groups):
+            completions = pg.completions or []
+            for comp_idx, comp_text in enumerate(completions):
+                record = {
+                    "step": step,
+                    "prompt_group": pg_idx,
+                    "completion_index": comp_idx,
+                    "prompt": pg.prompt,
+                    "completion": comp_text,
+                    "reward": pg.rewards[comp_idx] if comp_idx < len(pg.rewards) else None,
+                    "advantage": pg.advantages[comp_idx] if comp_idx < len(pg.advantages) else None,
+                    "completion_len": pg.completion_lens[comp_idx] if comp_idx < len(pg.completion_lens) else None,
+                    "truncated": pg.truncated[comp_idx] if comp_idx < len(pg.truncated) else None,
+                    "ground_truth": pg.row_meta.get("ground_truth") if pg.row_meta else None,
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                n_records += 1
+    logger.info("[step %d] Saved trajectory to %s (%d completions from %d groups)", step, path, n_records, len(prompt_groups))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -161,6 +198,15 @@ def main(
     cleanup_on_exit: bool = False,
 ):
     cfg = config
+
+    # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
+    def _signal_handler(signum, frame):
+        name = signal.Signals(signum).name
+        logger.warning("Received %s — raising SystemExit for cleanup", name)
+        raise SystemExit(f"Terminated by {name}")
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
     completions_per_prompt = cfg.completions_per_prompt
@@ -200,8 +246,9 @@ def main(
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        if profile.deployment_shape and not cfg.deployment.deployment_shape:
-            cfg.deployment.deployment_shape = profile.deployment_shape
+        dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
+        if dep_shape and not cfg.deployment.deployment_shape:
+            cfg.deployment.deployment_shape = dep_shape
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
@@ -416,6 +463,9 @@ def main(
                 advantages=adv_filtered, ref_logprobs=[],
                 prompt_len=prompt_len, rewards=rewards, inf_logprobs=inf_logprobs_aligned,
                 completion_lens=comp_lens, truncated=trunc,
+                prompt=input_messages if cfg.trajectory_dir else None,
+                completions=[s.text for s in sampled] if cfg.trajectory_dir else None,
+                row_meta={"ground_truth": row.get("ground_truth", "")} if cfg.trajectory_dir else None,
             )
 
         # -- Training callbacks ----------------------------------------------------
@@ -491,6 +541,10 @@ def main(
             )
             log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
             wandb_log(metrics, step)
+
+            if cfg.trajectory_dir:
+                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
+
             return step, metrics
 
         # -- Run ----------------------------------------------------------------
