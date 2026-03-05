@@ -55,6 +55,7 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train_async import AsyncConfig
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -105,6 +106,11 @@ class Config:
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
+
+    async_config: AsyncConfig | None = None
+    """Set to enable async off-policy mode.  None = sync on-policy (default).
+    When set, ``groups_per_batch`` controls the batch size instead of
+    ``prompt_groups_per_step``."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -503,15 +509,33 @@ def main(
 
         all_rows = dataset * cfg.epochs
 
-        global_step = asyncio.run(run_rl_loop(
-            sample_fns=(sample_one_prompt(row) for row in all_rows),
-            train_fns=train_fns,
-            prompt_groups_per_step=prompt_groups_per_step,
-            max_concurrent=cfg.max_concurrent,
-            dynamic_filter_fn=should_accept,
-            global_step=step_offset,
-            metrics_callback=_loop_metrics_callback,
-        ))
+        if cfg.async_config is not None:
+            from training.utils.rl.train_async import run_rl_loop_async
+
+            logger.info(
+                "Async mode: groups_per_batch=%d, max_steps_off_policy=%d",
+                cfg.async_config.groups_per_batch,
+                cfg.async_config.max_steps_off_policy,
+            )
+            global_step = asyncio.run(run_rl_loop_async(
+                sample_fn=sample_one_prompt,
+                rows=all_rows,
+                train_fns=train_fns,
+                async_config=cfg.async_config,
+                dynamic_filter_fn=should_accept,
+                global_step=step_offset,
+                metrics_callback=_loop_metrics_callback,
+            ))
+        else:
+            global_step = asyncio.run(run_rl_loop(
+                sample_fns=(sample_one_prompt(row) for row in all_rows),
+                train_fns=train_fns,
+                prompt_groups_per_step=prompt_groups_per_step,
+                max_concurrent=cfg.max_concurrent,
+                dynamic_filter_fn=should_accept,
+                global_step=step_offset,
+                metrics_callback=_loop_metrics_callback,
+            ))
 
         # -- Final checkpoint ----------------------------------------------------
 

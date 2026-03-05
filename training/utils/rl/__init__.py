@@ -16,9 +16,11 @@ __all__ = [
     "make_gspo_loss_fn",
     "make_tis_weights_fn",
     # Training loop
+    "AsyncConfig",
     "DynamicFilterFn",
     "TrainStepFns",
     "run_rl_loop",
+    "run_rl_loop_async",
     # Metrics helpers
     "add_response_length_stats",
     "add_train_perf_metrics",
@@ -36,6 +38,7 @@ from training.utils.rl.train import (
     TrainStepFns,
     run_rl_loop,
 )
+from training.utils.rl.train_async import AsyncConfig, run_rl_loop_async
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.metrics import (
     build_loop_metrics,

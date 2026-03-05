@@ -24,6 +24,8 @@ class PromptGroup:
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
     """Per-sample flag: True if completion hit max_completion_tokens."""
+    generation_step: int | None = None
+    """Training step when this group's rollout was submitted (async mode)."""
 
 
 def combine_prompt_groups(
