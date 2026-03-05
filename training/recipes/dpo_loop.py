@@ -38,13 +38,11 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     HotloadConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
     extract_text,
-    setup_resume,
     wandb_finish,
     validate_config,
     log_metrics_json,
@@ -57,6 +55,7 @@ from training.utils import (
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.timer import timer, flush_timing
+from training.utils.checkpoint_utils import resolve_resume, load_dcp
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -115,9 +114,11 @@ class Config:
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
+    log_path: str = "training_logs"
+    init_from_dcp: str | None = None
+
     hotload: HotloadConfig = field(default_factory=lambda: HotloadConfig(hot_load_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +387,7 @@ def main(
 ):
     cfg = config
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
+    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -465,7 +466,9 @@ def main(
         compression_format=DEFAULT_DELTA_COMPRESSION,
     )
 
-    step_offset, _ = setup_resume(policy, cfg.resume)
+    state = resolve_resume(cfg.log_path, cfg.init_from_dcp)
+    load_dcp(policy, state)
+    step_offset = state.step
     adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
     # -- Cache reference logprobs concurrently ------------------------------

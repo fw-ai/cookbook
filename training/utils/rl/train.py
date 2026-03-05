@@ -88,10 +88,12 @@ async def run_rl_loop(
             queue.put_nowait(None)
 
     coro_iter = iter(coros)
+    data_consumed = 0
     while True:
         step_coros = list(itertools.islice(coro_iter, prompt_groups_per_step))
         if not step_coros:
             break
+        data_consumed += len(step_coros)
 
         for c in step_coros:
             asyncio.create_task(_worker(c))
@@ -147,6 +149,7 @@ async def run_rl_loop(
             "sample_wait_time": total_wait_time,
             "step_wall_time": step_wall_time,
             "all_raw_rewards": list(all_raw_rewards),
+            "data_consumed": data_consumed,
         }
 
         global_step, _ = await asyncio.to_thread(
