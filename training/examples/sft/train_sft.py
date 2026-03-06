@@ -9,10 +9,6 @@ import sys
 import logging
 import signal
 
-_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
-
 import training.recipes.sft_loop as sft_loop
 from fireworks.training.sdk import TrainerJobManager
 from training.utils import InfraConfig, WandBConfig
