@@ -1,47 +1,34 @@
-![Building, Deploying, and Fine-Tuning AI Workflows with Fireworks](assets/hero-dark.svg)
-
 # Fireworks AI Cookbook
 
-This repository contains sample applications, Jupyter Notebooks, and resources designed to help you get hands-on with Fireworks AI. You'll explore tools for building, deploying, and fine-tuning generative AI, function-calling workflows, Retrieval-Augmented Generation (RAG) systems, agentic systems, and more.
+The Fireworks AI Cookbook provides ready-to-run recipes and utilities for training models on [Fireworks](https://fireworks.ai). It covers supervised fine-tuning (SFT), reinforcement learning (GRPO, DAPO, GSPO, CISPO), and preference optimization (DPO, ORPO) — all driven by the Fireworks Training SDK.
 
-This is a living-repo, so please check back as we continuously add new examples, tutorials and reference projects.
+For full SDK documentation, see the [Fireworks Training SDK Reference](https://docs.fireworks.ai/api-reference/training-sdk/overview).
 
-# Repository Structure
+## Getting Started
 
-This repo contains several types of examples organized by their use cases and purpose:
+Head to the [`training/`](./training) directory for installation instructions, recipe configuration, and runnable examples.
 
-1. **Production-ready examples** in [`./references`](./references): These projects receive regular review and support from the Fireworks engineering team. Each example is production-ready, focusing on specific Fireworks features and abstractions, and shares common dependencies.
-2. **Learning-focused examples** in [`./learn`](./learn): These projects are optimized for learning and exploration of AI techniques. Each example is built with experimentation in mind, allowing you to explore patterns for building AI applications. Each project has its own dependencies and Dockerfile for easy setup.
-3. **Showcase projects** in [`./showcase`](./showcase): User-contributed examples of Fireworks in action! These are community-driven projects that may not always follow production standards but demonstrate creative ways to use Fireworks.
-4. **Integration examples** in [`./integrations`](./integrations): Examples provided by Fireworks partners, illustrating how to integrate with external services or platforms (e.g., MongoDB). Each integration example includes dedicated resources and documentation from the contributing partners.
+## Repository Structure
 
-We appreciate your feedback and contributions! Please see our [contribution guide](./Contribution.md) for more information on how to contribute to this repository.
+```
+training/           Training SDK recipes, utilities, and examples
+  recipes/          Fork-and-customize training loop scripts
+  utils/            Shared config, data loading, losses, metrics
+  examples/         Worked examples (e.g. deepmath GRPO)
+  tests/            Unit and end-to-end tests
+archived/           Legacy cookbook content (see below)
+```
 
-# Getting Started
+## Archived Content
 
-To get started with Fireworks AI, check out our [Getting Started Guide](./references/get_started_with_Fireworks.md) for a walkthrough of setting up and running your first example, including using Docker or setting up environments for local development.
+All previous cookbook material — learning tutorials, integration examples, showcase projects, evaluation recipes, and more — has been moved to [`archived/`](./archived). See the [archived README](./archived/README.md) for details on what's there.
 
-# Contributing
+## Contributing
 
-We value your contributions to help improve and expand this repository! If you'd like to contribute, whether it's fixing a bug, adding an example, or improving existing ones, check out our [Contribution Guide](./Contribution.md). For more significant changes, please [open an issue](https://github.com/fw-ai/cookbook/issues/new) to discuss your proposal before starting.
+We welcome contributions! See the [Contribution Guide](./Contribution.md) for how to get started.
 
-# Feedback & Support
+## Feedback & Support
 
-We love hearing your feedback! If you run into issues, have questions, or find something confusing, please [open an issue](https://github.com/fw-ai/cookbook/issues/new) and let us know.
-
-For support and further reading, visit:
 - [Fireworks Documentation](https://fireworks.ai/docs)
 - [Discord](https://discord.gg/9nKGzdCk)
-
-## Additional Resources
-- [Fireworks AI Blog](https://fireworks.ai/blog)
-- [Fireworks AI YouTube](https://www.youtube.com/channel/UCHCffBTGYa1Ut72h03ldtGA)
-- [Fireworks AI Twitter](https://x.com/fireworksai_hq)
-
-# Showcasing Your Work
-
-Built something cool with Fireworks? We’d love to feature your project in our [Showcase](./showcase). If you have a project you'd like to contribute, check out the [Fireworks-In-Action guide](./showcase/fireworks_in_action.md) for how to submit your project!
-
-# Integrations
-
-See how Fireworks integrates with partner platforms and services in the [`./integrations`](./integrations) folder. Interested in contributing an integration example? Contact us or check the contribution guide for details.
+- [Open an issue](https://github.com/fw-ai/cookbook/issues/new)

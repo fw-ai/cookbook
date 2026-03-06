@@ -82,8 +82,7 @@ class TestGRPOResumeE2E:
             max_rows=8,
             epochs=1,
             router_replay=True,
-            tis_enabled=True,
-            tis=ISConfig(clip_high=10.0),
+            is_correction=ISConfig(tis_cap=10.0),
             infra=shared_infra,
             deployment=DeployConfig(
                 deployment_id=deployment_id,
@@ -121,8 +120,7 @@ class TestGRPOResumeE2E:
             max_rows=6,
             epochs=1,
             router_replay=True,
-            tis_enabled=True,
-            tis=ISConfig(clip_high=10.0),
+            is_correction=ISConfig(tis_cap=10.0),
             infra=shared_infra,
             deployment=DeployConfig(
                 deployment_id=deployment_id,

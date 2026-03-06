@@ -49,7 +49,8 @@ from training.utils import (
     load_jsonl_dataset,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
-from training.utils.rl import ISConfig, PromptGroup
+from training.utils.rl import PromptGroup
+from training.utils.rl.importance_sampling import ISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
@@ -102,11 +103,11 @@ class Config:
     policy_loss: str = "grpo"
     """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
 
-    tis_enabled: bool = False
-    tis: ISConfig = field(default_factory=ISConfig)
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
+    is_correction: ISConfig = field(default_factory=ISConfig)
+    """AReaL-style decoupled IS correction: PPO ratio + behavioral weight."""
 
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files.  Each file contains
@@ -362,9 +363,9 @@ def main(
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
-            tis_enabled=cfg.tis_enabled, tis_config=cfg.tis,
             dapo_config=cfg.dapo, gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
+            is_config=cfg.is_correction,
         )
 
         sample_kwargs: dict = dict(
@@ -497,9 +498,15 @@ def main(
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _t.time() - t0)
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
+
+            t0 = _t.time()
+            prox_fwd = policy.forward(data, "cross_entropy")
+            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+            logger.info("[step %d] prox_forward: done (%.1fs)", step + 1, _t.time() - t0)
+
             t0 = _t.time()
             fwd_bwd_result = policy.forward_backward_custom(
-                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp),
+                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
             logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _t.time() - t0)
 
