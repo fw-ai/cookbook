@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass, field
 from typing import cast
 
+from dotenv import load_dotenv
+
 _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
@@ -41,6 +43,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Fixed configuration
 # ---------------------------------------------------------------------------
+
+load_dotenv()
 
 FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
 FIREWORKS_ACCOUNT_ID = os.environ.get("FIREWORKS_ACCOUNT_ID", "")

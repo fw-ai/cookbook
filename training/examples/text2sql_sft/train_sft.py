@@ -9,6 +9,8 @@ import sys
 import logging
 import signal
 
+from dotenv import load_dotenv
+
 import training.recipes.sft_loop as sft_loop
 from fireworks.training.sdk import TrainerJobManager
 from training.utils import InfraConfig, WandBConfig
@@ -19,6 +21,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
 FIREWORKS_ACCOUNT_ID = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
