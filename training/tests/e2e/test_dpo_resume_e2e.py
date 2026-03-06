@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, HotloadConfig
 from training.recipes.dpo_loop import Config, main
 
 logger = logging.getLogger(__name__)
@@ -51,12 +51,12 @@ class TestDPOResumeE2E:
     def test_dpo_resume_from_checkpoint(
         self,
         sdk_managers,
-        e2e_region,
         e2e_model,
-        e2e_training_accelerator,
-        custom_image_tag,
+        e2e_training_shape,
     ):
         rlor_mgr, deploy_mgr = sdk_managers
+        if not e2e_training_shape:
+            pytest.skip("Set FIREWORKS_E2E_TRAINING_SHAPE for DPO resume E2E runs")
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             dataset_path = f.name
@@ -65,63 +65,64 @@ class TestDPOResumeE2E:
             _make_preference_dataset(dataset_path, num_pairs=8)
 
             shared_infra = InfraConfig(
-                region=e2e_region,
-                skip_validations=True,
-                accelerator_type=e2e_training_accelerator,
-                custom_image_tag=custom_image_tag,
+                training_shape_id=e2e_training_shape,
             )
 
-            # Phase 1: train, save DCP
-            logger.info("PHASE 1: initial DPO training")
+            with tempfile.TemporaryDirectory() as log_dir:
+                # Phase 1: train, save DCP
+                logger.info("PHASE 1: initial DPO training")
 
-            phase1_config = Config(
-                base_model=e2e_model,
-                dataset=dataset_path,
-                beta=0.1,
-                learning_rate=1e-5,
-                epochs=1,
-                grad_accum=2,
-                max_pairs=8,
-                infra=shared_infra,
-                deployment=DeployConfig(),
-                hotload=HotloadConfig(hot_load_interval=0, dcp_save_interval=2),
-            )
+                phase1_config = Config(
+                    base_model=e2e_model,
+                    dataset=dataset_path,
+                    beta=0.1,
+                    learning_rate=1e-5,
+                    epochs=1,
+                    grad_accum=2,
+                    max_pairs=8,
+                    log_path=log_dir,
+                    infra=shared_infra,
+                    deployment=DeployConfig(),
+                    hotload=HotloadConfig(hot_load_interval=0, dcp_save_interval=2),
+                )
 
-            phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+                phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
 
-            assert isinstance(phase1_metrics, dict)
-            assert "steps" in phase1_metrics
-            phase1_steps = phase1_metrics["steps"]
-            assert phase1_steps >= 2, f"Expected >= 2 steps in phase 1, got {phase1_steps}"
+                assert isinstance(phase1_metrics, dict)
+                assert "steps" in phase1_metrics
+                phase1_steps = phase1_metrics["steps"]
+                assert phase1_steps >= 2, f"Expected >= 2 steps in phase 1, got {phase1_steps}"
 
-            phase1_job_id = phase1_metrics["policy_job_id"]
-            dcp_name = f"step-{phase1_steps}"
-            logger.info("Phase 1 done: %d steps, job=%s", phase1_steps, phase1_job_id)
+                phase1_job_id = phase1_metrics["policy_job_id"]
+                dcp_name = f"step-{phase1_steps}"
+                logger.info("Phase 1 done: %d steps, job=%s", phase1_steps, phase1_job_id)
 
-            # Phase 2: resume from checkpoint
-            logger.info("PHASE 2: resume from '%s' (source job: %s)", dcp_name, phase1_job_id)
+                # Phase 2: resume from checkpoint (via init_from_dcp)
+                phase2_log_dir = os.path.join(log_dir, "phase2")
+                logger.info("PHASE 2: resume from '%s' (source job: %s)", dcp_name, phase1_job_id)
 
-            phase2_config = Config(
-                base_model=e2e_model,
-                dataset=dataset_path,
-                beta=0.1,
-                learning_rate=1e-5,
-                epochs=1,
-                grad_accum=2,
-                max_pairs=8,
-                infra=shared_infra,
-                deployment=DeployConfig(),
-                hotload=HotloadConfig(hot_load_interval=0),
-                resume=ResumeConfig(resume_from=dcp_name, resume_job_id=phase1_job_id),
-            )
+                phase2_config = Config(
+                    base_model=e2e_model,
+                    dataset=dataset_path,
+                    beta=0.1,
+                    learning_rate=1e-5,
+                    epochs=1,
+                    grad_accum=2,
+                    max_pairs=8,
+                    log_path=phase2_log_dir,
+                    init_from_dcp=f"{phase1_job_id}:{dcp_name}",
+                    infra=shared_infra,
+                    deployment=DeployConfig(),
+                    hotload=HotloadConfig(hot_load_interval=0),
+                )
 
-            phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+                phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
 
-            assert isinstance(phase2_metrics, dict)
-            assert "steps" in phase2_metrics
-            phase2_steps = phase2_metrics["steps"]
-            assert phase2_steps >= 2, f"Expected >= 2 steps in phase 2, got {phase2_steps}"
+                assert isinstance(phase2_metrics, dict)
+                assert "steps" in phase2_metrics
+                phase2_steps = phase2_metrics["steps"]
+                assert phase2_steps >= 2, f"Expected >= 2 steps in phase 2, got {phase2_steps}"
 
-            logger.info("Resume verified: phase1=%d, phase2=%d", phase1_steps, phase2_steps)
+                logger.info("Resume verified: phase1=%d, phase2=%d", phase1_steps, phase2_steps)
         finally:
             os.unlink(dataset_path)

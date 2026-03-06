@@ -23,7 +23,7 @@ from training.utils.rl.importance_sampling import (
 
 def make_grpo_loss_fn(
     advantages: List[float],
-    ref_logprobs: List[List[float]],
+    ref_logprobs: List[List[float]] | None,
     prompt_len: Union[int, List[int]],
     inf_logprobs: List[List[float]],
     prox_logprobs: List[List[float]],
@@ -61,7 +61,7 @@ def make_grpo_loss_fn(
 
         for i, pi_logprobs in enumerate(logprobs_list):
             adv = advantages[i]
-            ref_lp = ref_logprobs[i]
+            ref_lp = ref_logprobs[i] if ref_logprobs else None
             inf_lp = inf_logprobs[i]
             prox_lp = prox_logprobs[i]
             response_start = max(0, prompt_lens[i] - 1)
@@ -79,10 +79,13 @@ def make_grpo_loss_fn(
             if active_count == 0:
                 continue
 
-            resp_ref = torch.tensor(
-                [ref_lp[response_start + j] if (response_start + j) < len(ref_lp) else 0.0 for j in range(resp_len)],
-                dtype=resp_pi.dtype, device=resp_pi.device,
-            )
+            if ref_lp is not None:
+                resp_ref = torch.tensor(
+                    [ref_lp[response_start + j] if (response_start + j) < len(ref_lp) else 0.0 for j in range(resp_len)],
+                    dtype=resp_pi.dtype, device=resp_pi.device,
+                )
+            else:
+                resp_ref = torch.zeros(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
             pi_detached = resp_pi.detach()
 
             if not inf_lp:

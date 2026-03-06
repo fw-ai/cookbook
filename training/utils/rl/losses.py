@@ -16,9 +16,10 @@ class PromptGroup:
 
     data: List[tinker.Datum]
     advantages: List[float]
-    ref_logprobs: List[List[float]]
     prompt_len: int
     rewards: List[float]
+    ref_logprobs: List[List[float]] | None = None
+    """Reference model logprobs.  ``None`` when no reference model (kl_beta=0)."""
     ref_data: List[tinker.Datum] = field(default_factory=list)
     """Reference-only datums (no routing matrices)."""
     inf_logprobs: List[List[float]] = field(default_factory=list)
@@ -30,23 +31,27 @@ class PromptGroup:
 
 def combine_prompt_groups(
     groups: List[PromptGroup],
-) -> Tuple[List[tinker.Datum], List[float], List[List[float]], List[int], List[List[float]]]:
+) -> Tuple[List[tinker.Datum], List[float], List[List[float]] | None, List[int], List[List[float]]]:
     """Flatten a list of PromptGroups into combined arrays for a fwd_bwd call.
 
     Returns (data, advantages, ref_logprobs, prompt_lens, inf_logprobs).
+    ``ref_logprobs`` is ``None`` when no group has reference logprobs.
     """
     data: List[tinker.Datum] = []
     advantages: List[float] = []
-    ref_logprobs: List[List[float]] = []
     prompt_lens: List[int] = []
     inf_logprobs: List[List[float]] = []
+
+    has_ref = any(pg.ref_logprobs is not None for pg in groups)
+    ref_logprobs: List[List[float]] | None = [] if has_ref else None
 
     for pg in groups:
         data.extend(pg.data)
         advantages.extend(pg.advantages)
-        ref_logprobs.extend(pg.ref_logprobs)
         prompt_lens.extend([pg.prompt_len] * len(pg.data))
         inf_logprobs.extend(pg.inf_logprobs)
+        if has_ref:
+            ref_logprobs.extend(pg.ref_logprobs or [])
 
     return data, advantages, ref_logprobs, prompt_lens, inf_logprobs
 
@@ -78,7 +83,7 @@ def build_loss_fn(
 
     def build(
         advantages: List[float],
-        ref_logprobs: List[List[float]],
+        ref_logprobs: List[List[float]] | None,
         prompt_lens: List[int],
         inf_logprobs: List[List[float]],
         prox_logprobs: List[List[float]],

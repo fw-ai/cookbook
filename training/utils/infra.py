@@ -27,7 +27,6 @@ def create_trainer_job(
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
-    grad_accum: int = 1,
     display_name: str = "trainer",
     hot_load_deployment_id: str | None = None,
     extra_args: list[str] | None = None,
@@ -48,7 +47,6 @@ def create_trainer_job(
         lora_rank=lora_rank,
         max_context_length=max_seq_len,
         learning_rate=learning_rate,
-        gradient_accumulation_steps=grad_accum,
         node_count=infra.node_count if infra.node_count is not None else 1,
         display_name=display_name,
         hot_load_deployment_id=hot_load_deployment_id,
@@ -62,13 +60,7 @@ def create_trainer_job(
     )
 
     if profile is not None:
-        config.training_shape = profile.training_shape_version
-        # When training_shape is set, the server auto-configures accelerator,
-        # image tag, and node count from the shape. Clear any manually set
-        # values to avoid conflicts.
-        config.accelerator_type = None
-        config.accelerator_count = None
-        config.custom_image_tag = None
+        config.apply_shape(profile)
 
     logger.info(
         "Creating trainer job '%s' (forward_only=%s)...",
@@ -104,7 +96,7 @@ def setup_deployment(
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
         info = deploy_mgr.create_or_get(dep_config)
 
-    if info.state not in ("READY", "UPDATING"):
+    if info.state != "READY":
         info = deploy_mgr.wait_for_ready(
             deploy_cfg.deployment_id,
             timeout_s=deploy_cfg.deployment_timeout_s,

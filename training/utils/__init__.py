@@ -12,7 +12,6 @@ __all__ = [
     "HotloadConfig",
     "InfraConfig",
     "ReconnectableClient",
-    "ResumeConfig",
     "RewardFn",
     "StepCallback",
     "WandBConfig",
@@ -30,7 +29,6 @@ __all__ = [
     "make_batch_sft_loss_fn",
     "make_sft_loss_fn",
     "setup_deployment",
-    "setup_resume",
     "setup_training_client",
     "setup_wandb",
     "flush_timing",
@@ -64,7 +62,6 @@ from training.utils.config import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     StepCallback,
     HotloadConfig,
 )
@@ -74,7 +71,6 @@ from training.utils.losses import (
     make_batch_dpo_loss_fn,
     make_batch_sft_loss_fn,
 )
-from training.utils.resume import setup_resume
 from training.utils.logging import (
     wandb_log,
     setup_wandb,
