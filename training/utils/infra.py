@@ -67,16 +67,7 @@ def create_trainer_job(
     )
 
     if profile is not None:
-        if profile.trainer_image_tag:
-            config.custom_image_tag = profile.trainer_image_tag
-        if profile.node_count:
-            config.node_count = profile.node_count
-        # Do NOT set accelerator_type/count — the server auto-configures
-        # these from the training shape.
-        config.accelerator_type = None
-        config.accelerator_count = None
-        if profile.max_supported_context_length and max_seq_len is None:
-            config.max_context_length = profile.max_supported_context_length
+        config.apply_shape(profile)
 
     logger.info(
         "Creating trainer job '%s' (forward_only=%s)...",
