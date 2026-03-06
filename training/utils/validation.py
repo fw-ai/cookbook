@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 def validate_config(
     base_model: str,
     dataset: str,
-    hotload: HotloadConfig,
-    deploy: DeployConfig,
-    infra: InfraConfig,
+    hotload: HotloadConfig | None = None,
+    deploy: DeployConfig | None = None,
+    infra: InfraConfig | None = None,
     resume: ResumeConfig | None = None,
 ) -> None:
     """Pre-flight validation. Catches misconfiguration before provisioning GPUs."""
@@ -55,7 +55,7 @@ def validate_config(
                 resume.resume_from,
             )
 
-    if infra.node_count < 1:
+    if infra and infra.node_count < 1:
         errors.append(
             format_sdk_error(
                 "Invalid node_count",

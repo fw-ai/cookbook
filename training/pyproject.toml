@@ -15,6 +15,7 @@ dependencies = [
     "datasets",
     "tiktoken",
     "numpy",
+    "python-dotenv",
     "wandb",
 ]
 

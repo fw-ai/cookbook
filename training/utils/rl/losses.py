@@ -26,6 +26,12 @@ class PromptGroup:
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
     """Per-sample flag: True if completion hit max_completion_tokens."""
+    prompt: list[dict] | None = None
+    """Original prompt messages (for trajectory logging)."""
+    completions: list[str] | None = None
+    """Raw completion texts (for trajectory logging)."""
+    row_meta: dict | None = None
+    """Dataset row metadata, e.g. ground_truth (for trajectory logging)."""
 
 
 def combine_prompt_groups(
