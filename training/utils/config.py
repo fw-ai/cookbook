@@ -77,7 +77,7 @@ class DeployConfig:
     ) -> DeploymentConfig:
         """Produce an SDK-level DeploymentConfig from cookbook settings."""
         skip_validation = infra.skip_validations and not self.deployment_shape
-        accel = self.deployment_accelerator_type
+        accel = None if self.deployment_shape else self.deployment_accelerator_type
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type
         kwargs: dict = dict(
@@ -90,9 +90,8 @@ class DeployConfig:
             extra_args=self.deployment_extra_args,
             min_replica_count=1,
             max_replica_count=1,
+            accelerator_type=accel,
         )
-        if accel:
-            kwargs["accelerator_type"] = accel
         import inspect
         if "disable_speculative_decoding" in inspect.signature(DeploymentConfig).parameters:
             kwargs["disable_speculative_decoding"] = self.disable_speculative_decoding

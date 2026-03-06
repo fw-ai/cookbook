@@ -16,6 +16,8 @@ import logging
 
 from fireworks.training.sdk.client import FiretitanServiceClient, FiretitanTrainingClient
 from fireworks.training.sdk.trainer import TrainerJobManager, TrainerServiceEndpoint
+import tinker.lib.api_future_impl as tinker_api_future_impl
+from tinker.types.future_retrieve_request import FutureRetrieveRequest as _FutureRetrieveRequest
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,22 @@ DEFAULT_TIMEOUT_S: int = 600
 
 DCP_TIMEOUT_S: int = 2700
 """Default timeout for save_state / load_state_with_optimizer (45 min)."""
+
+
+def _install_tinker_future_retrieve_compat() -> None:
+    current = getattr(tinker_api_future_impl, "FutureRetrieveRequest", None)
+    if current is None or getattr(current, "_fw_cookbook_compat", False):
+        return
+
+    def _compat_future_retrieve_request(*args, **kwargs):
+        kwargs.pop("allow_metadata_only", None)
+        return _FutureRetrieveRequest(*args, **kwargs)
+
+    _compat_future_retrieve_request._fw_cookbook_compat = True
+    tinker_api_future_impl.FutureRetrieveRequest = _compat_future_retrieve_request
+
+
+_install_tinker_future_retrieve_compat()
 
 
 class ReconnectableClient:

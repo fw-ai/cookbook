@@ -6,6 +6,7 @@ Demonstrates reinforcement learning with multi-turn tool-calling:
   - cookbook handles the training plane (GRPO loss, weight sync, reference model)
 
 Usage:
+    pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol
     export FIREWORKS_API_KEY=...
     export FIREWORKS_ACCOUNT_ID=...
     python train_frozen_lake.py --training-shape <shape_id>
@@ -64,6 +65,7 @@ from training.utils import (
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import MinibatchTrainFns, run_rl_loop
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
+from training.utils.rl.importance_sampling import ISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
@@ -392,6 +394,63 @@ def main():
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
+    def _cleanup_job(job_id: str | None, label: str) -> None:
+        if not job_id:
+            return
+        try:
+            logger.info("Cleanup: deleting %s trainer job %s", label, job_id)
+            rlor_mgr.delete(job_id)
+        except Exception as e:
+            logger.warning("Cleanup: failed to delete %s job %s: %s", label, job_id, e)
+            return
+
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            try:
+                job = rlor_mgr.get(job_id)
+            except Exception as e:
+                logger.warning("Cleanup: failed to fetch %s job %s: %s", label, job_id, e)
+                return
+            if not job:
+                logger.info("Cleanup: %s trainer job %s deleted", label, job_id)
+                return
+            state = job.get("state", "")
+            if state == "JOB_STATE_DELETE_FAILED":
+                logger.warning("Cleanup: %s trainer job %s delete failed", label, job_id)
+                return
+            logger.info("Cleanup: waiting for %s trainer job %s deletion (state=%s)", label, job_id, state)
+            time.sleep(5)
+
+        logger.warning("Cleanup: timed out waiting for %s trainer job %s deletion", label, job_id)
+
+    def _cleanup_deployment(deployment_id: str | None) -> None:
+        if not deployment_id:
+            return
+        try:
+            logger.info("Cleanup: deleting deployment %s", deployment_id)
+            deploy_mgr.delete(deployment_id)
+        except Exception as e:
+            logger.warning("Cleanup: failed to delete deployment %s: %s", deployment_id, e)
+            return
+
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            try:
+                info = deploy_mgr.get(deployment_id)
+            except Exception as e:
+                logger.warning("Cleanup: failed to fetch deployment %s: %s", deployment_id, e)
+                return
+            if info is None:
+                logger.info("Cleanup: deployment %s deleted", deployment_id)
+                return
+            if info.state == "DELETE_FAILED":
+                logger.warning("Cleanup: deployment %s delete failed", deployment_id)
+                return
+            logger.info("Cleanup: waiting for deployment %s deletion (state=%s)", deployment_id, info.state)
+            time.sleep(5)
+
+        logger.warning("Cleanup: timed out waiting for deployment %s deletion", deployment_id)
+
     try:
         dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
 
@@ -511,7 +570,7 @@ def main():
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
-            tis_enabled=cfg.tis_enabled,
+            is_config=ISConfig(),
         )
 
         # -- Trajectory logging -----------------------------------------------
@@ -625,8 +684,10 @@ def main():
 
         def fwd_bwd_one(sub: list[PromptGroup]):
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
+            prox_fwd = policy.forward(data, "cross_entropy")
+            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
             return policy.forward_backward_custom(
-                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp)
+                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
             )
 
         def finish_step(
@@ -736,18 +797,9 @@ def main():
             trajectory_log.close()
         wandb_finish()
         for job_id, label in [(policy_job_id, "policy"), (reference_job_id, "reference")]:
-            if job_id:
-                try:
-                    logger.info("Cleanup: deleting %s trainer job %s", label, job_id)
-                    rlor_mgr.delete(job_id)
-                except Exception as e:
-                    logger.warning("Cleanup: failed to delete %s job %s: %s", label, job_id, e)
+            _cleanup_job(job_id, label)
         if deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
-            try:
-                logger.info("Cleanup: deleting deployment %s", deploy_cfg.deployment_id)
-                deploy_mgr.delete(deploy_cfg.deployment_id)
-            except Exception as e:
-                logger.warning("Cleanup: failed to delete deployment %s: %s", deploy_cfg.deployment_id, e)
+            _cleanup_deployment(deploy_cfg.deployment_id)
         elif deploy_cfg.deployment_id:
             logger.info("Keeping deployment %s (KEEP_DEPLOYMENT=1)", deploy_cfg.deployment_id)
 
