@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import signal
 import asyncio
 import logging
 from typing import Any, TypeVar, Awaitable, Iterable
@@ -386,6 +387,14 @@ def main(
 ):
     cfg = config
 
+    def _signal_handler(signum, frame):
+        name = signal.Signals(signum).name
+        logger.warning("Received %s — raising SystemExit for cleanup", name)
+        raise SystemExit(f"Terminated by {name}")
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
     validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
     if not cfg.tokenizer_model:
         raise ValueError(
@@ -426,94 +435,114 @@ def main(
     if "--no-compile" not in ref_extra:
         ref_extra.append("--no-compile")
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        pol_fut = pool.submit(
-            create_trainer_job,
-            rlor_mgr,
+    policy_job_id: str | None = None
+    reference_job_id: str | None = None
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pol_fut = pool.submit(
+                create_trainer_job,
+                rlor_mgr,
+                base_model=cfg.base_model,
+                infra=cfg.infra,
+                lora_rank=cfg.lora_rank,
+                max_seq_len=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate,
+                display_name="dpo-policy",
+                hot_load_deployment_id=cfg.deployment.deployment_id,
+            )
+            ref_fut = pool.submit(
+                create_trainer_job,
+                rlor_mgr,
+                base_model=cfg.base_model,
+                infra=cfg.infra,
+                lora_rank=cfg.lora_rank,
+                max_seq_len=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate,
+                display_name="dpo-reference",
+                extra_args=ref_extra,
+            )
+            policy_ep = pol_fut.result()
+            reference_ep = ref_fut.result()
+
+        policy_job_id = policy_ep.job_id
+        reference_job_id = reference_ep.job_id
+
+        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
+        reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+
+        weight_syncer = WeightSyncer(
+            policy_client=policy.inner,
+            deploy_mgr=deploy_mgr,
+            deployment_id=cfg.deployment.deployment_id,
             base_model=cfg.base_model,
-            infra=cfg.infra,
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            display_name="dpo-policy",
-            hot_load_deployment_id=cfg.deployment.deployment_id,
+            hotload_timeout=cfg.hotload.hot_load_timeout,
+            first_checkpoint_type=cfg.hotload.first_checkpoint_type,
+            compression_format=DEFAULT_DELTA_COMPRESSION,
         )
-        ref_fut = pool.submit(
-            create_trainer_job,
-            rlor_mgr,
-            base_model=cfg.base_model,
-            infra=cfg.infra,
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            display_name="dpo-reference",
-            extra_args=ref_extra,
+
+        step_offset, _ = setup_resume(policy, cfg.resume)
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+
+        # -- Cache reference logprobs concurrently ------------------------------
+
+        import transformers
+
+        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
+
+        raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)
+        if not raw_data:
+            raise RuntimeError(f"No data loaded from {cfg.dataset}")
+
+        logger.info("Computing reference logprobs for %d pairs...", len(raw_data))
+        ref_cache, filtered_count = asyncio.run(
+            _cache_ref_logprobs(
+                raw_data, reference, tokenizer, cfg.max_seq_len,
+                concurrency=cfg.ref_cache_concurrency,
+                batch_size=cfg.ref_cache_batch_size,
+            )
         )
-        policy_ep = pol_fut.result()
-        reference_ep = ref_fut.result()
 
-    policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
-    reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+        valid_indices = list(ref_cache.keys())
+        if filtered_count > 0:
+            logger.info(
+                "Seq-length filter: %d/%d pairs filtered (chosen or rejected > %d tokens)",
+                filtered_count, len(raw_data), cfg.max_seq_len,
+            )
+        logger.info("Prepared %d preference pairs", len(valid_indices))
+        if not valid_indices:
+            raise RuntimeError("No valid pairs after tokenization")
 
-    weight_syncer = WeightSyncer(
-        policy_client=policy.inner,
-        deploy_mgr=deploy_mgr,
-        deployment_id=cfg.deployment.deployment_id,
-        base_model=cfg.base_model,
-        hotload_timeout=cfg.hotload.hot_load_timeout,
-        first_checkpoint_type=cfg.hotload.first_checkpoint_type,
-        compression_format=DEFAULT_DELTA_COMPRESSION,
-    )
+        # -- Training loop (pipelined) -----------------------------------------
 
-    step_offset, _ = setup_resume(policy, cfg.resume)
-    adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-
-    # -- Cache reference logprobs concurrently ------------------------------
-
-    import transformers
-
-    tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
-
-    raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)
-    if not raw_data:
-        raise RuntimeError(f"No data loaded from {cfg.dataset}")
-
-    logger.info("Computing reference logprobs for %d pairs...", len(raw_data))
-    ref_cache, filtered_count = asyncio.run(
-        _cache_ref_logprobs(
-            raw_data, reference, tokenizer, cfg.max_seq_len,
-            concurrency=cfg.ref_cache_concurrency,
-            batch_size=cfg.ref_cache_batch_size,
+        step = asyncio.run(
+            _train_loop(
+                ref_cache, valid_indices, policy, adam_params, weight_syncer, cfg, step_offset,
+            )
         )
-    )
 
-    valid_indices = list(ref_cache.keys())
-    if filtered_count > 0:
-        logger.info(
-            "Seq-length filter: %d/%d pairs filtered (chosen or rejected > %d tokens)",
-            filtered_count, len(raw_data), cfg.max_seq_len,
-        )
-    logger.info("Prepared %d preference pairs", len(valid_indices))
-    if not valid_indices:
-        raise RuntimeError("No valid pairs after tokenization")
+        # -- Final checkpoint --------------------------------------------------
 
-    # -- Training loop (pipelined) -----------------------------------------
+        hl = cfg.hotload
+        if step > step_offset and (hl.hot_load_interval > 0 or hl.dcp_save_interval > 0):
+            weight_syncer.save_and_hotload(f"final-step-{step}")
 
-    step = asyncio.run(
-        _train_loop(
-            ref_cache, valid_indices, policy, adam_params, weight_syncer, cfg, step_offset,
-        )
-    )
-
-    # -- Final checkpoint --------------------------------------------------
-
-    hl = cfg.hotload
-    if step > step_offset and (hl.hot_load_interval > 0 or hl.dcp_save_interval > 0):
-        weight_syncer.save_and_hotload(f"final-step-{step}")
-
-    logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
-    wandb_finish()
-    return {"steps": step, "policy_job_id": policy.job_id, "reference_job_id": reference.job_id}
+        logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
+        return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
+    finally:
+        wandb_finish()
+        if policy_job_id:
+            try:
+                logger.info("Cleanup: deleting policy trainer job %s", policy_job_id)
+                rlor_mgr.delete(policy_job_id)
+            except Exception as e:
+                logger.warning("Cleanup: failed to delete policy job %s: %s", policy_job_id, e)
+        if reference_job_id:
+            try:
+                logger.info("Cleanup: deleting reference trainer job %s", reference_job_id)
+                rlor_mgr.delete(reference_job_id)
+            except Exception as e:
+                logger.warning("Cleanup: failed to delete reference job %s: %s", reference_job_id, e)
 
 
 if __name__ == "__main__":

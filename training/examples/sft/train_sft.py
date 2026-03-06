@@ -14,8 +14,8 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 import training.recipes.sft_loop as sft_loop
-from fireworks.training.sdk import TrainerJobManager, DeploymentManager
-from training.utils import InfraConfig, WandBConfig, HotloadConfig
+from fireworks.training.sdk import TrainerJobManager
+from training.utils import InfraConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,12 +70,6 @@ def main():
         account_id=FIREWORKS_ACCOUNT_ID,
         base_url=FIREWORKS_BASE_URL,
     )
-    deploy_mgr = DeploymentManager(
-        api_key=FIREWORKS_API_KEY,
-        account_id=FIREWORKS_ACCOUNT_ID,
-        base_url=FIREWORKS_BASE_URL,
-        hotload_api_url=FIREWORKS_BASE_URL,
-    )
 
     config = sft_loop.Config(
         base_model=args.base_model,
@@ -92,17 +86,13 @@ def main():
             region=args.region,
             skip_validations=True,
         ),
-        hotload=HotloadConfig(
-            hot_load_interval=0,
-            dcp_save_interval=0,
-        ),
         wandb=WandBConfig(
             project="sft-tinker",
-            run_name=f"sft-deepmath-{args.base_model.rsplit('/', 1)[-1]}",
+            run_name=f"sft-{args.base_model.rsplit('/', 1)[-1]}",
         ),
     )
 
-    metrics = sft_loop.main(config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+    metrics = sft_loop.main(config, rlor_mgr=rlor_mgr)
     logger.info("SFT complete. Final metrics: %s", metrics)
 
 
