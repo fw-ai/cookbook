@@ -314,8 +314,8 @@ if __name__ == "__main__":
         max_seq_len=131072,
         max_examples=500,
         infra=InfraConfig(
-            training_shape_id="qwen3-235b-2507-instruct-128k-h200",
-            # custom_image_tag="4.24.60",
+            training_shape_id="accounts/fireworks/trainingShapes/ts-qwen3-30b-a3b-128k",
+            # custom_image_tag="0.33.0",
         ),
     )
     main(cfg)
