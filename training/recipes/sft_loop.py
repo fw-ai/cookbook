@@ -313,7 +313,7 @@ if __name__ == "__main__":
         max_seq_len=131072,
         max_examples=500,
         infra=InfraConfig(
-            training_shape_id="ts-qwen3-30b-a3b-policy",
+            training_shape_id="ts-qwen3-30b-a3b-instruct-128k-rft-dev-cp8-v1",
         ),
     )
     main(cfg)
