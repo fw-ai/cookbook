@@ -31,3 +31,6 @@ include = ["training*"]
 
 [tool.pytest.ini_options]
 testpaths = ["training/tests"]
+markers = [
+    "e2e: end-to-end tests requiring live infrastructure",
+]
