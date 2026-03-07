@@ -16,9 +16,10 @@ Optional env vars (CI script sets these):
   FIREWORKS_BASE_URL           (default: https://dev.api.fireworks.ai)
   FROZEN_LAKE_POLICY_JOB_ID    (pre-created policy trainer job)
   FROZEN_LAKE_REFERENCE_JOB_ID (pre-created reference trainer job)
+  FROZEN_LAKE_DEPLOYMENT_ID    (pre-created deployment)
   FROZEN_LAKE_TRAINING_SHAPE   (default: qwen3-4b-b300)
   FROZEN_LAKE_REGION           (default: EU_NETHERLANDS_1)
-  FROZEN_LAKE_LORA_RANK        (default: 8, must match training shape)
+  FROZEN_LAKE_LORA_RANK        (default: 0, must match training shape)
 """
 
 from __future__ import annotations
@@ -82,7 +83,7 @@ def _preflight_deployment_check(
 @pytest.mark.e2e
 @pytest.mark.timeout(3600)
 class TestFrozenLakeB300:
-    """FrozenLake GRPO smoke test on Qwen3-4B with B300 GPUs."""
+    """FrozenLake GRPO smoke test on Qwen3-4B with B300 GPUs in EU_NETHERLANDS_1."""
 
     def test_frozen_lake_rewards_improve(self):
         api_key = _env("FIREWORKS_API_KEY")
@@ -95,7 +96,7 @@ class TestFrozenLakeB300:
 
         deployment_id = _env("FROZEN_LAKE_DEPLOYMENT_ID")
         if not deployment_id:
-            pytest.skip("FROZEN_LAKE_DEPLOYMENT_ID not set")
+            pytest.skip("FROZEN_LAKE_DEPLOYMENT_ID not set — need pre-created deployment")
 
         region = _env("FROZEN_LAKE_REGION", "EU_NETHERLANDS_1")
         training_shape = _env("FROZEN_LAKE_TRAINING_SHAPE", "qwen3-4b-b300")
@@ -147,42 +148,35 @@ class TestFrozenLakeB300:
         )
         logger.info("Smoke test result: %s", summary)
 
-        # At least 3 completed optimizer steps (conservative with filtering)
-        assert steps >= 3, (
-            f"Expected >= 3 optimizer steps, got {steps}. "
+        # At least 5 completed optimizer steps (branch primary intent)
+        assert steps >= 5, (
+            f"Expected >= 5 optimizer steps, got {steps}. "
             f"High filtering rate may indicate a rollout or env problem. {summary}"
         )
-        assert len(rewards) >= 3, (
-            f"Expected >= 3 reward entries, got {len(rewards)}. {summary}"
+        assert len(rewards) >= 5, (
+            f"Expected >= 5 reward entries, got {len(rewards)}. {summary}"
         )
 
         avg_reward = sum(rewards) / len(rewards)
         max_reward = max(rewards)
 
         logger.info(
-            "Rewards: avg=%.3f, max=%.3f, steps=%d, elapsed=%.0fs",
-            avg_reward, max_reward, steps, elapsed,
+            "Rewards: avg=%.3f, max=%.3f, steps=%d, elapsed=%.0fs, all=%s",
+            avg_reward, max_reward, steps, elapsed, [f"{r:.3f}" for r in rewards],
         )
 
-        # Random baseline for 4x4 FrozenLake is ~0.05 (very low due to holes).
-        # A functioning RL pipeline should average well above that.
-        # Threshold set to 0.15 to be robust against variance while still
-        # detecting broken pipelines (broken hotload, broken loss, etc.).
-        assert avg_reward >= 0.15, (
-            f"Average reward ({avg_reward:.3f}) should be >= 0.15 "
-            f"(random baseline ~0.05). This may indicate broken training "
-            f"(hotload, loss computation, or rollout). {summary}"
+        # Random baseline for 4x4 FrozenLake is ~0.15.
+        # A learning model should average well above that (branch primary intent).
+        assert avg_reward >= 0.3, (
+            f"Average reward ({avg_reward:.3f}) should be >= 0.30 "
+            f"(random baseline ~0.15). {summary}"
         )
-
-        # At least one step should show meaningful success
-        assert max_reward >= 0.25, (
-            f"Max reward ({max_reward:.3f}) should reach >= 0.25 "
+        assert max_reward >= 0.5, (
+            f"Max reward ({max_reward:.3f}) should reach >= 0.50 "
             f"at least once. {summary}"
         )
 
-        # Sanity: pipeline didn't take absurdly long.
-        # With 16 completions/prompt + full-param hotloads (~36s each),
-        # 12 steps take ~55min. Budget 70min.
+        # Sanity: pipeline didn't take absurdly long (upstream addition).
         assert elapsed < 4200, (
             f"Pipeline took {elapsed:.0f}s (>70min), expected <70min. "
             f"May indicate infrastructure issues. {summary}"

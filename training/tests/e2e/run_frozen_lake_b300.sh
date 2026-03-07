@@ -19,6 +19,10 @@
 # Usage:
 #   export FIREWORKS_API_KEY=fw_...
 #   bash training/tests/e2e/run_frozen_lake_b300.sh
+#
+# The script creates/reuses a deployment with hotloading, creates policy and
+# reference trainer jobs via firectl-admin, runs the pytest E2E test, and
+# cleans up trainer jobs (deployment is kept for reuse).
 
 set -euo pipefail
 
@@ -201,6 +205,13 @@ export KEEP_DEPLOYMENT=1
 
 cd "$REPO_ROOT"
 python -m pytest training/tests/e2e/test_frozen_lake_b300_e2e.py \
-    -v -s --log-cli-level=INFO --timeout=3600 -x
+    -v -s \
+    --log-cli-level=INFO \
+    --timeout=3600 \
+    -x
 
-log "Smoke test PASSED ($(elapsed)s total)"
+TEST_EXIT=$?
+if [[ $TEST_EXIT -eq 0 ]]; then
+    log "Smoke test PASSED ($(elapsed)s total)"
+fi
+exit $TEST_EXIT
