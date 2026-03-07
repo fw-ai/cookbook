@@ -507,7 +507,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 pool.submit(_make_job, "reference", cfg.reference_job_id, forward_only=True)
                 if use_reference else None
             )
-
             policy_ep, policy_job_id, precreated_policy = pol_fut.result()
             if ref_fut:
                 reference_ep, reference_job_id, precreated_reference = ref_fut.result()
