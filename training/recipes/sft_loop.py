@@ -68,8 +68,21 @@ class Config:
     max_seq_len: int | None = None
     max_examples: int | None = None
     lora_rank: int = 0
+    output_model: str | None = None
+    """Model name for the promoted checkpoint (e.g. ``my-sft-model``).
+    When set, the final inference checkpoint is promoted to a model under
+    the current account so it can be used for inference."""
 
-    dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+    dcp_save_interval: int = 0
+    """Save DCP checkpoint every N steps (0 = off, unless auto-derived from checkpoint_pct)."""
+    infer_save_interval: int = 0
+    """Save inference checkpoint every N steps (0 = off, unless auto-derived from checkpoint_pct)."""
+    checkpoint_pct: int = 0
+    """Auto-checkpoint every N% of total steps. Set to 0 to disable.
+    Only takes effect when both dcp_save_interval and infer_save_interval are 0."""
+    auto_checkpoint_min_steps: int = 10
+    """Minimum total optimizer steps required to enable percentage-based
+    auto-checkpointing. Prevents excessive saves on tiny runs."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
@@ -197,11 +210,32 @@ def main(
         step_offset, _ = setup_resume(client, cfg.resume)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
-        # -- Training loop (batched) -------------------------------------------
+        # -- Compute checkpoint intervals ----------------------------------
 
         batch_size = cfg.batch_size
         step = step_offset
         total_steps = len(training_data) * cfg.epochs // (cfg.grad_accum * batch_size)
+
+        dcp_interval = cfg.dcp_save_interval
+        infer_interval = cfg.infer_save_interval
+
+        if dcp_interval == 0 and infer_interval == 0 and cfg.checkpoint_pct > 0:
+            if total_steps >= cfg.auto_checkpoint_min_steps:
+                auto_interval = max(1, total_steps * cfg.checkpoint_pct // 100)
+                dcp_interval = auto_interval
+                infer_interval = auto_interval
+                logger.info(
+                    "Auto-checkpoint enabled: every %d steps (%d%% of %d total steps)",
+                    auto_interval, cfg.checkpoint_pct, total_steps,
+                )
+            else:
+                logger.info(
+                    "Auto-checkpoint skipped: total_steps=%d < min=%d",
+                    total_steps, cfg.auto_checkpoint_min_steps,
+                )
+
+        # -- Training loop (batched) ---------------------------------------
+
         accum = 0
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
@@ -236,10 +270,17 @@ def main(
                 step += 1
                 accum = 0
 
-                if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
+                if dcp_interval > 0 and step % dcp_interval == 0:
                     with timer("dcp_save"):
                         logger.info("Saving DCP checkpoint at step %d", step)
                         client.inner.save_state(f"step-{step}")
+
+                if infer_interval > 0 and step % infer_interval == 0:
+                    with timer("infer_save"):
+                        logger.info("Saving inference checkpoint at step %d", step)
+                        client.inner.save_weights_for_sampler_ext(
+                            f"step-{step}", checkpoint_type="base"
+                        )
 
                 step_metrics: Dict[str, Any] = flush_timing()
 
@@ -285,20 +326,51 @@ def main(
             client.optim_step(adam_params)
             step += 1
 
-        # -- Final checkpoint --------------------------------------------------
+        # -- Final checkpoint ----------------------------------------------
 
+        final_snapshot = None
         if step > step_offset:
-            logger.info("Saving final DCP checkpoint (step %d)...", step)
-            client.inner.save_state(f"final-step-{step}")
+            if dcp_interval > 0:
+                logger.info("Saving final DCP checkpoint (step %d)...", step)
+                client.inner.save_state(f"final-step-{step}")
 
-            logger.info("Saving final base checkpoint (step %d)...", step)
-            result = client.inner.save_weights_for_sampler_ext(
-                f"final-step-{step}", checkpoint_type="base"
-            )
-            logger.info("Final base checkpoint saved: %s", result.path)
+            logger.info("Saving final inference checkpoint (step %d)...", step)
+            with timer("final_infer_save"):
+                result = client.inner.save_weights_for_sampler_ext(
+                    f"final-step-{step}", checkpoint_type="base"
+                )
+                final_snapshot = result.path
+            logger.info("Final inference checkpoint saved: %s", final_snapshot)
+
+        # -- Promote to model ----------------------------------------------
+
+        promoted_model = None
+        if cfg.output_model and final_snapshot:
+            try:
+                checkpoints = rlor_mgr.list_checkpoints(job_id)
+                if checkpoints:
+                    last_ckpt = checkpoints[-1]
+                    ckpt_name = last_ckpt.get("name", "")
+                    logger.info("Promoting checkpoint %s -> %s", ckpt_name, cfg.output_model)
+                    promo_result = rlor_mgr.promote_checkpoint(
+                        job_id=job_id,
+                        checkpoint_name=ckpt_name,
+                        output_model=cfg.output_model,
+                    )
+                    promoted_model = promo_result.get("model", {}).get("name")
+                    logger.info("Model promoted: %s", promoted_model)
+                else:
+                    logger.warning("No checkpoints found for job %s, skipping promotion", job_id)
+            except Exception as e:
+                logger.error("Failed to promote checkpoint: %s", e)
 
         logger.info("Training complete: %d optimizer steps", step)
-        return {"steps": step, "job_id": job_id}
+        return {
+            "steps": step,
+            "job_id": job_id,
+            "final_snapshot": final_snapshot,
+            "promoted_model": promoted_model,
+        }
     finally:
         wandb_finish()
         try:
@@ -315,6 +387,7 @@ if __name__ == "__main__":
         tokenizer_model="Qwen/Qwen3-8B",
         max_seq_len=4096,
         max_examples=10,
+        output_model="my-sft-model",
         infra=InfraConfig(
             training_shape_id="your-training-shape",
         ),

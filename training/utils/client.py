@@ -13,6 +13,7 @@ cleanly and resume from the last DCP checkpoint.
 from __future__ import annotations
 
 import logging
+import time
 
 from fireworks.training.sdk.client import FiretitanServiceClient, FiretitanTrainingClient
 from fireworks.training.sdk.trainer import TrainerJobManager, TrainerServiceEndpoint
@@ -86,25 +87,41 @@ class ReconnectableClient:
         return self._job_id
 
     def forward(self, data, loss_fn):
-        return self._client.forward(data, loss_fn).result(
+        t0 = time.monotonic()
+        result = self._client.forward(data, loss_fn).result(
             timeout=self._default_timeout,
         )
+        logger.debug("[client_timing] forward: %.2fs", time.monotonic() - t0)
+        return result
 
     def forward_backward_custom(self, data, loss_fn):
-        return self._client.forward_backward_custom(data, loss_fn).result(
+        t0 = time.monotonic()
+        result = self._client.forward_backward_custom(data, loss_fn).result(
             timeout=self._default_timeout,
         )
+        elapsed = time.monotonic() - t0
+        logger.info("[client_timing] fwd_bwd: %.2fs", elapsed)
+        return result
 
     def optim_step(self, params):
-        return self._client.optim_step(params).result(
+        t0 = time.monotonic()
+        result = self._client.optim_step(params).result(
             timeout=self._default_timeout,
         )
+        logger.info("[client_timing] optim_step: %.2fs", time.monotonic() - t0)
+        return result
 
     def save_state(self, name: str, timeout: int = DCP_TIMEOUT_S):
-        return self._client.save_state(name).result(timeout=timeout)
+        t0 = time.monotonic()
+        result = self._client.save_state(name).result(timeout=timeout)
+        logger.info("[client_timing] save_state(%s): %.2fs", name, time.monotonic() - t0)
+        return result
 
     def load_state_with_optimizer(self, path: str, timeout: int = DCP_TIMEOUT_S):
-        return self._client.load_state_with_optimizer(path).result(timeout=timeout)
+        t0 = time.monotonic()
+        result = self._client.load_state_with_optimizer(path).result(timeout=timeout)
+        logger.info("[client_timing] load_state(%s): %.2fs", path, time.monotonic() - t0)
+        return result
 
     def resolve_checkpoint_path(self, name: str, source_job_id: str | None = None) -> str:
         return self.inner.resolve_checkpoint_path(name, source_job_id=source_job_id)
