@@ -308,7 +308,7 @@ def main(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = Config(
-        base_model="accounts/fireworks/models/qwen3-30b-a3b-thinking-2507",
+        base_model="accounts/fireworks/models/qwen3-30b-a3b",
         dataset="open-researcher-sft-500.jsonl",
         tokenizer_model="Qwen/Qwen3-30B-A3B-Thinking-2507",
         max_seq_len=131072,
