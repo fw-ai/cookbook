@@ -7,13 +7,14 @@ Required env vars:
   FIREWORKS_API_KEY
   FIREWORKS_ACCOUNT_ID
 
-Optional env vars:
+Optional env vars (CI script sets these):
   FIREWORKS_BASE_URL           (default: https://dev.api.fireworks.ai)
   FROZEN_LAKE_POLICY_JOB_ID    (pre-created policy trainer job)
   FROZEN_LAKE_REFERENCE_JOB_ID (pre-created reference trainer job)
-  FROZEN_LAKE_DEPLOYMENT_ID    (pre-created deployment)
+  FROZEN_LAKE_DEPLOYMENT_ID    (pre-created deployment, required)
   FROZEN_LAKE_TRAINING_SHAPE   (default: qwen3-4b-b300)
   FROZEN_LAKE_REGION           (default: EU_NETHERLANDS_1)
+  FROZEN_LAKE_LORA_RANK        (default: 8, must match training shape)
 """
 
 from __future__ import annotations
@@ -51,10 +52,11 @@ class TestFrozenLakeB300:
 
         deployment_id = _env("FROZEN_LAKE_DEPLOYMENT_ID")
         if not deployment_id:
-            pytest.skip("FROZEN_LAKE_DEPLOYMENT_ID not set — need pre-created deployment")
+            pytest.skip("FROZEN_LAKE_DEPLOYMENT_ID not set")
 
         region = _env("FROZEN_LAKE_REGION", "EU_NETHERLANDS_1")
         training_shape = _env("FROZEN_LAKE_TRAINING_SHAPE", "qwen3-4b-b300")
+        lora_rank = int(_env("FROZEN_LAKE_LORA_RANK", "8"))
 
         cfg = FrozenLakeConfig(
             base_model="accounts/fireworks/models/qwen3-4b",
@@ -63,7 +65,7 @@ class TestFrozenLakeB300:
             deployment_id=deployment_id,
             region=region,
             deployment_region=region,
-            lora_rank=8,
+            lora_rank=lora_rank,
             epochs=3,
             max_seeds=20,
             max_steps=12,
@@ -93,8 +95,6 @@ class TestFrozenLakeB300:
             avg_reward, max_reward, [f"{r:.3f}" for r in rewards],
         )
 
-        # Random baseline for 4x4 FrozenLake is ~0.15.
-        # A learning model should average well above that.
         assert avg_reward >= 0.3, (
             f"Average reward ({avg_reward:.3f}) should be >= 0.30 "
             f"(random baseline ~0.15). Full history: {rewards}"

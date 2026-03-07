@@ -471,77 +471,39 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     try:
         dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
 
-        precreated_policy = cfg.policy_job_id is not None
-        precreated_reference = cfg.reference_job_id is not None
+        # -- Create or reuse trainer jobs ------------------------------------
+        # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
+        # firectl-admin for regions the main gateway doesn't support yet).
 
-        if precreated_policy:
-            policy_job_id = cfg.policy_job_id
-            policy_ep = create_trainer_job(
-                rlor_mgr, base_model=cfg.base_model, infra=infra,
-                job_id=cfg.policy_job_id,
-            )
-        if precreated_reference:
-            reference_job_id = cfg.reference_job_id
-            reference_ep = create_trainer_job(
-                rlor_mgr, base_model=cfg.base_model, infra=infra,
-                job_id=cfg.reference_job_id,
-            )
-
-        if not precreated_policy:
-            if use_reference and not precreated_reference:
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    pol_fut = pool.submit(
-                        create_trainer_job, rlor_mgr,
-                        base_model=cfg.base_model, infra=infra, profile=profile,
-                        lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                        learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                        display_name="frozen-lake-policy",
-                        hot_load_deployment_id=deploy_cfg.deployment_id,
-                    )
-                    ref_fut = pool.submit(
-                        create_trainer_job, rlor_mgr,
-                        base_model=cfg.base_model, infra=infra, profile=profile,
-                        lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                        learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                        display_name="frozen-lake-reference", forward_only=True,
-                    )
-                    errors = []
-                    for fut, label in [(pol_fut, "policy"), (ref_fut, "reference")]:
-                        try:
-                            ep = fut.result()
-                            if label == "policy":
-                                policy_ep = ep
-                                policy_job_id = ep.job_id
-                            else:
-                                reference_ep = ep
-                                reference_job_id = ep.job_id
-                        except Exception as e:
-                            logger.error("Failed to create %s trainer job: %s", label, e)
-                            errors.append(e)
-                    if errors:
-                        raise errors[0]
-            else:
-                policy_ep = create_trainer_job(
-                    rlor_mgr,
-                    base_model=cfg.base_model, infra=infra, profile=profile,
-                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                    display_name="frozen-lake-policy",
-                    hot_load_deployment_id=deploy_cfg.deployment_id,
+        def _make_job(label: str, precreated_id: str | None, **extra_kw):
+            if precreated_id:
+                ep = create_trainer_job(
+                    rlor_mgr, base_model=cfg.base_model, infra=infra,
+                    job_id=precreated_id,
                 )
-                policy_job_id = policy_ep.job_id
-                if use_reference and not precreated_reference:
-                    reference_ep = create_trainer_job(
-                        rlor_mgr,
-                        base_model=cfg.base_model, infra=infra, profile=profile,
-                        lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                        learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                        display_name="frozen-lake-reference", forward_only=True,
-                    )
-                    reference_job_id = reference_ep.job_id
+                return ep, precreated_id, True
+            ep = create_trainer_job(
+                rlor_mgr, base_model=cfg.base_model, infra=infra, profile=profile,
+                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                display_name=f"frozen-lake-{label}",
+                hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,
+                **extra_kw,
+            )
+            return ep, ep.job_id, False
 
-        if not use_reference:
-            reference_ep = None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id)
+            ref_fut = (
+                pool.submit(_make_job, "reference", cfg.reference_job_id, forward_only=True)
+                if use_reference else None
+            )
+
+            policy_ep, policy_job_id, precreated_policy = pol_fut.result()
+            if ref_fut:
+                reference_ep, reference_job_id, precreated_reference = ref_fut.result()
+            else:
+                reference_ep, precreated_reference = None, False
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
         reference = (
