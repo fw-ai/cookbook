@@ -315,6 +315,7 @@ if __name__ == "__main__":
         max_examples=500,
         infra=InfraConfig(
             training_shape_id="ts-qwen3-30b-a3b-instruct-128k-rft-dev-cp8-v1",
+            custom_image_tag="4.24.60",
         ),
     )
     main(cfg)
