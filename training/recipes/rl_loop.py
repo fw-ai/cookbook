@@ -114,6 +114,18 @@ class Config:
     """Directory to save per-step trajectory JSONL files.  Each file contains
     prompts, completions, and rewards for every prompt group in that step."""
 
+    policy_job_id: str | None = None
+    """Pre-created RLOR policy trainer job ID (skip creation if set)."""
+
+    policy_base_url: str | None = None
+    """Base URL for the policy trainer (bypass direct route)."""
+
+    reference_job_id: str | None = None
+    """Pre-created RLOR reference trainer job ID (skip creation if set)."""
+
+    reference_base_url: str | None = None
+    """Base URL for the reference trainer (bypass direct route)."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=HotloadConfig)
@@ -298,6 +310,8 @@ def main(
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-policy",
                     hot_load_deployment_id=cfg.deployment.deployment_id,
+                    job_id=cfg.policy_job_id,
+                    base_url_override=cfg.policy_base_url,
                 )
                 ref_fut = pool.submit(
                     create_trainer_job, rlor_mgr,
@@ -305,6 +319,8 @@ def main(
                     lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-reference", forward_only=True,
+                    job_id=cfg.reference_job_id,
+                    base_url_override=cfg.reference_base_url,
                 )
                 policy_ep = pol_fut.result()
                 policy_job_id = policy_ep.job_id
@@ -318,13 +334,21 @@ def main(
                 learning_rate=cfg.learning_rate,
                 display_name="grpo-policy",
                 hot_load_deployment_id=cfg.deployment.deployment_id,
+                job_id=cfg.policy_job_id,
+                base_url_override=cfg.policy_base_url,
             )
             policy_job_id = policy_ep.job_id
             reference_ep = None
 
-        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
+        policy = ReconnectableClient(
+            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
+            endpoint=policy_ep if cfg.policy_base_url else None,
+        )
         reference = (
-            ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+            ReconnectableClient(
+                rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
+                endpoint=reference_ep if cfg.reference_base_url else None,
+            )
             if reference_ep else None
         )
 
@@ -556,7 +580,7 @@ def main(
             wandb_log(metrics, step)
 
             if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
+                _dump_trajectory(cfg.trajectory_dir, step, all_groups)
 
             return step, metrics
 
@@ -602,13 +626,13 @@ def main(
     finally:
         wandb_finish()
         if cleanup_on_exit:
-            if policy_job_id:
+            if policy_job_id and not cfg.policy_job_id:
                 try:
                     logger.info("Cleanup: deleting policy trainer job %s", policy_job_id)
                     rlor_mgr.delete(policy_job_id)
                 except Exception as e:
                     logger.warning("Cleanup: failed to delete policy job %s: %s", policy_job_id, e)
-            if reference_job_id:
+            if reference_job_id and not cfg.reference_job_id:
                 try:
                     logger.info("Cleanup: deleting reference trainer job %s", reference_job_id)
                     rlor_mgr.delete(reference_job_id)

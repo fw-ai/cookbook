@@ -41,13 +41,23 @@ def create_trainer_job(
     extra_args: list[str] | None = None,
     job_id: str | None = None,
     forward_only: bool = False,
+    base_url_override: str | None = None,
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
     When *profile* is provided, shape fields (image tag, node count,
     accelerator type/count, context length) are applied to the config.
+
+    When *base_url_override* is provided alongside *job_id*, skip health
+    polling and return an endpoint pointing at that URL directly.
     """
     if job_id:
+        if base_url_override:
+            job_name = f"accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}"
+            logger.info("Using pre-created job %s at %s", job_id, base_url_override)
+            return TrainerServiceEndpoint(
+                job_name=job_name, job_id=job_id, base_url=base_url_override,
+            )
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
     config = TrainerJobConfig(
