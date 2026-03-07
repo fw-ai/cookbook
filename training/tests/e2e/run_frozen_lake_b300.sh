@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# CI runner for FrozenLake GRPO E2E on B300 GPUs.
+# Firetitan RLOR smoke test — FrozenLake GRPO on B300 GPUs.
 #
-# This script manages the full lifecycle:
-#   1. Checks that the deployment is READY
-#   2. Creates policy + reference trainer jobs via firectl-admin
-#   3. Waits for jobs to become RUNNING
-#   4. Runs the pytest E2E test
-#   5. Cleans up trainer jobs (deployment is kept for reuse)
+# Manages the full lifecycle:
+#   1. Cleans up stale CI jobs from previous runs
+#   2. Verifies the deployment is READY
+#   3. Creates policy + reference trainer jobs
+#   4. Waits for jobs to reach RUNNING
+#   5. Runs the pytest smoke test
+#   6. Cleans up trainer jobs on exit
 #
 # Prerequisites:
-#   FIREWORKS_API_KEY          Valid API key for dev.api.fireworks.ai
+#   FIREWORKS_API_KEY          API key for dev.api.fireworks.ai
 #   FIREWORKS_ACCOUNT_ID       Default: pyroworks-dev
 #   FIRECTL_BIN                Path to firectl-admin binary
-#   FIRECTL_PROFILE            firectl profile for the B300 gateway (default: dev-bennychen)
-#   DEPLOYMENT_ID              Pre-created deployment with hotload (default: rl-qwen3-4b-b300-v8)
+#   FIRECTL_PROFILE            firectl profile for B300 gateway (default: dev-bennychen)
+#   DEPLOYMENT_ID              Pre-created deployment with hotload
 #
 # Usage:
 #   export FIREWORKS_API_KEY=fw_...
@@ -34,24 +35,45 @@ TRAINING_SHAPE="${TRAINING_SHAPE:-qwen3-4b-b300}"
 DEPLOYMENT_ID="${DEPLOYMENT_ID:-rl-qwen3-4b-b300-v8}"
 REGION="${REGION:-EU_NETHERLANDS_1}"
 ACCELERATOR="${ACCELERATOR:-NVIDIA_B300_288GB}"
+JOB_WAIT_TIMEOUT="${JOB_WAIT_TIMEOUT:-80}"
+JOB_CREATE_RETRIES="${JOB_CREATE_RETRIES:-3}"
 
 export FIRECTL_AGENT_SAFE_ACCOUNTS="$FIREWORKS_ACCOUNT_ID"
 
 POLICY_JOB_ID=""
 REFERENCE_JOB_ID=""
+START_TIME=$(date +%s)
 
-log() { echo "$(date '+%H:%M:%S') [CI] $*"; }
+log() { echo "$(date '+%H:%M:%S') [smoke] $*"; }
+
+elapsed() {
+    local now; now=$(date +%s)
+    echo $(( now - START_TIME ))
+}
 
 # ── Cleanup on exit ─────────────────────────────────────────────────────────
 cleanup_jobs() {
+    local exit_code=$?
     for jid in "$POLICY_JOB_ID" "$REFERENCE_JOB_ID"; do
         [[ -z "$jid" ]] && continue
         log "Cleanup: deleting job $jid"
         "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor delete "$jid" \
             -p "$FIRECTL_PROFILE" 2>/dev/null || true
     done
+    log "Finished in $(elapsed)s (exit=$exit_code)"
 }
 trap cleanup_jobs EXIT
+
+# ── 0. Clean stale CI jobs ──────────────────────────────────────────────────
+log "Cleaning stale CI jobs ..."
+stale_jobs=$("$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor list -p "$FIRECTL_PROFILE" 2>&1 \
+    | grep -E "frozen-lake-ci-(policy|reference)" \
+    | awk '{print $1}' || true)
+for jid in $stale_jobs; do
+    log "  deleting stale job: $jid"
+    "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor delete "$jid" \
+        -p "$FIRECTL_PROFILE" 2>/dev/null || true
+done
 
 # ── 1. Verify deployment ────────────────────────────────────────────────────
 log "Checking deployment $DEPLOYMENT_ID ..."
@@ -59,25 +81,36 @@ DEP_STATE=$("$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" deployment get "$DEPLOYMEN
     -p dev 2>&1 | awk '/^State:/{print $2}' || true)
 
 if [[ "$DEP_STATE" != "READY" ]]; then
-    log "FATAL: deployment $DEPLOYMENT_ID not READY (state=$DEP_STATE)"
+    log "FATAL: deployment $DEPLOYMENT_ID not READY (state=${DEP_STATE:-unknown})"
+    log "Create a deployment with hotload enabled before running this test."
     exit 1
 fi
 log "Deployment READY"
 
-# ── 2. Create trainer jobs ──────────────────────────────────────────────────
+# ── 2. Create trainer jobs (with retry) ─────────────────────────────────────
 create_job() {
     local label=$1; shift
-    local output
-    output=$("$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor create \
-        --base-model "accounts/fireworks/models/qwen3-4b" \
-        --training-shape "$TRAINING_SHAPE" \
-        --accelerator-type "$ACCELERATOR" --accelerator-count 8 \
-        --region "$REGION" \
-        --display-name "frozen-lake-ci-$label" \
-        --service-mode \
-        "$@" \
-        -p "$FIRECTL_PROFILE" 2>&1)
-    echo "$output" | awk -F/ '/^Name:/{print $NF}'
+    local attempt output jid
+    for attempt in $(seq 1 "$JOB_CREATE_RETRIES"); do
+        output=$("$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor create \
+            --base-model "accounts/fireworks/models/qwen3-4b" \
+            --training-shape "$TRAINING_SHAPE" \
+            --accelerator-type "$ACCELERATOR" --accelerator-count 8 \
+            --region "$REGION" \
+            --display-name "frozen-lake-ci-$label" \
+            --service-mode \
+            "$@" \
+            -p "$FIRECTL_PROFILE" 2>&1) && break
+        log "  attempt $attempt/$JOB_CREATE_RETRIES for $label failed, retrying in 10s ..."
+        sleep 10
+    done
+    jid=$(echo "$output" | awk -F/ '/^Name:/{print $NF}')
+    if [[ -z "$jid" ]]; then
+        log "FATAL: failed to create $label job after $JOB_CREATE_RETRIES attempts"
+        log "Output: $output"
+        exit 1
+    fi
+    echo "$jid"
 }
 
 log "Creating policy trainer job ..."
@@ -94,25 +127,35 @@ get_state() {
         -p "$FIRECTL_PROFILE" 2>&1 | awk '/^State:/{print $2}'
 }
 
-log "Waiting for trainer jobs ..."
-for i in $(seq 1 80); do
+log "Waiting for trainer jobs (timeout=${JOB_WAIT_TIMEOUT} polls) ..."
+for i in $(seq 1 "$JOB_WAIT_TIMEOUT"); do
     P=$(get_state "$POLICY_JOB_ID")
     R=$(get_state "$REFERENCE_JOB_ID")
-    [[ "$P" == "JOB_STATE_FAILED" || "$R" == "JOB_STATE_FAILED" ]] && {
-        log "FATAL: job failed (policy=$P, reference=$R)"; exit 1; }
-    [[ "$P" == "JOB_STATE_RUNNING" && "$R" == "JOB_STATE_RUNNING" ]] && {
-        log "Both jobs RUNNING"; break; }
-    log "  [$i/80] policy=$P  reference=$R"
+
+    if [[ "$P" == "JOB_STATE_FAILED" || "$R" == "JOB_STATE_FAILED" ]]; then
+        log "FATAL: trainer job failed (policy=$P, reference=$R)"
+        # Print failure details
+        "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor get "$POLICY_JOB_ID" -p "$FIRECTL_PROFILE" 2>&1 | grep -E "^(State|Status):" || true
+        "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor get "$REFERENCE_JOB_ID" -p "$FIRECTL_PROFILE" 2>&1 | grep -E "^(State|Status):" || true
+        exit 1
+    fi
+    if [[ "$P" == "JOB_STATE_RUNNING" && "$R" == "JOB_STATE_RUNNING" ]]; then
+        log "Both jobs RUNNING ($(elapsed)s elapsed)"
+        break
+    fi
+    log "  [$i/$JOB_WAIT_TIMEOUT] policy=$P  reference=$R"
     sleep 15
 done
 
 P=$(get_state "$POLICY_JOB_ID")
 R=$(get_state "$REFERENCE_JOB_ID")
-[[ "$P" != "JOB_STATE_RUNNING" || "$R" != "JOB_STATE_RUNNING" ]] && {
-    log "FATAL: jobs did not start in time"; exit 1; }
+if [[ "$P" != "JOB_STATE_RUNNING" || "$R" != "JOB_STATE_RUNNING" ]]; then
+    log "FATAL: jobs did not start in time (policy=$P, reference=$R)"
+    exit 1
+fi
 
 # ── 4. Run pytest ───────────────────────────────────────────────────────────
-log "Running FrozenLake B300 E2E test ..."
+log "Running FrozenLake B300 smoke test ..."
 export FROZEN_LAKE_POLICY_JOB_ID="$POLICY_JOB_ID"
 export FROZEN_LAKE_REFERENCE_JOB_ID="$REFERENCE_JOB_ID"
 export FROZEN_LAKE_DEPLOYMENT_ID="$DEPLOYMENT_ID"
@@ -125,4 +168,4 @@ cd "$REPO_ROOT"
 python -m pytest training/tests/e2e/test_frozen_lake_b300_e2e.py \
     -v -s --log-cli-level=INFO --timeout=3600 -x
 
-log "Test passed"
+log "Smoke test PASSED ($(elapsed)s total)"
