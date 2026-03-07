@@ -15,41 +15,39 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import signal
-import logging
+from dataclasses import dataclass, field
 from typing import Any, Dict, List
-from dataclasses import field, dataclass
 
-import torch
 import tinker
-
-import json
+import torch
 import transformers
 from dotenv import load_dotenv
-
 from fireworks.training.sdk import TrainerJobManager
+
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
-    WandBConfig,
-    ResumeConfig,
     ReconnectableClient,
-    wandb_log,
-    setup_wandb,
-    setup_resume,
-    wandb_finish,
-    validate_config,
-    log_metrics_json,
-    create_trainer_job,
-    make_batch_weighted_sft_loss_fn,
+    ResumeConfig,
+    WandBConfig,
     build_renderer,
+    create_trainer_job,
+    log_metrics_json,
+    make_batch_weighted_sft_loss_fn,
     parse_train_on_what,
     render_messages_to_datum,
     resolve_renderer_name,
+    setup_resume,
+    setup_wandb,
+    validate_config,
+    wandb_finish,
+    wandb_log,
 )
-from training.utils.timer import timer, flush_timing
-
+from training.utils.timer import flush_timing, timer
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -310,12 +308,14 @@ def main(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = Config(
-        dataset="kimi2_deid_sample_100_formatted.jsonl",
-        tokenizer_model="Qwen/Qwen3-8B",
-        max_seq_len=4096,
-        max_examples=10,
+        base_model="accounts/fireworks/models/qwen3-30b-a3b-instruct-2507",
+        dataset="open-researcher-sft-500.jsonl",
+        tokenizer_model="Qwen/Qwen3-30B-A3B-Thinking-2507",
+        max_seq_len=131072,
+        max_examples=500,
         infra=InfraConfig(
-            training_shape_id="your-training-shape",
+            training_shape_id="accounts/fireworks/trainingShapes/ts-qwen3-30b-a3b-128k",
+            # custom_image_tag="0.33.0",
         ),
     )
     main(cfg)
