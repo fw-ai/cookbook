@@ -54,7 +54,10 @@ jobs:
 
       - name: Summarize Training Script Coverage
         run: |
-          python tests/coverage_summary.py coverage.json | tee coverage-summary.txt
+          python tests/coverage_summary.py coverage.json \
+            --fail-under 85 \
+            --per-file-fail-under 75 \
+            --fail-on-no-data | tee coverage-summary.txt
 
       - name: Upload Coverage Artifact
         if: always()

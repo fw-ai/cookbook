@@ -14,9 +14,10 @@ Phase 1 targets:
 
 Current status:
 
-- overall scoped coverage: met (`71.1%`)
+- overall scoped coverage: met (`88.2%`)
+- per-file floor for all scoped files: met (`>= 78.1%`)
 - no `NO DATA` files in the scoped set: met
-- remaining misses: `recipes/dpo_loop.py`, `recipes/rl_loop.py`, and `examples/frozen_lake/train_frozen_lake.py`
+- CI ratchet: enabled (`overall >= 85%`, `per-file >= 75%`)
 
 The goal is not line-count inflation. New tests should cover:
 
@@ -50,5 +51,4 @@ The goal is not line-count inflation. New tests should cover:
      and dataset transforms
 4. Ratchet in CI
    - start with reporting + artifact upload
-   - once the first expansion pass lands, add a hard fail-under threshold for
-     the scoped scripts
+   - enforce a hard fail-under threshold for the scoped scripts

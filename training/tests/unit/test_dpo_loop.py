@@ -335,3 +335,72 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     assert events["weight_syncer_saves"] == ["final-step-2"]
     assert events["deleted_jobs"] == ["policy-job", "reference-job"]
     assert events["wandb_finished"] == 1
+
+
+def test_train_loop_runs_accumulation_and_hotload(monkeypatch):
+    events: dict[str, object] = {
+        "flush_batches": [],
+        "optim_steps": 0,
+        "hotloads": [],
+        "dcp_saves": [],
+        "metrics_logs": [],
+        "wandb_logs": [],
+    }
+
+    monkeypatch.setattr(
+        module,
+        "_flush_batch",
+        lambda batch, policy, beta: events["flush_batches"].append((list(batch), beta)) or SimpleNamespace(
+            metrics={"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75}
+        ),
+    )
+    monkeypatch.setattr(module, "flush_timing", lambda: {"perf/fwd_bwd_time": 1.0})
+    monkeypatch.setattr(module, "log_metrics_json", lambda step, **kwargs: events["metrics_logs"].append((step, kwargs)))
+    monkeypatch.setattr(module, "wandb_log", lambda payload, step: events["wandb_logs"].append((step, payload)))
+
+    class FakePolicy:
+        def optim_step(self, _params):
+            events["optim_steps"] += 1
+            return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
+
+    class FakeWeightSyncer:
+        def save_and_hotload(self, name):
+            events["hotloads"].append(name)
+
+        def save_dcp(self, name):
+            events["dcp_saves"].append(name)
+
+    ref_cache = {
+        0: {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"}, "ref_chosen": [-0.1], "ref_rejected": [-0.2], "response_start": 3},
+        1: {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"}, "ref_chosen": [-0.3], "ref_rejected": [-0.4], "response_start": 4},
+    }
+    cfg = module.Config(
+        beta=0.2,
+        epochs=1,
+        batch_size=1,
+        grad_accum=2,
+        hotload=module.HotloadConfig(hot_load_interval=1, dcp_save_interval=1),
+    )
+
+    step = asyncio.run(
+        module._train_loop(
+            ref_cache,
+            [0, 1],
+            FakePolicy(),
+            adam_params={"lr": 1e-4},
+            weight_syncer=FakeWeightSyncer(),
+            cfg=cfg,
+            step_offset=0,
+        )
+    )
+
+    assert step == 1
+    assert events["flush_batches"] == [
+        ([ref_cache[0]], 0.2),
+        ([ref_cache[1]], 0.2),
+    ]
+    assert events["optim_steps"] == 1
+    assert events["hotloads"] == ["step-1"]
+    assert events["dcp_saves"] == ["step-1"]
+    assert events["metrics_logs"] == [(1, {"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75})]
+    assert len(events["wandb_logs"]) == 1
