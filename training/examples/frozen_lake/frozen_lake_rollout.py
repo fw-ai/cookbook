@@ -246,6 +246,8 @@ class FireworksV1ImageCompletionsClient:
     ):
         self.model_id = model_id
         self.tokenizer_name_or_path = tokenizer_name_or_path or model_id
+        self._api_key = api_key
+        self._base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.request_params = dict(request_params or {})
@@ -254,10 +256,16 @@ class FireworksV1ImageCompletionsClient:
         self.tool_call_parser = tool_call_parser
         self.default_tools = default_tools or []
         self._tokenizer = None
-        self._client = AsyncFireworks(api_key=api_key, base_url=base_url)
+        self._client = None
 
     async def close(self) -> None:
-        await self._client.close()
+        if self._client is not None:
+            await self._client.close()
+
+    def _get_client(self) -> AsyncFireworks:
+        if self._client is None:
+            self._client = AsyncFireworks(api_key=self._api_key, base_url=self._base_url)
+        return self._client
 
     def _get_tokenizer(self):
         if self._tokenizer is None:
@@ -453,7 +461,7 @@ class FireworksV1ImageCompletionsClient:
         base_delay = 10.0
         for attempt in range(max_retries + 1):
             try:
-                response = await self._client.completions.create(**request_payload)
+                response = await self._get_client().completions.create(**request_payload)
                 break
             except Exception as exc:
                 status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
