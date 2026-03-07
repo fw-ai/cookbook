@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import training.utils.validation as validation_module
 from training.utils.validation import validate_preflight
 
 
@@ -118,3 +119,24 @@ class TestValidConfig:
             hot_load_interval=0,
         )
         validate_preflight(args, fw_api_key="key", fw_account_id="acct")
+
+
+def test_validation_falls_back_when_sdk_docs_constants_are_missing(monkeypatch):
+    class FakeErrors:
+        @staticmethod
+        def format_sdk_error(what, cause, solution, docs_url=None):
+            lines = [f"ERROR: {what}", f"Cause: {cause}", f"Solution: {solution}"]
+            if docs_url:
+                lines.append(f"Docs: {docs_url}")
+            return " | ".join(lines)
+
+    monkeypatch.setattr(validation_module, "sdk_errors", FakeErrors())
+
+    assert validation_module._get_sdk_docs_url("DOCS_HOTLOAD", "fallback-hotload") == "fallback-hotload"
+    assert validation_module._get_sdk_docs_url("DOCS_API_KEYS", "fallback-keys") == "fallback-keys"
+    assert "fallback-keys" in validation_module._format_sdk_error(
+        "Missing FIREWORKS_API_KEY",
+        "No API key found.",
+        "Set FIREWORKS_API_KEY.",
+        docs_url=validation_module._get_sdk_docs_url("DOCS_API_KEYS", "fallback-keys"),
+    )
