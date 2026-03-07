@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import os
 import time
+import signal
 import random
 import logging
 from dataclasses import field, dataclass
@@ -103,6 +104,14 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
+
+    def _signal_handler(signum, frame):
+        name = signal.Signals(signum).name
+        logger.warning("Received %s — raising SystemExit for cleanup", name)
+        raise SystemExit(f"Terminated by {name}")
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
 
     if not cfg.base_model or not cfg.base_model.startswith("accounts/"):
         raise ValueError(f"Invalid base_model: '{cfg.base_model}' (expected accounts/...)")
@@ -333,16 +342,17 @@ def main(
             )
             logger.info("Final base checkpoint saved: %s", result.path)
 
+        logger.info(
+            "Training complete: %d optimizer steps (%d new)", step, step - step_offset
+        )
+        return {"steps": step, "job_id": job_id}
     finally:
-        # -- Cleanup: always delete the trainer job to free GPU resources ----
-        logger.info("Deleting trainer job %s...", job_id)
-        rlor_mgr.delete(job_id)
         wandb_finish()
-
-    logger.info(
-        "Training complete: %d optimizer steps (%d new)", step, step - step_offset
-    )
-    return {"steps": step, "job_id": job_id}
+        try:
+            logger.info("Cleanup: deleting trainer job %s", job_id)
+            rlor_mgr.delete(job_id)
+        except Exception as e:
+            logger.warning("Cleanup: failed to delete trainer job %s: %s", job_id, e)
 
 
 if __name__ == "__main__":

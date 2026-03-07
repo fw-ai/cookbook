@@ -69,6 +69,8 @@ class DeployConfig:
     Increase for R3 + long completions where responses can be very large."""
     disable_speculative_decoding: bool = True
     """Disable base model's default draft/EAGLE speculation for hotload compatibility."""
+    extra_values: dict[str, str] | None = None
+    """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
 
     def to_deployment_config(
         self,

@@ -17,6 +17,7 @@ dependencies = [
     "numpy",
     "transformers",
     "pillow",
+    "python-dotenv",
     "wandb",
 ]
 
