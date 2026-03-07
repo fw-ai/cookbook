@@ -36,7 +36,10 @@ from eval_protocol.models import EvaluationRow, InputMetadata, Message
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
 from training.examples.frozen_lake.frozen_lake_env import build_frozen_lake_tool_env
-from training.examples.frozen_lake.frozen_lake_rollout import FrozenLakeToolRolloutProcessor
+from training.examples.frozen_lake.frozen_lake_rollout import (
+    DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
+    FrozenLakeToolRolloutProcessor,
+)
 from training.examples.frozen_lake.masking import (
     compute_model_output_spans,
     build_training_loss_mask,
@@ -82,13 +85,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_USER_PROMPT_TEMPLATE = "FrozenLake grid observation:\n{observation}"
-
-DEFAULT_SYSTEM_PROMPT = (
-    "/no_think\n"
-    "You are an RL policy for FrozenLake.\n"
-    "Pick the action that moves toward G while avoiding H.\n"
-    "Always respond with exactly one tool call, no text."
+DEFAULT_VISUAL_PROMPT_TEMPLATE = (
+    "You are playing FrozenLake. The image shows the current grid. "
+    "The current textual observation is below.\n"
+    "{observation}\n\n"
+    "Tiles are labeled S, F, H, and G. The agent is marked with a red dot. "
+    "Use exactly one lake_move tool call with action LEFT, DOWN, RIGHT, or UP."
 )
+
+DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS
 
 
 @dataclass
@@ -121,6 +126,9 @@ class FrozenLakeConfig:
     use_random_map: bool = True
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     user_prompt_template: str = DEFAULT_USER_PROMPT_TEMPLATE
+    visual_prompt_template: str = DEFAULT_VISUAL_PROMPT_TEMPLATE
+    observation_mode: str = "text"
+    allow_plaintext_action_fallback: bool = False
 
     training_shape: str = ""
     deployment_shape: str = ""
@@ -166,6 +174,9 @@ def parse_args() -> FrozenLakeConfig:
 
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
     parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "frozen-lake-grpo"))
+    parser.add_argument("--visual-prompt-template", default=DEFAULT_VISUAL_PROMPT_TEMPLATE)
+    parser.add_argument("--observation-mode", choices=("text", "image"), default="text")
+    parser.add_argument("--allow-plaintext-action-fallback", action="store_true")
 
     return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
 
@@ -559,6 +570,8 @@ def main():
             system_prompt=cfg.system_prompt,
             user_prompt_template=cfg.user_prompt_template,
             logprobs=True,
+            observation_mode=cfg.observation_mode,
+            allow_plaintext_action_fallback=cfg.allow_plaintext_action_fallback,
         )
         rollout_config = RolloutProcessorConfig(
             completion_params={"model": inference_model},
@@ -590,6 +603,7 @@ def main():
                         dataset_info={
                             "environment_context": dict(env_context),
                             "user_prompt_template": cfg.user_prompt_template,
+                            "visual_prompt_template": cfg.visual_prompt_template,
                         },
                     ),
                 ))
