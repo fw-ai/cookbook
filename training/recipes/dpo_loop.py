@@ -44,7 +44,6 @@ from training.utils import (
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    extract_text,
     setup_resume,
     wandb_finish,
     validate_config,
@@ -53,7 +52,9 @@ from training.utils import (
     setup_deployment,
     create_trainer_job,
     load_preference_dataset,
-    find_common_prefix_length,
+    build_renderer,
+    render_preference_pair,
+    resolve_renderer_name,
 )
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -98,6 +99,7 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for client-side tokenization
+    renderer_name: str = ""
 
     beta: float = 0.1
     learning_rate: float = 1e-5
@@ -129,44 +131,35 @@ class Config:
 def _tokenize_pair(
     example: dict[str, Any],
     tokenizer: Any,
+    renderer: Any,
     max_seq_len: int,
 ) -> dict[str, Any] | None:
     """Tokenize a single preference pair. Returns None if invalid, 'filtered' if too long."""
-    chosen_text = extract_text(example["chosen"])
-    rejected_text = extract_text(example["rejected"])
-    if not chosen_text or not rejected_text:
-        return None
-
-    chosen_tokens = tokenizer.encode(chosen_text)
-    rejected_tokens = tokenizer.encode(rejected_text)
-    if len(chosen_tokens) > max_seq_len or len(rejected_tokens) > max_seq_len:
-        return "filtered"
-    if len(chosen_tokens) < 2 or len(rejected_tokens) < 2:
-        return None
-
-    prompt_len = find_common_prefix_length(chosen_tokens, rejected_tokens)
-    return {
-        "chosen_tokens": chosen_tokens,
-        "rejected_tokens": rejected_tokens,
-        "prompt_len": prompt_len,
-    }
-
-
-def _make_datum(tokens: list[int]) -> tinker.Datum:
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
-        loss_fn_inputs={
-            "target_tokens": tinker.TensorData(
-                data=tokens[1:], dtype="int64", shape=[len(tokens) - 1]
-            )
-        },
+    pair = render_preference_pair(
+        example["chosen"],
+        example["rejected"],
+        renderer=renderer,
+        tokenizer=tokenizer,
     )
+    if pair is None:
+        return None
+    if len(pair.chosen_tokens) > max_seq_len or len(pair.rejected_tokens) > max_seq_len:
+        return "filtered"
+
+    return {
+        "chosen_tokens": pair.chosen_tokens,
+        "rejected_tokens": pair.rejected_tokens,
+        "response_start": pair.response_start,
+        "chosen_datum": pair.chosen_datum,
+        "rejected_datum": pair.rejected_datum,
+    }
 
 
 async def _cache_ref_logprobs(
     raw_data: list[dict[str, Any]],
     reference: ReconnectableClient,
     tokenizer: Any,
+    renderer: Any,
     max_seq_len: int,
     concurrency: int = 16,
     batch_size: int = 1,
@@ -181,7 +174,7 @@ async def _cache_ref_logprobs(
     tokenized: list[tuple[int, dict[str, Any]]] = []
     filtered_count = 0
     for i, example in enumerate(raw_data):
-        result = _tokenize_pair(example, tokenizer, max_seq_len)
+        result = _tokenize_pair(example, tokenizer, renderer, max_seq_len)
         if result == "filtered":
             filtered_count += 1
         elif result is not None:
@@ -198,8 +191,8 @@ async def _cache_ref_logprobs(
     ) -> list[tuple[int, dict[str, Any]]]:
         datums: list[tinker.Datum] = []
         for _, pair_data in batch:
-            datums.append(_make_datum(pair_data["chosen_tokens"]))
-            datums.append(_make_datum(pair_data["rejected_tokens"]))
+            datums.append(pair_data["chosen_datum"])
+            datums.append(pair_data["rejected_datum"])
 
         async with semaphore:
             fwd = await asyncio.to_thread(
@@ -211,9 +204,11 @@ async def _cache_ref_logprobs(
             results.append((idx, {
                 "chosen_tokens": pair_data["chosen_tokens"],
                 "rejected_tokens": pair_data["rejected_tokens"],
+                "chosen_datum": pair_data["chosen_datum"],
+                "rejected_datum": pair_data["rejected_datum"],
                 "ref_chosen": fwd.loss_fn_outputs[2 * j]["logprobs"].data,
                 "ref_rejected": fwd.loss_fn_outputs[2 * j + 1]["logprobs"].data,
-                "prompt_len": pair_data["prompt_len"],
+                "response_start": pair_data["response_start"],
             }))
         return results
 
@@ -250,12 +245,11 @@ def _flush_batch(
     response_starts: list[int] = []
 
     for cached in batch_pairs:
-        response_start = max(0, cached["prompt_len"] - 1)
-        datums.append(_make_datum(cached["chosen_tokens"]))
-        datums.append(_make_datum(cached["rejected_tokens"]))
+        datums.append(cached["chosen_datum"])
+        datums.append(cached["rejected_datum"])
         ref_chosen_list.append(cached["ref_chosen"])
         ref_rejected_list.append(cached["ref_rejected"])
-        response_starts.append(response_start)
+        response_starts.append(cached["response_start"])
 
     loss_fn = make_batch_dpo_loss_fn(
         ref_chosen_list, ref_rejected_list, response_starts, beta,
@@ -423,6 +417,14 @@ def main(
     if cfg.deployment.deployment_id:
         setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
+    profile = None
+    if cfg.infra.training_shape_id:
+        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+
+    if profile and cfg.max_seq_len is None:
+        cfg.max_seq_len = profile.max_supported_context_length
+        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
+
     if cfg.max_seq_len is None:
         raise ValueError(
             "max_seq_len is required. Set it in Config, or use a training shape "
@@ -445,6 +447,7 @@ def main(
                 rlor_mgr,
                 base_model=cfg.base_model,
                 infra=cfg.infra,
+                profile=profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
@@ -456,6 +459,7 @@ def main(
                 rlor_mgr,
                 base_model=cfg.base_model,
                 infra=cfg.infra,
+                profile=profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
@@ -489,6 +493,11 @@ def main(
         import transformers
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
+        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
+        logger.info(
+            "Using renderer=%s for preference tokenization",
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+        )
 
         raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)
         if not raw_data:
@@ -497,7 +506,7 @@ def main(
         logger.info("Computing reference logprobs for %d pairs...", len(raw_data))
         ref_cache, filtered_count = asyncio.run(
             _cache_ref_logprobs(
-                raw_data, reference, tokenizer, cfg.max_seq_len,
+                raw_data, reference, tokenizer, renderer, cfg.max_seq_len,
                 concurrency=cfg.ref_cache_concurrency,
                 batch_size=cfg.ref_cache_batch_size,
             )

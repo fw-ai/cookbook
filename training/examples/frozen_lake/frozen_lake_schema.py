@@ -111,9 +111,53 @@ def _load_xml_tool_call_payload_with_text_span(text: str) -> Tuple[Dict[str, Any
     return payload, start, end
 
 
+def _load_kimi_native_tool_call_payload_with_text_span(text: str) -> Tuple[Dict[str, Any], int, int]:
+    match = re.search(
+        r"(?:<\|tool_calls_section_begin\|>)?\s*"
+        r"<\|tool_call_begin\|>\s*(.*?)\s*"
+        r"<\|tool_call_argument_begin\|>\s*(\{.*?\})\s*"
+        r"<\|tool_call_end\|>\s*"
+        r"(?:<\|tool_calls_section_end\|>)?",
+        text,
+        flags=re.DOTALL,
+    )
+    if not match:
+        raise ValueError("No Kimi native tool_call block found")
+
+    raw_identifier = str(match.group(1) or "").strip()
+    arguments_text = match.group(2)
+    try:
+        arguments = json.loads(arguments_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON inside Kimi tool call: {arguments_text!r}") from exc
+    if not isinstance(arguments, dict):
+        raise ValueError("Kimi tool call arguments must be a JSON object")
+
+    tool_name = TOOL_NAME_LAKE_MOVE
+    identifier = raw_identifier
+    if raw_identifier.startswith("functions."):
+        qualified_name = raw_identifier.split(":", 1)[0]
+        tool_name = qualified_name.split(".", 1)[1] or TOOL_NAME_LAKE_MOVE
+    payload = {
+        "tool_calls": [
+            {
+                "id": identifier or f"toolcall_{uuid.uuid4().hex[:12]}",
+                "name": tool_name,
+                "arguments": arguments,
+            }
+        ]
+    }
+    start, end = match.span()
+    return payload, start, end
+
+
 def parse_first_frozen_lake_tool_call(output_text: str) -> ParsedToolCall:
     """Parse the first tool call from strict tool-call JSON output."""
-    loaders = (_load_json_object_with_text_span, _load_xml_tool_call_payload_with_text_span)
+    loaders = (
+        _load_json_object_with_text_span,
+        _load_xml_tool_call_payload_with_text_span,
+        _load_kimi_native_tool_call_payload_with_text_span,
+    )
     last_error: Exception | None = None
     for loader in loaders:
         try:
@@ -129,7 +173,11 @@ def parse_first_frozen_lake_tool_call(output_text: str) -> ParsedToolCall:
 
 def parse_first_frozen_lake_tool_call_with_content(output_text: str) -> Tuple[ParsedToolCall, str]:
     """Parse the first tool call and return residual assistant text content."""
-    loaders = (_load_json_object_with_text_span, _load_xml_tool_call_payload_with_text_span)
+    loaders = (
+        _load_json_object_with_text_span,
+        _load_xml_tool_call_payload_with_text_span,
+        _load_kimi_native_tool_call_payload_with_text_span,
+    )
     last_error: Exception | None = None
     for loader in loaders:
         try:

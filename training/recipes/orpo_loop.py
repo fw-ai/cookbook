@@ -59,7 +59,9 @@ from training.utils import (
     make_orpo_loss_fn,
     create_trainer_job,
     load_preference_dataset,
-    find_common_prefix_length,
+    build_renderer,
+    render_preference_pair,
+    resolve_renderer_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,7 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
     dataset: str = ""
     tokenizer_model: str = ""
+    renderer_name: str = ""
 
     orpo_lambda: float = 1.0
     learning_rate: float = 1e-5
@@ -143,6 +146,14 @@ def main(
             api_key=api_key, account_id=account, base_url=base_url
         )
 
+    profile = None
+    if cfg.infra.training_shape_id:
+        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+
+    if profile and cfg.max_seq_len is None:
+        cfg.max_seq_len = profile.max_supported_context_length
+        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
+
     if cfg.max_seq_len is None:
         raise ValueError(
             "max_seq_len is required. Set it in Config, or use a training shape "
@@ -153,6 +164,7 @@ def main(
         rlor_mgr,
         base_model=cfg.base_model,
         infra=cfg.infra,
+        profile=profile,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
         learning_rate=cfg.learning_rate,
@@ -173,6 +185,11 @@ def main(
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         cfg.tokenizer_model, trust_remote_code=True
     )
+    renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
+    logger.info(
+        "Using renderer=%s for preference tokenization",
+        resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+    )
 
     raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)
     if not raw_data:
@@ -183,33 +200,28 @@ def main(
     filtered_count = 0
 
     for example in raw_data:
-        chosen_msgs = example["chosen"].get("messages", [])
-        rejected_msgs = example["rejected"].get("messages", [])
-        if not chosen_msgs or not rejected_msgs:
+        pair = render_preference_pair(
+            example["chosen"],
+            example["rejected"],
+            renderer=renderer,
+            tokenizer=tokenizer,
+        )
+        if pair is None:
             continue
 
-        chosen_tokens = tokenizer.apply_chat_template(
-            chosen_msgs, tokenize=True, return_dict=False
-        )
-        rejected_tokens = tokenizer.apply_chat_template(
-            rejected_msgs, tokenize=True, return_dict=False
-        )
-
         if (
-            len(chosen_tokens) > cfg.max_seq_len
-            or len(rejected_tokens) > cfg.max_seq_len
+            len(pair.chosen_tokens) > cfg.max_seq_len
+            or len(pair.rejected_tokens) > cfg.max_seq_len
         ):
             filtered_count += 1
             continue
-        if len(chosen_tokens) < 2 or len(rejected_tokens) < 2:
-            continue
-
-        prompt_len = find_common_prefix_length(chosen_tokens, rejected_tokens)
         pair_cache.append(
             {
-                "chosen_tokens": chosen_tokens,
-                "rejected_tokens": rejected_tokens,
-                "prompt_len": prompt_len,
+                "chosen_tokens": pair.chosen_tokens,
+                "rejected_tokens": pair.rejected_tokens,
+                "response_start": pair.response_start,
+                "chosen_datum": pair.chosen_datum,
+                "rejected_datum": pair.rejected_datum,
             }
         )
 
@@ -246,32 +258,9 @@ def main(
             for pair in pair_cache:
                 chosen_tokens = pair["chosen_tokens"]
                 rejected_tokens = pair["rejected_tokens"]
-                response_start = max(0, pair["prompt_len"] - 1)
-
-                chosen_datum = tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(chosen_tokens[:-1]),
-                    loss_fn_inputs={
-                        "target_tokens": tinker.TensorData(
-                            data=chosen_tokens[1:],
-                            dtype="int64",
-                            shape=[len(chosen_tokens) - 1],
-                        )
-                    },
-                )
-                rejected_datum = tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(rejected_tokens[:-1]),
-                    loss_fn_inputs={
-                        "target_tokens": tinker.TensorData(
-                            data=rejected_tokens[1:],
-                            dtype="int64",
-                            shape=[len(rejected_tokens) - 1],
-                        )
-                    },
-                )
-
-                loss_fn = make_orpo_loss_fn(response_start, cfg.orpo_lambda)
+                loss_fn = make_orpo_loss_fn(pair["response_start"], cfg.orpo_lambda)
                 result = client.forward_backward_custom(
-                    [chosen_datum, rejected_datum], loss_fn
+                    [pair["chosen_datum"], pair["rejected_datum"]], loss_fn
                 ).result()
 
                 metrics = result.metrics

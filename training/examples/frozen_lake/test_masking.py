@@ -18,6 +18,7 @@ from training.examples.frozen_lake.masking import (
     build_ui_token_mask,
     compute_model_output_spans,
 )
+from training.utils.supervised import build_datum_from_token_mask
 
 
 def _make_traces(turns: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -75,6 +76,18 @@ MULTI_TURN_3 = [
     {
         "prompt_ids": [1, 2, 10, 20, 21, 30, 40, 41, 42],
         "completion_ids": [50, 51],
+    },
+]
+
+KIMI_STYLE_MULTI_TURN = [
+    {
+        "prompt_ids": [1, 2, 3],
+        "completion_ids": [99, 10, 90],  # prefill, raw tool call token(s), im_end
+        "assistant_turn_len": 3,
+    },
+    {
+        "prompt_ids": [1, 2, 3, 99, 10, 90, 20, 21],
+        "completion_ids": [99, 30, 90],
     },
 ]
 
@@ -183,3 +196,32 @@ def test_fallback_when_assistant_turn_len_missing():
 
     assert spans_no_mrt[0] == (3, 2, 1), "should fall back to completion_ids len"
     assert spans_with_mrt[0] == spans_no_mrt[0]
+
+
+def test_kimi_style_mask_includes_prefill_and_im_end_tokens():
+    """Assistant framing tokens should be masked as model output too."""
+    ttt, mrt = _make_traces(KIMI_STYLE_MULTI_TURN)
+    spans = compute_model_output_spans(ttt, mrt)
+
+    assert spans == [(3, 3, 1), (8, 3, 2)]
+
+    ui_mask = build_ui_token_mask(spans, 11)
+    assert ui_mask == [0, 0, 0, 1, 1, 1, 0, 0, 2, 2, 2]
+
+    train_mask = build_training_loss_mask(spans, 10)
+    assert train_mask == [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+
+
+def test_shared_weighted_datum_matches_training_loss_mask():
+    """The shared datum helper should use the exact same shifted mask as training."""
+    ttt, mrt = _make_traces(KIMI_STYLE_MULTI_TURN)
+    spans = compute_model_output_spans(ttt, mrt)
+
+    full_ids = list(ttt[-1]["prompt_ids"]) + list(ttt[-1]["completion_ids"])
+    ui_mask = build_ui_token_mask(spans, len(full_ids))
+    train_mask = build_training_loss_mask(spans, len(full_ids) - 1)
+
+    rendered = build_datum_from_token_mask(full_ids, ui_mask, include_loss_mask=True)
+
+    assert rendered.datum.loss_fn_inputs["weights"].data == train_mask
+    assert rendered.datum.loss_fn_inputs["loss_mask"].data == train_mask

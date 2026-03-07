@@ -9,12 +9,14 @@ requires-python = ">=3.11"
 dependencies = [
     "fireworks-ai>=1.0.0a36,<2",
     "tinker-cookbook>=0.1.0",
-    "eval-protocol>=0.3.21",
+    "eval-protocol>=0.3.23",
     "tqdm",
     "torch",
     "datasets",
     "tiktoken",
     "numpy",
+    "transformers",
+    "pillow",
     "python-dotenv",
     "wandb",
 ]
@@ -22,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-timeout",
     "math-verify",
 ]
 
@@ -31,3 +34,7 @@ include = ["training*"]
 
 [tool.pytest.ini_options]
 testpaths = ["training/tests"]
+markers = [
+    "e2e: tests that hit remote Fireworks infrastructure",
+    "timeout: per-test timeout budget",
+]

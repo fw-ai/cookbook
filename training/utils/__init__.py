@@ -28,7 +28,20 @@ __all__ = [
     "make_orpo_loss_fn",
     "make_batch_dpo_loss_fn",
     "make_batch_sft_loss_fn",
+    "make_batch_weighted_sft_loss_fn",
     "make_sft_loss_fn",
+    "RenderedSupervisedDatum",
+    "RenderedPreferencePair",
+    "build_next_token_datum",
+    "build_datum_from_token_mask",
+    "build_datum_from_tokens_and_weights",
+    "build_renderer",
+    "normalize_messages",
+    "parse_train_on_what",
+    "render_preference_pair",
+    "render_messages_to_datum",
+    "resolve_renderer_name",
+    "prepare_sampling_messages",
     "setup_deployment",
     "setup_resume",
     "setup_training_client",
@@ -49,6 +62,7 @@ from training.utils.data import (
     load_jsonl_dataset,
     load_preference_dataset,
     find_common_prefix_length,
+    prepare_sampling_messages,
 )
 from training.utils.infra import (
     setup_deployment,
@@ -73,6 +87,20 @@ from training.utils.losses import (
     make_orpo_loss_fn,
     make_batch_dpo_loss_fn,
     make_batch_sft_loss_fn,
+    make_batch_weighted_sft_loss_fn,
+)
+from training.utils.supervised import (
+    RenderedPreferencePair,
+    RenderedSupervisedDatum,
+    build_datum_from_token_mask,
+    build_next_token_datum,
+    build_datum_from_tokens_and_weights,
+    build_renderer,
+    normalize_messages,
+    parse_train_on_what,
+    render_preference_pair,
+    render_messages_to_datum,
+    resolve_renderer_name,
 )
 from training.utils.resume import setup_resume
 from training.utils.logging import (
