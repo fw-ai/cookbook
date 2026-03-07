@@ -18,6 +18,7 @@ from training.examples.frozen_lake.masking import (
     build_ui_token_mask,
     compute_model_output_spans,
 )
+from training.utils.supervised import build_datum_from_token_mask
 
 
 def _make_traces(turns: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -209,3 +210,18 @@ def test_kimi_style_mask_includes_prefill_and_im_end_tokens():
 
     train_mask = build_training_loss_mask(spans, 10)
     assert train_mask == [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+
+
+def test_shared_weighted_datum_matches_training_loss_mask():
+    """The shared datum helper should use the exact same shifted mask as training."""
+    ttt, mrt = _make_traces(KIMI_STYLE_MULTI_TURN)
+    spans = compute_model_output_spans(ttt, mrt)
+
+    full_ids = list(ttt[-1]["prompt_ids"]) + list(ttt[-1]["completion_ids"])
+    ui_mask = build_ui_token_mask(spans, len(full_ids))
+    train_mask = build_training_loss_mask(spans, len(full_ids) - 1)
+
+    rendered = build_datum_from_token_mask(full_ids, ui_mask, include_loss_mask=True)
+
+    assert rendered.datum.loss_fn_inputs["weights"].data == train_mask
+    assert rendered.datum.loss_fn_inputs["loss_mask"].data == train_mask

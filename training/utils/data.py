@@ -97,6 +97,19 @@ def extract_text(item: dict[str, Any]) -> str:
     return ""
 
 
+def prepare_sampling_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Preserve multi-turn chat history, dropping only trailing assistant turns.
+
+    RL prompt datasets should contain the full prior conversation. If the row
+    accidentally includes a final assistant completion, strip only that tail so
+    sampling resumes from the latest non-assistant turn.
+    """
+    prepared = list(messages)
+    while prepared and prepared[-1].get("role") == "assistant":
+        prepared.pop()
+    return prepared
+
+
 def find_common_prefix_length(tokens1: List[int], tokens2: List[int]) -> int:
     """Find the length of the longest common prefix between two token lists."""
     min_len = min(len(tokens1), len(tokens2))

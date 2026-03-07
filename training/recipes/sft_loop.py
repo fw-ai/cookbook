@@ -42,7 +42,11 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     create_trainer_job,
-    make_batch_sft_loss_fn,
+    make_batch_weighted_sft_loss_fn,
+    build_renderer,
+    parse_train_on_what,
+    render_messages_to_datum,
+    resolve_renderer_name,
 )
 from training.utils.timer import timer, flush_timing
 
@@ -60,6 +64,8 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
+    renderer_name: str = ""
+    train_on_what: str = "all_assistant_messages"
 
     learning_rate: float = 1e-4
     epochs: int = 3
@@ -150,6 +156,13 @@ def main(
     # -- Prepare data ------------------------------------------------------
     try:
         tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
+        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
+        train_on_what = parse_train_on_what(cfg.train_on_what)
+        logger.info(
+            "Using renderer=%s train_on_what=%s",
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            train_on_what.value,
+        )
 
         raw_data: List[Dict[str, Any]] = []
         with open(cfg.dataset) as f:
@@ -162,26 +175,23 @@ def main(
                     break
         logger.info("Loaded %d examples from %s", len(raw_data), cfg.dataset)
 
-        training_data: List[Dict[str, Any]] = []
+        training_data: List[tinker.Datum] = []
         filtered_count = 0
         for row in raw_data:
             messages = row.get("messages", [])
             if not messages:
                 continue
 
-            full_tokens = tokenizer.apply_chat_template(messages, tokenize=True, return_dict=False)
-            if len(full_tokens) > cfg.max_seq_len or len(full_tokens) < 2:
+            rendered = render_messages_to_datum(
+                messages,
+                renderer=renderer,
+                train_on_what=train_on_what,
+            )
+            if len(rendered.token_ids) > cfg.max_seq_len or len(rendered.token_ids) < 2:
                 filtered_count += 1
                 continue
 
-            prompt_messages = [m for m in messages if m.get("role") != "assistant"]
-            prompt_tokens = tokenizer.apply_chat_template(
-                prompt_messages,
-                tokenize=True,
-                add_generation_prompt=True,
-                return_dict=False,
-            )
-            training_data.append({"tokens": full_tokens, "prompt_len": len(prompt_tokens)})
+            training_data.append(rendered.datum)
 
         if filtered_count > 0:
             logger.info(
@@ -206,24 +216,13 @@ def main(
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
 
-        def _create_datum(tokens: list[int]) -> tinker.Datum:
-            return tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(tokens[:-1]),
-                loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[len(tokens) - 1]),
-                },
-            )
-
-        def _flush_batch(batch_buf: list[dict], step: int, accum: int) -> tuple[int, int]:
+        def _flush_batch(batch_buf: list[tinker.Datum], step: int, accum: int) -> tuple[int, int]:
             """Send a batch through forward_backward_custom and return (step, accum)."""
             nonlocal agg_loss_sum, agg_resp_tokens
 
-            datums = [_create_datum(ex["tokens"]) for ex in batch_buf]
-            prompt_counts = [ex["prompt_len"] for ex in batch_buf]
-
-            loss_fn = make_batch_sft_loss_fn(prompt_counts)
+            loss_fn = make_batch_weighted_sft_loss_fn()
             with timer("fwd_bwd"):
-                result = client.forward_backward_custom(datums, loss_fn)
+                result = client.forward_backward_custom(batch_buf, loss_fn)
 
             fwd_metrics = result.metrics
             agg_loss_sum += fwd_metrics.get("ce_loss_sum", 0.0)
@@ -271,7 +270,7 @@ def main(
             return step, accum
 
         for _epoch in range(cfg.epochs):
-            batch_buffer: list[dict] = []
+            batch_buffer: list[tinker.Datum] = []
             for ex in training_data:
                 batch_buffer.append(ex)
                 if len(batch_buffer) >= batch_size:

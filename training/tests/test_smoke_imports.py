@@ -68,7 +68,7 @@ def test_util_imports(module: str):
 # ── Example modules ─────────────────────────────────────────────────────────
 
 EXAMPLE_MODULES_WITH_ENV = [
-    ("training.examples.deepmath.train_deepmath", "math_verify", {"FIREWORKS_API_KEY": "test"}),
+    ("training.examples.deepmath_rl.train_deepmath", "math_verify", {"FIREWORKS_API_KEY": "test"}),
 ]
 
 

@@ -47,6 +47,7 @@ from training.utils import (
     compute_advantages,
     create_trainer_job,
     load_jsonl_dataset,
+    prepare_sampling_messages,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
@@ -57,7 +58,7 @@ from training.utils.timer import timer, flush_timing
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import MinibatchTrainFns, run_rl_loop
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -382,7 +383,7 @@ def main(
         async def sample_one_prompt(row: dict) -> PromptGroup | None:
             """Sample completions for one prompt and return a PromptGroup."""
             messages = row.get("messages", [])
-            input_messages = [m for m in messages if m.get("role") != "assistant"]
+            input_messages = prepare_sampling_messages(messages)
             if not input_messages:
                 return None
 
@@ -485,30 +486,35 @@ def main(
                 ]
                 idx += n
 
-        def train_step(
-            step: int,
-            prompt_groups: list[PromptGroup],
-            loop_stats: dict | None = None,
-        ) -> tuple[int, dict]:
-            """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
+        def fwd_bwd_one(prompt_groups: list[PromptGroup]):
+            """One minibatch forward/backward call after reference forward."""
+            if not prompt_groups:
+                raise ValueError("fwd_bwd_one requires at least one prompt group")
             import time as _t
-
-            t0 = _t.time()
-            ref_forward(prompt_groups)
-            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _t.time() - t0)
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
             t0 = _t.time()
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("[step %d] prox_forward: done (%.1fs)", step + 1, _t.time() - t0)
+            logger.info("prox_forward: done (%.1fs)", _t.time() - t0)
 
             t0 = _t.time()
             fwd_bwd_result = policy.forward_backward_custom(
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
-            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _t.time() - t0)
+            logger.info("fwd_bwd: done (%.1fs)", _t.time() - t0)
+            return fwd_bwd_result
+
+        def finish_step(
+            step: int,
+            prompt_groups: list[PromptGroup],
+            fwd_bwd_results: list,
+            n_accum: int,
+            loop_stats: dict | None = None,
+        ) -> tuple[int, dict]:
+            """optim_step + hotload + metrics after all minibatches in a step."""
+            import time as _t
 
             t0 = _t.time()
             optim_result = policy.optim_step(adam_params)
@@ -530,9 +536,9 @@ def main(
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
-                fwd_bwd_results=[fwd_bwd_result],
+                fwd_bwd_results=fwd_bwd_results,
                 optim_result=optim_result,
-                n_accum=1,
+                n_accum=n_accum,
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
@@ -560,18 +566,23 @@ def main(
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
-        train_fns = TrainStepFns(train_step=train_step)
+        train_fns = MinibatchTrainFns(
+            ref_forward_batch=ref_forward,
+            fwd_bwd_one=fwd_bwd_one,
+            finish_step=finish_step,
+        )
 
         all_rows = dataset * cfg.epochs
 
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(row) for row in all_rows),
-            train_fns=train_fns,
+            minibatch_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
             max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
             global_step=step_offset,
             metrics_callback=_loop_metrics_callback,
+            completions_per_prompt=completions_per_prompt,
         ))
 
         # -- Final checkpoint ----------------------------------------------------

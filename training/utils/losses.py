@@ -245,3 +245,59 @@ def make_batch_sft_loss_fn(
         }
 
     return loss_fn
+
+
+def make_batch_weighted_sft_loss_fn(
+) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
+    """Cross-entropy loss over per-token supervised weights stored on each datum.
+
+    This is the renderer-safe path for multi-turn SFT. Each datum must include
+    ``loss_fn_inputs["weights"]`` aligned with ``target_tokens``.
+    """
+
+    def loss_fn(
+        data: List[tinker.Datum],
+        logprobs_list: List[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        assert len(data) == len(logprobs_list)
+
+        total_loss = torch.tensor(0.0)
+        total_weight = 0.0
+        total_nll = 0.0
+
+        for datum, logprobs in zip(data, logprobs_list, strict=True):
+            weights_td = datum.loss_fn_inputs.get("weights")
+            if weights_td is None:
+                raise ValueError("Weighted SFT expects each datum to include loss_fn_inputs['weights'].")
+
+            weights = weights_td.to_torch().to(device=logprobs.device, dtype=logprobs.dtype)
+            if len(weights) != len(logprobs):
+                raise ValueError(
+                    f"weights/logprobs length mismatch: {len(weights)} != {len(logprobs)}"
+                )
+
+            sample_weight = float(weights.sum().item())
+            if sample_weight <= 0:
+                continue
+
+            sample_nll = -(logprobs * weights).sum()
+            total_loss = total_loss + sample_nll
+            total_weight += sample_weight
+            with torch.no_grad():
+                total_nll += float(sample_nll.item())
+
+        avg_loss = total_loss / total_weight if total_weight > 0 else total_loss
+        with torch.no_grad():
+            avg_nll = total_nll / total_weight if total_weight > 0 else 0.0
+            ppl = torch.exp(torch.tensor(avg_nll)).item()
+
+        return avg_loss, {
+            "ce_loss": avg_nll,
+            "ce_loss_sum": total_nll,
+            "ppl": ppl,
+            "response_tokens": total_weight,
+            "weighted_tokens": total_weight,
+            "batch_size": len(logprobs_list),
+        }
+
+    return loss_fn

@@ -42,7 +42,7 @@ from training.examples.frozen_lake.frozen_lake_rollout import (
 )
 from training.examples.frozen_lake.masking import (
     compute_model_output_spans,
-    build_training_loss_mask,
+    build_ui_token_mask,
 )
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
@@ -64,6 +64,7 @@ from training.utils import (
     setup_deployment,
     create_trainer_job,
     compute_advantages,
+    build_datum_from_token_mask,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import MinibatchTrainFns, run_rl_loop
@@ -245,23 +246,16 @@ def evaluation_row_to_training_data(
     # prompt_len = first turn's prompt length (system + user message, before any model output)
     first_prompt_len = len([int(x) for x in (token_turn_traces[0].get("prompt_ids") or [])])
 
-    model_input_len = len(full_tokens) - 1
-
     model_request_traces = extra.get("model_request_traces") or []
     spans = compute_model_output_spans(token_turn_traces, model_request_traces)
-    loss_mask = build_training_loss_mask(spans, model_input_len)
-
-    datum = tinker.Datum(
-        model_input=tinker.ModelInput.from_ints(full_tokens[:-1]),
-        loss_fn_inputs={
-            "target_tokens": tinker.TensorData(
-                data=full_tokens[1:], dtype="int64", shape=[model_input_len]
-            ),
-            "loss_mask": tinker.TensorData(
-                data=loss_mask, dtype="float32", shape=[model_input_len]
-            ),
-        },
+    token_mask = build_ui_token_mask(spans, len(full_tokens))
+    rendered = build_datum_from_token_mask(
+        full_tokens,
+        token_mask,
+        include_loss_mask=True,
     )
+    datum = rendered.datum
+    model_input_len = len(rendered.token_ids) - 1
 
     # Reconstruct inference logprobs aligned to the full sequence.
     # Pad prompt positions with 0.0, then fill in per-turn completion logprobs.

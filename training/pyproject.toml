@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-timeout",
     "math-verify",
 ]
 
@@ -33,3 +34,7 @@ include = ["training*"]
 
 [tool.pytest.ini_options]
 testpaths = ["training/tests"]
+markers = [
+    "e2e: tests that hit remote Fireworks infrastructure",
+    "timeout: per-test timeout budget",
+]
