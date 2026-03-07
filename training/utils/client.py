@@ -60,6 +60,7 @@ class ReconnectableClient:
         lora_rank: int = 0,
         api_key: str = "tml-local",
         default_timeout: int = DEFAULT_TIMEOUT_S,
+        endpoint: TrainerServiceEndpoint | None = None,
     ):
         self._rlor_mgr = rlor_mgr
         self._job_id = job_id
@@ -69,7 +70,10 @@ class ReconnectableClient:
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
         self._client: FiretitanTrainingClient | None = None
-        self._connect()
+        if endpoint:
+            self._use_endpoint(endpoint)
+        else:
+            self._connect()
 
     @property
     def inner(self) -> FiretitanTrainingClient:
@@ -111,11 +115,14 @@ class ReconnectableClient:
 
     # -- Internal --------------------------------------------------------------
 
-    def _connect(self) -> None:
-        ep = self._rlor_mgr.wait_for_existing(self._job_id)
+    def _use_endpoint(self, ep: TrainerServiceEndpoint) -> None:
         svc = FiretitanServiceClient(base_url=ep.base_url, api_key=self._api_key)
         self._client = svc.create_training_client(
             base_model=self._base_model,
             lora_rank=self._lora_rank,
         )
         self._endpoint = ep
+
+    def _connect(self) -> None:
+        ep = self._rlor_mgr.wait_for_existing(self._job_id)
+        self._use_endpoint(ep)

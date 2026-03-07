@@ -57,7 +57,7 @@ from training.utils.timer import timer, flush_timing
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import MinibatchTrainFns, run_rl_loop
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -112,6 +112,18 @@ class Config:
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files.  Each file contains
     prompts, completions, and rewards for every prompt group in that step."""
+
+    policy_job_id: str | None = None
+    """Pre-created RLOR policy trainer job ID (skip creation if set)."""
+
+    policy_base_url: str | None = None
+    """Base URL for the policy trainer (bypass direct route)."""
+
+    reference_job_id: str | None = None
+    """Pre-created RLOR reference trainer job ID (skip creation if set)."""
+
+    reference_base_url: str | None = None
+    """Base URL for the reference trainer (bypass direct route)."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -297,6 +309,8 @@ def main(
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-policy",
                     hot_load_deployment_id=cfg.deployment.deployment_id,
+                    job_id=cfg.policy_job_id,
+                    base_url_override=cfg.policy_base_url,
                 )
                 ref_fut = pool.submit(
                     create_trainer_job, rlor_mgr,
@@ -304,6 +318,8 @@ def main(
                     lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-reference", forward_only=True,
+                    job_id=cfg.reference_job_id,
+                    base_url_override=cfg.reference_base_url,
                 )
                 policy_ep = pol_fut.result()
                 policy_job_id = policy_ep.job_id
@@ -317,13 +333,21 @@ def main(
                 learning_rate=cfg.learning_rate,
                 display_name="grpo-policy",
                 hot_load_deployment_id=cfg.deployment.deployment_id,
+                job_id=cfg.policy_job_id,
+                base_url_override=cfg.policy_base_url,
             )
             policy_job_id = policy_ep.job_id
             reference_ep = None
 
-        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
+        policy = ReconnectableClient(
+            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
+            endpoint=policy_ep if cfg.policy_base_url else None,
+        )
         reference = (
-            ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+            ReconnectableClient(
+                rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
+                endpoint=reference_ep if cfg.reference_base_url else None,
+            )
             if reference_ep else None
         )
 
@@ -485,30 +509,33 @@ def main(
                 ]
                 idx += n
 
-        def train_step(
-            step: int,
-            prompt_groups: list[PromptGroup],
-            loop_stats: dict | None = None,
-        ) -> tuple[int, dict]:
-            """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
+        def fwd_bwd_one(prompt_groups: list[PromptGroup]):
+            """Forward-backward on a micro-batch of prompt groups."""
             import time as _t
-
-            t0 = _t.time()
-            ref_forward(prompt_groups)
-            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _t.time() - t0)
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
             t0 = _t.time()
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("[step %d] prox_forward: done (%.1fs)", step + 1, _t.time() - t0)
+            logger.info("prox_forward: done (%.1fs)", _t.time() - t0)
 
             t0 = _t.time()
             fwd_bwd_result = policy.forward_backward_custom(
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
-            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _t.time() - t0)
+            logger.info("fwd_bwd: done (%.1fs)", _t.time() - t0)
+            return fwd_bwd_result
+
+        def finish_step(
+            step: int,
+            all_groups: list[PromptGroup],
+            fwd_bwd_results: list,
+            n_accum: int,
+            loop_stats: dict,
+        ) -> tuple[int, dict]:
+            """Optimizer step + hotload + metrics."""
+            import time as _t
 
             t0 = _t.time()
             optim_result = policy.optim_step(adam_params)
@@ -529,10 +556,10 @@ def main(
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _t.time() - t0)
 
             metrics = compute_step_metrics(
-                prompt_groups=prompt_groups,
-                fwd_bwd_results=[fwd_bwd_result],
+                prompt_groups=all_groups,
+                fwd_bwd_results=fwd_bwd_results,
                 optim_result=optim_result,
-                n_accum=1,
+                n_accum=n_accum,
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
@@ -550,7 +577,7 @@ def main(
             wandb_log(metrics, step)
 
             if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
+                _dump_trajectory(cfg.trajectory_dir, step, all_groups)
 
             return step, metrics
 
@@ -560,18 +587,23 @@ def main(
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
-        train_fns = TrainStepFns(train_step=train_step)
+        train_fns = MinibatchTrainFns(
+            ref_forward_batch=ref_forward,
+            fwd_bwd_one=fwd_bwd_one,
+            finish_step=finish_step,
+        )
 
         all_rows = dataset * cfg.epochs
 
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(row) for row in all_rows),
-            train_fns=train_fns,
+            minibatch_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
             max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
             global_step=step_offset,
             metrics_callback=_loop_metrics_callback,
+            completions_per_prompt=completions_per_prompt,
         ))
 
         # -- Final checkpoint ----------------------------------------------------
@@ -591,13 +623,13 @@ def main(
     finally:
         wandb_finish()
         if cleanup_on_exit:
-            if policy_job_id:
+            if policy_job_id and not cfg.policy_job_id:
                 try:
                     logger.info("Cleanup: deleting policy trainer job %s", policy_job_id)
                     rlor_mgr.delete(policy_job_id)
                 except Exception as e:
                     logger.warning("Cleanup: failed to delete policy job %s: %s", policy_job_id, e)
-            if reference_job_id:
+            if reference_job_id and not cfg.reference_job_id:
                 try:
                     logger.info("Cleanup: deleting reference trainer job %s", reference_job_id)
                     rlor_mgr.delete(reference_job_id)

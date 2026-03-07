@@ -134,6 +134,9 @@ class FrozenLakeConfig:
         default_factory=lambda: os.environ.get("WANDB_PROJECT", "frozen-lake-grpo")
     )
 
+    policy_job_id: str | None = None
+    reference_job_id: str | None = None
+
 
 def parse_args() -> FrozenLakeConfig:
     parser = argparse.ArgumentParser(description="GRPO training on FrozenLake tool calls")
@@ -166,6 +169,11 @@ def parse_args() -> FrozenLakeConfig:
 
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
     parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "frozen-lake-grpo"))
+
+    parser.add_argument("--policy-job-id", default=None,
+                        help="Pre-created policy trainer job ID (skip creation)")
+    parser.add_argument("--reference-job-id", default=None,
+                        help="Pre-created reference trainer job ID (skip creation)")
 
     return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
 
@@ -275,8 +283,10 @@ def evaluation_row_to_training_data(
 # ---------------------------------------------------------------------------
 
 
-def main():
-    cfg = parse_args()
+def main(cfg: FrozenLakeConfig | None = None) -> dict:
+    """Run FrozenLake GRPO training. Returns a dict with 'steps' and 'rewards'."""
+    if cfg is None:
+        cfg = parse_args()
 
     logger.info("FrozenLake GRPO training: %s", cfg.base_model)
 
@@ -381,7 +391,9 @@ def main():
     policy_job_id: str | None = None
     reference_job_id: str | None = None
     trajectory_log = None
+    global_step = step_offset = 0
 
+    reward_history: list[float] = []
     _shutdown_requested = False
 
     def _signal_handler(signum, frame):
@@ -454,48 +466,76 @@ def main():
     try:
         dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
 
-        if use_reference:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(
-                    create_trainer_job, rlor_mgr,
+        precreated_policy = cfg.policy_job_id is not None
+        precreated_reference = cfg.reference_job_id is not None
+
+        if precreated_policy:
+            policy_job_id = cfg.policy_job_id
+            policy_ep = create_trainer_job(
+                rlor_mgr, base_model=cfg.base_model, infra=infra,
+                job_id=cfg.policy_job_id,
+            )
+        if precreated_reference:
+            reference_job_id = cfg.reference_job_id
+            reference_ep = create_trainer_job(
+                rlor_mgr, base_model=cfg.base_model, infra=infra,
+                job_id=cfg.reference_job_id,
+            )
+
+        if not precreated_policy:
+            if use_reference and not precreated_reference:
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    pol_fut = pool.submit(
+                        create_trainer_job, rlor_mgr,
+                        base_model=cfg.base_model, infra=infra, profile=profile,
+                        lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                        learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                        display_name="frozen-lake-policy",
+                        hot_load_deployment_id=deploy_cfg.deployment_id,
+                    )
+                    ref_fut = pool.submit(
+                        create_trainer_job, rlor_mgr,
+                        base_model=cfg.base_model, infra=infra, profile=profile,
+                        lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                        learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                        display_name="frozen-lake-reference", forward_only=True,
+                    )
+                    errors = []
+                    for fut, label in [(pol_fut, "policy"), (ref_fut, "reference")]:
+                        try:
+                            ep = fut.result()
+                            if label == "policy":
+                                policy_ep = ep
+                                policy_job_id = ep.job_id
+                            else:
+                                reference_ep = ep
+                                reference_job_id = ep.job_id
+                        except Exception as e:
+                            logger.error("Failed to create %s trainer job: %s", label, e)
+                            errors.append(e)
+                    if errors:
+                        raise errors[0]
+            else:
+                policy_ep = create_trainer_job(
+                    rlor_mgr,
                     base_model=cfg.base_model, infra=infra, profile=profile,
                     lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
                     display_name="frozen-lake-policy",
                     hot_load_deployment_id=deploy_cfg.deployment_id,
                 )
-                ref_fut = pool.submit(
-                    create_trainer_job, rlor_mgr,
-                    base_model=cfg.base_model, infra=infra, profile=profile,
-                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                    display_name="frozen-lake-reference", forward_only=True,
-                )
-                errors = []
-                for fut, label in [(pol_fut, "policy"), (ref_fut, "reference")]:
-                    try:
-                        ep = fut.result()
-                        if label == "policy":
-                            policy_ep = ep
-                            policy_job_id = ep.job_id
-                        else:
-                            reference_ep = ep
-                            reference_job_id = ep.job_id
-                    except Exception as e:
-                        logger.error("Failed to create %s trainer job: %s", label, e)
-                        errors.append(e)
-                if errors:
-                    raise errors[0]
-        else:
-            policy_ep = create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model, infra=infra, profile=profile,
-                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                display_name="frozen-lake-policy",
-                hot_load_deployment_id=deploy_cfg.deployment_id,
-            )
-            policy_job_id = policy_ep.job_id
+                policy_job_id = policy_ep.job_id
+                if use_reference and not precreated_reference:
+                    reference_ep = create_trainer_job(
+                        rlor_mgr,
+                        base_model=cfg.base_model, infra=infra, profile=profile,
+                        lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                        learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                        display_name="frozen-lake-reference", forward_only=True,
+                    )
+                    reference_job_id = reference_ep.job_id
+
+        if not use_reference:
             reference_ep = None
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
@@ -743,6 +783,7 @@ def main():
                 "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
                 step, avg_reward, avg_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
             )
+            reward_history.append(avg_reward)
             log_metrics_json(step, reward=avg_reward, kl=avg_kl)
             _wandb_step[0] = max(_wandb_step[0] + 1, step)
             wandb_log(metrics, _wandb_step[0])
@@ -796,12 +837,16 @@ def main():
         if trajectory_log and not trajectory_log.closed:
             trajectory_log.close()
         wandb_finish()
-        for job_id, label in [(policy_job_id, "policy"), (reference_job_id, "reference")]:
-            _cleanup_job(job_id, label)
+        if not precreated_policy:
+            _cleanup_job(policy_job_id, "policy")
+        if not precreated_reference:
+            _cleanup_job(reference_job_id, "reference")
         if deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
             _cleanup_deployment(deploy_cfg.deployment_id)
         elif deploy_cfg.deployment_id:
             logger.info("Keeping deployment %s (KEEP_DEPLOYMENT=1)", deploy_cfg.deployment_id)
+
+    return {"steps": global_step - step_offset, "rewards": reward_history}
 
 
 if __name__ == "__main__":

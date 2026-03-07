@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import logging
 
-from fireworks.training.sdk.errors import DOCS_HOTLOAD, DOCS_API_KEYS, DOCS_DEPLOYMENTS, format_sdk_error
+from fireworks.training.sdk.errors import format_sdk_error
+
+try:
+    from fireworks.training.sdk.errors import DOCS_HOTLOAD, DOCS_API_KEYS, DOCS_DEPLOYMENTS
+except ImportError:
+    DOCS_HOTLOAD = "https://docs.fireworks.ai/fine-tuning/rl-fine-tuning"
+    DOCS_API_KEYS = "https://docs.fireworks.ai/getting-started/api-keys"
+    DOCS_DEPLOYMENTS = "https://docs.fireworks.ai/getting-started/deployments"
 from training.utils.config import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
 
 logger = logging.getLogger(__name__)
