@@ -12,6 +12,12 @@ Phase 1 targets:
 - no example training script below `60%`
 - no scoped file with `NO DATA`
 
+Current status:
+
+- overall scoped coverage: met (`71.1%`)
+- no `NO DATA` files in the scoped set: met
+- remaining misses: `recipes/dpo_loop.py`, `recipes/rl_loop.py`, and `examples/frozen_lake/train_frozen_lake.py`
+
 The goal is not line-count inflation. New tests should cover:
 
 - config normalization and validation
