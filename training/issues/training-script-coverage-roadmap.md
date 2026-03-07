@@ -18,6 +18,8 @@ Current status:
 - per-file floor for all scoped files: met (`>= 78.1%`)
 - no `NO DATA` files in the scoped set: met
 - CI ratchet: enabled (`overall >= 85%`, `per-file >= 75%`)
+- multimodal renderer coverage: enabled through the upstream
+  `tinker-cookbook` git SHA until the PyPI release catches up
 
 The goal is not line-count inflation. New tests should cover:
 

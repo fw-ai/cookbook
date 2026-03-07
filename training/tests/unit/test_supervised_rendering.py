@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import pytest
 import torch
+import tinker
 from tinker_cookbook.renderers import TrainOnWhat
 
 from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.data import prepare_sampling_messages
 from training.utils.supervised import (
+    build_renderer,
     build_datum_from_token_mask,
+    resolve_renderer_name,
     render_preference_pair,
     normalize_messages,
     render_messages_to_datum,
@@ -38,6 +41,27 @@ class SequenceRenderer:
         return self.outputs[len(self.calls) - 1]
 
 
+class ModelInputRenderer:
+    def __init__(self):
+        self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
+        self.calls.append((messages, train_on_what))
+        model_input = tinker.ModelInput(
+            chunks=[
+                tinker.EncodedTextChunk(tokens=[10, 11]),
+                tinker.types.ImageAssetPointerChunk(
+                    location="https://example.com/cat.png",
+                    format="png",
+                    expected_tokens=3,
+                ),
+                tinker.EncodedTextChunk(tokens=[12, 13]),
+            ]
+        )
+        weights = torch.tensor([0, 0, 0, 0, 1, 1, 1], dtype=torch.float32)
+        return model_input, weights
+
+
 def test_render_messages_to_datum_preserves_multi_turn_weights():
     renderer = StubRenderer(
         tokens=[10, 11, 12, 13, 14, 15, 16, 17, 18],
@@ -65,23 +89,38 @@ def test_render_messages_to_datum_preserves_multi_turn_weights():
     assert rendered.datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
 
 
-def test_render_messages_to_datum_rejects_multimodal_content_for_text_renderer():
-    renderer = StubRenderer(tokens=[1, 2], weights=[0, 1])
+def test_render_messages_to_datum_supports_multimodal_model_input():
+    renderer = ModelInputRenderer()
 
-    with pytest.raises(ValueError, match="Multimodal content is not supported"):
-        render_messages_to_datum(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "look at this"},
-                        {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
-                    ],
-                },
-                {"role": "assistant", "content": "cat"},
-            ],
-            renderer=renderer,
-        )
+    rendered = render_messages_to_datum(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                    {"type": "text", "text": " now"},
+                ],
+            },
+            {"role": "assistant", "content": "cat"},
+        ],
+        renderer=renderer,
+    )
+
+    normalized_messages, train_on_what = renderer.calls[0]
+    assert train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+    assert normalized_messages[0]["content"] == [
+        {"type": "text", "text": "look at this"},
+        {"type": "image", "image": "https://example.com/cat.png"},
+        {"type": "text", "text": " now"},
+    ]
+    assert rendered.token_ids[:2] == [10, 11]
+    assert len(rendered.token_ids) == 7
+    assert len(rendered.token_weights) == 7
+    assert rendered.token_weights == [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    assert len(rendered.datum.model_input.chunks) == 3
+    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [11, 0, 0, 0, 12, 13]
+    assert rendered.datum.loss_fn_inputs["weights"].data == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
 
 
 def test_build_datum_from_token_mask_reuses_ui_mask_semantics():
@@ -117,7 +156,62 @@ def test_normalize_messages_supports_openai_tool_call_shape():
         ]
     )
 
-    assert normalized[0]["tool_calls"] == [{"name": "lake_move", "args": {"action": "RIGHT"}}]
+    tool_call = normalized[0]["tool_calls"][0]
+    assert tool_call.function.name == "lake_move"
+    assert tool_call.function.arguments == '{"action": "RIGHT"}'
+
+
+def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():
+    normalized = normalize_messages(
+        [
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": "lake_move",
+                "content": "board state",
+            },
+            {
+                "role": "assistant",
+                "thinking": "consider options",
+                "content": "RIGHT",
+            },
+        ]
+    )
+
+    assert normalized[0]["tool_call_id"] == "call_1"
+    assert normalized[0]["name"] == "lake_move"
+    assert normalized[1]["content"] == [
+        {"type": "thinking", "thinking": "consider options"},
+        {"type": "text", "text": "RIGHT"},
+    ]
+
+
+def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
+    calls: list[tuple[str, object | None]] = []
+
+    def fake_get_image_processor(model_name):
+        assert model_name == "Qwen/Qwen3-VL-30B-A3B-Instruct"
+        return "image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        calls.append((name, image_processor))
+        return "renderer"
+
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    renderer = build_renderer(
+        tokenizer="tok",
+        tokenizer_model="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        renderer_name="qwen3_vl_instruct",
+    )
+
+    assert renderer == "renderer"
+    assert calls == [("qwen3_vl_instruct", "image-processor")]
+
+
+def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_5():
+    assert resolve_renderer_name("moonshotai/Kimi-K2.5") == "kimi_k25"
 
 
 def test_weighted_sft_loss_uses_sparse_weights():
