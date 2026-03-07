@@ -69,7 +69,17 @@ def test_util_imports(module: str):
 
 EXAMPLE_MODULES_WITH_ENV = [
     ("training.examples.deepmath_rl.train_deepmath", "math_verify", {"FIREWORKS_API_KEY": "test"}),
+    ("training.examples.text2sql_sft.train_sft", "fireworks", {"FIREWORKS_API_KEY": "test"}),
 ]
+
+EXAMPLE_MODULES = [
+    "training.examples.deepmath_rl.prepare_data",
+]
+
+
+@pytest.mark.parametrize("module", EXAMPLE_MODULES)
+def test_example_imports_without_env(module: str):
+    importlib.import_module(module)
 
 
 @pytest.mark.parametrize(
