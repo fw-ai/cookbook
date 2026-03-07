@@ -12,6 +12,7 @@ token-level ``weights`` so training uses the same spans that the UI shows.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
@@ -19,13 +20,27 @@ from typing import Any, Iterable, Mapping, Sequence
 import torch
 import tinker
 from tinker_cookbook.model_info import get_recommended_renderer_name
-from tinker_cookbook.renderers import Message, Renderer, TrainOnWhat, get_renderer
-from tinker_cookbook.supervised.common import datum_from_tokens_weights
+from tinker_cookbook.renderers import Message, Renderer, ToolCall, TrainOnWhat, get_renderer
+
+try:  # Newer Tinker multimodal path
+    from tinker_cookbook.image_processing_utils import get_image_processor
+except ImportError:  # pragma: no cover - old Tinker fallback
+    get_image_processor = None  # type: ignore[assignment]
+
+try:  # Newer Tinker multimodal path
+    from tinker_cookbook.supervised.common import datum_from_model_input_weights
+except ImportError:  # pragma: no cover - old Tinker fallback
+    datum_from_model_input_weights = None  # type: ignore[assignment]
+
+try:  # Older released Tinker cookbook
+    from tinker_cookbook.supervised.common import datum_from_tokens_weights
+except ImportError:  # pragma: no cover - new Tinker fallback
+    datum_from_tokens_weights = None  # type: ignore[assignment]
 
 
 @dataclass(frozen=True)
 class RenderedSupervisedDatum:
-    """Rendered tokens, token-level weights, and the final training datum."""
+    """Rendered sequence ids, token-level weights, and the final training datum."""
 
     token_ids: list[int]
     token_weights: list[float]
@@ -57,6 +72,9 @@ def resolve_renderer_name(
     """Choose the renderer used for message -> token rendering."""
     if renderer_name:
         return renderer_name
+    normalized_model_name = tokenizer_model.lower()
+    if "moonshotai/kimi-k2.5" in normalized_model_name:
+        return "kimi_k25"
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
@@ -72,21 +90,44 @@ def build_renderer(
     renderer_name: str = "",
 ) -> Renderer:
     """Construct the Tinker renderer used for supervised formatting."""
-    return get_renderer(resolve_renderer_name(tokenizer_model, renderer_name), tokenizer)
+    resolved_name = resolve_renderer_name(tokenizer_model, renderer_name)
+    if get_image_processor is not None and _renderer_uses_images(resolved_name):
+        return get_renderer(
+            resolved_name,
+            tokenizer,
+            image_processor=get_image_processor(tokenizer_model),
+        )
+    return get_renderer(resolved_name, tokenizer)
 
 
-def _normalize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
-    """Normalize common tool-call shapes into Tinker's ``{\"name\", \"args\"}`` form."""
-    normalized: list[dict[str, Any]] = []
+def _renderer_uses_images(renderer_name: str) -> bool:
+    return any(
+        marker in renderer_name
+        for marker in (
+            "_vl",
+            "qwen3_5",
+            "kimi_k25",
+        )
+    )
+
+
+def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
+    """Normalize common tool-call shapes into Tinker's structured ToolCall form."""
+    normalized: list[ToolCall] = []
     for tool_call in tool_calls or []:
         if not isinstance(tool_call, Mapping):
             raise TypeError(f"Unsupported tool call type: {type(tool_call)!r}")
 
         if isinstance(tool_call.get("name"), str) and isinstance(tool_call.get("args"), Mapping):
-            normalized.append({
-                "name": tool_call["name"],
-                "args": dict(tool_call["args"]),
-            })
+            normalized.append(
+                ToolCall(
+                    function=ToolCall.FunctionBody(
+                        name=tool_call["name"],
+                        arguments=json.dumps(dict(tool_call["args"])),
+                    ),
+                    id=tool_call.get("id"),
+                )
+            )
             continue
 
         function = tool_call.get("function")
@@ -98,44 +139,78 @@ def _normalize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
                 parsed_args = dict(raw_args)
             else:
                 raise TypeError(f"Unsupported tool call arguments type: {type(raw_args)!r}")
-            normalized.append({
-                "name": function["name"],
-                "args": parsed_args,
-            })
+            normalized.append(
+                ToolCall(
+                    function=ToolCall.FunctionBody(
+                        name=function["name"],
+                        arguments=json.dumps(parsed_args),
+                    ),
+                    id=tool_call.get("id"),
+                )
+            )
             continue
 
         raise ValueError(f"Unsupported tool call shape: {tool_call}")
     return normalized
 
 
-def _normalize_content(content: Any) -> str:
-    """Convert OpenAI-style message content into plain text for text renderers."""
+def _normalize_image_part(part: Mapping[str, Any]) -> dict[str, Any]:
+    image_value = part.get("image")
+    if image_value is not None:
+        return {"type": "image", "image": image_value}
+
+    image_url = part.get("image_url")
+    if isinstance(image_url, str):
+        return {"type": "image", "image": image_url}
+    if isinstance(image_url, Mapping) and isinstance(image_url.get("url"), str):
+        return {"type": "image", "image": image_url["url"]}
+    raise TypeError(f"Unsupported image content part: {part}")
+
+
+def _normalize_content(content: Any) -> str | list[dict[str, Any]]:
+    """Convert OpenAI-style message content into Tinker's text or structured format."""
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     if isinstance(content, Mapping):
+        part_type = content.get("type")
+        if part_type in {"image", "image_url"}:
+            return [_normalize_image_part(content)]
+        if part_type == "thinking" and isinstance(content.get("thinking"), str):
+            return [{"type": "thinking", "thinking": content["thinking"]}]
         if isinstance(content.get("text"), str):
             return content["text"]
         raise TypeError(f"Unsupported message content mapping: {content}")
     if isinstance(content, Sequence):
-        text_parts: list[str] = []
+        normalized_parts: list[dict[str, Any]] = []
         for part in content:
             if isinstance(part, str):
-                text_parts.append(part)
+                normalized_parts.append({"type": "text", "text": part})
                 continue
             if not isinstance(part, Mapping):
                 raise TypeError(f"Unsupported message content part: {part!r}")
             part_type = part.get("type")
             if part_type == "text" and isinstance(part.get("text"), str):
-                text_parts.append(part["text"])
+                normalized_parts.append({"type": "text", "text": part["text"]})
                 continue
-            raise ValueError(
-                "Multimodal content is not supported by the shared text renderer. "
-                "Use the token_ids + mask path for eval-protocol visual trajectories."
-            )
-        return "".join(text_parts)
+            if part_type in {"image", "image_url"}:
+                normalized_parts.append(_normalize_image_part(part))
+                continue
+            if part_type == "thinking" and isinstance(part.get("thinking"), str):
+                normalized_parts.append({"type": "thinking", "thinking": part["thinking"]})
+                continue
+            raise TypeError(f"Unsupported message content part: {part!r}")
+        if normalized_parts and all(part["type"] == "text" for part in normalized_parts):
+            return "".join(str(part["text"]) for part in normalized_parts)
+        return normalized_parts
     raise TypeError(f"Unsupported message content type: {type(content)!r}")
+
+
+def _ensure_content_parts(content: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    return list(content)
 
 
 def normalize_messages(messages: Iterable[Mapping[str, Any]]) -> list[Message]:
@@ -159,15 +234,65 @@ def normalize_messages(messages: Iterable[Mapping[str, Any]]) -> list[Message]:
         if thinking is not None:
             if not isinstance(thinking, str):
                 raise TypeError(f"Unsupported thinking value type: {type(thinking)!r}")
-            normalized_message["thinking"] = thinking
+            normalized_message["content"] = [
+                {"type": "thinking", "thinking": thinking},
+                *_ensure_content_parts(normalized_message["content"]),
+            ]
 
         trainable = message.get("trainable")
         if trainable is not None:
             normalized_message["trainable"] = bool(trainable)
 
+        tool_call_id = message.get("tool_call_id")
+        if tool_call_id is not None:
+            normalized_message["tool_call_id"] = str(tool_call_id)
+
+        name = message.get("name")
+        if name is not None:
+            normalized_message["name"] = str(name)
+
         normalized.append(normalized_message)
 
     return normalized
+
+
+def _stable_chunk_sentinel(chunk: Any) -> int:
+    if isinstance(chunk, tinker.types.ImageAssetPointerChunk):
+        payload = f"{chunk.type}:{chunk.location}:{chunk.format}:{chunk.expected_tokens}".encode()
+    elif isinstance(chunk, tinker.types.ImageChunk):
+        payload = b"|".join(
+            [
+                chunk.type.encode(),
+                chunk.format.encode(),
+                str(chunk.expected_tokens).encode(),
+                bytes(chunk.data),
+            ]
+        )
+    else:  # pragma: no cover - defensive branch for future chunk types
+        payload = repr(chunk).encode()
+
+    digest = hashlib.sha1(payload).digest()
+    return -(int.from_bytes(digest[:8], "big") + 1)
+
+
+def _flatten_model_input_sequence_ids(model_input: tinker.ModelInput) -> list[int]:
+    sequence_ids: list[int] = []
+    for chunk in model_input.chunks:
+        if isinstance(chunk, tinker.types.EncodedTextChunk):
+            sequence_ids.extend(int(token) for token in chunk.tokens)
+            continue
+
+        sentinel = _stable_chunk_sentinel(chunk)
+        sequence_ids.extend([sentinel] * int(chunk.length))
+    return sequence_ids
+
+
+def _rendered_sequence_ids_from_datum(datum: tinker.Datum) -> list[int]:
+    sequence_ids = _flatten_model_input_sequence_ids(datum.model_input)
+    target_tokens = [int(x) for x in datum.loss_fn_inputs["target_tokens"].data]
+    if not target_tokens:
+        raise ValueError("Need at least one target token to reconstruct the rendered sequence.")
+    return sequence_ids + [target_tokens[-1]]
 
 
 def build_datum_from_tokens_and_weights(
@@ -193,10 +318,19 @@ def build_datum_from_tokens_and_weights(
 
     token_tensor = torch.tensor(tokens, dtype=torch.int64)
     weight_tensor = torch.tensor(weights, dtype=torch.float32)
-    datum = datum_from_tokens_weights(token_tensor, weight_tensor)
+    if datum_from_tokens_weights is not None:
+        datum = datum_from_tokens_weights(token_tensor, weight_tensor, max_length=max_seq_len)
+    else:
+        if datum_from_model_input_weights is None:  # pragma: no cover - impossible if imports succeeded
+            raise RuntimeError("Tinker cookbook does not expose a supported supervised datum builder.")
+        datum = datum_from_model_input_weights(
+            tinker.ModelInput.from_ints(tokens),
+            weight_tensor,
+            max_length=max_seq_len,
+        )
 
     if include_loss_mask:
-        shifted_weights = [float(x) for x in weights[1:]]
+        shifted_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
         datum.loss_fn_inputs["loss_mask"] = tinker.TensorData(
             data=shifted_weights,
             dtype="float32",
@@ -204,8 +338,53 @@ def build_datum_from_tokens_and_weights(
         )
 
     return RenderedSupervisedDatum(
-        token_ids=tokens,
-        token_weights=weights,
+        token_ids=[int(x) for x in datum.model_input.to_ints()] + [int(datum.loss_fn_inputs["target_tokens"].data[-1])],
+        token_weights=[0.0] + [float(x) for x in datum.loss_fn_inputs["weights"].data],
+        datum=datum,
+    )
+
+
+def build_datum_from_model_input_and_weights(
+    model_input: tinker.ModelInput,
+    token_weights: Sequence[int | float],
+    *,
+    max_seq_len: int | None = None,
+    include_loss_mask: bool = False,
+) -> RenderedSupervisedDatum:
+    """Build a weighted datum from a multimodal-capable ``ModelInput``."""
+    if datum_from_model_input_weights is None:
+        try:
+            token_ids = model_input.to_ints()
+        except ValueError as exc:
+            raise ValueError(
+                "Installed tinker-cookbook does not support multimodal supervised data. "
+                "Upgrade to the upstream multimodal renderer build."
+            ) from exc
+        return build_datum_from_tokens_and_weights(
+            token_ids,
+            token_weights,
+            max_seq_len=max_seq_len,
+            include_loss_mask=include_loss_mask,
+        )
+
+    weight_tensor = torch.tensor([float(x) for x in token_weights], dtype=torch.float32)
+    if weight_tensor.numel() != model_input.length:
+        raise ValueError(
+            f"model_input/weights length mismatch: {model_input.length} != {weight_tensor.numel()}"
+        )
+    datum = datum_from_model_input_weights(model_input, weight_tensor, max_length=max_seq_len)
+
+    if include_loss_mask:
+        shifted_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
+        datum.loss_fn_inputs["loss_mask"] = tinker.TensorData(
+            data=shifted_weights,
+            dtype="float32",
+            shape=[len(shifted_weights)],
+        )
+
+    return RenderedSupervisedDatum(
+        token_ids=_rendered_sequence_ids_from_datum(datum),
+        token_weights=[0.0] + [float(x) for x in datum.loss_fn_inputs["weights"].data],
         datum=datum,
     )
 
@@ -254,13 +433,22 @@ def render_messages_to_datum(
 ) -> RenderedSupervisedDatum:
     """Render a multi-turn conversation into the shared weighted datum format."""
     normalized_messages = normalize_messages(messages)
-    tokens, weights = renderer.build_supervised_example(
+    rendered_input, weights = renderer.build_supervised_example(
         normalized_messages,
         train_on_what=parse_train_on_what(train_on_what),
     )
+    weight_values = weights.tolist() if hasattr(weights, "tolist") else list(weights)
+    if isinstance(rendered_input, tinker.ModelInput):
+        return build_datum_from_model_input_and_weights(
+            rendered_input,
+            weight_values,
+            max_seq_len=max_seq_len,
+            include_loss_mask=include_loss_mask,
+        )
+    token_values = rendered_input.tolist() if hasattr(rendered_input, "tolist") else list(rendered_input)
     return build_datum_from_tokens_and_weights(
-        tokens.tolist(),
-        weights.tolist(),
+        token_values,
+        weight_values,
         max_seq_len=max_seq_len,
         include_loss_mask=include_loss_mask,
     )
@@ -279,15 +467,17 @@ def _render_preference_item_tokens(
     *,
     renderer: Renderer,
     tokenizer: Any,
-) -> list[int]:
+) -> tuple[list[int], tinker.Datum] | None:
     if "messages" in item:
         messages = item.get("messages") or []
         if not messages:
-            return []
-        return render_messages_to_datum(messages, renderer=renderer).token_ids
+            return None
+        rendered = render_messages_to_datum(messages, renderer=renderer)
+        return rendered.token_ids, rendered.datum
     if isinstance(item.get("text"), str):
-        return [int(x) for x in tokenizer.encode(item["text"])]
-    return []
+        token_ids = [int(x) for x in tokenizer.encode(item["text"])]
+        return token_ids, build_next_token_datum(token_ids)
+    return None
 
 
 def render_preference_pair(
@@ -299,8 +489,12 @@ def render_preference_pair(
     max_seq_len: int | None = None,
 ) -> RenderedPreferencePair | None:
     """Render a chosen/rejected pair through the shared tokenizer path."""
-    chosen_tokens = _render_preference_item_tokens(chosen, renderer=renderer, tokenizer=tokenizer)
-    rejected_tokens = _render_preference_item_tokens(rejected, renderer=renderer, tokenizer=tokenizer)
+    chosen_rendered = _render_preference_item_tokens(chosen, renderer=renderer, tokenizer=tokenizer)
+    rejected_rendered = _render_preference_item_tokens(rejected, renderer=renderer, tokenizer=tokenizer)
+    if chosen_rendered is None or rejected_rendered is None:
+        return None
+    chosen_tokens, chosen_datum = chosen_rendered
+    rejected_tokens, rejected_datum = rejected_rendered
     if len(chosen_tokens) < 2 or len(rejected_tokens) < 2:
         return None
     if max_seq_len is not None and (
@@ -312,6 +506,6 @@ def render_preference_pair(
         chosen_tokens=chosen_tokens,
         rejected_tokens=rejected_tokens,
         response_start=_common_prefix_length(chosen_tokens, rejected_tokens),
-        chosen_datum=build_next_token_datum(chosen_tokens),
-        rejected_datum=build_next_token_datum(rejected_tokens),
+        chosen_datum=chosen_datum,
+        rejected_datum=rejected_datum,
     )

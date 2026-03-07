@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "fireworks-ai>=1.0.0a36,<2",
-    "tinker-cookbook>=0.1.0",
+    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git@41cc57642f6373f342151ad95d418349d85512c5",
     "eval-protocol>=0.3.23",
     "tqdm",
     "torch",
@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",
     "pytest-timeout",
     "math-verify",
 ]
@@ -37,4 +38,21 @@ testpaths = ["training/tests"]
 markers = [
     "e2e: tests that hit remote Fireworks infrastructure",
     "timeout: per-test timeout budget",
+]
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["."]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+include = [
+    "recipes/*.py",
+    "examples/*/train_*.py",
+    "examples/*/prepare_data.py",
+]
+omit = [
+    "*/__init__.py",
 ]

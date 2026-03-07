@@ -162,3 +162,19 @@ tests/              Unit and end-to-end tests
 uv pip install -e ".[dev]"
 pytest tests/
 ```
+
+Coverage for the training entrypoints:
+
+```bash
+cd training
+pytest -q tests/unit tests/test_smoke_imports.py examples/frozen_lake/test_masking.py \
+  --cov=. \
+  --cov-report=term-missing \
+  --cov-report=json:coverage.json
+python tests/coverage_summary.py coverage.json
+```
+
+See [issues/training-script-coverage-baseline.md](./issues/training-script-coverage-baseline.md)
+for the current baseline and
+[issues/training-script-coverage-roadmap.md](./issues/training-script-coverage-roadmap.md)
+for the expansion plan.
