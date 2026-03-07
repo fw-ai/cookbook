@@ -5,8 +5,22 @@ from types import SimpleNamespace
 
 import pytest
 import transformers
+import torch
 
 import training.recipes.dpo_loop as module
+
+
+class SequenceRenderer:
+    def __init__(self, outputs: list[tuple[list[int], list[float]]]):
+        self.outputs = [
+            (torch.tensor(tokens, dtype=torch.int64), torch.tensor(weights, dtype=torch.float32))
+            for tokens, weights in outputs
+        ]
+        self.calls: list = []
+
+    def build_supervised_example(self, messages, train_on_what):
+        self.calls.append((messages, train_on_what))
+        return self.outputs[len(self.calls) - 1]
 
 
 def test_tokenize_pair_handles_invalid_filtered_and_valid(monkeypatch):
@@ -132,6 +146,66 @@ def test_cache_ref_logprobs_batches_results(monkeypatch):
             "response_start": 2,
         },
     }
+
+
+def test_cache_ref_logprobs_preserves_multi_turn_preference_history():
+    raw_data = [
+        {
+            "chosen": {
+                "messages": [
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                    {"role": "user", "content": "u2"},
+                    {"role": "assistant", "content": "chosen"},
+                ]
+            },
+            "rejected": {
+                "messages": [
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                    {"role": "user", "content": "u2"},
+                    {"role": "assistant", "content": "rejected"},
+                ]
+            },
+        }
+    ]
+    renderer = SequenceRenderer(
+        outputs=[
+            ([1, 2, 3, 4, 5, 6, 7], [0, 0, 0, 0, 1, 1, 1]),
+            ([1, 2, 3, 4, 8, 9], [0, 0, 0, 0, 1, 1]),
+        ]
+    )
+
+    class FakeReference:
+        def forward(self, datums, loss_fn):
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {"logprobs": SimpleNamespace(data=[-0.1, -0.2, -0.3])},
+                    {"logprobs": SimpleNamespace(data=[-0.4, -0.5])},
+                ]
+            )
+
+    ref_cache, filtered_count = asyncio.run(
+        module._cache_ref_logprobs(
+            raw_data,
+            FakeReference(),
+            tokenizer=None,
+            renderer=renderer,
+            max_seq_len=32,
+            concurrency=1,
+            batch_size=1,
+        )
+    )
+
+    assert filtered_count == 0
+    assert list(ref_cache) == [0]
+    assert ref_cache[0]["response_start"] == 4
+    chosen_messages, _ = renderer.calls[0]
+    rejected_messages, _ = renderer.calls[1]
+    assert [m["role"] for m in chosen_messages] == ["user", "assistant", "user", "assistant"]
+    assert [m["content"] for m in chosen_messages] == ["u1", "a1", "u2", "chosen"]
+    assert [m["role"] for m in rejected_messages] == ["user", "assistant", "user", "assistant"]
+    assert [m["content"] for m in rejected_messages] == ["u1", "a1", "u2", "rejected"]
 
 
 def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):

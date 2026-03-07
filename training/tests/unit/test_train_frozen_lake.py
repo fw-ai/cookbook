@@ -4,7 +4,7 @@ import json
 import sys
 from types import SimpleNamespace
 
-from eval_protocol.models import EvaluationRow, InputMetadata
+from eval_protocol.models import EvaluationRow, InputMetadata, Message
 import httpx
 
 import training.examples.frozen_lake.train_frozen_lake as train_module
@@ -125,6 +125,51 @@ def test_evaluation_row_to_training_data_builds_weighted_episode():
     assert datums[0].loss_fn_inputs["weights"].data == loss_mask
     assert datums[0].loss_fn_inputs["loss_mask"].data == loss_mask
     assert ui_mask == [0, 0, 0, 1, 1, 0, 0, 0, 2, 2, 2]
+
+
+def test_evaluation_row_to_training_data_handles_multimodal_row_messages():
+    row = EvaluationRow(input_metadata=InputMetadata(row_id="visual-episode"))
+    row.messages = [
+        Message(
+            role="user",
+            content=[
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                {"type": "text", "text": "FrozenLake grid observation"},
+            ],
+        ),
+        Message(
+            role="tool",
+            content=[
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,def"}},
+            ],
+        ),
+    ]
+    row.execution_metadata.extra = {
+        "token_turn_traces": [
+            {
+                "prompt_ids": [1, 2, 3],
+                "completion_ids": [10, 11],
+                "completion_logprobs": [-0.1, -0.2],
+            },
+            {
+                "prompt_ids": [1, 2, 3, 10, 11, 20, 21],
+                "completion_ids": [30],
+                "completion_logprobs": [-0.3],
+            },
+        ],
+        "model_request_traces": [{"assistant_turn_len": 2}, {}],
+        "step_rewards": [0.0, 1.0],
+        "observation_mode": "image",
+    }
+
+    datums, prompt_len, inf_logprobs, rewards = evaluation_row_to_training_data(row)
+
+    assert prompt_len == 3
+    assert rewards == [1.0]
+    assert inf_logprobs == [[0.0, 0.0, -0.1, -0.2, 0.0, 0.0, -0.3]]
+    assert len(datums) == 1
+    assert datums[0].loss_fn_inputs["target_tokens"].data == [2, 3, 10, 11, 20, 21, 30]
+    assert datums[0].loss_fn_inputs["weights"].data == [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]
 
 
 def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):

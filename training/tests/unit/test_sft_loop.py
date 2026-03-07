@@ -4,8 +4,20 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 import training.recipes.sft_loop as module
+
+
+class StubRenderer:
+    def __init__(self, tokens: list[int], weights: list[float]):
+        self.tokens = torch.tensor(tokens, dtype=torch.int64)
+        self.weights = torch.tensor(weights, dtype=torch.float32)
+        self.calls: list = []
+
+    def build_supervised_example(self, messages, train_on_what):
+        self.calls.append((messages, train_on_what))
+        return self.tokens, self.weights
 
 
 def _write_dataset(tmp_path, rows):
@@ -178,3 +190,84 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         module.main(cfg, rlor_mgr=FakeMgr())
 
     assert deleted_jobs == ["job-sft"]
+
+
+def test_main_uses_real_multi_turn_renderer_path(tmp_path, monkeypatch):
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                    {"role": "user", "content": "u2"},
+                    {"role": "assistant", "content": "a2"},
+                ]
+            }
+        ],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {
+        "batches": [],
+        "deleted_jobs": [],
+    }
+    renderer = StubRenderer(
+        tokens=[100, 101, 102, 103, 104, 105, 106],
+        weights=[0, 0, 1, 1, 0, 1, 1],
+    )
+
+    class FakeMgr:
+        def delete(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+    class FakeInner:
+        def save_state(self, _name):
+            return None
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"gs://unit/{name}")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.inner = FakeInner()
+
+        def forward_backward_custom(self, batch, loss_fn):
+            events["batches"].append(batch)
+            return SimpleNamespace(metrics={"ce_loss_sum": 2.0, "response_tokens": 4})
+
+        def optim_step(self, _params):
+            return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: renderer)
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    cfg = module.Config(
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        epochs=1,
+        batch_size=1,
+        grad_accum=1,
+    )
+
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    normalized_messages, train_on_what = renderer.calls[0]
+    assert [m["role"] for m in normalized_messages] == ["user", "assistant", "user", "assistant"]
+    assert [m["content"] for m in normalized_messages] == ["u1", "a1", "u2", "a2"]
+    assert train_on_what.value == "all_assistant_messages"
+
+    datum = events["batches"][0][0]
+    assert datum.loss_fn_inputs["target_tokens"].data == [101, 102, 103, 104, 105, 106]
+    assert datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 1.0, 1.0]
+    assert events["deleted_jobs"] == ["job-sft"]

@@ -65,6 +65,25 @@ def test_render_messages_to_datum_preserves_multi_turn_weights():
     assert rendered.datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
 
 
+def test_render_messages_to_datum_rejects_multimodal_content_for_text_renderer():
+    renderer = StubRenderer(tokens=[1, 2], weights=[0, 1])
+
+    with pytest.raises(ValueError, match="Multimodal content is not supported"):
+        render_messages_to_datum(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "look at this"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                    ],
+                },
+                {"role": "assistant", "content": "cat"},
+            ],
+            renderer=renderer,
+        )
+
+
 def test_build_datum_from_token_mask_reuses_ui_mask_semantics():
     rendered = build_datum_from_token_mask(
         token_ids=[100, 101, 102, 103, 104, 105],
@@ -147,6 +166,45 @@ def test_render_preference_pair_uses_shared_renderer_path():
     assert pair.response_start == 3
     assert pair.chosen_datum.loss_fn_inputs["target_tokens"].data == [2, 3, 4, 5, 6]
     assert len(renderer.calls) == 2
+
+
+def test_render_preference_pair_preserves_multi_turn_history():
+    renderer = SequenceRenderer(
+        outputs=[
+            ([1, 2, 3, 4, 5, 6, 7], [0, 0, 0, 0, 1, 1, 1]),
+            ([1, 2, 3, 4, 9, 10], [0, 0, 0, 0, 1, 1]),
+        ]
+    )
+
+    pair = render_preference_pair(
+        {
+            "messages": [
+                {"role": "user", "content": "u1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "u2"},
+                {"role": "assistant", "content": "chosen"},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "u1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "u2"},
+                {"role": "assistant", "content": "rejected"},
+            ]
+        },
+        renderer=renderer,
+        tokenizer=None,
+    )
+
+    assert pair is not None
+    assert pair.response_start == 4
+    chosen_messages, _ = renderer.calls[0]
+    rejected_messages, _ = renderer.calls[1]
+    assert [m["role"] for m in chosen_messages] == ["user", "assistant", "user", "assistant"]
+    assert [m["content"] for m in chosen_messages] == ["u1", "a1", "u2", "chosen"]
+    assert [m["role"] for m in rejected_messages] == ["user", "assistant", "user", "assistant"]
+    assert [m["content"] for m in rejected_messages] == ["u1", "a1", "u2", "rejected"]
 
 
 def test_prepare_sampling_messages_only_strips_trailing_assistant():
