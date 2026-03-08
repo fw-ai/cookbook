@@ -226,7 +226,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     class FakeDeploymentManager:
         inference_url = "https://deployments.unit.test"
 
-        def __init__(self, *, api_key, account_id, base_url, hotload_api_url):
+        def __init__(self, *, api_key, account_id, base_url, hotload_api_url, inference_url=None):
             events["deploy_mgr_init"] = {
                 "api_key": api_key,
                 "account_id": account_id,
@@ -251,6 +251,9 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     class FakeWeightSyncer:
         def __init__(self, **kwargs):
             events["weight_syncer_init"] = kwargs
+
+        def save_and_hotload(self, name, checkpoint_type="base"):
+            pass
 
     class FakeRolloutProcessor:
         def __init__(self, **kwargs):
@@ -368,7 +371,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     class FakeDeploymentManager:
         inference_url = "https://deployments.unit.test"
 
-        def __init__(self, *, api_key, account_id, base_url, hotload_api_url):
+        def __init__(self, *, api_key, account_id, base_url, hotload_api_url, inference_url=None):
             events["deploy_mgr_init"] = {
                 "api_key": api_key,
                 "account_id": account_id,
@@ -561,7 +564,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     ]
     assert events["trainer_jobs"][0]["grad_accum"] == 1
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
-    assert events["weight_sync_saves"] == [("step-1", "base")]
+    assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []
     assert events["final_save"] == ("step-1", 2700)
     assert len(events["build_loss_fn_calls"]) == 1

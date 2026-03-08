@@ -143,6 +143,10 @@ class FrozenLakeConfig:
         default_factory=lambda: os.environ.get("WANDB_PROJECT", "frozen-lake-grpo")
     )
 
+    policy_job_id: str | None = None
+    reference_job_id: str | None = None
+    inference_base_url: str | None = None
+
 
 def parse_args() -> FrozenLakeConfig:
     parser = argparse.ArgumentParser(description="GRPO training on FrozenLake tool calls")
@@ -178,6 +182,13 @@ def parse_args() -> FrozenLakeConfig:
     parser.add_argument("--visual-prompt-template", default=DEFAULT_VISUAL_PROMPT_TEMPLATE)
     parser.add_argument("--observation-mode", choices=("text", "image"), default="text")
     parser.add_argument("--allow-plaintext-action-fallback", action="store_true")
+
+    parser.add_argument("--policy-job-id", default=None,
+                        help="Pre-created policy trainer job ID (skip creation)")
+    parser.add_argument("--reference-job-id", default=None,
+                        help="Pre-created reference trainer job ID (skip creation)")
+    parser.add_argument("--inference-base-url", default=None,
+                        help="Direct base URL for inference deployment (skip gateway)")
 
     return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
 
@@ -280,8 +291,10 @@ def evaluation_row_to_training_data(
 # ---------------------------------------------------------------------------
 
 
-def main():
-    cfg = parse_args()
+def main(cfg: FrozenLakeConfig | None = None) -> dict:
+    """Run FrozenLake GRPO training. Returns a dict with 'steps' and 'rewards'."""
+    if cfg is None:
+        cfg = parse_args()
 
     logger.info("FrozenLake GRPO training: %s", cfg.base_model)
 
@@ -317,7 +330,7 @@ def main():
         dcp_save_interval=20,
         dcp_timeout=2700,
         first_checkpoint_type="base",
-        hot_load_before_training=False,
+        hot_load_before_training=bool(cfg.deployment_id),
         hot_load_timeout=900,
     )
     wandb_cfg = WandBConfig(
@@ -339,7 +352,9 @@ def main():
     rlor_mgr = TrainerJobManager(api_key=api_key, account_id=account, base_url=base_url)
     deploy_mgr = DeploymentManager(
         api_key=api_key, account_id=account,
-        base_url=base_url, hotload_api_url=base_url,
+        base_url=base_url,
+        hotload_api_url=base_url,
+        inference_url=cfg.inference_base_url or base_url,
     )
 
     # -- Load seed contexts --------------------------------------------------
@@ -386,7 +401,9 @@ def main():
     policy_job_id: str | None = None
     reference_job_id: str | None = None
     trajectory_log = None
+    global_step = step_offset = 0
 
+    reward_history: list[float] = []
     _shutdown_requested = False
 
     def _signal_handler(signum, frame):
@@ -457,59 +474,66 @@ def main():
         logger.warning("Cleanup: timed out waiting for deployment %s deletion", deployment_id)
 
     try:
-        dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
-
-        if use_reference:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(
-                    create_trainer_job, rlor_mgr,
-                    base_model=cfg.base_model, infra=infra, profile=profile,
-                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                    display_name="frozen-lake-policy",
-                    hot_load_deployment_id=deploy_cfg.deployment_id,
-                )
-                ref_fut = pool.submit(
-                    create_trainer_job, rlor_mgr,
-                    base_model=cfg.base_model, infra=infra, profile=profile,
-                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                    display_name="frozen-lake-reference", forward_only=True,
-                )
-                errors = []
-                for fut, label in [(pol_fut, "policy"), (ref_fut, "reference")]:
-                    try:
-                        ep = fut.result()
-                        if label == "policy":
-                            policy_ep = ep
-                            policy_job_id = ep.job_id
-                        else:
-                            reference_ep = ep
-                            reference_job_id = ep.job_id
-                    except Exception as e:
-                        logger.error("Failed to create %s trainer job: %s", label, e)
-                        errors.append(e)
-                if errors:
-                    raise errors[0]
+        if cfg.policy_job_id and cfg.deployment_id:
+            dep_info = None
+            logger.info("Skipping deployment setup — using pre-created resources")
         else:
-            policy_ep = create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model, infra=infra, profile=profile,
+            dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
+
+        # -- Create or reuse trainer jobs ------------------------------------
+        # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
+        # firectl-admin for regions the main gateway doesn't support yet).
+
+        def _make_job(label: str, precreated_id: str | None, **extra_kw):
+            if precreated_id:
+                ep = create_trainer_job(
+                    rlor_mgr, base_model=cfg.base_model, infra=infra,
+                    job_id=precreated_id,
+                )
+                return ep, precreated_id, True
+            ep = create_trainer_job(
+                rlor_mgr, base_model=cfg.base_model, infra=infra, profile=profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
-                display_name="frozen-lake-policy",
-                hot_load_deployment_id=deploy_cfg.deployment_id,
+                display_name=f"frozen-lake-{label}",
+                hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,
+                **extra_kw,
             )
-            policy_job_id = policy_ep.job_id
-            reference_ep = None
+            return ep, ep.job_id, False
 
-        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id)
+            ref_fut = (
+                pool.submit(_make_job, "reference", cfg.reference_job_id, forward_only=True)
+                if use_reference else None
+            )
+
+            policy_ep, policy_job_id, precreated_policy = pol_fut.result()
+            if ref_fut:
+                reference_ep, reference_job_id, precreated_reference = ref_fut.result()
+            else:
+                reference_ep, precreated_reference = None, False
+
+        policy = ReconnectableClient(
+            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
+            fw_api_key=api_key,
+            endpoint=policy_ep,
+        )
         reference = (
-            ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+            ReconnectableClient(
+                rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
+                fw_api_key=api_key,
+                endpoint=reference_ep,
+            )
             if reference_ep else None
         )
 
-        inference_model = dep_info.inference_model if dep_info else cfg.base_model
+        if dep_info:
+            inference_model = dep_info.inference_model
+        elif deploy_cfg.deployment_id:
+            inference_model = f"{cfg.base_model}#accounts/{account}/deployments/{deploy_cfg.deployment_id}"
+        else:
+            inference_model = cfg.base_model
         weight_syncer = WeightSyncer(
             policy_client=policy.inner, deploy_mgr=deploy_mgr,
             deployment_id=deploy_cfg.deployment_id, base_model=cfg.base_model,
@@ -531,7 +555,8 @@ def main():
         inference_url = deploy_mgr.inference_url
         logger.info("Waiting for deployment to be ready for inference...")
         import httpx
-        _readiness_url = inference_url.rstrip("/") + "/inference/v1/completions"
+        _inference_prefix = "/v1" if cfg.inference_base_url else "/inference/v1"
+        _readiness_url = inference_url.rstrip("/") + _inference_prefix + "/completions"
         for _ready_attempt in range(600):
             try:
                 _resp = httpx.post(
@@ -553,7 +578,7 @@ def main():
             logger.warning("Deployment readiness timeout, proceeding anyway")
 
         # -- Build rollout processor ----------------------------------------
-        rollout_base_url = inference_url.rstrip("/") + "/inference"
+        rollout_base_url = inference_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
         rollout_processor = FrozenLakeToolRolloutProcessor(
             model_id=inference_model,
             tokenizer_name_or_path=cfg.tokenizer_model,
@@ -751,6 +776,7 @@ def main():
                 "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
                 step, avg_reward, avg_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
             )
+            reward_history.append(avg_reward)
             log_metrics_json(step, reward=avg_reward, kl=avg_kl)
             _wandb_step[0] = max(_wandb_step[0] + 1, step)
             wandb_log(metrics, _wandb_step[0])
@@ -804,12 +830,16 @@ def main():
         if trajectory_log and not trajectory_log.closed:
             trajectory_log.close()
         wandb_finish()
-        for job_id, label in [(policy_job_id, "policy"), (reference_job_id, "reference")]:
-            _cleanup_job(job_id, label)
+        if not precreated_policy:
+            _cleanup_job(policy_job_id, "policy")
+        if not precreated_reference:
+            _cleanup_job(reference_job_id, "reference")
         if deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
             _cleanup_deployment(deploy_cfg.deployment_id)
         elif deploy_cfg.deployment_id:
             logger.info("Keeping deployment %s (KEEP_DEPLOYMENT=1)", deploy_cfg.deployment_id)
+
+    return {"steps": global_step - step_offset, "rewards": reward_history}
 
 
 if __name__ == "__main__":
