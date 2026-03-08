@@ -50,6 +50,8 @@ def create_trainer_job(
 
     When *base_url_override* is provided alongside *job_id*, skip health
     polling and return an endpoint pointing at that URL directly.
+    Otherwise for pre-created jobs, the SDK routes through the gateway
+    via /training/v1/rlorTrainerJobs/{accountId}/{jobId}/*.
     """
     if job_id:
         if base_url_override:

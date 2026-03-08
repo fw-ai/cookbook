@@ -59,6 +59,7 @@ class ReconnectableClient:
         base_model: str,
         lora_rank: int = 0,
         api_key: str = "tml-local",
+        fw_api_key: str | None = None,
         default_timeout: int = DEFAULT_TIMEOUT_S,
         endpoint: TrainerServiceEndpoint | None = None,
     ):
@@ -67,6 +68,7 @@ class ReconnectableClient:
         self._base_model = base_model
         self._lora_rank = lora_rank
         self._api_key = api_key
+        self._fw_api_key = fw_api_key
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
         self._client: FiretitanTrainingClient | None = None
@@ -116,7 +118,15 @@ class ReconnectableClient:
     # -- Internal --------------------------------------------------------------
 
     def _use_endpoint(self, ep: TrainerServiceEndpoint) -> None:
-        svc = FiretitanServiceClient(base_url=ep.base_url, api_key=self._api_key)
+        kwargs: dict = {}
+        if self._fw_api_key:
+            kwargs["default_headers"] = {
+                "X-API-Key": self._fw_api_key,
+                "Authorization": f"Bearer {self._fw_api_key}",
+            }
+        svc = FiretitanServiceClient(
+            base_url=ep.base_url, api_key=self._api_key, **kwargs,
+        )
         self._client = svc.create_training_client(
             base_model=self._base_model,
             lora_rank=self._lora_rank,

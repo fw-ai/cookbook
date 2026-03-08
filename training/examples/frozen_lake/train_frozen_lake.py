@@ -145,6 +145,7 @@ class FrozenLakeConfig:
 
     policy_job_id: str | None = None
     reference_job_id: str | None = None
+    inference_base_url: str | None = None
 
 
 def parse_args() -> FrozenLakeConfig:
@@ -186,6 +187,8 @@ def parse_args() -> FrozenLakeConfig:
                         help="Pre-created policy trainer job ID (skip creation)")
     parser.add_argument("--reference-job-id", default=None,
                         help="Pre-created reference trainer job ID (skip creation)")
+    parser.add_argument("--inference-base-url", default=None,
+                        help="Direct base URL for inference deployment (skip gateway)")
 
     return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
 
@@ -327,7 +330,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         dcp_save_interval=20,
         dcp_timeout=2700,
         first_checkpoint_type="base",
-        hot_load_before_training=False,
+        hot_load_before_training=bool(cfg.deployment_id),
         hot_load_timeout=900,
     )
     wandb_cfg = WandBConfig(
@@ -349,7 +352,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     rlor_mgr = TrainerJobManager(api_key=api_key, account_id=account, base_url=base_url)
     deploy_mgr = DeploymentManager(
         api_key=api_key, account_id=account,
-        base_url=base_url, hotload_api_url=base_url,
+        base_url=base_url,
+        hotload_api_url=base_url,
+        inference_url=cfg.inference_base_url or base_url,
     )
 
     # -- Load seed contexts --------------------------------------------------
@@ -469,7 +474,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         logger.warning("Cleanup: timed out waiting for deployment %s deletion", deployment_id)
 
     try:
-        dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
+        if cfg.policy_job_id and cfg.deployment_id:
+            dep_info = None
+            logger.info("Skipping deployment setup — using pre-created resources")
+        else:
+            dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
 
         # -- Create or reuse trainer jobs ------------------------------------
         # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
@@ -505,13 +514,26 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             else:
                 reference_ep, precreated_reference = None, False
 
-        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
+        policy = ReconnectableClient(
+            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
+            fw_api_key=api_key,
+            endpoint=policy_ep,
+        )
         reference = (
-            ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+            ReconnectableClient(
+                rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
+                fw_api_key=api_key,
+                endpoint=reference_ep,
+            )
             if reference_ep else None
         )
 
-        inference_model = dep_info.inference_model if dep_info else cfg.base_model
+        if dep_info:
+            inference_model = dep_info.inference_model
+        elif deploy_cfg.deployment_id:
+            inference_model = f"{cfg.base_model}#accounts/{account}/deployments/{deploy_cfg.deployment_id}"
+        else:
+            inference_model = cfg.base_model
         weight_syncer = WeightSyncer(
             policy_client=policy.inner, deploy_mgr=deploy_mgr,
             deployment_id=deploy_cfg.deployment_id, base_model=cfg.base_model,
@@ -533,7 +555,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         inference_url = deploy_mgr.inference_url
         logger.info("Waiting for deployment to be ready for inference...")
         import httpx
-        _readiness_url = inference_url.rstrip("/") + "/inference/v1/completions"
+        _inference_prefix = "/v1" if cfg.inference_base_url else "/inference/v1"
+        _readiness_url = inference_url.rstrip("/") + _inference_prefix + "/completions"
         for _ready_attempt in range(600):
             try:
                 _resp = httpx.post(
@@ -555,7 +578,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             logger.warning("Deployment readiness timeout, proceeding anyway")
 
         # -- Build rollout processor ----------------------------------------
-        rollout_base_url = inference_url.rstrip("/") + "/inference"
+        rollout_base_url = inference_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
         rollout_processor = FrozenLakeToolRolloutProcessor(
             model_id=inference_model,
             tokenizer_name_or_path=cfg.tokenizer_model,
