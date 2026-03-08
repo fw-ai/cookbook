@@ -580,7 +580,7 @@ def main(
             wandb_log(metrics, step)
 
             if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, all_groups)
+                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
 
             return step, metrics
 
