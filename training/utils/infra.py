@@ -104,12 +104,7 @@ def setup_deployment(
     info = deploy_mgr.get(deploy_cfg.deployment_id)
     if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
-        if deploy_cfg.extra_values:
-            info = _create_deployment_with_extra_values(
-                deploy_mgr, dep_config, deploy_cfg.extra_values,
-            )
-        else:
-            info = deploy_mgr.create_or_get(dep_config)
+        info = deploy_mgr.create_or_get(dep_config)
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
@@ -117,55 +112,6 @@ def setup_deployment(
             timeout_s=deploy_cfg.deployment_timeout_s,
         )
     return info
-
-
-def _create_deployment_with_extra_values(
-    deploy_mgr: DeploymentManager,
-    config: DeploymentConfig,
-    extra_values: dict[str, str],
-) -> DeploymentInfo:
-    """Create a deployment with ``extraValues`` injected into the API body.
-
-    The SDK's ``DeploymentManager`` doesn't support ``extraValues`` natively,
-    so we replicate the essential creation logic here.
-    """
-    url = (
-        f"{deploy_mgr.base_url}/v1/accounts/{deploy_mgr.account_id}"
-        f"/deployments?deploymentId={config.deployment_id}"
-        f"&skipShapeValidation={'true' if config.skip_shape_validation else 'false'}"
-    )
-    if config.disable_speculative_decoding:
-        url += "&disableSpeculativeDecoding=true"
-
-    body: dict[str, Any] = {
-        "baseModel": config.base_model,
-        "minReplicaCount": config.min_replica_count,
-        "maxReplicaCount": config.max_replica_count,
-        "enableHotLoad": True,
-        "placement": {"region": config.region},
-        "extraValues": extra_values,
-    }
-    if config.hot_load_bucket_type:
-        body["hotLoadBucketType"] = config.hot_load_bucket_type
-    if config.deployment_shape:
-        body["deploymentShape"] = config.deployment_shape
-    if config.accelerator_type:
-        body["acceleratorType"] = config.accelerator_type
-    if config.extra_args:
-        flat: list[str] = []
-        for arg in config.extra_args:
-            flat.extend(arg.split()) if " " in arg else flat.append(arg)
-        body["extraArgs"] = flat
-
-    headers = deploy_mgr._headers()
-    logger.info("Creating deployment with extra_values: %s", config.deployment_id)
-    resp = request_with_retries(
-        _requests.post, url, headers=headers, json=body, timeout=60,
-        verify=deploy_mgr._verify_ssl,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return deploy_mgr._parse_deployment_info(config.deployment_id, data)
 
 
 def setup_training_client(
