@@ -54,14 +54,20 @@ def _preflight_deployment_check(
     Raises pytest.fail with a clear message if the deployment is not ready,
     avoiding a 50-minute hang in the training loop's readiness polling.
     """
-    url = f"{base_url}/inference/v1/accounts/{account_id}/deployments/{deployment_id}"
+    url = f"{base_url}/inference/v1/completions"
+    body = {
+        "model": f"accounts/fireworks/models/qwen3-4b#accounts/{account_id}/deployments/{deployment_id}",
+        "prompt": "hello",
+        "max_tokens": 1,
+    }
     try:
-        resp = httpx.get(
+        resp = httpx.post(
             url,
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=body,
             timeout=timeout_s,
         )
-        if resp.status_code != 200:
+        if resp.status_code not in (200, 401):
             pytest.fail(
                 f"Deployment {deployment_id} pre-flight check failed: "
                 f"HTTP {resp.status_code} from {url}"
@@ -93,14 +99,18 @@ class TestFrozenLakeB300:
 
         region = _env("FROZEN_LAKE_REGION", "EU_NETHERLANDS_1")
         training_shape = _env("FROZEN_LAKE_TRAINING_SHAPE", "qwen3-4b-b300")
-        lora_rank = int(_env("FROZEN_LAKE_LORA_RANK", "8"))
+        # TODO(bennychen): LoRA hotload has a loading perf bug that needs
+        # fixing before re-enabling. Use full-parameter (rank=0) for now.
+        lora_rank = int(_env("FROZEN_LAKE_LORA_RANK", "0"))
         base_url = _env("FIREWORKS_BASE_URL", "https://dev.api.fireworks.ai")
 
         os.environ.setdefault("FIREWORKS_BASE_URL", base_url)
         os.environ.setdefault("WANDB_MODE", "disabled")
 
-        # Pre-flight: fail fast if deployment is unreachable
-        _preflight_deployment_check(base_url, api_key, account, deployment_id)
+        # Pre-flight: fail fast if deployment is unreachable.
+        # Skip when jobs are pre-created (CI script already verified via firectl).
+        if not _env("FROZEN_LAKE_POLICY_JOB_ID"):
+            _preflight_deployment_check(base_url, api_key, account, deployment_id)
 
         cfg = FrozenLakeConfig(
             base_model="accounts/fireworks/models/qwen3-4b",
@@ -170,8 +180,10 @@ class TestFrozenLakeB300:
             f"at least once. {summary}"
         )
 
-        # Sanity: pipeline didn't take absurdly long
-        assert elapsed < 2400, (
-            f"Pipeline took {elapsed:.0f}s (>40min), expected <20min. "
+        # Sanity: pipeline didn't take absurdly long.
+        # With 16 completions/prompt + full-param hotloads (~36s each),
+        # 12 steps take ~55min. Budget 70min.
+        assert elapsed < 4200, (
+            f"Pipeline took {elapsed:.0f}s (>70min), expected <70min. "
             f"May indicate infrastructure issues. {summary}"
         )

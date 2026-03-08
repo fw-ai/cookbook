@@ -32,7 +32,7 @@ export FIREWORKS_BASE_URL="${FIREWORKS_BASE_URL:-https://dev.api.fireworks.ai}"
 FIRECTL_BIN="${FIRECTL_BIN:-$REPO_ROOT/../fireworks/firectl/bin/firectl-admin}"
 FIRECTL_PROFILE="${FIRECTL_PROFILE:-dev-bennychen}"
 TRAINING_SHAPE="${TRAINING_SHAPE:-qwen3-4b-b300}"
-DEPLOYMENT_ID="${DEPLOYMENT_ID:-rl-qwen3-4b-b300-v8}"
+DEPLOYMENT_ID="${DEPLOYMENT_ID:-rl-qwen3-4b-b300-v10}"
 REGION="${REGION:-EU_NETHERLANDS_1}"
 ACCELERATOR="${ACCELERATOR:-NVIDIA_B300_288GB}"
 JOB_WAIT_TIMEOUT="${JOB_WAIT_TIMEOUT:-80}"
@@ -52,8 +52,9 @@ elapsed() {
 }
 
 # ── Cleanup on exit ─────────────────────────────────────────────────────────
-cleanup_jobs() {
+cleanup() {
     local exit_code=$?
+    [[ -n "${PF_DEPLOY_PID:-}" ]] && kill "$PF_DEPLOY_PID" 2>/dev/null || true
     for jid in "$POLICY_JOB_ID" "$REFERENCE_JOB_ID"; do
         [[ -z "$jid" ]] && continue
         log "Cleanup: deleting job $jid"
@@ -62,7 +63,7 @@ cleanup_jobs() {
     done
     log "Finished in $(elapsed)s (exit=$exit_code)"
 }
-trap cleanup_jobs EXIT
+trap cleanup EXIT
 
 # ── 0. Clean stale CI jobs ──────────────────────────────────────────────────
 log "Cleaning stale CI jobs ..."
@@ -154,7 +155,41 @@ if [[ "$P" != "JOB_STATE_RUNNING" || "$R" != "JOB_STATE_RUNNING" ]]; then
     exit 1
 fi
 
-# ── 4. Run pytest ───────────────────────────────────────────────────────────
+# ── 4. (Optional) Port-forward deployment for inference ────────────────────
+# Trainer traffic now routes through the API gateway automatically via
+# /training/v1/rlorTrainerJobs/{accountId}/{jobId}/* so no port-forward
+# is needed for trainers. Inference deployment may still need port-forward
+# for OCI clusters if the deployment isn't accessible via gateway.
+K8S_CONTEXT="${K8S_CONTEXT:-}"
+PF_DEPLOY_PID=""
+
+if [[ -n "$K8S_CONTEXT" ]]; then
+    DEPLOY_POD=$(kubectl --context="$K8S_CONTEXT" get pods -n default \
+        -l "app.kubernetes.io/instance=${FIREWORKS_ACCOUNT_ID}-${DEPLOYMENT_ID}" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+    if [[ -n "$DEPLOY_POD" ]]; then
+        log "Setting up deployment port-forward (context=$K8S_CONTEXT, pod=$DEPLOY_POD)..."
+        _pf_loop() {
+            local pod=$1 port=$2 target_port=$3
+            while true; do
+                kubectl --context="$K8S_CONTEXT" port-forward -n default "$pod" "${port}:${target_port}" 2>/dev/null || true
+                sleep 2
+            done
+        }
+        _pf_loop "$DEPLOY_POD" 18082 80 &
+        PF_DEPLOY_PID=$!
+
+        sleep 3
+        log "Verifying deployment port-forward..."
+        curl -s http://localhost:18082/v1/completions \
+            -d '{"model":"accounts/fireworks/models/qwen3-4b","prompt":"test","max_tokens":1}' \
+            -H "Content-Type: application/json" > /dev/null && log "  deploy port-forward OK" || log "  WARN: deploy port-forward not ready"
+        export FROZEN_LAKE_INFERENCE_BASE_URL="http://localhost:18082"
+    fi
+fi
+
+# ── 5. Run pytest ───────────────────────────────────────────────────────────
 log "Running FrozenLake B300 smoke test ..."
 export FROZEN_LAKE_POLICY_JOB_ID="$POLICY_JOB_ID"
 export FROZEN_LAKE_REFERENCE_JOB_ID="$REFERENCE_JOB_ID"
