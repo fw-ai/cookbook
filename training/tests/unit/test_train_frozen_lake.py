@@ -226,7 +226,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     class FakeDeploymentManager:
         inference_url = "https://deployments.unit.test"
 
-        def __init__(self, *, api_key, account_id, base_url, hotload_api_url):
+        def __init__(self, *, api_key, account_id, base_url, hotload_api_url, inference_url=None):
             events["deploy_mgr_init"] = {
                 "api_key": api_key,
                 "account_id": account_id,
@@ -368,7 +368,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     class FakeDeploymentManager:
         inference_url = "https://deployments.unit.test"
 
-        def __init__(self, *, api_key, account_id, base_url, hotload_api_url):
+        def __init__(self, *, api_key, account_id, base_url, hotload_api_url, inference_url=None):
             events["deploy_mgr_init"] = {
                 "api_key": api_key,
                 "account_id": account_id,
