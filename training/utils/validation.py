@@ -4,15 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from fireworks.training.sdk import errors as sdk_errors
-from fireworks.training.sdk.errors import format_sdk_error
+from fireworks.training.sdk.errors import format_sdk_error, DOCS_SDK
 from training.utils.config import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
 
 logger = logging.getLogger(__name__)
-
-DOCS_API_KEYS = getattr(
-    sdk_errors, "DOCS_API_KEYS", "https://fireworks.ai/account/api-keys"
-)
 
 
 def validate_config(
@@ -96,7 +91,7 @@ def validate_preflight(
                     "No API key found in --fireworks-api-key or FIREWORKS_API_KEY env var.",
                     "export FIREWORKS_API_KEY='your-key-here'\n"
                     "  Get your API key at: https://fireworks.ai/account/api-keys",
-                    docs_url=DOCS_API_KEYS,
+                    docs_url=DOCS_SDK,
                 )
             )
         if not fw_account_id:
@@ -106,7 +101,7 @@ def validate_preflight(
                     "No account ID found in --fireworks-account-id or FIREWORKS_ACCOUNT_ID env var.",
                     "export FIREWORKS_ACCOUNT_ID='your-account-id'\n"
                     "  Find your account ID at: https://fireworks.ai/account",
-                    docs_url=DOCS_API_KEYS,
+                    docs_url=DOCS_SDK,
                 )
             )
 
