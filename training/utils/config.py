@@ -94,6 +94,7 @@ class DeployConfig:
             min_replica_count=1,
             max_replica_count=1,
             accelerator_type=accel,
+            extra_values=self.extra_values,
         )
         import inspect
         if "disable_speculative_decoding" in inspect.signature(DeploymentConfig).parameters:
