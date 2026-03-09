@@ -54,20 +54,18 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         def forward_backward_custom(self, batch, loss_fn):
             events["forward_batches"].append((list(batch), loss_fn))
             return SimpleNamespace(
-                result=lambda: SimpleNamespace(
-                    metrics={
-                        "orpo_loss": 1.2,
-                        "sft_loss": 0.7,
-                        "or_loss": 0.5,
-                        "log_odds_ratio": 0.1,
-                        "accuracy": 0.75,
-                    }
-                )
+                metrics={
+                    "orpo_loss": 1.2,
+                    "sft_loss": 0.7,
+                    "or_loss": 0.5,
+                    "log_odds_ratio": 0.1,
+                    "accuracy": 0.75,
+                }
             )
 
         def optim_step(self, _params):
             events["optim_steps"] += 1
-            return SimpleNamespace(result=lambda: SimpleNamespace())
+            return SimpleNamespace()
 
     pair_outputs = iter(
         [

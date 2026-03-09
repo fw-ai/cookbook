@@ -24,11 +24,14 @@ StepCallback = Callable[[int, Dict[str, float]], None]
 class InfraConfig:
     """GPU, region, and image settings.
 
-    When ``training_shape_id`` is set, the SDK resolves the training shape
-    from the control plane and auto-populates region, accelerator, image tag,
-    node count, etc.  Manual overrides are still accepted but may be rejected
-    by the CP's training shape validation (use ``skip_validations=True`` to
-    bypass).
+    Two launch paths when ``training_shape_id`` is set:
+
+    * **Validated** (default): the backend owns all shape-derived fields
+      (accelerator, image tag, node count, etc.).  Setting
+      ``accelerator_type``, ``accelerator_count``, ``custom_image_tag``,
+      or ``node_count`` raises ``ValueError``.
+    * **Override** (``skip_validations=True``): the shape provides defaults
+      via ``apply_shape``, but explicit values here win.
     """
 
     training_shape_id: str | None = None
@@ -44,7 +47,7 @@ class InfraConfig:
     accelerator_type: str | None = None
     accelerator_count: int | None = None
     skip_validations: bool = False
-    node_count: int = 1
+    node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
 
@@ -83,7 +86,7 @@ class DeployConfig:
         accel = None if self.deployment_shape else self.deployment_accelerator_type
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type
-        kwargs: dict = dict(
+        return DeploymentConfig(
             deployment_id=self.deployment_id,
             base_model=base_model,
             deployment_shape=self.deployment_shape,
@@ -94,12 +97,9 @@ class DeployConfig:
             min_replica_count=1,
             max_replica_count=1,
             accelerator_type=accel,
+            disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
         )
-        import inspect
-        if "disable_speculative_decoding" in inspect.signature(DeploymentConfig).parameters:
-            kwargs["disable_speculative_decoding"] = self.disable_speculative_decoding
-        return DeploymentConfig(**kwargs)
 
 
 @dataclass
