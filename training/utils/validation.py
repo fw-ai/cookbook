@@ -4,44 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from fireworks.training.sdk import errors as sdk_errors
+from fireworks.training.sdk.errors import format_sdk_error, DOCS_API_KEYS
 from training.utils.config import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_DOCS_HOTLOAD = "https://docs.fireworks.ai/fine-tuning/hotload"
-_DEFAULT_DOCS_API_KEYS = "https://fireworks.ai/account/api-keys"
-_DEFAULT_DOCS_DEPLOYMENTS = "https://docs.fireworks.ai/deployments"
-
-
-def _get_sdk_docs_url(name: str, default: str) -> str:
-    value = getattr(sdk_errors, name, None)
-    return value if isinstance(value, str) and value else default
-
-
-def _format_sdk_error(
-    what: str,
-    cause: str,
-    solution: str,
-    docs_url: str | None = None,
-) -> str:
-    formatter = getattr(sdk_errors, "format_sdk_error", None)
-    if callable(formatter):
-        return formatter(what, cause, solution, docs_url=docs_url)
-
-    lines = [
-        f"ERROR: {what}",
-        f"  Cause: {cause}",
-        f"  Solution: {solution}",
-    ]
-    if docs_url:
-        lines.append(f"  Docs: {docs_url}")
-    return "\n".join(lines)
-
-
-DOCS_HOTLOAD = _get_sdk_docs_url("DOCS_HOTLOAD", _DEFAULT_DOCS_HOTLOAD)
-DOCS_API_KEYS = _get_sdk_docs_url("DOCS_API_KEYS", _DEFAULT_DOCS_API_KEYS)
-DOCS_DEPLOYMENTS = _get_sdk_docs_url("DOCS_DEPLOYMENTS", _DEFAULT_DOCS_DEPLOYMENTS)
 
 
 def validate_config(
@@ -57,7 +23,7 @@ def validate_config(
 
     if not base_model:
         errors.append(
-            _format_sdk_error(
+            format_sdk_error(
                 "Missing base_model",
                 "No base model specified.",
                 "Set base_model (e.g. 'accounts/fireworks/models/qwen3-8b').",
@@ -65,23 +31,28 @@ def validate_config(
         )
     elif not base_model.startswith("accounts/"):
         errors.append(
-            _format_sdk_error(
+            format_sdk_error(
                 "Invalid base_model format",
                 f"'{base_model}' doesn't match expected format.",
-                "Use format: accounts/ACCOUNT/models/MODEL_NAME\n" "  Example: accounts/fireworks/models/qwen3-8b",
+                "Use format: accounts/ACCOUNT/models/MODEL_NAME\n"
+                "  Example: accounts/fireworks/models/qwen3-8b",
             )
         )
 
     if not dataset:
         errors.append(
-            _format_sdk_error(
+            format_sdk_error(
                 "Missing dataset",
                 "No dataset path or URL specified.",
                 "Set dataset to a local path or URL to a JSONL file.",
             )
         )
 
-    if resume and resume.resume_from and not resume.resume_from.startswith(("gs://", "/")):
+    if (
+        resume
+        and resume.resume_from
+        and not resume.resume_from.startswith(("gs://", "/"))
+    ):
         if resume.resume_job_id is None:
             logger.warning(
                 "resume_from='%s' looks like a checkpoint name, not a full path. "
@@ -91,7 +62,7 @@ def validate_config(
 
     if infra and infra.node_count < 1:
         errors.append(
-            _format_sdk_error(
+            format_sdk_error(
                 "Invalid node_count",
                 f"node_count={infra.node_count} must be >= 1.",
                 "Set InfraConfig(node_count=1) or higher.",
@@ -115,7 +86,7 @@ def validate_preflight(
     if not skip_credential_check:
         if not fw_api_key:
             errors.append(
-                _format_sdk_error(
+                format_sdk_error(
                     "Missing FIREWORKS_API_KEY",
                     "No API key found in --fireworks-api-key or FIREWORKS_API_KEY env var.",
                     "export FIREWORKS_API_KEY='your-key-here'\n"
@@ -125,7 +96,7 @@ def validate_preflight(
             )
         if not fw_account_id:
             errors.append(
-                _format_sdk_error(
+                format_sdk_error(
                     "Missing FIREWORKS_ACCOUNT_ID",
                     "No account ID found in --fireworks-account-id or FIREWORKS_ACCOUNT_ID env var.",
                     "export FIREWORKS_ACCOUNT_ID='your-account-id'\n"
