@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import logging
 
-from fireworks.training.sdk.errors import format_sdk_error, DOCS_API_KEYS
+from fireworks.training.sdk import errors as sdk_errors
+from fireworks.training.sdk.errors import format_sdk_error
 from training.utils.config import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
 
 logger = logging.getLogger(__name__)
+
+DOCS_API_KEYS = getattr(
+    sdk_errors, "DOCS_API_KEYS", "https://fireworks.ai/account/api-keys"
+)
 
 
 def validate_config(
