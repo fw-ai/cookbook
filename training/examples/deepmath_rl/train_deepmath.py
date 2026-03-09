@@ -81,6 +81,10 @@ class TrainArgs:
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
     skip_cleanup: bool = False
     """Do not delete deployment and trainer jobs on exit."""
+    policy_job_id: str | None = None
+    """Pre-created policy trainer job ID to reuse."""
+    reference_job_id: str | None = None
+    """Pre-created reference trainer job ID to reuse."""
 
 
 def parse_args() -> TrainArgs:
@@ -126,6 +130,10 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--wandb-project")
     parser.add_argument("--skip-cleanup", action="store_true",
                         help="Do not delete deployment and trainer jobs on exit")
+    parser.add_argument("--policy-job-id",
+                        help="Pre-created policy trainer job ID to reuse")
+    parser.add_argument("--reference-job-id",
+                        help="Pre-created reference trainer job ID to reuse")
 
     parsed = parser.parse_args(namespace=defaults)
     # Convert --deployment-extra-values key=value pairs to a dict.
@@ -285,6 +293,8 @@ def main():
         is_correction=ISConfig(tis_cap=2.0),
         router_replay=args.router_replay,
         router_replay_completion_only=args.router_replay,
+        policy_job_id=args.policy_job_id,
+        reference_job_id=args.reference_job_id,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             ref_training_shape_id=args.ref_training_shape,

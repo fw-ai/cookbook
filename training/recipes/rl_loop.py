@@ -22,7 +22,7 @@ import json
 import signal
 import asyncio
 import logging
-from typing import List, Optional
+from typing import List, Optional, Any
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
