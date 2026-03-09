@@ -94,7 +94,7 @@ def create_trainer_job(
         "Creating trainer job '%s' (forward_only=%s)...",
         display_name, forward_only,
     )
-    return rlor_mgr.create_and_wait(config)
+    return rlor_mgr.create_and_wait(config, timeout_s=infra.trainer_timeout_s)
 
 
 def setup_deployment(

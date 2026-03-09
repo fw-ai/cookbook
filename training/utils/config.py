@@ -45,6 +45,7 @@ class InfraConfig:
     accelerator_count: int | None = None
     skip_validations: bool = False
     node_count: int = 1
+    trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
 
 

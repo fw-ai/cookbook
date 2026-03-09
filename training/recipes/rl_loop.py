@@ -260,22 +260,9 @@ def main(
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        # Propagate accelerator type from shape so deployment can use it
-        if profile.accelerator_type and not cfg.infra.accelerator_type:
-            cfg.infra.accelerator_type = profile.accelerator_type
-
         dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
         if dep_shape and not cfg.deployment.deployment_shape:
-            # Only auto-set if the deployment shape is under our account
-            # (cross-account shapes like accounts/fireworks/... may not be accessible).
-            account_id = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
-            if not account_id or f"accounts/{account_id}/" in dep_shape:
-                cfg.deployment.deployment_shape = dep_shape
-            else:
-                logger.info(
-                    "Skipping cross-account deployment shape: %s (account=%s)",
-                    dep_shape, account_id,
-                )
+            cfg.deployment.deployment_shape = dep_shape
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
@@ -653,10 +640,10 @@ def main(
                     logger.warning("Cleanup: failed to delete reference job %s: %s", reference_job_id, e)
             if cfg.deployment.deployment_id:
                 try:
-                    logger.info("Cleanup: scaling deployment to zero %s", cfg.deployment.deployment_id)
-                    deploy_mgr.scale_to_zero(cfg.deployment.deployment_id)
+                    logger.info("Cleanup: deleting deployment %s", cfg.deployment.deployment_id)
+                    deploy_mgr.delete(cfg.deployment.deployment_id)
                 except Exception as e:
-                    logger.warning("Cleanup: failed to scale deployment %s: %s", cfg.deployment.deployment_id, e)
+                    logger.warning("Cleanup: failed to delete deployment %s: %s", cfg.deployment.deployment_id, e)
 
 
 if __name__ == "__main__":
