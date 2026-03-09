@@ -138,6 +138,7 @@ SDK_IMPORTS = [
     ("fireworks.training.sdk.trainer", "TrainerServiceEndpoint"),
     ("fireworks.training.sdk.trainer", "TrainingShapeProfile"),
     ("fireworks.training.sdk.errors", "format_sdk_error"),
+    ("fireworks.training.sdk.errors", "DOCS_SDK"),
     ("fireworks.training.sdk.errors", "request_with_retries"),
 ]
 
