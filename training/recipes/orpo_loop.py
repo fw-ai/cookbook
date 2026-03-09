@@ -261,7 +261,7 @@ def main(
                 loss_fn = make_orpo_loss_fn(pair["response_start"], cfg.orpo_lambda)
                 result = client.forward_backward_custom(
                     [pair["chosen_datum"], pair["rejected_datum"]], loss_fn
-                ).result()
+                )
 
                 metrics = result.metrics
                 agg["orpo_loss"] += metrics["orpo_loss"]
@@ -274,7 +274,7 @@ def main(
                 accum_count += 1
 
                 if accum_count >= cfg.grad_accum:
-                    client.optim_step(adam_params).result()
+                    client.optim_step(adam_params)
                     step += 1
                     accum_count = 0
 
