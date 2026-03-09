@@ -82,9 +82,10 @@ def create_trainer_job(
 
     if profile is not None:
         config.training_shape = profile.training_shape_version
-        # When training_shape is set, the server auto-configures accelerator,
-        # image tag, and node count from the shape. Clear any manually set
-        # values to avoid conflicts.
+        # When training_shape is set, the server validates against the shape
+        # but does NOT auto-derive nodeCount from it. We must set it explicitly.
+        if profile.node_count:
+            config.node_count = profile.node_count
         config.accelerator_type = None
         config.accelerator_count = None
         config.custom_image_tag = None

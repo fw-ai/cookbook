@@ -78,7 +78,7 @@ class DeployConfig:
         infra: InfraConfig,
     ) -> DeploymentConfig:
         """Produce an SDK-level DeploymentConfig from cookbook settings."""
-        skip_validation = infra.skip_validations and not self.deployment_shape
+        skip_validation = False
         accel = None if self.deployment_shape else self.deployment_accelerator_type
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type

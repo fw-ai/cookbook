@@ -260,9 +260,22 @@ def main(
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+        # Propagate accelerator type from shape so deployment can use it
+        if profile.accelerator_type and not cfg.infra.accelerator_type:
+            cfg.infra.accelerator_type = profile.accelerator_type
+
         dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
         if dep_shape and not cfg.deployment.deployment_shape:
-            cfg.deployment.deployment_shape = dep_shape
+            # Only auto-set if the deployment shape is under our account
+            # (cross-account shapes like accounts/fireworks/... may not be accessible).
+            account_id = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
+            if not account_id or f"accounts/{account_id}/" in dep_shape:
+                cfg.deployment.deployment_shape = dep_shape
+            else:
+                logger.info(
+                    "Skipping cross-account deployment shape: %s (account=%s)",
+                    dep_shape, account_id,
+                )
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
@@ -510,7 +523,7 @@ def main(
                 ]
                 idx += n
 
-        def fwd_bwd_one(prompt_groups: list[PromptGroup]):
+        def fwd_bwd_one(prompt_groups: list[PromptGroup]) -> Any:
             """One minibatch forward/backward call after reference forward."""
             if not prompt_groups:
                 raise ValueError("fwd_bwd_one requires at least one prompt group")
@@ -521,23 +534,23 @@ def main(
             t0 = _t.time()
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("prox_forward: done (%.1fs)", _t.time() - t0)
+            logger.info("fwd_bwd_one: prox_forward done (%.1fs)", _t.time() - t0)
 
             t0 = _t.time()
-            fwd_bwd_result = policy.forward_backward_custom(
+            result = policy.forward_backward_custom(
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
-            logger.info("fwd_bwd: done (%.1fs)", _t.time() - t0)
-            return fwd_bwd_result
+            logger.info("fwd_bwd_one: fwd_bwd done (%.1fs)", _t.time() - t0)
+            return result
 
         def finish_step(
             step: int,
-            prompt_groups: list[PromptGroup],
+            all_groups: list[PromptGroup],
             fwd_bwd_results: list,
             n_accum: int,
-            loop_stats: dict | None = None,
+            loop_stats: dict,
         ) -> tuple[int, dict]:
-            """optim_step + hotload + metrics after all minibatches in a step."""
+            """optim_step + hotload + metrics."""
             import time as _t
 
             t0 = _t.time()
@@ -559,7 +572,7 @@ def main(
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _t.time() - t0)
 
             metrics = compute_step_metrics(
-                prompt_groups=prompt_groups,
+                prompt_groups=all_groups,
                 fwd_bwd_results=fwd_bwd_results,
                 optim_result=optim_result,
                 n_accum=n_accum,
@@ -580,7 +593,7 @@ def main(
             wandb_log(metrics, step)
 
             if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
+                _dump_trajectory(cfg.trajectory_dir, step, all_groups)
 
             return step, metrics
 
@@ -590,7 +603,7 @@ def main(
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
-        train_fns = MinibatchTrainFns(
+        minibatch_fns = MinibatchTrainFns(
             ref_forward_batch=ref_forward,
             fwd_bwd_one=fwd_bwd_one,
             finish_step=finish_step,
@@ -600,7 +613,7 @@ def main(
 
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(row) for row in all_rows),
-            minibatch_fns=train_fns,
+            minibatch_fns=minibatch_fns,
             prompt_groups_per_step=prompt_groups_per_step,
             max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
