@@ -344,6 +344,22 @@ def build_datum_from_tokens_and_weights(
     )
 
 
+def _extract_token_ids(model_input: tinker.ModelInput) -> list[int]:
+    """Extract token IDs from a ModelInput, handling multimodal chunks.
+
+    Text chunks contribute their token IDs directly.  Non-text chunks
+    (e.g. ``ImageAssetPointerChunk``) contribute placeholder zeros
+    matching their ``expected_tokens`` count.
+    """
+    ids: list[int] = []
+    for chunk in model_input.chunks:
+        if hasattr(chunk, "tokens"):
+            ids.extend(chunk.tokens)
+        elif hasattr(chunk, "expected_tokens"):
+            ids.extend([0] * chunk.expected_tokens)
+    return ids
+
+
 def build_datum_from_model_input_and_weights(
     model_input: tinker.ModelInput,
     token_weights: Sequence[int | float],
@@ -353,13 +369,7 @@ def build_datum_from_model_input_and_weights(
 ) -> RenderedSupervisedDatum:
     """Build a weighted datum from a multimodal-capable ``ModelInput``."""
     if datum_from_model_input_weights is None:
-        try:
-            token_ids = model_input.to_ints()
-        except ValueError as exc:
-            raise ValueError(
-                "Installed tinker-cookbook does not support multimodal supervised data. "
-                "Upgrade to the upstream multimodal renderer build."
-            ) from exc
+        token_ids = _extract_token_ids(model_input)
         return build_datum_from_tokens_and_weights(
             token_ids,
             token_weights,

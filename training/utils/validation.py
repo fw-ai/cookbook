@@ -60,7 +60,7 @@ def validate_config(
                 resume.resume_from,
             )
 
-    if infra and infra.node_count < 1:
+    if infra and infra.node_count is not None and infra.node_count < 1:
         errors.append(
             format_sdk_error(
                 "Invalid node_count",
