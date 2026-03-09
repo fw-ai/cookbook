@@ -59,6 +59,8 @@ class TrainArgs:
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "dataset.jsonl")
     )
     training_shape: str = field(default_factory=lambda: os.environ.get("TRAINING_SHAPE", ""))
+    ref_training_shape: str | None = None
+    """Separate training shape for the forward-only reference model."""
     deployment_id: str | None = None
     """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "US_OHIO_1"
@@ -77,6 +79,12 @@ class TrainArgs:
     deployment_extra_values: dict[str, str] | None = None
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
+    skip_cleanup: bool = False
+    """Do not delete deployment and trainer jobs on exit."""
+    policy_job_id: str | None = None
+    """Pre-created policy trainer job ID to reuse."""
+    reference_job_id: str | None = None
+    """Pre-created reference trainer job ID to reuse."""
 
 
 def parse_args() -> TrainArgs:
@@ -89,6 +97,8 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--tokenizer-model")
     parser.add_argument("--dataset-path")
     parser.add_argument("--training-shape")
+    parser.add_argument("--ref-training-shape",
+                        help="Separate training shape for the forward-only reference model")
     parser.add_argument(
         "--deployment-id",
         help="Existing deployment ID to reuse; omit to auto-create",
@@ -118,6 +128,12 @@ def parse_args() -> TrainArgs:
     )
     parser.add_argument("--wandb-entity")
     parser.add_argument("--wandb-project")
+    parser.add_argument("--skip-cleanup", action="store_true",
+                        help="Do not delete deployment and trainer jobs on exit")
+    parser.add_argument("--policy-job-id",
+                        help="Pre-created policy trainer job ID to reuse")
+    parser.add_argument("--reference-job-id",
+                        help="Pre-created reference trainer job ID to reuse")
 
     parsed = parser.parse_args(namespace=defaults)
     # Convert --deployment-extra-values key=value pairs to a dict.
@@ -277,10 +293,12 @@ def main():
         is_correction=ISConfig(tis_cap=2.0),
         router_replay=args.router_replay,
         router_replay_completion_only=args.router_replay,
+        policy_job_id=args.policy_job_id,
+        reference_job_id=args.reference_job_id,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
+            ref_training_shape_id=args.ref_training_shape,
             region=args.region,
-            skip_validations=True,
         ),
         deployment=DeployConfig(
             deployment_id=args.deployment_id,
@@ -329,7 +347,7 @@ def main():
         config,
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
-        cleanup_on_exit=True,
+        cleanup_on_exit=not args.skip_cleanup,
     )
 
     logger.info("Training complete. Final metrics: %s", metrics)
