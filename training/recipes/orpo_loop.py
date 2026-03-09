@@ -352,9 +352,8 @@ if __name__ == "__main__":
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
 
-    default_dataset = str(pathlib.Path(__file__).parent / "sample_orpo_data.jsonl")
     cfg = Config(
-        dataset=os.environ.get("ORPO_DATASET", default_dataset),
+        dataset=os.environ.get("ORPO_DATASET_PATH"), 
         tokenizer_model=os.environ.get("ORPO_TOKENIZER", "Qwen/Qwen3-235B-A22B-Instruct-2507"),
     )
     main(cfg)

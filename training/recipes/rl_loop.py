@@ -22,7 +22,7 @@ import json
 import signal
 import asyncio
 import logging
-from typing import List, Optional, Any
+from typing import List, Optional
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -510,7 +510,7 @@ def main(
                 ]
                 idx += n
 
-        def fwd_bwd_one(prompt_groups: list[PromptGroup]) -> Any:
+        def fwd_bwd_one(prompt_groups: list[PromptGroup]):
             """One minibatch forward/backward call after reference forward."""
             if not prompt_groups:
                 raise ValueError("fwd_bwd_one requires at least one prompt group")
@@ -521,23 +521,23 @@ def main(
             t0 = _t.time()
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("fwd_bwd_one: prox_forward done (%.1fs)", _t.time() - t0)
+            logger.info("prox_forward: done (%.1fs)", _t.time() - t0)
 
             t0 = _t.time()
-            result = policy.forward_backward_custom(
+            fwd_bwd_result = policy.forward_backward_custom(
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
-            logger.info("fwd_bwd_one: fwd_bwd done (%.1fs)", _t.time() - t0)
-            return result
+            logger.info("fwd_bwd: done (%.1fs)", _t.time() - t0)
+            return fwd_bwd_result
 
         def finish_step(
             step: int,
-            all_groups: list[PromptGroup],
+            prompt_groups: list[PromptGroup],
             fwd_bwd_results: list,
             n_accum: int,
-            loop_stats: dict,
+            loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """optim_step + hotload + metrics."""
+            """optim_step + hotload + metrics after all minibatches in a step."""
             import time as _t
 
             t0 = _t.time()
@@ -559,7 +559,7 @@ def main(
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _t.time() - t0)
 
             metrics = compute_step_metrics(
-                prompt_groups=all_groups,
+                prompt_groups=prompt_groups,
                 fwd_bwd_results=fwd_bwd_results,
                 optim_result=optim_result,
                 n_accum=n_accum,
@@ -580,7 +580,7 @@ def main(
             wandb_log(metrics, step)
 
             if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, all_groups)
+                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
 
             return step, metrics
 
@@ -590,7 +590,7 @@ def main(
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
-        minibatch_fns = MinibatchTrainFns(
+        train_fns = MinibatchTrainFns(
             ref_forward_batch=ref_forward,
             fwd_bwd_one=fwd_bwd_one,
             finish_step=finish_step,
@@ -600,7 +600,7 @@ def main(
 
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(row) for row in all_rows),
-            minibatch_fns=minibatch_fns,
+            minibatch_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
             max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
@@ -640,10 +640,10 @@ def main(
                     logger.warning("Cleanup: failed to delete reference job %s: %s", reference_job_id, e)
             if cfg.deployment.deployment_id:
                 try:
-                    logger.info("Cleanup: deleting deployment %s", cfg.deployment.deployment_id)
-                    deploy_mgr.delete(cfg.deployment.deployment_id)
+                    logger.info("Cleanup: scaling deployment to zero %s", cfg.deployment.deployment_id)
+                    deploy_mgr.scale_to_zero(cfg.deployment.deployment_id)
                 except Exception as e:
-                    logger.warning("Cleanup: failed to delete deployment %s: %s", cfg.deployment.deployment_id, e)
+                    logger.warning("Cleanup: failed to scale deployment %s: %s", cfg.deployment.deployment_id, e)
 
 
 if __name__ == "__main__":
