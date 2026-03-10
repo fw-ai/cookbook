@@ -45,25 +45,16 @@ def resolve_resume(
     """Determine resume state from ``local_checkpoint_state.jsonl``.
 
     Priority:
-    1. If ``local_checkpoint_state.jsonl`` has entries, resume from the last one.
-    2. If empty/missing but *init_from_checkpoint* is set, start fresh
-       with DCP weights (step=0, data_consumed=0).
+    1. If *init_from_checkpoint* is set, always start fresh with those
+       DCP weights (step=0, data_consumed=0).  Any existing state file
+       is cleared — this is an explicit directive to start from specific
+       weights, not continue a previous run.
+    2. If ``local_checkpoint_state.jsonl`` has entries, resume from the
+       last one.
     3. Otherwise, completely fresh start (no DCP).
 
     *init_from_checkpoint* supports cross-job format ``"job_id:checkpoint_name"``.
     """
-    last = _load_last_loop_state(log_path)
-    if last is not None:
-        logger.info("Resuming from local_checkpoint_state.jsonl: %s", last)
-        return ResumeState(
-            step=last.get("step", 0),
-            data_consumed=last.get("data_consumed", 0),
-            dcp_name=last.get("dcp_name"),
-            dataset_fingerprint=last.get("dataset_fingerprint"),
-            training_shape_id=last.get("training_shape_id"),
-            source_job_id=last.get("source_job_id"),
-        )
-
     if init_from_checkpoint:
         source_job_id = None
         dcp_name = init_from_checkpoint
@@ -80,8 +71,21 @@ def resolve_resume(
             dcp_name=dcp_name,
             source_job_id=source_job_id,
         )
+        _clear_state_file(log_path)
         save_loop_state(log_path, _state_to_dict(initial))
         return initial
+
+    last = _load_last_loop_state(log_path)
+    if last is not None:
+        logger.info("Resuming from local_checkpoint_state.jsonl: %s", last)
+        return ResumeState(
+            step=last.get("step", 0),
+            data_consumed=last.get("data_consumed", 0),
+            dcp_name=last.get("dcp_name"),
+            dataset_fingerprint=last.get("dataset_fingerprint"),
+            training_shape_id=last.get("training_shape_id"),
+            source_job_id=last.get("source_job_id"),
+        )
 
     logger.info("Fresh start (no checkpoint)")
     return ResumeState()
@@ -118,6 +122,14 @@ def save_loop_state(log_path: str, loop_state: dict[str, Any]) -> None:
     with open(path, "a") as f:
         f.write(json.dumps(loop_state) + "\n")
     logger.info("Saved loop state: %s", loop_state)
+
+
+def _clear_state_file(log_path: str) -> None:
+    """Remove the state file so a fresh run starts clean."""
+    path = os.path.join(log_path, STATE_FILE)
+    if os.path.exists(path):
+        os.remove(path)
+        logger.info("Cleared previous state file: %s", path)
 
 
 def _load_last_loop_state(log_path: str) -> dict[str, Any] | None:

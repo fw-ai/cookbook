@@ -76,8 +76,7 @@ class TestSFTResumeE2E:
             logger.info("PHASE 1: initial SFT training")
 
             import tempfile as _tf
-            phase1_log = _tf.mkdtemp(prefix="sft_resume_p1_")
-            phase2_log = _tf.mkdtemp(prefix="sft_resume_p2_")
+            log_dir = _tf.mkdtemp(prefix="sft_resume_")
 
             phase1_config = Config(
                 base_model=e2e_model,
@@ -90,7 +89,7 @@ class TestSFTResumeE2E:
                 max_seq_len=4096,
                 max_examples=50,
                 dcp_save_interval=4,
-                log_path=phase1_log,
+                log_path=log_dir,
                 infra=shared_infra,
             )
 
@@ -118,7 +117,7 @@ class TestSFTResumeE2E:
                 grad_accum=2,
                 max_seq_len=4096,
                 max_examples=50,
-                log_path=phase2_log,
+                log_path=log_dir,
                 infra=shared_infra,
                 init_from_checkpoint=f"{phase1_job_id}:{dcp_name}",
             )
