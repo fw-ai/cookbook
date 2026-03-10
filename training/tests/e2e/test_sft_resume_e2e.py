@@ -69,7 +69,8 @@ class TestSFTResumeE2E:
 
             shared_infra = InfraConfig(
                 region=e2e_region,
-                custom_image_tag=custom_image_tag or "0.65.4",
+                training_shape_id="ts-qwen3-30b-a3b-policy",
+                custom_image_tag=custom_image_tag,
             )
 
             # Phase 1: train, save DCP
