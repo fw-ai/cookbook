@@ -102,7 +102,7 @@ class TestValidatedShapePath:
         assert c.accelerator_type is None
         assert c.accelerator_count is None
         assert c.custom_image_tag is None
-        assert c.max_context_length is None
+        assert c.max_context_length == PROFILE.max_supported_context_length
         assert c.node_count is None
 
     def test_payload_omits_shape_derived_fields(self):
