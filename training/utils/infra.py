@@ -98,6 +98,7 @@ def create_trainer_job(
         config = TrainerJobConfig(
             base_model=base_model,
             lora_rank=lora_rank,
+            max_context_length=max_seq_len or profile.max_supported_context_length,
             learning_rate=learning_rate,
             gradient_accumulation_steps=grad_accum,
             display_name=display_name,
