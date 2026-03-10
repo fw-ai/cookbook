@@ -537,8 +537,10 @@ def main(
         # -- Final checkpoint --------------------------------------------------
 
         hl = cfg.hotload
-        if step > step_offset and (hl.hot_load_interval > 0 or hl.dcp_save_interval > 0):
-            weight_syncer.save_and_hotload(f"final-step-{step}")
+        if step > step_offset:
+            weight_syncer.save_dcp(f"step-{step}")
+            if hl.hot_load_interval > 0:
+                weight_syncer.save_and_hotload(f"final-step-{step}")
 
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}

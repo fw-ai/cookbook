@@ -327,8 +327,11 @@ def main(
         # -- Final checkpoint ------------------------------------------------
 
         if step > step_offset:
+            logger.info("Saving final DCP checkpoint (step %d)...", step)
+            client.save_state(f"step-{step}")
+
             logger.info("Saving final base checkpoint (step %d)...", step)
-            result = client.inner.save_weights_for_sampler_ext(
+            result = client.save_weights_for_sampler_ext(
                 f"final-step-{step}", checkpoint_type="base"
             )
             logger.info("Final base checkpoint saved: %s", result.path)

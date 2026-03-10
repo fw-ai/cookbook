@@ -260,7 +260,7 @@ def main(
                 if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                     with timer("dcp_save"):
                         logger.info("Saving DCP checkpoint at step %d", step)
-                        client.inner.save_state(f"step-{step}")
+                        client.save_state(f"step-{step}")
                     save_loop_state(cfg.log_path, {
                         "step": step,
                         "data_consumed": data_consumed,
@@ -318,7 +318,7 @@ def main(
 
         if step > state.step:
             logger.info("Saving final DCP checkpoint (step %d)...", step)
-            client.inner.save_state(f"step-{step}")
+            client.save_state(f"step-{step}")
             save_loop_state(cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
@@ -329,7 +329,7 @@ def main(
             })
 
             logger.info("Saving final base checkpoint (step %d)...", step)
-            result = client.inner.save_weights_for_sampler_ext(
+            result = client.save_weights_for_sampler_ext(
                 f"final-step-{step}", checkpoint_type="base"
             )
             logger.info("Final base checkpoint saved: %s", result.path)
