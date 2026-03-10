@@ -189,14 +189,9 @@ class Qwen3VLInstructRenderer(Renderer):
                     elif ptype == "image":
                         image_data, fmt = _decode_data_url(part["image"])
                         expected = _compute_qwen_vl_expected_tokens(image_data)
-                        vision_start = self._encode("<|vision_start|>")
-                        vision_end = self._encode("<|vision_end|>")
 
-                        model_input = model_input.append(
-                            tinker.types.EncodedTextChunk(tokens=vision_start)
-                        )
-                        all_weights.extend([0.0] * len(vision_start))
-
+                        # The server inserts <|vision_start|>/<|vision_end|>
+                        # around ImageChunks automatically; do NOT add them here.
                         model_input = model_input.append(
                             tinker.types.ImageChunk(
                                 data=image_data,
@@ -205,11 +200,6 @@ class Qwen3VLInstructRenderer(Renderer):
                             )
                         )
                         all_weights.extend([0.0] * expected)
-
-                        model_input = model_input.append(
-                            tinker.types.EncodedTextChunk(tokens=vision_end)
-                        )
-                        all_weights.extend([0.0] * len(vision_end))
                     elif ptype == "thinking":
                         think_tokens = self._encode(part.get("thinking", ""))
                         model_input = model_input.append(
@@ -610,6 +600,21 @@ def _extract_token_ids(model_input: tinker.ModelInput) -> list[int]:
     return ids
 
 
+def _extract_text_only_token_ids(model_input: tinker.ModelInput) -> list[int]:
+    """Extract only text token IDs from a ModelInput, skipping image chunks.
+
+    Non-text chunks are silently skipped.  The returned list contains only
+    actual text token IDs in sequence order, with no placeholders for images.
+    This is required because the server corrupts logprobs when target_tokens
+    contains zeros at image chunk positions.
+    """
+    ids: list[int] = []
+    for chunk in model_input.chunks:
+        if hasattr(chunk, "tokens"):
+            ids.extend(chunk.tokens)
+    return ids
+
+
 def _has_non_text_chunks(model_input: tinker.ModelInput) -> bool:
     return any(
         not isinstance(c, tinker.types.EncodedTextChunk) for c in model_input.chunks
@@ -621,7 +626,12 @@ def _build_multimodal_datum(
     weights: list[float],
     max_seq_len: int | None = None,
 ) -> tinker.Datum:
-    """Build a next-token-prediction datum that preserves image chunks."""
+    """Build a next-token-prediction datum that preserves image chunks.
+
+    ``target_tokens`` contains only text token IDs (no image placeholders).
+    The server uses these for logprob gathering; including zeros at image
+    positions corrupts the logprob computation.
+    """
     token_ids = _extract_token_ids(model_input)
 
     if max_seq_len is not None and len(token_ids) > max_seq_len:
@@ -632,8 +642,9 @@ def _build_multimodal_datum(
         raise ValueError("Need at least 2 tokens to build a supervised datum.")
 
     input_mi = _truncate_model_input(model_input)
-    target_tokens = token_ids[1:]
     shifted_weights = weights[1:]
+
+    text_target_tokens = _extract_text_only_token_ids(model_input)[1:]
 
     return tinker.Datum(
         model_input=input_mi,
@@ -644,9 +655,9 @@ def _build_multimodal_datum(
                 shape=[len(shifted_weights)],
             ),
             "target_tokens": tinker.TensorData(
-                data=[int(x) for x in target_tokens],
+                data=[int(x) for x in text_target_tokens],
                 dtype="int64",
-                shape=[len(target_tokens)],
+                shape=[len(text_target_tokens)],
             ),
         },
     )
