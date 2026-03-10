@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, HotloadConfig
+from training.utils import InfraConfig
 from training.recipes.sft_loop import Config, main
 
 logger = logging.getLogger(__name__)
@@ -85,12 +85,11 @@ class TestSFTResumeE2E:
                 epochs=2,
                 grad_accum=2,
                 max_examples=10,
+                dcp_save_interval=4,
                 infra=shared_infra,
-                deployment=DeployConfig(),
-                hotload=HotloadConfig(hot_load_interval=0, dcp_save_interval=4),
             )
 
-            phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+            phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr)
 
             assert isinstance(phase1_metrics, dict)
             assert "steps" in phase1_metrics
@@ -113,12 +112,10 @@ class TestSFTResumeE2E:
                 grad_accum=2,
                 max_examples=10,
                 infra=shared_infra,
-                deployment=DeployConfig(),
-                hotload=HotloadConfig(hot_load_interval=0),
                 init_from_checkpoint=f"{phase1_job_id}:{dcp_name}",
             )
 
-            phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+            phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr)
 
             assert isinstance(phase2_metrics, dict)
             assert "steps" in phase2_metrics
