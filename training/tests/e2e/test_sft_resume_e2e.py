@@ -69,9 +69,7 @@ class TestSFTResumeE2E:
 
             shared_infra = InfraConfig(
                 region=e2e_region,
-                skip_validations=True,
-                accelerator_type=e2e_training_accelerator,
-                custom_image_tag=custom_image_tag,
+                custom_image_tag=custom_image_tag or "0.65.4",
             )
 
             # Phase 1: train, save DCP
