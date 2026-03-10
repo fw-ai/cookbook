@@ -390,8 +390,7 @@ def main(
 
         state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
         dcp_load_time = load_dcp(policy, state)
-        if dcp_load_time > 0:
-            wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
+        wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
         step_offset = state.step
 
         if cfg.hotload.hot_load_before_training and cfg.deployment.deployment_id:

@@ -217,8 +217,7 @@ def main(
 
         state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
         dcp_load_time = load_dcp(client, state)
-        if dcp_load_time > 0:
-            wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
+        wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
 
         fp = dataset_fingerprint(raw_data)
         validate_dataset(state.dataset_fingerprint, fp, state.data_consumed)
