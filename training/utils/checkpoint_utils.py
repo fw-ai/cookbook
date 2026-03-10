@@ -1,9 +1,8 @@
 """Checkpoint utilities using tinker_cookbook's checkpoints.jsonl format.
 
-Checkpoint state is persisted in ``checkpoints.jsonl`` (same format as
-``tinker_cookbook.checkpoint_utils``).  Reading uses ``get_last_checkpoint``
-imported directly from tinker_cookbook; writing uses a sync
-``save_checkpoint`` that follows the same schema.
+Reading uses ``get_last_checkpoint`` from tinker_cookbook directly.
+Writing (``save_checkpoint``) and resume (``resolve_resume``) are
+implemented locally for Fireworks RLOR compatibility.
 """
 
 from __future__ import annotations
