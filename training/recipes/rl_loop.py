@@ -51,8 +51,6 @@ from training.utils import (
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
-    dataset_fingerprint,
-    validate_dataset,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
@@ -403,9 +401,6 @@ def main(
         # -- Prepare sampling and training --------------------------------------
 
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
-        fp = dataset_fingerprint(raw_dataset)
-        if resume_info:
-            validate_dataset(resume_info.dataset_fingerprint, fp, resume_info.data_consumed)
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
@@ -581,8 +576,6 @@ def main(
                 save_checkpoint(policy, f"step-{step}", cfg.log_path, {
                     "step": step,
                     "data_consumed": _data_consumed,
-                    "dataset_fingerprint": fp,
-                    "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
                     "source_job_id": policy_job_id,
                 })
 
@@ -647,8 +640,6 @@ def main(
                 save_checkpoint(policy, f"step-{global_step}", cfg.log_path, {
                     "step": global_step,
                     "data_consumed": _data_consumed,
-                    "dataset_fingerprint": fp,
-                    "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
                     "source_job_id": policy_job_id,
                 })
             except Exception as e:

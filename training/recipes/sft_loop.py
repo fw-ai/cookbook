@@ -51,8 +51,6 @@ from training.utils import (
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
-    dataset_fingerprint,
-    validate_dataset,
 )
 from training.utils.timer import timer, flush_timing
 
@@ -230,10 +228,6 @@ def main(
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)
 
-        fp = dataset_fingerprint(raw_data)
-        if resume_info:
-            validate_dataset(resume_info.dataset_fingerprint, fp, data_consumed)
-
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         # -- Training loop (batch-indexed) -------------------------------------
@@ -268,8 +262,6 @@ def main(
                         save_checkpoint(client, f"step-{step}", cfg.log_path, {
                             "step": step,
                             "data_consumed": data_consumed,
-                            "dataset_fingerprint": fp,
-                            "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
                             "source_job_id": job_id,
                         })
 
@@ -319,8 +311,6 @@ def main(
             save_checkpoint(client, f"step-{step}", cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
-                "dataset_fingerprint": fp,
-                "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
                 "source_job_id": job_id,
             }, kind="both")
 

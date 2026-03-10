@@ -1,4 +1,4 @@
-"""Unit tests for checkpoint_utils -- resume, save, fingerprints."""
+"""Unit tests for checkpoint_utils -- resume, save."""
 
 import json
 import os
@@ -11,9 +11,6 @@ from training.utils.checkpoint_utils import (
     ResumeInfo,
     resolve_resume,
     save_checkpoint,
-    dataset_fingerprint,
-    validate_dataset,
-    validate_training_shape,
     CHECKPOINTS_BASE_NAME,
 )
 
@@ -67,8 +64,6 @@ class TestResolveResume:
             "step": 5,
             "data_consumed": 40,
             "state_path": "cross_job://job-abc/step-5",
-            "dataset_fingerprint": "abc123",
-            "training_shape_id": "ts-qwen3-8b-policy",
             "source_job_id": "job-abc",
         })
         client = _make_mock_client()
@@ -76,8 +71,6 @@ class TestResolveResume:
         assert result is not None
         assert result.step == 5
         assert result.data_consumed == 40
-        assert result.dataset_fingerprint == "abc123"
-        assert result.training_shape_id == "ts-qwen3-8b-policy"
         assert result.source_job_id == "job-abc"
         client.load_state_with_optimizer.assert_called_once_with("cross_job://job-abc/step-5")
 
@@ -164,56 +157,6 @@ class TestSaveCheckpoint:
             client = _make_mock_client()
             save_checkpoint(client, "step-1", nested, {"step": 1})
             assert os.path.exists(os.path.join(nested, CHECKPOINTS_BASE_NAME))
-
-
-class TestDatasetFingerprint:
-    def test_consistent(self):
-        rows = [{"a": 1}, {"b": 2}, {"c": 3}]
-        fp1 = dataset_fingerprint(rows)
-        fp2 = dataset_fingerprint(rows)
-        assert fp1 == fp2
-        assert len(fp1) == 12
-
-    def test_different_data(self):
-        fp1 = dataset_fingerprint([{"a": 1}])
-        fp2 = dataset_fingerprint([{"a": 2}])
-        assert fp1 != fp2
-
-    def test_different_length(self):
-        fp1 = dataset_fingerprint([{"a": 1}])
-        fp2 = dataset_fingerprint([{"a": 1}, {"b": 2}])
-        assert fp1 != fp2
-
-    def test_empty(self):
-        assert dataset_fingerprint([]) == "empty"
-
-
-class TestValidateDataset:
-    def test_no_warning_on_match(self, log_dir, caplog):
-        validate_dataset("abc123", "abc123", 40)
-        assert "Dataset changed" not in caplog.text
-
-    def test_warning_on_mismatch(self, log_dir, caplog):
-        validate_dataset("abc123", "xyz789", 40)
-        assert "Dataset changed" in caplog.text
-
-    def test_no_warning_when_saved_is_none(self, log_dir, caplog):
-        validate_dataset(None, "abc123", 0)
-        assert "Dataset changed" not in caplog.text
-
-
-class TestValidateTrainingShape:
-    def test_no_warning_on_match(self, caplog):
-        validate_training_shape("ts-qwen3-8b", "ts-qwen3-8b")
-        assert "Training shape changed" not in caplog.text
-
-    def test_warning_on_mismatch(self, caplog):
-        validate_training_shape("ts-qwen3-8b", "ts-qwen3-30b")
-        assert "Training shape changed" in caplog.text
-
-    def test_no_warning_when_none(self, caplog):
-        validate_training_shape(None, "ts-qwen3-8b")
-        assert "Training shape changed" not in caplog.text
 
 
 class TestRLPromptDataset:

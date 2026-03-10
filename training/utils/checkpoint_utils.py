@@ -7,7 +7,6 @@ implemented locally for Fireworks RLOR compatibility.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -32,8 +31,6 @@ class ResumeInfo:
 
     step: int = 0
     data_consumed: int = 0
-    dataset_fingerprint: str | None = None
-    training_shape_id: str | None = None
     source_job_id: str | None = None
 
 
@@ -74,8 +71,6 @@ def resolve_resume(
         return ResumeInfo(
             step=last.get("step", 0),
             data_consumed=last.get("data_consumed", 0),
-            dataset_fingerprint=last.get("dataset_fingerprint"),
-            training_shape_id=last.get("training_shape_id"),
             source_job_id=last.get("source_job_id"),
         )
 
@@ -117,52 +112,3 @@ def save_checkpoint(
         f.write(json.dumps(full_dict) + "\n")
     logger.info("Saved checkpoint: %s", full_dict)
     return paths
-
-
-# -- Dataset fingerprint -------------------------------------------------------
-
-
-def dataset_fingerprint(rows: list[dict]) -> str:
-    """Short hash of row count + first/last row content."""
-    if not rows:
-        return "empty"
-    content = (
-        f"{len(rows)}:"
-        f"{json.dumps(rows[0], sort_keys=True)}:"
-        f"{json.dumps(rows[-1], sort_keys=True)}"
-    )
-    return hashlib.sha256(content.encode()).hexdigest()[:12]
-
-
-def validate_dataset(
-    saved_fingerprint: str | None,
-    current_fingerprint: str,
-    data_consumed: int,
-) -> None:
-    """Warn if the dataset changed between checkpoint save and resume."""
-    if saved_fingerprint and saved_fingerprint != current_fingerprint:
-        logger.warning(
-            "Dataset changed since checkpoint! "
-            "fingerprint: saved=%s current=%s. "
-            "data_consumed=%d may point to different data.",
-            saved_fingerprint,
-            current_fingerprint,
-            data_consumed,
-        )
-
-
-# -- Training shape validation -------------------------------------------------
-
-
-def validate_training_shape(
-    saved_shape_id: str | None,
-    current_shape_id: str | None,
-) -> None:
-    """Warn if the training shape changed between checkpoint save and resume."""
-    if saved_shape_id and current_shape_id and saved_shape_id != current_shape_id:
-        logger.warning(
-            "Training shape changed! saved=%s current=%s. "
-            "Model parallelism may be incompatible.",
-            saved_shape_id,
-            current_shape_id,
-        )
