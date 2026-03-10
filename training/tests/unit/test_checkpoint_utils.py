@@ -237,3 +237,76 @@ class TestRLPromptDataset:
         ds = RLPromptDataset(rows, prompts_per_step=4)
         assert len(ds) == 3
         assert ds.get_batch(2) == rows[8:12]
+
+
+class TestLogPathRequired:
+    """Verify log_path is a required field on all recipe Configs (no default)."""
+
+    def test_sft_config_requires_log_path(self):
+        from training.recipes.sft_loop import Config
+        with pytest.raises(TypeError, match="log_path"):
+            Config()
+
+    def test_rl_config_requires_log_path(self):
+        from training.recipes.rl_loop import Config
+        with pytest.raises(TypeError, match="log_path"):
+            Config()
+
+    def test_dpo_config_requires_log_path(self):
+        from training.recipes.dpo_loop import Config
+        with pytest.raises(TypeError, match="log_path"):
+            Config()
+
+    def test_orpo_config_requires_log_path(self):
+        from training.recipes.orpo_loop import Config
+        with pytest.raises(TypeError, match="log_path"):
+            Config()
+
+    def test_sft_config_accepts_log_path(self):
+        from training.recipes.sft_loop import Config
+        cfg = Config(log_path="/tmp/test_sft")
+        assert cfg.log_path == "/tmp/test_sft"
+
+    def test_rl_config_accepts_log_path(self):
+        from training.recipes.rl_loop import Config
+        cfg = Config(log_path="/tmp/test_rl")
+        assert cfg.log_path == "/tmp/test_rl"
+
+    def test_save_checkpoint_creates_log_dir(self, log_dir):
+        """save_checkpoint creates log_path if it doesn't exist."""
+        nested = os.path.join(log_dir, "deep", "nested")
+        assert not os.path.exists(nested)
+        client = _make_mock_client()
+        save_checkpoint(client, "step-1", nested, {"step": 1})
+        assert os.path.exists(os.path.join(nested, CHECKPOINTS_BASE_NAME))
+
+    def test_resolve_resume_with_empty_log_dir(self, log_dir):
+        """resolve_resume returns None for a fresh log_path with no checkpoints."""
+        client = _make_mock_client()
+        result = resolve_resume(client, log_dir)
+        assert result is None
+        client.load_state_with_optimizer.assert_not_called()
+
+    def test_save_then_resume_roundtrip(self, log_dir):
+        """Full roundtrip: save a checkpoint, then resume from it."""
+        client = _make_mock_client(job_id="job-roundtrip")
+        save_checkpoint(client, "step-3", log_dir, {
+            "step": 3,
+            "data_consumed": 24,
+            "source_job_id": "job-roundtrip",
+        })
+
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        assert os.path.exists(ckpt_path)
+        with open(ckpt_path) as f:
+            entry = json.loads(f.readline())
+        assert entry["name"] == "step-3"
+        assert entry["step"] == 3
+        assert "state_path" in entry
+
+        client2 = _make_mock_client(job_id="job-new")
+        result = resolve_resume(client2, log_dir)
+        assert result is not None
+        assert result.step == 3
+        assert result.data_consumed == 24
+        client2.load_state_with_optimizer.assert_called_once()
