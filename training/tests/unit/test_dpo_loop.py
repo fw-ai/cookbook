@@ -315,12 +315,21 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
             self.job_id = job_id
             self.inner = object()
 
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
+
     class FakeWeightSyncer:
         def __init__(self, **kwargs):
             events["weight_syncer_init"] = kwargs
 
         def save_and_hotload(self, name):
             events["weight_syncer_saves"].append(name)
+
+        def save_dcp(self, name):
+            events.setdefault("dcp_saves", []).append(name)
 
     async def fake_cache_ref_logprobs(*args, **kwargs):
         events["cache_args"] = {"args": args, "kwargs": kwargs}

@@ -22,20 +22,8 @@ import tinker
 from tinker_cookbook.model_info import get_recommended_renderer_name
 from tinker_cookbook.renderers import Message, Renderer, ToolCall, TrainOnWhat, get_renderer
 
-try:  # Newer Tinker multimodal path
-    from tinker_cookbook.image_processing_utils import get_image_processor
-except ImportError:  # pragma: no cover - old Tinker fallback
-    get_image_processor = None  # type: ignore[assignment]
-
-try:  # Newer Tinker multimodal path
-    from tinker_cookbook.supervised.common import datum_from_model_input_weights
-except ImportError:  # pragma: no cover - old Tinker fallback
-    datum_from_model_input_weights = None  # type: ignore[assignment]
-
-try:  # Older released Tinker cookbook
-    from tinker_cookbook.supervised.common import datum_from_tokens_weights
-except ImportError:  # pragma: no cover - new Tinker fallback
-    datum_from_tokens_weights = None  # type: ignore[assignment]
+from tinker_cookbook.image_processing_utils import get_image_processor
+from tinker_cookbook.supervised.common import datum_from_model_input_weights
 
 
 @dataclass(frozen=True)
@@ -91,7 +79,7 @@ def build_renderer(
 ) -> Renderer:
     """Construct the Tinker renderer used for supervised formatting."""
     resolved_name = resolve_renderer_name(tokenizer_model, renderer_name)
-    if get_image_processor is not None and _renderer_uses_images(resolved_name):
+    if _renderer_uses_images(resolved_name):
         return get_renderer(
             resolved_name,
             tokenizer,
@@ -316,18 +304,12 @@ def build_datum_from_tokens_and_weights(
         if len(tokens) < 2:
             raise ValueError("Truncation left fewer than 2 tokens.")
 
-    token_tensor = torch.tensor(tokens, dtype=torch.int64)
     weight_tensor = torch.tensor(weights, dtype=torch.float32)
-    if datum_from_tokens_weights is not None:
-        datum = datum_from_tokens_weights(token_tensor, weight_tensor, max_length=max_seq_len)
-    else:
-        if datum_from_model_input_weights is None:  # pragma: no cover - impossible if imports succeeded
-            raise RuntimeError("Tinker cookbook does not expose a supported supervised datum builder.")
-        datum = datum_from_model_input_weights(
-            tinker.ModelInput.from_ints(tokens),
-            weight_tensor,
-            max_length=max_seq_len,
-        )
+    datum = datum_from_model_input_weights(
+        tinker.ModelInput.from_ints(tokens),
+        weight_tensor,
+        max_length=max_seq_len,
+    )
 
     if include_loss_mask:
         shifted_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
@@ -368,15 +350,6 @@ def build_datum_from_model_input_and_weights(
     include_loss_mask: bool = False,
 ) -> RenderedSupervisedDatum:
     """Build a weighted datum from a multimodal-capable ``ModelInput``."""
-    if datum_from_model_input_weights is None:
-        token_ids = _extract_token_ids(model_input)
-        return build_datum_from_tokens_and_weights(
-            token_ids,
-            token_weights,
-            max_seq_len=max_seq_len,
-            include_loss_mask=include_loss_mask,
-        )
-
     weight_tensor = torch.tensor([float(x) for x in token_weights], dtype=torch.float32)
     if weight_tensor.numel() != model_input.length:
         raise ValueError(

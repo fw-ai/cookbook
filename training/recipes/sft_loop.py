@@ -25,10 +25,12 @@ import torch
 import tinker
 
 import json
+import datasets as hf_datasets
 import transformers
 from dotenv import load_dotenv
 
 from fireworks.training.sdk import TrainerJobManager
+from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
@@ -48,8 +50,7 @@ from training.utils import (
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
-    load_dcp,
-    save_loop_state,
+    save_checkpoint,
     dataset_fingerprint,
     validate_dataset,
 )
@@ -184,61 +185,64 @@ def main(
                     break
         logger.info("Loaded %d examples from %s", len(raw_data), cfg.dataset)
 
-        training_data: List[tinker.Datum] = []
+        max_seq_len = cfg.max_seq_len
         filtered_count = 0
-        for row in raw_data:
+
+        def _map_fn(row: dict) -> tinker.Datum | None:
+            nonlocal filtered_count
             messages = row.get("messages", [])
             if not messages:
-                continue
-
-            rendered = render_messages_to_datum(
-                messages,
-                renderer=renderer,
-                train_on_what=train_on_what,
-            )
-            if len(rendered.token_ids) > cfg.max_seq_len or len(rendered.token_ids) < 2:
                 filtered_count += 1
-                continue
+                return None
+            rendered = render_messages_to_datum(
+                messages, renderer=renderer, train_on_what=train_on_what,
+            )
+            if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
+                filtered_count += 1
+                return None
+            return rendered.datum
 
-            training_data.append(rendered.datum)
-
+        training_data = [d for row in raw_data if (d := _map_fn(row)) is not None]
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count,
-                len(raw_data),
-                cfg.max_seq_len,
+                filtered_count, len(raw_data), max_seq_len,
             )
         logger.info("Prepared %d training examples", len(training_data))
         if not training_data:
             raise RuntimeError("No valid training examples after tokenization")
 
+        sft_dataset = SupervisedDatasetFromHFDataset(
+            hf_datasets.Dataset.from_dict({"datum_idx": list(range(len(training_data)))}),
+            batch_size=cfg.batch_size,
+            map_fn=lambda row: training_data[row["datum_idx"]],
+        )
+        total_batches_per_epoch = len(sft_dataset)
+        logger.info("Dataset: %d examples, %d batches/epoch, %d epochs",
+                     len(training_data), total_batches_per_epoch, cfg.epochs)
+
         # -- Resume ---------------------------------------------------------------
 
-        state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
-        dcp_load_time = load_dcp(client, state)
-        wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
+        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+        step = resume_info.step if resume_info else 0
+        data_consumed = resume_info.data_consumed if resume_info else 0
+        wandb_log({"train/step": step}, step)
 
         fp = dataset_fingerprint(raw_data)
-        validate_dataset(state.dataset_fingerprint, fp, state.data_consumed)
+        if resume_info:
+            validate_dataset(resume_info.dataset_fingerprint, fp, data_consumed)
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
-        # -- Training loop (batched) -------------------------------------------
+        # -- Training loop (batch-indexed) -------------------------------------
 
-        batch_size = cfg.batch_size
-        all_examples = training_data * cfg.epochs
-        examples_to_process = all_examples[state.data_consumed:]
-        data_consumed = state.data_consumed
-
-        step = state.step
-        total_steps = len(all_examples) // (cfg.grad_accum * batch_size)
+        start_batch = data_consumed // cfg.batch_size
+        total_steps_estimate = (total_batches_per_epoch * cfg.epochs) // cfg.grad_accum
         accum = 0
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
 
         def _flush_batch(batch_buf: list[tinker.Datum], step: int, accum: int) -> tuple[int, int]:
-            """Send a batch through forward_backward_custom and return (step, accum)."""
             nonlocal agg_loss_sum, agg_resp_tokens
 
             loss_fn = make_batch_weighted_sft_loss_fn()
@@ -259,15 +263,13 @@ def main(
                 if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                     with timer("dcp_save"):
                         logger.info("Saving DCP checkpoint at step %d", step)
-                        client.save_state(f"step-{step}")
-                    save_loop_state(cfg.log_path, {
-                        "step": step,
-                        "data_consumed": data_consumed,
-                        "dcp_name": f"step-{step}",
-                        "dataset_fingerprint": fp,
-                        "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
-                        "source_job_id": job_id,
-                    })
+                        save_checkpoint(client, f"step-{step}", cfg.log_path, {
+                            "step": step,
+                            "data_consumed": data_consumed,
+                            "dataset_fingerprint": fp,
+                            "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
+                            "source_job_id": job_id,
+                        })
 
                 step_metrics: Dict[str, Any] = flush_timing()
 
@@ -280,10 +282,7 @@ def main(
                     ppl = torch.exp(torch.tensor(avg_loss)).item()
                     logger.info(
                         "Step %d/%d | Loss: %.4f | PPL: %.2f",
-                        step,
-                        total_steps,
-                        avg_loss,
-                        ppl,
+                        step, total_steps_estimate, avg_loss, ppl,
                     )
                     log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
                     step_metrics.update({
@@ -298,16 +297,13 @@ def main(
 
             return step, accum
 
-        batch_buffer: list[tinker.Datum] = []
-        for ex in examples_to_process:
-            batch_buffer.append(ex)
-            data_consumed += 1
-            if len(batch_buffer) >= batch_size:
-                step, accum = _flush_batch(batch_buffer, step, accum)
-                batch_buffer = []
-
-        if batch_buffer:
-            step, accum = _flush_batch(batch_buffer, step, accum)
+        for epoch in range(cfg.epochs):
+            sft_dataset.set_epoch(epoch)
+            epoch_start = start_batch if epoch == 0 else 0
+            for i_batch in range(epoch_start, total_batches_per_epoch):
+                batch = sft_dataset.get_batch(i_batch)
+                data_consumed += len(batch)
+                step, accum = _flush_batch(batch, step, accum)
 
         if accum > 0:
             client.optim_step(adam_params)
@@ -315,23 +311,16 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
-        if step > state.step:
-            logger.info("Saving final DCP checkpoint (step %d)...", step)
-            client.save_state(f"step-{step}")
-            save_loop_state(cfg.log_path, {
+        start_step = resume_info.step if resume_info else 0
+        if step > start_step:
+            logger.info("Saving final checkpoint (step %d)...", step)
+            save_checkpoint(client, f"step-{step}", cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
-                "dcp_name": f"step-{step}",
                 "dataset_fingerprint": fp,
                 "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
                 "source_job_id": job_id,
-            })
-
-            logger.info("Saving final base checkpoint (step %d)...", step)
-            result = client.save_weights_for_sampler_ext(
-                f"final-step-{step}", checkpoint_type="base"
-            )
-            logger.info("Final base checkpoint saved: %s", result.path)
+            }, kind="both")
 
         logger.info("Training complete: %d optimizer steps", step)
         return {"steps": step, "job_id": job_id}

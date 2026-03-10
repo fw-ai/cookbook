@@ -61,7 +61,7 @@ from training.utils import (
     render_preference_pair,
     resolve_renderer_name,
 )
-from training.utils.checkpoint_utils import resolve_resume, load_dcp
+from training.utils.checkpoint_utils import resolve_resume
 
 logger = logging.getLogger(__name__)
 
@@ -175,9 +175,8 @@ def main(
     )
 
     job_id = endpoint.job_id
-    state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
-    dcp_load_time = load_dcp(client, state)
-    step_offset = state.step
+    resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+    step_offset = resume_info.step if resume_info else 0
     adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
     # -- Data ----------------------------------------------------------------

@@ -67,6 +67,19 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
             events["optim_steps"] += 1
             return SimpleNamespace()
 
+        def save_state(self, name):
+            return SimpleNamespace(path=f"tinker://unit/state/{name}")
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            events["save_weights"].append((name, checkpoint_type))
+            return SimpleNamespace(path=f"tinker://unit/sampler/{name}")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
+
     pair_outputs = iter(
         [
             SimpleNamespace(

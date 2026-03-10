@@ -36,6 +36,7 @@ from training.utils import (
     DeployConfig,
     HotloadConfig,
     ReconnectableClient,
+    RLPromptDataset,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -49,8 +50,7 @@ from training.utils import (
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
-    load_dcp,
-    save_loop_state,
+    save_checkpoint,
     dataset_fingerprint,
     validate_dataset,
 )
@@ -351,11 +351,13 @@ def main(
 
         policy = ReconnectableClient(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
+            fw_api_key=api_key,
             endpoint=policy_ep if cfg.policy_base_url else None,
         )
         reference = (
             ReconnectableClient(
                 rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
+                fw_api_key=api_key,
                 endpoint=reference_ep if cfg.reference_base_url else None,
             )
             if reference_ep else None
@@ -388,10 +390,9 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
-        dcp_load_time = load_dcp(policy, state)
-        wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
-        step_offset = state.step
+        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        step_offset = resume_info.step if resume_info else 0
+        wandb_log({"train/step": step_offset}, step_offset)
 
         if cfg.hotload.hot_load_before_training and cfg.deployment.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
@@ -399,9 +400,12 @@ def main(
 
         # -- Prepare sampling and training --------------------------------------
 
-        dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
-        fp = dataset_fingerprint(dataset)
-        validate_dataset(state.dataset_fingerprint, fp, state.data_consumed)
+        raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+        fp = dataset_fingerprint(raw_dataset)
+        if resume_info:
+            validate_dataset(resume_info.dataset_fingerprint, fp, resume_info.data_consumed)
+        all_rows = raw_dataset * cfg.epochs
+        rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
@@ -531,20 +535,19 @@ def main(
             """One minibatch forward/backward call after reference forward."""
             if not prompt_groups:
                 raise ValueError("fwd_bwd_one requires at least one prompt group")
-            import time as _t
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
-            t0 = _t.time()
+            t0 = _time.time()
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("prox_forward: done (%.1fs)", _t.time() - t0)
+            logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
 
-            t0 = _t.time()
+            t0 = _time.time()
             fwd_bwd_result = policy.forward_backward_custom(
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
-            logger.info("fwd_bwd: done (%.1fs)", _t.time() - t0)
+            logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
 
         def finish_step(
@@ -555,30 +558,27 @@ def main(
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
             """optim_step + hotload + metrics after all minibatches in a step."""
-            import time as _t
-
-            t0 = _t.time()
+            t0 = _time.time()
             optim_result = policy.optim_step(adam_params)
             step += 1
-            logger.info("[step %d] optim_step: done (%.1fs)", step, _t.time() - t0)
+            logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
             if cfg.hotload.hot_load_interval > 0 and step % cfg.hotload.hot_load_interval == 0:
                 logger.info("[step %d] hotload: saving + loading...", step)
-                t0 = _t.time()
+                t0 = _time.time()
                 with timer("weight_sync"):
                     weight_syncer.save_and_hotload(f"step-{step}")
-                logger.info("[step %d] hotload: done (%.1fs)", step, _t.time() - t0)
+                logger.info("[step %d] hotload: done (%.1fs)", step, _time.time() - t0)
             if cfg.hotload.dcp_save_interval > 0 and step % cfg.hotload.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
-                t0 = _t.time()
+                t0 = _time.time()
                 with timer("dcp_save"):
                     weight_syncer.save_dcp(f"step-{step}")
-                logger.info("[step %d] dcp_save: done (%.1fs)", step, _t.time() - t0)
-                data_consumed = state.data_consumed + (step - state.step) * prompt_groups_per_step
-                save_loop_state(cfg.log_path, {
+                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
+                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (step - step_offset) * prompt_groups_per_step
+                save_checkpoint(policy, f"step-{step}", cfg.log_path, {
                     "step": step,
-                    "data_consumed": data_consumed,
-                    "dcp_name": f"step-{step}",
+                    "data_consumed": _data_consumed,
                     "dataset_fingerprint": fp,
                     "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
                     "source_job_id": policy_job_id,
@@ -622,10 +622,12 @@ def main(
             finish_step=finish_step,
         )
 
-        all_rows = (dataset * cfg.epochs)[state.data_consumed:]
+        remaining_rows = []
+        for i_step in range(step_offset, len(rl_dataset)):
+            remaining_rows.extend(rl_dataset.get_batch(i_step))
 
         global_step = asyncio.run(run_rl_loop(
-            sample_fns=(sample_one_prompt(row) for row in all_rows),
+            sample_fns=(sample_one_prompt(row) for row in remaining_rows),
             minibatch_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
             max_concurrent=cfg.max_concurrent,
@@ -639,12 +641,10 @@ def main(
 
         if global_step > step_offset:
             try:
-                policy.save_state(f"step-{global_step}", timeout=cfg.hotload.dcp_timeout)
-                data_consumed = state.data_consumed + (global_step - state.step) * prompt_groups_per_step
-                save_loop_state(cfg.log_path, {
+                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
+                save_checkpoint(policy, f"step-{global_step}", cfg.log_path, {
                     "step": global_step,
-                    "data_consumed": data_consumed,
-                    "dcp_name": f"step-{global_step}",
+                    "data_consumed": _data_consumed,
                     "dataset_fingerprint": fp,
                     "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
                     "source_job_id": policy_job_id,

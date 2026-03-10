@@ -1,11 +1,9 @@
-"""Checkpoint utilities -- single source of truth for resume state.
+"""Checkpoint utilities using tinker_cookbook's checkpoints.jsonl format.
 
-All resume logic flows through ``local_checkpoint_state.jsonl``:
-
-- **Continuing a run**: last entry has ``dcp_name``, ``step``, ``data_consumed``.
-- **Fresh start with pretrained weights**: ``init_from_checkpoint`` writes an
-  initial entry with ``step=0, data_consumed=0``, then loads the DCP.
-- **Completely fresh start**: no entries, no DCP load.
+Checkpoint state is persisted in ``checkpoints.jsonl`` (same format as
+``tinker_cookbook.checkpoint_utils``).  Reading uses ``get_last_checkpoint``
+imported directly from tinker_cookbook; writing uses a sync
+``save_checkpoint`` that follows the same schema.
 """
 
 from __future__ import annotations
@@ -18,142 +16,108 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from tinker_cookbook.checkpoint_utils import (
+    get_last_checkpoint,
+    CHECKPOINTS_BASE_NAME,
+)
+
 logger = logging.getLogger(__name__)
 
-STATE_FILE = "local_checkpoint_state.jsonl"
 
-
-# -- Resume state --------------------------------------------------------------
+# -- Resume info ---------------------------------------------------------------
 
 
 @dataclass
-class ResumeState:
-    """Resolved resume state -- the single source of truth."""
+class ResumeInfo:
+    """Resolved resume state returned by ``resolve_resume``."""
 
     step: int = 0
     data_consumed: int = 0
-    dcp_name: str | None = None
     dataset_fingerprint: str | None = None
     training_shape_id: str | None = None
     source_job_id: str | None = None
 
 
+def _parse_cross_job(spec: str) -> tuple[str | None, str]:
+    """Parse ``"job_id:checkpoint_name"`` or a plain path/name."""
+    if ":" in spec and not spec.startswith(("gs://", "/")):
+        job_id, name = spec.split(":", 1)
+        return job_id, name
+    return None, spec
+
+
 def resolve_resume(
+    client: Any,
     log_path: str,
     init_from_checkpoint: str | None = None,
-) -> ResumeState:
-    """Determine resume state from ``local_checkpoint_state.jsonl``.
+) -> ResumeInfo | None:
+    """Determine resume state from ``checkpoints.jsonl``.
 
-    Priority:
-    1. If *init_from_checkpoint* is set, always start fresh with those
-       DCP weights (step=0, data_consumed=0).  Any existing state file
-       is cleared — this is an explicit directive to start from specific
-       weights, not continue a previous run.
-    2. If ``local_checkpoint_state.jsonl`` has entries, resume from the
-       last one.
-    3. Otherwise, completely fresh start (no DCP).
-
-    *init_from_checkpoint* supports cross-job format ``"job_id:checkpoint_name"``.
+    Returns ``None`` for a completely fresh start (no checkpoint to load).
+    When a checkpoint is found or *init_from_checkpoint* is set, the
+    weights + optimizer state are loaded into *client* before returning.
     """
     if init_from_checkpoint:
-        source_job_id = None
-        dcp_name = init_from_checkpoint
-        if ":" in init_from_checkpoint and not init_from_checkpoint.startswith(("gs://", "/")):
-            source_job_id, dcp_name = init_from_checkpoint.split(":", 1)
+        source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
+        path = client.resolve_checkpoint_path(dcp_name, source_job_id=source_job_id)
+        logger.info("Fresh start with pretrained weights: %s", path)
+        t0 = time.time()
+        client.load_state_with_optimizer(path)
+        logger.info("Checkpoint loaded (%.1fs)", time.time() - t0)
+        return ResumeInfo(step=0, data_consumed=0, source_job_id=source_job_id)
 
-        logger.info(
-            "Fresh start with pretrained weights: dcp=%s source_job=%s",
-            dcp_name,
-            source_job_id,
-        )
-        initial = ResumeState(
-            step=0,
-            dcp_name=dcp_name,
-            source_job_id=source_job_id,
-        )
-        _clear_state_file(log_path)
-        save_loop_state(log_path, _state_to_dict(initial))
-        return initial
-
-    last = _load_last_loop_state(log_path)
+    last = get_last_checkpoint(log_path)
     if last is not None:
-        logger.info("Resuming from local_checkpoint_state.jsonl: %s", last)
-        return ResumeState(
+        logger.info("Resuming from checkpoints.jsonl: %s", last)
+        t0 = time.time()
+        client.load_state_with_optimizer(last["state_path"])
+        logger.info("Checkpoint loaded: %s (%.1fs)", last["state_path"], time.time() - t0)
+        return ResumeInfo(
             step=last.get("step", 0),
             data_consumed=last.get("data_consumed", 0),
-            dcp_name=last.get("dcp_name"),
             dataset_fingerprint=last.get("dataset_fingerprint"),
             training_shape_id=last.get("training_shape_id"),
             source_job_id=last.get("source_job_id"),
         )
 
     logger.info("Fresh start (no checkpoint)")
-    return ResumeState()
+    return None
 
 
-def load_dcp(client: Any, state: ResumeState) -> float:
-    """Load DCP checkpoint if *state.dcp_name* is set.
+# -- Checkpoint save -----------------------------------------------------------
 
-    Resolves cross-job references and loads model weights + optimizer.
-    Returns the load time in seconds (0.0 if no checkpoint was loaded).
+
+def save_checkpoint(
+    client: Any,
+    name: str,
+    log_path: str,
+    loop_state: dict[str, Any],
+    kind: str = "state",
+) -> dict[str, str]:
+    """Save a checkpoint using tinker_cookbook's ``checkpoints.jsonl`` format.
+
+    *kind* can be ``"state"`` (optimizer + weights), ``"sampler"`` (weights
+    only for inference), or ``"both"``.
+
+    The ``state_path`` stored is resolved to a cross-job checkpoint
+    reference at save time, so any future trainer job can load it
+    directly without additional resolution.
     """
-    if state.dcp_name is None:
-        return 0.0
+    paths: dict[str, str] = {}
+    if kind in ("state", "both"):
+        client.save_state(name)
+        paths["state_path"] = client.resolve_checkpoint_path(
+            name, source_job_id=client.job_id,
+        )
+    if kind in ("sampler", "both"):
+        paths["sampler_path"] = client.save_weights_for_sampler_ext(name).path
 
-    checkpoint_ref = client.resolve_checkpoint_path(
-        state.dcp_name,
-        source_job_id=state.source_job_id,
-    )
-    logger.info("Loading DCP checkpoint: %s", checkpoint_ref)
-    t0 = time.time()
-    client.load_state_with_optimizer(checkpoint_ref)
-    elapsed = time.time() - t0
-    logger.info("DCP checkpoint loaded: %s (%.1fs)", state.dcp_name, elapsed)
-    return elapsed
-
-
-# -- Loop state persistence ----------------------------------------------------
-
-
-def save_loop_state(log_path: str, loop_state: dict[str, Any]) -> None:
-    """Append a loop-state entry to ``local_checkpoint_state.jsonl``."""
+    full_dict = {"name": name, **loop_state, **paths}
     os.makedirs(log_path, exist_ok=True)
-    path = os.path.join(log_path, STATE_FILE)
-    with open(path, "a") as f:
-        f.write(json.dumps(loop_state) + "\n")
-    logger.info("Saved loop state: %s", loop_state)
-
-
-def _clear_state_file(log_path: str) -> None:
-    """Remove the state file so a fresh run starts clean."""
-    path = os.path.join(log_path, STATE_FILE)
-    if os.path.exists(path):
-        os.remove(path)
-        logger.info("Cleared previous state file: %s", path)
-
-
-def _load_last_loop_state(log_path: str) -> dict[str, Any] | None:
-    """Read the most recent entry from ``local_checkpoint_state.jsonl``."""
-    path = os.path.join(log_path, STATE_FILE)
-    if not os.path.exists(path):
-        return None
-    with open(path) as f:
-        lines = [line.strip() for line in f if line.strip()]
-    if not lines:
-        return None
-    return json.loads(lines[-1])
-
-
-def _state_to_dict(state: ResumeState) -> dict[str, Any]:
-    """Serialize a ResumeState to a dict for local_checkpoint_state.jsonl."""
-    return {
-        "step": state.step,
-        "data_consumed": state.data_consumed,
-        "dcp_name": state.dcp_name,
-        "dataset_fingerprint": state.dataset_fingerprint,
-        "training_shape_id": state.training_shape_id,
-        "source_job_id": state.source_job_id,
-    }
+    with open(os.path.join(log_path, CHECKPOINTS_BASE_NAME), "a") as f:
+        f.write(json.dumps(full_dict) + "\n")
+    logger.info("Saved checkpoint: %s", full_dict)
+    return paths
 
 
 # -- Dataset fingerprint -------------------------------------------------------
@@ -186,27 +150,6 @@ def validate_dataset(
             current_fingerprint,
             data_consumed,
         )
-
-
-# -- Checkpoint availability ---------------------------------------------------
-
-
-def verify_checkpoint_available(client: Any, dcp_name: str) -> bool:
-    """Check that a DCP checkpoint exists on the trainer."""
-    try:
-        checkpoints, _ = client.list_checkpoints()
-        if dcp_name in checkpoints:
-            logger.info(
-                "Checkpoint '%s' available (all: %s)", dcp_name, checkpoints,
-            )
-            return True
-        logger.warning(
-            "Checkpoint '%s' not found. Available: %s", dcp_name, checkpoints,
-        )
-        return False
-    except Exception as e:
-        logger.warning("Could not list checkpoints: %s. Proceeding anyway.", e)
-        return True
 
 
 # -- Training shape validation -------------------------------------------------

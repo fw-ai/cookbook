@@ -13,6 +13,7 @@ __all__ = [
     "InfraConfig",
     "ReconnectableClient",
     "RewardFn",
+    "RLPromptDataset",
     "StepCallback",
     "WandBConfig",
     "compute_advantages",
@@ -54,6 +55,7 @@ __all__ = [
 ]
 
 from training.utils.data import (
+    RLPromptDataset,
     encode_text,
     extract_text,
     compute_advantages,

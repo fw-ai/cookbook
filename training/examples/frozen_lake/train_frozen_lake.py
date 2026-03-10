@@ -543,10 +543,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         infra_boot_time = time.time() - _infra_start
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
-        from training.utils.checkpoint_utils import resolve_resume, load_dcp
-        state = resolve_resume("./frozen_lake_logs")
-        load_dcp(policy, state)
-        step_offset = state.step
+        from training.utils.checkpoint_utils import resolve_resume
+        resume_info = resolve_resume(policy, "./frozen_lake_logs")
+        step_offset = resume_info.step if resume_info else 0
         if hotload_cfg.hot_load_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")

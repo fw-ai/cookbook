@@ -56,7 +56,7 @@ from training.utils import (
 )
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
-from training.utils.checkpoint_utils import resolve_resume, load_dcp, save_loop_state, dataset_fingerprint, validate_dataset
+from training.utils.checkpoint_utils import resolve_resume
 from training.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -485,10 +485,9 @@ def main(
             compression_format=DEFAULT_DELTA_COMPRESSION,
         )
 
-        state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
-        dcp_load_time = load_dcp(policy, state)
-        wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
-        step_offset = state.step
+        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        step_offset = resume_info.step if resume_info else 0
+        wandb_log({"train/step": step_offset}, step_offset)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         # -- Cache reference logprobs concurrently ------------------------------
