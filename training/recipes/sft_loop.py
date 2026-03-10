@@ -160,7 +160,7 @@ def main(
         display_name="sft-trainer",
     )
     job_id = endpoint.job_id
-    client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank)
+    client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
 
     # -- Prepare data ------------------------------------------------------
     try:
