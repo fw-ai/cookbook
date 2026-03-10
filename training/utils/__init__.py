@@ -12,7 +12,6 @@ __all__ = [
     "HotloadConfig",
     "InfraConfig",
     "ReconnectableClient",
-    "ResumeConfig",
     "RewardFn",
     "StepCallback",
     "WandBConfig",
@@ -43,7 +42,6 @@ __all__ = [
     "resolve_renderer_name",
     "prepare_sampling_messages",
     "setup_deployment",
-    "setup_resume",
     "setup_training_client",
     "setup_wandb",
     "flush_timing",
@@ -78,7 +76,6 @@ from training.utils.config import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     StepCallback,
     HotloadConfig,
 )
@@ -102,7 +99,6 @@ from training.utils.supervised import (
     render_messages_to_datum,
     resolve_renderer_name,
 )
-from training.utils.resume import setup_resume
 from training.utils.logging import (
     wandb_log,
     setup_wandb,

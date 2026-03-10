@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, HotloadConfig
 from training.recipes.sft_loop import Config, main
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ class TestSFTResumeE2E:
                 infra=shared_infra,
                 deployment=DeployConfig(),
                 hotload=HotloadConfig(hot_load_interval=0),
-                resume=ResumeConfig(resume_from=dcp_name, resume_job_id=phase1_job_id),
+                init_from_checkpoint=f"{phase1_job_id}:{dcp_name}",
             )
 
             phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)

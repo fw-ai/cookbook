@@ -39,12 +39,10 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     HotloadConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     validate_config,
     log_metrics_json,
@@ -58,6 +56,7 @@ from training.utils import (
 )
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
+from training.utils.checkpoint_utils import resolve_resume, load_dcp, save_loop_state, dataset_fingerprint, validate_dataset
 from training.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -120,7 +119,8 @@ class Config:
     deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=lambda: HotloadConfig(hot_load_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
+    log_path: str = "./dpo_logs"
+    init_from_checkpoint: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +389,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
+    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -485,7 +485,11 @@ def main(
             compression_format=DEFAULT_DELTA_COMPRESSION,
         )
 
-        step_offset, _ = setup_resume(policy, cfg.resume)
+        state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
+        dcp_load_time = load_dcp(policy, state)
+        if dcp_load_time > 0:
+            wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
+        step_offset = state.step
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         # -- Cache reference logprobs concurrently ------------------------------

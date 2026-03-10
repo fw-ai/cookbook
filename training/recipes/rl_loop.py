@@ -34,12 +34,10 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     HotloadConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     validate_config,
     log_metrics_json,
@@ -48,6 +46,13 @@ from training.utils import (
     create_trainer_job,
     load_jsonl_dataset,
     prepare_sampling_messages,
+)
+from training.utils.checkpoint_utils import (
+    resolve_resume,
+    load_dcp,
+    save_loop_state,
+    dataset_fingerprint,
+    validate_dataset,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
@@ -126,11 +131,15 @@ class Config:
     reference_base_url: str | None = None
     """Base URL for the reference trainer (bypass direct route)."""
 
+    log_path: str = "./rl_logs"
+    init_from_checkpoint: str | None = None
+    """Load pretrained DCP weights on a fresh dataset. Supports cross-job
+    format ``"job_id:checkpoint_name"``."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=HotloadConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +231,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
+    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -377,7 +386,14 @@ def main(
             boot_metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
         wandb_log(boot_metrics, step=0)
 
-        step_offset, _ = setup_resume(policy, cfg.resume)
+        # -- Resume ---------------------------------------------------------------
+
+        state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
+        dcp_load_time = load_dcp(policy, state)
+        if dcp_load_time > 0:
+            wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
+        step_offset = state.step
+
         if cfg.hotload.hot_load_before_training and cfg.deployment.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
@@ -385,6 +401,8 @@ def main(
         # -- Prepare sampling and training --------------------------------------
 
         dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+        fp = dataset_fingerprint(dataset)
+        validate_dataset(state.dataset_fingerprint, fp, state.data_consumed)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
@@ -486,7 +504,7 @@ def main(
 
             return PromptGroup(
                 data=policy_data, ref_data=reference_data,
-                advantages=adv_filtered, ref_logprobs=[],
+                advantages=adv_filtered, ref_logprobs=None,
                 prompt_len=prompt_len, rewards=rewards, inf_logprobs=inf_logprobs_aligned,
                 completion_lens=comp_lens, truncated=trunc,
                 prompt=input_messages if cfg.trajectory_dir else None,
@@ -557,6 +575,15 @@ def main(
                 with timer("dcp_save"):
                     weight_syncer.save_dcp(f"step-{step}")
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _t.time() - t0)
+                data_consumed = state.data_consumed + (step - state.step) * prompt_groups_per_step
+                save_loop_state(cfg.log_path, {
+                    "step": step,
+                    "data_consumed": data_consumed,
+                    "dcp_name": f"step-{step}",
+                    "dataset_fingerprint": fp,
+                    "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
+                    "source_job_id": policy_job_id,
+                })
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
@@ -596,7 +623,7 @@ def main(
             finish_step=finish_step,
         )
 
-        all_rows = dataset * cfg.epochs
+        all_rows = (dataset * cfg.epochs)[state.data_consumed:]
 
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(row) for row in all_rows),
@@ -614,6 +641,15 @@ def main(
         if global_step > step_offset:
             try:
                 policy.save_state(f"step-{global_step}", timeout=cfg.hotload.dcp_timeout)
+                data_consumed = state.data_consumed + (global_step - state.step) * prompt_groups_per_step
+                save_loop_state(cfg.log_path, {
+                    "step": global_step,
+                    "data_consumed": data_consumed,
+                    "dcp_name": f"step-{global_step}",
+                    "dataset_fingerprint": fp,
+                    "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
+                    "source_job_id": policy_job_id,
+                })
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
 

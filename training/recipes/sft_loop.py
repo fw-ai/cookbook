@@ -33,11 +33,9 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     WandBConfig,
-    ResumeConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     validate_config,
     log_metrics_json,
@@ -47,6 +45,13 @@ from training.utils import (
     parse_train_on_what,
     render_messages_to_datum,
     resolve_renderer_name,
+)
+from training.utils.checkpoint_utils import (
+    resolve_resume,
+    load_dcp,
+    save_loop_state,
+    dataset_fingerprint,
+    validate_dataset,
 )
 from training.utils.timer import timer, flush_timing
 
@@ -77,9 +82,13 @@ class Config:
 
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
 
+    log_path: str = "./sft_logs"
+    init_from_checkpoint: str | None = None
+    """Load pretrained DCP weights on a fresh dataset. Supports cross-job
+    format ``"job_id:checkpoint_name"``."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +110,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, infra=cfg.infra, resume=cfg.resume)
+    validate_config(cfg.base_model, cfg.dataset, infra=cfg.infra)
     setup_wandb(
         cfg.wandb,
         {
@@ -204,14 +213,27 @@ def main(
         if not training_data:
             raise RuntimeError("No valid training examples after tokenization")
 
-        step_offset, _ = setup_resume(client, cfg.resume)
+        # -- Resume ---------------------------------------------------------------
+
+        state = resolve_resume(cfg.log_path, cfg.init_from_checkpoint)
+        dcp_load_time = load_dcp(client, state)
+        if dcp_load_time > 0:
+            wandb_log({"perf/dcp_load_time": dcp_load_time}, state.step)
+
+        fp = dataset_fingerprint(raw_data)
+        validate_dataset(state.dataset_fingerprint, fp, state.data_consumed)
+
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         # -- Training loop (batched) -------------------------------------------
 
         batch_size = cfg.batch_size
-        step = step_offset
-        total_steps = len(training_data) * cfg.epochs // (cfg.grad_accum * batch_size)
+        all_examples = training_data * cfg.epochs
+        examples_to_process = all_examples[state.data_consumed:]
+        data_consumed = state.data_consumed
+
+        step = state.step
+        total_steps = len(all_examples) // (cfg.grad_accum * batch_size)
         accum = 0
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
@@ -239,6 +261,14 @@ def main(
                     with timer("dcp_save"):
                         logger.info("Saving DCP checkpoint at step %d", step)
                         client.inner.save_state(f"step-{step}")
+                    save_loop_state(cfg.log_path, {
+                        "step": step,
+                        "data_consumed": data_consumed,
+                        "dcp_name": f"step-{step}",
+                        "dataset_fingerprint": fp,
+                        "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
+                        "source_job_id": job_id,
+                    })
 
                 step_metrics: Dict[str, Any] = flush_timing()
 
@@ -269,16 +299,16 @@ def main(
 
             return step, accum
 
-        for _epoch in range(cfg.epochs):
-            batch_buffer: list[tinker.Datum] = []
-            for ex in training_data:
-                batch_buffer.append(ex)
-                if len(batch_buffer) >= batch_size:
-                    step, accum = _flush_batch(batch_buffer, step, accum)
-                    batch_buffer = []
-
-            if batch_buffer:
+        batch_buffer: list[tinker.Datum] = []
+        for ex in examples_to_process:
+            batch_buffer.append(ex)
+            data_consumed += 1
+            if len(batch_buffer) >= batch_size:
                 step, accum = _flush_batch(batch_buffer, step, accum)
+                batch_buffer = []
+
+        if batch_buffer:
+            step, accum = _flush_batch(batch_buffer, step, accum)
 
         if accum > 0:
             client.optim_step(adam_params)
@@ -286,9 +316,17 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
-        if step > step_offset:
+        if step > state.step:
             logger.info("Saving final DCP checkpoint (step %d)...", step)
-            client.inner.save_state(f"final-step-{step}")
+            client.inner.save_state(f"step-{step}")
+            save_loop_state(cfg.log_path, {
+                "step": step,
+                "data_consumed": data_consumed,
+                "dcp_name": f"step-{step}",
+                "dataset_fingerprint": fp,
+                "training_shape_id": getattr(cfg.infra, "training_shape_id", None),
+                "source_job_id": job_id,
+            })
 
             logger.info("Saving final base checkpoint (step %d)...", step)
             result = client.inner.save_weights_for_sampler_ext(

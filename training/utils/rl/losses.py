@@ -16,7 +16,7 @@ class PromptGroup:
 
     data: List[tinker.Datum]
     advantages: List[float]
-    ref_logprobs: List[List[float]]
+    ref_logprobs: List[List[float]] | None
     prompt_len: int
     rewards: List[float]
     ref_data: List[tinker.Datum] = field(default_factory=list)
@@ -50,7 +50,8 @@ def combine_prompt_groups(
     for pg in groups:
         data.extend(pg.data)
         advantages.extend(pg.advantages)
-        ref_logprobs.extend(pg.ref_logprobs)
+        if pg.ref_logprobs is not None:
+            ref_logprobs.extend(pg.ref_logprobs)
         prompt_lens.extend([pg.prompt_len] * len(pg.data))
         inf_logprobs.extend(pg.inf_logprobs)
 

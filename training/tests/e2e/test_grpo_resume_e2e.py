@@ -21,7 +21,7 @@ import logging
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, HotloadConfig
 from training.utils.rl import ISConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
@@ -132,10 +132,7 @@ class TestGRPOResumeE2E:
                 hot_load_before_training=True,
                 hot_load_timeout=600,
             ),
-            resume=ResumeConfig(
-                resume_from=dcp_name,
-                resume_job_id=phase1_policy_job_id,
-            ),
+            init_from_checkpoint=f"{phase1_policy_job_id}:{dcp_name}",
         )
 
         phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)

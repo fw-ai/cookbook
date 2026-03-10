@@ -380,7 +380,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
-    monkeypatch.setattr(module, "setup_resume", lambda *args, **kwargs: (1, None))
+    from training.utils.checkpoint_utils import ResumeState
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: ResumeState(step=1))
+    monkeypatch.setattr(module, "load_dcp", lambda *args, **kwargs: 0.0)
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [
         {
             "messages": [
