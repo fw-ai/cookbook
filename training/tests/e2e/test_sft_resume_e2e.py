@@ -69,7 +69,7 @@ class TestSFTResumeE2E:
 
             shared_infra = InfraConfig(
                 region=e2e_region,
-                training_shape_id="ts-qwen3-30b-a3b-policy",
+                training_shape_id="ts-qwen3-30b-a3b-128k-2node",
                 custom_image_tag=custom_image_tag,
             )
 
