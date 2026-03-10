@@ -81,6 +81,7 @@ def test_dump_trajectory_writes_one_record_per_completion(tmp_path):
 def test_main_requires_deployment_tokenizer_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
         dataset="/tmp/prompts.jsonl",
         deployment=module.DeployConfig(tokenizer_model=""),
     )
@@ -167,6 +168,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
 
     cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/prompts.jsonl",
         kl_beta=0.0,
@@ -439,6 +441,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     )
 
     cfg = module.Config(
+        log_path=str(tmp_path / "rl_logs"),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/prompts.jsonl",
         kl_beta=0.1,

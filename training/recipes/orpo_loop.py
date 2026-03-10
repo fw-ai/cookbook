@@ -72,6 +72,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:
+    log_path: str
+    """Directory for checkpoints and logs. Required, no default."""
+
     base_model: str = "accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
     dataset: str = ""
     tokenizer_model: str = ""
@@ -93,7 +96,6 @@ class Config:
             project="dsv3-training",
         )
     )
-    log_path: str = "./orpo_logs"
     init_from_checkpoint: str | None = None
 
 
@@ -357,7 +359,8 @@ if __name__ == "__main__":
     )
 
     cfg = Config(
-        dataset=os.environ.get("ORPO_DATASET_PATH"), 
+        log_path="./orpo_logs",
+        dataset=os.environ.get("ORPO_DATASET_PATH"),
         tokenizer_model=os.environ.get("ORPO_TOKENIZER", "Qwen/Qwen3-235B-A22B-Instruct-2507"),
     )
     main(cfg)

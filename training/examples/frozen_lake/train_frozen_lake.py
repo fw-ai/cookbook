@@ -97,6 +97,8 @@ DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS
 
 @dataclass
 class FrozenLakeConfig:
+    log_path: str = "./frozen_lake_logs"
+
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     tokenizer_model: str = "Qwen/Qwen3-8B"
 
@@ -544,7 +546,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
         from training.utils.checkpoint_utils import resolve_resume
-        resume_info = resolve_resume(policy, "./frozen_lake_logs")
+        resume_info = resolve_resume(policy, cfg.log_path)
         step_offset = resume_info.step if resume_info else 0
         if hotload_cfg.hot_load_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"

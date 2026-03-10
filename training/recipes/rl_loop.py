@@ -77,6 +77,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:
+    log_path: str
+    """Directory for checkpoints and logs. Required, no default."""
+
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
@@ -131,7 +134,6 @@ class Config:
     reference_base_url: str | None = None
     """Base URL for the reference trainer (bypass direct route)."""
 
-    log_path: str = "./rl_logs"
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
@@ -683,4 +685,4 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config())
+    main(Config(log_path="./rl_logs"))

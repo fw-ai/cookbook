@@ -72,6 +72,7 @@ def main():
     )
 
     config = sft_loop.Config(
+        log_path="./text2sql_logs",
         base_model=args.base_model,
         dataset=args.dataset_path,
         tokenizer_model=args.tokenizer_model,

@@ -71,6 +71,7 @@ def test_grpo_smoke(
         _make_prompt_dataset(dataset_path, n=4)
 
         config = Config(
+            log_path=tempfile.mkdtemp(prefix="grpo_smoke_"),
             base_model=smoke_base_model,
             dataset=dataset_path,
             learning_rate=1e-4,

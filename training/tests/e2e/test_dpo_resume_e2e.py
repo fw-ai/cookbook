@@ -61,6 +61,8 @@ class TestDPOResumeE2E:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             dataset_path = f.name
 
+        log_dir = tempfile.mkdtemp(prefix="dpo_resume_")
+
         try:
             _make_preference_dataset(dataset_path, num_pairs=8)
 
@@ -75,6 +77,7 @@ class TestDPOResumeE2E:
             logger.info("PHASE 1: initial DPO training")
 
             phase1_config = Config(
+                log_path=log_dir,
                 base_model=e2e_model,
                 dataset=dataset_path,
                 beta=0.1,
@@ -102,6 +105,7 @@ class TestDPOResumeE2E:
             logger.info("PHASE 2: resume from '%s' (source job: %s)", dcp_name, phase1_job_id)
 
             phase2_config = Config(
+                log_path=log_dir,
                 base_model=e2e_model,
                 dataset=dataset_path,
                 beta=0.1,

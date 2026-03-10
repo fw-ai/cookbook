@@ -49,6 +49,7 @@ def test_dpo_smoke(
     try:
         _make_preference_dataset(dataset_path, num_pairs=4)
         config = Config(
+            log_path=tempfile.mkdtemp(prefix="dpo_smoke_"),
             base_model=smoke_base_model,
             dataset=dataset_path,
             tokenizer_model=smoke_tokenizer_model,

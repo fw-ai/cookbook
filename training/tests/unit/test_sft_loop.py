@@ -33,7 +33,7 @@ def test_main_requires_tokenizer_model(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
 
-    cfg = module.Config(dataset=str(dataset_path), tokenizer_model="", max_seq_len=32)
+    cfg = module.Config(log_path=str(tmp_path / "logs"), dataset=str(dataset_path), tokenizer_model="", max_seq_len=32)
 
     with pytest.raises(ValueError, match="tokenizer_model"):
         module.main(cfg)
@@ -72,6 +72,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
         dataset=str(dataset_path),
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,

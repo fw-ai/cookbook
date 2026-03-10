@@ -67,6 +67,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:
+    log_path: str
+    """Directory for checkpoints and logs. Required, no default."""
+
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
@@ -83,7 +86,6 @@ class Config:
 
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
 
-    log_path: str = "./sft_logs"
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
@@ -336,6 +338,7 @@ def main(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = Config(
+        log_path="./sft_logs",
         dataset="kimi2_deid_sample_100_formatted.jsonl",
         tokenizer_model="Qwen/Qwen3-8B",
         max_seq_len=4096,

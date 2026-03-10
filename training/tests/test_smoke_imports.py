@@ -156,28 +156,28 @@ def test_sdk_symbols(module: str, attr: str):
 def test_sft_config_defaults():
     from training.recipes.sft_loop import Config
 
-    cfg = Config()
+    cfg = Config(log_path="/tmp/test")
     assert cfg.base_model
 
 
 def test_rl_config_defaults():
     from training.recipes.rl_loop import Config
 
-    cfg = Config()
+    cfg = Config(log_path="/tmp/test")
     assert cfg.base_model
 
 
 def test_dpo_config_defaults():
     from training.recipes.dpo_loop import Config
 
-    cfg = Config()
+    cfg = Config(log_path="/tmp/test")
     assert cfg.base_model
 
 
 def test_orpo_config_defaults():
     from training.recipes.orpo_loop import Config
 
-    cfg = Config()
+    cfg = Config(log_path="/tmp/test")
     assert cfg.base_model
 
 
