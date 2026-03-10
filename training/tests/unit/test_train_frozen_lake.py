@@ -564,7 +564,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     ]
     assert events["trainer_jobs"][0]["grad_accum"] == 1
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
-    assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
+    # lora_rank=0 (default) → full-param → checkpoint_type=None (auto: first=base, rest=delta)
+    assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", None)]
     assert events["weight_sync_dcp"] == []
     assert events["final_save"] == ("step-1", 2700)
     assert len(events["build_loss_fn_calls"]) == 1

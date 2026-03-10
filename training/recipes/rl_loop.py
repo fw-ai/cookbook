@@ -548,8 +548,11 @@ def main(
             if cfg.hotload.hot_load_interval > 0 and step % cfg.hotload.hot_load_interval == 0:
                 logger.info("[step %d] hotload: saving + loading...", step)
                 t0 = _t.time()
+                # LoRA always saves full "base" checkpoints (merged adapters);
+                # full-param uses auto (first=base, then incremental delta).
+                ckpt_type = "base" if cfg.lora_rank > 0 else None
                 with timer("weight_sync"):
-                    weight_syncer.save_and_hotload(f"step-{step}")
+                    weight_syncer.save_and_hotload(f"step-{step}", checkpoint_type=ckpt_type)
                 logger.info("[step %d] hotload: done (%.1fs)", step, _t.time() - t0)
             if cfg.hotload.dcp_save_interval > 0 and step % cfg.hotload.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
