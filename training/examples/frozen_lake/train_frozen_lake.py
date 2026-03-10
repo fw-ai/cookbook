@@ -750,7 +750,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 logger.info("[step %d] hotload: saving + loading...", step)
                 t0 = time.time()
                 with timer("weight_sync"):
-                    weight_syncer.save_and_hotload(f"step-{step}")
+                    weight_syncer.save_and_hotload(f"step-{step}", checkpoint_type="base")
                 logger.info("[step %d] hotload: done (%.1fs)", step, time.time() - t0)
 
             if hotload_cfg.dcp_save_interval > 0 and step % hotload_cfg.dcp_save_interval == 0:
