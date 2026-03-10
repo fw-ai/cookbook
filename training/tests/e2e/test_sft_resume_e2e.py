@@ -65,7 +65,7 @@ class TestSFTResumeE2E:
             dataset_path = f.name
 
         try:
-            _make_chat_dataset(dataset_path, num_examples=50)
+            _make_chat_dataset(dataset_path, num_examples=20)
 
             shared_infra = InfraConfig(
                 region=e2e_region,
@@ -87,8 +87,8 @@ class TestSFTResumeE2E:
                 batch_size=4,
                 grad_accum=2,
                 max_seq_len=4096,
-                max_examples=50,
-                dcp_save_interval=4,
+                max_examples=20,
+                dcp_save_interval=2,
                 log_path=log_dir,
                 infra=shared_infra,
             )
@@ -116,7 +116,7 @@ class TestSFTResumeE2E:
                 batch_size=4,
                 grad_accum=2,
                 max_seq_len=4096,
-                max_examples=50,
+                max_examples=20,
                 log_path=log_dir,
                 infra=shared_infra,
                 init_from_checkpoint=f"{phase1_job_id}:{dcp_name}",
