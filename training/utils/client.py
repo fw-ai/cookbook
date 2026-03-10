@@ -112,8 +112,14 @@ class ReconnectableClient:
     def load_state_with_optimizer(self, path: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.load_state_with_optimizer(path).result(timeout=timeout)
 
+    def save_weights_for_sampler_ext(self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S):
+        return self.inner.save_weights_for_sampler_ext(name, checkpoint_type=checkpoint_type)
+
     def resolve_checkpoint_path(self, name: str, source_job_id: str | None = None) -> str:
         return self.inner.resolve_checkpoint_path(name, source_job_id=source_job_id)
+
+    def list_checkpoints(self) -> tuple[list[str], str | None]:
+        return self.inner.list_checkpoints()
 
     # -- Internal --------------------------------------------------------------
 

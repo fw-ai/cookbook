@@ -124,10 +124,3 @@ class WandBConfig:
     run_name: str | None = None
 
 
-@dataclass
-class ResumeConfig:
-    """Checkpoint resume settings."""
-
-    resume_from: str | None = None
-    resume_job_id: str | None = None
-    step_offset: int | None = None

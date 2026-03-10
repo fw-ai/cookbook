@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, HotloadConfig
 from training.recipes.dpo_loop import Config, main
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,8 @@ class TestDPOResumeE2E:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             dataset_path = f.name
 
+        log_dir = tempfile.mkdtemp(prefix="dpo_resume_")
+
         try:
             _make_preference_dataset(dataset_path, num_pairs=8)
 
@@ -75,6 +77,7 @@ class TestDPOResumeE2E:
             logger.info("PHASE 1: initial DPO training")
 
             phase1_config = Config(
+                log_path=log_dir,
                 base_model=e2e_model,
                 dataset=dataset_path,
                 beta=0.1,
@@ -102,6 +105,7 @@ class TestDPOResumeE2E:
             logger.info("PHASE 2: resume from '%s' (source job: %s)", dcp_name, phase1_job_id)
 
             phase2_config = Config(
+                log_path=log_dir,
                 base_model=e2e_model,
                 dataset=dataset_path,
                 beta=0.1,
@@ -112,7 +116,7 @@ class TestDPOResumeE2E:
                 infra=shared_infra,
                 deployment=DeployConfig(),
                 hotload=HotloadConfig(hot_load_interval=0),
-                resume=ResumeConfig(resume_from=dcp_name, resume_job_id=phase1_job_id),
+                init_from_checkpoint=f"{phase1_job_id}:{dcp_name}",
             )
 
             phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)

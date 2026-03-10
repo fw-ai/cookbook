@@ -279,6 +279,7 @@ def main():
     )
 
     config = rl_loop.Config(
+        log_path=args.trajectory_dir or "./deepmath_logs",
         base_model=args.base_model,
         dataset=args.dataset_path,
         learning_rate=args.learning_rate,

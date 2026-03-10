@@ -261,7 +261,7 @@ def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
 
 def test_main_requires_tokenizer_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
-    cfg = module.Config(dataset="/tmp/pairs.jsonl", tokenizer_model="")
+    cfg = module.Config(log_path="/tmp/dpo_test_logs", dataset="/tmp/pairs.jsonl", tokenizer_model="")
 
     with pytest.raises(ValueError, match="tokenizer_model"):
         module.main(cfg)
@@ -315,12 +315,21 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
             self.job_id = job_id
             self.inner = object()
 
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
+
     class FakeWeightSyncer:
         def __init__(self, **kwargs):
             events["weight_syncer_init"] = kwargs
 
         def save_and_hotload(self, name):
             events["weight_syncer_saves"].append(name)
+
+        def save_dcp(self, name):
+            events.setdefault("dcp_saves", []).append(name)
 
     async def fake_cache_ref_logprobs(*args, **kwargs):
         events["cache_args"] = {"args": args, "kwargs": kwargs}
@@ -368,6 +377,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
 
     cfg = module.Config(
+        log_path="/tmp/dpo_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
@@ -449,6 +459,7 @@ def test_train_loop_runs_accumulation_and_hotload(monkeypatch):
         1: {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"}, "ref_chosen": [-0.3], "ref_rejected": [-0.4], "response_start": 4},
     }
     cfg = module.Config(
+        log_path="/tmp/dpo_test_logs",
         beta=0.2,
         epochs=1,
         batch_size=1,

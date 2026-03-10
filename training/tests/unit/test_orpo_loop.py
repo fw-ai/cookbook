@@ -10,7 +10,7 @@ import training.recipes.orpo_loop as module
 
 def test_main_rejects_invalid_base_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
-    cfg = module.Config(base_model="qwen3-4b", dataset="/tmp/pairs.jsonl", tokenizer_model="Qwen/Qwen3-4B")
+    cfg = module.Config(log_path="/tmp/orpo_test_logs", base_model="qwen3-4b", dataset="/tmp/pairs.jsonl", tokenizer_model="Qwen/Qwen3-4B")
 
     with pytest.raises(ValueError, match="Invalid base_model"):
         module.main(cfg)
@@ -67,6 +67,19 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
             events["optim_steps"] += 1
             return SimpleNamespace()
 
+        def save_state(self, name):
+            return SimpleNamespace(path=f"tinker://unit/state/{name}")
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            events["save_weights"].append((name, checkpoint_type))
+            return SimpleNamespace(path=f"tinker://unit/sampler/{name}")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
+
     pair_outputs = iter(
         [
             SimpleNamespace(
@@ -109,6 +122,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
 
     mgr = FakeMgr()
     cfg = module.Config(
+        log_path="/tmp/orpo_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",

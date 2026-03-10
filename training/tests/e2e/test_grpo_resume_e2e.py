@@ -1,10 +1,11 @@
-"""E2E test: GRPO training -> DCP checkpoint -> resume.
+"""E2E test: GRPO training -> DCP checkpoint -> resume from dataloader position.
 
-Two-phase test on qwen3-30b-a3b (MoE) with Router Replay, TIS, and
-hotloading:
+Two-phase test on qwen3-30b-a3b (MoE) with Router Replay and TIS:
 
-  Phase 1: Train ~2 steps with hotloading and dcp_save_interval=2.
-  Phase 2: Create new RLOR jobs, reuse deployment, resume from checkpoint.
+  Phase 1: Train a few steps, save DCP checkpoints to checkpoints.jsonl.
+  Phase 2: New RLOR jobs, same log_dir -- resolve_resume picks up from
+           checkpoints.jsonl, loads cross-job checkpoint, resumes at the
+           saved step (continues dataloader, not from beginning).
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training/deployment access
@@ -18,11 +19,12 @@ from __future__ import annotations
 import os
 import re
 import logging
+import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
-from training.utils.rl import ISConfig
+from tinker_cookbook.checkpoint_utils import get_last_checkpoint
+from training.utils import InfraConfig, DeployConfig, HotloadConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
 
@@ -64,12 +66,14 @@ class TestGRPOResumeE2E:
         grpo_mod.reward_fn = _gsm8k_reward
 
         deployment_id = os.environ.get("GRPO_RESUME_DEPLOYMENT_ID")
+        log_dir = tempfile.mkdtemp(prefix="grpo_resume_")
 
+        training_shape_id = os.environ.get("FIREWORKS_E2E_TRAINING_SHAPE", "ts-qwen3-30b-a3b-policy")
         shared_infra = InfraConfig(
             region=e2e_region,
-            skip_validations=True,
             accelerator_type=e2e_training_accelerator,
             custom_image_tag=custom_image_tag,
+            training_shape_id=training_shape_id,
         )
 
         # Phase 1: train ~2 steps, save DCP
@@ -81,8 +85,8 @@ class TestGRPOResumeE2E:
             completions_per_prompt=4,
             max_rows=8,
             epochs=1,
-            router_replay=True,
-            is_correction=ISConfig(tis_cap=10.0),
+            kl_beta=0,
+            log_path=log_dir,
             infra=shared_infra,
             deployment=DeployConfig(
                 deployment_id=deployment_id,
@@ -106,24 +110,32 @@ class TestGRPOResumeE2E:
         phase1_steps = phase1_metrics["steps"]
         assert phase1_steps >= 2, f"Expected >= 2 steps in phase 1, got {phase1_steps}"
 
-        phase1_policy_job_id = phase1_metrics["policy_job_id"]
-        dcp_name = f"step-{phase1_steps}"
-        logger.info("Phase 1 done: %d steps, job=%s", phase1_steps, phase1_policy_job_id)
+        phase1_deployment_id = phase1_config.deployment.deployment_id
+        logger.info("Phase 1 done: %d steps, job=%s, deployment=%s",
+                     phase1_steps, phase1_metrics["policy_job_id"], phase1_deployment_id)
 
-        # Phase 2: resume from checkpoint
-        logger.info("PHASE 2: resume from '%s' (source job: %s)", dcp_name, phase1_policy_job_id)
+        last_ckpt = get_last_checkpoint(log_dir)
+        assert last_ckpt is not None, "Expected at least one checkpoint in checkpoints.jsonl"
+        assert "state_path" in last_ckpt
+        saved_step = last_ckpt["step"]
+        saved_data_consumed = last_ckpt["data_consumed"]
+        logger.info("Phase 1 checkpoint: step=%d data_consumed=%d",
+                     saved_step, saved_data_consumed)
+
+        # Phase 2: new jobs, same log_dir -- resume from checkpoints.jsonl
+        logger.info("PHASE 2: resume from checkpoints.jsonl (step=%d)", saved_step)
 
         phase2_config = Config(
             base_model=e2e_model,
             dataset=GSM8K_SAMPLE_URL,
             completions_per_prompt=4,
-            max_rows=6,
+            max_rows=8,
             epochs=1,
-            router_replay=True,
-            is_correction=ISConfig(tis_cap=10.0),
+            kl_beta=0,
+            log_path=log_dir,
             infra=shared_infra,
             deployment=DeployConfig(
-                deployment_id=deployment_id,
+                deployment_id=phase1_deployment_id,
                 tokenizer_model=e2e_tokenizer_model,
             ),
             hotload=HotloadConfig(
@@ -132,10 +144,6 @@ class TestGRPOResumeE2E:
                 hot_load_before_training=True,
                 hot_load_timeout=600,
             ),
-            resume=ResumeConfig(
-                resume_from=dcp_name,
-                resume_job_id=phase1_policy_job_id,
-            ),
         )
 
         phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
@@ -143,5 +151,22 @@ class TestGRPOResumeE2E:
         assert isinstance(phase2_metrics, dict)
         assert "steps" in phase2_metrics
         phase2_steps = phase2_metrics["steps"]
-        assert phase2_steps > phase1_steps, f"Expected global_step > {phase1_steps} after resume, got {phase2_steps}"
-        logger.info("Resume verified: phase1=%d, phase2=%d", phase1_steps, phase2_steps)
+
+        assert phase2_steps > saved_step, (
+            f"Phase 2 should continue beyond phase 1's saved step {saved_step}, "
+            f"but got {phase2_steps}"
+        )
+
+        final_ckpt = get_last_checkpoint(log_dir)
+        assert final_ckpt is not None
+        assert final_ckpt["data_consumed"] > saved_data_consumed, (
+            f"Phase 2 data_consumed ({final_ckpt['data_consumed']}) should exceed "
+            f"phase 1's ({saved_data_consumed}) -- dataloader should continue, not restart"
+        )
+
+        logger.info(
+            "Resume verified: phase1=%d steps (data_consumed=%d), "
+            "phase2=%d steps (data_consumed=%d)",
+            saved_step, saved_data_consumed,
+            phase2_steps, final_ckpt["data_consumed"],
+        )

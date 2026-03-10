@@ -7,8 +7,8 @@ name = "fireworks-training-cookbook"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fireworks-ai>=1.0.0a39,<2",
-    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git@934f0d9b2f53c3edff02cbf23ec6da8682047fa5",
+    "fireworks-ai>=1.0.0a40,<2",
+    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git@d7fb423674c0bdd27c20a9b948b6091457874039",
     "eval-protocol>=0.3.23",
     "tqdm",
     "torch",

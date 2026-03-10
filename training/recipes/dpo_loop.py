@@ -39,12 +39,10 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     HotloadConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     validate_config,
     log_metrics_json,
@@ -58,6 +56,7 @@ from training.utils import (
 )
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
+from training.utils.checkpoint_utils import resolve_resume
 from training.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -96,6 +95,9 @@ async def gather_with_progress(
 
 @dataclass
 class Config:
+    log_path: str
+    """Directory for checkpoints and logs. Required, no default."""
+
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for client-side tokenization
@@ -120,7 +122,7 @@ class Config:
     deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=lambda: HotloadConfig(hot_load_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
+    init_from_checkpoint: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +391,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
+    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -485,7 +487,9 @@ def main(
             compression_format=DEFAULT_DELTA_COMPRESSION,
         )
 
-        step_offset, _ = setup_resume(policy, cfg.resume)
+        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        step_offset = resume_info.step if resume_info else 0
+        wandb_log({"train/step": step_offset}, step_offset)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         # -- Cache reference logprobs concurrently ------------------------------
@@ -533,8 +537,10 @@ def main(
         # -- Final checkpoint --------------------------------------------------
 
         hl = cfg.hotload
-        if step > step_offset and (hl.hot_load_interval > 0 or hl.dcp_save_interval > 0):
-            weight_syncer.save_and_hotload(f"final-step-{step}")
+        if step > step_offset:
+            weight_syncer.save_dcp(f"step-{step}")
+            if hl.hot_load_interval > 0:
+                weight_syncer.save_and_hotload(f"final-step-{step}")
 
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
@@ -556,4 +562,4 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config())
+    main(Config(log_path="./dpo_logs"))

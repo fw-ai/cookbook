@@ -41,6 +41,7 @@ def test_sft_smoke(
     try:
         _make_chat_dataset(dataset_path, num_examples=4)
         config = Config(
+            log_path=tempfile.mkdtemp(prefix="sft_smoke_"),
             base_model=smoke_base_model,
             dataset=dataset_path,
             tokenizer_model=smoke_tokenizer_model,
