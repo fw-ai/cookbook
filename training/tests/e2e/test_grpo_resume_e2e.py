@@ -103,69 +103,80 @@ class TestGRPOResumeE2E:
             ),
         )
 
-        phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+        try:
+            phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
 
-        assert isinstance(phase1_metrics, dict)
-        assert "steps" in phase1_metrics
-        phase1_steps = phase1_metrics["steps"]
-        assert phase1_steps >= 2, f"Expected >= 2 steps in phase 1, got {phase1_steps}"
+            assert isinstance(phase1_metrics, dict)
+            assert "steps" in phase1_metrics
+            phase1_steps = phase1_metrics["steps"]
+            assert phase1_steps >= 2, f"Expected >= 2 steps in phase 1, got {phase1_steps}"
 
-        logger.info("Phase 1 done: %d steps, job=%s",
-                     phase1_steps, phase1_metrics["policy_job_id"])
+            logger.info("Phase 1 done: %d steps, job=%s",
+                         phase1_steps, phase1_metrics["policy_job_id"])
 
-        last_ckpt = get_last_checkpoint(log_dir)
-        assert last_ckpt is not None, "Expected at least one checkpoint in checkpoints.jsonl"
-        assert "state_path" in last_ckpt
-        saved_step = last_ckpt["step"]
-        saved_data_consumed = last_ckpt["data_consumed"]
-        logger.info("Phase 1 checkpoint: step=%d data_consumed=%d",
-                     saved_step, saved_data_consumed)
+            last_ckpt = get_last_checkpoint(log_dir)
+            assert last_ckpt is not None, "Expected at least one checkpoint in checkpoints.jsonl"
+            assert "state_path" in last_ckpt
+            saved_step = last_ckpt["step"]
+            saved_data_consumed = last_ckpt["data_consumed"]
+            logger.info("Phase 1 checkpoint: step=%d data_consumed=%d",
+                         saved_step, saved_data_consumed)
 
-        # Phase 2: new jobs, same log_dir -- resume from checkpoints.jsonl
-        logger.info("PHASE 2: resume from checkpoints.jsonl (step=%d)", saved_step)
+            # Reuse Phase 1's deployment for Phase 2
+            phase1_deployment_id = phase1_config.deployment.deployment_id
 
-        phase2_config = Config(
-            base_model=e2e_model,
-            dataset=GSM8K_SAMPLE_URL,
-            completions_per_prompt=4,
-            max_rows=8,
-            epochs=1,
-            kl_beta=0,
-            log_path=log_dir,
-            infra=shared_infra,
-            deployment=DeployConfig(
-                deployment_id=deployment_id,
-                tokenizer_model=e2e_tokenizer_model,
-            ),
-            hotload=HotloadConfig(
-                hot_load_interval=1,
-                first_checkpoint_type="base",
-                hot_load_before_training=True,
-                hot_load_timeout=600,
-            ),
-        )
+            # Phase 2: new jobs, same log_dir -- resume from checkpoints.jsonl
+            logger.info("PHASE 2: resume from checkpoints.jsonl (step=%d, deployment=%s)",
+                         saved_step, phase1_deployment_id)
 
-        phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+            phase2_config = Config(
+                base_model=e2e_model,
+                dataset=GSM8K_SAMPLE_URL,
+                completions_per_prompt=4,
+                max_rows=8,
+                epochs=1,
+                kl_beta=0,
+                log_path=log_dir,
+                infra=shared_infra,
+                deployment=DeployConfig(
+                    deployment_id=phase1_deployment_id,
+                    tokenizer_model=e2e_tokenizer_model,
+                ),
+                hotload=HotloadConfig(
+                    hot_load_interval=1,
+                    first_checkpoint_type="base",
+                    hot_load_before_training=True,
+                    hot_load_timeout=600,
+                ),
+            )
 
-        assert isinstance(phase2_metrics, dict)
-        assert "steps" in phase2_metrics
-        phase2_steps = phase2_metrics["steps"]
+            phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
 
-        assert phase2_steps > saved_step, (
-            f"Phase 2 should continue beyond phase 1's saved step {saved_step}, "
-            f"but got {phase2_steps}"
-        )
+            assert isinstance(phase2_metrics, dict)
+            assert "steps" in phase2_metrics
+            phase2_steps = phase2_metrics["steps"]
 
-        final_ckpt = get_last_checkpoint(log_dir)
-        assert final_ckpt is not None
-        assert final_ckpt["data_consumed"] > saved_data_consumed, (
-            f"Phase 2 data_consumed ({final_ckpt['data_consumed']}) should exceed "
-            f"phase 1's ({saved_data_consumed}) -- dataloader should continue, not restart"
-        )
+            assert phase2_steps > saved_step, (
+                f"Phase 2 should continue beyond phase 1's saved step {saved_step}, "
+                f"but got {phase2_steps}"
+            )
 
-        logger.info(
-            "Resume verified: phase1=%d steps (data_consumed=%d), "
-            "phase2=%d steps (data_consumed=%d)",
-            saved_step, saved_data_consumed,
-            phase2_steps, final_ckpt["data_consumed"],
-        )
+            final_ckpt = get_last_checkpoint(log_dir)
+            assert final_ckpt is not None
+            assert final_ckpt["data_consumed"] > saved_data_consumed, (
+                f"Phase 2 data_consumed ({final_ckpt['data_consumed']}) should exceed "
+                f"phase 1's ({saved_data_consumed}) -- dataloader should continue, not restart"
+            )
+
+            logger.info(
+                "Resume verified: phase1=%d steps (data_consumed=%d), "
+                "phase2=%d steps (data_consumed=%d)",
+                saved_step, saved_data_consumed,
+                phase2_steps, final_ckpt["data_consumed"],
+            )
+        finally:
+            if phase1_config.deployment.deployment_id:
+                try:
+                    deploy_mgr.scale_to_zero(phase1_config.deployment.deployment_id)
+                except Exception as e:
+                    logger.warning("Cleanup: failed to scale deployment: %s", e)
