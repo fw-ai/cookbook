@@ -564,7 +564,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     ]
     assert events["trainer_jobs"][0]["grad_accum"] == 1
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
-    assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
+    # The initial save (hot_load_before_training) always uses "base".
+    # Training loop saves: full-param (lora_rank=0) uses checkpoint_type=None
+    # (auto: first=base, then incremental delta).
+    assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", None)]
     assert events["weight_sync_dcp"] == []
     assert events["final_save"] == ("step-1", 2700)
     assert len(events["build_loss_fn_calls"]) == 1

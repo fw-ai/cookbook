@@ -749,11 +749,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             if hotload_cfg.hot_load_interval > 0 and step % hotload_cfg.hot_load_interval == 0:
                 logger.info("[step %d] hotload: saving + loading...", step)
                 t0 = time.time()
-                # TODO: switch full-param to checkpoint_type=None (auto delta)
-                # once serving fixes DELTA decompression on B200.
-                # For now, always use "base" to avoid deployment crashes.
+                # LoRA always saves full "base" checkpoints (merged adapters);
+                # full-param uses auto (first=base, then incremental delta).
+                ckpt_type = "base" if cfg.lora_rank > 0 else None
                 with timer("weight_sync"):
-                    weight_syncer.save_and_hotload(f"step-{step}", checkpoint_type="base")
+                    weight_syncer.save_and_hotload(f"step-{step}", checkpoint_type=ckpt_type)
                 logger.info("[step %d] hotload: done (%.1fs)", step, time.time() - t0)
 
             if hotload_cfg.dcp_save_interval > 0 and step % hotload_cfg.dcp_save_interval == 0:
