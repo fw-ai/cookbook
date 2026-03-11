@@ -291,9 +291,6 @@ def main(
         )
 
     ref_profile = profile
-    if use_reference and cfg.infra.ref_training_shape_id:
-        logger.info("Using separate ref training shape: %s", cfg.infra.ref_training_shape_id)
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
 
     import time as _time
     _infra_start = _time.time()

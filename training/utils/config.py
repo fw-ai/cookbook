@@ -35,12 +35,9 @@ class InfraConfig:
     """
 
     training_shape_id: str | None = None
-    """Training shape ID for the policy trainer (e.g. ``ts-qwen3-8b-policy``).
-    When set, infra config is auto-derived from the shape."""
-
-    ref_training_shape_id: str | None = None
-    """Training shape ID for the reference (forward-only) trainer.
-    Falls back to ``training_shape_id`` if not set."""
+    """Training shape ID (e.g. ``ts-qwen3-8b-policy``).
+    When set, infra config is auto-derived from the shape.
+    Used for both policy and forward-only reference trainers."""
 
     region: str | None = None
     custom_image_tag: str | None = None

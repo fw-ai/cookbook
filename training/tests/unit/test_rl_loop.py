@@ -454,7 +454,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             deployment_id="dep-123",
             tokenizer_model="Qwen/Qwen3-4B",
         ),
-        infra=module.InfraConfig(training_shape_id="shape-a", ref_training_shape_id="ref-shape"),
+        infra=module.InfraConfig(training_shape_id="shape-a"),
     )
 
     result = module.main(

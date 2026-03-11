@@ -59,8 +59,6 @@ class TrainArgs:
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "dataset.jsonl")
     )
     training_shape: str = field(default_factory=lambda: os.environ.get("TRAINING_SHAPE", ""))
-    ref_training_shape: str | None = None
-    """Separate training shape for the forward-only reference model."""
     deployment_id: str | None = None
     """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "US_OHIO_1"
@@ -97,8 +95,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--tokenizer-model")
     parser.add_argument("--dataset-path")
     parser.add_argument("--training-shape")
-    parser.add_argument("--ref-training-shape",
-                        help="Separate training shape for the forward-only reference model")
     parser.add_argument(
         "--deployment-id",
         help="Existing deployment ID to reuse; omit to auto-create",
@@ -298,7 +294,6 @@ def main():
         reference_job_id=args.reference_job_id,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
-            ref_training_shape_id=args.ref_training_shape,
             region=args.region,
         ),
         deployment=DeployConfig(
