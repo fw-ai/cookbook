@@ -12,7 +12,7 @@ def _load_module(monkeypatch):
     monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
-    import training.examples.text2sql_sft.train_sft as module
+    import training.examples.sft_getting_started.train_sft as module
 
     return importlib.reload(module)
 
@@ -136,7 +136,6 @@ def test_main_builds_sft_config_and_calls_recipe(monkeypatch):
     assert cfg.lora_rank == 16
     assert cfg.infra.training_shape_id == "ts-qwen3-4b-smoke-v1"
     assert cfg.infra.region == "US_OHIO_1"
-    assert cfg.infra.skip_validations is True
     assert created["mgr_init"] == {
         "api_key": "test-key",
         "account_id": "acct",

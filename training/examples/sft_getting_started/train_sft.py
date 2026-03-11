@@ -48,6 +48,7 @@ def parse_args():
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
+    parser.add_argument("--renderer-name", default="")
     return parser.parse_args()
 
 
@@ -76,6 +77,7 @@ def main():
         base_model=args.base_model,
         dataset=args.dataset_path,
         tokenizer_model=args.tokenizer_model,
+        renderer_name=args.renderer_name,
         learning_rate=args.learning_rate,
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -85,7 +87,6 @@ def main():
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,
-            skip_validations=True,
         ),
         wandb=WandBConfig(
             project="sft-tinker",

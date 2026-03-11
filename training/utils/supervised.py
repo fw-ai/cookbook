@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -63,6 +64,8 @@ def resolve_renderer_name(
     normalized_model_name = tokenizer_model.lower()
     if "moonshotai/kimi-k2.5" in normalized_model_name:
         return "kimi_k25"
+    if "qwen3-vl" in normalized_model_name:
+        return "qwen3_vl_instruct"
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
@@ -79,7 +82,7 @@ def build_renderer(
 ) -> Renderer:
     """Construct the Tinker renderer used for supervised formatting."""
     resolved_name = resolve_renderer_name(tokenizer_model, renderer_name)
-    if _renderer_uses_images(resolved_name):
+    if get_image_processor is not None and _renderer_uses_images(resolved_name):
         return get_renderer(
             resolved_name,
             tokenizer,
@@ -97,6 +100,31 @@ def _renderer_uses_images(renderer_name: str) -> bool:
             "kimi_k25",
         )
     )
+
+
+logger = logging.getLogger(__name__)
+
+
+def _truncate_model_input(model_input: tinker.ModelInput) -> tinker.ModelInput:
+    """Return a copy of *model_input* with the last text token removed.
+
+    This is the multimodal equivalent of ``tokens[:-1]`` used for the standard
+    next-token prediction shift.
+    """
+    chunks = list(model_input.chunks)
+    for i in range(len(chunks) - 1, -1, -1):
+        chunk = chunks[i]
+        if isinstance(chunk, tinker.types.EncodedTextChunk) and len(chunk.tokens) > 0:
+            remaining = list(chunk.tokens)[:-1]
+            if remaining:
+                chunks[i] = tinker.types.EncodedTextChunk(tokens=remaining)
+            else:
+                chunks.pop(i)
+            result = tinker.ModelInput.empty()
+            for c in chunks:
+                result = result.append(c)
+            return result
+    raise ValueError("ModelInput has no text tokens to truncate")
 
 
 def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
@@ -342,6 +370,69 @@ def _extract_token_ids(model_input: tinker.ModelInput) -> list[int]:
     return ids
 
 
+def _extract_text_only_token_ids(model_input: tinker.ModelInput) -> list[int]:
+    """Extract only text token IDs from a ModelInput, skipping image chunks.
+
+    Non-text chunks are silently skipped.  The returned list contains only
+    actual text token IDs in sequence order, with no placeholders for images.
+    This is required because the server corrupts logprobs when target_tokens
+    contains zeros at image chunk positions.
+    """
+    ids: list[int] = []
+    for chunk in model_input.chunks:
+        if hasattr(chunk, "tokens"):
+            ids.extend(chunk.tokens)
+    return ids
+
+
+def _has_non_text_chunks(model_input: tinker.ModelInput) -> bool:
+    return any(
+        not isinstance(c, tinker.types.EncodedTextChunk) for c in model_input.chunks
+    )
+
+
+def _build_multimodal_datum(
+    model_input: tinker.ModelInput,
+    weights: list[float],
+    max_seq_len: int | None = None,
+) -> tinker.Datum:
+    """Build a next-token-prediction datum that preserves image chunks.
+
+    ``target_tokens`` contains only text token IDs (no image placeholders).
+    The server uses these for logprob gathering; including zeros at image
+    positions corrupts the logprob computation.
+    """
+    token_ids = _extract_token_ids(model_input)
+
+    if max_seq_len is not None and len(token_ids) > max_seq_len:
+        token_ids = token_ids[:max_seq_len]
+        weights = weights[:max_seq_len]
+
+    if len(token_ids) < 2:
+        raise ValueError("Need at least 2 tokens to build a supervised datum.")
+
+    input_mi = _truncate_model_input(model_input)
+    shifted_weights = weights[1:]
+
+    text_target_tokens = _extract_text_only_token_ids(model_input)[1:]
+
+    return tinker.Datum(
+        model_input=input_mi,
+        loss_fn_inputs={
+            "weights": tinker.TensorData(
+                data=shifted_weights,
+                dtype="float32",
+                shape=[len(shifted_weights)],
+            ),
+            "target_tokens": tinker.TensorData(
+                data=[int(x) for x in text_target_tokens],
+                dtype="int64",
+                shape=[len(text_target_tokens)],
+            ),
+        },
+    )
+
+
 def build_datum_from_model_input_and_weights(
     model_input: tinker.ModelInput,
     token_weights: Sequence[int | float],
@@ -350,12 +441,29 @@ def build_datum_from_model_input_and_weights(
     include_loss_mask: bool = False,
 ) -> RenderedSupervisedDatum:
     """Build a weighted datum from a multimodal-capable ``ModelInput``."""
-    weight_tensor = torch.tensor([float(x) for x in token_weights], dtype=torch.float32)
-    if weight_tensor.numel() != model_input.length:
-        raise ValueError(
-            f"model_input/weights length mismatch: {model_input.length} != {weight_tensor.numel()}"
+    weights = [float(x) for x in token_weights]
+
+    if _has_non_text_chunks(model_input):
+        # Multimodal path: use our datum builder which produces text-only
+        # target_tokens.  The upstream datum_from_model_input_weights includes
+        # image-position zeros in target_tokens that corrupt the server's
+        # logprob computation.
+        datum = _build_multimodal_datum(model_input, weights, max_seq_len)
+    elif datum_from_model_input_weights is not None:
+        weight_tensor = torch.tensor(weights, dtype=torch.float32)
+        if weight_tensor.numel() != model_input.length:
+            raise ValueError(
+                f"model_input/weights length mismatch: {model_input.length} != {weight_tensor.numel()}"
+            )
+        datum = datum_from_model_input_weights(model_input, weight_tensor, max_length=max_seq_len)
+    else:
+        token_ids = _extract_token_ids(model_input)
+        return build_datum_from_tokens_and_weights(
+            token_ids,
+            token_weights,
+            max_seq_len=max_seq_len,
+            include_loss_mask=include_loss_mask,
         )
-    datum = datum_from_model_input_weights(model_input, weight_tensor, max_length=max_seq_len)
 
     if include_loss_mask:
         shifted_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
