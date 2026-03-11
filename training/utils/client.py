@@ -118,7 +118,7 @@ class ReconnectableClient:
     def resolve_checkpoint_path(self, name: str, source_job_id: str | None = None) -> str:
         return self.inner.resolve_checkpoint_path(name, source_job_id=source_job_id)
 
-    def list_checkpoints(self) -> tuple[list[str], str | None]:
+    def list_checkpoints(self) -> list[str]:
         return self.inner.list_checkpoints()
 
     # -- Internal --------------------------------------------------------------
