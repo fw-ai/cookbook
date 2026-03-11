@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "fireworks-ai>=1.0.0a39,<2",
-    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git@934f0d9b2f53c3edff02cbf23ec6da8682047fa5",
+    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git@155adb5dfed929e0a8d21e68f674649bd357a1f6",
     "eval-protocol>=0.3.23",
     "tqdm",
     "torch",

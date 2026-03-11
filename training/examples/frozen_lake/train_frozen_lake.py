@@ -147,6 +147,7 @@ class FrozenLakeConfig:
     policy_job_id: str | None = None
     reference_job_id: str | None = None
     inference_base_url: str | None = None
+    disable_hotload: bool = False
 
 
 def parse_args() -> FrozenLakeConfig:
@@ -190,8 +191,42 @@ def parse_args() -> FrozenLakeConfig:
                         help="Pre-created reference trainer job ID (skip creation)")
     parser.add_argument("--inference-base-url", default=None,
                         help="Direct base URL for inference deployment (skip gateway)")
+    parser.add_argument("--max-seq-len", type=int, default=None,
+                        help="Maximum sequence length for training (default: from training shape)")
 
-    return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
+    known_args, _ = parser.parse_known_args()
+    model_family_parser = argparse.ArgumentParser(add_help=False)
+    model_family_parser.add_argument("--model-family", default="",
+                                     choices=("", "qwen3", "kimi"))
+    family_args, _ = model_family_parser.parse_known_args()
+
+    cfg = cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
+    return _apply_model_family_defaults(cfg, family=family_args.model_family)
+
+
+KIMI_DEFAULTS = {
+    "base_model": "accounts/fireworks/models/kimi-k2p5",
+    "tokenizer_model": "moonshotai/Kimi-K2.5",
+    "observation_mode": "image",
+}
+
+
+def _apply_model_family_defaults(cfg: FrozenLakeConfig, family: str = "") -> FrozenLakeConfig:
+    """Apply model-family-specific defaults when --model-family is set."""
+    if not family:
+        model_lower = cfg.base_model.lower()
+        if "kimi" in model_lower:
+            family = "kimi"
+
+    if family == "kimi":
+        if cfg.base_model == "accounts/fireworks/models/qwen3-8b":
+            cfg.base_model = KIMI_DEFAULTS["base_model"]
+        if cfg.tokenizer_model == "Qwen/Qwen3-8B":
+            cfg.tokenizer_model = KIMI_DEFAULTS["tokenizer_model"]
+        if cfg.observation_mode == "text":
+            cfg.observation_mode = KIMI_DEFAULTS["observation_mode"]
+
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -331,11 +366,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         sample_timeout=1200,
     )
     hotload_cfg = HotloadConfig(
-        hot_load_interval=1,
+        hot_load_interval=0 if cfg.disable_hotload else 1,
         dcp_save_interval=20,
         dcp_timeout=2700,
         first_checkpoint_type="base",
-        hot_load_before_training=bool(cfg.deployment_id),
+        hot_load_before_training=False if cfg.disable_hotload else bool(cfg.deployment_id),
         hot_load_timeout=900,
     )
     wandb_cfg = WandBConfig(
@@ -830,11 +865,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
         # -- Final checkpoint -----------------------------------------------
 
-        if global_step > step_offset:
+        if global_step > step_offset and not cfg.disable_hotload:
             try:
                 policy.save_state(f"step-{global_step}", timeout=hotload_cfg.dcp_timeout)
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
+        if global_step > step_offset:
             logger.info("Training complete: %d steps", global_step)
 
     finally:
