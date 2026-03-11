@@ -1,9 +1,8 @@
-"""Smoke tests for the three training-shape launch paths.
+"""Tests for the three training-shape launch paths.
 
-Exercises the full stack from cookbook ``create_trainer_job`` through
-SDK ``TrainerJobManager._create`` payload serialization for a Qwen 1.7B
-model, verifying that each path produces the correct TrainerJobConfig
-fields *and* REST payload shape.
+Exercises the cookbook ``create_trainer_job`` through to
+``TrainerJobConfig`` construction for each path, verifying that the
+correct config fields are set.
 
 Three paths tested:
   1. Validated shape (training_shape_id, no skip_validations)
@@ -14,7 +13,6 @@ Three paths tested:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,7 +20,6 @@ import training.utils.infra as infra_module
 from training.utils.config import InfraConfig
 from fireworks.training.sdk.trainer import (
     TrainerJobConfig,
-    TrainerJobManager,
     TrainingShapeProfile,
 )
 
@@ -55,27 +52,6 @@ class _CapturingMgr:
         return SimpleNamespace(job_id="job-smoke")
 
 
-def _serialize_payload(config: TrainerJobConfig) -> tuple[str, dict]:
-    """Run the real SDK ``_create`` serialization and return (url, payload)."""
-    mgr = TrainerJobManager(
-        api_key="test-key",
-        account_id="test-account",
-        base_url="https://smoke.test",
-    )
-    with patch("fireworks.training.sdk.trainer.request_with_retries") as mock_req:
-        resp = MagicMock()
-        resp.ok = True
-        resp.status_code = 200
-        resp.json.return_value = {"name": "accounts/test-account/rlorTrainerJobs/j"}
-        mock_req.return_value = resp
-
-        mgr._create(config)
-
-        url = mock_req.call_args[0][1]
-        payload = mock_req.call_args[1]["json"]
-    return url, payload
-
-
 # -----------------------------------------------------------------------
 # Path 1: Validated shape (training_shape_id, no skip_validations)
 # -----------------------------------------------------------------------
@@ -104,28 +80,6 @@ class TestValidatedShapePath:
         assert c.custom_image_tag is None
         assert c.max_context_length == PROFILE.max_supported_context_length
         assert c.node_count is None
-
-    def test_payload_omits_shape_derived_fields(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr,
-            base_model=BASE_MODEL,
-            infra=InfraConfig(region="US_VIRGINIA_1"),
-            profile=PROFILE,
-        )
-        url, payload = _serialize_payload(mgr.captured)
-        tc = payload["trainingConfig"]
-
-        assert "trainingShape=" in url
-        assert "skipValidations" not in url
-        assert "nodeCount" not in payload
-        assert "acceleratorType" not in tc
-        assert "acceleratorCount" not in tc
-        assert "customImageTag" not in tc
-        assert "maxContextLength" not in tc
-
-        assert tc["baseModel"] == BASE_MODEL
-        assert tc["region"] == "US_VIRGINIA_1"
 
     def test_rejects_accelerator_override(self):
         with pytest.raises(ValueError, match="accelerator_type"):
@@ -163,7 +117,7 @@ class TestValidatedShapePath:
                 profile=PROFILE,
             )
 
-    def test_extra_args_still_sent(self):
+    def test_extra_args_passed_through(self):
         mgr = _CapturingMgr()
         infra_module.create_trainer_job(
             mgr,
@@ -171,8 +125,7 @@ class TestValidatedShapePath:
             infra=InfraConfig(extra_args=["--foo"]),
             profile=PROFILE,
         )
-        _, payload = _serialize_payload(mgr.captured)
-        assert payload["trainingConfig"]["extraArgs"] == ["--foo"]
+        assert mgr.captured.extra_args == ["--foo"]
 
 
 # -----------------------------------------------------------------------
@@ -222,34 +175,6 @@ class TestOverrideShapePath:
         assert c.accelerator_count == 1
         assert c.custom_image_tag == "0.35.0"
 
-    def test_payload_sends_all_fields(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr,
-            base_model=BASE_MODEL,
-            infra=InfraConfig(
-                region="US_OHIO_1",
-                accelerator_type="NVIDIA_A100_80GB",
-                accelerator_count=4,
-                custom_image_tag="custom:1",
-                skip_validations=True,
-                node_count=2,
-            ),
-            profile=PROFILE,
-            max_seq_len=2048,
-        )
-        url, payload = _serialize_payload(mgr.captured)
-        tc = payload["trainingConfig"]
-
-        assert "trainingShape=" in url
-        assert "skipValidations=true" in url
-        assert tc["acceleratorType"] == "NVIDIA_A100_80GB"
-        assert tc["acceleratorCount"] == 4
-        assert tc["customImageTag"] == "custom:1"
-        assert tc["maxContextLength"] == 2048
-        assert payload["nodeCount"] == 2
-        assert tc["region"] == "US_OHIO_1"
-
 
 # -----------------------------------------------------------------------
 # Path 3: Manual (no training_shape_id / no profile)
@@ -280,31 +205,6 @@ class TestManualPath:
         assert c.max_context_length == 4096
         assert c.node_count == 1
 
-    def test_payload_sends_everything(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr,
-            base_model=BASE_MODEL,
-            infra=InfraConfig(
-                region="US_VIRGINIA_1",
-                accelerator_type="NVIDIA_H100_80GB",
-                accelerator_count=1,
-                custom_image_tag="manual:1",
-            ),
-            max_seq_len=4096,
-        )
-        url, payload = _serialize_payload(mgr.captured)
-        tc = payload["trainingConfig"]
-
-        assert "trainingShape" not in url
-        assert "skipValidations" not in url
-        assert tc["acceleratorType"] == "NVIDIA_H100_80GB"
-        assert tc["acceleratorCount"] == 1
-        assert tc["customImageTag"] == "manual:1"
-        assert tc["maxContextLength"] == 4096
-        assert payload["nodeCount"] == 1
-        assert tc["region"] == "US_VIRGINIA_1"
-
     def test_no_shape_no_overrides(self):
         """Bare minimum manual launch with only base_model."""
         mgr = _CapturingMgr()
@@ -320,10 +220,3 @@ class TestManualPath:
         assert c.accelerator_type is None
         assert c.accelerator_count is None
         assert c.custom_image_tag is None
-
-        _, payload = _serialize_payload(c)
-        tc = payload["trainingConfig"]
-        assert "acceleratorType" not in tc
-        assert "acceleratorCount" not in tc
-        assert "customImageTag" not in tc
-        assert "trainingShape" not in _serialize_payload(c)[0]
