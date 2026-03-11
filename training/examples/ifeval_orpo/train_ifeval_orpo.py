@@ -48,8 +48,9 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--orpo-lambda", type=float, default=1.0)
     parser.add_argument("--lora-rank", type=int, default=0)
+    parser.add_argument("--job-id", default=None, help="Reuse a pre-existing trainer job")
     parser.add_argument(
-        "--wandb-entity", default=os.environ.get("WANDB_ENTITY", "")
+        "--wandb-entity", default=os.environ.get("WANDB_ENTITY") or None
     )
     parser.add_argument(
         "--wandb-project",
@@ -92,6 +93,7 @@ def main():
         grad_accum=args.grad_accum,
         max_pairs=args.max_pairs,
         lora_rank=args.lora_rank,
+        job_id=args.job_id,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,

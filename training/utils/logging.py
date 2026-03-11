@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
     """Initialize WandB if entity is provided. Returns True if active."""
-    if wb.entity is None:
+    if not wb.entity:
         return False
     try:
         import wandb
