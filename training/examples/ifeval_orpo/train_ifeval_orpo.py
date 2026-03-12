@@ -98,7 +98,7 @@ def main():
             region=args.region,
         ),
         wandb=WandBConfig(
-            entity=args.wandb_entity,
+            entity=args.wandb_entity or None,
             project=args.wandb_project,
             run_name=f"ifeval-orpo-{args.base_model.rsplit('/', 1)[-1]}",
         ),

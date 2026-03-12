@@ -13,6 +13,7 @@ cleanly and resume from the last DCP checkpoint.
 from __future__ import annotations
 
 import logging
+import os
 
 from fireworks.training.sdk.client import FiretitanServiceClient, FiretitanTrainingClient
 from fireworks.training.sdk.trainer import TrainerJobManager, TrainerServiceEndpoint
@@ -68,7 +69,7 @@ class ReconnectableClient:
         self._base_model = base_model
         self._lora_rank = lora_rank
         self._api_key = api_key
-        self._fw_api_key = fw_api_key
+        self._fw_api_key = fw_api_key or os.environ.get("FIREWORKS_API_KEY")
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
         self._client: FiretitanTrainingClient | None = None
