@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Any, Dict, List
 
 import torch
@@ -12,6 +13,26 @@ import requests
 from fireworks.training.sdk.errors import request_with_retries
 
 logger = logging.getLogger(__name__)
+
+
+class RLPromptDataset:
+    """Batch-indexed prompt dataset for RL training.
+
+    Follows tinker_cookbook's dataset pattern (``get_batch`` / ``__len__``)
+    but returns raw row dicts instead of ``EnvGroupBuilder``.
+    """
+
+    def __init__(self, rows: list[dict], prompts_per_step: int):
+        self.rows = rows
+        self.prompts_per_step = prompts_per_step
+
+    def get_batch(self, index: int) -> list[dict]:
+        start = index * self.prompts_per_step
+        end = min(start + self.prompts_per_step, len(self.rows))
+        return self.rows[start:end]
+
+    def __len__(self) -> int:
+        return math.ceil(len(self.rows) / self.prompts_per_step) if self.rows else 0
 
 
 def load_jsonl_dataset(path_or_url: str, max_rows: int | None = None) -> List[Dict[str, Any]]:

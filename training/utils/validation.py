@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from fireworks.training.sdk.errors import format_sdk_error, DOCS_SDK
-from training.utils.config import InfraConfig, DeployConfig, ResumeConfig, HotloadConfig
+from training.utils.config import InfraConfig, DeployConfig, HotloadConfig
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,6 @@ def validate_config(
     hotload: HotloadConfig | None = None,
     deploy: DeployConfig | None = None,
     infra: InfraConfig | None = None,
-    resume: ResumeConfig | None = None,
 ) -> None:
     """Pre-flight validation. Catches misconfiguration before provisioning GPUs."""
     errors: list[str] = []
@@ -48,19 +47,7 @@ def validate_config(
             )
         )
 
-    if (
-        resume
-        and resume.resume_from
-        and not resume.resume_from.startswith(("gs://", "/"))
-    ):
-        if resume.resume_job_id is None:
-            logger.warning(
-                "resume_from='%s' looks like a checkpoint name, not a full path. "
-                "If resuming from a different job, set resume_job_id.",
-                resume.resume_from,
-            )
-
-    if infra and infra.node_count < 1:
+    if infra and infra.node_count is not None and infra.node_count < 1:
         errors.append(
             format_sdk_error(
                 "Invalid node_count",

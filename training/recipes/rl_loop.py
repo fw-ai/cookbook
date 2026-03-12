@@ -34,12 +34,11 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     HotloadConfig,
     ReconnectableClient,
+    RLPromptDataset,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     validate_config,
     log_metrics_json,
@@ -48,6 +47,10 @@ from training.utils import (
     create_trainer_job,
     load_jsonl_dataset,
     prepare_sampling_messages,
+)
+from training.utils.checkpoint_utils import (
+    resolve_resume,
+    save_checkpoint,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
@@ -72,6 +75,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:
+    log_path: str
+    """Directory for checkpoints and logs. Required, no default."""
+
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
@@ -126,11 +132,14 @@ class Config:
     reference_base_url: str | None = None
     """Base URL for the reference trainer (bypass direct route)."""
 
+    init_from_checkpoint: str | None = None
+    """Load pretrained DCP weights on a fresh dataset. Supports cross-job
+    format ``"job_id:checkpoint_name"``."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     hotload: HotloadConfig = field(default_factory=HotloadConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +231,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra, cfg.resume)
+    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -342,11 +351,13 @@ def main(
 
         policy = ReconnectableClient(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
+            fw_api_key=api_key,
             endpoint=policy_ep if cfg.policy_base_url else None,
         )
         reference = (
             ReconnectableClient(
                 rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
+                fw_api_key=api_key,
                 endpoint=reference_ep if cfg.reference_base_url else None,
             )
             if reference_ep else None
@@ -377,14 +388,21 @@ def main(
             boot_metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
         wandb_log(boot_metrics, step=0)
 
-        step_offset, _ = setup_resume(policy, cfg.resume)
+        # -- Resume ---------------------------------------------------------------
+
+        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        step_offset = resume_info.step if resume_info else 0
+        wandb_log({"train/step": step_offset}, step_offset)
+
         if cfg.hotload.hot_load_before_training and cfg.deployment.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
         # -- Prepare sampling and training --------------------------------------
 
-        dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+        raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+        all_rows = raw_dataset * cfg.epochs
+        rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
@@ -486,7 +504,7 @@ def main(
 
             return PromptGroup(
                 data=policy_data, ref_data=reference_data,
-                advantages=adv_filtered, ref_logprobs=[],
+                advantages=adv_filtered, ref_logprobs=None,
                 prompt_len=prompt_len, rewards=rewards, inf_logprobs=inf_logprobs_aligned,
                 completion_lens=comp_lens, truncated=trunc,
                 prompt=input_messages if cfg.trajectory_dir else None,
@@ -514,20 +532,19 @@ def main(
             """One minibatch forward/backward call after reference forward."""
             if not prompt_groups:
                 raise ValueError("fwd_bwd_one requires at least one prompt group")
-            import time as _t
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
-            t0 = _t.time()
+            t0 = _time.time()
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("prox_forward: done (%.1fs)", _t.time() - t0)
+            logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
 
-            t0 = _t.time()
+            t0 = _time.time()
             fwd_bwd_result = policy.forward_backward_custom(
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
-            logger.info("fwd_bwd: done (%.1fs)", _t.time() - t0)
+            logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
 
         def finish_step(
@@ -538,25 +555,29 @@ def main(
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
             """optim_step + hotload + metrics after all minibatches in a step."""
-            import time as _t
-
-            t0 = _t.time()
+            t0 = _time.time()
             optim_result = policy.optim_step(adam_params)
             step += 1
-            logger.info("[step %d] optim_step: done (%.1fs)", step, _t.time() - t0)
+            logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
             if cfg.hotload.hot_load_interval > 0 and step % cfg.hotload.hot_load_interval == 0:
                 logger.info("[step %d] hotload: saving + loading...", step)
-                t0 = _t.time()
+                t0 = _time.time()
                 with timer("weight_sync"):
                     weight_syncer.save_and_hotload(f"step-{step}")
-                logger.info("[step %d] hotload: done (%.1fs)", step, _t.time() - t0)
+                logger.info("[step %d] hotload: done (%.1fs)", step, _time.time() - t0)
             if cfg.hotload.dcp_save_interval > 0 and step % cfg.hotload.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
-                t0 = _t.time()
+                t0 = _time.time()
                 with timer("dcp_save"):
                     weight_syncer.save_dcp(f"step-{step}")
-                logger.info("[step %d] dcp_save: done (%.1fs)", step, _t.time() - t0)
+                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
+                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (step - step_offset) * prompt_groups_per_step
+                save_checkpoint(policy, f"step-{step}", cfg.log_path, {
+                    "step": step,
+                    "data_consumed": _data_consumed,
+                    "source_job_id": policy_job_id,
+                })
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
@@ -596,10 +617,12 @@ def main(
             finish_step=finish_step,
         )
 
-        all_rows = dataset * cfg.epochs
+        remaining_rows = []
+        for i_step in range(step_offset, len(rl_dataset)):
+            remaining_rows.extend(rl_dataset.get_batch(i_step))
 
         global_step = asyncio.run(run_rl_loop(
-            sample_fns=(sample_one_prompt(row) for row in all_rows),
+            sample_fns=(sample_one_prompt(row) for row in remaining_rows),
             minibatch_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
             max_concurrent=cfg.max_concurrent,
@@ -613,7 +636,12 @@ def main(
 
         if global_step > step_offset:
             try:
-                policy.save_state(f"step-{global_step}", timeout=cfg.hotload.dcp_timeout)
+                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
+                save_checkpoint(policy, f"step-{global_step}", cfg.log_path, {
+                    "step": global_step,
+                    "data_consumed": _data_consumed,
+                    "source_job_id": policy_job_id,
+                })
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
 
@@ -648,4 +676,4 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config())
+    main(Config(log_path="./rl_logs"))

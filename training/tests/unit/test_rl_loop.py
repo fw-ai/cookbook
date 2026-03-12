@@ -81,6 +81,7 @@ def test_dump_trajectory_writes_one_record_per_completion(tmp_path):
 def test_main_requires_deployment_tokenizer_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
         dataset="/tmp/prompts.jsonl",
         deployment=module.DeployConfig(tokenizer_model=""),
     )
@@ -124,8 +125,18 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         def __init__(self, *args, **kwargs):
             self.inner = object()
 
-        def save_state(self, name, timeout):
+        def save_state(self, name, timeout=None):
             events["saved_state"] = (name, timeout)
+            return SimpleNamespace(path=f"tinker://unit/state/{name}")
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"tinker://unit/sampler/{name}")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
 
     class FakeWeightSyncer:
         def __init__(self, **kwargs):
@@ -157,6 +168,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
 
     cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/prompts.jsonl",
         kl_beta=0.0,
@@ -280,8 +292,18 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             events["optim_step_called"] = True
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
-        def save_state(self, name, timeout):
+        def save_state(self, name, timeout=None):
             events["saved_state"] = (name, timeout)
+            return SimpleNamespace(path=f"tinker://unit/state/{name}")
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"tinker://unit/sampler/{name}")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
 
     class FakeWeightSyncer:
         def __init__(self, **kwargs):
@@ -380,7 +402,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
-    monkeypatch.setattr(module, "setup_resume", lambda *args, **kwargs: (1, None))
+    from training.utils.checkpoint_utils import ResumeInfo
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: ResumeInfo(step=0))
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [
         {
             "messages": [
@@ -418,6 +441,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     )
 
     cfg = module.Config(
+        log_path=str(tmp_path / "rl_logs"),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/prompts.jsonl",
         kl_beta=0.1,
@@ -457,10 +481,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     ]
     assert events["sampler_calls"][0]["include_routing_matrix"] is True
     assert len(events["routing_matrix_calls"]) == 2
-    assert events["weight_sync_saves"][0] == ("resume-1-base", "base")
-    assert ("step-2", "base") in events["weight_sync_saves"]
-    assert events["weight_sync_dcp"] == ["step-2"]
-    assert events["saved_state"] == ("step-2", cfg.hotload.dcp_timeout)
+    assert events["weight_sync_saves"][0] == ("step-0-base", "base")
+    hotload_names = [name for name, _ in events["weight_sync_saves"]]
+    assert "step-2" in hotload_names
+    assert "step-2" in events["weight_sync_dcp"]
     assert len(events["build_loss_fn_calls"]) == 1
     advantages = events["build_loss_fn_calls"][0]["advantages"]
     assert len(advantages) == 2

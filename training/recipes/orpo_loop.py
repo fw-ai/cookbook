@@ -49,11 +49,9 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     WandBConfig,
-    ResumeConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     log_metrics_json,
     make_orpo_loss_fn,
@@ -63,6 +61,7 @@ from training.utils import (
     render_preference_pair,
     resolve_renderer_name,
 )
+from training.utils.checkpoint_utils import resolve_resume
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +72,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:
+    log_path: str
+    """Directory for checkpoints and logs. Required, no default."""
+
     base_model: str = "accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
     dataset: str = ""
     tokenizer_model: str = ""
@@ -95,7 +97,7 @@ class Config:
             project="dsv3-training",
         )
     )
-    resume: ResumeConfig = field(default_factory=ResumeConfig)
+    init_from_checkpoint: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +179,8 @@ def main(
     )
 
     job_id = endpoint.job_id
-    step_offset, _ = setup_resume(client, cfg.resume)
+    resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+    step_offset = resume_info.step if resume_info else 0
     adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
     # -- Data ----------------------------------------------------------------
@@ -328,8 +331,11 @@ def main(
         # -- Final checkpoint ------------------------------------------------
 
         if step > step_offset:
+            logger.info("Saving final DCP checkpoint (step %d)...", step)
+            client.save_state(f"step-{step}")
+
             logger.info("Saving final base checkpoint (step %d)...", step)
-            result = client.inner.save_weights_for_sampler_ext(
+            result = client.save_weights_for_sampler_ext(
                 f"final-step-{step}", checkpoint_type="base"
             )
             logger.info("Final base checkpoint saved: %s", result.path)
@@ -356,7 +362,8 @@ if __name__ == "__main__":
     )
 
     cfg = Config(
-        dataset=os.environ.get("ORPO_DATASET_PATH"), 
+        log_path="./orpo_logs",
+        dataset=os.environ.get("ORPO_DATASET_PATH"),
         tokenizer_model=os.environ.get("ORPO_TOKENIZER", "Qwen/Qwen3-235B-A22B-Instruct-2507"),
     )
     main(cfg)

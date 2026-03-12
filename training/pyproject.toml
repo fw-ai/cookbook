@@ -7,22 +7,25 @@ name = "fireworks-training-cookbook"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fireworks-ai>=1.0.0a38,<2",
-    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git@41cc57642f6373f342151ad95d418349d85512c5",
-    "eval-protocol>=0.3.23",
+    "fireworks-ai[training]>=1.0.0a41,<2",
+    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git@d7fb423674c0bdd27c20a9b948b6091457874039",
     "tqdm",
     "torch",
     "datasets",
     "tiktoken",
     "numpy",
     "transformers",
-    "pillow",
     "python-dotenv",
     "wandb",
 ]
 
 [project.optional-dependencies]
+eval = [
+    "eval-protocol>=0.3.23",
+    "pillow",
+]
 dev = [
+    "fireworks-training-cookbook[eval]",
     "pytest",
     "pytest-cov",
     "pytest-timeout",

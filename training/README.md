@@ -141,11 +141,11 @@ All recipes expect JSONL files with OpenAI chat format:
 
 All recipes use composable dataclass configs:
 
-- **`InfraConfig`** -- region, accelerators, training shapes. When `training_shape_id` is set, `max_seq_len` and GPU config are auto-derived.
+- **`InfraConfig`** -- region, accelerators, training shapes. When `training_shape_id` is set, `max_seq_len` and GPU config are auto-derived; use `skip_validations=True` only if you intentionally want explicit accelerator overrides to win.
 - **`DeployConfig`** -- inference deployment for RL rollouts. Set `deployment_id` to reuse an existing deployment, or omit to auto-create.
-- **`HotloadConfig`** -- weight sync cadence and checkpoint settings.
+- **`HotloadConfig`** -- weight sync cadence and checkpoint settings. Set `dcp_save_interval` to save DCP checkpoints for resume.
 - **`WandBConfig`** -- optional Weights & Biases logging.
-- **`ResumeConfig`** -- resume training from a checkpoint.
+- **`log_path`** (required on all Configs) -- directory for `checkpoints.jsonl` and logs. Resume is automatic: if `checkpoints.jsonl` exists in `log_path`, training continues from the last checkpoint. Use `init_from_checkpoint` to start from a specific checkpoint with fresh data.
 
 ## Directory layout
 

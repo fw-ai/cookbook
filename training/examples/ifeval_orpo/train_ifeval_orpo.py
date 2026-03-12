@@ -84,6 +84,7 @@ def main():
     )
 
     config = orpo_loop.Config(
+        log_path="./ifeval_orpo_logs",
         base_model=args.base_model,
         dataset=args.dataset_path,
         tokenizer_model=args.tokenizer_model,

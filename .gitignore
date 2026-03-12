@@ -295,3 +295,4 @@ cython_debug/
 .idea/
 wandb/
 *_dev.sh
+sft_logs/

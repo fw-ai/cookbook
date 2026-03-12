@@ -81,7 +81,7 @@ def make_cispo_loss_fn(
 
         for i, pi_logprobs in enumerate(logprobs_list):
             adv = advantages[i]
-            ref_lp = ref_logprobs[i]
+            ref_lp = ref_logprobs[i] if ref_logprobs else []
             inf_lp = inf_logprobs[i]
             prox_lp = prox_logprobs[i]
             response_start = max(0, prompt_lens[i] - 1)

@@ -53,12 +53,10 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     HotloadConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
-    setup_resume,
     wandb_finish,
     log_metrics_json,
     setup_deployment,
@@ -99,6 +97,8 @@ DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS
 
 @dataclass
 class FrozenLakeConfig:
+    log_path: str = "./frozen_lake_logs"
+
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     tokenizer_model: str = "Qwen/Qwen3-8B"
 
@@ -545,7 +545,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         infra_boot_time = time.time() - _infra_start
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
-        step_offset, _ = setup_resume(policy, ResumeConfig())
+        from training.utils.checkpoint_utils import resolve_resume
+        resume_info = resolve_resume(policy, cfg.log_path)
+        step_offset = resume_info.step if resume_info else 0
         if hotload_cfg.hot_load_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")

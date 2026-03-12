@@ -12,8 +12,8 @@ __all__ = [
     "HotloadConfig",
     "InfraConfig",
     "ReconnectableClient",
-    "ResumeConfig",
     "RewardFn",
+    "RLPromptDataset",
     "StepCallback",
     "WandBConfig",
     "compute_advantages",
@@ -43,7 +43,6 @@ __all__ = [
     "resolve_renderer_name",
     "prepare_sampling_messages",
     "setup_deployment",
-    "setup_resume",
     "setup_training_client",
     "setup_wandb",
     "flush_timing",
@@ -56,6 +55,7 @@ __all__ = [
 ]
 
 from training.utils.data import (
+    RLPromptDataset,
     encode_text,
     extract_text,
     compute_advantages,
@@ -78,7 +78,6 @@ from training.utils.config import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    ResumeConfig,
     StepCallback,
     HotloadConfig,
 )
@@ -102,7 +101,6 @@ from training.utils.supervised import (
     render_messages_to_datum,
     resolve_renderer_name,
 )
-from training.utils.resume import setup_resume
 from training.utils.logging import (
     wandb_log,
     setup_wandb,

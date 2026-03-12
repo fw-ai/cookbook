@@ -118,9 +118,9 @@ def test_render_messages_to_datum_supports_multimodal_model_input():
     assert len(rendered.token_ids) == 7
     assert len(rendered.token_weights) == 7
     assert rendered.token_weights == [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-    assert len(rendered.datum.model_input.chunks) == 3
-    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [11, 0, 0, 0, 12, 13]
+    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [11, 12, 13]
     assert rendered.datum.loss_fn_inputs["weights"].data == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    assert len(rendered.datum.model_input.chunks) == 3
 
 
 def test_build_datum_from_token_mask_reuses_ui_mask_semantics():

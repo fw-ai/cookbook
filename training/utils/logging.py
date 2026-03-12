@@ -13,11 +13,23 @@ logger = logging.getLogger(__name__)
 
 
 def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
-    """Initialize WandB if entity is provided. Returns True if active."""
+    """Initialize WandB if entity is provided. Returns True if active.
+
+    If ``WANDB_API_KEY`` is not set, falls back to offline mode so runs
+    are logged locally without requiring authentication.
+    """
     if not wb.entity:
         return False
     try:
+        import os
         import wandb
+
+        if not os.environ.get("WANDB_API_KEY"):
+            logger.warning(
+                "WANDB_API_KEY not set; running wandb in offline mode. "
+                "Set the key to sync runs to the dashboard."
+            )
+            os.environ["WANDB_MODE"] = "offline"
 
         wandb.init(entity=wb.entity, project=wb.project, name=wb.run_name, config=config)
         if wandb.run is not None:
