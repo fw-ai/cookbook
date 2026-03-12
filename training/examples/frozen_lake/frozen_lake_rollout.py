@@ -255,7 +255,7 @@ class FireworksV1ImageCompletionsClient:
         self.enable_thinking = enable_thinking
         self.tool_call_parser = tool_call_parser
         self.default_tools = default_tools or []
-        self._tokenizer = None
+        self._tokenizer = _get_hf_tokenizer(self.tokenizer_name_or_path)
         self._client = None
 
     async def close(self) -> None:
@@ -268,8 +268,6 @@ class FireworksV1ImageCompletionsClient:
         return self._client
 
     def _get_tokenizer(self):
-        if self._tokenizer is None:
-            self._tokenizer = _get_hf_tokenizer(self.tokenizer_name_or_path)
         return self._tokenizer
 
     def _thinking_kwargs(self) -> Dict[str, Any]:
@@ -857,44 +855,49 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
             or DEFAULT_VISUAL_PROMPT_TEMPLATE
         )
 
+        tokenizer = _get_hf_tokenizer(str(tokenizer_name_or_path))
+
+        shared_tool_call_parser = build_frozen_lake_tool_call_parser(
+            allow_plaintext_action_fallback=allow_plaintext_action_fallback,
+            tokenizer_getter=lambda: tokenizer,
+            model_id=model_id,
+        )
+        shared_text_client = None
+        shared_image_client = None
+        if observation_mode == "image":
+            shared_image_client = FireworksV1ImageCompletionsClient(
+                model_id=model_id,
+                tokenizer_name_or_path=str(tokenizer_name_or_path),
+                api_key=str(api_key) if api_key is not None else None,
+                base_url=str(base_url) if base_url is not None else None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                request_params=request_params,
+                logprobs=self.logprobs,
+                enable_thinking=self.enable_thinking,
+                tool_call_parser=shared_tool_call_parser,
+                default_tools=FROZEN_LAKE_TOOLS,
+            )
+        else:
+            shared_text_client = FireworksV1CompletionsClient(
+                model_id=model_id,
+                tokenizer_name_or_path=str(tokenizer_name_or_path),
+                api_key=str(api_key) if api_key is not None else None,
+                base_url=str(base_url) if base_url is not None else None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                request_params=request_params,
+                logprobs=self.logprobs,
+                enable_thinking=self.enable_thinking,
+                tool_call_parser=shared_tool_call_parser,
+                default_tools=FROZEN_LAKE_TOOLS,
+            )
+
         async def process_row(row: EvaluationRow) -> EvaluationRow:
             start_time = time.perf_counter()
-
-            tool_call_parser = build_frozen_lake_tool_call_parser(
-                allow_plaintext_action_fallback=allow_plaintext_action_fallback,
-                tokenizer_getter=lambda: _get_hf_tokenizer(str(tokenizer_name_or_path)),
-                model_id=model_id,
-            )
-            text_client = None
-            image_client = None
-            if observation_mode == "image":
-                image_client = FireworksV1ImageCompletionsClient(
-                    model_id=model_id,
-                    tokenizer_name_or_path=str(tokenizer_name_or_path),
-                    api_key=str(api_key) if api_key is not None else None,
-                    base_url=str(base_url) if base_url is not None else None,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    request_params=request_params,
-                    logprobs=self.logprobs,
-                    enable_thinking=self.enable_thinking,
-                    tool_call_parser=tool_call_parser,
-                    default_tools=FROZEN_LAKE_TOOLS,
-                )
-            else:
-                text_client = FireworksV1CompletionsClient(
-                    model_id=model_id,
-                    tokenizer_name_or_path=str(tokenizer_name_or_path),
-                    api_key=str(api_key) if api_key is not None else None,
-                    base_url=str(base_url) if base_url is not None else None,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    request_params=request_params,
-                    logprobs=self.logprobs,
-                    enable_thinking=self.enable_thinking,
-                    tool_call_parser=tool_call_parser,
-                    default_tools=FROZEN_LAKE_TOOLS,
-                )
+            tool_call_parser = shared_tool_call_parser
+            text_client = shared_text_client
+            image_client = shared_image_client
             usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             all_prompt_ids: List[int] = []
             all_completion_ids: List[int] = []
