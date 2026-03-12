@@ -146,8 +146,11 @@ class FrozenLakeConfig:
 
     policy_job_id: str | None = None
     reference_job_id: str | None = None
+    policy_base_url: str | None = None
+    reference_base_url: str | None = None
     inference_base_url: str | None = None
     disable_hotload: bool = False
+    skip_pre_training_hotload: bool = False
 
 
 def parse_args() -> FrozenLakeConfig:
@@ -370,7 +373,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         dcp_save_interval=20,
         dcp_timeout=2700,
         first_checkpoint_type="base",
-        hot_load_before_training=False if cfg.disable_hotload else bool(cfg.deployment_id),
+        hot_load_before_training=False if (cfg.disable_hotload or cfg.skip_pre_training_hotload) else bool(cfg.deployment_id),
         hot_load_timeout=900,
     )
     wandb_cfg = WandBConfig(
@@ -524,11 +527,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
         # firectl-admin for regions the main gateway doesn't support yet).
 
-        def _make_job(label: str, precreated_id: str | None, **extra_kw):
+        def _make_job(label: str, precreated_id: str | None, base_url_override: str | None = None, **extra_kw):
             if precreated_id:
                 ep = create_trainer_job(
                     rlor_mgr, base_model=cfg.base_model, infra=infra,
                     job_id=precreated_id,
+                    base_url_override=base_url_override,
                 )
                 return ep, precreated_id, True
             ep = create_trainer_job(
@@ -542,9 +546,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             return ep, ep.job_id, False
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id)
+            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id, base_url_override=cfg.policy_base_url)
             ref_fut = (
-                pool.submit(_make_job, "reference", cfg.reference_job_id, forward_only=True)
+                pool.submit(_make_job, "reference", cfg.reference_job_id, base_url_override=cfg.reference_base_url, forward_only=True)
                 if use_reference else None
             )
             policy_ep, policy_job_id, precreated_policy = pol_fut.result()
