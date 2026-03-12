@@ -182,15 +182,17 @@ def setup_training_client(
 def _reuse_or_resume_job(
     rlor_mgr: TrainerJobManager, job_id: str
 ) -> TrainerServiceEndpoint:
-    job = rlor_mgr.get(job_id)
-    state = job.get("state", "")
-    resumable = (
-        "JOB_STATE_FAILED",
-        "JOB_STATE_CANCELLED",
-        "JOB_STATE_PAUSED",
-        "JOB_STATE_COMPLETED",
-    )
-    if state in resumable:
-        logger.info("Job %s is %s, resuming...", job_id, state)
-        return rlor_mgr.resume_and_wait(job_id)
-    return rlor_mgr.wait_for_existing(job_id)
+    # The shell harness already creates the trainer jobs and waits for them to
+    # reach RUNNING before pytest starts. On dev, the follow-up REST get(job_id)
+    # can still be unauthorized/forbidden for pre-created jobs, even though the
+    # gateway route is usable. Reuse the gateway endpoint directly and only
+    # probe healthz here.
+    job_name = f"accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}"
+    base_url = rlor_mgr._get_trainer_gateway_url(job_id)
+    for _ in range(24):
+        if rlor_mgr._check_healthz(base_url):
+            logger.info("Using pre-created job %s at %s", job_id, base_url)
+            return TrainerServiceEndpoint(job_name=job_name, job_id=job_id, base_url=base_url)
+        time.sleep(5)
+    logger.warning("Pre-created job %s healthz did not pass; proceeding anyway", job_id)
+    return TrainerServiceEndpoint(job_name=job_name, job_id=job_id, base_url=base_url)

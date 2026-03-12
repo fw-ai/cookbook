@@ -405,6 +405,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     _infra_start = time.time()
     policy_job_id: str | None = None
     reference_job_id: str | None = None
+    precreated_policy = False
+    precreated_reference = False
     trajectory_log = None
     global_step = step_offset = 0
 
