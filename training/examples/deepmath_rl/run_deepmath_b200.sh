@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ---- Fixed config (do not change) ----
-export FIREWORKS_API_KEY="fw_CFSRKgtwX24YounxB4BwtJ"
+export FIREWORKS_API_KEY="${FIREWORKS_API_KEY:?Set FIREWORKS_API_KEY env var}"
 export FIREWORKS_ACCOUNT_ID="pyroworks"
 export FIREWORKS_BASE_URL="https://api.fireworks.ai"
 export TRAINING_SHAPE="qwen3-30b-a3b-instruct-2507-128k-b200"

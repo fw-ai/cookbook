@@ -65,7 +65,7 @@ from training.utils import (
     build_datum_from_token_mask,
 )
 from training.utils.rl import PromptGroup
-from training.utils.rl.train import MinibatchTrainFns, run_rl_loop
+from training.utils.rl.train import TrainStepFns, run_rl_loop
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from training.utils.rl.importance_sampling import ISConfig
 from training.utils.rl.metrics import compute_step_metrics
@@ -114,7 +114,6 @@ class FrozenLakeConfig:
     max_seq_len: int | None = None
 
     prompt_groups_per_step: int = 4
-    min_samples_per_fwd_bwd: int | None = None
     max_concurrent: int = 16
 
     policy_loss: str = "grpo"
@@ -305,12 +304,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     total_samples_per_step = prompt_groups_per_step * completions_per_prompt
-    min_samples_per_fwd_bwd = cfg.min_samples_per_fwd_bwd or total_samples_per_step
-    min_prompt_groups_per_fwd_bwd = max(1, min_samples_per_fwd_bwd // completions_per_prompt)
-    server_grad_accum_steps = max(
-        1,
-        -(-prompt_groups_per_step // min_prompt_groups_per_fwd_bwd),
-    )
 
     infra = InfraConfig(
         training_shape_id=cfg.training_shape or None,
@@ -725,13 +718,20 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
             )
 
-        def finish_step(
+        def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
-            fwd_bwd_results: list,
-            n_accum: int,
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
+            """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
+            t0 = time.time()
+            ref_forward_batch(prompt_groups)
+            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
+
+            t0 = time.time()
+            fwd_bwd_result = fwd_bwd_one(prompt_groups)
+            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0)
+
             t0 = time.time()
             optim_result = policy.optim_step(adam_params)
             step += 1
@@ -753,9 +753,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
-                fwd_bwd_results=fwd_bwd_results,
+                fwd_bwd_results=[fwd_bwd_result],
                 optim_result=optim_result,
-                n_accum=n_accum,
+                n_accum=1,
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
@@ -764,7 +764,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             if loop_stats:
                 metrics["rollout/sample_fail_count"] = loop_stats.get("sample_fails", 0)
                 metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
-                metrics["perf/sample_idle_time"] = loop_stats.get("sample_idle_time", 0)
 
             avg_reward = metrics.get("rollout/reward", 0.0)
             avg_kl = metrics.get("train/mean_kl", 0.0)
@@ -784,11 +783,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             wandb_log(metrics, _wandb_step[0])
             return step, metrics
 
-        minibatch_fns = MinibatchTrainFns(
-            ref_forward_batch=ref_forward_batch,
-            fwd_bwd_one=fwd_bwd_one,
-            finish_step=finish_step,
-        )
+        train_fns = TrainStepFns(train_step=train_step)
 
         def should_accept(pg: PromptGroup) -> bool:
             return len(set(pg.rewards)) > 1
@@ -809,14 +804,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
-            minibatch_fns=minibatch_fns,
+            train_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
             max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
             global_step=step_offset,
             metrics_callback=_filtered_step_callback,
-            min_prompt_groups_per_fwd_bwd=min_prompt_groups_per_fwd_bwd,
-            completions_per_prompt=completions_per_prompt,
         ))
 
         # -- Final checkpoint -----------------------------------------------
