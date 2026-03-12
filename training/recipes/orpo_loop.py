@@ -173,7 +173,7 @@ def main(
         display_name="orpo-trainer",
     )
     client = ReconnectableClient(
-        rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank
+        rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key
     )
 
     job_id = endpoint.job_id

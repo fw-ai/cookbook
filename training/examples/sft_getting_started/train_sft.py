@@ -49,6 +49,11 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""),
+                        help="WandB team/entity for logging (optional, omit to disable WandB)")
+    parser.add_argument("--wandb-project", default="sft-tinker",
+                        help="WandB project name (only used when --wandb-entity is set)")
+    parser.add_argument("--extra-args", action="append", default=[], help="Extra trainer args (repeatable, e.g. --extra-args='--moe-gate-fp32')")
     return parser.parse_args()
 
 
@@ -87,9 +92,11 @@ def main():
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,
+            extra_args=args.extra_args or None,
         ),
         wandb=WandBConfig(
-            project="sft-tinker",
+            entity=args.wandb_entity or None,
+            project=args.wandb_project,
             run_name=f"sft-{args.base_model.rsplit('/', 1)[-1]}",
         ),
     )

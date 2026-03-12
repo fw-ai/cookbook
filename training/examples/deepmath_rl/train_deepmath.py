@@ -317,7 +317,7 @@ def main():
             hot_load_timeout=600,
         ),
         wandb=WandBConfig(
-            entity=args.wandb_entity,
+            entity=args.wandb_entity or None,
             project=args.wandb_project,
             run_name=args.deployment_id or f"deepmath-{int(time.time()) % 100000}",
         ),
