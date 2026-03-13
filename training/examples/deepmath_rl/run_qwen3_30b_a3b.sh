@@ -22,7 +22,7 @@ export FIREWORKS_BASE_URL="${FIREWORKS_BASE_URL:-https://api.fireworks.ai}"
 export TRAINING_SHAPE="qwen3-30b-a3b-instruct-2507-128k-b200"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 REF_TRAINING_SHAPE="qwen3-30b-a3b-instruct-2507-128k-b200-ref"
