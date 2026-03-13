@@ -50,6 +50,16 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
+    parser.add_argument("--grad-acc-norm", default="num_masked_tokens",
+                        choices=["num_sequences", "num_masked_tokens", "none"],
+                        help="Gradient accumulation normalization mode (default: num_masked_tokens)")
+    parser.add_argument("--no-checkpoint", action="store_true",
+                        help="Skip final checkpoint save")
+    parser.add_argument("--grad-clip-norm", type=float, default=0.0,
+                        help="Max gradient norm for clipping (0 = no clipping)")
+    parser.add_argument("--wandb-project", default="sft-tinker")
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-entity", default="myh97")
     return parser.parse_args()
 
 
@@ -86,13 +96,17 @@ def main():
         max_examples=args.max_examples,
         lora_rank=args.lora_rank,
         output_model_id=args.output_model_id,
+        grad_accumulation_normalization=args.grad_acc_norm if args.grad_acc_norm != "none" else None,
+        grad_clip_norm=args.grad_clip_norm,
+        dcp_save_interval=-1 if args.no_checkpoint else 0,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,
         ),
         wandb=WandBConfig(
-            project="sft-tinker",
-            run_name=f"sft-{args.base_model.rsplit('/', 1)[-1]}",
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            run_name=args.wandb_run_name or f"sft-{args.base_model.rsplit('/', 1)[-1]}",
         ),
     )
 
