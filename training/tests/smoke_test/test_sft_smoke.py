@@ -56,5 +56,18 @@ def test_sft_smoke(
         metrics = main(config, rlor_mgr=rlor_mgr)
         assert isinstance(metrics, dict)
         assert metrics["steps"] >= 2, f"Expected >= 2 steps, got {metrics['steps']}"
+
+        import httpx, time
+        time.sleep(3)
+        job_id = metrics.get("job_id")
+        if job_id:
+            try:
+                job = rlor_mgr.get(job_id)
+                state = job.get("state", "")
+                assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                    f"ResourceCleanup failed: job {job_id} still {state}"
+                )
+            except httpx.HTTPStatusError as e:
+                assert e.response.status_code == 404
     finally:
         os.unlink(dataset_path)
