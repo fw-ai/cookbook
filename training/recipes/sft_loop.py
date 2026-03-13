@@ -89,10 +89,10 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
-    grad_accumulation_normalization: str | None = "num_masked_tokens"
+    grad_accumulation_normalization: str | None = "num_loss_tokens"
     """Normalization mode for accumulated gradients at optim_step.
-    One of "num_sequences", "num_masked_tokens", or None (no normalization).
-    Defaults to "num_masked_tokens" so that gradients are correctly
+    One of "num_sequences", "num_loss_tokens", or None (no normalization).
+    Defaults to "num_loss_tokens" so that gradients are correctly
     averaged across all response tokens regardless of grad_accum setting.
     Requires the loss function to return raw token sums (raw_sum=True),
     which is set automatically when this is not None."""
@@ -294,7 +294,7 @@ def main(
                         step_metrics[f"train/{k}"] = v
 
                 norm_mode = cfg.grad_accumulation_normalization
-                if norm_mode == "num_masked_tokens":
+                if norm_mode == "num_loss_tokens":
                     expected_norm_factor = agg_resp_tokens
                 elif norm_mode == "num_sequences":
                     expected_norm_factor = agg_sequences

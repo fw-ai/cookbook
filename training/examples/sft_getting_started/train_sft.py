@@ -49,9 +49,9 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
-    parser.add_argument("--grad-acc-norm", default="num_masked_tokens",
-                        choices=["num_sequences", "num_masked_tokens", "none"],
-                        help="Gradient accumulation normalization mode (default: num_masked_tokens)")
+    parser.add_argument("--grad-acc-norm", default="num_loss_tokens",
+                        choices=["num_sequences", "num_loss_tokens", "none"],
+                        help="Gradient accumulation normalization mode (default: num_loss_tokens)")
     parser.add_argument("--no-checkpoint", action="store_true",
                         help="Skip final checkpoint save")
     parser.add_argument("--grad-clip-norm", type=float, default=0.0,
