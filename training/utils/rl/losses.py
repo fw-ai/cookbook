@@ -70,9 +70,14 @@ def build_builtin_loss_datums(
 
     Folds the TIS weight ``exp(prox - inf)`` into per-token advantages so the
     server only sees ``sampling_logprobs`` (= prox_lp) and ``advantages``
-    (= advantage * tis_weight * completion_mask).
+    (= advantage * tis_weight * loss_mask).
+
+    Uses ``compute_tis_weight`` for behavioral IS correction and
+    ``_get_loss_mask`` for multi-turn tool-call masking (matching the
+    pattern in grpo/dapo/cispo).
     """
     import torch
+    from training.utils.rl.common import _get_loss_mask
     from training.utils.rl.importance_sampling import compute_tis_weight
 
     if is_config is None:
@@ -93,29 +98,17 @@ def build_builtin_loss_datums(
             resp_prox = torch.tensor(prox_lp[response_start:response_start + resp_len], dtype=torch.float32)
             resp_inf = torch.tensor(inf_lp[response_start:response_start + resp_len], dtype=torch.float32)
             tis_weight, _ = compute_tis_weight(resp_prox, resp_inf, is_config)
-            tis_list = tis_weight.tolist()
         else:
-            tis_list = [1.0] * resp_len
+            tis_weight = torch.ones(resp_len, dtype=torch.float32)
 
-        per_token_adv: list[float] = []
-        resp_idx = 0
-        for t in range(n_tokens):
-            if t < response_start:
-                per_token_adv.append(0.0)
-            else:
-                adv_val = advantages[adv_idx] if adv_idx < len(advantages) else 0.0
-                tis = tis_list[resp_idx] if resp_idx < len(tis_list) else 1.0
-                per_token_adv.append(float(adv_val * tis))
-                resp_idx += 1
+        loss_mask = _get_loss_mask(
+            datum, response_start, resp_len, dtype=torch.float32, device=torch.device("cpu"),
+        )
 
-        # Apply loss_mask: zero out advantages where mask is 0 (GRPO uses this
-        # for multi-turn tool-call masking; safe as a no-op for other algorithms).
-        loss_mask_td = datum.loss_fn_inputs.get("loss_mask")
-        if loss_mask_td is not None:
-            mask_data = list(loss_mask_td.data)
-            for t in range(min(n_tokens, len(mask_data))):
-                if mask_data[t] == 0.0:
-                    per_token_adv[t] = 0.0
+        per_token_adv = [0.0] * response_start
+        adv_val = advantages[adv_idx] if adv_idx < len(advantages) else 0.0
+        for r in range(resp_len):
+            per_token_adv.append(float(adv_val * tis_weight[r].item() * loss_mask[r].item()))
 
         slp_padded = prox_lp[:n_tokens] if len(prox_lp) >= n_tokens else prox_lp + [0.0] * (n_tokens - len(prox_lp))
         new_datum = tinker.Datum(
