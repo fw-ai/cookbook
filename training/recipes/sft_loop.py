@@ -55,7 +55,6 @@ from training.utils.checkpoint_utils import (
 )
 from training.utils.timer import timer, flush_timing
 
-
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -74,6 +73,7 @@ class Config:
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
     renderer_name: str = ""
     train_on_what: str = "all_assistant_messages"
+    mode: str = "single-pass"  # "single-pass" (forward_backward only) or "two-pass" (forward+backward_custom, legacy)
 
     learning_rate: float = 1e-4
     epochs: int = 3
@@ -197,7 +197,9 @@ def main(
                 filtered_count += 1
                 return None
             rendered = render_messages_to_datum(
-                messages, renderer=renderer, train_on_what=train_on_what,
+                messages,
+                renderer=renderer,
+                train_on_what=train_on_what,
             )
             if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
                 filtered_count += 1
@@ -208,7 +210,9 @@ def main(
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count, len(raw_data), max_seq_len,
+                filtered_count,
+                len(raw_data),
+                max_seq_len,
             )
         logger.info("Prepared %d training examples", len(training_data))
         if not training_data:
@@ -220,8 +224,12 @@ def main(
             map_fn=lambda row: training_data[row["datum_idx"]],
         )
         total_batches_per_epoch = len(sft_dataset)
-        logger.info("Dataset: %d examples, %d batches/epoch, %d epochs",
-                     len(training_data), total_batches_per_epoch, cfg.epochs)
+        logger.info(
+            "Dataset: %d examples, %d batches/epoch, %d epochs",
+            len(training_data),
+            total_batches_per_epoch,
+            cfg.epochs,
+        )
 
         # -- Resume ---------------------------------------------------------------
 
@@ -240,16 +248,23 @@ def main(
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
 
+        single_pass = cfg.mode == "single-pass"
+
         def _flush_batch(batch_buf: list[tinker.Datum], step: int, accum: int) -> tuple[int, int]:
             nonlocal agg_loss_sum, agg_resp_tokens
 
-            loss_fn = make_batch_weighted_sft_loss_fn()
-            with timer("fwd_bwd"):
-                result = client.forward_backward_custom(batch_buf, loss_fn)
-
-            fwd_metrics = result.metrics
-            agg_loss_sum += fwd_metrics.get("ce_loss_sum", 0.0)
-            agg_resp_tokens += fwd_metrics.get("response_tokens", 0)
+            if single_pass:
+                with timer("fwd_bwd"):
+                    result = client.forward_backward(batch_buf)
+                agg_loss_sum += result.metrics.get("loss:sum", 0.0)
+                agg_resp_tokens += sum(sum(d.loss_fn_inputs["weights"].data) for d in batch_buf)
+            else:
+                loss_fn = make_batch_weighted_sft_loss_fn()
+                with timer("fwd_bwd"):
+                    result = client.forward_backward_custom(batch_buf, loss_fn)
+                fwd_metrics = result.metrics
+                agg_loss_sum += fwd_metrics.get("ce_loss_sum", 0.0)
+                agg_resp_tokens += fwd_metrics.get("response_tokens", 0)
             accum += 1
 
             if accum >= cfg.grad_accum:
@@ -261,11 +276,16 @@ def main(
                 if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                     with timer("dcp_save"):
                         logger.info("Saving DCP checkpoint at step %d", step)
-                        save_checkpoint(client, f"step-{step}", cfg.log_path, {
-                            "step": step,
-                            "data_consumed": data_consumed,
-                            "source_job_id": job_id,
-                        })
+                        save_checkpoint(
+                            client,
+                            f"step-{step}",
+                            cfg.log_path,
+                            {
+                                "step": step,
+                                "data_consumed": data_consumed,
+                                "source_job_id": job_id,
+                            },
+                        )
 
                 step_metrics: Dict[str, Any] = flush_timing()
 
@@ -278,14 +298,19 @@ def main(
                     ppl = torch.exp(torch.tensor(avg_loss)).item()
                     logger.info(
                         "Step %d/%d | Loss: %.4f | PPL: %.2f",
-                        step, total_steps_estimate, avg_loss, ppl,
+                        step,
+                        total_steps_estimate,
+                        avg_loss,
+                        ppl,
                     )
                     log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
-                    step_metrics.update({
-                        "train/step": step,
-                        "train/ce_loss": avg_loss,
-                        "train/ppl": ppl,
-                    })
+                    step_metrics.update(
+                        {
+                            "train/step": step,
+                            "train/ce_loss": avg_loss,
+                            "train/ppl": ppl,
+                        }
+                    )
                     wandb_log(step_metrics, step)
 
                 agg_loss_sum = 0.0
@@ -310,11 +335,17 @@ def main(
         start_step = resume_info.step if resume_info else 0
         if step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
-            save_checkpoint(client, f"step-{step}", cfg.log_path, {
-                "step": step,
-                "data_consumed": data_consumed,
-                "source_job_id": job_id,
-            }, kind="both")
+            save_checkpoint(
+                client,
+                f"step-{step}",
+                cfg.log_path,
+                {
+                    "step": step,
+                    "data_consumed": data_consumed,
+                    "source_job_id": job_id,
+                },
+                kind="both",
+            )
 
         logger.info("Training complete: %d optimizer steps", step)
         wandb_finish()

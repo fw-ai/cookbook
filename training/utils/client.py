@@ -97,6 +97,11 @@ class ReconnectableClient:
             timeout=self._default_timeout,
         )
 
+    def forward_backward(self, data, loss_fn: str = "cross_entropy"):
+        return self._client.forward_backward(data, loss_fn).result(
+            timeout=self._default_timeout,
+        )
+
     def forward_backward_custom(self, data, loss_fn):
         return self._client.forward_backward_custom(data, loss_fn).result(
             timeout=self._default_timeout,
@@ -113,7 +118,9 @@ class ReconnectableClient:
     def load_state_with_optimizer(self, path: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.load_state_with_optimizer(path).result(timeout=timeout)
 
-    def save_weights_for_sampler_ext(self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S):
+    def save_weights_for_sampler_ext(
+        self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S
+    ):
         return self.inner.save_weights_for_sampler_ext(name, checkpoint_type=checkpoint_type)
 
     def resolve_checkpoint_path(self, name: str, source_job_id: str | None = None) -> str:
@@ -132,7 +139,9 @@ class ReconnectableClient:
                 "Authorization": f"Bearer {self._fw_api_key}",
             }
         svc = FiretitanServiceClient(
-            base_url=ep.base_url, api_key=self._api_key, **kwargs,
+            base_url=ep.base_url,
+            api_key=self._api_key,
+            **kwargs,
         )
         self._client = svc.create_training_client(
             base_model=self._base_model,
