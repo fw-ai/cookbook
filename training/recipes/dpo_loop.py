@@ -423,6 +423,16 @@ def main(
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
 
+    ref_profile = None
+    if cfg.infra.ref_training_shape_id:
+        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+    elif profile is not None:
+        raise ValueError(
+            "ref_training_shape_id must be set when training_shape_id is set. "
+            "DPO always requires a reference model. Set it explicitly "
+            "(can be the same as training_shape_id)."
+        )
+
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
         logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
@@ -455,7 +465,7 @@ def main(
                 rlor_mgr,
                 base_model=cfg.base_model,
                 infra=cfg.infra,
-                profile=profile,
+                profile=ref_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,

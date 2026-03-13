@@ -259,10 +259,6 @@ def main(
 
     # -- Resolve training shapes -----------------------------------------------
 
-    use_reference = cfg.kl_beta != 0
-    if not use_reference:
-        logger.info("kl_beta=0: skipping reference model creation")
-
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
@@ -288,14 +284,22 @@ def main(
         )
 
     ref_profile = None
-    if use_reference and cfg.infra.ref_training_shape_id:
+    if cfg.infra.ref_training_shape_id:
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-    elif use_reference and profile is not None and not cfg.infra.ref_training_shape_id:
-        raise ValueError(
-            "ref_training_shape_id is required when using a training shape with "
-            "kl_beta != 0. Set it explicitly (can be the same as training_shape_id), "
-            "or set kl_beta=0 to skip the reference model."
-        )
+
+    if profile is not None:
+        use_reference = ref_profile is not None
+        if cfg.kl_beta != 0 and not use_reference:
+            raise ValueError(
+                "ref_training_shape_id must be set when training_shape_id is set "
+                "and kl_beta != 0. Set it explicitly (can be the same as "
+                "training_shape_id), or set kl_beta=0 to skip."
+            )
+    else:
+        use_reference = cfg.kl_beta != 0
+
+    if not use_reference:
+        logger.info("Skipping reference model creation")
 
     import time as _time
     _infra_start = _time.time()

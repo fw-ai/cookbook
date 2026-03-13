@@ -39,8 +39,11 @@ class InfraConfig:
 
     ref_training_shape_id: str | None = None
     """Training shape ID for the reference (forward-only) trainer.
-    Must be set explicitly when ``training_shape_id`` is set and
-    ``kl_beta != 0``.  Can be the same value as ``training_shape_id``."""
+    Must be set explicitly when ``training_shape_id`` is set and a
+    reference model is needed (``kl_beta != 0`` for RL, always for DPO).
+    No implicit fallback.  Can be the same value as ``training_shape_id``
+    -- the control plane auto-appends ``--forward-only`` via
+    ``applyForwardOnlyConfig``."""
 
     region: str | None = None
     custom_image_tag: str | None = None
