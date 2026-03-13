@@ -35,7 +35,7 @@ def test_dpo_smoke(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
-    smoke_infra,
+    smoke_dpo_infra,
 ):
     from training.recipes.dpo_loop import Config, main
     from training.utils import DeployConfig, HotloadConfig, WandBConfig
@@ -58,7 +58,7 @@ def test_dpo_smoke(
             batch_size=1,
             grad_accum=1,
             max_pairs=4,
-            infra=smoke_infra,
+            infra=smoke_dpo_infra,
             deployment=DeployConfig(),
             hotload=HotloadConfig(hot_load_interval=0, dcp_save_interval=0),
             wandb=WandBConfig(),

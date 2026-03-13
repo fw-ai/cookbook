@@ -60,6 +60,22 @@ def smoke_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig:
 
 
 @pytest.fixture(scope="session")
+def smoke_dpo_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig:
+    """InfraConfig for DPO smoke tests (includes ref_training_shape_id).
+
+    DPO always needs a reference model. On the shape path, both policy
+    and reference use the same training shape -- the control plane's
+    ``applyForwardOnlyConfig`` handles the ``--forward-only`` difference.
+    """
+    if smoke_custom_image_tag:
+        return InfraConfig(custom_image_tag=smoke_custom_image_tag)
+    return InfraConfig(
+        training_shape_id=smoke_training_shape,
+        ref_training_shape_id=smoke_training_shape,
+    )
+
+
+@pytest.fixture(scope="session")
 def smoke_sdk_managers():
     api_key = _get_env("FIREWORKS_API_KEY")
     if not api_key:
