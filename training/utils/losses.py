@@ -103,6 +103,7 @@ def make_batch_dpo_loss_fn(
     ref_rejected_list: List[List[float]],
     response_starts: List[int],
     beta: float,
+    raw_sum: bool = False,
 ) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Batched DPO loss over multiple preference pairs.
 
@@ -115,6 +116,10 @@ def make_batch_dpo_loss_fn(
         ref_rejected_list: Per-pair reference logprobs for rejected sequences.
         response_starts: Per-pair token index where the response begins.
         beta: DPO temperature parameter.
+        raw_sum: If True, return the raw sum of pair losses without dividing
+            by n_pairs. Use with server-side ``grad_accumulation_normalization``
+            (``"num_sequences"``) to get a correct global per-pair mean across
+            all accumulation steps.
     """
     n_pairs = len(ref_chosen_list)
     assert len(ref_rejected_list) == n_pairs
@@ -154,18 +159,19 @@ def make_batch_dpo_loss_fn(
                 total_chosen_reward += beta * (pi_chosen.item() - rc.item())
                 total_rejected_reward += beta * (pi_rejected.item() - rr.item())
 
-        avg_loss = total_loss / n_pairs
+        avg_loss_val = total_loss.item() / n_pairs if n_pairs > 0 else 0.0
+        out_loss = total_loss if raw_sum else total_loss / n_pairs
 
         with torch.no_grad():
             metrics = {
-                "dpo_loss": avg_loss.item(),
+                "dpo_loss": avg_loss_val,
                 "margin": total_margin / n_pairs,
                 "accuracy": total_accuracy / n_pairs,
                 "chosen_reward": total_chosen_reward / n_pairs,
                 "rejected_reward": total_rejected_reward / n_pairs,
                 "batch_pairs": n_pairs,
             }
-        return avg_loss, metrics
+        return out_loss, metrics
 
     return loss_fn
 
@@ -251,11 +257,19 @@ def make_batch_sft_loss_fn(
 
 
 def make_batch_weighted_sft_loss_fn(
+    raw_sum: bool = False,
 ) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Cross-entropy loss over per-token supervised weights stored on each datum.
 
     This is the renderer-safe path for multi-turn SFT. Each datum must include
     ``loss_fn_inputs["weights"]`` aligned with ``target_tokens``.
+
+    Args:
+        raw_sum: If True, return the raw sum of token losses without dividing
+            by the token count. Use this with server-side gradient accumulation
+            normalization (``grad_accumulation_normalization="num_masked_tokens"``
+            on ``optim_step``) to get a correct global per-token mean across
+            all accumulation steps.
     """
 
     def loss_fn(
@@ -289,12 +303,15 @@ def make_batch_weighted_sft_loss_fn(
             with torch.no_grad():
                 total_nll += float(sample_nll.item())
 
-        avg_loss = total_loss / total_weight if total_weight > 0 else total_loss
+        if raw_sum:
+            out_loss = total_loss
+        else:
+            out_loss = total_loss / total_weight if total_weight > 0 else total_loss
         with torch.no_grad():
             avg_nll = total_nll / total_weight if total_weight > 0 else 0.0
             ppl = torch.exp(torch.tensor(avg_nll)).item()
 
-        return avg_loss, {
+        return out_loss, {
             "ce_loss": avg_nll,
             "ce_loss_sum": total_nll,
             "ppl": ppl,

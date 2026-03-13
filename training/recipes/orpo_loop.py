@@ -90,6 +90,11 @@ class Config:
     lora_rank: int = 0
     job_id: str | None = None
 
+    grad_accumulation_normalization: str | None = "num_sequences"
+    """Normalization mode for accumulated gradients at optim_step.
+    Defaults to "num_sequences" so gradients are correctly averaged
+    across all accumulation steps regardless of grad_accum setting."""
+
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
     )
@@ -281,7 +286,10 @@ def main(
                 accum_count += 1
 
                 if accum_count >= cfg.grad_accum:
-                    client.optim_step(adam_params)
+                    client.optim_step(
+                        adam_params,
+                        grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                    )
                     step += 1
                     accum_count = 0
 
@@ -326,7 +334,10 @@ def main(
                     step_t0 = time.monotonic()
 
             if accum_count > 0:
-                client.optim_step(adam_params).result()
+                client.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                ).result()
                 step += 1
                 accum_count = 0
 
