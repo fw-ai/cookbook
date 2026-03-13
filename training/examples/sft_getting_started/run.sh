@@ -14,11 +14,11 @@ if [ -n "$missing_vars" ]; then
 fi
 
 python train_sft.py \
-    --base-model accounts/fireworks/models/qwen3-8b \
-    --tokenizer-model Qwen/Qwen3-8B \
+    --base-model accounts/fireworks/models/qwen3-32b \
+    --tokenizer-model Qwen/Qwen3-32B \
     --dataset-path text2sql_dataset.jsonl \
-    --training-shape qwen3-8b-128k-h200 \
-    --region US_VIRGINIA_1 \
+    --training-shape accounts/fireworks/trainingShapes/qwen3-32b-65k-b200 \
+    --region US_OHIO_1 \
     --max-examples 100 \
     --epochs 3 \
     --batch-size 8 \
