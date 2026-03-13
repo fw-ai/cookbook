@@ -51,10 +51,9 @@ from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
-    ResourceCleanup,
     WandBConfig,
     DeployConfig,
-    WeightSyncConfig,
+    HotloadConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
@@ -68,7 +67,7 @@ from training.utils import (
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups
 from training.utils.rl.importance_sampling import ISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
@@ -120,6 +119,10 @@ class FrozenLakeConfig:
 
     policy_loss: str = "grpo"
     tis_enabled: bool = False
+
+    mode: str = "single-pass"
+    """``"single-pass"`` uses server-side built-in PPO loss (1 fwd + 1 bwd).
+    ``"two-pass"`` uses ``forward_backward_custom`` (2 fwd + 1 bwd, legacy)."""
 
     seed_jsonl_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "seeds.jsonl")
@@ -313,6 +316,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     infra = InfraConfig(
         training_shape_id=cfg.training_shape or None,
         region=cfg.region,
+        skip_validations=True,
     )
     deploy_cfg = DeployConfig(
         deployment_id=cfg.deployment_id,
@@ -322,13 +326,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         tokenizer_model=cfg.tokenizer_model,
         sample_timeout=1200,
     )
-    weight_sync_cfg = WeightSyncConfig(
-        weight_sync_interval=1,
+    hotload_cfg = HotloadConfig(
+        hot_load_interval=1,
         dcp_save_interval=20,
         dcp_timeout=2700,
         first_checkpoint_type="base",
-        weight_sync_before_training=bool(cfg.deployment_id),
-        weight_sync_timeout=900,
+        hot_load_before_training=bool(cfg.deployment_id),
+        hot_load_timeout=900,
     )
     wandb_cfg = WandBConfig(
         entity=cfg.wandb_entity or None,
@@ -372,6 +376,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
     # -- Resolve training shapes --------------------------------------------
 
+    use_reference = cfg.kl_beta != 0
+    if not use_reference:
+        logger.info("kl_beta=0: skipping reference model creation")
+
     profile = None
     if infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
@@ -396,13 +404,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         cfg.max_seq_len = 4096
         logger.info("max_seq_len defaulting to %d (no training shape)", cfg.max_seq_len)
 
-    ref_profile = None
-    if infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
-    use_reference = ref_profile is not None
-    if not use_reference:
-        logger.info("No ref_training_shape_id set, skipping reference model")
-
     # -- Infrastructure setup -----------------------------------------------
 
     _infra_start = time.time()
@@ -424,22 +425,75 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
+    def _cleanup_job(job_id: str | None, label: str) -> None:
+        if not job_id:
+            return
+        try:
+            logger.info("Cleanup: deleting %s trainer job %s", label, job_id)
+            rlor_mgr.delete(job_id)
+        except Exception as e:
+            logger.warning("Cleanup: failed to delete %s job %s: %s", label, job_id, e)
+            return
+
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            try:
+                job = rlor_mgr.get(job_id)
+            except Exception as e:
+                logger.warning("Cleanup: failed to fetch %s job %s: %s", label, job_id, e)
+                return
+            if not job:
+                logger.info("Cleanup: %s trainer job %s deleted", label, job_id)
+                return
+            state = job.get("state", "")
+            if state == "JOB_STATE_DELETE_FAILED":
+                logger.warning("Cleanup: %s trainer job %s delete failed", label, job_id)
+                return
+            logger.info("Cleanup: waiting for %s trainer job %s deletion (state=%s)", label, job_id, state)
+            time.sleep(5)
+
+        logger.warning("Cleanup: timed out waiting for %s trainer job %s deletion", label, job_id)
+
+    def _cleanup_deployment(deployment_id: str | None) -> None:
+        if not deployment_id:
+            return
+        try:
+            logger.info("Cleanup: deleting deployment %s", deployment_id)
+            deploy_mgr.delete(deployment_id)
+        except Exception as e:
+            logger.warning("Cleanup: failed to delete deployment %s: %s", deployment_id, e)
+            return
+
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            try:
+                info = deploy_mgr.get(deployment_id)
+            except Exception as e:
+                logger.warning("Cleanup: failed to fetch deployment %s: %s", deployment_id, e)
+                return
+            if info is None:
+                logger.info("Cleanup: deployment %s deleted", deployment_id)
+                return
+            if info.state == "DELETE_FAILED":
+                logger.warning("Cleanup: deployment %s delete failed", deployment_id)
+                return
+            logger.info("Cleanup: waiting for deployment %s deletion (state=%s)", deployment_id, info.state)
+            time.sleep(5)
+
+        logger.warning("Cleanup: timed out waiting for deployment %s deletion", deployment_id)
+
+    try:
         if cfg.policy_job_id and cfg.deployment_id:
             dep_info = None
             logger.info("Skipping deployment setup — using pre-created resources")
         else:
             dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
-            if not cfg.deployment_id and deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
-                cleanup.deployment(deploy_cfg.deployment_id)
-            elif deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") == "1":
-                logger.info("Keeping deployment %s (KEEP_DEPLOYMENT=1)", deploy_cfg.deployment_id)
 
         # -- Create or reuse trainer jobs ------------------------------------
         # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
         # firectl-admin for regions the main gateway doesn't support yet).
 
-        def _make_job(label: str, precreated_id: str | None, job_profile=None, **extra_kw):
+        def _make_job(label: str, precreated_id: str | None, **extra_kw):
             if precreated_id:
                 ep = create_trainer_job(
                     rlor_mgr, base_model=cfg.base_model, infra=infra,
@@ -447,11 +501,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 )
                 return ep, precreated_id, True
             ep = create_trainer_job(
-                rlor_mgr, base_model=cfg.base_model, infra=infra, profile=job_profile,
+                rlor_mgr, base_model=cfg.base_model, infra=infra, profile=profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name=f"frozen-lake-{label}",
-                hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,  # weight sync target deployment
+                hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,
                 **extra_kw,
             )
             return ep, ep.job_id, False
@@ -459,9 +513,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         precreated_policy = False
         precreated_reference = False
         with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id, job_profile=profile)
+            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id)
             ref_fut = (
-                pool.submit(_make_job, "reference", cfg.reference_job_id, job_profile=ref_profile, forward_only=True)
+                pool.submit(_make_job, "reference", cfg.reference_job_id, forward_only=True)
                 if use_reference else None
             )
 
@@ -469,12 +523,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             if ref_fut:
                 reference_ep, reference_job_id, precreated_reference = ref_fut.result()
             else:
-                reference_ep, reference_job_id, precreated_reference = None, None, False
-
-            if not precreated_policy:
-                cleanup.trainer(policy_job_id)
-            if not precreated_reference and reference_job_id:
-                cleanup.trainer(reference_job_id)
+                reference_ep, precreated_reference = None, False
 
         policy = ReconnectableClient(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
@@ -499,9 +548,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         weight_syncer = WeightSyncer(
             policy_client=policy.inner, deploy_mgr=deploy_mgr,
             deployment_id=deploy_cfg.deployment_id, base_model=cfg.base_model,
-            hotload_timeout=weight_sync_cfg.weight_sync_timeout,
-            first_checkpoint_type=weight_sync_cfg.first_checkpoint_type,
-            dcp_timeout=weight_sync_cfg.dcp_timeout,
+            hotload_timeout=hotload_cfg.hot_load_timeout,
+            first_checkpoint_type=hotload_cfg.first_checkpoint_type,
+            dcp_timeout=hotload_cfg.dcp_timeout,
         )
 
         infra_boot_time = time.time() - _infra_start
@@ -510,7 +559,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         from training.utils.checkpoint_utils import resolve_resume
         resume_info = resolve_resume(policy, cfg.log_path)
         step_offset = resume_info.step if resume_info else 0
-        if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
+        if hotload_cfg.hot_load_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
@@ -573,242 +622,249 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         trajectory_path = f"/tmp/frozen_lake_trajectories_{int(time.time())}.jsonl"
         trajectory_log = open(trajectory_path, "a")
         logger.info("Logging trajectories to %s", trajectory_path)
-        try:
-            # -- Sample one prompt group ----------------------------------------
 
-            async def sample_one_prompt(env_context: Dict[str, Any]) -> PromptGroup | None:
-                """Run completions_per_prompt rollouts for one seed, return PromptGroup."""
-                rows: List[EvaluationRow] = []
-                for rollout_idx in range(completions_per_prompt):
-                    rows.append(EvaluationRow(
-                        input_metadata=InputMetadata(
-                            row_id=f"seed_{env_context.get('seed', 0)}_{rollout_idx}",
-                            dataset_info={
-                                "environment_context": dict(env_context),
-                                "user_prompt_template": cfg.user_prompt_template,
-                                "visual_prompt_template": cfg.visual_prompt_template,
-                            },
-                        ),
-                    ))
+        # -- Sample one prompt group ----------------------------------------
 
-                tasks = rollout_processor(rows, rollout_config)
-                completed_rows: List[EvaluationRow] = []
-                for task in tasks:
-                    try:
-                        result = await task
-                        extra = result.execution_metadata.extra or {}
-                        if extra.get("rollout_error"):
-                            logger.warning(
-                                "Rollout error for seed %s: %s",
-                                env_context.get("seed"), extra["rollout_error"],
-                            )
-                            continue
-                        completed_rows.append(result)
-                    except Exception as e:
-                        logger.warning("Rollout task failed for seed %s: %s", env_context.get("seed"), e)
+        async def sample_one_prompt(env_context: Dict[str, Any]) -> PromptGroup | None:
+            """Run completions_per_prompt rollouts for one seed, return PromptGroup."""
+            rows: List[EvaluationRow] = []
+            for rollout_idx in range(completions_per_prompt):
+                rows.append(EvaluationRow(
+                    input_metadata=InputMetadata(
+                        row_id=f"seed_{env_context.get('seed', 0)}_{rollout_idx}",
+                        dataset_info={
+                            "environment_context": dict(env_context),
+                            "user_prompt_template": cfg.user_prompt_template,
+                            "visual_prompt_template": cfg.visual_prompt_template,
+                        },
+                    ),
+                ))
 
-                if trajectory_log:
-                    for row in completed_rows:
-                        extra = row.execution_metadata.extra or {}
-                        entry = {
-                            "seed": env_context.get("seed"),
-                            "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in (row.messages or [])],
-                            "step_rewards": extra.get("step_rewards", []),
-                            "reward": 1.0 if extra.get("step_rewards") and float(extra["step_rewards"][-1]) > 0 else 0.0,
-                            "rollout_error": extra.get("rollout_error"),
-                        }
-                        trajectory_log.write(json.dumps(entry) + "\n")
-                        trajectory_log.flush()
-
-                if len(completed_rows) < 2:
-                    return None
-
-                all_datums: List[tinker.Datum] = []
-                all_ref_datums: List[tinker.Datum] = []
-                all_rewards: List[float] = []
-                all_inf_logprobs: List[List[float]] = []
-                first_prompt_len = 0
-
-                for row in completed_rows:
-                    datums, prompt_len, inf_lps, rewards = evaluation_row_to_training_data(row)
-                    if not datums:
+            tasks = rollout_processor(rows, rollout_config)
+            completed_rows: List[EvaluationRow] = []
+            for task in tasks:
+                try:
+                    result = await task
+                    extra = result.execution_metadata.extra or {}
+                    if extra.get("rollout_error"):
+                        logger.warning(
+                            "Rollout error for seed %s: %s",
+                            env_context.get("seed"), extra["rollout_error"],
+                        )
                         continue
-                    all_datums.extend(datums)
-                    all_rewards.extend(rewards)
-                    all_inf_logprobs.extend(inf_lps)
-                    if first_prompt_len == 0:
-                        first_prompt_len = prompt_len
+                    completed_rows.append(result)
+                except Exception as e:
+                    logger.warning("Rollout task failed for seed %s: %s", env_context.get("seed"), e)
 
-                    if use_reference:
-                        for d in datums:
-                            ref_datum = tinker.Datum(
-                                model_input=d.model_input,
-                                loss_fn_inputs=d.loss_fn_inputs,
-                            )
-                            all_ref_datums.append(ref_datum)
+            if trajectory_log:
+                for row in completed_rows:
+                    extra = row.execution_metadata.extra or {}
+                    entry = {
+                        "seed": env_context.get("seed"),
+                        "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in (row.messages or [])],
+                        "step_rewards": extra.get("step_rewards", []),
+                        "reward": 1.0 if extra.get("step_rewards") and float(extra["step_rewards"][-1]) > 0 else 0.0,
+                        "rollout_error": extra.get("rollout_error"),
+                    }
+                    trajectory_log.write(json.dumps(entry) + "\n")
+                    trajectory_log.flush()
 
-                if not all_datums or len(all_rewards) < 2:
-                    return None
+            if len(completed_rows) < 2:
+                return None
 
-                advantages = compute_advantages(all_rewards)
+            all_datums: List[tinker.Datum] = []
+            all_ref_datums: List[tinker.Datum] = []
+            all_rewards: List[float] = []
+            all_inf_logprobs: List[List[float]] = []
+            first_prompt_len = 0
 
-                return PromptGroup(
-                    data=all_datums,
-                    ref_data=all_ref_datums,
-                    advantages=advantages,
-                    ref_logprobs=[],
-                    prompt_len=first_prompt_len,
-                    rewards=all_rewards,
-                    inf_logprobs=all_inf_logprobs,
-                )
+            for row in completed_rows:
+                datums, prompt_len, inf_lps, rewards = evaluation_row_to_training_data(row)
+                if not datums:
+                    continue
+                all_datums.extend(datums)
+                all_rewards.extend(rewards)
+                all_inf_logprobs.extend(inf_lps)
+                if first_prompt_len == 0:
+                    first_prompt_len = prompt_len
 
-            # -- Training callbacks ---------------------------------------------
+                if use_reference:
+                    for d in datums:
+                        ref_datum = tinker.Datum(
+                            model_input=d.model_input,
+                            loss_fn_inputs=d.loss_fn_inputs,
+                        )
+                        all_ref_datums.append(ref_datum)
 
-            def ref_forward_batch(groups: list[PromptGroup]) -> None:
-                if not use_reference or reference is None:
-                    return
-                all_ref_data = [d for pg in groups for d in pg.ref_data]
-                if not all_ref_data:
-                    return
-                ref_fwd = reference.forward(all_ref_data, "cross_entropy")
-                idx = 0
-                for pg in groups:
-                    n = len(pg.ref_data)
-                    pg.ref_logprobs = [
-                        ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
-                    ]
-                    idx += n
+            if not all_datums or len(all_rewards) < 2:
+                return None
 
-            def fwd_bwd_one(sub: list[PromptGroup]):
-                data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
-                prox_fwd = policy.forward(data, "cross_entropy")
-                prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-                return policy.forward_backward_custom(
-                    data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
-                )
+            advantages = compute_advantages(all_rewards)
 
-            def train_step(
-                step: int,
-                prompt_groups: list[PromptGroup],
-                loop_stats: dict | None = None,
-            ) -> tuple[int, dict]:
-                """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
-                t0 = time.time()
-                ref_forward_batch(prompt_groups)
-                logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
-
-                t0 = time.time()
-                fwd_bwd_result = fwd_bwd_one(prompt_groups)
-                logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0)
-
-                t0 = time.time()
-                optim_result = policy.optim_step(adam_params)
-                step += 1
-                logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
-
-                if weight_sync_cfg.weight_sync_interval > 0 and step % weight_sync_cfg.weight_sync_interval == 0:
-                    logger.info("[step %d] weight_sync: saving + loading...", step)
-                    t0 = time.time()
-                    with timer("weight_sync"):
-                        weight_syncer.save_and_hotload(f"step-{step}")
-                    logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
-
-                if weight_sync_cfg.dcp_save_interval > 0 and step % weight_sync_cfg.dcp_save_interval == 0:
-                    logger.info("[step %d] dcp_save...", step)
-                    t0 = time.time()
-                    with timer("dcp_save"):
-                        weight_syncer.save_dcp(f"step-{step}")
-                    logger.info("[step %d] dcp_save: done (%.1fs)", step, time.time() - t0)
-
-                metrics = compute_step_metrics(
-                    prompt_groups=prompt_groups,
-                    fwd_bwd_results=[fwd_bwd_result],
-                    optim_result=optim_result,
-                    n_accum=1,
-                    timing_metrics=flush_timing(),
-                    loop_stats=loop_stats,
-                    completions_per_prompt=completions_per_prompt,
-                )
-                metrics["train/step"] = step
-                if loop_stats:
-                    metrics["rollout/sample_fail_count"] = loop_stats.get("sample_fails", 0)
-                    metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
-
-                avg_reward = metrics.get("rollout/reward", 0.0)
-                avg_kl = metrics.get("train/mean_kl", 0.0)
-                mean_loss = metrics.get("train/mean_loss", 0.0)
-                adv_loss = metrics.get("train/mean_adv_loss", 0.0)
-                kl_pen = metrics.get("train/mean_kl_penalty", 0.0)
-                mask_r = metrics.get("train/mask_ratio", 0.0)
-                inf_kld = metrics.get("train/inference_kld", 0.0)
-                logger.info(
-                    "Step %d | Reward: %.3f | KL: %.4f | Loss: %.4f "
-                    "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
-                    step, avg_reward, avg_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
-                )
-                reward_history.append(avg_reward)
-                log_metrics_json(step, reward=avg_reward, kl=avg_kl)
-                _wandb_step[0] = max(_wandb_step[0] + 1, step)
-                wandb_log(metrics, _wandb_step[0])
-                return step, metrics
-
-            train_fns = TrainStepFns(train_step=train_step)
-
-            def should_accept(pg: PromptGroup) -> bool:
-                return len(set(pg.rewards)) > 1
-
-            all_prompts = seed_contexts * cfg.epochs
-            logger.info(
-                "Training: %d seeds x %d epochs = %d prompt groups, "
-                "%d completions/prompt, %d groups/step",
-                len(seed_contexts), cfg.epochs, len(all_prompts),
-                completions_per_prompt, prompt_groups_per_step,
+            return PromptGroup(
+                data=all_datums,
+                ref_data=all_ref_datums,
+                advantages=advantages,
+                ref_logprobs=[],
+                prompt_len=first_prompt_len,
+                rewards=all_rewards,
+                inf_logprobs=all_inf_logprobs,
             )
 
-            _wandb_step = [step_offset]
+        # -- Training callbacks ---------------------------------------------
 
-            def _filtered_step_callback(loop_metrics: dict) -> None:
-                _wandb_step[0] += 1
-                wandb_log(loop_metrics, step=_wandb_step[0])
+        def ref_forward_batch(groups: list[PromptGroup]) -> None:
+            if not use_reference or reference is None:
+                return
+            all_ref_data = [d for pg in groups for d in pg.ref_data]
+            if not all_ref_data:
+                return
+            ref_fwd = reference.forward(all_ref_data, "cross_entropy")
+            idx = 0
+            for pg in groups:
+                n = len(pg.ref_data)
+                pg.ref_logprobs = [
+                    ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
+                ]
+                idx += n
 
-            global_step = asyncio.run(run_rl_loop(
-                sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
-                train_fns=train_fns,
-                prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=should_accept,
-                global_step=step_offset,
-                metrics_callback=_filtered_step_callback,
-            ))
+        fl_single_pass = cfg.mode == "single-pass"
+        if fl_single_pass and profile and profile.pipeline_parallelism > 1:
+            logger.warning(
+                "single-pass mode is not supported with pipeline parallelism (PP=%d). "
+                "Falling back to two-pass (forward_backward_custom).",
+                profile.pipeline_parallelism,
+            )
+            fl_single_pass = False
 
-            # -- Final checkpoint -----------------------------------------------
+        def fwd_bwd_one(sub: list[PromptGroup]):
+            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
+            prox_fwd = policy.forward(data, "cross_entropy")
+            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+            if fl_single_pass:
+                rl_datums = build_builtin_loss_datums(
+                    data, adv, prox_lp, inf_lp, prompt_lens,
+                )
+                return policy.forward_backward(rl_datums, "ppo")
+            return policy.forward_backward_custom(
+                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
+            )
 
-            if global_step > step_offset:
-                try:
-                    cp_name = f"step-{global_step}"
-                    _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
-                    from training.utils.checkpoint_utils import save_checkpoint
-                    paths = save_checkpoint(policy, cp_name, cfg.log_path, {
-                        "step": global_step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    }, kind="both")
-                    
-                    if getattr(cfg, "output_model_id", None):
-                        from training.utils.checkpoint_utils import promote_checkpoint
-                        promote_checkpoint(
-                            rlor_mgr,
-                            policy_job_id,
-                            paths["sampler_path"],
-                            cfg.output_model_id,
-                        )
-                except Exception as e:
-                    logger.warning("Failed to save final checkpoint: %s", e)
-                logger.info("Training complete: %d steps", global_step)
+        def train_step(
+            step: int,
+            prompt_groups: list[PromptGroup],
+            loop_stats: dict | None = None,
+        ) -> tuple[int, dict]:
+            """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
+            t0 = time.time()
+            ref_forward_batch(prompt_groups)
+            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
 
-        finally:
-            if trajectory_log and not trajectory_log.closed:
-                trajectory_log.close()
-            wandb_finish()
+            t0 = time.time()
+            fwd_bwd_result = fwd_bwd_one(prompt_groups)
+            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0)
+
+            t0 = time.time()
+            optim_result = policy.optim_step(adam_params)
+            step += 1
+            logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
+
+            if hotload_cfg.hot_load_interval > 0 and step % hotload_cfg.hot_load_interval == 0:
+                logger.info("[step %d] hotload: saving + loading...", step)
+                t0 = time.time()
+                with timer("weight_sync"):
+                    weight_syncer.save_and_hotload(f"step-{step}")
+                logger.info("[step %d] hotload: done (%.1fs)", step, time.time() - t0)
+
+            if hotload_cfg.dcp_save_interval > 0 and step % hotload_cfg.dcp_save_interval == 0:
+                logger.info("[step %d] dcp_save...", step)
+                t0 = time.time()
+                with timer("dcp_save"):
+                    weight_syncer.save_dcp(f"step-{step}")
+                logger.info("[step %d] dcp_save: done (%.1fs)", step, time.time() - t0)
+
+            metrics = compute_step_metrics(
+                prompt_groups=prompt_groups,
+                fwd_bwd_results=[fwd_bwd_result],
+                optim_result=optim_result,
+                n_accum=1,
+                timing_metrics=flush_timing(),
+                loop_stats=loop_stats,
+                completions_per_prompt=completions_per_prompt,
+            )
+            metrics["train/step"] = step
+            if loop_stats:
+                metrics["rollout/sample_fail_count"] = loop_stats.get("sample_fails", 0)
+                metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
+
+            avg_reward = metrics.get("rollout/reward", 0.0)
+            avg_kl = metrics.get("train/mean_kl", 0.0)
+            mean_loss = metrics.get("train/mean_loss", 0.0)
+            adv_loss = metrics.get("train/mean_adv_loss", 0.0)
+            kl_pen = metrics.get("train/mean_kl_penalty", 0.0)
+            mask_r = metrics.get("train/mask_ratio", 0.0)
+            inf_kld = metrics.get("train/inference_kld", 0.0)
+            logger.info(
+                "Step %d | Reward: %.3f | KL: %.4f | Loss: %.4f "
+                "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
+                step, avg_reward, avg_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
+            )
+            reward_history.append(avg_reward)
+            log_metrics_json(step, reward=avg_reward, kl=avg_kl)
+            _wandb_step[0] = max(_wandb_step[0] + 1, step)
+            wandb_log(metrics, _wandb_step[0])
+            return step, metrics
+
+        train_fns = TrainStepFns(train_step=train_step)
+
+        def should_accept(pg: PromptGroup) -> bool:
+            return len(set(pg.rewards)) > 1
+
+        all_prompts = seed_contexts * cfg.epochs
+        logger.info(
+            "Training: %d seeds x %d epochs = %d prompt groups, "
+            "%d completions/prompt, %d groups/step",
+            len(seed_contexts), cfg.epochs, len(all_prompts),
+            completions_per_prompt, prompt_groups_per_step,
+        )
+
+        _wandb_step = [step_offset]
+
+        def _filtered_step_callback(loop_metrics: dict) -> None:
+            _wandb_step[0] += 1
+            wandb_log(loop_metrics, step=_wandb_step[0])
+
+        global_step = asyncio.run(run_rl_loop(
+            sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
+            train_fns=train_fns,
+            prompt_groups_per_step=prompt_groups_per_step,
+            max_concurrent=cfg.max_concurrent,
+            dynamic_filter_fn=should_accept,
+            global_step=step_offset,
+            metrics_callback=_filtered_step_callback,
+        ))
+
+        # -- Final checkpoint -----------------------------------------------
+
+        if global_step > step_offset:
+            try:
+                policy.save_state(f"step-{global_step}", timeout=hotload_cfg.dcp_timeout)
+            except Exception as e:
+                logger.warning("Failed to save final checkpoint: %s", e)
+            logger.info("Training complete: %d steps", global_step)
+
+    finally:
+        if trajectory_log and not trajectory_log.closed:
+            trajectory_log.close()
+        wandb_finish()
+        if not precreated_policy:
+            _cleanup_job(policy_job_id, "policy")
+        if not precreated_reference:
+            _cleanup_job(reference_job_id, "reference")
+        if deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
+            _cleanup_deployment(deploy_cfg.deployment_id)
+        elif deploy_cfg.deployment_id:
+            logger.info("Keeping deployment %s (KEEP_DEPLOYMENT=1)", deploy_cfg.deployment_id)
 
     return {"steps": global_step - step_offset, "rewards": reward_history}
 

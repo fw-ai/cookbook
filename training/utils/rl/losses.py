@@ -58,6 +58,77 @@ def combine_prompt_groups(
     return data, advantages, ref_logprobs, prompt_lens, inf_logprobs
 
 
+def build_builtin_loss_datums(
+    data: List[tinker.Datum],
+    advantages: List[float],
+    prox_logprobs: List[List[float]],
+    inf_logprobs: List[List[float]],
+    prompt_lens: List[int],
+    is_config: ISConfig | None = None,
+) -> List[tinker.Datum]:
+    """Build datums with per-token sampling_logprobs and advantages for server-side built-in loss.
+
+    Folds the TIS weight ``exp(prox - inf)`` into per-token advantages so the
+    server only sees ``sampling_logprobs`` (= prox_lp) and ``advantages``
+    (= advantage * tis_weight * completion_mask).
+    """
+    import torch
+    from training.utils.rl.importance_sampling import compute_tis_weight
+
+    if is_config is None:
+        is_config = ISConfig()
+    result: List[tinker.Datum] = []
+    adv_idx = 0
+
+    for i, datum in enumerate(data):
+        target_data = datum.loss_fn_inputs["target_tokens"]
+        target_tokens = list(target_data.data)
+        n_tokens = len(target_tokens)
+        response_start = max(0, prompt_lens[i] - 1)
+        prox_lp = list(prox_logprobs[i])
+        inf_lp = list(inf_logprobs[i]) if inf_logprobs else [0.0] * len(prox_lp)
+
+        resp_len = max(0, n_tokens - response_start)
+        if resp_len > 0 and inf_lp:
+            resp_prox = torch.tensor(prox_lp[response_start:response_start + resp_len], dtype=torch.float32)
+            resp_inf = torch.tensor(inf_lp[response_start:response_start + resp_len], dtype=torch.float32)
+            tis_weight, _ = compute_tis_weight(resp_prox, resp_inf, is_config)
+            tis_list = tis_weight.tolist()
+        else:
+            tis_list = [1.0] * resp_len
+
+        per_token_adv: list[float] = []
+        resp_idx = 0
+        for t in range(n_tokens):
+            if t < response_start:
+                per_token_adv.append(0.0)
+            else:
+                adv_val = advantages[adv_idx] if adv_idx < len(advantages) else 0.0
+                tis = tis_list[resp_idx] if resp_idx < len(tis_list) else 1.0
+                per_token_adv.append(float(adv_val * tis))
+                resp_idx += 1
+
+        slp_padded = prox_lp[:n_tokens] if len(prox_lp) >= n_tokens else prox_lp + [0.0] * (n_tokens - len(prox_lp))
+        new_datum = tinker.Datum(
+            model_input=datum.model_input,
+            loss_fn_inputs={
+                "target_tokens": tinker.TensorData(
+                    data=target_tokens, dtype="int64", shape=[n_tokens],
+                ),
+                "logprobs": tinker.TensorData(
+                    data=slp_padded, dtype="float32", shape=[n_tokens],
+                ),
+                "advantages": tinker.TensorData(
+                    data=per_token_adv, dtype="float32", shape=[n_tokens],
+                ),
+            },
+        )
+        result.append(new_datum)
+        adv_idx += 1
+
+    return result
+
+
 LossFnBuilder = Callable[..., Any]
 """Signature for the loss builder returned by ``build_loss_fn``."""
 
