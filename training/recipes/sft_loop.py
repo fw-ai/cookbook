@@ -111,7 +111,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, infra=cfg.infra)
+    validate_config(cfg.base_model, cfg.dataset)
     setup_wandb(
         cfg.wandb,
         {

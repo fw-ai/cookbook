@@ -65,7 +65,6 @@ class TestSFTE2E:
                 max_examples=10,
                 infra=InfraConfig(
                     region=e2e_region,
-                    skip_validations=True,
                     accelerator_type=e2e_training_accelerator,
                     custom_image_tag=custom_image_tag,
                 ),

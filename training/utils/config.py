@@ -24,14 +24,13 @@ StepCallback = Callable[[int, Dict[str, float]], None]
 class InfraConfig:
     """GPU, region, and image settings.
 
-    Two launch paths when ``training_shape_id`` is set:
+    Two launch paths:
 
-    * **Validated** (default): the backend owns all shape-derived fields
-      (accelerator, image tag, node count, etc.).  Setting
-      ``accelerator_type``, ``accelerator_count``, ``custom_image_tag``,
-      or ``node_count`` raises ``ValueError``.
-    * **Override** (``skip_validations=True``): the shape provides defaults
-      via ``apply_shape``, but explicit values here win.
+    * **Shape path** (``training_shape_id`` set): the backend owns all
+      shape-derived fields (accelerator, image tag, node count).
+      Setting infra overrides raises ``ValueError``.
+    * **Manual path** (``training_shape_id`` is ``None``): all fields
+      are sent as-is; the server skips shape validation.
     """
 
     training_shape_id: str | None = None
@@ -46,7 +45,6 @@ class InfraConfig:
     custom_image_tag: str | None = None
     accelerator_type: str | None = None
     accelerator_count: int | None = None
-    skip_validations: bool = False
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None

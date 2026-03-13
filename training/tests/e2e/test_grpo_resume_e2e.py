@@ -68,12 +68,10 @@ class TestGRPOResumeE2E:
         deployment_id = os.environ.get("GRPO_RESUME_DEPLOYMENT_ID")
         log_dir = tempfile.mkdtemp(prefix="grpo_resume_")
 
-        training_shape_id = os.environ.get("FIREWORKS_E2E_TRAINING_SHAPE", "ts-qwen3-30b-a3b-policy")
         shared_infra = InfraConfig(
             region=e2e_region,
             accelerator_type=e2e_training_accelerator,
             custom_image_tag=custom_image_tag,
-            training_shape_id=training_shape_id,
         )
 
         # Phase 1: train ~2 steps, save DCP

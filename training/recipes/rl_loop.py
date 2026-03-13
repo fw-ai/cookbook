@@ -91,8 +91,8 @@ class Config:
     max_seq_len: int | None = None
     """Max sequence length for sampling and training.  When using training
     shapes, this is auto-populated from the shape's
-    ``max_supported_context_length``.  Can be set manually when not using
-    shapes, or as an override with ``skip_validations=True``."""
+    ``max_supported_context_length``.  Must be set manually on the
+    manual path (no training shape)."""
     lora_rank: int = 0
 
     prompt_groups_per_step: int = 1
@@ -228,7 +228,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
+    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment)
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:

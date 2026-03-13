@@ -21,29 +21,6 @@ from training.utils.config import InfraConfig, DeployConfig
 logger = logging.getLogger(__name__)
 
 
-def _reject_shape_overrides(infra: InfraConfig) -> None:
-    """Raise ``ValueError`` if infra has shape-derived overrides set.
-
-    On the validated-shape path the backend populates accelerator,
-    image tag, node count, etc. from the shape.  User-side overrides
-    are only honoured on the ``skip_validations`` path.
-    """
-    overrides = []
-    if infra.accelerator_type:
-        overrides.append("accelerator_type")
-    if infra.accelerator_count:
-        overrides.append("accelerator_count")
-    if infra.custom_image_tag:
-        overrides.append("custom_image_tag")
-    if infra.node_count is not None:
-        overrides.append("node_count")
-    if overrides:
-        raise ValueError(
-            f"InfraConfig.{', '.join(overrides)} cannot be set on a validated "
-            f"training-shape launch. Use skip_validations=True to override."
-        )
-
-
 def create_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,
@@ -63,17 +40,14 @@ def create_trainer_job(
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
-    Two shape launch paths:
+    Two launch paths:
 
-    * **Validated** (profile + ``skip_validations=False``): sends only
-      ``training_shape_ref`` plus algorithm fields.  The backend
-      populates accelerator, image tag, node count, sharding, etc.
-      from the validated training shape.  ``InfraConfig`` overrides
-      for shape-derived fields are rejected.
-    * **Override** (profile + ``skip_validations=True``): resolves
-      shape defaults via ``apply_shape``, lets user overrides win,
-      and sends everything.
-    * **Manual** (no profile): sends all ``InfraConfig`` fields as-is.
+    * **Shape path** (profile provided): sends ``training_shape_ref``
+      plus algorithm fields only.  The backend populates accelerator,
+      image tag, node count, sharding, etc. from the validated
+      training shape.
+    * **Manual path** (no profile): sends all ``InfraConfig`` fields
+      as-is; the server skips shape validation.
 
     When *base_url_override* is provided alongside *job_id*, skip health
     polling and return an endpoint pointing at that URL directly.
@@ -91,10 +65,7 @@ def create_trainer_job(
             )
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
-    validated_shape = profile is not None and not infra.skip_validations
-
-    if validated_shape:
-        _reject_shape_overrides(infra)
+    if profile is not None:
         config = TrainerJobConfig(
             base_model=base_model,
             lora_rank=lora_rank,
@@ -123,12 +94,8 @@ def create_trainer_job(
             extra_args=extra_args or infra.extra_args,
             accelerator_type=infra.accelerator_type,
             accelerator_count=infra.accelerator_count,
-            skip_validations=infra.skip_validations,
             forward_only=forward_only,
         )
-        if profile is not None:
-            config.apply_shape(profile)
-            config.training_shape_ref = profile.training_shape_version
 
     logger.info(
         "Creating trainer job '%s' (forward_only=%s)...",

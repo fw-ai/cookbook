@@ -27,11 +27,10 @@ def test_sft_smoke(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
-    smoke_training_shape,
-    smoke_custom_image_tag,
+    smoke_infra,
 ):
     from training.recipes.sft_loop import Config, main
-    from training.utils import InfraConfig, WandBConfig
+    from training.utils import WandBConfig
 
     rlor_mgr, _deploy_mgr = smoke_sdk_managers
 
@@ -50,11 +49,7 @@ def test_sft_smoke(
             batch_size=2,
             grad_accum=1,
             max_examples=4,
-            infra=InfraConfig(
-                training_shape_id=smoke_training_shape,
-                skip_validations=True,
-                custom_image_tag=smoke_custom_image_tag,
-            ),
+            infra=smoke_infra,
             wandb=WandBConfig(),
         )
 

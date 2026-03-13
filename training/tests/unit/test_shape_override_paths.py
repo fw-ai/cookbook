@@ -1,13 +1,12 @@
-"""Tests for the three training-shape launch paths.
+"""Tests for the two training-shape launch paths.
 
 Exercises the cookbook ``create_trainer_job`` through to
 ``TrainerJobConfig`` construction for each path, verifying that the
 correct config fields are set.
 
-Three paths tested:
-  1. Validated shape (training_shape_id, no skip_validations)
-  2. Override shape  (training_shape_id + skip_validations=True)
-  3. Manual          (no training_shape_id)
+Two paths tested:
+  1. Shape path  (profile provided, shape owns infra)
+  2. Manual path (no profile, all fields from InfraConfig)
 """
 
 from __future__ import annotations
@@ -53,11 +52,11 @@ class _CapturingMgr:
 
 
 # -----------------------------------------------------------------------
-# Path 1: Validated shape (training_shape_id, no skip_validations)
+# Path 1: Shape path (profile provided, shape owns infra)
 # -----------------------------------------------------------------------
 
 
-class TestValidatedShapePath:
+class TestShapePath:
     def test_config_has_minimal_fields(self):
         mgr = _CapturingMgr()
         infra_module.create_trainer_job(
@@ -73,49 +72,12 @@ class TestValidatedShapePath:
         assert c.base_model == BASE_MODEL
         assert c.gradient_accumulation_steps == 2
         assert c.region == "US_VIRGINIA_1"
-        assert c.skip_validations is False
 
         assert c.accelerator_type is None
         assert c.accelerator_count is None
         assert c.custom_image_tag is None
         assert c.max_context_length == PROFILE.max_supported_context_length
         assert c.node_count is None
-
-    def test_rejects_accelerator_override(self):
-        with pytest.raises(ValueError, match="accelerator_type"):
-            infra_module.create_trainer_job(
-                _CapturingMgr(),
-                base_model=BASE_MODEL,
-                infra=InfraConfig(accelerator_type="NVIDIA_H100_80GB"),
-                profile=PROFILE,
-            )
-
-    def test_rejects_accelerator_count_override(self):
-        with pytest.raises(ValueError, match="accelerator_count"):
-            infra_module.create_trainer_job(
-                _CapturingMgr(),
-                base_model=BASE_MODEL,
-                infra=InfraConfig(accelerator_count=8),
-                profile=PROFILE,
-            )
-
-    def test_rejects_custom_image_tag_override(self):
-        with pytest.raises(ValueError, match="custom_image_tag"):
-            infra_module.create_trainer_job(
-                _CapturingMgr(),
-                base_model=BASE_MODEL,
-                infra=InfraConfig(custom_image_tag="my-tag"),
-                profile=PROFILE,
-            )
-
-    def test_rejects_node_count_override(self):
-        with pytest.raises(ValueError, match="node_count"):
-            infra_module.create_trainer_job(
-                _CapturingMgr(),
-                base_model=BASE_MODEL,
-                infra=InfraConfig(node_count=4),
-                profile=PROFILE,
-            )
 
     def test_extra_args_passed_through(self):
         mgr = _CapturingMgr()
@@ -129,55 +91,7 @@ class TestValidatedShapePath:
 
 
 # -----------------------------------------------------------------------
-# Path 2: Override shape (training_shape_id + skip_validations=True)
-# -----------------------------------------------------------------------
-
-
-class TestOverrideShapePath:
-    def test_user_overrides_win(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr,
-            base_model=BASE_MODEL,
-            infra=InfraConfig(
-                region="US_OHIO_1",
-                accelerator_type="NVIDIA_A100_80GB",
-                accelerator_count=4,
-                custom_image_tag="custom:1",
-                skip_validations=True,
-            ),
-            profile=PROFILE,
-            max_seq_len=2048,
-            grad_accum=8,
-        )
-        c = mgr.captured
-
-        assert c.training_shape_ref == PROFILE.training_shape_version
-        assert c.skip_validations is True
-        assert c.accelerator_type == "NVIDIA_A100_80GB"
-        assert c.accelerator_count == 4
-        assert c.custom_image_tag == "custom:1"
-        assert c.max_context_length == 2048
-        assert c.gradient_accumulation_steps == 8
-
-    def test_shape_fills_unset_fields(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr,
-            base_model=BASE_MODEL,
-            infra=InfraConfig(skip_validations=True),
-            profile=PROFILE,
-            max_seq_len=2048,
-        )
-        c = mgr.captured
-
-        assert c.accelerator_type == "NVIDIA_H100_80GB"
-        assert c.accelerator_count == 1
-        assert c.custom_image_tag == "0.35.0"
-
-
-# -----------------------------------------------------------------------
-# Path 3: Manual (no training_shape_id / no profile)
+# Path 2: Manual path (no profile, all fields from InfraConfig)
 # -----------------------------------------------------------------------
 
 
@@ -216,7 +130,6 @@ class TestManualPath:
         c = mgr.captured
 
         assert c.training_shape_ref is None
-        assert c.skip_validations is False
         assert c.accelerator_type is None
         assert c.accelerator_count is None
         assert c.custom_image_tag is None

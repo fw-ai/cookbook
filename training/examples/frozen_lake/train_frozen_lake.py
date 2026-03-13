@@ -308,7 +308,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     infra = InfraConfig(
         training_shape_id=cfg.training_shape or None,
         region=cfg.region,
-        skip_validations=True,
     )
     deploy_cfg = DeployConfig(
         deployment_id=cfg.deployment_id,

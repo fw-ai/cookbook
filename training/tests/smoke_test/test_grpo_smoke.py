@@ -52,11 +52,10 @@ def test_grpo_smoke(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
-    smoke_training_shape,
-    smoke_custom_image_tag,
+    smoke_infra,
 ):
     """2-step GRPO on Qwen3-4B: train, hotload, train again, cleanup."""
-    from training.utils import InfraConfig, DeployConfig, HotloadConfig, WandBConfig
+    from training.utils import DeployConfig, HotloadConfig, WandBConfig
     from training.recipes.rl_loop import Config, main
     import training.recipes.rl_loop as rl_mod
 
@@ -81,11 +80,7 @@ def test_grpo_smoke(
             max_completion_tokens=32,
             max_rows=2,
             epochs=1,
-            infra=InfraConfig(
-                training_shape_id=smoke_training_shape,
-                skip_validations=True,
-                custom_image_tag=smoke_custom_image_tag,
-            ),
+            infra=smoke_infra,
             deployment=DeployConfig(
                 tokenizer_model=smoke_tokenizer_model,
             ),

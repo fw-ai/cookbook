@@ -1,11 +1,15 @@
-"""Pre-flight validation for cookbook configs."""
+"""Pre-flight validation for cookbook configs.
+
+Application-level checks only (credentials, base_model format, dataset).
+Infra-field validation lives in the SDK's ``TrainerJobConfig.validate()``.
+"""
 
 from __future__ import annotations
 
 import logging
 
 from fireworks.training.sdk.errors import format_sdk_error, DOCS_SDK
-from training.utils.config import InfraConfig, DeployConfig, HotloadConfig
+from training.utils.config import DeployConfig, HotloadConfig
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +19,6 @@ def validate_config(
     dataset: str,
     hotload: HotloadConfig | None = None,
     deploy: DeployConfig | None = None,
-    infra: InfraConfig | None = None,
 ) -> None:
     """Pre-flight validation. Catches misconfiguration before provisioning GPUs."""
     errors: list[str] = []
@@ -44,15 +47,6 @@ def validate_config(
                 "Missing dataset",
                 "No dataset path or URL specified.",
                 "Set dataset to a local path or URL to a JSONL file.",
-            )
-        )
-
-    if infra and infra.node_count is not None and infra.node_count < 1:
-        errors.append(
-            format_sdk_error(
-                "Invalid node_count",
-                f"node_count={infra.node_count} must be >= 1.",
-                "Set InfraConfig(node_count=1) or higher.",
             )
         )
 
@@ -105,5 +99,4 @@ def validate_preflight(
         deploy=DeployConfig(
             deployment_id=getattr(args, "hot_load_deployment_id", None),
         ),
-        infra=InfraConfig(),
     )

@@ -35,11 +35,10 @@ def test_dpo_smoke(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
-    smoke_training_shape,
-    smoke_custom_image_tag,
+    smoke_infra,
 ):
     from training.recipes.dpo_loop import Config, main
-    from training.utils import DeployConfig, HotloadConfig, InfraConfig, WandBConfig
+    from training.utils import DeployConfig, HotloadConfig, WandBConfig
 
     rlor_mgr, deploy_mgr = smoke_sdk_managers
 
@@ -59,11 +58,7 @@ def test_dpo_smoke(
             batch_size=1,
             grad_accum=1,
             max_pairs=4,
-            infra=InfraConfig(
-                training_shape_id=smoke_training_shape,
-                skip_validations=True,
-                custom_image_tag=smoke_custom_image_tag,
-            ),
+            infra=smoke_infra,
             deployment=DeployConfig(),
             hotload=HotloadConfig(hot_load_interval=0, dcp_save_interval=0),
             wandb=WandBConfig(),

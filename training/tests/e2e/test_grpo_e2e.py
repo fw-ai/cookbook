@@ -70,7 +70,6 @@ class TestGRPOE2E:
             is_correction=ISConfig(tis_cap=10.0),
             infra=InfraConfig(
                 region=e2e_region,
-                skip_validations=True,
                 accelerator_type=e2e_training_accelerator,
                 custom_image_tag=custom_image_tag,
             ),
