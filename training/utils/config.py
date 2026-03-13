@@ -39,7 +39,8 @@ class InfraConfig:
 
     ref_training_shape_id: str | None = None
     """Training shape ID for the reference (forward-only) trainer.
-    Falls back to ``training_shape_id`` if not set."""
+    Required when ``training_shape_id`` is set and ``kl_beta != 0``.
+    There is no fallback to ``training_shape_id``."""
 
     region: str | None = None
     custom_image_tag: str | None = None

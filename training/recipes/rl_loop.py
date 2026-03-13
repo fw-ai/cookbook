@@ -287,10 +287,16 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    ref_profile = profile
+    ref_profile = None
     if use_reference and cfg.infra.ref_training_shape_id:
         logger.info("Using separate ref training shape: %s", cfg.infra.ref_training_shape_id)
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+    elif use_reference and profile is not None and not cfg.infra.ref_training_shape_id:
+        raise ValueError(
+            "ref_training_shape_id is required when using a training shape with "
+            "kl_beta != 0. Either set InfraConfig.ref_training_shape_id for the "
+            "reference trainer, or set kl_beta=0 to skip the reference model."
+        )
 
     import time as _time
     _infra_start = _time.time()
