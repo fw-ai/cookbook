@@ -856,13 +856,27 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
             or completion_params.get("visual_prompt_template")
             or DEFAULT_VISUAL_PROMPT_TEMPLATE
         )
+        _shared_tokenizer = None
+        _shared_tokenizer_lock = asyncio.Lock()
+
+        async def _load_shared_tokenizer():
+            nonlocal _shared_tokenizer
+            if _shared_tokenizer is not None:
+                return _shared_tokenizer
+            async with _shared_tokenizer_lock:
+                if _shared_tokenizer is None:
+                    # Load once per rollout invocation so per-row clients share
+                    # the same tokenizer instead of re-fetching from HF.
+                    _shared_tokenizer = _get_hf_tokenizer(str(tokenizer_name_or_path))
+            return _shared_tokenizer
 
         async def process_row(row: EvaluationRow) -> EvaluationRow:
             start_time = time.perf_counter()
+            shared_tokenizer = await _load_shared_tokenizer()
 
             tool_call_parser = build_frozen_lake_tool_call_parser(
                 allow_plaintext_action_fallback=allow_plaintext_action_fallback,
-                tokenizer_getter=lambda: _get_hf_tokenizer(str(tokenizer_name_or_path)),
+                tokenizer_getter=lambda: shared_tokenizer,
                 model_id=model_id,
             )
             text_client = None
@@ -881,6 +895,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                     tool_call_parser=tool_call_parser,
                     default_tools=FROZEN_LAKE_TOOLS,
                 )
+                image_client._tokenizer = shared_tokenizer
             else:
                 text_client = FireworksV1CompletionsClient(
                     model_id=model_id,
@@ -895,6 +910,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                     tool_call_parser=tool_call_parser,
                     default_tools=FROZEN_LAKE_TOOLS,
                 )
+                text_client._tokenizer = shared_tokenizer
             usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             all_prompt_ids: List[int] = []
             all_completion_ids: List[int] = []
