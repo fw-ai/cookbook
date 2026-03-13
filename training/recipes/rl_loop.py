@@ -560,10 +560,47 @@ def main(
 
             t0 = _time.time()
             if single_pass:
+                if cfg.policy_loss == "cispo":
+                    kernel_loss = "cispo"
+                    kernel_config = {
+                        "clip_low_threshold": 1.0 - cfg.cispo.eps_low,
+                        "clip_high_threshold": 1.0 + cfg.cispo.eps_high,
+                        "ratio_log_cap": cfg.cispo.ratio_log_cap,
+                    }
+                elif cfg.policy_loss == "gspo":
+                    kernel_loss = "gspo"
+                    clip_low = cfg.gspo.clip_ratio_low or cfg.gspo.clip_ratio
+                    clip_high = cfg.gspo.clip_ratio_high or cfg.gspo.clip_ratio
+                    kernel_config = {
+                        "clip_low_threshold": 1.0 - clip_low,
+                        "clip_high_threshold": 1.0 + clip_high,
+                        "seq_ratio_log_cap": cfg.gspo.seq_ratio_log_cap,
+                    }
+                elif cfg.policy_loss == "dapo":
+                    kernel_config = {
+                        "clip_low_threshold": 1.0 - cfg.dapo.eps_clip,
+                        "clip_high_threshold": 1.0 + cfg.dapo.eps_clip_high,
+                        "ratio_log_cap": cfg.dapo.ratio_log_cap,
+                    }
+                    if cfg.dapo.eps_clip_c is not None:
+                        kernel_loss = "dapo"
+                        kernel_config["eps_clip_c"] = cfg.dapo.eps_clip_c
+                    else:
+                        kernel_loss = "ppo"
+                else:  # grpo
+                    kernel_loss = "ppo"
+                    eps_high = cfg.is_correction.eps_clip_high or cfg.is_correction.eps_clip
+                    kernel_config = {
+                        "clip_low_threshold": 1.0 - cfg.is_correction.eps_clip,
+                        "clip_high_threshold": 1.0 + eps_high,
+                    }
+
                 rl_datums = build_builtin_loss_datums(
                     data, adv, prox_lp, inf_lp, prompt_lens, cfg.is_correction,
                 )
-                fwd_bwd_result = policy.forward_backward(rl_datums, "ppo")
+                fwd_bwd_result = policy.forward_backward(
+                    rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                )
             else:
                 # TODO: remove once PP kernel supports built-in losses
                 fwd_bwd_result = policy.forward_backward_custom(

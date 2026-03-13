@@ -733,10 +733,39 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
             if fl_single_pass:
+                if cfg.policy_loss == "cispo":
+                    kernel_loss = "cispo"
+                    kernel_config: dict = {
+                        "clip_low_threshold": 0.8,
+                        "clip_high_threshold": 1.28,
+                        "ratio_log_cap": 20.0,
+                    }
+                elif cfg.policy_loss == "gspo":
+                    kernel_loss = "gspo"
+                    kernel_config = {
+                        "clip_low_threshold": 0.8,
+                        "clip_high_threshold": 1.2,
+                        "seq_ratio_log_cap": 10.0,
+                    }
+                elif cfg.policy_loss == "dapo":
+                    kernel_loss = "ppo"
+                    kernel_config = {
+                        "clip_low_threshold": 0.8,
+                        "clip_high_threshold": 1.28,
+                        "ratio_log_cap": 20.0,
+                    }
+                else:  # grpo
+                    kernel_loss = "ppo"
+                    kernel_config = {
+                        "clip_low_threshold": 0.8,
+                        "clip_high_threshold": 1.2,
+                    }
                 rl_datums = build_builtin_loss_datums(
                     data, adv, prox_lp, inf_lp, prompt_lens,
                 )
-                return policy.forward_backward(rl_datums, "ppo")
+                return policy.forward_backward(
+                    rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                )
             # TODO: remove once PP kernel supports built-in losses
             return policy.forward_backward_custom(
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)

@@ -1,16 +1,13 @@
-"""CISPO (Clipped Importance Sampling Policy Optimization) loss.
+"""DRO (Distributionally Robust Optimization) policy loss.
 
-Clips the importance-sampling ratio ``pi/pi_prox`` to ``[1-eps_low,
-1+eps_high]`` and uses the clipped ratio as a *detached* weight on the
-log-probability.  This matches the Tinker kernel formula::
+Matches the Tinker kernel formula::
 
-    clipped_ratio = clamp(ratio, 1 - eps_low, 1 + eps_high)
-    per_token_loss = -(clipped_ratio.detach() * logprob * advantage) * tis_weight
+    loss = -(lp * adv - 0.5 * beta * (lp - slp)^2).sum()
 
-Gradient flows through ``logprob`` (not through ``ratio``), and the
-clipped ratio caps the effective learning signal for tokens whose
-policy has already moved far from the proximal checkpoint.  Behavioral
-IS weight corrects for the train-inference gap.
+The quadratic penalty ``0.5 * beta * (lp - slp)^2`` constrains the policy
+at *all* positions (including where ``adv=0``) to stay close to the
+proximal checkpoint.  This differs from PPO-style clipping by providing a
+smooth, continuous penalty rather than a hard clip boundary.
 """
 
 from __future__ import annotations
@@ -23,37 +20,33 @@ import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens
 from training.utils.rl.importance_sampling import (
-    SAFETY_CLAMP,
     ISConfig,
     compute_tis_weight,
 )
 
 
 @dataclass
-class CISPOConfig:
-    """CISPO clipping thresholds.
+class DROConfig:
+    """DRO loss configuration.
 
-    The ratio ``pi/pi_prox`` is clamped to ``[1 - eps_low, 1 + eps_high]``.
-    ``ratio_log_cap`` clamps log-ratio before exp() for numerical stability.
+    ``beta`` controls the strength of the quadratic proximity penalty.
     """
 
-    eps_low: float = 0.2
-    eps_high: float = 0.28
-    ratio_log_cap: float = 20.0
+    beta: float = 0.05
 
 
-def make_cispo_loss_fn(
+def make_dro_loss_fn(
     advantages: List[float],
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
     prox_logprobs: List[List[float]],
-    cispo_config: CISPOConfig | None = None,
+    dro_config: DROConfig | None = None,
     is_config: ISConfig | None = None,
 ) -> ...:
-    """Build a CISPO loss closure with ratio clipping and behavioral IS weight."""
-    if cispo_config is None:
-        cispo_config = CISPOConfig()
+    """Build a DRO loss closure with quadratic proximity penalty."""
+    if dro_config is None:
+        dro_config = DROConfig()
     if is_config is None:
         is_config = ISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
@@ -68,9 +61,7 @@ def make_cispo_loss_fn(
         total_inf_kld = 0.0
         inf_num_samples = 0
         num_tokens = 0
-        clip_frac_sum = 0.0
-        ppo_ratio_mean_sum = 0.0
-        clip_frac_count = 0
+        total_quad_penalty = 0.0
         tis_metrics_agg: Dict[str, float] = {}
 
         for i, pi_logprobs in enumerate(logprobs_list):
@@ -91,17 +82,6 @@ def make_cispo_loss_fn(
             )
             pi_detached = resp_pi.detach()
 
-            if not inf_lp:
-                raise ValueError(
-                    f"CISPO requires inference logprobs for sample {i} but got empty list. "
-                    f"Ensure logprobs=True is set when using policy_loss='cispo'."
-                )
-            if len(inf_lp) < response_start + resp_len:
-                raise ValueError(
-                    f"CISPO requires at least {response_start + resp_len} inference logprobs "
-                    f"for sample {i}, got {len(inf_lp)}."
-                )
-
             resp_inf = torch.tensor(
                 inf_lp[response_start:response_start + resp_len],
                 dtype=resp_pi.dtype, device=resp_pi.device,
@@ -116,32 +96,24 @@ def make_cispo_loss_fn(
             total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
             inf_num_samples += 1
 
-            log_ratio = torch.clamp(resp_pi - resp_prox, min=-cispo_config.ratio_log_cap, max=cispo_config.ratio_log_cap)
-            ratio = torch.exp(log_ratio)
-
-            clip_lo = 1.0 - cispo_config.eps_low
-            clip_hi = 1.0 + cispo_config.eps_high
-            clipped_ratio = torch.clamp(ratio, clip_lo, clip_hi)
-            clip_frac_sum += (clipped_ratio.detach() != ratio.detach()).float().mean().item()
-            ppo_ratio_mean_sum += ratio.detach().mean().item()
-            clip_frac_count += 1
-
             tis_weight, bm = compute_tis_weight(resp_prox, resp_inf, is_config)
             for k, v in bm.items():
                 tis_metrics_agg[k] = tis_metrics_agg.get(k, 0.0) + v
 
             adv_t = torch.as_tensor(adv, dtype=resp_pi.dtype, device=resp_pi.device)
-            per_token_loss = -(clipped_ratio.detach() * resp_pi * adv_t) * tis_weight
+            quad = (resp_pi - resp_prox) ** 2
+            per_token = resp_pi * adv_t - 0.5 * dro_config.beta * quad
+            per_token_loss = -per_token * tis_weight
 
             total_loss = total_loss + per_token_loss.sum()
             total_kl += (pi_detached - resp_ref).sum().item()
+            total_quad_penalty += (0.5 * dro_config.beta * quad).detach().sum().item()
             num_tokens += resp_len
 
         n_samples = max(len(logprobs_list), 1)
         metrics: Dict[str, float] = {
             "mean_kl": total_kl / num_tokens if num_tokens > 0 else 0.0,
-            "cispo_clip_frac": clip_frac_sum / clip_frac_count if clip_frac_count > 0 else 0.0,
-            "ppo_ratio_mean": ppo_ratio_mean_sum / n_samples,
+            "dro_quad_penalty": total_quad_penalty / num_tokens if num_tokens > 0 else 0.0,
         }
         if inf_num_samples > 0:
             metrics["inference_diff"] = total_inf_diff / inf_num_samples
