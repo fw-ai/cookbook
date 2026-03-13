@@ -197,7 +197,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
-    assert events["wandb_finished"] == 1
+    assert events["wandb_finished"] == 0
 
 
 def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
@@ -484,5 +484,5 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     assert len(advantages) == 2
     assert advantages[0] > 0
     assert advantages[1] < 0
-    assert events["deleted_jobs"] == ["policy-job", "reference-job"]
+    assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]

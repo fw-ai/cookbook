@@ -382,7 +382,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=None,
-        infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
+        infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
         deployment=module.DeployConfig(deployment_id="dep-123"),
         hotload=module.HotloadConfig(hot_load_interval=1),
     )
@@ -405,11 +405,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         "dpo-reference",
     ]
     assert events["create_trainer_job"][0]["hot_load_deployment_id"] == "dep-123"
-    assert events["create_trainer_job"][1]["extra_args"] == [
-        "--foo",
-        "--forward-only",
-        "--no-compile",
-    ]
+    assert events["create_trainer_job"][1]["forward_only"] is True
     assert events["cache_args"]["kwargs"] == {
         "concurrency": cfg.ref_cache_concurrency,
         "batch_size": cfg.ref_cache_batch_size,
@@ -417,7 +413,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     assert events["train_loop"]["valid_indices"] == [0]
     assert events["train_loop"]["policy_job_id"] == "policy-job"
     assert events["weight_syncer_saves"] == ["final-step-2"]
-    assert events["deleted_jobs"] == ["policy-job", "reference-job"]
+    assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["wandb_finished"] == 1
 
 
