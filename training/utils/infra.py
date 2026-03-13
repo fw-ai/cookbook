@@ -21,6 +21,60 @@ from training.utils.config import InfraConfig, DeployConfig
 logger = logging.getLogger(__name__)
 
 
+class ResourceCleanup:
+    """Register resource IDs for automatic cleanup on scope exit.
+
+    Wrap recipe logic in ``with ResourceCleanup(...) as cleanup:`` and
+    call ``cleanup.trainer(job_id)`` / ``cleanup.deployment(dep_id)``
+    after creating each resource.  On scope exit (including exceptions),
+    registered resources are deleted in reverse creation order.
+
+    Pre-created resources that should survive simply aren't registered.
+    """
+
+    def __init__(
+        self,
+        rlor_mgr: TrainerJobManager,
+        deploy_mgr: DeploymentManager | None = None,
+    ):
+        self._rlor_mgr = rlor_mgr
+        self._deploy_mgr = deploy_mgr
+        self._jobs: list[str] = []
+        self._deployments: list[tuple[str, str]] = []
+
+    def trainer(self, job_id: str) -> None:
+        """Register a trainer job for deletion on exit."""
+        self._jobs.append(job_id)
+
+    def deployment(self, dep_id: str, action: str = "delete") -> None:
+        """Register a deployment for cleanup on exit.
+
+        *action*: ``"delete"`` (default) or ``"scale_to_zero"``.
+        """
+        self._deployments.append((dep_id, action))
+
+    def __enter__(self) -> ResourceCleanup:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        for jid in reversed(self._jobs):
+            try:
+                logger.info("Cleanup: deleting trainer job %s", jid)
+                self._rlor_mgr.delete(jid)
+            except Exception as e:
+                logger.warning("Cleanup: failed to delete trainer %s: %s", jid, e)
+        for did, action in reversed(self._deployments):
+            try:
+                if action == "scale_to_zero":
+                    logger.info("Cleanup: scaling deployment %s to zero", did)
+                    self._deploy_mgr.scale_to_zero(did)
+                else:
+                    logger.info("Cleanup: deleting deployment %s", did)
+                    self._deploy_mgr.delete(did)
+            except Exception as e:
+                logger.warning("Cleanup: failed to clean deployment %s: %s", did, e)
+
+
 def create_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,

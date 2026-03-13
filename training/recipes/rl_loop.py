@@ -32,6 +32,7 @@ from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    ResourceCleanup,
     WandBConfig,
     DeployConfig,
     HotloadConfig,
@@ -294,11 +295,10 @@ def main(
     import time as _time
     _infra_start = _time.time()
 
-    policy_job_id: str | None = None
-    reference_job_id: str | None = None
-
-    try:
+    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+        if cleanup_on_exit:
+            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         logger.info(
             "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
@@ -329,8 +329,12 @@ def main(
                 )
                 policy_ep = pol_fut.result()
                 policy_job_id = policy_ep.job_id
+                if not cfg.policy_job_id:
+                    cleanup.trainer(policy_job_id)
                 reference_ep = ref_fut.result()
                 reference_job_id = reference_ep.job_id
+                if not cfg.reference_job_id:
+                    cleanup.trainer(reference_job_id)
         else:
             policy_ep = create_trainer_job(
                 rlor_mgr,
@@ -343,6 +347,8 @@ def main(
                 base_url_override=cfg.policy_base_url,
             )
             policy_job_id = policy_ep.job_id
+            if not cfg.policy_job_id:
+                cleanup.trainer(policy_job_id)
             reference_ep = None
 
         policy = ReconnectableClient(
@@ -641,32 +647,12 @@ def main(
                 logger.warning("Failed to save final checkpoint: %s", e)
 
             logger.info("Training complete: %d steps", global_step)
+            wandb_finish()
             return {
                 "steps": global_step,
                 "policy_job_id": policy_job_id,
                 "reference_job_id": reference_job_id,
             }
-    finally:
-        wandb_finish()
-        if cleanup_on_exit:
-            if policy_job_id and not cfg.policy_job_id:
-                try:
-                    logger.info("Cleanup: deleting policy trainer job %s", policy_job_id)
-                    rlor_mgr.delete(policy_job_id)
-                except Exception as e:
-                    logger.warning("Cleanup: failed to delete policy job %s: %s", policy_job_id, e)
-            if reference_job_id and not cfg.reference_job_id:
-                try:
-                    logger.info("Cleanup: deleting reference trainer job %s", reference_job_id)
-                    rlor_mgr.delete(reference_job_id)
-                except Exception as e:
-                    logger.warning("Cleanup: failed to delete reference job %s: %s", reference_job_id, e)
-            if cfg.deployment.deployment_id:
-                try:
-                    logger.info("Cleanup: scaling deployment to zero %s", cfg.deployment.deployment_id)
-                    deploy_mgr.scale_to_zero(cfg.deployment.deployment_id)
-                except Exception as e:
-                    logger.warning("Cleanup: failed to scale deployment %s: %s", cfg.deployment.deployment_id, e)
 
 
 if __name__ == "__main__":

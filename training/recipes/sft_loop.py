@@ -34,6 +34,7 @@ from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    ResourceCleanup,
     WandBConfig,
     ReconnectableClient,
     wandb_log,
@@ -150,21 +151,22 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    endpoint = create_trainer_job(
-        rlor_mgr,
-        base_model=cfg.base_model,
-        infra=cfg.infra,
-        profile=profile,
-        lora_rank=cfg.lora_rank,
-        max_seq_len=cfg.max_seq_len,
-        learning_rate=cfg.learning_rate,
-        display_name="sft-trainer",
-    )
-    job_id = endpoint.job_id
-    client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
+    with ResourceCleanup(rlor_mgr) as cleanup:
+        endpoint = create_trainer_job(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            profile=profile,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            display_name="sft-trainer",
+        )
+        job_id = endpoint.job_id
+        cleanup.trainer(job_id)
+        client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
 
-    # -- Prepare data ------------------------------------------------------
-    try:
+        # -- Prepare data ------------------------------------------------------
         tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
         renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
         train_on_what = parse_train_on_what(cfg.train_on_what)
@@ -315,14 +317,8 @@ def main(
             }, kind="both")
 
         logger.info("Training complete: %d optimizer steps", step)
-        return {"steps": step, "job_id": job_id}
-    finally:
         wandb_finish()
-        try:
-            logger.info("Cleanup: deleting trainer job %s", job_id)
-            rlor_mgr.delete(job_id)
-        except Exception as e:
-            logger.warning("Cleanup: failed to delete trainer job %s: %s", job_id, e)
+        return {"steps": step, "job_id": job_id}
 
 
 if __name__ == "__main__":

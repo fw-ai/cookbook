@@ -37,6 +37,7 @@ from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    ResourceCleanup,
     WandBConfig,
     DeployConfig,
     HotloadConfig,
@@ -443,10 +444,7 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    policy_job_id: str | None = None
-    reference_job_id: str | None = None
-
-    try:
+    with ResourceCleanup(rlor_mgr) as cleanup:
         with ThreadPoolExecutor(max_workers=2) as pool:
             pol_fut = pool.submit(
                 create_trainer_job,
@@ -477,6 +475,8 @@ def main(
 
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id
+        cleanup.trainer(policy_job_id)
+        cleanup.trainer(reference_job_id)
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
         reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
@@ -547,21 +547,8 @@ def main(
                 weight_syncer.save_and_hotload(f"final-step-{step}")
 
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
-        return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
-    finally:
         wandb_finish()
-        if policy_job_id:
-            try:
-                logger.info("Cleanup: deleting policy trainer job %s", policy_job_id)
-                rlor_mgr.delete(policy_job_id)
-            except Exception as e:
-                logger.warning("Cleanup: failed to delete policy job %s: %s", policy_job_id, e)
-        if reference_job_id:
-            try:
-                logger.info("Cleanup: deleting reference trainer job %s", reference_job_id)
-                rlor_mgr.delete(reference_job_id)
-            except Exception as e:
-                logger.warning("Cleanup: failed to delete reference job %s: %s", reference_job_id, e)
+        return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
 
 
 if __name__ == "__main__":

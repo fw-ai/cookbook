@@ -48,6 +48,7 @@ from fireworks.training.sdk import TrainerJobManager
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    ResourceCleanup,
     WandBConfig,
     ReconnectableClient,
     wandb_log,
@@ -163,100 +164,101 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    endpoint = create_trainer_job(
-        rlor_mgr,
-        base_model=cfg.base_model,
-        infra=cfg.infra,
-        profile=profile,
-        lora_rank=cfg.lora_rank,
-        max_seq_len=cfg.max_seq_len,
-        learning_rate=cfg.learning_rate,
-        display_name="orpo-trainer",
-        job_id=cfg.job_id,
-    )
-    client = ReconnectableClient(
-        rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank
-    )
-
-    job_id = endpoint.job_id
-    resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
-    step_offset = resume_info.step if resume_info else 0
-    adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-
-    # -- Data ----------------------------------------------------------------
-
-    import transformers
-
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        cfg.tokenizer_model, trust_remote_code=True
-    )
-    renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
-    logger.info(
-        "Using renderer=%s for preference tokenization",
-        resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-    )
-
-    raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)
-    if not raw_data:
-        raise RuntimeError(f"No data loaded from {cfg.dataset}")
-
-    logger.info("Tokenizing %d preference pairs...", len(raw_data))
-    pair_cache: list[dict] = []
-    filtered_count = 0
-
-    for example in raw_data:
-        pair = render_preference_pair(
-            example["chosen"],
-            example["rejected"],
-            renderer=renderer,
-            tokenizer=tokenizer,
+    with ResourceCleanup(rlor_mgr) as cleanup:
+        endpoint = create_trainer_job(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            profile=profile,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            display_name="orpo-trainer",
+            job_id=cfg.job_id,
         )
-        if pair is None:
-            continue
-
-        if (
-            len(pair.chosen_tokens) > cfg.max_seq_len
-            or len(pair.rejected_tokens) > cfg.max_seq_len
-        ):
-            filtered_count += 1
-            continue
-        pair_cache.append(
-            {
-                "chosen_tokens": pair.chosen_tokens,
-                "rejected_tokens": pair.rejected_tokens,
-                "response_start": pair.response_start,
-                "chosen_datum": pair.chosen_datum,
-                "rejected_datum": pair.rejected_datum,
-            }
+        job_id = endpoint.job_id
+        if not cfg.job_id:
+            cleanup.trainer(job_id)
+        client = ReconnectableClient(
+            rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank
         )
+        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+        step_offset = resume_info.step if resume_info else 0
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
-    if filtered_count > 0:
+        # -- Data ----------------------------------------------------------------
+
+        import transformers
+
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            cfg.tokenizer_model, trust_remote_code=True
+        )
+        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
         logger.info(
-            "Seq-length filter: %d/%d pairs filtered (chosen or rejected > %d tokens)",
-            filtered_count,
-            len(raw_data),
-            cfg.max_seq_len,
+            "Using renderer=%s for preference tokenization",
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
         )
-    logger.info("Prepared %d preference pairs", len(pair_cache))
-    if not pair_cache:
-        raise RuntimeError("No valid pairs after tokenization")
 
-    # -- Training loop -------------------------------------------------------
+        raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)
+        if not raw_data:
+            raise RuntimeError(f"No data loaded from {cfg.dataset}")
 
-    step = step_offset
-    total_steps = len(pair_cache) * cfg.epochs // cfg.grad_accum
-    accum_count = 0
-    agg = {
-        "orpo_loss": 0.0,
-        "sft_loss": 0.0,
-        "or_loss": 0.0,
-        "log_odds_ratio": 0.0,
-        "accuracy": 0.0,
-        "tokens": 0,
-        "count": 0,
-    }
+        logger.info("Tokenizing %d preference pairs...", len(raw_data))
+        pair_cache: list[dict] = []
+        filtered_count = 0
 
-    try:
+        for example in raw_data:
+            pair = render_preference_pair(
+                example["chosen"],
+                example["rejected"],
+                renderer=renderer,
+                tokenizer=tokenizer,
+            )
+            if pair is None:
+                continue
+
+            if (
+                len(pair.chosen_tokens) > cfg.max_seq_len
+                or len(pair.rejected_tokens) > cfg.max_seq_len
+            ):
+                filtered_count += 1
+                continue
+            pair_cache.append(
+                {
+                    "chosen_tokens": pair.chosen_tokens,
+                    "rejected_tokens": pair.rejected_tokens,
+                    "response_start": pair.response_start,
+                    "chosen_datum": pair.chosen_datum,
+                    "rejected_datum": pair.rejected_datum,
+                }
+            )
+
+        if filtered_count > 0:
+            logger.info(
+                "Seq-length filter: %d/%d pairs filtered (chosen or rejected > %d tokens)",
+                filtered_count,
+                len(raw_data),
+                cfg.max_seq_len,
+            )
+        logger.info("Prepared %d preference pairs", len(pair_cache))
+        if not pair_cache:
+            raise RuntimeError("No valid pairs after tokenization")
+
+        # -- Training loop -------------------------------------------------------
+
+        step = step_offset
+        total_steps = len(pair_cache) * cfg.epochs // cfg.grad_accum
+        accum_count = 0
+        agg = {
+            "orpo_loss": 0.0,
+            "sft_loss": 0.0,
+            "or_loss": 0.0,
+            "log_odds_ratio": 0.0,
+            "accuracy": 0.0,
+            "tokens": 0,
+            "count": 0,
+        }
+
         for epoch in range(cfg.epochs):
             random.shuffle(pair_cache)
             step_t0 = time.monotonic()
@@ -343,14 +345,8 @@ def main(
         logger.info(
             "Training complete: %d optimizer steps (%d new)", step, step - step_offset
         )
-        return {"steps": step, "job_id": job_id}
-    finally:
         wandb_finish()
-        try:
-            logger.info("Cleanup: deleting trainer job %s", job_id)
-            rlor_mgr.delete(job_id)
-        except Exception as e:
-            logger.warning("Cleanup: failed to delete trainer job %s: %s", job_id, e)
+        return {"steps": step, "job_id": job_id}
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ __all__ = [
     "HotloadConfig",
     "InfraConfig",
     "ReconnectableClient",
+    "ResourceCleanup",
     "RewardFn",
     "RLPromptDataset",
     "StepCallback",
@@ -65,6 +66,7 @@ from training.utils.data import (
     prepare_sampling_messages,
 )
 from training.utils.infra import (
+    ResourceCleanup,
     setup_deployment,
     create_trainer_job,
     setup_training_client,
