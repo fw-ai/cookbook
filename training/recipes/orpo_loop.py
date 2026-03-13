@@ -87,6 +87,7 @@ class Config:
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
+    job_id: str | None = None
 
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
@@ -171,6 +172,7 @@ def main(
         max_seq_len=cfg.max_seq_len,
         learning_rate=cfg.learning_rate,
         display_name="orpo-trainer",
+        job_id=cfg.job_id,
     )
     client = ReconnectableClient(
         rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank
@@ -304,6 +306,7 @@ def main(
                         log_metrics_json(step, tokens_per_sec=tokens_per_sec, **avg)
                         wandb_log(
                             {
+                                "train/step": step,
                                 "train/orpo_loss": avg["orpo_loss"],
                                 "train/sft_loss": avg["sft_loss"],
                                 "train/or_loss": avg["or_loss"],

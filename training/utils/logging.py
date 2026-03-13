@@ -18,7 +18,7 @@ def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
     If ``WANDB_API_KEY`` is not set, falls back to offline mode so runs
     are logged locally without requiring authentication.
     """
-    if wb.entity is None:
+    if not wb.entity:
         return False
     try:
         import os

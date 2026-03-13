@@ -51,8 +51,11 @@ def make_orpo_loss_fn(
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         assert len(logprobs_list) == 2, "ORPO expects exactly 2 datums: [chosen, rejected]"
 
-        chosen_lp = logprobs_list[0][response_start:]
-        rejected_lp = logprobs_list[1][response_start:]
+        # logprobs[i] predicts token[i+1], so slice at response_start - 1
+        # to include the first response token's logprob.
+        lp_start = max(0, response_start - 1)
+        chosen_lp = logprobs_list[0][lp_start:]
+        rejected_lp = logprobs_list[1][lp_start:]
 
         n_chosen = max(len(chosen_lp), 1)
         n_rejected = max(len(rejected_lp), 1)
