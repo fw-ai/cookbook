@@ -408,13 +408,10 @@ def main(
             is_config=cfg.is_correction,
         )
 
-        request_semaphore = asyncio.Semaphore(32)
-
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens, temperature=cfg.temperature,
             max_seq_len=cfg.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
-            request_semaphore=request_semaphore,
         )
         if cfg.router_replay:
             sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
