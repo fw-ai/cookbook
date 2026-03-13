@@ -190,7 +190,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         tokenizer_model="Qwen/Qwen3-4B",
         completions_per_prompt=2,
         prompt_groups_per_step=4,
-        min_samples_per_fwd_bwd=2,
         max_concurrent=8,
         max_steps=5,
         max_seeds=1,
@@ -301,7 +300,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["resolved_shape"] == "ts-qwen3-4b-smoke-v1"
     assert len(events["trainer_jobs"]) == 1
     assert events["trainer_jobs"][0]["display_name"] == "frozen-lake-policy"
-    assert events["trainer_jobs"][0]["grad_accum"] == 4
     assert events["trainer_jobs"][0]["hot_load_deployment_id"] == "dep-123"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["rollout_processor_init"]["observation_mode"] == "image"
@@ -334,7 +332,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         tokenizer_model="Qwen/Qwen3-4B",
         completions_per_prompt=2,
         prompt_groups_per_step=1,
-        min_samples_per_fwd_bwd=2,
         max_concurrent=8,
         max_steps=5,
         max_seeds=1,
@@ -557,7 +554,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         "frozen-lake-policy",
         "frozen-lake-reference",
     ]
-    assert events["trainer_jobs"][0]["grad_accum"] == 1
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
     assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []

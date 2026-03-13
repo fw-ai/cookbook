@@ -487,13 +487,15 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             ep = create_trainer_job(
                 rlor_mgr, base_model=cfg.base_model, infra=infra, profile=profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate, grad_accum=server_grad_accum_steps,
+                learning_rate=cfg.learning_rate,
                 display_name=f"frozen-lake-{label}",
                 hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,
                 **extra_kw,
             )
             return ep, ep.job_id, False
 
+        precreated_policy = False
+        precreated_reference = False
         with ThreadPoolExecutor(max_workers=2) as pool:
             pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id)
             ref_fut = (
