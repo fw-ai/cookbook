@@ -433,12 +433,6 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    ref_extra = list(cfg.infra.extra_args or [])
-    if "--forward-only" not in ref_extra:
-        ref_extra.append("--forward-only")
-    if "--no-compile" not in ref_extra:
-        ref_extra.append("--no-compile")
-
     policy_job_id: str | None = None
     reference_job_id: str | None = None
 
@@ -466,7 +460,7 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-reference",
-                extra_args=ref_extra,
+                forward_only=True,
             )
             policy_ep = pol_fut.result()
             reference_ep = ref_fut.result()
