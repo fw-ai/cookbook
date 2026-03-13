@@ -119,10 +119,6 @@ class FrozenLakeConfig:
     policy_loss: str = "grpo"
     tis_enabled: bool = False
 
-    mode: str = "single-pass"
-    """``"single-pass"`` uses server-side built-in PPO loss (1 fwd + 1 bwd).
-    ``"two-pass"`` uses ``forward_backward_custom`` (2 fwd + 1 bwd, legacy)."""
-
     seed_jsonl_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "seeds.jsonl")
     )
@@ -716,14 +712,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 ]
                 idx += n
 
-        fl_single_pass = cfg.mode == "single-pass"
-        if fl_single_pass and profile and profile.pipeline_parallelism > 1:
-            logger.warning(
-                "single-pass mode is not supported with pipeline parallelism (PP=%d). "
-                "Falling back to two-pass (forward_backward_custom).",
-                profile.pipeline_parallelism,
-            )
-            fl_single_pass = False
+        use_pp = profile is not None and profile.pipeline_parallelism > 1
+        fl_single_pass = not use_pp
 
         def fwd_bwd_one(sub: list[PromptGroup]):
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)

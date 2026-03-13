@@ -108,10 +108,6 @@ class Config:
     policy_loss: str = "grpo"
     """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
 
-    mode: str = "single-pass"
-    """``"single-pass"`` uses server-side built-in PPO loss (1 fwd + 1 bwd).
-    ``"two-pass"`` uses ``forward_backward_custom`` (2 fwd + 1 bwd, legacy)."""
-
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
@@ -533,14 +529,12 @@ def main(
                 ]
                 idx += n
 
-        single_pass = cfg.mode == "single-pass"
-        if single_pass and profile and profile.pipeline_parallelism > 1:
-            logger.warning(
-                "single-pass mode is not supported with pipeline parallelism (PP=%d). "
-                "Falling back to two-pass (forward_backward_custom).",
-                profile.pipeline_parallelism,
-            )
-            single_pass = False
+        use_pp = profile is not None and profile.pipeline_parallelism > 1
+        single_pass = not use_pp
+        if use_pp:
+            logger.info("PP=%d detected — using two-pass (forward_backward_custom).", profile.pipeline_parallelism)
+        else:
+            logger.info("Using single-pass server-side built-in loss.")
 
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
             """One minibatch forward/backward call after reference forward."""
