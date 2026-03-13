@@ -190,7 +190,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         tokenizer_model="Qwen/Qwen3-4B",
         completions_per_prompt=2,
         prompt_groups_per_step=4,
-        min_samples_per_fwd_bwd=2,
         max_concurrent=8,
         max_steps=5,
         max_seeds=1,
@@ -301,14 +300,12 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["resolved_shape"] == "ts-qwen3-4b-smoke-v1"
     assert len(events["trainer_jobs"]) == 1
     assert events["trainer_jobs"][0]["display_name"] == "frozen-lake-policy"
-    assert events["trainer_jobs"][0]["grad_accum"] == 4
     assert events["trainer_jobs"][0]["hot_load_deployment_id"] == "dep-123"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["rollout_processor_init"]["observation_mode"] == "image"
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
     assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
-    assert events["run_rl_loop_kwargs"]["min_prompt_groups_per_fwd_bwd"] == 1
-    assert events["run_rl_loop_kwargs"]["completions_per_prompt"] == 2
+    assert "train_fns" in events["run_rl_loop_kwargs"]
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["deleted_deployments"] == ["dep-123"]
     assert events["wandb_finished"] == 1
@@ -335,7 +332,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         tokenizer_model="Qwen/Qwen3-4B",
         completions_per_prompt=2,
         prompt_groups_per_step=1,
-        min_samples_per_fwd_bwd=2,
         max_concurrent=8,
         max_steps=5,
         max_seeds=1,
@@ -469,13 +465,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         pg = await next(sample_iter)
         assert pg is not None
         assert kwargs["dynamic_filter_fn"](pg) is True
-        kwargs["minibatch_fns"].ref_forward_batch([pg])
-        fwd_bwd_result = kwargs["minibatch_fns"].fwd_bwd_one([pg])
-        step, metrics = kwargs["minibatch_fns"].finish_step(
+        step, metrics = kwargs["train_fns"].train_step(
             0,
             [pg],
-            [fwd_bwd_result],
-            1,
             {
                 "valid_prompt_groups": 1,
                 "total_sampled": 1,
@@ -562,7 +554,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         "frozen-lake-policy",
         "frozen-lake-reference",
     ]
-    assert events["trainer_jobs"][0]["grad_accum"] == 1
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
     assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []

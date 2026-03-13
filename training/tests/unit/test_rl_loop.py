@@ -195,7 +195,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
-    assert events["run_loop_kwargs"]["completions_per_prompt"] == cfg.completions_per_prompt
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
     assert events["wandb_finished"] == 1
@@ -319,7 +318,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             events["sampler_init"] = kwargs
 
-        def sample_with_tokens(self, **kwargs):
+        async def sample_with_tokens(self, **kwargs):
             events["sampler_calls"].append(kwargs)
             return [
                 SimpleNamespace(
@@ -348,13 +347,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         pg = await next(sample_iter)
         assert pg is not None
         assert kwargs["dynamic_filter_fn"](pg) is True
-        kwargs["minibatch_fns"].ref_forward_batch([pg])
-        fwd_bwd_result = kwargs["minibatch_fns"].fwd_bwd_one([pg])
-        step, metrics = kwargs["minibatch_fns"].finish_step(
+        step, metrics = kwargs["train_fns"].train_step(
             1,
             [pg],
-            [fwd_bwd_result],
-            1,
             {
                 "valid_prompt_groups": 1,
                 "total_sampled": 1,
@@ -363,7 +358,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                 "sample_wait_time": 0.1,
                 "step_wall_time": 0.2,
                 "all_raw_rewards": list(pg.rewards),
-                "fwd_bwd_group_counts": [1],
             },
         )
         kwargs["metrics_callback"]({"train/step": step, "rollout/sample_fail_count": 0})

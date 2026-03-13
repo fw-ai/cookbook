@@ -61,7 +61,7 @@ from training.utils.timer import timer, flush_timing
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import MinibatchTrainFns, run_rl_loop
+from training.utils.rl.train import TrainStepFns, run_rl_loop
 from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -100,9 +100,6 @@ class Config:
 
     All groups are collected before a single ``forward_backward_custom`` +
     ``optim_step`` pair fires (1:1 ratio)."""
-
-    max_concurrent: int = 32
-    """Cap on concurrent in-flight sampling requests to the inference server."""
 
     router_replay: bool = False
     router_replay_completion_only: bool = True
@@ -430,8 +427,7 @@ def main(
                 return None
 
             try:
-                sampled = await asyncio.to_thread(
-                    sampler.sample_with_tokens,
+                sampled = await sampler.sample_with_tokens(
                     messages=input_messages,
                     n=completions_per_prompt,
                     **sample_kwargs,
@@ -547,14 +543,20 @@ def main(
             logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
 
-        def finish_step(
+        def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
-            fwd_bwd_results: list,
-            n_accum: int,
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """optim_step + hotload + metrics after all minibatches in a step."""
+            """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
+            t0 = _time.time()
+            ref_forward(prompt_groups)
+            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
+
+            t0 = _time.time()
+            fwd_bwd_result = fwd_bwd_one(prompt_groups)
+            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _time.time() - t0)
+
             t0 = _time.time()
             optim_result = policy.optim_step(adam_params)
             step += 1
@@ -581,9 +583,9 @@ def main(
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
-                fwd_bwd_results=fwd_bwd_results,
+                fwd_bwd_results=[fwd_bwd_result],
                 optim_result=optim_result,
-                n_accum=n_accum,
+                n_accum=1,
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
@@ -611,11 +613,7 @@ def main(
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
-        train_fns = MinibatchTrainFns(
-            ref_forward_batch=ref_forward,
-            fwd_bwd_one=fwd_bwd_one,
-            finish_step=finish_step,
-        )
+        train_fns = TrainStepFns(train_step=train_step)
 
         remaining_rows = []
         for i_step in range(step_offset, len(rl_dataset)):
@@ -623,13 +621,11 @@ def main(
 
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(row) for row in remaining_rows),
-            minibatch_fns=train_fns,
+            train_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
-            max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
             global_step=step_offset,
             metrics_callback=_loop_metrics_callback,
-            completions_per_prompt=completions_per_prompt,
         ))
 
         # -- Final checkpoint ----------------------------------------------------
