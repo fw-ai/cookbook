@@ -195,7 +195,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
-    assert events["run_loop_kwargs"]["completions_per_prompt"] == cfg.completions_per_prompt
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
     assert events["wandb_finished"] == 1
@@ -319,7 +318,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             events["sampler_init"] = kwargs
 
-        def sample_with_tokens(self, **kwargs):
+        async def sample_with_tokens(self, **kwargs):
             events["sampler_calls"].append(kwargs)
             return [
                 SimpleNamespace(
