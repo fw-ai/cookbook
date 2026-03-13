@@ -103,5 +103,18 @@ def test_grpo_smoke(
         assert isinstance(metrics, dict), f"Expected dict, got {type(metrics)}"
         assert "steps" in metrics, f"Missing 'steps' in metrics: {metrics}"
         assert metrics["steps"] >= 2, f"Expected >= 2 steps, got {metrics['steps']}"
+
+        import httpx, time
+        time.sleep(3)
+        policy_job_id = metrics.get("policy_job_id")
+        if policy_job_id:
+            try:
+                job = rlor_mgr.get(policy_job_id)
+                state = job.get("state", "")
+                assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                    f"ResourceCleanup failed: policy job {policy_job_id} still {state}"
+                )
+            except httpx.HTTPStatusError as e:
+                assert e.response.status_code == 404
     finally:
         os.unlink(dataset_path)
