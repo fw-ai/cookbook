@@ -712,6 +712,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 ]
                 idx += n
 
+        # TODO: remove two-pass fallback once the PP kernel supports built-in losses
         use_pp = profile is not None and profile.pipeline_parallelism > 1
         fl_single_pass = not use_pp
 
@@ -724,6 +725,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     data, adv, prox_lp, inf_lp, prompt_lens,
                 )
                 return policy.forward_backward(rl_datums, "ppo")
+            # TODO: remove once PP kernel supports built-in losses
             return policy.forward_backward_custom(
                 data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
             )
