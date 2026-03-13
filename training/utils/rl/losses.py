@@ -108,6 +108,15 @@ def build_builtin_loss_datums(
                 per_token_adv.append(float(adv_val * tis))
                 resp_idx += 1
 
+        # Apply loss_mask: zero out advantages where mask is 0 (GRPO uses this
+        # for multi-turn tool-call masking; safe as a no-op for other algorithms).
+        loss_mask_td = datum.loss_fn_inputs.get("loss_mask")
+        if loss_mask_td is not None:
+            mask_data = list(loss_mask_td.data)
+            for t in range(min(n_tokens, len(mask_data))):
+                if mask_data[t] == 0.0:
+                    per_token_adv[t] = 0.0
+
         slp_padded = prox_lp[:n_tokens] if len(prox_lp) >= n_tokens else prox_lp + [0.0] * (n_tokens - len(prox_lp))
         new_datum = tinker.Datum(
             model_input=datum.model_input,
@@ -137,6 +146,7 @@ def build_loss_fn(
     policy_loss: str,
     kl_beta: float,
     dapo_config: Any = None,
+    dro_config: Any = None,
     gspo_config: Any = None,
     cispo_config: Any = None,
     is_config: ISConfig | None = None,
@@ -150,9 +160,11 @@ def build_loss_fn(
         is_config = ISConfig()
 
     from training.utils.rl.dapo import make_dapo_loss_fn
+    from training.utils.rl.dro import make_dro_loss_fn
     from training.utils.rl.grpo import make_grpo_loss_fn
     from training.utils.rl.gspo import make_gspo_loss_fn
     from training.utils.rl.cispo import make_cispo_loss_fn
+    from training.utils.rl.is_loss import make_is_loss_fn
 
     def build(
         advantages: List[float],
@@ -161,11 +173,23 @@ def build_loss_fn(
         inf_logprobs: List[List[float]],
         prox_logprobs: List[List[float]],
     ) -> Any:
+        if policy_loss == "importance_sampling":
+            return make_is_loss_fn(
+                advantages, ref_logprobs, inf_logprobs,
+                prompt_lens, prox_logprobs,
+                is_config=is_config,
+            )
         if policy_loss == "dapo":
             return make_dapo_loss_fn(
                 advantages, ref_logprobs, inf_logprobs,
                 prompt_lens, prox_logprobs,
                 dapo_config, is_config=is_config,
+            )
+        if policy_loss == "dro":
+            return make_dro_loss_fn(
+                advantages, ref_logprobs, inf_logprobs,
+                prompt_lens, prox_logprobs,
+                dro_config, is_config=is_config,
             )
         if policy_loss == "gspo":
             return make_gspo_loss_fn(
@@ -187,7 +211,8 @@ def build_loss_fn(
                 kl_beta=kl_beta, is_config=is_config,
             )
         raise ValueError(
-            f"Unsupported policy_loss '{policy_loss}'. Expected one of: grpo, dapo, gspo, cispo."
+            f"Unsupported policy_loss '{policy_loss}'. "
+            f"Expected one of: grpo, importance_sampling, dapo, dro, gspo, cispo."
         )
 
     return build

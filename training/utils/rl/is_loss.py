@@ -1,16 +1,12 @@
-"""CISPO (Clipped Importance Sampling Policy Optimization) loss.
+"""Importance Sampling (IS) policy loss.
 
-Clips the importance-sampling ratio ``pi/pi_prox`` to ``[1-eps_low,
-1+eps_high]`` and uses the clipped ratio as a *detached* weight on the
-log-probability.  This matches the Tinker kernel formula::
+Unclipped importance-sampling objective matching the Tinker kernel::
 
-    clipped_ratio = clamp(ratio, 1 - eps_low, 1 + eps_high)
-    per_token_loss = -(clipped_ratio.detach() * logprob * advantage) * tis_weight
+    loss = -(exp(lp - slp) * adv).sum()
 
-Gradient flows through ``logprob`` (not through ``ratio``), and the
-clipped ratio caps the effective learning signal for tokens whose
-policy has already moved far from the proximal checkpoint.  Behavioral
-IS weight corrects for the train-inference gap.
+The ratio ``exp(pi - prox)`` is capped by ``ratio_log_cap`` for numerical
+stability but is otherwise unclipped.  Behavioral IS weight corrects for
+the train-inference gap.
 """
 
 from __future__ import annotations
@@ -30,30 +26,27 @@ from training.utils.rl.importance_sampling import (
 
 
 @dataclass
-class CISPOConfig:
-    """CISPO clipping thresholds.
+class ISLossConfig:
+    """IS loss configuration.
 
-    The ratio ``pi/pi_prox`` is clamped to ``[1 - eps_low, 1 + eps_high]``.
     ``ratio_log_cap`` clamps log-ratio before exp() for numerical stability.
     """
 
-    eps_low: float = 0.2
-    eps_high: float = 0.28
     ratio_log_cap: float = 20.0
 
 
-def make_cispo_loss_fn(
+def make_is_loss_fn(
     advantages: List[float],
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
     prox_logprobs: List[List[float]],
-    cispo_config: CISPOConfig | None = None,
+    is_loss_config: ISLossConfig | None = None,
     is_config: ISConfig | None = None,
 ) -> ...:
-    """Build a CISPO loss closure with ratio clipping and behavioral IS weight."""
-    if cispo_config is None:
-        cispo_config = CISPOConfig()
+    """Build an IS loss closure with unclipped ratio and behavioral IS weight."""
+    if is_loss_config is None:
+        is_loss_config = ISLossConfig()
     if is_config is None:
         is_config = ISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
@@ -68,9 +61,7 @@ def make_cispo_loss_fn(
         total_inf_kld = 0.0
         inf_num_samples = 0
         num_tokens = 0
-        clip_frac_sum = 0.0
         ppo_ratio_mean_sum = 0.0
-        clip_frac_count = 0
         tis_metrics_agg: Dict[str, float] = {}
 
         for i, pi_logprobs in enumerate(logprobs_list):
@@ -91,17 +82,6 @@ def make_cispo_loss_fn(
             )
             pi_detached = resp_pi.detach()
 
-            if not inf_lp:
-                raise ValueError(
-                    f"CISPO requires inference logprobs for sample {i} but got empty list. "
-                    f"Ensure logprobs=True is set when using policy_loss='cispo'."
-                )
-            if len(inf_lp) < response_start + resp_len:
-                raise ValueError(
-                    f"CISPO requires at least {response_start + resp_len} inference logprobs "
-                    f"for sample {i}, got {len(inf_lp)}."
-                )
-
             resp_inf = torch.tensor(
                 inf_lp[response_start:response_start + resp_len],
                 dtype=resp_pi.dtype, device=resp_pi.device,
@@ -116,22 +96,20 @@ def make_cispo_loss_fn(
             total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
             inf_num_samples += 1
 
-            log_ratio = torch.clamp(resp_pi - resp_prox, min=-cispo_config.ratio_log_cap, max=cispo_config.ratio_log_cap)
+            log_ratio = torch.clamp(
+                resp_pi - resp_prox,
+                min=-is_loss_config.ratio_log_cap,
+                max=is_loss_config.ratio_log_cap,
+            )
             ratio = torch.exp(log_ratio)
-
-            clip_lo = 1.0 - cispo_config.eps_low
-            clip_hi = 1.0 + cispo_config.eps_high
-            clipped_ratio = torch.clamp(ratio, clip_lo, clip_hi)
-            clip_frac_sum += (clipped_ratio.detach() != ratio.detach()).float().mean().item()
             ppo_ratio_mean_sum += ratio.detach().mean().item()
-            clip_frac_count += 1
 
             tis_weight, bm = compute_tis_weight(resp_prox, resp_inf, is_config)
             for k, v in bm.items():
                 tis_metrics_agg[k] = tis_metrics_agg.get(k, 0.0) + v
 
             adv_t = torch.as_tensor(adv, dtype=resp_pi.dtype, device=resp_pi.device)
-            per_token_loss = -(clipped_ratio.detach() * resp_pi * adv_t) * tis_weight
+            per_token_loss = -(ratio * adv_t) * tis_weight
 
             total_loss = total_loss + per_token_loss.sum()
             total_kl += (pi_detached - resp_ref).sum().item()
@@ -140,8 +118,7 @@ def make_cispo_loss_fn(
         n_samples = max(len(logprobs_list), 1)
         metrics: Dict[str, float] = {
             "mean_kl": total_kl / num_tokens if num_tokens > 0 else 0.0,
-            "cispo_clip_frac": clip_frac_sum / clip_frac_count if clip_frac_count > 0 else 0.0,
-            "ppo_ratio_mean": ppo_ratio_mean_sum / n_samples,
+            "is_ratio_mean": ppo_ratio_mean_sum / n_samples,
         }
         if inf_num_samples > 0:
             metrics["inference_diff"] = total_inf_diff / inf_num_samples
