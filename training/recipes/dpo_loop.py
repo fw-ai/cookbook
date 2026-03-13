@@ -456,7 +456,7 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,
+                hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
             )
             ref_fut = pool.submit(
                 create_trainer_job,

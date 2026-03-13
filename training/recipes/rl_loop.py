@@ -314,7 +314,7 @@ def main(
                     lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-policy",
-                    hot_load_deployment_id=cfg.deployment.deployment_id,
+                    hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
                     job_id=cfg.policy_job_id,
                     base_url_override=cfg.policy_base_url,
                 )

@@ -439,7 +439,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name=f"frozen-lake-{label}",
-                hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,
+                hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,  # weight sync target deployment
                 **extra_kw,
             )
             return ep, ep.job_id, False
