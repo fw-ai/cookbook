@@ -359,10 +359,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
     # -- Resolve training shapes --------------------------------------------
 
-    use_reference = cfg.kl_beta != 0
-    if not use_reference:
-        logger.info("kl_beta=0: skipping reference model creation")
-
     profile = None
     if infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
@@ -386,6 +382,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     if cfg.max_seq_len is None:
         cfg.max_seq_len = 4096
         logger.info("max_seq_len defaulting to %d (no training shape)", cfg.max_seq_len)
+
+    ref_profile = None
+    if infra.ref_training_shape_id:
+        ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
+    use_reference = ref_profile is not None
+    if not use_reference:
+        logger.info("No ref_training_shape_id set, skipping reference model")
 
     # -- Infrastructure setup -----------------------------------------------
 
@@ -476,7 +479,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
         # firectl-admin for regions the main gateway doesn't support yet).
 
-        def _make_job(label: str, precreated_id: str | None, **extra_kw):
+        def _make_job(label: str, precreated_id: str | None, job_profile=None, **extra_kw):
             if precreated_id:
                 ep = create_trainer_job(
                     rlor_mgr, base_model=cfg.base_model, infra=infra,
@@ -484,7 +487,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 )
                 return ep, precreated_id, True
             ep = create_trainer_job(
-                rlor_mgr, base_model=cfg.base_model, infra=infra, profile=profile,
+                rlor_mgr, base_model=cfg.base_model, infra=infra, profile=job_profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name=f"frozen-lake-{label}",
@@ -496,9 +499,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         precreated_policy = False
         precreated_reference = False
         with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id)
+            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id, job_profile=profile)
             ref_fut = (
-                pool.submit(_make_job, "reference", cfg.reference_job_id, forward_only=True)
+                pool.submit(_make_job, "reference", cfg.reference_job_id, job_profile=ref_profile, forward_only=True)
                 if use_reference else None
             )
 
