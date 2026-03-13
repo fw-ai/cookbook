@@ -1,9 +1,8 @@
 """Smoke test: ResourceCleanup deletes trainer jobs on scope exit.
 
-Uses the same fixtures as the other smoke tests (qwen3-4b on dev).
-Creates a real trainer job (without waiting for it to be ready),
-wraps it in ResourceCleanup, exits the scope via exception, then
-verifies the job was deleted.
+Creates a real trainer job, registers it with ResourceCleanup, exits
+scope via exception, then verifies the job no longer exists on the
+control plane.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ def test_resource_cleanup_deletes_trainer_on_exception(
     smoke_infra,
     smoke_base_model,
 ):
-    """Create a trainer job, exit scope via exception, verify deletion."""
+    """Create a job, crash, verify ResourceCleanup actually deleted it."""
     rlor_mgr, _ = smoke_sdk_managers
 
     profile = None
@@ -36,29 +35,30 @@ def test_resource_cleanup_deletes_trainer_on_exception(
         display_name="cleanup-smoke-test",
     )
 
-    job_id = None
+    raw = rlor_mgr._create(config)
+    job_name = raw.get("name", "")
+    job_id = job_name.split("/")[-1] if "/" in job_name else job_name
+    assert job_id
+
+    job_before = rlor_mgr.get(job_id)
+    assert job_before.get("state") != "", f"Job {job_id} should exist"
+
     try:
         with ResourceCleanup(rlor_mgr) as cleanup:
-            raw = rlor_mgr._create(config)
-            job_name = raw.get("name", "")
-            job_id = job_name.split("/")[-1] if "/" in job_name else job_name
             cleanup.trainer(job_id)
-
-            job = rlor_mgr.get(job_id)
-            assert job, f"Job {job_id} should exist after creation"
-
             raise RuntimeError("simulate crash")
     except RuntimeError:
         pass
 
-    assert job_id, "Job was never created"
-
     time.sleep(3)
+    import httpx
     try:
         job_after = rlor_mgr.get(job_id)
         state = job_after.get("state", "")
-        assert "DELET" in state or state == "", (
-            f"Expected job {job_id} deleted/deleting, got state={state}"
+        assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+            f"ResourceCleanup failed to delete job {job_id}: state={state}"
         )
-    except Exception:
-        pass
+    except httpx.HTTPStatusError as e:
+        assert e.response.status_code == 404, (
+            f"Expected 404 (deleted) but got {e.response.status_code}"
+        )
