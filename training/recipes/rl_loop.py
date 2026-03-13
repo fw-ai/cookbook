@@ -63,7 +63,7 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 
@@ -107,6 +107,10 @@ class Config:
 
     policy_loss: str = "grpo"
     """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
+
+    mode: str = "single-pass"
+    """``"single-pass"`` uses server-side built-in PPO loss (1 fwd + 1 bwd).
+    ``"two-pass"`` uses ``forward_backward_custom`` (2 fwd + 1 bwd, legacy)."""
 
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
@@ -529,6 +533,15 @@ def main(
                 ]
                 idx += n
 
+        single_pass = cfg.mode == "single-pass"
+        if single_pass and profile and profile.pipeline_parallelism > 1:
+            logger.warning(
+                "single-pass mode is not supported with pipeline parallelism (PP=%d). "
+                "Falling back to two-pass (forward_backward_custom).",
+                profile.pipeline_parallelism,
+            )
+            single_pass = False
+
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
             """One minibatch forward/backward call after reference forward."""
             if not prompt_groups:
@@ -542,9 +555,15 @@ def main(
             logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
 
             t0 = _time.time()
-            fwd_bwd_result = policy.forward_backward_custom(
-                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
-            )
+            if single_pass:
+                rl_datums = build_builtin_loss_datums(
+                    data, adv, prox_lp, inf_lp, prompt_lens, cfg.is_correction,
+                )
+                fwd_bwd_result = policy.forward_backward(rl_datums, "ppo")
+            else:
+                fwd_bwd_result = policy.forward_backward_custom(
+                    data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+                )
             logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
 
