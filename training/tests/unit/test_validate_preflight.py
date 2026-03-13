@@ -14,9 +14,9 @@ def _cfg(**overrides):
     defaults = dict(
         base_model="accounts/test/models/qwen3-1p7b",
         dataset="data/test.jsonl",
-        hot_load_interval=0,
+        weight_sync_interval=0,
         hot_load_deployment_id=None,
-        hot_load_before_training=False,
+        weight_sync_before_training=False,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -47,18 +47,18 @@ class TestCredentialChecks:
 
 
 # ---------------------------------------------------------------------------
-# Hotload config
+# Weight sync config
 # ---------------------------------------------------------------------------
 
 
-class TestHotloadConfig:
-    def test_hot_load_interval_without_deployment_id_ok(self):
-        """Hotload without deployment_id is fine -- setup_deployment auto-creates."""
-        args = _cfg(hot_load_interval=5, hot_load_deployment_id=None)
+class TestWeightSyncConfig:
+    def test_weight_sync_interval_without_deployment_id_ok(self):
+        """Weight sync without deployment_id is fine -- setup_deployment auto-creates."""
+        args = _cfg(weight_sync_interval=5, hot_load_deployment_id=None)
         validate_preflight(args, fw_api_key="k", fw_account_id="a")
 
-    def test_hot_load_interval_with_deployment_id_ok(self):
-        args = _cfg(hot_load_interval=5, hot_load_deployment_id="dep-1")
+    def test_weight_sync_interval_with_deployment_id_ok(self):
+        args = _cfg(weight_sync_interval=5, hot_load_deployment_id="dep-1")
         validate_preflight(args, fw_api_key="k", fw_account_id="a")
 
 
@@ -96,7 +96,7 @@ class TestMultipleErrors:
         args = _cfg(
             base_model="bad-model",
             dataset="",
-            hot_load_interval=5,
+            weight_sync_interval=5,
             hot_load_deployment_id=None,
         )
         with pytest.raises(RuntimeError) as exc_info:
@@ -115,7 +115,7 @@ class TestValidConfig:
     def test_passes(self):
         args = _cfg(
             base_model="accounts/test/models/m",
-            hot_load_interval=0,
+            weight_sync_interval=0,
         )
         validate_preflight(args, fw_api_key="key", fw_account_id="acct")
 

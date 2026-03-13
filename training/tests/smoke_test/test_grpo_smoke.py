@@ -1,7 +1,7 @@
 """Minimal GRPO e2e smoke test on Qwen3-4B.
 
-Runs 2 optimizer steps with hotloading on a single GPU:
-  Step 1: fwd/bkwd + optim_step -> hotload to deployment
+Runs 2 optimizer steps with weight syncing on a single GPU:
+  Step 1: fwd/bkwd + optim_step -> weight sync to deployment
   Step 2: fwd/bkwd + optim_step (sampling from updated weights)
   Cleanup: delete trainer job, scale deployment to zero
 
@@ -54,8 +54,8 @@ def test_grpo_smoke(
     smoke_tokenizer_model,
     smoke_infra,
 ):
-    """2-step GRPO on Qwen3-4B: train, hotload, train again, cleanup."""
-    from training.utils import DeployConfig, HotloadConfig, WandBConfig
+    """2-step GRPO on Qwen3-4B: train, weight sync, train again, cleanup."""
+    from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
     from training.recipes.rl_loop import Config, main
     import training.recipes.rl_loop as rl_mod
 
@@ -84,11 +84,11 @@ def test_grpo_smoke(
             deployment=DeployConfig(
                 tokenizer_model=smoke_tokenizer_model,
             ),
-            hotload=HotloadConfig(
-                hot_load_interval=1,
+            weight_sync=WeightSyncConfig(
+                weight_sync_interval=1,
                 first_checkpoint_type="base",
-                hot_load_before_training=True,
-                hot_load_timeout=600,
+                weight_sync_before_training=True,
+                weight_sync_timeout=600,
             ),
             wandb=WandBConfig(),
         )

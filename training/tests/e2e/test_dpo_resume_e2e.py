@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
 from training.recipes.dpo_loop import Config, main
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ class TestDPOResumeE2E:
                 max_pairs=8,
                 infra=shared_infra,
                 deployment=DeployConfig(),
-                hotload=HotloadConfig(hot_load_interval=0, dcp_save_interval=2),
+                weight_sync=WeightSyncConfig(weight_sync_interval=0, dcp_save_interval=2),
             )
 
             phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
@@ -114,7 +114,7 @@ class TestDPOResumeE2E:
                 max_pairs=8,
                 infra=shared_infra,
                 deployment=DeployConfig(),
-                hotload=HotloadConfig(hot_load_interval=0),
+                weight_sync=WeightSyncConfig(weight_sync_interval=0),
                 init_from_checkpoint=f"{phase1_job_id}:{dcp_name}",
             )
 

@@ -201,8 +201,8 @@ def test_main_builds_rl_config_and_calls_recipe(monkeypatch):
     assert cfg.deployment.deployment_region == "US_VIRGINIA_1"
     assert cfg.deployment.tokenizer_model == "Qwen/Qwen3-4B"
     assert cfg.deployment.extra_values == {"priorityClass": "deployment"}
-    assert cfg.hotload.hot_load_interval == 1
-    assert cfg.hotload.dcp_save_interval == 20
+    assert cfg.weight_sync.weight_sync_interval == 1
+    assert cfg.weight_sync.dcp_save_interval == 20
     assert cfg.wandb.entity == "fw"
     assert cfg.wandb.project == "deepmath-tests"
     assert cfg.wandb.run_name == "dep-123"

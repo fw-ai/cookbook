@@ -40,7 +40,7 @@ from training.utils import (
     ResourceCleanup,
     WandBConfig,
     DeployConfig,
-    HotloadConfig,
+    WeightSyncConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
@@ -121,7 +121,7 @@ class Config:
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    hotload: HotloadConfig = field(default_factory=lambda: HotloadConfig(hot_load_interval=0))
+    weight_sync: WeightSyncConfig = field(default_factory=lambda: WeightSyncConfig(weight_sync_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     init_from_checkpoint: str | None = None
 
@@ -303,8 +303,8 @@ async def _train_loop(
             for k, v in optim_result.metrics.items():
                 step_metrics[f"train/{k}"] = v
 
-        hl = cfg.hotload
-        if hl.hot_load_interval > 0 and step % hl.hot_load_interval == 0:
+        hl = cfg.weight_sync
+        if hl.weight_sync_interval > 0 and step % hl.weight_sync_interval == 0:
             with timer("weight_sync"):
                 weight_syncer.save_and_hotload(f"step-{step}")
         if hl.dcp_save_interval > 0 and step % hl.dcp_save_interval == 0:
@@ -392,7 +392,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment)
+    validate_config(cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -486,8 +486,8 @@ def main(
             deploy_mgr=deploy_mgr,
             deployment_id=cfg.deployment.deployment_id,
             base_model=cfg.base_model,
-            hotload_timeout=cfg.hotload.hot_load_timeout,
-            first_checkpoint_type=cfg.hotload.first_checkpoint_type,
+            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
+            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
             compression_format=DEFAULT_DELTA_COMPRESSION,
         )
 
@@ -540,10 +540,10 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
-        hl = cfg.hotload
+        hl = cfg.weight_sync
         if step > step_offset:
             weight_syncer.save_dcp(f"step-{step}")
-            if hl.hot_load_interval > 0:
+            if hl.weight_sync_interval > 0:
                 weight_syncer.save_and_hotload(f"final-step-{step}")
 
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)

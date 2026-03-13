@@ -384,7 +384,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         max_seq_len=None,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
         deployment=module.DeployConfig(deployment_id="dep-123"),
-        hotload=module.HotloadConfig(hot_load_interval=1),
+        weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
     )
 
     result = module.main(
@@ -417,11 +417,11 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     assert events["wandb_finished"] == 1
 
 
-def test_train_loop_runs_accumulation_and_hotload(monkeypatch):
+def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     events: dict[str, object] = {
         "flush_batches": [],
         "optim_steps": 0,
-        "hotloads": [],
+        "weight_syncs": [],
         "dcp_saves": [],
         "metrics_logs": [],
         "wandb_logs": [],
@@ -445,7 +445,7 @@ def test_train_loop_runs_accumulation_and_hotload(monkeypatch):
 
     class FakeWeightSyncer:
         def save_and_hotload(self, name):
-            events["hotloads"].append(name)
+            events["weight_syncs"].append(name)
 
         def save_dcp(self, name):
             events["dcp_saves"].append(name)
@@ -460,7 +460,7 @@ def test_train_loop_runs_accumulation_and_hotload(monkeypatch):
         epochs=1,
         batch_size=1,
         grad_accum=2,
-        hotload=module.HotloadConfig(hot_load_interval=1, dcp_save_interval=1),
+        weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1),
     )
 
     step = asyncio.run(
@@ -481,7 +481,7 @@ def test_train_loop_runs_accumulation_and_hotload(monkeypatch):
         ([ref_cache[1]], 0.2),
     ]
     assert events["optim_steps"] == 1
-    assert events["hotloads"] == ["step-1"]
+    assert events["weight_syncs"] == ["step-1"]
     assert events["dcp_saves"] == ["step-1"]
     assert events["metrics_logs"] == [(1, {"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75})]
     assert len(events["wandb_logs"]) == 1

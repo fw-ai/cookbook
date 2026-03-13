@@ -54,7 +54,7 @@ from training.utils import (
     ResourceCleanup,
     WandBConfig,
     DeployConfig,
-    HotloadConfig,
+    WeightSyncConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
@@ -318,13 +318,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         tokenizer_model=cfg.tokenizer_model,
         sample_timeout=1200,
     )
-    hotload_cfg = HotloadConfig(
-        hot_load_interval=1,
+    weight_sync_cfg = WeightSyncConfig(
+        weight_sync_interval=1,
         dcp_save_interval=20,
         dcp_timeout=2700,
         first_checkpoint_type="base",
-        hot_load_before_training=bool(cfg.deployment_id),
-        hot_load_timeout=900,
+        weight_sync_before_training=bool(cfg.deployment_id),
+        weight_sync_timeout=900,
     )
     wandb_cfg = WandBConfig(
         entity=cfg.wandb_entity or None,
@@ -487,9 +487,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         weight_syncer = WeightSyncer(
             policy_client=policy.inner, deploy_mgr=deploy_mgr,
             deployment_id=deploy_cfg.deployment_id, base_model=cfg.base_model,
-            hotload_timeout=hotload_cfg.hot_load_timeout,
-            first_checkpoint_type=hotload_cfg.first_checkpoint_type,
-            dcp_timeout=hotload_cfg.dcp_timeout,
+            hotload_timeout=weight_sync_cfg.weight_sync_timeout,
+            first_checkpoint_type=weight_sync_cfg.first_checkpoint_type,
+            dcp_timeout=weight_sync_cfg.dcp_timeout,
         )
 
         infra_boot_time = time.time() - _infra_start
@@ -498,7 +498,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         from training.utils.checkpoint_utils import resolve_resume
         resume_info = resolve_resume(policy, cfg.log_path)
         step_offset = resume_info.step if resume_info else 0
-        if hotload_cfg.hot_load_before_training and deploy_cfg.deployment_id:
+        if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
@@ -680,7 +680,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 prompt_groups: list[PromptGroup],
                 loop_stats: dict | None = None,
             ) -> tuple[int, dict]:
-                """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
+                """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
                 t0 = time.time()
                 ref_forward_batch(prompt_groups)
                 logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
@@ -694,14 +694,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 step += 1
                 logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
 
-                if hotload_cfg.hot_load_interval > 0 and step % hotload_cfg.hot_load_interval == 0:
-                    logger.info("[step %d] hotload: saving + loading...", step)
+                if weight_sync_cfg.weight_sync_interval > 0 and step % weight_sync_cfg.weight_sync_interval == 0:
+                    logger.info("[step %d] weight_sync: saving + loading...", step)
                     t0 = time.time()
                     with timer("weight_sync"):
                         weight_syncer.save_and_hotload(f"step-{step}")
-                    logger.info("[step %d] hotload: done (%.1fs)", step, time.time() - t0)
+                    logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
 
-                if hotload_cfg.dcp_save_interval > 0 and step % hotload_cfg.dcp_save_interval == 0:
+                if weight_sync_cfg.dcp_save_interval > 0 and step % weight_sync_cfg.dcp_save_interval == 0:
                     logger.info("[step %d] dcp_save...", step)
                     t0 = time.time()
                     with timer("dcp_save"):
@@ -773,7 +773,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             if global_step > step_offset:
                 try:
-                    policy.save_state(f"step-{global_step}", timeout=hotload_cfg.dcp_timeout)
+                    policy.save_state(f"step-{global_step}", timeout=weight_sync_cfg.dcp_timeout)
                 except Exception as e:
                     logger.warning("Failed to save final checkpoint: %s", e)
                 logger.info("Training complete: %d steps", global_step)

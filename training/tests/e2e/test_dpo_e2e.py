@@ -1,7 +1,7 @@
 """E2E test for DPO training on qwen3-30b-a3b.
 
 Creates a real RLOR trainer job, trains DPO on a small synthetic preference
-dataset, and verifies metrics. No deployment or hotloading.
+dataset, and verifies metrics. No deployment or weight sync.
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training access
@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
 from training.recipes.dpo_loop import Config, main
 
 
@@ -77,7 +77,7 @@ class TestDPOE2E:
                     custom_image_tag=custom_image_tag,
                 ),
                 deployment=DeployConfig(),
-                hotload=HotloadConfig(hot_load_interval=0),
+                weight_sync=WeightSyncConfig(weight_sync_interval=0),
             )
 
             metrics = main(config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)

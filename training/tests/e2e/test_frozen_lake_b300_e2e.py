@@ -4,13 +4,13 @@ Validates the full Firetitan RL pipeline end-to-end:
   - RLOR trainer job lifecycle (policy + reference)
   - Multi-turn tool-call rollouts via eval-protocol
   - GRPO loss with KL divergence
-  - Hotloading (weight sync to inference deployment)
+  - Weight sync (sync to inference deployment)
   - Reward-based learning signal
 
 Required env vars:
   FIREWORKS_API_KEY
   FIREWORKS_ACCOUNT_ID
-  FROZEN_LAKE_DEPLOYMENT_ID    (pre-created deployment with hotload)
+  FROZEN_LAKE_DEPLOYMENT_ID    (pre-created deployment with weight sync)
 
 Optional env vars (CI script sets these):
   FIREWORKS_BASE_URL           (default: https://dev.api.fireworks.ai)
@@ -99,7 +99,7 @@ class TestFrozenLakeB300:
 
         region = _env("FROZEN_LAKE_REGION", "EU_NETHERLANDS_1")
         training_shape = _env("FROZEN_LAKE_TRAINING_SHAPE", "qwen3-4b-b300")
-        # TODO(bennychen): LoRA hotload has a loading perf bug that needs
+        # TODO(bennychen): LoRA weight sync has a loading perf bug that needs
         # fixing before re-enabling. Use full-parameter (rank=0) for now.
         lora_rank = int(_env("FROZEN_LAKE_LORA_RANK", "0"))
         base_url = _env("FIREWORKS_BASE_URL", "https://dev.api.fireworks.ai")
@@ -167,11 +167,11 @@ class TestFrozenLakeB300:
         # Random baseline for 4x4 FrozenLake is ~0.05 (very low due to holes).
         # A functioning RL pipeline should average well above that.
         # Threshold set to 0.15 to be robust against variance while still
-        # detecting broken pipelines (broken hotload, broken loss, etc.).
+        # detecting broken pipelines (broken weight sync, broken loss, etc.).
         assert avg_reward >= 0.15, (
             f"Average reward ({avg_reward:.3f}) should be >= 0.15 "
             f"(random baseline ~0.05). This may indicate broken training "
-            f"(hotload, loss computation, or rollout). {summary}"
+            f"(weight sync, loss computation, or rollout). {summary}"
         )
 
         # At least one step should show meaningful success
@@ -181,7 +181,7 @@ class TestFrozenLakeB300:
         )
 
         # Sanity: pipeline didn't take absurdly long.
-        # With 16 completions/prompt + full-param hotloads (~36s each),
+        # With 16 completions/prompt + full-param weight syncs (~36s each),
         # 12 steps take ~55min. Budget 70min.
         assert elapsed < 4200, (
             f"Pipeline took {elapsed:.0f}s (>70min), expected <70min. "

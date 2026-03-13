@@ -35,7 +35,7 @@ from training.utils import (
     ResourceCleanup,
     WandBConfig,
     DeployConfig,
-    HotloadConfig,
+    WeightSyncConfig,
     ReconnectableClient,
     RLPromptDataset,
     wandb_log,
@@ -136,7 +136,7 @@ class Config:
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    hotload: HotloadConfig = field(default_factory=HotloadConfig)
+    weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
 
 
@@ -229,7 +229,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment)
+    validate_config(cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment)
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -376,9 +376,9 @@ def main(
         weight_syncer = WeightSyncer(
             policy_client=policy.inner, deploy_mgr=deploy_mgr,
             deployment_id=cfg.deployment.deployment_id, base_model=cfg.base_model,
-            hotload_timeout=cfg.hotload.hot_load_timeout,
-            first_checkpoint_type=cfg.hotload.first_checkpoint_type,
-            dcp_timeout=cfg.hotload.dcp_timeout,
+            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
+            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
+            dcp_timeout=cfg.weight_sync.dcp_timeout,
         )
 
         infra_boot_time = _time.time() - _infra_start
@@ -396,7 +396,7 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
 
-        if cfg.hotload.hot_load_before_training and cfg.deployment.deployment_id:
+        if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
@@ -553,7 +553,7 @@ def main(
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
+            """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
             t0 = _time.time()
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
@@ -567,13 +567,13 @@ def main(
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
-            if cfg.hotload.hot_load_interval > 0 and step % cfg.hotload.hot_load_interval == 0:
-                logger.info("[step %d] hotload: saving + loading...", step)
+            if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
+                logger.info("[step %d] weight_sync: saving + loading...", step)
                 t0 = _time.time()
                 with timer("weight_sync"):
                     weight_syncer.save_and_hotload(f"step-{step}")
-                logger.info("[step %d] hotload: done (%.1fs)", step, _time.time() - t0)
-            if cfg.hotload.dcp_save_interval > 0 and step % cfg.hotload.dcp_save_interval == 0:
+                logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
+            if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
                 with timer("dcp_save"):

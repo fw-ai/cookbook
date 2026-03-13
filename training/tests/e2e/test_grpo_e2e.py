@@ -1,6 +1,6 @@
 """E2E test for GRPO training on qwen3-30b-a3b (MoE).
 
-Full pipeline: policy + reference trainers, deployment with hotloading,
+Full pipeline: policy + reference trainers, deployment with weight sync,
 Router Replay (R3), and Truncated Importance Sampling (TIS).
 
 Requires:
@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
 from training.utils.rl import ISConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
@@ -37,7 +37,7 @@ def _gsm8k_reward(completion: str, row: dict) -> float:
 @pytest.mark.e2e
 @pytest.mark.timeout(3600)
 class TestGRPOE2E:
-    """GRPO on qwen3-30b-a3b with R3, TIS, and hotloading."""
+    """GRPO on qwen3-30b-a3b with R3, TIS, and weight sync."""
 
     def test_grpo_full_pipeline(
         self,
@@ -79,11 +79,11 @@ class TestGRPOE2E:
                 deployment_region=e2e_region,
                 tokenizer_model=e2e_tokenizer_model,
             ),
-            hotload=HotloadConfig(
-                hot_load_interval=1,
+            weight_sync=WeightSyncConfig(
+                weight_sync_interval=1,
                 first_checkpoint_type="base",
-                hot_load_before_training=True,
-                hot_load_timeout=600,
+                weight_sync_before_training=True,
+                weight_sync_timeout=600,
             ),
         )
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from fireworks.training.sdk.errors import format_sdk_error, DOCS_SDK
-from training.utils.config import DeployConfig, HotloadConfig
+from training.utils.config import DeployConfig, WeightSyncConfig
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def validate_config(
     base_model: str,
     dataset: str,
-    hotload: HotloadConfig | None = None,
+    hotload: WeightSyncConfig | None = None,
     deploy: DeployConfig | None = None,
 ) -> None:
     """Pre-flight validation. Catches misconfiguration before provisioning GPUs."""
@@ -92,9 +92,9 @@ def validate_preflight(
     validate_config(
         base_model=getattr(args, "base_model", "") or "",
         dataset=getattr(args, "dataset", "") or "",
-        hotload=HotloadConfig(
-            hot_load_interval=getattr(args, "hot_load_interval", 0),
-            hot_load_before_training=getattr(args, "hot_load_before_training", False),
+        hotload=WeightSyncConfig(
+            weight_sync_interval=getattr(args, "weight_sync_interval", 0),
+            weight_sync_before_training=getattr(args, "weight_sync_before_training", False),
         ),
         deploy=DeployConfig(
             deployment_id=getattr(args, "hot_load_deployment_id", None),
