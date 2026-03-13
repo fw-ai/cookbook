@@ -43,8 +43,6 @@ class TrainStepFns:
     """
 
     train_step: Callable[[int, list[PromptGroup], dict | None], tuple[int, dict]]
-    """Execute one training step.  Signature:
-    (step, prompt_groups, loop_stats) -> (new_step, metrics)."""
 
 
 async def run_rl_loop(
@@ -52,32 +50,26 @@ async def run_rl_loop(
     *,
     train_fns: TrainStepFns,
     prompt_groups_per_step: int = 1,
-    max_concurrent: int = 32,
     dynamic_filter_fn: DynamicFilterFn | None = None,
     global_step: int = 0,
     metrics_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
     """Run the on-policy RL training loop.
 
-    Samples ``prompt_groups_per_step`` prompts concurrently (capped by
-    ``max_concurrent``), collects valid groups, then calls
-    ``train_fns.train_step`` once per optimizer step.
-
-    Each prompt fires ``completions_per_prompt`` individual n=1 requests
-    internally (via ``sample_with_tokens``), so the actual in-flight
-    request count is up to ``max_concurrent * completions_per_prompt``.
+    All ``prompt_groups_per_step`` sampling coroutines fire concurrently.
+    Request-level throttling is handled by the ``request_semaphore``
+    passed into ``sample_with_tokens`` by the caller -- this loop does
+    not limit concurrency itself.
     """
     coros = list(sample_fns)
 
     queue: asyncio.Queue[PromptGroup | None] = asyncio.Queue()
-    sem = asyncio.Semaphore(max_concurrent)
     worker_error: BaseException | None = None
 
     async def _worker(coro: Coroutine) -> None:
         nonlocal worker_error
         try:
-            async with sem:
-                result = await coro
+            result = await coro
             queue.put_nowait(result)
         except BaseException as exc:
             if worker_error is None:
@@ -98,10 +90,11 @@ async def run_rl_loop(
         sample_fails = 0
         all_raw_rewards: list[float] = []
         total_sampled = 0
+        total_completions = 0
         step_start_time = time.time()
         step_prompt_groups: list[PromptGroup] = []
 
-        pbar = tqdm(total=prompt_groups_per_step, desc="sampling", unit="prompt_grp", dynamic_ncols=True)
+        pbar = tqdm(total=len(step_coros), desc="sampling", unit="group", dynamic_ncols=True)
 
         for _ in range(len(step_coros)):
             t_wait = time.time()
@@ -115,24 +108,30 @@ async def run_rl_loop(
             if item is None:
                 sample_fails += 1
                 total_sampled += 1
-                pbar.set_postfix(sampled=total_sampled, failed=sample_fails, filtered=filter_drops)
+                pbar.set_postfix(
+                    groups=f"{len(step_prompt_groups)}/{prompt_groups_per_step}",
+                    failed=sample_fails, filtered=filter_drops,
+                )
                 continue
 
             total_sampled += 1
+            n_completions = len(item.rewards)
+            total_completions += n_completions
             all_raw_rewards.extend(item.rewards)
             if dynamic_filter_fn is not None and not dynamic_filter_fn(item):
                 filter_drops += 1
-                pbar.set_postfix(sampled=total_sampled, failed=sample_fails, filtered=filter_drops)
+                pbar.update(1)
+                pbar.set_postfix(completions=total_completions, failed=sample_fails, filtered=filter_drops)
                 continue
 
             step_prompt_groups.append(item)
             pbar.update(1)
-            pbar.set_postfix(sampled=total_sampled, failed=sample_fails, filtered=filter_drops)
+            pbar.set_postfix(completions=total_completions, failed=sample_fails, filtered=filter_drops)
             if len(step_prompt_groups) % 5 == 0 or len(step_prompt_groups) == prompt_groups_per_step:
                 logger.info(
-                    "Sampling %d/%d groups (sampled=%d, failed=%d, filtered=%d, %.0fs elapsed)",
+                    "Sampling %d/%d groups (%d completions, failed=%d, filtered=%d, %.0fs elapsed)",
                     len(step_prompt_groups), prompt_groups_per_step,
-                    total_sampled, sample_fails, filter_drops,
+                    total_completions, sample_fails, filter_drops,
                     time.time() - step_start_time,
                 )
 
@@ -144,9 +143,9 @@ async def run_rl_loop(
 
         step_wall_time = time.time() - step_start_time
         logger.info(
-            "Sampling complete: %d/%d groups in %.1fs (failed=%d, filtered=%d)",
+            "Sampling complete: %d/%d groups (%d completions) in %.1fs (failed=%d, filtered=%d)",
             len(step_prompt_groups), prompt_groups_per_step,
-            step_wall_time, sample_fails, filter_drops,
+            total_completions, step_wall_time, sample_fails, filter_drops,
         )
         loop_stats = {
             "valid_prompt_groups": len(step_prompt_groups),

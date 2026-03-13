@@ -171,13 +171,8 @@ def should_accept(pg: PromptGroup) -> bool:
 
     Passed to ``run_rl_loop`` as a pluggable filter.  Replace with your
     own logic (e.g. minimum reward threshold, response length filter).
-
-    NOTE: Dynamic filtering is disabled by default (returns True for all
-    groups) to ensure 1:1 training.  Uncomment the variance check below
-    to re-enable it.
     """
-    # return len(set(pg.rewards)) > 1
-    return True
+    return len(set(pg.rewards)) > 1
 
 
 # ---------------------------------------------------------------------------
@@ -413,10 +408,13 @@ def main(
             is_config=cfg.is_correction,
         )
 
+        request_semaphore = asyncio.Semaphore(32)
+
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens, temperature=cfg.temperature,
             max_seq_len=cfg.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
+            request_semaphore=request_semaphore,
         )
         if cfg.router_replay:
             sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
