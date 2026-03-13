@@ -60,9 +60,12 @@ async def run_rl_loop(
     """Run the on-policy RL training loop.
 
     Samples ``prompt_groups_per_step`` prompts concurrently (capped by
-    ``max_concurrent``), collects all valid groups, then calls
-    ``train_fns.train_step`` once per optimizer step (1:1 fwd/bwd to
-    optim_step ratio).
+    ``max_concurrent``), collects valid groups, then calls
+    ``train_fns.train_step`` once per optimizer step.
+
+    Each prompt fires ``completions_per_prompt`` individual n=1 requests
+    internally (via ``sample_with_tokens``), so the actual in-flight
+    request count is up to ``max_concurrent * completions_per_prompt``.
     """
     coros = list(sample_fns)
 
@@ -125,6 +128,13 @@ async def run_rl_loop(
             step_prompt_groups.append(item)
             pbar.update(1)
             pbar.set_postfix(sampled=total_sampled, failed=sample_fails, filtered=filter_drops)
+            if len(step_prompt_groups) % 5 == 0 or len(step_prompt_groups) == prompt_groups_per_step:
+                logger.info(
+                    "Sampling %d/%d groups (sampled=%d, failed=%d, filtered=%d, %.0fs elapsed)",
+                    len(step_prompt_groups), prompt_groups_per_step,
+                    total_sampled, sample_fails, filter_drops,
+                    time.time() - step_start_time,
+                )
 
         pbar.close()
 
@@ -133,6 +143,11 @@ async def run_rl_loop(
             continue
 
         step_wall_time = time.time() - step_start_time
+        logger.info(
+            "Sampling complete: %d/%d groups in %.1fs (failed=%d, filtered=%d)",
+            len(step_prompt_groups), prompt_groups_per_step,
+            step_wall_time, sample_fails, filter_drops,
+        )
         loop_stats = {
             "valid_prompt_groups": len(step_prompt_groups),
             "total_sampled": total_sampled,

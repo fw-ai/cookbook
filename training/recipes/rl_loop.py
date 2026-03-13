@@ -101,9 +101,6 @@ class Config:
     All groups are collected before a single ``forward_backward_custom`` +
     ``optim_step`` pair fires (1:1 ratio)."""
 
-    max_concurrent: int = 32
-    """Cap on concurrent in-flight sampling requests to the inference server."""
-
     router_replay: bool = False
     router_replay_completion_only: bool = True
 
@@ -174,8 +171,13 @@ def should_accept(pg: PromptGroup) -> bool:
 
     Passed to ``run_rl_loop`` as a pluggable filter.  Replace with your
     own logic (e.g. minimum reward threshold, response length filter).
+
+    NOTE: Dynamic filtering is disabled by default (returns True for all
+    groups) to ensure 1:1 training.  Uncomment the variance check below
+    to re-enable it.
     """
-    return len(set(pg.rewards)) > 1
+    # return len(set(pg.rewards)) > 1
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -430,8 +432,7 @@ def main(
                 return None
 
             try:
-                sampled = await asyncio.to_thread(
-                    sampler.sample_with_tokens,
+                sampled = await sampler.sample_with_tokens(
                     messages=input_messages,
                     n=completions_per_prompt,
                     **sample_kwargs,
@@ -627,7 +628,6 @@ def main(
             sample_fns=(sample_one_prompt(row) for row in remaining_rows),
             train_fns=train_fns,
             prompt_groups_per_step=prompt_groups_per_step,
-            max_concurrent=cfg.max_concurrent,
             dynamic_filter_fn=should_accept,
             global_step=step_offset,
             metrics_callback=_loop_metrics_callback,
