@@ -267,7 +267,7 @@ def make_batch_weighted_sft_loss_fn(
     Args:
         raw_sum: If True, return the raw sum of token losses without dividing
             by the token count. Use this with server-side gradient accumulation
-            normalization (``grad_accumulation_normalization="num_masked_tokens"``
+            normalization (``grad_accumulation_normalization="num_loss_tokens"``
             on ``optim_step``) to get a correct global per-token mean across
             all accumulation steps.
     """
