@@ -5,7 +5,6 @@ import sys
 from types import SimpleNamespace
 
 from eval_protocol.models import EvaluationRow, InputMetadata, Message
-import httpx
 
 import training.examples.frozen_lake.train_frozen_lake as train_module
 from training.examples.frozen_lake.masking import (
@@ -19,6 +18,31 @@ from training.examples.frozen_lake.train_frozen_lake import (
     load_seed_contexts,
     parse_args,
 )
+
+
+class _FakeAsyncFireworks:
+    init_kwargs: list[dict[str, object]] = []
+    create_kwargs: list[dict[str, object]] = []
+    responses: list[object | None] = []
+
+    def __init__(self, *, api_key, base_url):
+        type(self).init_kwargs.append({
+            "api_key": api_key,
+            "base_url": base_url,
+        })
+        self.completions = self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def create(self, **kwargs):
+        type(self).create_kwargs.append(dict(kwargs))
+        if type(self).responses:
+            return type(self).responses.pop(0)
+        return object()
 
 
 def test_parse_args_applies_cli_overrides(monkeypatch):
@@ -231,6 +255,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
                 "account_id": account_id,
                 "base_url": base_url,
                 "hotload_api_url": hotload_api_url,
+                "inference_url": inference_url,
             }
 
         def delete(self, deployment_id):
@@ -292,7 +317,10 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(train_module, "FrozenLakeToolRolloutProcessor", FakeRolloutProcessor)
     monkeypatch.setattr(train_module, "build_loss_fn", lambda **kwargs: ("loss-builder", kwargs))
     monkeypatch.setattr(train_module, "run_rl_loop", fake_run_rl_loop)
-    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: SimpleNamespace(status_code=200))
+    _FakeAsyncFireworks.init_kwargs = []
+    _FakeAsyncFireworks.create_kwargs = []
+    _FakeAsyncFireworks.responses = []
+    monkeypatch.setattr(train_module, "AsyncFireworks", _FakeAsyncFireworks)
 
     train_module.main()
 
@@ -302,8 +330,11 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["trainer_jobs"][0]["display_name"] == "frozen-lake-policy"
     assert events["trainer_jobs"][0]["hot_load_deployment_id"] == "dep-123"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
+    assert events["deploy_mgr_init"]["inference_url"] == "https://unit.test"
+    assert _FakeAsyncFireworks.init_kwargs[0]["base_url"] == "https://unit.test/inference"
     assert events["rollout_processor_init"]["observation_mode"] == "image"
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
+    assert events["rollout_processor_init"]["base_url"] == "https://unit.test/inference"
     assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
     assert "train_fns" in events["run_rl_loop_kwargs"]
     assert events["deleted_jobs"] == ["policy-job"]
@@ -373,6 +404,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
                 "account_id": account_id,
                 "base_url": base_url,
                 "hotload_api_url": hotload_api_url,
+                "inference_url": inference_url,
             }
 
         def delete(self, deployment_id):
@@ -506,8 +538,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
 
         return _builder
 
-    readiness_status = iter([503, 200])
-
     monkeypatch.setattr(train_module, "parse_args", lambda: cfg)
     monkeypatch.setattr(train_module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(train_module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
@@ -545,11 +575,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         lambda **kwargs: _OrigInfraConfig(ref_training_shape_id="ts-qwen3-4b-smoke-v1", **kwargs),
     )
     monkeypatch.setattr(train_module.time, "sleep", lambda seconds: events["sleeps"].append(seconds))
-    monkeypatch.setattr(
-        httpx,
-        "post",
-        lambda *args, **kwargs: SimpleNamespace(status_code=next(readiness_status)),
-    )
+    _FakeAsyncFireworks.init_kwargs = []
+    _FakeAsyncFireworks.create_kwargs = []
+    _FakeAsyncFireworks.responses = [None] * 8 + [object() for _ in range(8)]
+    monkeypatch.setattr(train_module, "AsyncFireworks", _FakeAsyncFireworks)
 
     train_module.main()
 
@@ -559,7 +588,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         "frozen-lake-policy",
         "frozen-lake-reference",
     ]
+    assert events["deploy_mgr_init"]["inference_url"] == "https://unit.test"
+    assert _FakeAsyncFireworks.init_kwargs[0]["base_url"] == "https://unit.test/inference"
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
+    assert events["rollout_processor_init"]["base_url"] == "https://unit.test/inference"
     assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []
     assert events["final_save"] == ("step-1", 2700)
@@ -572,3 +604,4 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1
+    assert events["sleeps"] == [5]
