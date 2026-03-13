@@ -307,7 +307,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
     assert "train_fns" in events["run_rl_loop_kwargs"]
     assert events["deleted_jobs"] == ["policy-job"]
-    assert events["deleted_deployments"] == ["dep-123"]
+    assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1
 
 
@@ -539,6 +539,11 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     monkeypatch.setattr(train_module, "flush_timing", lambda: {"perf/step_time": 1.0})
     monkeypatch.setattr(train_module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
     monkeypatch.setattr(train_module, "run_rl_loop", fake_run_rl_loop)
+    _OrigInfraConfig = train_module.InfraConfig
+    monkeypatch.setattr(
+        train_module, "InfraConfig",
+        lambda **kwargs: _OrigInfraConfig(ref_training_shape_id="ts-qwen3-4b-smoke-v1", **kwargs),
+    )
     monkeypatch.setattr(train_module.time, "sleep", lambda seconds: events["sleeps"].append(seconds))
     monkeypatch.setattr(
         httpx,
@@ -548,7 +553,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
 
     train_module.main()
 
-    assert events["resolved_shapes"] == ["ts-qwen3-4b-smoke-v1"]
+    assert events["resolved_shapes"] == ["ts-qwen3-4b-smoke-v1", "ts-qwen3-4b-smoke-v1"]
     assert events["deployment_shape"] == "shape"
     assert [call["display_name"] for call in events["trainer_jobs"]] == [
         "frozen-lake-policy",
@@ -564,6 +569,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     assert advantages[0] > 0
     assert advantages[1] < 0
     assert events["build_loss_fn_calls"][0]["prompt_lens"] == [3, 3]
-    assert events["deleted_jobs"] == ["policy-job", "reference-job"]
-    assert events["deleted_deployments"] == ["dep-123"]
+    assert events["deleted_jobs"] == ["reference-job", "policy-job"]
+    assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1

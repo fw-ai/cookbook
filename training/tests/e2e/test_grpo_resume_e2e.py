@@ -24,7 +24,7 @@ import tempfile
 import pytest
 
 from tinker_cookbook.checkpoint_utils import get_last_checkpoint
-from training.utils import InfraConfig, DeployConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
 
@@ -44,7 +44,7 @@ def _gsm8k_reward(completion: str, row: dict) -> float:
 @pytest.mark.e2e
 @pytest.mark.timeout(5400)
 class TestGRPOResumeE2E:
-    """GRPO checkpoint-resume on qwen3-30b-a3b with R3, TIS, and hotloading."""
+    """GRPO checkpoint-resume on qwen3-30b-a3b with R3, TIS, and weight sync."""
 
     def test_grpo_resume_from_checkpoint(
         self,
@@ -68,12 +68,10 @@ class TestGRPOResumeE2E:
         deployment_id = os.environ.get("GRPO_RESUME_DEPLOYMENT_ID")
         log_dir = tempfile.mkdtemp(prefix="grpo_resume_")
 
-        training_shape_id = os.environ.get("FIREWORKS_E2E_TRAINING_SHAPE", "ts-qwen3-30b-a3b-policy")
         shared_infra = InfraConfig(
             region=e2e_region,
             accelerator_type=e2e_training_accelerator,
             custom_image_tag=custom_image_tag,
-            training_shape_id=training_shape_id,
         )
 
         # Phase 1: train ~2 steps, save DCP
@@ -94,12 +92,12 @@ class TestGRPOResumeE2E:
                 deployment_region=e2e_region,
                 tokenizer_model=e2e_tokenizer_model,
             ),
-            hotload=HotloadConfig(
-                hot_load_interval=1,
+            weight_sync=WeightSyncConfig(
+                weight_sync_interval=1,
                 dcp_save_interval=2,
                 first_checkpoint_type="base",
-                hot_load_before_training=True,
-                hot_load_timeout=600,
+                weight_sync_before_training=True,
+                weight_sync_timeout=600,
             ),
         )
 
@@ -138,11 +136,11 @@ class TestGRPOResumeE2E:
                 deployment_id=phase1_deployment_id,
                 tokenizer_model=e2e_tokenizer_model,
             ),
-            hotload=HotloadConfig(
-                hot_load_interval=1,
+            weight_sync=WeightSyncConfig(
+                weight_sync_interval=1,
                 first_checkpoint_type="base",
-                hot_load_before_training=True,
-                hot_load_timeout=600,
+                weight_sync_before_training=True,
+                weight_sync_timeout=600,
             ),
         )
 

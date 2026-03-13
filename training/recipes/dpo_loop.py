@@ -37,9 +37,10 @@ from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    ResourceCleanup,
     WandBConfig,
     DeployConfig,
-    HotloadConfig,
+    WeightSyncConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
@@ -120,7 +121,7 @@ class Config:
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    hotload: HotloadConfig = field(default_factory=lambda: HotloadConfig(hot_load_interval=0))
+    weight_sync: WeightSyncConfig = field(default_factory=lambda: WeightSyncConfig(weight_sync_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     init_from_checkpoint: str | None = None
 
@@ -302,8 +303,8 @@ async def _train_loop(
             for k, v in optim_result.metrics.items():
                 step_metrics[f"train/{k}"] = v
 
-        hl = cfg.hotload
-        if hl.hot_load_interval > 0 and step % hl.hot_load_interval == 0:
+        hl = cfg.weight_sync
+        if hl.weight_sync_interval > 0 and step % hl.weight_sync_interval == 0:
             with timer("weight_sync"):
                 weight_syncer.save_and_hotload(f"step-{step}")
         if hl.dcp_save_interval > 0 and step % hl.dcp_save_interval == 0:
@@ -391,7 +392,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
+    validate_config(cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -423,6 +424,16 @@ def main(
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
 
+    ref_profile = None
+    if cfg.infra.ref_training_shape_id:
+        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+    elif profile is not None:
+        raise ValueError(
+            "ref_training_shape_id must be set when training_shape_id is set. "
+            "DPO always requires a reference model. Set it explicitly "
+            "(can be the same as training_shape_id)."
+        )
+
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
         logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
@@ -433,16 +444,7 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    ref_extra = list(cfg.infra.extra_args or [])
-    if "--forward-only" not in ref_extra:
-        ref_extra.append("--forward-only")
-    if "--no-compile" not in ref_extra:
-        ref_extra.append("--no-compile")
-
-    policy_job_id: str | None = None
-    reference_job_id: str | None = None
-
-    try:
+    with ResourceCleanup(rlor_mgr) as cleanup:
         with ThreadPoolExecutor(max_workers=2) as pool:
             pol_fut = pool.submit(
                 create_trainer_job,
@@ -454,25 +456,27 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,
+                hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
             )
             ref_fut = pool.submit(
                 create_trainer_job,
                 rlor_mgr,
                 base_model=cfg.base_model,
                 infra=cfg.infra,
-                profile=profile,
+                profile=ref_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-reference",
-                extra_args=ref_extra,
+                forward_only=True,
             )
             policy_ep = pol_fut.result()
             reference_ep = ref_fut.result()
 
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id
+        cleanup.trainer(policy_job_id)
+        cleanup.trainer(reference_job_id)
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
         reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
@@ -482,8 +486,8 @@ def main(
             deploy_mgr=deploy_mgr,
             deployment_id=cfg.deployment.deployment_id,
             base_model=cfg.base_model,
-            hotload_timeout=cfg.hotload.hot_load_timeout,
-            first_checkpoint_type=cfg.hotload.first_checkpoint_type,
+            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
+            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
             compression_format=DEFAULT_DELTA_COMPRESSION,
         )
 
@@ -536,28 +540,15 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
-        hl = cfg.hotload
+        hl = cfg.weight_sync
         if step > step_offset:
             weight_syncer.save_dcp(f"step-{step}")
-            if hl.hot_load_interval > 0:
+            if hl.weight_sync_interval > 0:
                 weight_syncer.save_and_hotload(f"final-step-{step}")
 
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
-        return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
-    finally:
         wandb_finish()
-        if policy_job_id:
-            try:
-                logger.info("Cleanup: deleting policy trainer job %s", policy_job_id)
-                rlor_mgr.delete(policy_job_id)
-            except Exception as e:
-                logger.warning("Cleanup: failed to delete policy job %s: %s", policy_job_id, e)
-        if reference_job_id:
-            try:
-                logger.info("Cleanup: deleting reference trainer job %s", reference_job_id)
-                rlor_mgr.delete(reference_job_id)
-            except Exception as e:
-                logger.warning("Cleanup: failed to delete reference job %s: %s", reference_job_id, e)
+        return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
 
 
 if __name__ == "__main__":

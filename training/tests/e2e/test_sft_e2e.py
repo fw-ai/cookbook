@@ -1,7 +1,7 @@
 """E2E test for SFT training on qwen3-30b-a3b.
 
 Creates a real RLOR trainer job, trains SFT on a small synthetic chat dataset,
-and verifies metrics. No deployment or hotloading.
+and verifies metrics. No deployment or weight sync.
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training access
@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, HotloadConfig
+from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
 from training.recipes.sft_loop import Config, main
 
 
@@ -65,12 +65,11 @@ class TestSFTE2E:
                 max_examples=10,
                 infra=InfraConfig(
                     region=e2e_region,
-                    skip_validations=True,
                     accelerator_type=e2e_training_accelerator,
                     custom_image_tag=custom_image_tag,
                 ),
                 deployment=DeployConfig(),
-                hotload=HotloadConfig(hot_load_interval=0),
+                weight_sync=WeightSyncConfig(weight_sync_interval=0),
             )
 
             metrics = main(config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)

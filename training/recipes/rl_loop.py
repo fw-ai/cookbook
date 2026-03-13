@@ -32,9 +32,10 @@ from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    ResourceCleanup,
     WandBConfig,
     DeployConfig,
-    HotloadConfig,
+    WeightSyncConfig,
     ReconnectableClient,
     RLPromptDataset,
     wandb_log,
@@ -91,8 +92,8 @@ class Config:
     max_seq_len: int | None = None
     """Max sequence length for sampling and training.  When using training
     shapes, this is auto-populated from the shape's
-    ``max_supported_context_length``.  Can be set manually when not using
-    shapes, or as an override with ``skip_validations=True``."""
+    ``max_supported_context_length``.  Must be set manually on the
+    manual path (no training shape)."""
     lora_rank: int = 0
 
     prompt_groups_per_step: int = 1
@@ -135,7 +136,7 @@ class Config:
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    hotload: HotloadConfig = field(default_factory=HotloadConfig)
+    weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
 
 
@@ -228,7 +229,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.hotload, cfg.deployment, cfg.infra)
+    validate_config(cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment)
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -259,10 +260,6 @@ def main(
 
     # -- Resolve training shapes -----------------------------------------------
 
-    use_reference = cfg.kl_beta != 0
-    if not use_reference:
-        logger.info("kl_beta=0: skipping reference model creation")
-
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
@@ -287,19 +284,21 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    ref_profile = profile
-    if use_reference and cfg.infra.ref_training_shape_id:
-        logger.info("Using separate ref training shape: %s", cfg.infra.ref_training_shape_id)
+    ref_profile = None
+    if cfg.infra.ref_training_shape_id:
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+
+    use_reference = ref_profile is not None
+    if not use_reference:
+        logger.info("No ref_training_shape_id set, skipping reference model")
 
     import time as _time
     _infra_start = _time.time()
 
-    policy_job_id: str | None = None
-    reference_job_id: str | None = None
-
-    try:
+    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+        if cleanup_on_exit:
+            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         logger.info(
             "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
@@ -315,7 +314,7 @@ def main(
                     lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-policy",
-                    hot_load_deployment_id=cfg.deployment.deployment_id,
+                    hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
                     job_id=cfg.policy_job_id,
                     base_url_override=cfg.policy_base_url,
                 )
@@ -330,8 +329,12 @@ def main(
                 )
                 policy_ep = pol_fut.result()
                 policy_job_id = policy_ep.job_id
+                if not cfg.policy_job_id:
+                    cleanup.trainer(policy_job_id)
                 reference_ep = ref_fut.result()
                 reference_job_id = reference_ep.job_id
+                if not cfg.reference_job_id:
+                    cleanup.trainer(reference_job_id)
         else:
             policy_ep = create_trainer_job(
                 rlor_mgr,
@@ -344,6 +347,8 @@ def main(
                 base_url_override=cfg.policy_base_url,
             )
             policy_job_id = policy_ep.job_id
+            if not cfg.policy_job_id:
+                cleanup.trainer(policy_job_id)
             reference_ep = None
 
         policy = ReconnectableClient(
@@ -371,9 +376,9 @@ def main(
         weight_syncer = WeightSyncer(
             policy_client=policy.inner, deploy_mgr=deploy_mgr,
             deployment_id=cfg.deployment.deployment_id, base_model=cfg.base_model,
-            hotload_timeout=cfg.hotload.hot_load_timeout,
-            first_checkpoint_type=cfg.hotload.first_checkpoint_type,
-            dcp_timeout=cfg.hotload.dcp_timeout,
+            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
+            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
+            dcp_timeout=cfg.weight_sync.dcp_timeout,
         )
 
         infra_boot_time = _time.time() - _infra_start
@@ -391,7 +396,7 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
 
-        if cfg.hotload.hot_load_before_training and cfg.deployment.deployment_id:
+        if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
@@ -548,7 +553,7 @@ def main(
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + fwd_bwd + optim_step + hotload + metrics (1:1)."""
+            """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
             t0 = _time.time()
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
@@ -562,13 +567,13 @@ def main(
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
-            if cfg.hotload.hot_load_interval > 0 and step % cfg.hotload.hot_load_interval == 0:
-                logger.info("[step %d] hotload: saving + loading...", step)
+            if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
+                logger.info("[step %d] weight_sync: saving + loading...", step)
                 t0 = _time.time()
                 with timer("weight_sync"):
                     weight_syncer.save_and_hotload(f"step-{step}")
-                logger.info("[step %d] hotload: done (%.1fs)", step, _time.time() - t0)
-            if cfg.hotload.dcp_save_interval > 0 and step % cfg.hotload.dcp_save_interval == 0:
+                logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
+            if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
                 with timer("dcp_save"):
@@ -642,32 +647,12 @@ def main(
                 logger.warning("Failed to save final checkpoint: %s", e)
 
             logger.info("Training complete: %d steps", global_step)
+            wandb_finish()
             return {
                 "steps": global_step,
                 "policy_job_id": policy_job_id,
                 "reference_job_id": reference_job_id,
             }
-    finally:
-        wandb_finish()
-        if cleanup_on_exit:
-            if policy_job_id and not cfg.policy_job_id:
-                try:
-                    logger.info("Cleanup: deleting policy trainer job %s", policy_job_id)
-                    rlor_mgr.delete(policy_job_id)
-                except Exception as e:
-                    logger.warning("Cleanup: failed to delete policy job %s: %s", policy_job_id, e)
-            if reference_job_id and not cfg.reference_job_id:
-                try:
-                    logger.info("Cleanup: deleting reference trainer job %s", reference_job_id)
-                    rlor_mgr.delete(reference_job_id)
-                except Exception as e:
-                    logger.warning("Cleanup: failed to delete reference job %s: %s", reference_job_id, e)
-            if cfg.deployment.deployment_id:
-                try:
-                    logger.info("Cleanup: scaling deployment to zero %s", cfg.deployment.deployment_id)
-                    deploy_mgr.scale_to_zero(cfg.deployment.deployment_id)
-                except Exception as e:
-                    logger.warning("Cleanup: failed to scale deployment %s: %s", cfg.deployment.deployment_id, e)
 
 
 if __name__ == "__main__":

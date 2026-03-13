@@ -80,7 +80,7 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | Field | What to set |
 | --- | --- |
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
-| `hotload` | `HotloadConfig(hot_load_interval=1)` to sync weights to the deployment |
+| `weight_sync` | `WeightSyncConfig(weight_sync_interval=1)` to sync weights to the deployment |
 
 **DPO / ORPO** -- also requires:
 
@@ -141,9 +141,9 @@ All recipes expect JSONL files with OpenAI chat format:
 
 All recipes use composable dataclass configs:
 
-- **`InfraConfig`** -- region, accelerators, training shapes. When `training_shape_id` is set, `max_seq_len` and GPU config are auto-derived; use `skip_validations=True` only if you intentionally want explicit accelerator overrides to win.
+- **`InfraConfig`** -- region, accelerators, training shapes. When `training_shape_id` is set (shape path), `max_seq_len` and GPU config are auto-derived from the shape. When `training_shape_id` is not set (manual path), all infra fields are sent directly.
 - **`DeployConfig`** -- inference deployment for RL rollouts. Set `deployment_id` to reuse an existing deployment, or omit to auto-create.
-- **`HotloadConfig`** -- weight sync cadence and checkpoint settings. Set `dcp_save_interval` to save DCP checkpoints for resume.
+- **`WeightSyncConfig`** -- weight sync cadence and checkpoint settings. Set `dcp_save_interval` to save DCP checkpoints for resume.
 - **`WandBConfig`** -- optional Weights & Biases logging.
 - **`log_path`** (required on all Configs) -- directory for `checkpoints.jsonl` and logs. Resume is automatic: if `checkpoints.jsonl` exists in `log_path`, training continues from the last checkpoint. Use `init_from_checkpoint` to start from a specific checkpoint with fresh data.
 

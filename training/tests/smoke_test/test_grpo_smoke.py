@@ -1,7 +1,7 @@
 """Minimal GRPO e2e smoke test on Qwen3-4B.
 
-Runs 2 optimizer steps with hotloading on a single GPU:
-  Step 1: fwd/bkwd + optim_step -> hotload to deployment
+Runs 2 optimizer steps with weight syncing on a single GPU:
+  Step 1: fwd/bkwd + optim_step -> weight sync to deployment
   Step 2: fwd/bkwd + optim_step (sampling from updated weights)
   Cleanup: delete trainer job, scale deployment to zero
 
@@ -52,11 +52,10 @@ def test_grpo_smoke(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
-    smoke_training_shape,
-    smoke_custom_image_tag,
+    smoke_infra,
 ):
-    """2-step GRPO on Qwen3-4B: train, hotload, train again, cleanup."""
-    from training.utils import InfraConfig, DeployConfig, HotloadConfig, WandBConfig
+    """2-step GRPO on Qwen3-4B: train, weight sync, train again, cleanup."""
+    from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
     from training.recipes.rl_loop import Config, main
     import training.recipes.rl_loop as rl_mod
 
@@ -81,19 +80,15 @@ def test_grpo_smoke(
             max_completion_tokens=32,
             max_rows=2,
             epochs=1,
-            infra=InfraConfig(
-                training_shape_id=smoke_training_shape,
-                skip_validations=True,
-                custom_image_tag=smoke_custom_image_tag,
-            ),
+            infra=smoke_infra,
             deployment=DeployConfig(
                 tokenizer_model=smoke_tokenizer_model,
             ),
-            hotload=HotloadConfig(
-                hot_load_interval=1,
+            weight_sync=WeightSyncConfig(
+                weight_sync_interval=1,
                 first_checkpoint_type="base",
-                hot_load_before_training=True,
-                hot_load_timeout=600,
+                weight_sync_before_training=True,
+                weight_sync_timeout=600,
             ),
             wandb=WandBConfig(),
         )
@@ -108,5 +103,18 @@ def test_grpo_smoke(
         assert isinstance(metrics, dict), f"Expected dict, got {type(metrics)}"
         assert "steps" in metrics, f"Missing 'steps' in metrics: {metrics}"
         assert metrics["steps"] >= 2, f"Expected >= 2 steps, got {metrics['steps']}"
+
+        import httpx, time
+        time.sleep(3)
+        policy_job_id = metrics.get("policy_job_id")
+        if policy_job_id:
+            try:
+                job = rlor_mgr.get(policy_job_id)
+                state = job.get("state", "")
+                assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                    f"ResourceCleanup failed: policy job {policy_job_id} still {state}"
+                )
+            except httpx.HTTPStatusError as e:
+                assert e.response.status_code == 404
     finally:
         os.unlink(dataset_path)

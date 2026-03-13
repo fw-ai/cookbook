@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 import pytest
 
 from fireworks.training.sdk.deployment import DeploymentManager
 from fireworks.training.sdk.trainer import TrainerJobManager
+from training.utils.config import InfraConfig
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SMOKE_BASE_MODEL = "accounts/fireworks/models/qwen3-4b"
 DEFAULT_SMOKE_TOKENIZER_MODEL = "Qwen/Qwen3-4B"
@@ -37,6 +41,38 @@ def smoke_training_shape() -> str:
 @pytest.fixture(scope="session")
 def smoke_custom_image_tag() -> str | None:
     return _get_env("FIREWORKS_CUSTOM_IMAGE_TAG")
+
+
+@pytest.fixture(scope="session")
+def smoke_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig:
+    """Build the right InfraConfig for the smoke environment.
+
+    * CI sets ``FIREWORKS_CUSTOM_IMAGE_TAG`` to test a freshly-built image
+      -> manual path (no training shape, direct infra fields).
+    * Without a custom image -> shape path (validated training shape owns
+      all infra fields, which is what production users actually use).
+    """
+    if smoke_custom_image_tag:
+        logger.info("Smoke: manual path (custom_image_tag=%s)", smoke_custom_image_tag)
+        return InfraConfig(custom_image_tag=smoke_custom_image_tag)
+    logger.info("Smoke: shape path (training_shape_id=%s)", smoke_training_shape)
+    return InfraConfig(training_shape_id=smoke_training_shape)
+
+
+@pytest.fixture(scope="session")
+def smoke_dpo_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig:
+    """InfraConfig for DPO smoke tests (includes ref_training_shape_id).
+
+    DPO always needs a reference model. On the shape path, both policy
+    and reference use the same training shape -- the control plane's
+    ``applyForwardOnlyConfig`` handles the ``--forward-only`` difference.
+    """
+    if smoke_custom_image_tag:
+        return InfraConfig(custom_image_tag=smoke_custom_image_tag)
+    return InfraConfig(
+        training_shape_id=smoke_training_shape,
+        ref_training_shape_id=smoke_training_shape,
+    )
 
 
 @pytest.fixture(scope="session")

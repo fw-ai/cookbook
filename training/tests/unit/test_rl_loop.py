@@ -197,7 +197,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
-    assert events["wandb_finished"] == 1
+    assert events["wandb_finished"] == 0
 
 
 def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
@@ -443,7 +443,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         prompt_groups_per_step=1,
         router_replay=True,
         trajectory_dir=str(tmp_path),
-        hotload=module.HotloadConfig(hot_load_interval=1, dcp_save_interval=1, hot_load_before_training=True),
+        weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1, weight_sync_before_training=True),
         deployment=module.DeployConfig(
             deployment_id="dep-123",
             tokenizer_model="Qwen/Qwen3-4B",
@@ -476,13 +476,13 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     assert events["sampler_calls"][0]["include_routing_matrix"] is True
     assert len(events["routing_matrix_calls"]) == 2
     assert events["weight_sync_saves"][0] == ("step-0-base", "base")
-    hotload_names = [name for name, _ in events["weight_sync_saves"]]
-    assert "step-2" in hotload_names
+    weight_sync_names = [name for name, _ in events["weight_sync_saves"]]
+    assert "step-2" in weight_sync_names
     assert "step-2" in events["weight_sync_dcp"]
     assert len(events["build_loss_fn_calls"]) == 1
     advantages = events["build_loss_fn_calls"][0]["advantages"]
     assert len(advantages) == 2
     assert advantages[0] > 0
     assert advantages[1] < 0
-    assert events["deleted_jobs"] == ["policy-job", "reference-job"]
+    assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]

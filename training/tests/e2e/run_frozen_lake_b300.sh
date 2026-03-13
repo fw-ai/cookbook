@@ -14,7 +14,7 @@
 #   FIREWORKS_ACCOUNT_ID       Default: pyroworks-dev
 #   FIRECTL_BIN                Path to firectl-admin binary
 #   FIRECTL_PROFILE            firectl profile for B300 gateway (default: dev-bennychen)
-#   DEPLOYMENT_ID              Pre-created deployment with hotload
+#   DEPLOYMENT_ID              Pre-created deployment with weight sync
 #
 # Usage:
 #   export FIREWORKS_API_KEY=fw_...
@@ -83,7 +83,7 @@ DEP_STATE=$("$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" deployment get "$DEPLOYMEN
 
 if [[ "$DEP_STATE" != "READY" ]]; then
     log "FATAL: deployment $DEPLOYMENT_ID not READY (state=${DEP_STATE:-unknown})"
-    log "Create a deployment with hotload enabled before running this test."
+    log "Create a deployment with weight sync enabled before running this test."
     exit 1
 fi
 log "Deployment READY"

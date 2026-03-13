@@ -56,6 +56,7 @@ from training.utils import (
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
+from training.utils.infra import ResourceCleanup
 
 logging.basicConfig(
     level=logging.INFO,
@@ -219,7 +220,7 @@ def main():
     policy_job_id = None
     ref_job_id = None
 
-    try:
+    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
         n_workers = 3 if use_reference else 2
         logger.info(
             "\n[1/4] Setting up deployment + trainers in parallel (%s)...",
@@ -246,8 +247,13 @@ def main():
                 )
 
             dep_info = dep_fut.result()
+            if args.cleanup and not args.deployment_id:
+                cleanup.deployment(dep_id, action="scale_to_zero")
+
             pol_ep = pol_fut.result()
             policy_job_id = pol_ep.job_id
+            if args.cleanup:
+                cleanup.trainer(policy_job_id)
             logger.info("  Deployment ready: %s", dep_info.name)
             logger.info("  Policy trainer:   %s", pol_ep.job_id)
 
@@ -255,6 +261,8 @@ def main():
             if ref_fut is not None:
                 ref_ep = ref_fut.result()
                 ref_job_id = ref_ep.job_id
+                if args.cleanup:
+                    cleanup.trainer(ref_job_id)
                 logger.info("  Reference trainer: %s", ref_ep.job_id)
 
         policy = ReconnectableClient(
@@ -427,22 +435,6 @@ def main():
             logger.info("  Results: %s", os.path.join(args.log_dir, "results.json"))
         else:
             logger.error("  No valid comparisons completed!")
-
-    finally:
-        if args.cleanup:
-            for job_id, name in [(policy_job_id, "policy"), (ref_job_id, "reference")]:
-                if job_id:
-                    try:
-                        rlor_mgr.delete(job_id)
-                        logger.info("Deleted %s job: %s", name, job_id)
-                    except Exception as e:
-                        logger.warning("Failed to delete %s job: %s", name, e)
-            if dep_id and not args.deployment_id:
-                try:
-                    deploy_mgr.scale_to_zero(dep_id)
-                    logger.info("Scaled deployment to zero: %s", dep_id)
-                except Exception as e:
-                    logger.warning("Failed to scale deployment: %s", e)
 
 
 if __name__ == "__main__":

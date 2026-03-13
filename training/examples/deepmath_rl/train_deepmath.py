@@ -17,7 +17,7 @@ from typing import cast
 
 from dotenv import load_dotenv
 
-_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
+_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
@@ -29,7 +29,7 @@ from training.utils import (
     InfraConfig,
     WandBConfig,
     DeployConfig,
-    HotloadConfig,
+    WeightSyncConfig,
 )
 from training.utils.rl import ISConfig
 
@@ -308,13 +308,13 @@ def main():
             sample_timeout=1200,
             extra_values=args.deployment_extra_values,
         ),
-        hotload=HotloadConfig(
-            hot_load_interval=1,
+        weight_sync=WeightSyncConfig(
+            weight_sync_interval=1,
             dcp_save_interval=20,
             dcp_timeout=2700,
             first_checkpoint_type="base",
-            hot_load_before_training=True,
-            hot_load_timeout=600,
+            weight_sync_before_training=True,
+            weight_sync_timeout=600,
         ),
         wandb=WandBConfig(
             entity=args.wandb_entity,

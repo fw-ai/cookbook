@@ -27,11 +27,10 @@ def test_sft_smoke(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
-    smoke_training_shape,
-    smoke_custom_image_tag,
+    smoke_infra,
 ):
     from training.recipes.sft_loop import Config, main
-    from training.utils import InfraConfig, WandBConfig
+    from training.utils import WandBConfig
 
     rlor_mgr, _deploy_mgr = smoke_sdk_managers
 
@@ -50,16 +49,25 @@ def test_sft_smoke(
             batch_size=2,
             grad_accum=1,
             max_examples=4,
-            infra=InfraConfig(
-                training_shape_id=smoke_training_shape,
-                skip_validations=True,
-                custom_image_tag=smoke_custom_image_tag,
-            ),
+            infra=smoke_infra,
             wandb=WandBConfig(),
         )
 
         metrics = main(config, rlor_mgr=rlor_mgr)
         assert isinstance(metrics, dict)
         assert metrics["steps"] >= 2, f"Expected >= 2 steps, got {metrics['steps']}"
+
+        import httpx, time
+        time.sleep(3)
+        job_id = metrics.get("job_id")
+        if job_id:
+            try:
+                job = rlor_mgr.get(job_id)
+                state = job.get("state", "")
+                assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                    f"ResourceCleanup failed: job {job_id} still {state}"
+                )
+            except httpx.HTTPStatusError as e:
+                assert e.response.status_code == 404
     finally:
         os.unlink(dataset_path)
