@@ -105,6 +105,10 @@ class Config:
     router_replay: bool = False
     router_replay_completion_only: bool = True
 
+    grad_accumulation_normalization: str | None = "num_loss_tokens"
+    """Normalization mode for accumulated gradients at optim_step.
+    Defaults to "num_loss_tokens" (per-token mean)."""
+
     policy_loss: str = "grpo"
     """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
 
@@ -563,7 +567,10 @@ def main(
             logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _time.time() - t0)
 
             t0 = _time.time()
-            optim_result = policy.optim_step(adam_params)
+            optim_result = policy.optim_step(
+                adam_params,
+                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            )
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
