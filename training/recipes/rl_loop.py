@@ -108,7 +108,7 @@ class Config:
     router_replay_completion_only: bool = True
 
     policy_loss: str = "grpo"
-    """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
+    """``"grpo"``, ``"dapo"``, ``"gspo"``, ``"cispo"``, or ``"reinforce"``."""
 
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
@@ -528,6 +528,8 @@ def main(
                 ]
                 idx += n
 
+        needs_policy_logprobs = cfg.policy_loss != "reinforce"
+
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
             """One minibatch forward/backward call after reference forward."""
             if not prompt_groups:
@@ -535,10 +537,13 @@ def main(
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
-            t0 = _time.time()
-            prox_fwd = policy.forward(data, "cross_entropy")
-            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
+            if needs_policy_logprobs:
+                t0 = _time.time()
+                prox_fwd = policy.forward(data, "cross_entropy")
+                prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+                logger.info("policy_forward: done (%.1fs)", _time.time() - t0)
+            else:
+                prox_lp = []
 
             t0 = _time.time()
             fwd_bwd_result = policy.forward_backward_custom(
@@ -675,5 +680,30 @@ def main(
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
+    
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config(log_path="./rl_logs"))
+    
+    cfg = Config(
+        base_model="accounts/fireworks/models/qwen3-8b",
+        dataset="/shared/datasets/gsm8k_e2e_100/dataset.jsonl",
+        policy_loss="reinforce",
+        max_rows=100,
+        infra=InfraConfig(
+            training_shape_id="qwen3-8b-128k-h200",
+            # custom_image_tag="0.75.2",
+            # skip_validations=True,
+        ),
+        deployment=DeployConfig(
+            tokenizer_model="Qwen/Qwen3-8B",
+        ),
+        hotload=HotloadConfig(
+            hot_load_interval=1,
+        ),
+        log_path="./rl_logs",
+        kl_beta=0,
+    )
+    main(cfg)
+    # logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # main(Config(log_path="./rl_logs"))
