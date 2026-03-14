@@ -200,6 +200,58 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["wandb_finished"] == 0
 
 
+def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
+    """Builtin policy_loss + PP>1 should raise immediately."""
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    class FakeRlorMgr:
+        def resolve_training_profile(self, shape_id):
+            return SimpleNamespace(
+                deployment_shape="dep-shape",
+                deployment_shape_version=None,
+                pipeline_parallelism=4,
+                max_supported_context_length=128,
+            )
+
+        def delete(self, job_id):
+            pass
+
+    class FakeDeployMgr:
+        inference_url = "https://inference.unit.test"
+        boot_time_s = 1.0
+
+        def scale_to_zero(self, deployment_id):
+            pass
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="m"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="j"))
+    monkeypatch.setattr(module, "ReconnectableClient", lambda *a, **kw: SimpleNamespace(inner=object()))
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
+    monkeypatch.setattr(module, "DeploymentSampler", lambda **kw: None)
+    monkeypatch.setattr(module, "WeightSyncer", lambda **kw: None)
+    monkeypatch.setattr(module, "build_loss_fn", lambda **kw: None)
+    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [])
+    from training.utils.checkpoint_utils import ResumeInfo
+    monkeypatch.setattr(module, "resolve_resume", lambda *a, **kw: ResumeInfo(step=0))
+
+    cfg = module.Config(
+        log_path="/tmp/pp_test",
+        base_model="accounts/test/models/m",
+        dataset="/tmp/d.jsonl",
+        policy_loss="grpo",
+        deployment=module.DeployConfig(deployment_id="dep", tokenizer_model="T"),
+        infra=module.InfraConfig(training_shape_id="shape-pp4"),
+    )
+
+    with pytest.raises(ValueError, match="Pipeline parallelism.*PP=4.*not supported"):
+        module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr())
+
+
 def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
@@ -229,7 +281,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             return SimpleNamespace(
                 deployment_shape="dep-shape-v2",
                 deployment_shape_version=None,
-                pipeline_parallelism=2,
+                pipeline_parallelism=1,
                 max_supported_context_length=96,
             )
 
@@ -414,7 +466,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
-    monkeypatch.setattr(module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
     monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {
         "rollout/reward": 0.5,
         "rollout/accuracy": 0.5,
@@ -654,7 +705,6 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
-    monkeypatch.setattr(module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
     monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {"rollout/reward": 0.5, "rollout/accuracy": 0.5, "train/mean_kl": 0.02})
     monkeypatch.setattr(module, "flush_timing", lambda: {})
     monkeypatch.setattr(
