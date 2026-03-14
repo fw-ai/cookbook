@@ -119,7 +119,7 @@ class Config:
     Defaults to ``GradAccNormalization.NUM_LOSS_TOKENS`` (per-token mean)."""
 
     policy_loss: str = "grpo"
-    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, or ``"cispo"``.
+    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, ``"reinforce"``, or ``"cispo"``.
 
     If an eligible builtin kernel exists for the selected loss, training uses
     the server-side ``forward_backward(...)`` path. Otherwise it falls back to
@@ -570,6 +570,7 @@ def main(
             ratio_log_cap=cfg.ratio_log_cap,
             eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high,
         )
+        needs_policy_logprobs = cfg.policy_loss != "reinforce"
 
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
             """One minibatch update using the builtin or client-side loss path."""
@@ -578,10 +579,13 @@ def main(
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
-            t0 = _time.time()
-            prox_fwd = policy.forward(data, "cross_entropy")
-            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
+            if needs_policy_logprobs:
+                t0 = _time.time()
+                prox_fwd = policy.forward(data, "cross_entropy")
+                prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+                logger.info("policy_forward: done (%.1fs)", _time.time() - t0)
+            else:
+                prox_lp = []
 
             t0 = _time.time()
             if builtin_server_loss is not None:
@@ -727,5 +731,30 @@ def main(
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
+    
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config(log_path="./rl_logs"))
+    
+    cfg = Config(
+        base_model="accounts/fireworks/models/qwen3-8b",
+        dataset="/shared/datasets/gsm8k_e2e_100/dataset.jsonl",
+        policy_loss="reinforce",
+        max_rows=100,
+        infra=InfraConfig(
+            training_shape_id="qwen3-8b-128k-h200",
+            # custom_image_tag="0.75.2",
+            # skip_validations=True,
+        ),
+        deployment=DeployConfig(
+            tokenizer_model="Qwen/Qwen3-8B",
+        ),
+        hotload=HotloadConfig(
+            hot_load_interval=1,
+        ),
+        log_path="./rl_logs",
+        kl_beta=0,
+    )
+    main(cfg)
+    # logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # main(Config(log_path="./rl_logs"))
