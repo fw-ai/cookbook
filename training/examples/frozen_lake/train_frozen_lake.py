@@ -67,7 +67,7 @@ from training.utils import (
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
 from training.utils.rl.importance_sampling import ISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
@@ -667,12 +667,23 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     ]
                     idx += n
 
+            check_builtin_loss_eligibility(cfg.policy_loss, profile)
+            builtin = get_builtin_loss_config(cfg.policy_loss)
+
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 prox_fwd = policy.forward(data, "cross_entropy")
                 prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+                if builtin is not None:
+                    kernel_loss, kernel_config = builtin
+                    rl_datums = build_builtin_loss_datums(
+                        data, adv, prox_lp, inf_lp, prompt_lens,
+                    )
+                    return policy.forward_backward(
+                        rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                    )
                 return policy.forward_backward_custom(
-                    data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
+                    data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
                 )
 
             def train_step(

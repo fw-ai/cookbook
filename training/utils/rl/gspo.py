@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import torch
 import tinker
 
-from training.utils.rl.common import _normalize_prompt_lens
+from training.utils.rl.common import _normalize_prompt_lens, _get_loss_mask
 from training.utils.rl.importance_sampling import (
     ISConfig,
     compute_tis_weight,
@@ -83,6 +83,17 @@ def make_gspo_loss_fn(
             if resp_len == 0:
                 continue
 
+            if i < len(data):
+                resp_mask = _get_loss_mask(
+                    data[i], response_start, resp_len, resp_pi.dtype, resp_pi.device,
+                )
+            else:
+                resp_mask = torch.ones(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
+            active = resp_mask > 0.5
+            active_count = int(active.sum().item())
+            if active_count == 0:
+                continue
+
             resp_ref = torch.tensor(
                 [ref_lp[response_start + j] if (response_start + j) < len(ref_lp) else 0.0 for j in range(resp_len)],
                 dtype=resp_pi.dtype, device=resp_pi.device,
@@ -120,11 +131,11 @@ def make_gspo_loss_fn(
             adv_t = torch.as_tensor(adv, dtype=resp_pi.dtype, device=resp_pi.device)
             surr1 = -seq_ratio * adv_t
             surr2 = -clipped_seq_ratio * adv_t
-            per_token_loss = torch.maximum(surr1, surr2) * tis_weight
+            per_token_loss = torch.maximum(surr1, surr2) * tis_weight * resp_mask
 
             total_loss = total_loss + per_token_loss.sum()
-            total_kl += (pi_detached - resp_ref).sum().item()
-            num_tokens += resp_len
+            total_kl += ((pi_detached - resp_ref) * resp_mask).sum().item()
+            num_tokens += active_count
 
         n_samples = max(len(logprobs_list), 1)
         metrics: Dict[str, float] = {

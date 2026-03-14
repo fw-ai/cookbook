@@ -119,6 +119,10 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            events["batches"].append(batch)
+            return SimpleNamespace(metrics={"loss:sum": 2.0, "ce_loss_sum": 2.0, "response_tokens": 4})
+
         def forward_backward_custom(self, batch, loss_fn):
             events["batches"].append(batch)
             return SimpleNamespace(metrics={"ce_loss_sum": 2.0, "response_tokens": 4})

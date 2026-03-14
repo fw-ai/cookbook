@@ -200,6 +200,58 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["wandb_finished"] == 0
 
 
+def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
+    """Builtin policy_loss + PP>1 should raise immediately."""
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    class FakeRlorMgr:
+        def resolve_training_profile(self, shape_id):
+            return SimpleNamespace(
+                deployment_shape="dep-shape",
+                deployment_shape_version=None,
+                pipeline_parallelism=4,
+                max_supported_context_length=128,
+            )
+
+        def delete(self, job_id):
+            pass
+
+    class FakeDeployMgr:
+        inference_url = "https://inference.unit.test"
+        boot_time_s = 1.0
+
+        def scale_to_zero(self, deployment_id):
+            pass
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="m"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="j"))
+    monkeypatch.setattr(module, "ReconnectableClient", lambda *a, **kw: SimpleNamespace(inner=object()))
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
+    monkeypatch.setattr(module, "DeploymentSampler", lambda **kw: None)
+    monkeypatch.setattr(module, "WeightSyncer", lambda **kw: None)
+    monkeypatch.setattr(module, "build_loss_fn", lambda **kw: None)
+    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [])
+    from training.utils.checkpoint_utils import ResumeInfo
+    monkeypatch.setattr(module, "resolve_resume", lambda *a, **kw: ResumeInfo(step=0))
+
+    cfg = module.Config(
+        log_path="/tmp/pp_test",
+        base_model="accounts/test/models/m",
+        dataset="/tmp/d.jsonl",
+        policy_loss="grpo",
+        deployment=module.DeployConfig(deployment_id="dep", tokenizer_model="T"),
+        infra=module.InfraConfig(training_shape_id="shape-pp4"),
+    )
+
+    with pytest.raises(ValueError, match="Pipeline parallelism.*PP=4.*not supported"):
+        module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr())
+
+
 def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
@@ -229,7 +281,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             return SimpleNamespace(
                 deployment_shape="dep-shape-v2",
                 deployment_shape_version=None,
-                pipeline_parallelism=2,
+                pipeline_parallelism=1,
                 max_supported_context_length=96,
             )
 
@@ -282,6 +334,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                     for _ in data
                 ]
             )
+
+        def forward_backward(self, data, loss_fn="cross_entropy", loss_fn_config=None):
+            events["fwd_bwd_call"] = {"data": data, "loss_fn": loss_fn, "loss_fn_config": loss_fn_config}
+            return SimpleNamespace(metrics={"loss": 1.0})
 
         def forward_backward_custom(self, data, loss_fn):
             events["fwd_bwd_call"] = {"data": data, "loss_fn": loss_fn}
@@ -410,7 +466,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
-    monkeypatch.setattr(module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
     monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {
         "rollout/reward": 0.5,
         "rollout/accuracy": 0.5,
@@ -479,10 +534,202 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     weight_sync_names = [name for name, _ in events["weight_sync_saves"]]
     assert "step-2" in weight_sync_names
     assert "step-2" in events["weight_sync_dcp"]
-    assert len(events["build_loss_fn_calls"]) == 1
-    advantages = events["build_loss_fn_calls"][0]["advantages"]
-    assert len(advantages) == 2
-    assert advantages[0] > 0
-    assert advantages[1] < 0
+    assert "fwd_bwd_call" in events
+    from training.utils.rl.losses import get_builtin_loss_config
+    expected_kernel, expected_config = get_builtin_loss_config(cfg.policy_loss, is_config=cfg.is_correction)
+    assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
+    assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
+
+
+def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
+    """When policy_loss is not in the builtin registry, fwd_bwd_one should
+    call forward_backward_custom (two-pass) and invoke the loss builder."""
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {
+        "fwd_bwd_method": None,
+        "build_loss_fn_calls": [],
+        "deleted_jobs": [],
+        "scaled_deployments": [],
+        "wandb_logs": [],
+        "weight_sync_saves": [],
+        "weight_sync_dcp": [],
+    }
+
+    class FakeRlorMgr:
+        def resolve_training_profile(self, shape_id):
+            return SimpleNamespace(
+                deployment_shape="dep-shape-v2",
+                deployment_shape_version=None,
+                pipeline_parallelism=1,
+                max_supported_context_length=96,
+            )
+
+        def delete(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+    class FakeDeployMgr:
+        inference_url = "https://inference.unit.test"
+        boot_time_s = 1.5
+
+        def scale_to_zero(self, deployment_id):
+            events["scaled_deployments"].append(deployment_id)
+
+    class FakeFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class FakeThreadPoolExecutor:
+        def __init__(self, max_workers):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            return FakeFuture(fn(*args, **kwargs))
+
+    class FakeClient:
+        def __init__(self, _mgr, job_id, *_args, **_kwargs):
+            self.job_id = job_id
+            self.inner = object()
+
+        def forward(self, data, loss_fn):
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {"logprobs": SimpleNamespace(data=[-0.21, -0.22])}
+                    for _ in data
+                ]
+            )
+
+        def forward_backward(self, data, loss_fn="cross_entropy", loss_fn_config=None):
+            events["fwd_bwd_method"] = "forward_backward"
+            return SimpleNamespace(metrics={"loss": 1.0})
+
+        def forward_backward_custom(self, data, loss_fn):
+            events["fwd_bwd_method"] = "forward_backward_custom"
+            return SimpleNamespace(metrics={"loss": 1.0})
+
+        def optim_step(self, _params):
+            return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
+
+        def save_state(self, name, timeout=None):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=name)
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return name
+
+    class FakeWeightSyncer:
+        def __init__(self, **kwargs):
+            pass
+
+        def save_and_hotload(self, name, checkpoint_type="base"):
+            events["weight_sync_saves"].append(name)
+
+        def save_dcp(self, name):
+            events["weight_sync_dcp"].append(name)
+
+    class FakeSampler:
+        def __init__(self, **kwargs):
+            pass
+
+        async def sample_with_tokens(self, **kwargs):
+            return [
+                SimpleNamespace(
+                    text="<answer>7</answer>",
+                    full_tokens=[10, 11, 12, 13],
+                    prompt_len=2,
+                    inference_logprobs=[-0.5, -0.6],
+                    logprobs_echoed=False,
+                    finish_reason="stop",
+                    routing_matrices=None,
+                ),
+                SimpleNamespace(
+                    text="<answer>8</answer>",
+                    full_tokens=[20, 21, 22, 23],
+                    prompt_len=2,
+                    inference_logprobs=[-0.7, -0.8],
+                    logprobs_echoed=False,
+                    finish_reason="length",
+                    routing_matrices=None,
+                ),
+            ]
+
+    async def fake_run_rl_loop(**kwargs):
+        sample_iter = iter(kwargs["sample_fns"])
+        pg = await next(sample_iter)
+        step, _ = kwargs["train_fns"].train_step(0, [pg])
+        return step
+
+    def fake_create_trainer_job(*args, **kwargs):
+        return SimpleNamespace(job_id="policy-job")
+
+    def fake_build_loss_fn(**kwargs):
+        def _builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp):
+            events["build_loss_fn_calls"].append(True)
+            return "custom-loss-fn"
+
+        return _builder
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
+    monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
+    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
+    monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
+    from training.utils.checkpoint_utils import ResumeInfo
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: ResumeInfo(step=0))
+    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [
+        {"messages": [{"role": "user", "content": "Solve"}], "ground_truth": "<answer>7</answer>"}
+    ])
+    monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
+    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
+    monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {"rollout/reward": 0.5, "rollout/accuracy": 0.5, "train/mean_kl": 0.02})
+    monkeypatch.setattr(module, "flush_timing", lambda: {})
+    monkeypatch.setattr(
+        module.tinker.ModelInput, "from_ints",
+        lambda ints, routing_matrices=None: SimpleNamespace(tokens=list(ints), routing_matrices=routing_matrices),
+    )
+    monkeypatch.setattr(module.tinker, "TensorData", lambda data, dtype, shape: SimpleNamespace(data=data, dtype=dtype, shape=shape))
+    monkeypatch.setattr(module.tinker, "Datum", lambda model_input, loss_fn_inputs: SimpleNamespace(model_input=model_input, loss_fn_inputs=loss_fn_inputs))
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "rl_logs"),
+        base_model="accounts/test/models/qwen3-4b",
+        dataset="/tmp/prompts.jsonl",
+        policy_loss="my_custom_loss",
+        completions_per_prompt=2,
+        prompt_groups_per_step=1,
+        deployment=module.DeployConfig(deployment_id="dep-123", tokenizer_model="Qwen/Qwen3-4B"),
+        infra=module.InfraConfig(training_shape_id="shape-a"),
+    )
+
+    module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr())
+
+    assert events["fwd_bwd_method"] == "forward_backward_custom", (
+        "Custom policy_loss not in builtin registry should use two-pass forward_backward_custom"
+    )
+    assert len(events["build_loss_fn_calls"]) == 1, (
+        "Two-pass path should invoke the loss builder from build_loss_fn"
+    )
