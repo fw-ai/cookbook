@@ -50,6 +50,7 @@ async def run_rl_loop(
     *,
     train_fns: TrainStepFns,
     prompt_groups_per_step: int = 1,
+    max_concurrent: int | None = None,
     dynamic_filter_fn: DynamicFilterFn | None = None,
     global_step: int = 0,
     metrics_callback: Callable[[dict[str, Any]], None] | None = None,
