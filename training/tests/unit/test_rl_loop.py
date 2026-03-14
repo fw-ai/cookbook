@@ -478,7 +478,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     assert events["weight_sync_saves"][0] == ("step-0-base", "base")
     weight_sync_names = [name for name, _ in events["weight_sync_saves"]]
     assert "step-2" in weight_sync_names
-    assert "step-2" in events["weight_sync_dcp"]
+    assert events.get("saved_state") == ("step-2", None)
     assert len(events["build_loss_fn_calls"]) == 1
     advantages = events["build_loss_fn_calls"][0]["advantages"]
     assert len(advantages) == 2

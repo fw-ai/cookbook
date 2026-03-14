@@ -40,6 +40,8 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
             "--allow-plaintext-action-fallback",
             "--training-shape",
             "ts-qwen3-4b-smoke-v1",
+            "--output-model-id",
+            "out-model",
         ],
     )
 
@@ -244,7 +246,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
             self.job_id = job_id
             self.inner = object()
 
-        def save_state(self, name, timeout):
+        def save_state(self, name, timeout=None):
             events["final_save"] = (name, timeout)
 
     class FakeWeightSyncer:
@@ -422,7 +424,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
             events["optim_step_called"] = True
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
-        def save_state(self, name, timeout):
+        def save_state(self, name, timeout=None):
             events["final_save"] = (name, timeout)
 
     class FakeWeightSyncer:
@@ -562,7 +564,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
     assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []
-    assert events["final_save"] == ("step-1", 2700)
+    assert events["final_save"] == ("step-1", None)
     assert len(events["build_loss_fn_calls"]) == 1
     advantages = events["build_loss_fn_calls"][0]["advantages"]
     assert len(advantages) == 2

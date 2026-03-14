@@ -44,6 +44,8 @@ def test_parse_args_reads_overrides(monkeypatch):
             "2e-5",
             "--lora-rank",
             "8",
+            "--output-model-id",
+            "out-model",
         ],
     )
 
@@ -63,7 +65,7 @@ def test_parse_args_reads_overrides(monkeypatch):
 
 def test_main_raises_when_dataset_is_missing(monkeypatch):
     module = _load_module(monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["train_sft.py", "--dataset-path", "/tmp/missing.jsonl"])
+    monkeypatch.setattr(sys, "argv", ["train_sft.py", "--dataset-path", "/tmp/missing.jsonl", "--output-model-id", "out"])
     monkeypatch.setattr(module.os.path, "exists", lambda path: False)
 
     with pytest.raises(FileNotFoundError, match="Dataset not found"):
@@ -100,6 +102,8 @@ def test_main_builds_sft_config_and_calls_recipe(monkeypatch):
             "2e-5",
             "--lora-rank",
             "16",
+            "--output-model-id",
+            "out-model",
         ],
     )
     monkeypatch.setattr(module.os.path, "exists", lambda path: path == dataset_path)
