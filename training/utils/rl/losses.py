@@ -70,7 +70,7 @@ def build_loss_fn(
     cispo_config: Any = None,
     is_config: ISConfig | None = None,
 ) -> LossFnBuilder:
-    """Create a loss builder that dispatches to grpo/dapo/gspo/cispo.
+    """Create a loss builder that dispatches to grpo/dapo/gspo/cispo/reinforce.
 
     Returns a callable:
       (advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs) -> loss_fn
@@ -82,6 +82,7 @@ def build_loss_fn(
     from training.utils.rl.grpo import make_grpo_loss_fn
     from training.utils.rl.gspo import make_gspo_loss_fn
     from training.utils.rl.cispo import make_cispo_loss_fn
+    from training.utils.rl.reinforce import make_reinforce_loss_fn
 
     def build(
         advantages: List[float],
@@ -115,8 +116,13 @@ def build_loss_fn(
                 prox_logprobs=prox_logprobs,
                 kl_beta=kl_beta, is_config=is_config,
             )
+        if policy_loss == "reinforce":
+            return make_reinforce_loss_fn(
+                advantages, ref_logprobs, prompt_lens, kl_beta=kl_beta,
+            )
         raise ValueError(
-            f"Unsupported policy_loss '{policy_loss}'. Expected one of: grpo, dapo, gspo, cispo."
+            f"Unsupported policy_loss '{policy_loss}'. "
+            f"Expected one of: grpo, dapo, gspo, cispo, reinforce."
         )
 
     return build
