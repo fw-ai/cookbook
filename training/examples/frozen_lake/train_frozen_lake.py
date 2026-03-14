@@ -67,7 +67,7 @@ from training.utils import (
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
 from training.utils.rl.importance_sampling import ISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
@@ -728,51 +728,23 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 ]
                 idx += n
 
-        # TODO: remove two-pass fallback once the PP kernel supports built-in losses
-        use_pp = profile is not None and profile.pipeline_parallelism > 1
-        fl_single_pass = not use_pp
+        check_builtin_loss_eligibility(cfg.policy_loss, profile)
+        builtin = get_builtin_loss_config(cfg.policy_loss)
 
         def fwd_bwd_one(sub: list[PromptGroup]):
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            if fl_single_pass:
-                if cfg.policy_loss == "cispo":
-                    kernel_loss = "cispo"
-                    kernel_config: dict[str, float] = {
-                        "clip_low_threshold": 0.8,
-                        "clip_high_threshold": 1.28,
-                        "ratio_log_cap": 20.0,
-                    }
-                elif cfg.policy_loss == "gspo":
-                    kernel_loss = "gspo"
-                    kernel_config = {
-                        "clip_low_threshold": 0.8,
-                        "clip_high_threshold": 1.2,
-                        "seq_ratio_log_cap": 10.0,
-                    }
-                elif cfg.policy_loss == "dapo":
-                    kernel_loss = "ppo"
-                    kernel_config = {
-                        "clip_low_threshold": 0.8,
-                        "clip_high_threshold": 1.28,
-                        "ratio_log_cap": 20.0,
-                    }
-                else:  # grpo
-                    kernel_loss = "ppo"
-                    kernel_config = {
-                        "clip_low_threshold": 0.8,
-                        "clip_high_threshold": 1.2,
-                    }
+            if builtin is not None:
+                kernel_loss, kernel_config = builtin
                 rl_datums = build_builtin_loss_datums(
                     data, adv, prox_lp, inf_lp, prompt_lens,
                 )
                 return policy.forward_backward(
                     rl_datums, kernel_loss, loss_fn_config=kernel_config,
                 )
-            # TODO: remove once PP kernel supports built-in losses
             return policy.forward_backward_custom(
-                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
+                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
 
         def train_step(

@@ -369,7 +369,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
             events.setdefault("resolved_shapes", []).append(shape_id)
             return SimpleNamespace(
                 deployment_shape_version="shape/versions/7",
-                pipeline_parallelism=2,
+                pipeline_parallelism=1,
                 max_supported_context_length=256,
             )
 

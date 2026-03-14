@@ -64,7 +64,7 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, get_builtin_loss_config
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 
@@ -539,6 +539,7 @@ def main(
                 ]
                 idx += n
 
+        check_builtin_loss_eligibility(cfg.policy_loss, profile)
         builtin = get_builtin_loss_config(
             cfg.policy_loss,
             dapo_config=cfg.dapo,
@@ -546,12 +547,6 @@ def main(
             cispo_config=cfg.cispo,
             is_config=cfg.is_correction,
         )
-        if builtin is not None and profile is not None and profile.pipeline_parallelism > 1:
-            raise ValueError(
-                f"Pipeline parallelism (PP={profile.pipeline_parallelism}) is not supported "
-                f"with server-side built-in loss '{cfg.policy_loss}'. "
-                f"Use a training shape with PP=1, or use a custom policy_loss."
-            )
 
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
             """One minibatch forward/backward call after reference forward."""
