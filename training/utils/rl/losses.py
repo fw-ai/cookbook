@@ -7,7 +7,119 @@ from dataclasses import field, dataclass
 
 import tinker
 
+from training.utils.rl.dapo import DAPOConfig
+from training.utils.rl.dro import DROConfig
+from training.utils.rl.gspo import GSPOConfig
+from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.importance_sampling import ISConfig
+
+
+def _cispo_kernel_config(
+    *, cispo_config: CISPOConfig | None = None, **_kw: Any,
+) -> tuple[str, dict[str, Any]]:
+    cfg = cispo_config or CISPOConfig()
+    return "cispo", {
+        "clip_low_threshold": 1.0 - cfg.eps_low,
+        "clip_high_threshold": 1.0 + cfg.eps_high,
+        "ratio_log_cap": cfg.ratio_log_cap,
+    }
+
+
+def _gspo_kernel_config(
+    *, gspo_config: GSPOConfig | None = None, **_kw: Any,
+) -> tuple[str, dict[str, Any]]:
+    cfg = gspo_config or GSPOConfig()
+    clip_low = cfg.clip_ratio_low or cfg.clip_ratio
+    clip_high = cfg.clip_ratio_high or cfg.clip_ratio
+    return "gspo", {
+        "clip_low_threshold": 1.0 - clip_low,
+        "clip_high_threshold": 1.0 + clip_high,
+        "seq_ratio_log_cap": cfg.seq_ratio_log_cap,
+    }
+
+
+def _dapo_kernel_config(
+    *, dapo_config: DAPOConfig | None = None, **_kw: Any,
+) -> tuple[str, dict[str, Any]]:
+    cfg = dapo_config or DAPOConfig()
+    config: dict[str, Any] = {
+        "clip_low_threshold": 1.0 - cfg.eps_clip,
+        "clip_high_threshold": 1.0 + cfg.eps_clip_high,
+        "ratio_log_cap": cfg.ratio_log_cap,
+    }
+    if cfg.eps_clip_c is not None:
+        config["eps_clip_c"] = cfg.eps_clip_c
+        return "dapo", config
+    return "ppo", config
+
+
+def _grpo_kernel_config(
+    *, is_config: ISConfig | None = None, **_kw: Any,
+) -> tuple[str, dict[str, Any]]:
+    cfg = is_config or ISConfig()
+    eps_high = cfg.eps_clip_high or cfg.eps_clip
+    return "ppo", {
+        "clip_low_threshold": 1.0 - cfg.eps_clip,
+        "clip_high_threshold": 1.0 + eps_high,
+    }
+
+
+def _is_kernel_config(
+    *, is_config: ISConfig | None = None, **_kw: Any,
+) -> tuple[str, dict[str, Any]]:
+    cfg = is_config or ISConfig()
+    return "importance_sampling", {
+        "ratio_log_cap": 20.0,
+    }
+
+
+def _dro_kernel_config(
+    *, dro_config: DROConfig | None = None, **_kw: Any,
+) -> tuple[str, dict[str, Any]]:
+    cfg = dro_config or DROConfig()
+    return "dro", {
+        "beta": cfg.beta,
+    }
+
+
+BUILTIN_LOSS_REGISTRY: dict[str, Callable[..., tuple[str, dict[str, Any]]]] = {
+    "grpo": _grpo_kernel_config,
+    "importance_sampling": _is_kernel_config,
+    "cispo": _cispo_kernel_config,
+    "gspo": _gspo_kernel_config,
+    "dapo": _dapo_kernel_config,
+    "dro": _dro_kernel_config,
+}
+"""Mapping from ``policy_loss`` name to a builder that returns
+``(kernel_loss_name, kernel_config_dict)`` for the server-side built-in loss
+kernel.  Any ``policy_loss`` not in this registry falls back to the two-pass
+``forward_backward_custom`` path."""
+
+
+def get_builtin_loss_config(
+    policy_loss: str,
+    *,
+    dapo_config: DAPOConfig | None = None,
+    dro_config: DROConfig | None = None,
+    gspo_config: GSPOConfig | None = None,
+    cispo_config: CISPOConfig | None = None,
+    is_config: ISConfig | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Return ``(kernel_loss_name, kernel_config)`` for a supported built-in loss.
+
+    Returns ``None`` if *policy_loss* is not in :data:`BUILTIN_LOSS_REGISTRY`,
+    signalling the caller to fall back to ``forward_backward_custom``.
+    """
+    builder = BUILTIN_LOSS_REGISTRY.get(policy_loss)
+    if builder is None:
+        return None
+    return builder(
+        dapo_config=dapo_config,
+        dro_config=dro_config,
+        gspo_config=gspo_config,
+        cispo_config=cispo_config,
+        is_config=is_config,
+    )
 
 
 @dataclass

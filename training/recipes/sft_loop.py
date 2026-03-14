@@ -43,7 +43,6 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     create_trainer_job,
-    make_batch_weighted_sft_loss_fn,
     build_renderer,
     parse_train_on_what,
     render_messages_to_datum,
@@ -74,7 +73,6 @@ class Config:
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
     renderer_name: str = ""
     train_on_what: str = "all_assistant_messages"
-    mode: str = "single-pass"  # "single-pass" (forward_backward only) or "two-pass" (forward+backward_custom, legacy)
 
     learning_rate: float = 1e-4
     epochs: int = 3
@@ -248,28 +246,15 @@ def main(
         total_steps_estimate = (total_batches_per_epoch * cfg.epochs) // cfg.grad_accum
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
-        single_pass = cfg.mode == "single-pass"
 
-        def _flush_step(
-            batch_buf: list[tinker.Datum],
-            microbatch_sizes: list[int],
-            step: int,
-        ) -> int:
+        def _flush_step(batch_buf: list[tinker.Datum], step: int) -> int:
             nonlocal agg_loss_sum, agg_resp_tokens
 
-            if single_pass:
-                with timer("fwd_bwd"):
-                    result = client.forward_backward(batch_buf)
-                agg_loss_sum += result.metrics.get("loss:sum", 0.0)
-                agg_resp_tokens += sum(sum(d.loss_fn_inputs["weights"].data) for d in batch_buf)
-            else:
-                loss_fn = make_batch_weighted_sft_loss_fn(microbatch_sizes=microbatch_sizes)
-                with timer("fwd_bwd"):
-                    result = client.forward_backward_custom(batch_buf, loss_fn)
+            with timer("fwd_bwd"):
+                result = client.forward_backward(batch_buf)
+            agg_loss_sum += result.metrics.get("loss:sum", 0.0)
+            agg_resp_tokens += sum(sum(d.loss_fn_inputs["weights"].data) for d in batch_buf)
 
-                fwd_metrics = result.metrics
-                agg_loss_sum += fwd_metrics.get("ce_loss_sum", 0.0)
-                agg_resp_tokens += fwd_metrics.get("response_tokens", 0)
             with timer("optim_step"):
                 optim_result = client.optim_step(adam_params)
             step += 1
@@ -321,12 +306,12 @@ def main(
                 step_microbatch_sizes.append(len(batch))
 
                 if len(step_microbatch_sizes) >= cfg.grad_accum:
-                    step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
+                    step = _flush_step(step_batch_buffer, step)
                     step_batch_buffer = []
                     step_microbatch_sizes = []
 
         if step_batch_buffer:
-            step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
+            step = _flush_step(step_batch_buffer, step)
 
         # -- Final checkpoint --------------------------------------------------
 

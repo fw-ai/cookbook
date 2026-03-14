@@ -64,7 +64,7 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, get_builtin_loss_config
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 
@@ -359,6 +359,7 @@ def main(
             if not cfg.policy_job_id:
                 cleanup.trainer(policy_job_id)
             reference_ep = None
+            reference_job_id = None
 
         policy = ReconnectableClient(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
@@ -538,13 +539,13 @@ def main(
                 ]
                 idx += n
 
-        # TODO: remove two-pass fallback once the PP kernel supports built-in losses
-        use_pp = profile is not None and profile.pipeline_parallelism > 1
-        single_pass = not use_pp
-        if use_pp:
-            logger.info("PP=%d detected — using two-pass (forward_backward_custom).", profile.pipeline_parallelism)
-        else:
-            logger.info("Using single-pass server-side built-in loss.")
+        builtin = get_builtin_loss_config(
+            cfg.policy_loss,
+            dapo_config=cfg.dapo,
+            gspo_config=cfg.gspo,
+            cispo_config=cfg.cispo,
+            is_config=cfg.is_correction,
+        )
 
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
             """One minibatch forward/backward call after reference forward."""
@@ -559,42 +560,8 @@ def main(
             logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
 
             t0 = _time.time()
-            if single_pass:
-                if cfg.policy_loss == "cispo":
-                    kernel_loss = "cispo"
-                    kernel_config = {
-                        "clip_low_threshold": 1.0 - cfg.cispo.eps_low,
-                        "clip_high_threshold": 1.0 + cfg.cispo.eps_high,
-                        "ratio_log_cap": cfg.cispo.ratio_log_cap,
-                    }
-                elif cfg.policy_loss == "gspo":
-                    kernel_loss = "gspo"
-                    clip_low = cfg.gspo.clip_ratio_low or cfg.gspo.clip_ratio
-                    clip_high = cfg.gspo.clip_ratio_high or cfg.gspo.clip_ratio
-                    kernel_config = {
-                        "clip_low_threshold": 1.0 - clip_low,
-                        "clip_high_threshold": 1.0 + clip_high,
-                        "seq_ratio_log_cap": cfg.gspo.seq_ratio_log_cap,
-                    }
-                elif cfg.policy_loss == "dapo":
-                    kernel_config = {
-                        "clip_low_threshold": 1.0 - cfg.dapo.eps_clip,
-                        "clip_high_threshold": 1.0 + cfg.dapo.eps_clip_high,
-                        "ratio_log_cap": cfg.dapo.ratio_log_cap,
-                    }
-                    if cfg.dapo.eps_clip_c is not None:
-                        kernel_loss = "dapo"
-                        kernel_config["eps_clip_c"] = cfg.dapo.eps_clip_c
-                    else:
-                        kernel_loss = "ppo"
-                else:  # grpo
-                    kernel_loss = "ppo"
-                    eps_high = cfg.is_correction.eps_clip_high or cfg.is_correction.eps_clip
-                    kernel_config = {
-                        "clip_low_threshold": 1.0 - cfg.is_correction.eps_clip,
-                        "clip_high_threshold": 1.0 + eps_high,
-                    }
-
+            if builtin is not None:
+                kernel_loss, kernel_config = builtin
                 rl_datums = build_builtin_loss_datums(
                     data, adv, prox_lp, inf_lp, prompt_lens, cfg.is_correction,
                 )
@@ -602,7 +569,6 @@ def main(
                     rl_datums, kernel_loss, loss_fn_config=kernel_config,
                 )
             else:
-                # TODO: remove once PP kernel supports built-in losses
                 fwd_bwd_result = policy.forward_backward_custom(
                     data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
                 )

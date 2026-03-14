@@ -97,8 +97,8 @@ class ReconnectableClient:
             timeout=self._default_timeout,
         )
 
-    def forward_backward(self, data, loss_fn: str = "cross_entropy"):
-        return self._client.forward_backward(data, loss_fn).result(
+    def forward_backward(self, data, loss_fn: str = "cross_entropy", loss_fn_config=None):
+        return self._client.forward_backward(data, loss_fn, loss_fn_config=loss_fn_config).result(
             timeout=self._default_timeout,
         )
 

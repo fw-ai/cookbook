@@ -120,6 +120,10 @@ class FrozenLakeConfig:
     policy_loss: str = "grpo"
     tis_enabled: bool = False
 
+    mode: str = "single-pass"
+    """``"single-pass"`` uses server-side built-in PPO loss (1 fwd + 1 bwd).
+    ``"two-pass"`` uses ``forward_backward_custom`` (2 fwd + 1 bwd, legacy)."""
+
     seed_jsonl_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "seeds.jsonl")
     )
@@ -735,7 +739,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             if fl_single_pass:
                 if cfg.policy_loss == "cispo":
                     kernel_loss = "cispo"
-                    kernel_config: dict = {
+                    kernel_config: dict[str, float] = {
                         "clip_low_threshold": 0.8,
                         "clip_high_threshold": 1.28,
                         "ratio_log_cap": 20.0,
