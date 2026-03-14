@@ -89,6 +89,19 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
+    grad_accumulation_normalization: str | None = "num_loss_tokens"
+    """Normalization mode for accumulated gradients at optim_step.
+    ``"num_loss_tokens"``: per-token mean (verl ``token-mean``).
+    ``"num_sequences"``: per-sequence mean (verl ``seq-mean-token-sum``
+    if loss is raw sum, ``seq-mean-token-mean`` if loss is pre-normalized).
+    ``"none"``: no normalization.
+    ``None``: server default (currently per-token).
+    Requires the loss function to return raw token sums (raw_sum=True),
+    which is set automatically when this is not ``"none"``."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 = no clipping."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
 
@@ -230,7 +243,10 @@ def main(
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)
 
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        if cfg.grad_clip_norm > 0:
+            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Training loop (batch-indexed) -------------------------------------
 
@@ -239,22 +255,31 @@ def main(
         accum = 0
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
+        agg_sequences = 0
 
         def _flush_batch(batch_buf: list[tinker.Datum], step: int, accum: int) -> tuple[int, int]:
-            nonlocal agg_loss_sum, agg_resp_tokens
+            nonlocal agg_loss_sum, agg_resp_tokens, agg_sequences
 
-            loss_fn = make_batch_weighted_sft_loss_fn()
+            # NOTE: raw_sum=True when server-side normalization is active to
+            # avoid double-normalization (client divides by token count AND
+            # server divides again). raw_sum=False only with "none".
+            use_raw_sum = cfg.grad_accumulation_normalization != "none"
+            loss_fn = make_batch_weighted_sft_loss_fn(raw_sum=use_raw_sum)
             with timer("fwd_bwd"):
                 result = client.forward_backward_custom(batch_buf, loss_fn)
 
             fwd_metrics = result.metrics
             agg_loss_sum += fwd_metrics.get("ce_loss_sum", 0.0)
             agg_resp_tokens += fwd_metrics.get("response_tokens", 0)
+            agg_sequences += fwd_metrics.get("batch_size", len(batch_buf))
             accum += 1
 
             if accum >= cfg.grad_accum:
                 with timer("optim_step"):
-                    optim_result = client.optim_step(adam_params)
+                    optim_result = client.optim_step(
+                        adam_params,
+                        grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                    )
                 step += 1
                 accum = 0
 
@@ -273,12 +298,28 @@ def main(
                     for k, v in optim_result.metrics.items():
                         step_metrics[f"train/{k}"] = v
 
+                norm_mode = cfg.grad_accumulation_normalization
+                if norm_mode == "num_loss_tokens":
+                    expected_norm_factor = agg_resp_tokens
+                elif norm_mode == "num_sequences":
+                    expected_norm_factor = agg_sequences
+                else:
+                    expected_norm_factor = 0
+
+                step_metrics["grad_acc/accumulated_sequences"] = agg_sequences
+                step_metrics["grad_acc/accumulated_tokens"] = agg_resp_tokens
+                step_metrics["grad_acc/loss_sum_raw"] = agg_loss_sum
+                step_metrics["grad_acc/norm_mode"] = norm_mode or "none"
+                step_metrics["grad_acc/expected_norm_factor"] = expected_norm_factor
+                step_metrics["grad_acc/num_microbatches"] = cfg.grad_accum
+
                 if agg_resp_tokens > 0:
                     avg_loss = agg_loss_sum / agg_resp_tokens
                     ppl = torch.exp(torch.tensor(avg_loss)).item()
                     logger.info(
-                        "Step %d/%d | Loss: %.4f | PPL: %.2f",
+                        "Step %d/%d | Loss: %.4f | PPL: %.2f | accum_tokens=%d accum_seqs=%d norm=%s",
                         step, total_steps_estimate, avg_loss, ppl,
+                        agg_resp_tokens, agg_sequences, norm_mode or "none",
                     )
                     log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
                     step_metrics.update({
@@ -290,6 +331,7 @@ def main(
 
                 agg_loss_sum = 0.0
                 agg_resp_tokens = 0
+                agg_sequences = 0
 
             return step, accum
 
@@ -302,13 +344,16 @@ def main(
                 step, accum = _flush_batch(batch, step, accum)
 
         if accum > 0:
-            client.optim_step(adam_params)
+            client.optim_step(
+                adam_params,
+                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            )
             step += 1
 
-        # -- Final checkpoint --------------------------------------------------
+        # -- Final checkpoint (skip if dcp_save_interval == -1) ----------------
 
         start_step = resume_info.step if resume_info else 0
-        if step > start_step:
+        if cfg.dcp_save_interval != -1 and step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             save_checkpoint(client, f"step-{step}", cfg.log_path, {
                 "step": step,

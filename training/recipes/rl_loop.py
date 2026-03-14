@@ -57,7 +57,6 @@ from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
 from training.utils.rl.importance_sampling import ISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
-from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
@@ -104,6 +103,10 @@ class Config:
 
     router_replay: bool = False
     router_replay_completion_only: bool = True
+
+    grad_accumulation_normalization: str | None = "num_loss_tokens"
+    """Normalization mode for accumulated gradients at optim_step.
+    Defaults to "num_loss_tokens" (per-token mean)."""
 
     policy_loss: str = "grpo"
     """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
@@ -266,14 +269,6 @@ def main(
         dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
         if dep_shape and not cfg.deployment.deployment_shape:
             cfg.deployment.deployment_shape = dep_shape
-
-    if profile and profile.pipeline_parallelism > 1:
-        pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
-        logger.info(
-            "PP recommendation: set prompt_groups_per_step=%d for optimal efficiency (current=%d)",
-            pp_rec.recommended_prompts_per_step,
-            prompt_groups_per_step,
-        )
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -563,7 +558,10 @@ def main(
             logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _time.time() - t0)
 
             t0 = _time.time()
-            optim_result = policy.optim_step(adam_params)
+            optim_result = policy.optim_step(
+                adam_params,
+                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            )
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
