@@ -773,7 +773,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
                 train_fns=train_fns,
                 prompt_groups_per_step=prompt_groups_per_step,
-                max_concurrent=cfg.max_concurrent,
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
                 metrics_callback=_filtered_step_callback,

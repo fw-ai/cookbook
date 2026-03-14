@@ -336,6 +336,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
     assert events["rollout_processor_init"]["base_url"] == "https://unit.test/inference"
     assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
+    assert "max_concurrent" not in events["run_rl_loop_kwargs"]
     assert "train_fns" in events["run_rl_loop_kwargs"]
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["deleted_deployments"] == []
@@ -592,6 +593,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     assert _FakeAsyncFireworks.init_kwargs[0]["base_url"] == "https://unit.test/inference"
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
     assert events["rollout_processor_init"]["base_url"] == "https://unit.test/inference"
+    assert "max_concurrent" not in events["run_rl_loop_kwargs"]
     assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []
     assert events["final_save"] == ("step-1", 2700)
