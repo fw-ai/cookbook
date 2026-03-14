@@ -14,6 +14,7 @@ if [ -n "$missing_vars" ]; then
 fi
 
 python train_ifeval_orpo.py \
+    --output-model-id orpo-finetuned-qwen3-8b-$(date +%Y%m%d%H%M) \
     --base-model accounts/fireworks/models/qwen3-8b \
     --tokenizer-model Qwen/Qwen3-8B \
     --dataset-path dataset.jsonl \

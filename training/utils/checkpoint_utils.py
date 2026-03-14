@@ -11,7 +11,10 @@ import json
 import logging
 import os
 import time
+import requests
 from dataclasses import dataclass
+from training.utils import ReconnectableClient
+from enum import Enum
 from typing import Any
 
 from tinker_cookbook.checkpoint_utils import (
@@ -20,6 +23,53 @@ from tinker_cookbook.checkpoint_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+def promote_checkpoint(
+    job_mgr: Any,
+    job_id: str,
+    checkpoint_id: str,
+    output_model_id: str,
+) -> dict:
+    """Promote a checkpoint to a model via control plane API."""
+    url = f"{job_mgr.base_url}/v1/accounts/{job_mgr.account_id}/rlorTrainerJobs/{job_id}/checkpoints/{checkpoint_id}:promote"
+    output_model = f"accounts/{job_mgr.account_id}/models/{output_model_id}"
+    logger.info("Promoting checkpoint '%s' -> model '%s'", checkpoint_id, output_model)
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {job_mgr.api_key}",
+        "x-api-key": job_mgr.api_key,
+    }
+    if hasattr(job_mgr, "additional_headers") and job_mgr.additional_headers:
+        headers.update(job_mgr.additional_headers)
+
+    verify_ssl = getattr(job_mgr, "_verify_ssl", True)
+
+    resp = requests.post(
+        url,
+        json={"output_model": output_model},
+        headers=headers,
+        timeout=300,
+        verify=verify_ssl,
+    )
+    resp.raise_for_status()
+
+    result = resp.json()
+    model = result.get("model", {})
+    state = model.get("state", "UNKNOWN")
+    kind = model.get("kind", "UNKNOWN")
+    logger.info("  Promoted! Model state=%s, kind=%s", state, kind)
+
+    peft = model.get("peftDetails", {})
+    if peft:
+        logger.info(
+            "  PEFT: base=%s, r=%s, targets=%s",
+            peft.get("baseModel"),
+            peft.get("r"),
+            peft.get("targetModules"),
+        )
+
+    return model
 
 
 # -- Resume info ---------------------------------------------------------------
@@ -80,31 +130,35 @@ def resolve_resume(
 
 # -- Checkpoint save -----------------------------------------------------------
 
+class CheckpointKind(str, Enum):
+    STATE = "state"
+    SAMPLER = "sampler"
+    BOTH = "both"
 
 def save_checkpoint(
-    client: Any,
+    client: ReconnectableClient,
     name: str,
     log_path: str,
     loop_state: dict[str, Any],
-    kind: str = "state",
+    kind: CheckpointKind = CheckpointKind.STATE,
 ) -> dict[str, str]:
     """Save a checkpoint using tinker_cookbook's ``checkpoints.jsonl`` format.
 
-    *kind* can be ``"state"`` (optimizer + weights), ``"sampler"`` (weights
-    only for inference), or ``"both"``.
+    *kind* can be ``CheckpointKind.STATE`` (optimizer + weights), ``CheckpointKind.SAMPLER`` (weights
+    only for inference), or ``CheckpointKind.BOTH``.
 
     The ``state_path`` stored is resolved to a cross-job checkpoint
     reference at save time, so any future trainer job can load it
     directly without additional resolution.
     """
     paths: dict[str, str] = {}
-    if kind in ("state", "both"):
+    if kind in (CheckpointKind.STATE, CheckpointKind.BOTH):
         client.save_state(name)
         paths["state_path"] = client.resolve_checkpoint_path(
             name, source_job_id=client.job_id,
         )
-    if kind in ("sampler", "both"):
-        paths["sampler_path"] = client.save_weights_for_sampler_ext(name).path
+    if kind in (CheckpointKind.SAMPLER, CheckpointKind.BOTH):
+        paths["sampler_path"] = client.save_weights_for_sampler_ext(name, checkpoint_type="base").path
 
     full_dict = {"name": name, **loop_state, **paths}
     os.makedirs(log_path, exist_ok=True)
