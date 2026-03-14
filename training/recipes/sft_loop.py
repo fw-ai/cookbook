@@ -91,11 +91,13 @@ class Config:
 
     grad_accumulation_normalization: str | None = "num_loss_tokens"
     """Normalization mode for accumulated gradients at optim_step.
-    One of "num_sequences", "num_loss_tokens", or None (no normalization).
-    Defaults to "num_loss_tokens" so that gradients are correctly
-    averaged across all response tokens regardless of grad_accum setting.
+    ``"num_loss_tokens"``: per-token mean (verl ``token-mean``).
+    ``"num_sequences"``: per-sequence mean (verl ``seq-mean-token-sum``
+    if loss is raw sum, ``seq-mean-token-mean`` if loss is pre-normalized).
+    ``"none"``: no normalization.
+    ``None``: server default (currently per-token).
     Requires the loss function to return raw token sums (raw_sum=True),
-    which is set automatically when this is not None."""
+    which is set automatically when this is not ``"none"``."""
 
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 = no clipping."""
@@ -258,7 +260,10 @@ def main(
         def _flush_batch(batch_buf: list[tinker.Datum], step: int, accum: int) -> tuple[int, int]:
             nonlocal agg_loss_sum, agg_resp_tokens, agg_sequences
 
-            use_raw_sum = cfg.grad_accumulation_normalization is not None
+            # NOTE: raw_sum=True when server-side normalization is active to
+            # avoid double-normalization (client divides by token count AND
+            # server divides again). raw_sum=False only with "none".
+            use_raw_sum = cfg.grad_accumulation_normalization != "none"
             loss_fn = make_batch_weighted_sft_loss_fn(raw_sum=use_raw_sum)
             with timer("fwd_bwd"):
                 result = client.forward_backward_custom(batch_buf, loss_fn)
