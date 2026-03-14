@@ -82,6 +82,31 @@ def _dro_kernel_config(
     }
 
 
+def check_builtin_loss_eligibility(
+    policy_loss: str,
+    profile: Any | None,
+) -> None:
+    """Reject unsupported parallelism configurations early.
+
+    Must be called before rollout generation to avoid wasted work.
+
+    Raises ``ValueError`` when:
+    - Any builtin loss is used with PP > 1 (server kernels don't support PP)
+    - GSPO + TP/CP is caught server-side only (profile doesn't expose TP/CP)
+    """
+    if profile is None:
+        return
+    if policy_loss not in BUILTIN_LOSS_REGISTRY:
+        return
+    pp = getattr(profile, "pipeline_parallelism", 1)
+    if pp > 1:
+        raise ValueError(
+            f"Pipeline parallelism (PP={pp}) is not supported with server-side "
+            f"built-in loss '{policy_loss}'. Use a training shape with PP=1, "
+            f"or use a custom policy_loss (which falls back to two-pass)."
+        )
+
+
 BUILTIN_LOSS_REGISTRY: dict[str, Callable[..., tuple[str, dict[str, Any]]]] = {
     "grpo": _grpo_kernel_config,
     "importance_sampling": _is_kernel_config,

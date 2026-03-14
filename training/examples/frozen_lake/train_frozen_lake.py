@@ -67,7 +67,7 @@ from training.utils import (
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, get_builtin_loss_config
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
 from training.utils.rl.importance_sampling import ISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
@@ -667,6 +667,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     ]
                     idx += n
 
+            check_builtin_loss_eligibility(cfg.policy_loss, profile)
             builtin = get_builtin_loss_config(cfg.policy_loss)
 
             def fwd_bwd_one(sub: list[PromptGroup]):
