@@ -409,10 +409,14 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         def forward(self, data, loss_fn):
             return SimpleNamespace(
                 loss_fn_outputs=[
-                    {"logprobs": SimpleNamespace(data=[-0.31, -0.32])}
-                    for _ in data
+                    {"logprobs": SimpleNamespace(data=[-0.3] * len(d.loss_fn_inputs["target_tokens"].data))}
+                    for d in data
                 ]
             )
+
+        def forward_backward(self, data, loss_fn="cross_entropy", loss_fn_config=None):
+            events["fwd_bwd_call"] = {"data_len": len(data), "loss_fn": loss_fn, "loss_fn_config": loss_fn_config}
+            return SimpleNamespace(metrics={"loss": 1.0})
 
         def forward_backward_custom(self, data, loss_fn):
             events["fwd_bwd_call"] = {"data_len": len(data), "loss_fn": loss_fn}
@@ -563,12 +567,11 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []
     assert events["final_save"] == ("step-1", 2700)
-    assert len(events["build_loss_fn_calls"]) == 1
-    advantages = events["build_loss_fn_calls"][0]["advantages"]
-    assert len(advantages) == 2
-    assert advantages[0] > 0
-    assert advantages[1] < 0
-    assert events["build_loss_fn_calls"][0]["prompt_lens"] == [3, 3]
+    assert "fwd_bwd_call" in events
+    from training.utils.rl.losses import get_builtin_loss_config
+    expected_kernel, expected_config = get_builtin_loss_config(cfg.policy_loss)
+    assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
+    assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1
