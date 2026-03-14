@@ -211,7 +211,7 @@ def test_cache_ref_logprobs_preserves_multi_turn_preference_history():
 def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
     captured = {}
 
-    def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta):
+    def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta, **kwargs):
         captured["ref_chosen"] = ref_chosen
         captured["ref_rejected"] = ref_rejected
         captured["response_starts"] = response_starts
@@ -430,7 +430,7 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     monkeypatch.setattr(
         module,
         "_flush_batch",
-        lambda batch, policy, beta: events["flush_batches"].append((list(batch), beta)) or SimpleNamespace(
+        lambda batch, policy, beta, **kwargs: events["flush_batches"].append((list(batch), beta)) or SimpleNamespace(
             metrics={"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75}
         ),
     )
@@ -439,7 +439,7 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     monkeypatch.setattr(module, "wandb_log", lambda payload, step: events["wandb_logs"].append((step, payload)))
 
     class FakePolicy:
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
