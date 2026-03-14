@@ -14,4 +14,5 @@ python train_deepmath.py \
     --epochs 3 \
     --completions-per-prompt 8 \
     --learning-rate 1e-5 \
-    --kl-beta 0.001
+    --kl-beta 0.001 \
+    --output-model-id deepmath-qwen3-4b-$(date +%s)

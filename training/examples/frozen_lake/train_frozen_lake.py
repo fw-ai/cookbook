@@ -146,6 +146,7 @@ class FrozenLakeConfig:
     policy_job_id: str | None = None
     reference_job_id: str | None = None
     inference_base_url: str | None = None
+    output_model_id: str | None = None
 
 
 def parse_args() -> FrozenLakeConfig:
@@ -189,6 +190,8 @@ def parse_args() -> FrozenLakeConfig:
                         help="Pre-created reference trainer job ID (skip creation)")
     parser.add_argument("--inference-base-url", default=None,
                         help="Direct base URL for inference deployment (skip gateway)")
+    parser.add_argument("--output-model-id", type=str, required=True,
+                        help="Promote final checkpoint to this model ID")
 
     return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
 
@@ -773,7 +776,23 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             if global_step > step_offset:
                 try:
-                    policy.save_state(f"step-{global_step}", timeout=weight_sync_cfg.dcp_timeout)
+                    cp_name = f"step-{global_step}"
+                    _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
+                    from training.utils.checkpoint_utils import save_checkpoint
+                    save_checkpoint(policy, cp_name, cfg.log_path, {
+                        "step": global_step,
+                        "data_consumed": _data_consumed,
+                        "source_job_id": policy_job_id,
+                    }, kind="both")
+                    
+                    if getattr(cfg, "output_model_id", None):
+                        from training.utils.checkpoint_utils import promote_checkpoint
+                        promote_checkpoint(
+                            rlor_mgr,
+                            policy_job_id,
+                            cp_name,
+                            cfg.output_model_id,
+                        )
                 except Exception as e:
                     logger.warning("Failed to save final checkpoint: %s", e)
                 logger.info("Training complete: %d steps", global_step)

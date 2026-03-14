@@ -85,6 +85,8 @@ class TrainArgs:
     """Pre-created policy trainer job ID to reuse."""
     reference_job_id: str | None = None
     """Pre-created reference trainer job ID to reuse."""
+    output_model_id: str | None = None
+    """Promote final checkpoint to this model ID."""
 
 
 def parse_args() -> TrainArgs:
@@ -134,6 +136,8 @@ def parse_args() -> TrainArgs:
                         help="Pre-created policy trainer job ID to reuse")
     parser.add_argument("--reference-job-id",
                         help="Pre-created reference trainer job ID to reuse")
+    parser.add_argument("--output-model-id", type=str, required=True,
+                        help="Promote final checkpoint to this model ID")
 
     parsed = parser.parse_args(namespace=defaults)
     # Convert --deployment-extra-values key=value pairs to a dict.
@@ -296,6 +300,7 @@ def main():
         router_replay_completion_only=args.router_replay,
         policy_job_id=args.policy_job_id,
         reference_job_id=args.reference_job_id,
+        output_model_id=args.output_model_id,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             ref_training_shape_id=args.ref_training_shape,
