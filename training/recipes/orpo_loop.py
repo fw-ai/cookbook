@@ -265,13 +265,18 @@ def main(
             "count": 0,
         }
 
+        # NOTE: raw_sum=True when server-side normalization is active to
+        # avoid double-normalization (client divides by count AND server
+        # divides again). raw_sum=False only with "none".
+        use_raw_sum = cfg.grad_accumulation_normalization != "none"
+
         for epoch in range(cfg.epochs):
             random.shuffle(pair_cache)
             step_t0 = time.monotonic()
             for pair in pair_cache:
                 chosen_tokens = pair["chosen_tokens"]
                 rejected_tokens = pair["rejected_tokens"]
-                loss_fn = make_orpo_loss_fn(pair["response_start"], cfg.orpo_lambda)
+                loss_fn = make_orpo_loss_fn(pair["response_start"], cfg.orpo_lambda, raw_sum=use_raw_sum)
                 result = client.forward_backward_custom(
                     [pair["chosen_datum"], pair["rejected_datum"]], loss_fn
                 )

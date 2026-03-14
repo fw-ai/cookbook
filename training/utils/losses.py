@@ -30,6 +30,7 @@ def _log1mexp(x: torch.Tensor) -> torch.Tensor:
 def make_orpo_loss_fn(
     response_start: int,
     orpo_lambda: float = 1.0,
+    raw_sum: bool = False,
 ) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """ORPO loss: L_SFT(chosen) + lambda * L_OR.
 
@@ -43,6 +44,9 @@ def make_orpo_loss_fn(
     Args:
         response_start: Token index where the response begins (prompt boundary).
         orpo_lambda: Weight for the odds-ratio term (default 1.0).
+        raw_sum: If True, use raw token sum for the SFT component instead of
+            per-token mean. Use with server-side ``grad_accumulation_normalization``
+            to avoid double-normalization.
     """
 
     def loss_fn(
@@ -60,8 +64,7 @@ def make_orpo_loss_fn(
         n_chosen = max(len(chosen_lp), 1)
         n_rejected = max(len(rejected_lp), 1)
 
-        # SFT loss: cross-entropy on chosen response tokens
-        sft_loss = -chosen_lp.sum() / n_chosen
+        sft_loss = -chosen_lp.sum() if raw_sum else -chosen_lp.sum() / n_chosen
 
         # Average log-probabilities for odds computation
         avg_chosen_lp = chosen_lp.sum() / n_chosen

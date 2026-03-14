@@ -288,7 +288,10 @@ async def _train_loop(
     total_steps = len(valid_indices) * cfg.epochs // (cfg.grad_accum * batch_size)
     accum_count = 0
     agg: dict[str, float] = {"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.0, "count": 0}
-    use_raw_sum = cfg.grad_accumulation_normalization is not None
+    # NOTE: raw_sum=True when server-side normalization is active to
+    # avoid double-normalization (client divides by count AND server
+    # divides again). raw_sum=False only with "none".
+    use_raw_sum = cfg.grad_accumulation_normalization != "none"
 
     fwd_bwd_futures: list[Any] = []
 
