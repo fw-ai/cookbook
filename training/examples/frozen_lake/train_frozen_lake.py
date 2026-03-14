@@ -492,6 +492,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             hotload_timeout=weight_sync_cfg.weight_sync_timeout,
             first_checkpoint_type=weight_sync_cfg.first_checkpoint_type,
             dcp_timeout=weight_sync_cfg.dcp_timeout,
+            lora_mode=cfg.lora_rank > 0,
         )
 
         infra_boot_time = time.time() - _infra_start
