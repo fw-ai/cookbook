@@ -131,7 +131,7 @@ def create_trainer_job(
             region=infra.region,
             extra_args=extra_args or infra.extra_args,
             forward_only=forward_only,
-            training_shape_ref=profile.training_shape_version,
+            training_shape=profile.training_shape_version,
         )
     else:
         config = TrainerJobConfig(
