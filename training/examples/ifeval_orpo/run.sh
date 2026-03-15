@@ -23,4 +23,5 @@ python train_ifeval_orpo.py \
     --epochs 1 \
     --grad-accum 4 \
     --learning-rate 1e-5 \
-    --orpo-lambda 1.0
+    --orpo-lambda 1.0 \
+    --output-model-id orpo-finetuned-qwen3-8b-$(date +%Y%m%d%H%M)

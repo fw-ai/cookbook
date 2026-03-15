@@ -23,4 +23,5 @@ python train_sft.py \
     --epochs 3 \
     --batch-size 8 \
     --grad-accum 4 \
-    --learning-rate 1e-5 
+    --learning-rate 1e-5 \
+    --output-model-id sft-text-qwen3-8b-$(date +%Y%m%d%H%M)

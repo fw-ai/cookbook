@@ -89,6 +89,7 @@ class Config:
     max_pairs: int | None = None
     lora_rank: int = 0
     job_id: str | None = None
+    output_model_id: str | None = None
 
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
@@ -337,10 +338,20 @@ def main(
             client.save_state(f"step-{step}")
 
             logger.info("Saving final base checkpoint (step %d)...", step)
+            cp_name = f"final-step-{step}"
             result = client.save_weights_for_sampler_ext(
-                f"final-step-{step}", checkpoint_type="base"
+                cp_name, checkpoint_type="base"
             )
             logger.info("Final base checkpoint saved: %s", result.path)
+            
+            if getattr(cfg, "output_model_id", None):
+                from training.utils.checkpoint_utils import promote_checkpoint
+                promote_checkpoint(
+                    rlor_mgr,
+                    job_id,
+                    cp_name,
+                    cfg.output_model_id,
+                )
 
         logger.info(
             "Training complete: %d optimizer steps (%d new)", step, step - step_offset

@@ -47,6 +47,7 @@ ARGS=(
     --completions-per-prompt "$COMPLETIONS_PER_PROMPT"
     --prompt-groups-per-step "$PROMPT_GROUPS_PER_STEP"
     --skip-cleanup
+    --output-model-id deepmath-rl-$(date +%Y%m%d%H%M)
 )
 
 if [ -n "${WANDB_ENTITY:-}" ]; then

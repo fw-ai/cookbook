@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import logging
-
+from datetime import datetime
 from dotenv import load_dotenv
 
 import training.recipes.orpo_loop as orpo_loop
@@ -49,6 +49,7 @@ def parse_args():
     parser.add_argument("--orpo-lambda", type=float, default=1.0)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--job-id", default=None, help="Reuse a pre-existing trainer job")
+    parser.add_argument("--output-model-id", type=str, required=True, help="Promote final checkpoint to this model ID")
     parser.add_argument(
         "--wandb-entity", default=os.environ.get("WANDB_ENTITY") or None
     )
@@ -95,6 +96,7 @@ def main():
         max_pairs=args.max_pairs,
         lora_rank=args.lora_rank,
         job_id=args.job_id,
+        output_model_id=args.output_model_id,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,
@@ -102,7 +104,7 @@ def main():
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            run_name=f"ifeval-orpo-{args.base_model.rsplit('/', 1)[-1]}",
+            run_name=f"ifeval-orpo-{args.base_model.rsplit('/', 1)[-1]}-{datetime.now().strftime('%Y%m%d%H%M')}",
         ),
     )
 

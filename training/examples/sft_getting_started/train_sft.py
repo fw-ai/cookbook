@@ -37,6 +37,7 @@ def _signal_handler(signum, frame):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="SFT on DeepMath")
+    parser.add_argument("--output-model-id", type=str, required=True, help="Final output model name")
     parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument("--dataset-path", default=os.path.join(os.path.dirname(__file__), "sft_dataset.jsonl"))
@@ -84,6 +85,7 @@ def main():
         grad_accum=args.grad_accum,
         max_examples=args.max_examples,
         lora_rank=args.lora_rank,
+        output_model_id=args.output_model_id,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,

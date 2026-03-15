@@ -124,6 +124,7 @@ class Config:
     weight_sync: WeightSyncConfig = field(default_factory=lambda: WeightSyncConfig(weight_sync_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     init_from_checkpoint: str | None = None
+    output_model_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -542,9 +543,20 @@ def main(
 
         hl = cfg.weight_sync
         if step > step_offset:
-            weight_syncer.save_dcp(f"step-{step}")
+            cp_name = f"step-{step}"
+            weight_syncer.save_dcp(cp_name)
             if hl.weight_sync_interval > 0:
-                weight_syncer.save_and_hotload(f"final-step-{step}")
+                cp_name = f"final-step-{step}"
+                weight_syncer.save_and_hotload(cp_name)
+                
+            if getattr(cfg, "output_model_id", None):
+                from training.utils.checkpoint_utils import promote_checkpoint
+                promote_checkpoint(
+                    rlor_mgr,
+                    policy_job_id,
+                    cp_name,
+                    cfg.output_model_id,
+                )
 
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()

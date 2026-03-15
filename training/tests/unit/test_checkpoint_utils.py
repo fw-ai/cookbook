@@ -11,6 +11,7 @@ from training.utils.checkpoint_utils import (
     ResumeInfo,
     resolve_resume,
     save_checkpoint,
+    CheckpointKind,
     CHECKPOINTS_BASE_NAME,
 )
 
@@ -134,7 +135,7 @@ class TestSaveCheckpoint:
 
     def test_save_both(self, log_dir):
         client = _make_mock_client()
-        paths = save_checkpoint(client, "step-5", log_dir, {"step": 5}, kind="both")
+        paths = save_checkpoint(client, "step-5", log_dir, {"step": 5}, kind=CheckpointKind.BOTH)
 
         assert "state_path" in paths
         assert "sampler_path" in paths

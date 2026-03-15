@@ -52,6 +52,7 @@ from training.utils import (
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    CheckpointKind,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
@@ -133,6 +134,8 @@ class Config:
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
+
+    output_model_id: str | None = None
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -576,15 +579,13 @@ def main(
             if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
-                with timer("dcp_save"):
-                    weight_syncer.save_dcp(f"step-{step}")
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
                 _data_consumed = (resume_info.data_consumed if resume_info else 0) + (step - step_offset) * prompt_groups_per_step
                 save_checkpoint(policy, f"step-{step}", cfg.log_path, {
                     "step": step,
                     "data_consumed": _data_consumed,
                     "source_job_id": policy_job_id,
-                })
+                }, kind=CheckpointKind.STATE)
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
@@ -638,11 +639,21 @@ def main(
         if global_step > step_offset:
             try:
                 _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
-                save_checkpoint(policy, f"step-{global_step}", cfg.log_path, {
+                cp_name = f"step-{global_step}"
+                save_checkpoint(policy, cp_name, cfg.log_path, {
                     "step": global_step,
                     "data_consumed": _data_consumed,
                     "source_job_id": policy_job_id,
-                })
+                }, kind=CheckpointKind.BOTH)
+                
+                if getattr(cfg, "output_model_id", None):
+                    from training.utils.checkpoint_utils import promote_checkpoint
+                    promote_checkpoint(
+                        rlor_mgr,
+                        policy_job_id,
+                        cp_name,
+                        cfg.output_model_id,
+                    )
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
 

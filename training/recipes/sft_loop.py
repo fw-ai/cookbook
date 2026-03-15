@@ -52,6 +52,7 @@ from training.utils import (
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    CheckpointKind,
 )
 from training.utils.timer import timer, flush_timing
 
@@ -82,6 +83,7 @@ class Config:
     max_seq_len: int | None = None
     max_examples: int | None = None
     lora_rank: int = 0
+    output_model_id: str | None = None
 
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
 
@@ -265,7 +267,7 @@ def main(
                             "step": step,
                             "data_consumed": data_consumed,
                             "source_job_id": job_id,
-                        })
+                        }, kind=CheckpointKind.STATE)
 
                 step_metrics: Dict[str, Any] = flush_timing()
 
@@ -310,11 +312,21 @@ def main(
         start_step = resume_info.step if resume_info else 0
         if step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
-            save_checkpoint(client, f"step-{step}", cfg.log_path, {
+            cp_name = f"step-{step}"
+            save_checkpoint(client, cp_name, cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
                 "source_job_id": job_id,
-            }, kind="both")
+            }, kind=CheckpointKind.BOTH)
+            
+            if getattr(cfg, "output_model_id", None):
+                from training.utils.checkpoint_utils import promote_checkpoint
+                promote_checkpoint(
+                    rlor_mgr,
+                    job_id,
+                    cp_name,
+                    cfg.output_model_id,
+                )
 
         logger.info("Training complete: %d optimizer steps", step)
         wandb_finish()

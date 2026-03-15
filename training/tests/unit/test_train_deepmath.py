@@ -34,6 +34,8 @@ def test_parse_args_parses_extra_values(monkeypatch):
             "--deployment-extra-values",
             "priorityClass=deployment",
             "featureFlag=on",
+            "--output-model-id",
+            "out-model",
         ],
     )
 
@@ -143,6 +145,8 @@ def test_main_builds_rl_config_and_calls_recipe(monkeypatch):
             "fw",
             "--wandb-project",
             "deepmath-tests",
+            "--output-model-id",
+            "out-model",
         ],
     )
     monkeypatch.setattr(module.os.path, "exists", lambda path: path == dataset_path)
