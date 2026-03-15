@@ -32,6 +32,7 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+from fireworks import AsyncFireworks
 from eval_protocol.models import EvaluationRow, InputMetadata, Message
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
@@ -304,6 +305,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     api_key = os.environ["FIREWORKS_API_KEY"]
     account = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
+    inference_api_base = cfg.inference_base_url or f"{base_url.rstrip('/')}/inference"
 
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
@@ -350,7 +352,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         api_key=api_key, account_id=account,
         base_url=base_url,
         hotload_api_url=base_url,
-        inference_url=cfg.inference_base_url or base_url,
+        inference_url=base_url,
     )
 
     # -- Load seed contexts --------------------------------------------------
@@ -493,6 +495,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             hotload_timeout=weight_sync_cfg.weight_sync_timeout,
             first_checkpoint_type=weight_sync_cfg.first_checkpoint_type,
             dcp_timeout=weight_sync_cfg.dcp_timeout,
+            lora_mode=cfg.lora_rank > 0,
         )
 
         infra_boot_time = time.time() - _infra_start
@@ -507,25 +510,34 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
         # -- Wait for deployment readiness -----------------------------------
 
-        inference_url = deploy_mgr.inference_url
-        logger.info("Waiting for deployment to be ready for inference...")
-        import httpx
-        _inference_prefix = "/v1" if cfg.inference_base_url else "/inference/v1"
-        _readiness_url = inference_url.rstrip("/") + _inference_prefix + "/completions"
-        for _ready_attempt in range(600):
-            try:
-                _resp = httpx.post(
-                    _readiness_url,
-                    json={"model": inference_model, "prompt": "test", "max_tokens": 1},
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    timeout=15,
+        logger.info("Waiting for deployment to be ready for inference (base=%s)...", inference_api_base)
+
+        async def _check_readiness_burst(burst_size: int = 8) -> bool:
+            async with AsyncFireworks(api_key=api_key, base_url=inference_api_base) as readiness_client:
+                async def _one():
+                    resp = await readiness_client.completions.create(
+                        model=inference_model,
+                        prompt=[1, 2],
+                        max_tokens=1,
+                        temperature=0.0,
+                    )
+                    return resp is not None
+
+                results = await asyncio.gather(
+                    *[_one() for _ in range(burst_size)],
+                    return_exceptions=True,
                 )
-                if _resp.status_code == 200:
+                ok = sum(1 for result in results if result is True)
+                logger.info("Readiness burst: %d/%d succeeded", ok, burst_size)
+                return ok == burst_size
+
+        for _ready_attempt in range(120):
+            try:
+                if asyncio.run(_check_readiness_burst()):
                     logger.info("Deployment is ready for inference")
                     break
-                logger.info("Deployment not ready yet (status=%d), waiting...", _resp.status_code)
+                logger.info("Deployment not fully ready, waiting...")
                 time.sleep(5)
-                continue
             except Exception as e:
                 logger.info("Readiness check failed (%s), waiting...", e)
                 time.sleep(5)
@@ -533,12 +545,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             logger.warning("Deployment readiness timeout, proceeding anyway")
 
         # -- Build rollout processor ----------------------------------------
-        rollout_base_url = inference_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
         rollout_processor = FrozenLakeToolRolloutProcessor(
             model_id=inference_model,
             tokenizer_name_or_path=cfg.tokenizer_model,
             api_key=api_key,
-            base_url=rollout_base_url,
+            base_url=inference_api_base,
             temperature=cfg.temperature,
             max_tokens=cfg.max_completion_tokens,
             system_prompt=cfg.system_prompt,
@@ -766,7 +777,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
                 train_fns=train_fns,
                 prompt_groups_per_step=prompt_groups_per_step,
-                max_concurrent=cfg.max_concurrent,
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
                 metrics_callback=_filtered_step_callback,

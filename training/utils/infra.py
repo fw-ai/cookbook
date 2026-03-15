@@ -201,18 +201,49 @@ def setup_training_client(
     return svc, cli
 
 
+def _wait_for_existing_job_gateway(
+    rlor_mgr: TrainerJobManager,
+    job_id: str,
+) -> TrainerServiceEndpoint:
+    """Fall back to the trainer gateway when control-plane lookups fail.
+
+    Some pre-created smoke-test jobs are reachable via the gateway but can still
+    fail follow-up control-plane `get()`/`wait_for_existing()` calls due to
+    account or environment mismatches. In that case, reuse the gateway endpoint
+    directly and wait for `/api/v1/healthz`.
+    """
+    job_name = f"accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}"
+    base_url = rlor_mgr._get_trainer_gateway_url(job_id)
+    for _ in range(24):
+        if rlor_mgr._check_healthz(base_url):
+            logger.info("Using pre-created job %s at %s", job_id, base_url)
+            return TrainerServiceEndpoint(job_name=job_name, job_id=job_id, base_url=base_url)
+        time.sleep(5)
+    logger.warning("Pre-created job %s healthz did not pass; proceeding anyway", job_id)
+    return TrainerServiceEndpoint(job_name=job_name, job_id=job_id, base_url=base_url)
+
+
 def _reuse_or_resume_job(
     rlor_mgr: TrainerJobManager, job_id: str
 ) -> TrainerServiceEndpoint:
-    job = rlor_mgr.get(job_id)
-    state = job.get("state", "")
     resumable = (
         "JOB_STATE_FAILED",
         "JOB_STATE_CANCELLED",
         "JOB_STATE_PAUSED",
         "JOB_STATE_COMPLETED",
     )
-    if state in resumable:
-        logger.info("Job %s is %s, resuming...", job_id, state)
-        return rlor_mgr.resume_and_wait(job_id)
-    return rlor_mgr.wait_for_existing(job_id)
+    try:
+        job = rlor_mgr.get(job_id)
+        state = job.get("state", "")
+        if state in resumable:
+            logger.info("Job %s is %s, resuming...", job_id, state)
+            return rlor_mgr.resume_and_wait(job_id)
+        return rlor_mgr.wait_for_existing(job_id)
+    except Exception as e:
+        logger.warning(
+            "Failed to look up pre-created job %s via control plane (%s); "
+            "falling back to trainer gateway health checks",
+            job_id,
+            e,
+        )
+        return _wait_for_existing_job_gateway(rlor_mgr, job_id)
