@@ -55,6 +55,7 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
     assert cfg.observation_mode == "image"
     assert cfg.allow_plaintext_action_fallback is True
     assert cfg.training_shape == "ts-qwen3-4b-smoke-v1"
+    assert cfg.deployment_region is None
 
 
 def test_load_seed_contexts_respects_limit_and_defaults(tmp_path):

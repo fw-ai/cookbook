@@ -45,6 +45,7 @@ def test_parse_args_parses_extra_values(monkeypatch):
     assert args.tokenizer_model == "Qwen/Qwen3-4B"
     assert args.dataset_path == "/tmp/deepmath.jsonl"
     assert args.training_shape == "ts-qwen3-4b-smoke-v1"
+    assert args.deployment_region is None
     assert args.deployment_extra_values == {
         "priorityClass": "deployment",
         "featureFlag": "on",

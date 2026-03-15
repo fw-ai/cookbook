@@ -64,7 +64,7 @@ class TrainArgs:
     deployment_id: str | None = None
     """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "US_OHIO_1"
-    deployment_region: str = "US_VIRGINIA_1"
+    deployment_region: str | None = None
     max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8

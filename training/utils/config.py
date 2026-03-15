@@ -87,11 +87,12 @@ class DeployConfig:
         accel = None if self.deployment_shape else self.deployment_accelerator_type
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type
+        region = None if self.deployment_shape else (self.deployment_region or infra.region or "US_VIRGINIA_1")
         return DeploymentConfig(
             deployment_id=self.deployment_id,
             base_model=base_model,
             deployment_shape=self.deployment_shape,
-            region=self.deployment_region or infra.region or "US_VIRGINIA_1",
+            region=region,
             hot_load_bucket_type=self.hot_load_bucket_type,
             skip_shape_validation=skip_validation,
             extra_args=self.deployment_extra_args,
@@ -123,5 +124,4 @@ class WandBConfig:
     entity: str | None = None
     project: str | None = None
     run_name: str | None = None
-
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import logging
+from typing import Any
 
 from fireworks.training.sdk.client import (
     FiretitanServiceClient,
@@ -15,7 +16,7 @@ from fireworks.training.sdk.trainer import (
     TrainingShapeProfile,
     TrainerServiceEndpoint,
 )
-from fireworks.training.sdk.deployment import DeploymentInfo, DeploymentManager
+from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
 from training.utils.config import InfraConfig, DeployConfig
 
 logger = logging.getLogger(__name__)
@@ -179,7 +180,10 @@ def setup_deployment(
     info = deploy_mgr.get(deploy_cfg.deployment_id)
     if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
-        info = deploy_mgr.create_or_get(dep_config)
+        if dep_config.region is None:
+            info = _create_deployment_via_cookbook(deploy_mgr, dep_config)
+        else:
+            info = deploy_mgr.create_or_get(dep_config)
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
@@ -187,6 +191,47 @@ def setup_deployment(
             timeout_s=deploy_cfg.deployment_timeout_s,
         )
     return info
+
+
+def _create_deployment_via_cookbook(
+    deploy_mgr: DeploymentManager,
+    config: DeploymentConfig,
+) -> DeploymentInfo:
+    """Create a deployment while leaving placement selection to the control plane."""
+    path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
+    if config.skip_shape_validation:
+        path += "&skipShapeValidation=true"
+    if config.disable_speculative_decoding:
+        path += "&disableSpeculativeDecoding=true"
+
+    body: dict[str, Any] = {
+        "baseModel": config.base_model,
+        "minReplicaCount": config.min_replica_count,
+        "maxReplicaCount": config.max_replica_count,
+        "enableHotLoad": True,
+    }
+    if config.hot_load_bucket_type:
+        body["hotLoadBucketType"] = config.hot_load_bucket_type
+    if config.deployment_shape:
+        body["deploymentShape"] = config.deployment_shape
+    if config.accelerator_type:
+        body["acceleratorType"] = config.accelerator_type
+    if config.extra_args:
+        flat: list[str] = []
+        for arg in config.extra_args:
+            flat.extend(arg.split()) if " " in arg else flat.append(arg)
+        body["extraArgs"] = flat
+    if config.extra_values:
+        body["extraValues"] = config.extra_values
+
+    logger.info(
+        "Creating deployment: %s (placement_region=auto, extra_values=%s)",
+        config.deployment_id,
+        bool(config.extra_values),
+    )
+    resp = deploy_mgr._post(path, json=body, timeout=60)
+    resp.raise_for_status()
+    return deploy_mgr._parse_deployment_info(config.deployment_id, resp.json())
 
 
 def setup_training_client(
