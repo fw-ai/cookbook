@@ -4,11 +4,12 @@ echo $HERE
 export PYTHONPATH=$PYTHONPATH:$HERE/../../../../../
 echo $PYTHONPATH
 python train_deepmath.py \
-    --base-model accounts/fireworks/models/qwen3-4b \
-    --tokenizer-model Qwen/Qwen3-4b \
+    --base-model accounts/fireworks/models/qwen3-8b \
+    --tokenizer-model Qwen/Qwen3-8b \
     --dataset-path dataset.jsonl \
-    --training-shape qwen3-4b-minimum-h200 \
-    --deployment-id deepmath-qwen3-4b-$(date +%s) \
+    --training-shape accounts/fireworks/trainingShapes/qwen3-8b-128k-h200 \
+    --ref-training-shape accounts/fireworks/trainingShapes/qwen3-8b-128k-h200-forward \
+    --deployment-id deepmath-qwen3-8b-$(date +%s) \
     --region US_VIRGINIA_1 \
     --max-rows 500 \
     --epochs 3 \
