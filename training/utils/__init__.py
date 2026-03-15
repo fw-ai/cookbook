@@ -12,6 +12,7 @@ __all__ = [
     "WeightSyncConfig",
     "InfraConfig",
     "ReconnectableClient",
+    "build_base_model_reference_id",
     "ResourceCleanup",
     "RewardFn",
     "RLPromptDataset",
@@ -72,7 +73,7 @@ from training.utils.infra import (
     setup_training_client,
 )
 from training.utils.timer import timed, timer, flush_timing
-from training.utils.client import ReconnectableClient
+from training.utils.client import ReconnectableClient, build_base_model_reference_id
 from training.utils.config import (
     DEFAULT_ADAM,
     EvalFn,

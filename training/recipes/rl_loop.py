@@ -48,6 +48,7 @@ from training.utils import (
     create_trainer_job,
     load_jsonl_dataset,
     prepare_sampling_messages,
+    build_base_model_reference_id,
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
@@ -260,6 +261,23 @@ def main(
 
     # -- Resolve training shapes -----------------------------------------------
 
+    use_reference = cfg.kl_beta != 0
+    if not use_reference:
+        logger.info("kl_beta=0: skipping reference model creation")
+    reuse_policy_base_reference = (
+        use_reference
+        and cfg.policy_loss == "grpo"
+        and cfg.lora_rank > 0
+        and not cfg.reference_job_id
+        and not cfg.reference_base_url
+        and not cfg.infra.ref_training_shape_id
+    )
+    if reuse_policy_base_reference:
+        logger.info(
+            "lora_rank=%d: reusing policy trainer for base-model reference forwards",
+            cfg.lora_rank,
+        )
+
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
@@ -284,16 +302,19 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    ref_profile = None
-    if cfg.infra.ref_training_shape_id:
+    ref_profile = profile
+    if (
+        use_reference
+        and not reuse_policy_base_reference
+        and cfg.infra.ref_training_shape_id
+    ):
+        logger.info("Using separate ref training shape: %s", cfg.infra.ref_training_shape_id)
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-
-    use_reference = ref_profile is not None
-    if not use_reference:
-        logger.info("No ref_training_shape_id set, skipping reference model")
 
     import time as _time
     _infra_start = _time.time()
+    policy_job_id: str | None = None
+    reference_job_id: str | None = None
 
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
@@ -306,7 +327,7 @@ def main(
             completions_per_prompt,
         )
 
-        if use_reference:
+        if use_reference and not reuse_policy_base_reference:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 pol_fut = pool.submit(
                     create_trainer_job, rlor_mgr,
@@ -358,11 +379,26 @@ def main(
         )
         reference = (
             ReconnectableClient(
-                rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
+                rlor_mgr,
+                policy_ep.job_id,
+                cfg.base_model,
+                cfg.lora_rank,
                 fw_api_key=api_key,
-                endpoint=reference_ep if cfg.reference_base_url else None,
+                endpoint=policy_ep if cfg.policy_base_url else None,
+                model_id_override=build_base_model_reference_id(cfg.base_model),
             )
-            if reference_ep else None
+            if reuse_policy_base_reference
+            else (
+                ReconnectableClient(
+                    rlor_mgr,
+                    reference_ep.job_id,
+                    cfg.base_model,
+                    cfg.lora_rank,
+                    fw_api_key=api_key,
+                    endpoint=reference_ep if cfg.reference_base_url else None,
+                )
+                if reference_ep else None
+            )
         )
 
         import transformers
@@ -517,7 +553,7 @@ def main(
 
         def ref_forward(groups: list[PromptGroup]) -> None:
             """Compute reference logprobs for all prompt groups (one call)."""
-            if not use_reference:
+            if not use_reference or reference is None:
                 return
             all_ref_data = [d for pg in groups for d in pg.ref_data]
             ref_fwd = reference.forward(all_ref_data, "cross_entropy")
