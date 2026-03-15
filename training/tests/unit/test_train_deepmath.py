@@ -114,6 +114,8 @@ def test_main_builds_rl_config_and_calls_recipe(monkeypatch):
             dataset_path,
             "--training-shape",
             "ts-qwen3-4b-smoke-v1",
+            "--ref-training-shape",
+            "ts-qwen3-4b-smoke-v1-ref",
             "--deployment-id",
             "dep-123",
             "--region",
@@ -200,6 +202,7 @@ def test_main_builds_rl_config_and_calls_recipe(monkeypatch):
     assert cfg.router_replay_completion_only is True
     assert cfg.is_correction.tis_cap == 2.0
     assert cfg.infra.training_shape_id == "ts-qwen3-4b-smoke-v1"
+    assert cfg.infra.ref_training_shape_id == "ts-qwen3-4b-smoke-v1-ref"
     assert cfg.infra.region == "US_OHIO_1"
     assert cfg.deployment.deployment_id == "dep-123"
     assert cfg.deployment.deployment_region == "US_VIRGINIA_1"

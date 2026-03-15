@@ -1,18 +1,9 @@
-HERE=$(dirname $(realpath $0))
-echo $HERE
+#!/usr/bin/env bash
+set -euo pipefail
 
-export PYTHONPATH=$PYTHONPATH:$HERE/../../../../../
-echo $PYTHONPATH
-python train_deepmath.py \
-    --base-model accounts/fireworks/models/qwen3-4b \
-    --tokenizer-model Qwen/Qwen3-4b \
-    --dataset-path dataset.jsonl \
-    --training-shape qwen3-4b-minimum-h200 \
-    --deployment-id deepmath-qwen3-4b-$(date +%s) \
-    --region US_VIRGINIA_1 \
-    --max-rows 500 \
-    --epochs 3 \
-    --completions-per-prompt 8 \
-    --learning-rate 1e-5 \
-    --kl-beta 0.001 \
-    --output-model-id deepmath-qwen3-4b-$(date +%s)
+# Keep the default DeepMath launcher on a validated GRPO shape pair.
+# The older qwen3-4b launcher path is not currently runnable for the
+# public GRPO flow because it lacks a working policy/reference shape set.
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$HERE/run_qwen3_30b_a3b.sh" "$@"
