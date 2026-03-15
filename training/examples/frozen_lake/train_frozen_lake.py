@@ -24,7 +24,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, cast
 
 import tinker
 
@@ -32,10 +32,9 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from eval_protocol.models import EvaluationRow, InputMetadata, Message
+from eval_protocol.models import EvaluationRow, InputMetadata
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
-from training.examples.frozen_lake.frozen_lake_env import build_frozen_lake_tool_env
 from training.examples.frozen_lake.frozen_lake_rollout import (
     DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
     FrozenLakeToolRolloutProcessor,
@@ -64,6 +63,7 @@ from training.utils import (
     create_trainer_job,
     compute_advantages,
     build_datum_from_token_mask,
+    build_base_model_reference_id,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
@@ -304,7 +304,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
-    total_samples_per_step = prompt_groups_per_step * completions_per_prompt
 
     infra = InfraConfig(
         training_shape_id=cfg.training_shape or None,
@@ -360,6 +359,22 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
     # -- Resolve training shapes --------------------------------------------
 
+    use_reference = cfg.kl_beta != 0
+    if not use_reference:
+        logger.info("kl_beta=0: skipping reference model creation")
+    reuse_policy_base_reference = (
+        use_reference
+        and cfg.policy_loss == "grpo"
+        and cfg.lora_rank > 0
+        and not cfg.reference_job_id
+        and not infra.ref_training_shape_id
+    )
+    if reuse_policy_base_reference:
+        logger.info(
+            "lora_rank=%d: reusing policy trainer for base-model reference forwards",
+            cfg.lora_rank,
+        )
+
     profile = None
     if infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
@@ -384,12 +399,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         cfg.max_seq_len = 4096
         logger.info("max_seq_len defaulting to %d (no training shape)", cfg.max_seq_len)
 
-    ref_profile = None
-    if infra.ref_training_shape_id:
+    ref_profile = profile
+    if (
+        use_reference
+        and not reuse_policy_base_reference
+        and infra.ref_training_shape_id
+    ):
+        logger.info("Using separate ref training shape: %s", infra.ref_training_shape_id)
         ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
-    use_reference = ref_profile is not None
-    if not use_reference:
-        logger.info("No ref_training_shape_id set, skipping reference model")
 
     # -- Infrastructure setup -----------------------------------------------
 
@@ -450,7 +467,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id, job_profile=profile)
             ref_fut = (
                 pool.submit(_make_job, "reference", cfg.reference_job_id, job_profile=ref_profile, forward_only=True)
-                if use_reference else None
+                if use_reference and not reuse_policy_base_reference else None
             )
 
             policy_ep, policy_job_id, precreated_policy = pol_fut.result()
@@ -471,11 +488,26 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         )
         reference = (
             ReconnectableClient(
-                rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
+                rlor_mgr,
+                policy_ep.job_id,
+                cfg.base_model,
+                cfg.lora_rank,
                 fw_api_key=api_key,
-                endpoint=reference_ep,
+                endpoint=policy_ep,
+                model_id_override=build_base_model_reference_id(cfg.base_model),
             )
-            if reference_ep else None
+            if reuse_policy_base_reference
+            else (
+                ReconnectableClient(
+                    rlor_mgr,
+                    reference_ep.job_id,
+                    cfg.base_model,
+                    cfg.lora_rank,
+                    fw_api_key=api_key,
+                    endpoint=reference_ep,
+                )
+                if reference_ep else None
+            )
         )
 
         if dep_info:
