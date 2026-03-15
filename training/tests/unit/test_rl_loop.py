@@ -16,24 +16,14 @@ def test_extract_answer_reads_digits_from_answer_block():
 
 
 def test_reward_fn_requires_matching_numeric_answer():
-    assert (
-        module.reward_fn("<answer>7</answer>", {"ground_truth": "<answer>7</answer>"})
-        == 1.0
-    )
-    assert (
-        module.reward_fn("<answer>8</answer>", {"ground_truth": "<answer>7</answer>"})
-        == 0.0
-    )
+    assert module.reward_fn("<answer>7</answer>", {"ground_truth": "<answer>7</answer>"}) == 1.0
+    assert module.reward_fn("<answer>8</answer>", {"ground_truth": "<answer>7</answer>"}) == 0.0
     assert module.reward_fn("missing", {"ground_truth": "<answer>7</answer>"}) == 0.0
 
 
 def test_should_accept_requires_reward_variance():
-    same_rewards = PromptGroup(
-        data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 0.0]
-    )
-    varied_rewards = PromptGroup(
-        data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 1.0]
-    )
+    same_rewards = PromptGroup(data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 0.0])
+    varied_rewards = PromptGroup(data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 1.0])
 
     assert module.should_accept(same_rewards) is False
     assert module.should_accept(varied_rewards) is True
@@ -161,39 +151,20 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         return 0
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1)
-    )
-    monkeypatch.setattr(
-        module,
-        "wandb_log",
-        lambda payload, step=0: events["wandb_logs"].append((step, payload)),
-    )
-    monkeypatch.setattr(
-        module,
-        "setup_deployment",
-        lambda *args, **kwargs: SimpleNamespace(
-            inference_model="accounts/test/models/deployed"
-        ),
-    )
+    monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
+    monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
+    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
     monkeypatch.setattr(
         module,
         "create_trainer_job",
-        lambda *args, **kwargs: (
-            events["create_trainer_job"].append(kwargs)
-            or SimpleNamespace(job_id="policy-job")
-        ),
+        lambda *args, **kwargs: events["create_trainer_job"].append(kwargs) or SimpleNamespace(job_id="policy-job"),
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakePolicyClient)
-    monkeypatch.setattr(
-        transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object()
-    )
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        module, "build_loss_fn", lambda **kwargs: ("loss-builder", kwargs)
-    )
+    monkeypatch.setattr(module, "build_loss_fn", lambda **kwargs: ("loss-builder", kwargs))
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
 
     cfg = module.Config(
@@ -223,10 +194,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["create_trainer_job"][0]["hot_load_deployment_id"] == "dep-123"
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
-    assert (
-        events["run_loop_kwargs"]["prompt_groups_per_step"]
-        == cfg.prompt_groups_per_step
-    )
+    assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
     assert events["wandb_finished"] == 0
@@ -304,12 +272,14 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             if self.job_id == "reference-job":
                 return SimpleNamespace(
                     loss_fn_outputs=[
-                        {"logprobs": SimpleNamespace(data=[-0.11, -0.12])} for _ in data
+                        {"logprobs": SimpleNamespace(data=[-0.11, -0.12])}
+                        for _ in data
                     ]
                 )
             return SimpleNamespace(
                 loss_fn_outputs=[
-                    {"logprobs": SimpleNamespace(data=[-0.21, -0.22])} for _ in data
+                    {"logprobs": SimpleNamespace(data=[-0.21, -0.22])}
+                    for _ in data
                 ]
             )
 
@@ -416,85 +386,42 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         return _builder
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1)
-    )
-    monkeypatch.setattr(
-        module,
-        "wandb_log",
-        lambda payload, step=0: events["wandb_logs"].append((step, payload)),
-    )
-    monkeypatch.setattr(
-        module,
-        "log_metrics_json",
-        lambda step, **kwargs: events.setdefault("metrics_logs", []).append(
-            (step, kwargs)
-        ),
-    )
-    monkeypatch.setattr(
-        module,
-        "setup_deployment",
-        lambda *args, **kwargs: SimpleNamespace(
-            inference_model="accounts/test/models/deployed"
-        ),
-    )
+    monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
+    monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
+    monkeypatch.setattr(module, "log_metrics_json", lambda step, **kwargs: events.setdefault("metrics_logs", []).append((step, kwargs)))
+    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
     monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
     monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
-    monkeypatch.setattr(
-        transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object()
-    )
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
     from training.utils.checkpoint_utils import ResumeInfo
-
-    monkeypatch.setattr(
-        module, "resolve_resume", lambda *args, **kwargs: ResumeInfo(step=0)
-    )
-    monkeypatch.setattr(
-        module,
-        "load_jsonl_dataset",
-        lambda *args, **kwargs: [
-            {
-                "messages": [
-                    {"role": "system", "content": "sys"},
-                    {"role": "user", "content": "Solve"},
-                    {"role": "assistant", "content": "prior"},
-                ],
-                "ground_truth": "<answer>7</answer>",
-            }
-        ],
-    )
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: ResumeInfo(step=0))
+    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [
+        {
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "Solve"},
+                {"role": "assistant", "content": "prior"},
+            ],
+            "ground_truth": "<answer>7</answer>",
+        }
+    ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
-    monkeypatch.setattr(
-        module,
-        "compute_pp_recommendation",
-        lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3),
-    )
-    monkeypatch.setattr(
-        module,
-        "compute_step_metrics",
-        lambda **kwargs: {
-            "rollout/reward": 0.5,
-            "rollout/accuracy": 0.5,
-            "train/mean_kl": 0.02,
-        },
-    )
+    monkeypatch.setattr(module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
+    monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {
+        "rollout/reward": 0.5,
+        "rollout/accuracy": 0.5,
+        "train/mean_kl": 0.02,
+    })
     monkeypatch.setattr(module, "flush_timing", lambda: {"perf/step_time": 1.0})
-    monkeypatch.setattr(
-        module,
-        "build_r3_routing_matrices",
-        lambda *args, **kwargs: (
-            events["routing_matrix_calls"].append((args, kwargs)) or {"rm": True}
-        ),
-    )
+    monkeypatch.setattr(module, "build_r3_routing_matrices", lambda *args, **kwargs: events["routing_matrix_calls"].append((args, kwargs)) or {"rm": True})
     monkeypatch.setattr(
         module.tinker.ModelInput,
         "from_ints",
-        lambda ints, routing_matrices=None: SimpleNamespace(
-            tokens=list(ints), routing_matrices=routing_matrices
-        ),
+        lambda ints, routing_matrices=None: SimpleNamespace(tokens=list(ints), routing_matrices=routing_matrices),
     )
     monkeypatch.setattr(
         module.tinker,
@@ -504,9 +431,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setattr(
         module.tinker,
         "Datum",
-        lambda model_input, loss_fn_inputs: SimpleNamespace(
-            model_input=model_input, loss_fn_inputs=loss_fn_inputs
-        ),
+        lambda model_input, loss_fn_inputs: SimpleNamespace(model_input=model_input, loss_fn_inputs=loss_fn_inputs),
     )
 
     cfg = module.Config(
@@ -518,18 +443,12 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         prompt_groups_per_step=1,
         router_replay=True,
         trajectory_dir=str(tmp_path),
-        weight_sync=module.WeightSyncConfig(
-            weight_sync_interval=1,
-            dcp_save_interval=1,
-            weight_sync_before_training=True,
-        ),
+        weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1, weight_sync_before_training=True),
         deployment=module.DeployConfig(
             deployment_id="dep-123",
             tokenizer_model="Qwen/Qwen3-4B",
         ),
-        infra=module.InfraConfig(
-            training_shape_id="shape-a", ref_training_shape_id="ref-shape"
-        ),
+        infra=module.InfraConfig(training_shape_id="shape-a", ref_training_shape_id="ref-shape"),
     )
 
     result = module.main(

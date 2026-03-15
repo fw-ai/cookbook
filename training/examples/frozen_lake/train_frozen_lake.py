@@ -28,9 +28,7 @@ from typing import Any, Dict, List, cast
 
 import tinker
 
-_SRC = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..")
-)
+_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
@@ -140,9 +138,7 @@ class FrozenLakeConfig:
     region: str = "US_VIRGINIA_1"
     deployment_region: str = "US_VIRGINIA_1"
 
-    wandb_entity: str = field(
-        default_factory=lambda: os.environ.get("WANDB_ENTITY", "")
-    )
+    wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(
         default_factory=lambda: os.environ.get("WANDB_PROJECT", "frozen-lake-grpo")
     )
@@ -153,24 +149,18 @@ class FrozenLakeConfig:
 
 
 def parse_args() -> FrozenLakeConfig:
-    parser = argparse.ArgumentParser(
-        description="GRPO training on FrozenLake tool calls"
-    )
+    parser = argparse.ArgumentParser(description="GRPO training on FrozenLake tool calls")
     parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
-    parser.add_argument(
-        "--training-shape", default=os.environ.get("TRAINING_SHAPE", "")
-    )
+    parser.add_argument("--training-shape", default=os.environ.get("TRAINING_SHAPE", ""))
     parser.add_argument("--deployment-shape", default="")
     parser.add_argument("--accelerator-type", default="")
     parser.add_argument("--deployment-id", default=None)
     parser.add_argument("--region", default="US_VIRGINIA_1")
     parser.add_argument("--deployment-region", default="US_VIRGINIA_1")
 
-    parser.add_argument(
-        "--seed-jsonl-path",
-        default=os.path.join(os.path.dirname(__file__), "seeds.jsonl"),
-    )
+    parser.add_argument("--seed-jsonl-path",
+                        default=os.path.join(os.path.dirname(__file__), "seeds.jsonl"))
     parser.add_argument("--max-seeds", type=int, default=20)
     parser.add_argument("--max-steps", type=int, default=12)
     parser.add_argument("--map-name", default="4x4")
@@ -188,30 +178,17 @@ def parse_args() -> FrozenLakeConfig:
     parser.add_argument("--lora-rank", type=int, default=0)
 
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
-    parser.add_argument(
-        "--wandb-project", default=os.environ.get("WANDB_PROJECT", "frozen-lake-grpo")
-    )
-    parser.add_argument(
-        "--visual-prompt-template", default=DEFAULT_VISUAL_PROMPT_TEMPLATE
-    )
+    parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "frozen-lake-grpo"))
+    parser.add_argument("--visual-prompt-template", default=DEFAULT_VISUAL_PROMPT_TEMPLATE)
     parser.add_argument("--observation-mode", choices=("text", "image"), default="text")
     parser.add_argument("--allow-plaintext-action-fallback", action="store_true")
 
-    parser.add_argument(
-        "--policy-job-id",
-        default=None,
-        help="Pre-created policy trainer job ID (skip creation)",
-    )
-    parser.add_argument(
-        "--reference-job-id",
-        default=None,
-        help="Pre-created reference trainer job ID (skip creation)",
-    )
-    parser.add_argument(
-        "--inference-base-url",
-        default=None,
-        help="Direct base URL for inference deployment (skip gateway)",
-    )
+    parser.add_argument("--policy-job-id", default=None,
+                        help="Pre-created policy trainer job ID (skip creation)")
+    parser.add_argument("--reference-job-id", default=None,
+                        help="Pre-created reference trainer job ID (skip creation)")
+    parser.add_argument("--inference-base-url", default=None,
+                        help="Direct base URL for inference deployment (skip gateway)")
 
     return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
 
@@ -230,13 +207,11 @@ def load_seed_contexts(path: str, max_seeds: int) -> List[Dict[str, Any]]:
             if not line:
                 continue
             entry = json.loads(line)
-            contexts.append(
-                {
-                    "map_name": entry.get("map_name", "4x4"),
-                    "use_random_map": True,
-                    "seed": int(entry["seed"]),
-                }
-            )
+            contexts.append({
+                "map_name": entry.get("map_name", "4x4"),
+                "use_random_map": True,
+                "seed": int(entry["seed"]),
+            })
             if len(contexts) >= max_seeds:
                 break
     return contexts
@@ -280,9 +255,7 @@ def evaluation_row_to_training_data(
         return [], 0, [], []
 
     # prompt_len = first turn's prompt length (system + user message, before any model output)
-    first_prompt_len = len(
-        [int(x) for x in (token_turn_traces[0].get("prompt_ids") or [])]
-    )
+    first_prompt_len = len([int(x) for x in (token_turn_traces[0].get("prompt_ids") or [])])
 
     model_request_traces = extra.get("model_request_traces") or []
     spans = compute_model_output_spans(token_turn_traces, model_request_traces)
@@ -358,23 +331,19 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         run_name=cfg.deployment_id or f"frozen-lake-{int(time.time()) % 100000}",
     )
 
-    setup_wandb(
-        wandb_cfg,
-        {
-            "completions_per_prompt": completions_per_prompt,
-            "prompt_groups_per_step": prompt_groups_per_step,
-            "kl_beta": cfg.kl_beta,
-            "lr": cfg.learning_rate,
-            "temperature": cfg.temperature,
-            "max_steps": cfg.max_steps,
-            "max_seeds": cfg.max_seeds,
-        },
-    )
+    setup_wandb(wandb_cfg, {
+        "completions_per_prompt": completions_per_prompt,
+        "prompt_groups_per_step": prompt_groups_per_step,
+        "kl_beta": cfg.kl_beta,
+        "lr": cfg.learning_rate,
+        "temperature": cfg.temperature,
+        "max_steps": cfg.max_steps,
+        "max_seeds": cfg.max_seeds,
+    })
 
     rlor_mgr = TrainerJobManager(api_key=api_key, account_id=account, base_url=base_url)
     deploy_mgr = DeploymentManager(
-        api_key=api_key,
-        account_id=account,
+        api_key=api_key, account_id=account,
         base_url=base_url,
         hotload_api_url=base_url,
         inference_url=cfg.inference_base_url or base_url,
@@ -385,8 +354,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     seed_contexts = load_seed_contexts(cfg.seed_jsonl_path, cfg.max_seeds)
     logger.info(
         "Loaded %d seed contexts from %s",
-        len(seed_contexts),
-        os.path.abspath(cfg.seed_jsonl_path),
+        len(seed_contexts), os.path.abspath(cfg.seed_jsonl_path),
     )
 
     # -- Resolve training shapes --------------------------------------------
@@ -415,16 +383,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             # Strip /versions/... suffix to get the parent deployment shape
             idx = dsv.find("/versions/")
             deploy_cfg.deployment_shape = dsv[:idx] if idx >= 0 else dsv
-            logger.info(
-                "Deployment shape from training shape: %s", deploy_cfg.deployment_shape
-            )
+            logger.info("Deployment shape from training shape: %s", deploy_cfg.deployment_shape)
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
         logger.info(
             "PP recommendation: prompt_groups_per_step=%d (current=%d)",
-            pp_rec.recommended_prompts_per_step,
-            prompt_groups_per_step,
+            pp_rec.recommended_prompts_per_step, prompt_groups_per_step,
         )
 
     if profile and cfg.max_seq_len is None:
@@ -440,9 +405,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         and not reuse_policy_base_reference
         and infra.ref_training_shape_id
     ):
-        logger.info(
-            "Using separate ref training shape: %s", infra.ref_training_shape_id
-        )
+        logger.info("Using separate ref training shape: %s", infra.ref_training_shape_id)
         ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
 
     # -- Infrastructure setup -----------------------------------------------
@@ -472,48 +435,28 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             logger.info("Skipping deployment setup — using pre-created resources")
         else:
             dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
-            if (
-                not cfg.deployment_id
-                and deploy_cfg.deployment_id
-                and os.environ.get("KEEP_DEPLOYMENT", "0") != "1"
-            ):
+            if not cfg.deployment_id and deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
                 cleanup.deployment(deploy_cfg.deployment_id)
-            elif (
-                deploy_cfg.deployment_id
-                and os.environ.get("KEEP_DEPLOYMENT", "0") == "1"
-            ):
-                logger.info(
-                    "Keeping deployment %s (KEEP_DEPLOYMENT=1)",
-                    deploy_cfg.deployment_id,
-                )
+            elif deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") == "1":
+                logger.info("Keeping deployment %s (KEEP_DEPLOYMENT=1)", deploy_cfg.deployment_id)
 
         # -- Create or reuse trainer jobs ------------------------------------
         # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
         # firectl-admin for regions the main gateway doesn't support yet).
 
-        def _make_job(
-            label: str, precreated_id: str | None, job_profile=None, **extra_kw
-        ):
+        def _make_job(label: str, precreated_id: str | None, job_profile=None, **extra_kw):
             if precreated_id:
                 ep = create_trainer_job(
-                    rlor_mgr,
-                    base_model=cfg.base_model,
-                    infra=infra,
+                    rlor_mgr, base_model=cfg.base_model, infra=infra,
                     job_id=precreated_id,
                 )
                 return ep, precreated_id, True
             ep = create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=infra,
-                profile=job_profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
+                rlor_mgr, base_model=cfg.base_model, infra=infra, profile=job_profile,
+                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name=f"frozen-lake-{label}",
-                hot_load_deployment_id=deploy_cfg.deployment_id
-                if label == "policy"
-                else None,  # weight sync target deployment
+                hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,  # weight sync target deployment
                 **extra_kw,
             )
             return ep, ep.job_id, False
@@ -521,19 +464,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         precreated_policy = False
         precreated_reference = False
         with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(
-                _make_job, "policy", cfg.policy_job_id, job_profile=profile
-            )
+            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id, job_profile=profile)
             ref_fut = (
-                pool.submit(
-                    _make_job,
-                    "reference",
-                    cfg.reference_job_id,
-                    job_profile=ref_profile,
-                    forward_only=True,
-                )
-                if use_reference and not reuse_policy_base_reference
-                else None
+                pool.submit(_make_job, "reference", cfg.reference_job_id, job_profile=ref_profile, forward_only=True)
+                if use_reference and not reuse_policy_base_reference else None
             )
 
             policy_ep, policy_job_id, precreated_policy = pol_fut.result()
@@ -548,10 +482,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 cleanup.trainer(reference_job_id)
 
         policy = ReconnectableClient(
-            rlor_mgr,
-            policy_ep.job_id,
-            cfg.base_model,
-            cfg.lora_rank,
+            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
             fw_api_key=api_key,
             endpoint=policy_ep,
         )
@@ -575,8 +506,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     fw_api_key=api_key,
                     endpoint=reference_ep,
                 )
-                if reference_ep
-                else None
+                if reference_ep else None
             )
         )
 
@@ -587,10 +517,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         else:
             inference_model = cfg.base_model
         weight_syncer = WeightSyncer(
-            policy_client=policy.inner,
-            deploy_mgr=deploy_mgr,
-            deployment_id=deploy_cfg.deployment_id,
-            base_model=cfg.base_model,
+            policy_client=policy.inner, deploy_mgr=deploy_mgr,
+            deployment_id=deploy_cfg.deployment_id, base_model=cfg.base_model,
             hotload_timeout=weight_sync_cfg.weight_sync_timeout,
             first_checkpoint_type=weight_sync_cfg.first_checkpoint_type,
             dcp_timeout=weight_sync_cfg.dcp_timeout,
@@ -600,7 +528,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
         from training.utils.checkpoint_utils import resolve_resume
-
         resume_info = resolve_resume(policy, cfg.log_path)
         step_offset = resume_info.step if resume_info else 0
         if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
@@ -612,7 +539,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         inference_url = deploy_mgr.inference_url
         logger.info("Waiting for deployment to be ready for inference...")
         import httpx
-
         _inference_prefix = "/v1" if cfg.inference_base_url else "/inference/v1"
         _readiness_url = inference_url.rstrip("/") + _inference_prefix + "/completions"
         for _ready_attempt in range(600):
@@ -626,10 +552,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 if _resp.status_code == 200:
                     logger.info("Deployment is ready for inference")
                     break
-                logger.info(
-                    "Deployment not ready yet (status=%d), waiting...",
-                    _resp.status_code,
-                )
+                logger.info("Deployment not ready yet (status=%d), waiting...", _resp.status_code)
                 time.sleep(5)
                 continue
             except Exception as e:
@@ -639,9 +562,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             logger.warning("Deployment readiness timeout, proceeding anyway")
 
         # -- Build rollout processor ----------------------------------------
-        rollout_base_url = inference_url.rstrip("/") + (
-            "" if cfg.inference_base_url else "/inference"
-        )
+        rollout_base_url = inference_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
         rollout_processor = FrozenLakeToolRolloutProcessor(
             model_id=inference_model,
             tokenizer_name_or_path=cfg.tokenizer_model,
@@ -664,8 +585,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
-            policy_loss=cfg.policy_loss,
-            kl_beta=cfg.kl_beta,
+            policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
             is_config=ISConfig(),
         )
 
@@ -676,24 +596,20 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         try:
             # -- Sample one prompt group ----------------------------------------
 
-            async def sample_one_prompt(
-                env_context: Dict[str, Any],
-            ) -> PromptGroup | None:
+            async def sample_one_prompt(env_context: Dict[str, Any]) -> PromptGroup | None:
                 """Run completions_per_prompt rollouts for one seed, return PromptGroup."""
                 rows: List[EvaluationRow] = []
                 for rollout_idx in range(completions_per_prompt):
-                    rows.append(
-                        EvaluationRow(
-                            input_metadata=InputMetadata(
-                                row_id=f"seed_{env_context.get('seed', 0)}_{rollout_idx}",
-                                dataset_info={
-                                    "environment_context": dict(env_context),
-                                    "user_prompt_template": cfg.user_prompt_template,
-                                    "visual_prompt_template": cfg.visual_prompt_template,
-                                },
-                            ),
-                        )
-                    )
+                    rows.append(EvaluationRow(
+                        input_metadata=InputMetadata(
+                            row_id=f"seed_{env_context.get('seed', 0)}_{rollout_idx}",
+                            dataset_info={
+                                "environment_context": dict(env_context),
+                                "user_prompt_template": cfg.user_prompt_template,
+                                "visual_prompt_template": cfg.visual_prompt_template,
+                            },
+                        ),
+                    ))
 
                 tasks = rollout_processor(rows, rollout_config)
                 completed_rows: List[EvaluationRow] = []
@@ -704,32 +620,21 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         if extra.get("rollout_error"):
                             logger.warning(
                                 "Rollout error for seed %s: %s",
-                                env_context.get("seed"),
-                                extra["rollout_error"],
+                                env_context.get("seed"), extra["rollout_error"],
                             )
                             continue
                         completed_rows.append(result)
                     except Exception as e:
-                        logger.warning(
-                            "Rollout task failed for seed %s: %s",
-                            env_context.get("seed"),
-                            e,
-                        )
+                        logger.warning("Rollout task failed for seed %s: %s", env_context.get("seed"), e)
 
                 if trajectory_log:
                     for row in completed_rows:
                         extra = row.execution_metadata.extra or {}
                         entry = {
                             "seed": env_context.get("seed"),
-                            "messages": [
-                                m.model_dump() if hasattr(m, "model_dump") else m
-                                for m in (row.messages or [])
-                            ],
+                            "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in (row.messages or [])],
                             "step_rewards": extra.get("step_rewards", []),
-                            "reward": 1.0
-                            if extra.get("step_rewards")
-                            and float(extra["step_rewards"][-1]) > 0
-                            else 0.0,
+                            "reward": 1.0 if extra.get("step_rewards") and float(extra["step_rewards"][-1]) > 0 else 0.0,
                             "rollout_error": extra.get("rollout_error"),
                         }
                         trajectory_log.write(json.dumps(entry) + "\n")
@@ -745,9 +650,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 first_prompt_len = 0
 
                 for row in completed_rows:
-                    datums, prompt_len, inf_lps, rewards = (
-                        evaluation_row_to_training_data(row)
-                    )
+                    datums, prompt_len, inf_lps, rewards = evaluation_row_to_training_data(row)
                     if not datums:
                         continue
                     all_datums.extend(datums)
@@ -792,18 +695,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 for pg in groups:
                     n = len(pg.ref_data)
                     pg.ref_logprobs = [
-                        ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data
-                        for i in range(n)
+                        ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
                     ]
                     idx += n
 
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 prox_fwd = policy.forward(data, "cross_entropy")
-                prox_lp = [
-                    prox_fwd.loss_fn_outputs[i]["logprobs"].data
-                    for i in range(len(data))
-                ]
+                prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
                 return policy.forward_backward_custom(
                     data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
                 )
@@ -816,46 +715,30 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
                 t0 = time.time()
                 ref_forward_batch(prompt_groups)
-                logger.info(
-                    "[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0
-                )
+                logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
 
                 t0 = time.time()
                 fwd_bwd_result = fwd_bwd_one(prompt_groups)
-                logger.info(
-                    "[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0
-                )
+                logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0)
 
                 t0 = time.time()
                 optim_result = policy.optim_step(adam_params)
                 step += 1
-                logger.info(
-                    "[step %d] optim_step: done (%.1fs)", step, time.time() - t0
-                )
+                logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
 
-                if (
-                    weight_sync_cfg.weight_sync_interval > 0
-                    and step % weight_sync_cfg.weight_sync_interval == 0
-                ):
+                if weight_sync_cfg.weight_sync_interval > 0 and step % weight_sync_cfg.weight_sync_interval == 0:
                     logger.info("[step %d] weight_sync: saving + loading...", step)
                     t0 = time.time()
                     with timer("weight_sync"):
                         weight_syncer.save_and_hotload(f"step-{step}")
-                    logger.info(
-                        "[step %d] weight_sync: done (%.1fs)", step, time.time() - t0
-                    )
+                    logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
 
-                if (
-                    weight_sync_cfg.dcp_save_interval > 0
-                    and step % weight_sync_cfg.dcp_save_interval == 0
-                ):
+                if weight_sync_cfg.dcp_save_interval > 0 and step % weight_sync_cfg.dcp_save_interval == 0:
                     logger.info("[step %d] dcp_save...", step)
                     t0 = time.time()
                     with timer("dcp_save"):
                         weight_syncer.save_dcp(f"step-{step}")
-                    logger.info(
-                        "[step %d] dcp_save: done (%.1fs)", step, time.time() - t0
-                    )
+                    logger.info("[step %d] dcp_save: done (%.1fs)", step, time.time() - t0)
 
                 metrics = compute_step_metrics(
                     prompt_groups=prompt_groups,
@@ -868,9 +751,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 )
                 metrics["train/step"] = step
                 if loop_stats:
-                    metrics["rollout/sample_fail_count"] = loop_stats.get(
-                        "sample_fails", 0
-                    )
+                    metrics["rollout/sample_fail_count"] = loop_stats.get("sample_fails", 0)
                     metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
 
                 avg_reward = metrics.get("rollout/reward", 0.0)
@@ -883,14 +764,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 logger.info(
                     "Step %d | Reward: %.3f | KL: %.4f | Loss: %.4f "
                     "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
-                    step,
-                    avg_reward,
-                    avg_kl,
-                    mean_loss,
-                    adv_loss,
-                    kl_pen,
-                    inf_kld,
-                    mask_r,
+                    step, avg_reward, avg_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
                 )
                 reward_history.append(avg_reward)
                 log_metrics_json(step, reward=avg_reward, kl=avg_kl)
@@ -907,11 +781,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             logger.info(
                 "Training: %d seeds x %d epochs = %d prompt groups, "
                 "%d completions/prompt, %d groups/step",
-                len(seed_contexts),
-                cfg.epochs,
-                len(all_prompts),
-                completions_per_prompt,
-                prompt_groups_per_step,
+                len(seed_contexts), cfg.epochs, len(all_prompts),
+                completions_per_prompt, prompt_groups_per_step,
             )
 
             _wandb_step = [step_offset]
@@ -920,25 +791,21 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 _wandb_step[0] += 1
                 wandb_log(loop_metrics, step=_wandb_step[0])
 
-            global_step = asyncio.run(
-                run_rl_loop(
-                    sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
-                    train_fns=train_fns,
-                    prompt_groups_per_step=prompt_groups_per_step,
-                    max_concurrent=cfg.max_concurrent,
-                    dynamic_filter_fn=should_accept,
-                    global_step=step_offset,
-                    metrics_callback=_filtered_step_callback,
-                )
-            )
+            global_step = asyncio.run(run_rl_loop(
+                sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
+                train_fns=train_fns,
+                prompt_groups_per_step=prompt_groups_per_step,
+                max_concurrent=cfg.max_concurrent,
+                dynamic_filter_fn=should_accept,
+                global_step=step_offset,
+                metrics_callback=_filtered_step_callback,
+            ))
 
             # -- Final checkpoint -----------------------------------------------
 
             if global_step > step_offset:
                 try:
-                    policy.save_state(
-                        f"step-{global_step}", timeout=weight_sync_cfg.dcp_timeout
-                    )
+                    policy.save_state(f"step-{global_step}", timeout=weight_sync_cfg.dcp_timeout)
                 except Exception as e:
                     logger.warning("Failed to save final checkpoint: %s", e)
                 logger.info("Training complete: %d steps", global_step)

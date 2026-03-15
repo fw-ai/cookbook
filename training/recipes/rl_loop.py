@@ -138,9 +138,7 @@ class Config:
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
-    wandb: WandBConfig = field(
-        default_factory=lambda: WandBConfig(project="grpo-tinker")
-    )
+    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +182,7 @@ def should_accept(pg: PromptGroup) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _dump_trajectory(
-    trajectory_dir: str, step: int, prompt_groups: list[PromptGroup]
-) -> None:
+def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptGroup]) -> None:
     """Write per-step trajectory JSONL: one line per individual completion."""
     os.makedirs(trajectory_dir, exist_ok=True)
     path = os.path.join(trajectory_dir, f"step_{step:04d}.jsonl")
@@ -201,31 +197,15 @@ def _dump_trajectory(
                     "completion_index": comp_idx,
                     "prompt": pg.prompt,
                     "completion": comp_text,
-                    "reward": pg.rewards[comp_idx]
-                    if comp_idx < len(pg.rewards)
-                    else None,
-                    "advantage": pg.advantages[comp_idx]
-                    if comp_idx < len(pg.advantages)
-                    else None,
-                    "completion_len": pg.completion_lens[comp_idx]
-                    if comp_idx < len(pg.completion_lens)
-                    else None,
-                    "truncated": pg.truncated[comp_idx]
-                    if comp_idx < len(pg.truncated)
-                    else None,
-                    "ground_truth": pg.row_meta.get("ground_truth")
-                    if pg.row_meta
-                    else None,
+                    "reward": pg.rewards[comp_idx] if comp_idx < len(pg.rewards) else None,
+                    "advantage": pg.advantages[comp_idx] if comp_idx < len(pg.advantages) else None,
+                    "completion_len": pg.completion_lens[comp_idx] if comp_idx < len(pg.completion_lens) else None,
+                    "truncated": pg.truncated[comp_idx] if comp_idx < len(pg.truncated) else None,
+                    "ground_truth": pg.row_meta.get("ground_truth") if pg.row_meta else None,
                 }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 n_records += 1
-    logger.info(
-        "[step %d] Saved trajectory to %s (%d completions from %d groups)",
-        step,
-        path,
-        n_records,
-        len(prompt_groups),
-    )
+    logger.info("[step %d] Saved trajectory to %s (%d completions from %d groups)", step, path, n_records, len(prompt_groups))
 
 
 # ---------------------------------------------------------------------------
@@ -275,13 +255,9 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
     if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
-            api_key=api_key, account_id=account, base_url=base_url
-        )
+        rlor_mgr = TrainerJobManager(api_key=api_key, account_id=account, base_url=base_url)
     if deploy_mgr is None:
-        deploy_mgr = DeploymentManager(
-            api_key=api_key, account_id=account, base_url=base_url
-        )
+        deploy_mgr = DeploymentManager(api_key=api_key, account_id=account, base_url=base_url)
 
     # -- Resolve training shapes -----------------------------------------------
 
@@ -305,9 +281,7 @@ def main(
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        dep_shape = getattr(profile, "deployment_shape", None) or getattr(
-            profile, "deployment_shape_version", None
-        )
+        dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
         if dep_shape and not cfg.deployment.deployment_shape:
             cfg.deployment.deployment_shape = dep_shape
 
@@ -334,21 +308,16 @@ def main(
         and not reuse_policy_base_reference
         and cfg.infra.ref_training_shape_id
     ):
-        logger.info(
-            "Using separate ref training shape: %s", cfg.infra.ref_training_shape_id
-        )
+        logger.info("Using separate ref training shape: %s", cfg.infra.ref_training_shape_id)
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
 
     import time as _time
-
     _infra_start = _time.time()
     policy_job_id: str | None = None
     reference_job_id: str | None = None
 
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
-        dep_info = setup_deployment(
-            deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra
-        )
+        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
         if cleanup_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
@@ -361,13 +330,9 @@ def main(
         if use_reference and not reuse_policy_base_reference:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 pol_fut = pool.submit(
-                    create_trainer_job,
-                    rlor_mgr,
-                    base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=profile,
-                    lora_rank=cfg.lora_rank,
-                    max_seq_len=cfg.max_seq_len,
+                    create_trainer_job, rlor_mgr,
+                    base_model=cfg.base_model, infra=cfg.infra, profile=profile,
+                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-policy",
                     hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
@@ -375,16 +340,11 @@ def main(
                     base_url_override=cfg.policy_base_url,
                 )
                 ref_fut = pool.submit(
-                    create_trainer_job,
-                    rlor_mgr,
-                    base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=ref_profile,
-                    lora_rank=cfg.lora_rank,
-                    max_seq_len=cfg.max_seq_len,
+                    create_trainer_job, rlor_mgr,
+                    base_model=cfg.base_model, infra=cfg.infra, profile=ref_profile,
+                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
-                    display_name="grpo-reference",
-                    forward_only=True,
+                    display_name="grpo-reference", forward_only=True,
                     job_id=cfg.reference_job_id,
                     base_url_override=cfg.reference_base_url,
                 )
@@ -399,11 +359,8 @@ def main(
         else:
             policy_ep = create_trainer_job(
                 rlor_mgr,
-                base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
+                base_model=cfg.base_model, infra=cfg.infra, profile=profile,
+                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="grpo-policy",
                 hot_load_deployment_id=cfg.deployment.deployment_id,
@@ -416,10 +373,7 @@ def main(
             reference_ep = None
 
         policy = ReconnectableClient(
-            rlor_mgr,
-            policy_ep.job_id,
-            cfg.base_model,
-            cfg.lora_rank,
+            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
             fw_api_key=api_key,
             endpoint=policy_ep if cfg.policy_base_url else None,
         )
@@ -443,28 +397,21 @@ def main(
                     fw_api_key=api_key,
                     endpoint=reference_ep if cfg.reference_base_url else None,
                 )
-                if reference_ep
-                else None
+                if reference_ep else None
             )
         )
 
         import transformers
 
         inference_model = dep_info.inference_model if dep_info else cfg.base_model
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.deployment.tokenizer_model, trust_remote_code=True
-        )
+        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
-            model=inference_model,
-            api_key=api_key,
-            tokenizer=tokenizer,
+            model=inference_model, api_key=api_key, tokenizer=tokenizer,
         )
         weight_syncer = WeightSyncer(
-            policy_client=policy.inner,
-            deploy_mgr=deploy_mgr,
-            deployment_id=cfg.deployment.deployment_id,
-            base_model=cfg.base_model,
+            policy_client=policy.inner, deploy_mgr=deploy_mgr,
+            deployment_id=cfg.deployment.deployment_id, base_model=cfg.base_model,
             hotload_timeout=cfg.weight_sync.weight_sync_timeout,
             first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
             dcp_timeout=cfg.weight_sync.dcp_timeout,
@@ -496,17 +443,14 @@ def main(
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
-            policy_loss=cfg.policy_loss,
-            kl_beta=cfg.kl_beta,
-            dapo_config=cfg.dapo,
-            gspo_config=cfg.gspo,
+            policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
+            dapo_config=cfg.dapo, gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
             is_config=cfg.is_correction,
         )
 
         sample_kwargs: dict = dict(
-            max_tokens=cfg.max_completion_tokens,
-            temperature=cfg.temperature,
+            max_tokens=cfg.max_completion_tokens, temperature=cfg.temperature,
             max_seq_len=cfg.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
@@ -554,20 +498,14 @@ def main(
                 rm = None
                 if cfg.router_replay:
                     rm = build_r3_routing_matrices(
-                        s.routing_matrices,
-                        s.prompt_len,
-                        model_input_len,
+                        s.routing_matrices, s.prompt_len, model_input_len,
                         completion_only=cfg.router_replay_completion_only,
                     )
 
                 policy_datum = tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(
-                        tokens[:-1], routing_matrices=rm
-                    ),
+                    model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),
                     loss_fn_inputs={
-                        "target_tokens": tinker.TensorData(
-                            data=tokens[1:], dtype="int64", shape=[model_input_len]
-                        ),
+                        "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
                     },
                 )
                 policy_data.append(policy_datum)
@@ -576,9 +514,7 @@ def main(
                     reference_datum = tinker.Datum(
                         model_input=tinker.ModelInput.from_ints(tokens[:-1]),
                         loss_fn_inputs={
-                            "target_tokens": tinker.TensorData(
-                                data=tokens[1:], dtype="int64", shape=[model_input_len]
-                            ),
+                            "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
                         },
                     )
                     reference_data.append(reference_datum)
@@ -593,9 +529,7 @@ def main(
                 response_start = max(0, prompt_len - 1)
                 echoed = getattr(s, "logprobs_echoed", False)
                 aligned = (
-                    list(s.inference_logprobs)
-                    if echoed
-                    else [0.0] * response_start + list(s.inference_logprobs)
+                    list(s.inference_logprobs) if echoed else [0.0] * response_start + list(s.inference_logprobs)
                 )
                 inf_logprobs_aligned.append(aligned)
 
@@ -606,20 +540,13 @@ def main(
             trunc = [s.finish_reason == "length" for s in sampled]
 
             return PromptGroup(
-                data=policy_data,
-                ref_data=reference_data,
-                advantages=adv_filtered,
-                ref_logprobs=None,
-                prompt_len=prompt_len,
-                rewards=rewards,
-                inf_logprobs=inf_logprobs_aligned,
-                completion_lens=comp_lens,
-                truncated=trunc,
+                data=policy_data, ref_data=reference_data,
+                advantages=adv_filtered, ref_logprobs=None,
+                prompt_len=prompt_len, rewards=rewards, inf_logprobs=inf_logprobs_aligned,
+                completion_lens=comp_lens, truncated=trunc,
                 prompt=input_messages if cfg.trajectory_dir else None,
                 completions=[s.text for s in sampled] if cfg.trajectory_dir else None,
-                row_meta={"ground_truth": row.get("ground_truth", "")}
-                if cfg.trajectory_dir
-                else None,
+                row_meta={"ground_truth": row.get("ground_truth", "")} if cfg.trajectory_dir else None,
             )
 
         # -- Training callbacks ----------------------------------------------------
@@ -643,21 +570,16 @@ def main(
             if not prompt_groups:
                 raise ValueError("fwd_bwd_one requires at least one prompt group")
 
-            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(
-                prompt_groups
-            )
+            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
             t0 = _time.time()
             prox_fwd = policy.forward(data, "cross_entropy")
-            prox_lp = [
-                prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))
-            ]
+            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
             logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
 
             t0 = _time.time()
             fwd_bwd_result = policy.forward_backward_custom(
-                data,
-                loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
             logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
@@ -670,9 +592,7 @@ def main(
             """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
             t0 = _time.time()
             ref_forward(prompt_groups)
-            logger.info(
-                "[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0
-            )
+            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
             t0 = _time.time()
             fwd_bwd_result = fwd_bwd_one(prompt_groups)
@@ -683,39 +603,24 @@ def main(
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
-            if (
-                cfg.weight_sync.weight_sync_interval > 0
-                and step % cfg.weight_sync.weight_sync_interval == 0
-            ):
+            if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
                 logger.info("[step %d] weight_sync: saving + loading...", step)
                 t0 = _time.time()
                 with timer("weight_sync"):
                     weight_syncer.save_and_hotload(f"step-{step}")
-                logger.info(
-                    "[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0
-                )
-            if (
-                cfg.weight_sync.dcp_save_interval > 0
-                and step % cfg.weight_sync.dcp_save_interval == 0
-            ):
+                logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
+            if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
                 with timer("dcp_save"):
                     weight_syncer.save_dcp(f"step-{step}")
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    step - step_offset
-                ) * prompt_groups_per_step
-                save_checkpoint(
-                    policy,
-                    f"step-{step}",
-                    cfg.log_path,
-                    {
-                        "step": step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
-                )
+                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (step - step_offset) * prompt_groups_per_step
+                save_checkpoint(policy, f"step-{step}", cfg.log_path, {
+                    "step": step,
+                    "data_consumed": _data_consumed,
+                    "source_job_id": policy_job_id,
+                })
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
@@ -733,10 +638,7 @@ def main(
             avg_kl = metrics.get("train/mean_kl", 0.0)
             logger.info(
                 "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
-                step,
-                avg_reward,
-                avg_acc * 100,
-                avg_kl,
+                step, avg_reward, avg_acc * 100, avg_kl,
             )
             log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
             wandb_log(metrics, step)
@@ -758,34 +660,25 @@ def main(
         for i_step in range(step_offset, len(rl_dataset)):
             remaining_rows.extend(rl_dataset.get_batch(i_step))
 
-        global_step = asyncio.run(
-            run_rl_loop(
-                sample_fns=(sample_one_prompt(row) for row in remaining_rows),
-                train_fns=train_fns,
-                prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=should_accept,
-                global_step=step_offset,
-                metrics_callback=_loop_metrics_callback,
-            )
-        )
+        global_step = asyncio.run(run_rl_loop(
+            sample_fns=(sample_one_prompt(row) for row in remaining_rows),
+            train_fns=train_fns,
+            prompt_groups_per_step=prompt_groups_per_step,
+            dynamic_filter_fn=should_accept,
+            global_step=step_offset,
+            metrics_callback=_loop_metrics_callback,
+        ))
 
         # -- Final checkpoint ----------------------------------------------------
 
         if global_step > step_offset:
             try:
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    global_step - step_offset
-                ) * prompt_groups_per_step
-                save_checkpoint(
-                    policy,
-                    f"step-{global_step}",
-                    cfg.log_path,
-                    {
-                        "step": global_step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
-                )
+                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
+                save_checkpoint(policy, f"step-{global_step}", cfg.log_path, {
+                    "step": global_step,
+                    "data_consumed": _data_consumed,
+                    "source_job_id": policy_job_id,
+                })
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
 
@@ -799,7 +692,5 @@ def main(
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     main(Config(log_path="./rl_logs"))

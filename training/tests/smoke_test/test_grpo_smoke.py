@@ -94,7 +94,9 @@ def test_grpo_smoke(
 
         smoke_lora_rank = int(os.environ.get("FIREWORKS_SMOKE_GRPO_LORA_RANK", "0"))
         default_kl_beta = 0.001 if smoke_lora_rank > 0 else 0.0
-        smoke_kl_beta = _get_float_env("FIREWORKS_SMOKE_GRPO_KL_BETA", default_kl_beta)
+        smoke_kl_beta = _get_float_env(
+            "FIREWORKS_SMOKE_GRPO_KL_BETA", default_kl_beta
+        )
         smoke_skip_validations = _get_bool_env(
             "FIREWORKS_SMOKE_SKIP_VALIDATIONS",
             default=smoke_custom_image_tag is not None,
