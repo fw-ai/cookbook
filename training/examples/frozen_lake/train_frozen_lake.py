@@ -135,8 +135,8 @@ class FrozenLakeConfig:
     deployment_shape: str = ""
     accelerator_type: str = ""
     deployment_id: str | None = None
-    region: str = "US_VIRGINIA_1"
-    deployment_region: str = "US_VIRGINIA_1"
+    region: str | None = None
+    deployment_region: str | None = None
 
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(
@@ -158,7 +158,7 @@ def parse_args() -> FrozenLakeConfig:
     parser.add_argument("--accelerator-type", default="")
     parser.add_argument("--deployment-id", default=None)
     parser.add_argument("--region", default="US_VIRGINIA_1")
-    parser.add_argument("--deployment-region", default="US_VIRGINIA_1")
+    parser.add_argument("--deployment-region", default=None)
 
     parser.add_argument("--seed-jsonl-path",
                         default=os.path.join(os.path.dirname(__file__), "seeds.jsonl"))
