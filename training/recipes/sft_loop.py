@@ -337,10 +337,10 @@ def main(
         if step_batch_buffer:
             step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
 
-        # -- Final checkpoint (skip if dcp_save_interval == -1) ----------------
+        # -- Final checkpoint --------------------------------------------------
 
         start_step = resume_info.step if resume_info else 0
-        if cfg.dcp_save_interval != -1 and step > start_step:
+        if step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
             paths = save_checkpoint(client, cp_name, cfg.log_path, {
