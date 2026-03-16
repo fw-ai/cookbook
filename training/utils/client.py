@@ -15,10 +15,15 @@ from __future__ import annotations
 import logging
 import os
 
-from fireworks.training.sdk.client import FiretitanServiceClient, FiretitanTrainingClient
+from fireworks.training.sdk.client import (
+    FiretitanServiceClient,
+    FiretitanTrainingClient,
+)
 from fireworks.training.sdk.trainer import TrainerJobManager, TrainerServiceEndpoint
 import tinker.lib.api_future_impl as tinker_api_future_impl
-from tinker.types.future_retrieve_request import FutureRetrieveRequest as _FutureRetrieveRequest
+from tinker.types.future_retrieve_request import (
+    FutureRetrieveRequest as _FutureRetrieveRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,9 @@ DEFAULT_TIMEOUT_S: int = 600
 
 DCP_TIMEOUT_S: int = 2700
 """Default timeout for save_state / load_state_with_optimizer (45 min)."""
+
+BASE_MODEL_REFERENCE_PREFIX = "base::"
+"""Prefix for model_ids that should run with LoRA adapters disabled."""
 
 
 def _install_tinker_future_retrieve_compat() -> None:
@@ -43,6 +51,11 @@ def _install_tinker_future_retrieve_compat() -> None:
 
 
 _install_tinker_future_retrieve_compat()
+
+
+def build_base_model_reference_id(base_model: str) -> str:
+    """Return a model_id that routes LoRA trainers through the frozen base model."""
+    return f"{BASE_MODEL_REFERENCE_PREFIX}{base_model}"
 
 
 class ReconnectableClient:
@@ -63,6 +76,7 @@ class ReconnectableClient:
         fw_api_key: str | None = None,
         default_timeout: int = DEFAULT_TIMEOUT_S,
         endpoint: TrainerServiceEndpoint | None = None,
+        model_id_override: str | None = None,
     ):
         self._rlor_mgr = rlor_mgr
         self._job_id = job_id
@@ -71,6 +85,7 @@ class ReconnectableClient:
         self._api_key = api_key
         self._fw_api_key = fw_api_key or os.environ.get("FIREWORKS_API_KEY")
         self._default_timeout = default_timeout
+        self._model_id_override = model_id_override
         self._endpoint: TrainerServiceEndpoint | None = None
         self._client: FiretitanTrainingClient | None = None
         if endpoint:
@@ -113,16 +128,45 @@ class ReconnectableClient:
     def load_state_with_optimizer(self, path: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.load_state_with_optimizer(path).result(timeout=timeout)
 
-    def save_weights_for_sampler_ext(self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S):
-        return self.inner.save_weights_for_sampler_ext(name, checkpoint_type=checkpoint_type)
+    def save_weights_for_sampler_ext(
+        self,
+        name: str,
+        checkpoint_type: str | None = None,
+        timeout: int = DCP_TIMEOUT_S,
+    ):
+        return self.inner.save_weights_for_sampler_ext(
+            name, checkpoint_type=checkpoint_type
+        )
 
-    def resolve_checkpoint_path(self, name: str, source_job_id: str | None = None) -> str:
+    def resolve_checkpoint_path(
+        self, name: str, source_job_id: str | None = None
+    ) -> str:
         return self.inner.resolve_checkpoint_path(name, source_job_id=source_job_id)
 
     def list_checkpoints(self) -> list[str]:
         return self.inner.list_checkpoints()
 
     # -- Internal --------------------------------------------------------------
+
+    def _build_training_client(
+        self,
+        svc: FiretitanServiceClient,
+    ) -> FiretitanTrainingClient:
+        if self._model_id_override is not None:
+            logger.info(
+                "Using manual model_id override '%s' for job %s",
+                self._model_id_override,
+                self._job_id,
+            )
+            return FiretitanTrainingClient(
+                holder=svc.holder,
+                model_seq_id=svc.holder.get_training_client_id(),
+                model_id=self._model_id_override,
+            )
+        return svc.create_training_client(
+            base_model=self._base_model,
+            lora_rank=self._lora_rank,
+        )
 
     def _use_endpoint(self, ep: TrainerServiceEndpoint) -> None:
         kwargs: dict = {}
@@ -132,12 +176,11 @@ class ReconnectableClient:
                 "Authorization": f"Bearer {self._fw_api_key}",
             }
         svc = FiretitanServiceClient(
-            base_url=ep.base_url, api_key=self._api_key, **kwargs,
+            base_url=ep.base_url,
+            api_key=self._api_key,
+            **kwargs,
         )
-        self._client = svc.create_training_client(
-            base_model=self._base_model,
-            lora_rank=self._lora_rank,
-        )
+        self._client = self._build_training_client(svc)
         self._endpoint = ep
 
     def _connect(self) -> None:
