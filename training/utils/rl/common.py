@@ -43,6 +43,34 @@ def _get_loss_mask(
     return torch.ones(resp_len, dtype=dtype, device=device)
 
 
+def _format_policy_loss_label(policy_loss: str) -> str:
+    """Human-readable label for error messages."""
+    if policy_loss == "importance_sampling":
+        return policy_loss
+    return policy_loss.upper()
+
+
+def validate_inference_logprobs_for_sample(
+    policy_loss: str,
+    sample_idx: int,
+    inf_lp: List[float],
+    required: int,
+) -> None:
+    """Ensure one sample has inference logprobs for all active response tokens."""
+    policy_label = _format_policy_loss_label(policy_loss)
+    if not inf_lp:
+        raise ValueError(
+            f"{policy_label} requires inference logprobs for sample {sample_idx} but got empty list. "
+            f"Ensure logprobs=True is set when using policy_loss='{policy_loss}'."
+        )
+
+    if len(inf_lp) < required:
+        raise ValueError(
+            f"{policy_label} requires at least {required} inference logprobs "
+            f"for sample {sample_idx}, got {len(inf_lp)}."
+        )
+
+
 @dataclass
 class SampleContext:
     """Pre-computed tensors for a single sample in the RL loss loop.
@@ -98,6 +126,7 @@ def run_loss_loop(
     tis_config: TISConfig,
     data: List[tinker.Datum],
     logprobs_list: List[torch.Tensor],
+    policy_loss: str,
     policy_fn: PolicyFn,
 ) -> LossLoopResult:
     """Shared loss loop: tensor setup, TIS weight, inference metrics, KL.
@@ -141,9 +170,12 @@ def run_loss_loop(
         )
         pi_detached = resp_pi.detach()
 
-        inf_lp = inf_logprobs[i] if inf_logprobs else []
+        inf_lp = inf_logprobs[i] if i < len(inf_logprobs) else []
+        validate_inference_logprobs_for_sample(
+            policy_loss, i, inf_lp, response_start + resp_len,
+        )
         resp_inf = torch.tensor(
-            [inf_lp[response_start + j] if (response_start + j) < len(inf_lp) else 0.0 for j in range(resp_len)],
+            inf_lp[response_start:response_start + resp_len],
             dtype=resp_pi.dtype, device=resp_pi.device,
         )
         prox_lp = prox_logprobs[i]

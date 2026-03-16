@@ -12,7 +12,12 @@ from training.utils.losses import (
     make_orpo_loss_fn,
 )
 from training.utils.rl.common import _normalize_prompt_lens
-from training.utils.rl.losses import build_loss_fn
+from training.utils.rl.gspo import GSPOConfig
+from training.utils.rl.losses import (
+    build_builtin_loss_datums,
+    build_loss_fn,
+    get_builtin_loss_config,
+)
 from training.utils.supervised import build_datum_from_token_mask
 
 
@@ -42,6 +47,62 @@ class TestLossBuilder:
         builder = build_loss_fn(policy_loss="unknown", kl_beta=0.01)
         with pytest.raises(ValueError, match="Unsupported policy_loss"):
             builder([1.0], [_zeros(4)], [2], [_zeros(4)], [_zeros(4)])
+
+    def test_grpo_requires_inference_logprobs(self):
+        builder = build_loss_fn(policy_loss="grpo", kl_beta=0.01)
+        loss_fn = builder([1.0], [_zeros(4)], [2], [[]], [_zeros(4)])
+
+        with pytest.raises(ValueError, match="GRPO requires inference logprobs"):
+            loss_fn([], [_make_dummy_logprobs(4, seed=0)])
+
+
+class TestBuiltinLossConfig:
+    def test_grpo_preserves_zero_upper_clip_bound(self):
+        kernel, config = get_builtin_loss_config(
+            "grpo", eps_clip=0.2, eps_clip_high=0.0,
+        )
+
+        assert kernel == "ppo"
+        assert config["clip_low_threshold"] == pytest.approx(0.8)
+        assert config["clip_high_threshold"] == pytest.approx(1.0)
+
+    def test_gspo_preserves_zero_clip_bounds(self):
+        kernel, config = get_builtin_loss_config(
+            "gspo",
+            gspo_config=GSPOConfig(
+                clip_ratio_low=0.0,
+                clip_ratio_high=0.0,
+            ),
+        )
+
+        assert kernel == "gspo"
+        assert config["clip_low_threshold"] == pytest.approx(1.0)
+        assert config["clip_high_threshold"] == pytest.approx(1.0)
+
+    def test_importance_sampling_uses_ratio_log_cap(self):
+        kernel, config = get_builtin_loss_config(
+            "importance_sampling",
+            ratio_log_cap=7.5,
+        )
+
+        assert kernel == "importance_sampling"
+        assert config["ratio_log_cap"] == pytest.approx(7.5)
+
+    def test_builtin_datums_require_inference_logprobs(self):
+        datum = build_datum_from_token_mask(
+            token_ids=[10, 11, 12, 13],
+            token_mask=[0, 1, 1, 1],
+        ).datum
+
+        with pytest.raises(ValueError, match="GRPO requires inference logprobs"):
+            build_builtin_loss_datums(
+                [datum],
+                [1.0],
+                [[-0.1, -0.2, -0.3]],
+                [[]],
+                [2],
+                policy_loss="grpo",
+            )
 
 
 class TestBatchDPOLoss:

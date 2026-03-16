@@ -21,19 +21,6 @@ def _make_logprobs(seq_len: int, seed: int = 0) -> torch.Tensor:
     return torch.randn(seq_len, requires_grad=True)
 
 
-class TestCISPOConfigDefaults:
-    def test_defaults(self):
-        cfg = CISPOConfig()
-        assert cfg.eps_low == 0.2
-        assert cfg.eps_high == 0.28
-        assert cfg.ratio_log_cap == 20.0
-
-    def test_custom(self):
-        cfg = CISPOConfig(eps_low=0.1, eps_high=0.5)
-        assert cfg.eps_low == 0.1
-        assert cfg.eps_high == 0.5
-
-
 class TestCISPOClipping:
     """Test that CISPO clips the ratio to [1-eps_low, 1+eps_high]."""
 

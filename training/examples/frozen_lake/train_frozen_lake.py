@@ -4,6 +4,8 @@
 Demonstrates reinforcement learning with multi-turn tool-calling:
   - eval-protocol handles the data plane (token-ID-based rollout with environment)
   - cookbook handles the training plane (GRPO loss, weight sync, reference model)
+  - training uses the server-side builtin loss path when available, otherwise
+    it falls back to the client-side custom loss path
 
 Usage:
     pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol
@@ -67,7 +69,7 @@ from training.utils import (
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, resolve_builtin_loss
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
@@ -118,6 +120,13 @@ class FrozenLakeConfig:
     max_concurrent: int = 16
 
     policy_loss: str = "grpo"
+    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, or ``"cispo"``.
+
+    If an eligible builtin kernel exists for the selected loss, training uses
+    the server-side ``forward_backward(...)`` path. Otherwise it falls back to
+    the client-side ``forward_backward_custom(...)`` path.
+    """
+    ratio_log_cap: float = 20.0
     tis_enabled: bool = False
 
     seed_jsonl_path: str = field(
@@ -171,6 +180,7 @@ def parse_args() -> FrozenLakeConfig:
     parser.add_argument("--completions-per-prompt", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--kl-beta", type=float, default=0.001)
+    parser.add_argument("--ratio-log-cap", type=float, default=20.0)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-completion-tokens", type=int, default=128)
     parser.add_argument("--prompt-groups-per-step", type=int, default=4)
@@ -563,8 +573,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         )
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-        loss_builder = build_loss_fn(
+        # Client-side fallback: build the Python loss closure used by
+        # forward_backward_custom(...) when no eligible builtin kernel exists.
+        client_loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
+            ratio_log_cap=cfg.ratio_log_cap,
             tis_config=TISConfig(),
         )
 
@@ -678,23 +691,39 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     ]
                     idx += n
 
-            check_builtin_loss_eligibility(cfg.policy_loss, profile)
-            builtin = get_builtin_loss_config(cfg.policy_loss)
+            # Server-side fast path: resolve the builtin kernel/config used by
+            # forward_backward(...). Returns None when this loss has no builtin
+            # implementation, and raises when the current profile is ineligible.
+            builtin_server_loss = resolve_builtin_loss(
+                cfg.policy_loss,
+                profile,
+                ratio_log_cap=cfg.ratio_log_cap,
+            )
 
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 prox_fwd = policy.forward(data, "cross_entropy")
                 prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-                if builtin is not None:
-                    kernel_loss, kernel_config = builtin
+                if builtin_server_loss is not None:
+                    # Server-side builtin path: pre-pack the rollout tensors
+                    # into datums the trainer kernel understands, then call
+                    # forward_backward(...).
+                    kernel_loss, kernel_config = builtin_server_loss
                     rl_datums = build_builtin_loss_datums(
-                        data, adv, prox_lp, inf_lp, prompt_lens,
+                        data,
+                        adv,
+                        prox_lp,
+                        inf_lp,
+                        prompt_lens,
+                        policy_loss=cfg.policy_loss,
                     )
                     return policy.forward_backward(
                         rl_datums, kernel_loss, loss_fn_config=kernel_config,
                     )
+                # Client-side custom path: execute the Python loss closure
+                # returned by build_loss_fn(...) via forward_backward_custom(...).
                 return policy.forward_backward_custom(
-                    data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+                    data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
                 )
 
             def train_step(

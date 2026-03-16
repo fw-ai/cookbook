@@ -12,13 +12,14 @@ smooth, continuous penalty rather than a hard clip boundary.
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 from dataclasses import dataclass
 
 import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
+from training.utils.rl.spec import LossSpec
 from training.utils.rl.tis import TISConfig
 
 
@@ -66,7 +67,7 @@ def make_dro_loss_fn(
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
             advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            prox_logprobs, tis_config, data, logprobs_list, policy_fn,
+            prox_logprobs, tis_config, data, logprobs_list, "dro", policy_fn,
         )
         metrics = dict(result.base_metrics)
         nt = result.num_tokens
@@ -74,3 +75,41 @@ def make_dro_loss_fn(
         return result.total_loss, metrics
 
     return loss_fn
+
+
+def _builtin_config(
+    *, dro_config: DROConfig | None = None, **_kw: Any,
+) -> tuple[str, dict[str, Any]]:
+    cfg = dro_config or DROConfig()
+    return "dro", {
+        "beta": cfg.beta,
+    }
+
+
+def _make_loss(
+    *,
+    advantages: List[float],
+    ref_logprobs: List[List[float]],
+    prompt_lens: List[int],
+    inf_logprobs: List[List[float]],
+    prox_logprobs: List[List[float]],
+    dro_config: DROConfig | None,
+    tis_config: TISConfig,
+    **_kw: Any,
+) -> Any:
+    return make_dro_loss_fn(
+        advantages,
+        ref_logprobs,
+        inf_logprobs,
+        prompt_lens,
+        prox_logprobs,
+        dro_config,
+        tis_config=tis_config,
+    )
+
+
+LOSS_SPEC = LossSpec(
+    name="dro",
+    make_loss_fn=_make_loss,
+    builtin_config_builder=_builtin_config,
+)
