@@ -21,3 +21,15 @@ def test_to_deployment_config_includes_extra_values():
     assert deployment_config.region == "US_OHIO_1"
     assert deployment_config.disable_speculative_decoding is True
     assert deployment_config.extra_values == {"priorityClass": "deployment"}
+
+
+def test_to_deployment_config_does_not_infer_region_from_trainer():
+    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(region="US_VIRGINIA_1"),
+    )
+
+    assert isinstance(deployment_config, DeploymentConfig)
+    assert deployment_config.region is None
