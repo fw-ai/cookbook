@@ -119,6 +119,12 @@ class Config:
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
 
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The DPO loss function
+    already computes per-pair means client-side, so server-side
+    normalization would double-normalize."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=lambda: WeightSyncConfig(weight_sync_interval=0))
@@ -299,7 +305,10 @@ async def _train_loop(
                 cfg.beta,
                 microbatch_sizes=microbatch_sizes,
             )
-        optim_result = policy.optim_step(adam_params)
+        optim_result = policy.optim_step(
+            adam_params,
+            grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+        )
         step += 1
 
         step_metrics: dict[str, Any] = {}

@@ -127,7 +127,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
             events["batches"].append(batch)
             return SimpleNamespace(metrics={"ce_loss_sum": 2.0, "response_tokens": 4})
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
         def save_state(self, name):
@@ -210,7 +210,7 @@ def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monk
             events["batches"].append(list(batch))
             return SimpleNamespace(metrics={"ce_loss_sum": 4.0, "response_tokens": 8})
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={})
 

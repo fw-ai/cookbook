@@ -107,8 +107,11 @@ class ReconnectableClient:
             timeout=self._default_timeout,
         )
 
-    def optim_step(self, params):
-        return self._client.optim_step(params).result(
+    def optim_step(self, params, grad_accumulation_normalization: str | None = None):
+        kwargs: dict = {}
+        if grad_accumulation_normalization is not None:
+            kwargs["grad_accumulation_normalization"] = grad_accumulation_normalization
+        return self._client.optim_step(params, **kwargs).result(
             timeout=self._default_timeout,
         )
 

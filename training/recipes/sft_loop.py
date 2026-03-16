@@ -89,6 +89,17 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The SFT loss function
+    already computes per-token means client-side via microbatch_sizes,
+    so server-side normalization would double-normalize.
+    ``"num_loss_tokens"``: per-token mean -- only use with raw-sum losses.
+    ``"num_sequences"``: per-sequence mean."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 = no clipping."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
 
@@ -238,7 +249,10 @@ def main(
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)
 
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        if cfg.grad_clip_norm > 0:
+            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Training loop (batch-indexed) -------------------------------------
 
@@ -263,7 +277,10 @@ def main(
             agg_resp_tokens += response_tokens
 
             with timer("optim_step"):
-                optim_result = client.optim_step(adam_params)
+                optim_result = client.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                )
             step += 1
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:

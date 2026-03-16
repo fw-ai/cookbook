@@ -344,7 +344,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             events["fwd_bwd_call"] = {"data": data, "loss_fn": loss_fn}
             return SimpleNamespace(metrics={"loss": 1.0})
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_step_called"] = True
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
@@ -642,7 +642,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
             events["fwd_bwd_method"] = "forward_backward_custom"
             return SimpleNamespace(metrics={"loss": 1.0})
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
         def save_state(self, name, timeout=None):
