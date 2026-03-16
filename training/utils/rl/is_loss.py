@@ -67,7 +67,7 @@ def _builtin_config(*, ratio_log_cap: float = 20.0, **_kw: Any) -> tuple[str, di
     }
 
 
-def _make_loss(
+def _client_loss_factory(
     *,
     advantages: List[float],
     ref_logprobs: List[List[float]],
@@ -91,6 +91,6 @@ def _make_loss(
 
 LOSS_SPEC = LossSpec(
     name="importance_sampling",
-    make_loss_fn=_make_loss,
+    client_loss_factory=_client_loss_factory,
     builtin_config_builder=_builtin_config,
 )

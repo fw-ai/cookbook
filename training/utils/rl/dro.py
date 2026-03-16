@@ -86,7 +86,7 @@ def _builtin_config(
     }
 
 
-def _make_loss(
+def _client_loss_factory(
     *,
     advantages: List[float],
     ref_logprobs: List[List[float]],
@@ -110,6 +110,6 @@ def _make_loss(
 
 LOSS_SPEC = LossSpec(
     name="dro",
-    make_loss_fn=_make_loss,
+    client_loss_factory=_client_loss_factory,
     builtin_config_builder=_builtin_config,
 )

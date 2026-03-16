@@ -6,13 +6,17 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 BuiltinConfigBuilder = Callable[..., tuple[str, dict[str, Any]]]
-LossFactory = Callable[..., Any]
+ClientLossFactory = Callable[..., Any]
 
 
 @dataclass(frozen=True)
 class LossSpec:
-    """How one policy loss is constructed in custom and builtin paths."""
+    """How one policy loss is registered for client-side and builtin paths.
+
+    ``builtin_config_builder=None`` means the loss is client-side-only and
+    should always execute through ``forward_backward_custom(...)``.
+    """
 
     name: str
-    make_loss_fn: LossFactory
-    builtin_config_builder: BuiltinConfigBuilder | None
+    client_loss_factory: ClientLossFactory
+    builtin_config_builder: BuiltinConfigBuilder | None = None

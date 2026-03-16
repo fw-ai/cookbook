@@ -14,10 +14,13 @@ from training.utils.losses import (
 from training.utils.rl.common import _normalize_prompt_lens
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.losses import (
+    LOSS_REGISTRY,
     build_builtin_loss_datums,
     build_loss_fn,
     get_builtin_loss_config,
+    resolve_builtin_loss,
 )
+from training.utils.rl.spec import LossSpec
 from training.utils.supervised import build_datum_from_token_mask
 
 
@@ -54,6 +57,32 @@ class TestLossBuilder:
 
         with pytest.raises(ValueError, match="GRPO requires inference logprobs"):
             loss_fn([], [_make_dummy_logprobs(4, seed=0)])
+
+    def test_client_only_loss_registration_uses_custom_path(self, monkeypatch):
+        events: dict[str, object] = {}
+
+        def fake_client_loss_factory(**kwargs):
+            events["kwargs"] = kwargs
+            return "client-only-loss"
+
+        monkeypatch.setitem(
+            LOSS_REGISTRY,
+            "client_only_test",
+            LossSpec(
+                name="client_only_test",
+                client_loss_factory=fake_client_loss_factory,
+            ),
+        )
+
+        assert resolve_builtin_loss("client_only_test") is None
+
+        builder = build_loss_fn(policy_loss="client_only_test", kl_beta=0.01)
+        loss_fn = builder([1.0], [_zeros(4)], [2], [_zeros(4)], [_zeros(4)])
+
+        assert loss_fn == "client-only-loss"
+        assert events["kwargs"]["advantages"] == [1.0]
+        assert events["kwargs"]["prompt_lens"] == [2]
+        assert events["kwargs"]["kl_beta"] == pytest.approx(0.01)
 
 
 class TestBuiltinLossConfig:

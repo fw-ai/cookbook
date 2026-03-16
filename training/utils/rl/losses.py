@@ -32,7 +32,10 @@ LOSS_REGISTRY: dict[str, LossSpec] = {
 
 Each :class:`~training.utils.rl.spec.LossSpec` can provide:
 - ``builtin_config_builder`` for the server-side ``forward_backward(...)`` path
-- ``make_loss_fn`` for the client-side ``forward_backward_custom(...)`` path
+- ``client_loss_factory`` for the client-side ``forward_backward_custom(...)`` path
+
+Losses may support both paths, or may be intentionally registered as
+client-side-only by leaving ``builtin_config_builder=None``.
 """
 
 SUPPORTED_POLICY_LOSSES: tuple[str, ...] = tuple(LOSS_REGISTRY)
@@ -56,9 +59,9 @@ def resolve_builtin_loss(
 ) -> tuple[str, dict[str, Any]] | None:
     """Resolve the builtin server-side loss kernel for a policy loss.
 
-    Returns ``None`` if *policy_loss* has no builtin kernel config, signalling
-    the caller to fall back to the client-side ``forward_backward_custom(...)``
-    path.
+    Returns ``None`` when *policy_loss* is registered as client-side-only, or
+    when it otherwise has no builtin kernel config. In both cases the caller
+    should fall back to ``forward_backward_custom(...)``.
 
     Raises ``ValueError`` when the current *profile* cannot use builtin losses
     (for example, PP > 1), instead of silently falling back.
@@ -115,9 +118,8 @@ def get_builtin_loss_config(
 ) -> tuple[str, dict[str, Any]] | None:
     """Return ``(kernel_loss_name, kernel_config)`` for a supported built-in loss.
 
-    Returns ``None`` if *policy_loss* has no builtin kernel config, signalling
-    the caller to fall back to the client-side ``forward_backward_custom(...)``
-    path.
+    Returns ``None`` for losses that are registered as client-side-only, or
+    that otherwise have no builtin kernel config.
     """
     return resolve_builtin_loss(
         policy_loss,
@@ -277,7 +279,8 @@ def build_loss_fn(
 
     The returned callable is only used on the
     ``forward_backward_custom(...)`` path. Builtin server-side kernels are
-    resolved separately by :func:`resolve_builtin_loss`.
+    resolved separately by :func:`resolve_builtin_loss`. Losses registered with
+    ``builtin_config_builder=None`` always take this client-side path.
 
     Returns a callable:
     ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs) -> loss_fn``
@@ -299,7 +302,7 @@ def build_loss_fn(
                 f"Unsupported policy_loss '{policy_loss}'. "
                 f"Expected one of: {supported}."
             )
-        return spec.make_loss_fn(
+        return spec.client_loss_factory(
             advantages=advantages,
             ref_logprobs=ref_logprobs,
             prompt_lens=prompt_lens,
