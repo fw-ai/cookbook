@@ -119,6 +119,11 @@ class Config:
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
 
+    grad_accumulation_normalization: str | None = "num_sequences"
+    """Normalization mode for accumulated gradients at optim_step.
+    Defaults to "num_sequences" so gradients are correctly averaged
+    across all accumulation steps regardless of grad_accum setting."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=lambda: WeightSyncConfig(weight_sync_interval=0))
@@ -299,7 +304,10 @@ async def _train_loop(
                 cfg.beta,
                 microbatch_sizes=microbatch_sizes,
             )
-        optim_result = policy.optim_step(adam_params)
+        optim_result = policy.optim_step(
+            adam_params,
+            grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+        )
         step += 1
 
         step_metrics: dict[str, Any] = {}

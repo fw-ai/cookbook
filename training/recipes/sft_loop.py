@@ -89,6 +89,19 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
+    grad_accumulation_normalization: str | None = "num_loss_tokens"
+    """Normalization mode for accumulated gradients at optim_step.
+    ``"num_loss_tokens"``: per-token mean (verl ``token-mean``).
+    ``"num_sequences"``: per-sequence mean (verl ``seq-mean-token-sum``
+    if loss is raw sum, ``seq-mean-token-mean`` if loss is pre-normalized).
+    ``"none"``: no normalization.
+    ``None``: server default (currently per-token).
+    Requires the loss function to return raw token sums (raw_sum=True),
+    which is set automatically when this is not ``"none"``."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 = no clipping."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
 
@@ -238,7 +251,10 @@ def main(
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)
 
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        if cfg.grad_clip_norm > 0:
+            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Training loop (batch-indexed) -------------------------------------
 
@@ -263,7 +279,10 @@ def main(
             agg_resp_tokens += response_tokens
 
             with timer("optim_step"):
-                optim_result = client.optim_step(adam_params)
+                optim_result = client.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                )
             step += 1
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
@@ -320,10 +339,10 @@ def main(
         if step_batch_buffer:
             step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
 
-        # -- Final checkpoint --------------------------------------------------
+        # -- Final checkpoint (skip if dcp_save_interval == -1) ----------------
 
         start_step = resume_info.step if resume_info else 0
-        if step > start_step:
+        if cfg.dcp_save_interval != -1 and step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
             paths = save_checkpoint(client, cp_name, cfg.log_path, {

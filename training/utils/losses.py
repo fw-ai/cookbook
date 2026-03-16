@@ -53,6 +53,7 @@ def _log1mexp(x: torch.Tensor) -> torch.Tensor:
 def make_orpo_loss_fn(
     response_start: int,
     orpo_lambda: float = 1.0,
+    raw_sum: bool = False,
 ) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Single-pair ORPO loss wrapper over the batched implementation."""
     return make_batch_orpo_loss_fn([response_start], orpo_lambda=orpo_lambda)
@@ -159,6 +160,7 @@ def make_batch_dpo_loss_fn(
         ref_rejected_list: Per-pair reference logprobs for rejected sequences.
         response_starts: Per-pair token index where the response begins.
         beta: DPO temperature parameter.
+        microbatch_sizes: Optional per-microbatch sizes for fused accumulation.
     """
     n_pairs = len(ref_chosen_list)
     assert len(ref_rejected_list) == n_pairs
@@ -344,6 +346,13 @@ def make_batch_weighted_sft_loss_fn(
 
     This is the renderer-safe path for multi-turn SFT. Each datum must include
     ``loss_fn_inputs["weights"]`` aligned with ``target_tokens``.
+
+    Args:
+        raw_sum: If True, return the raw sum of token losses without dividing
+            by the token count. Use this with server-side gradient accumulation
+            normalization (``grad_accumulation_normalization="num_loss_tokens"``
+            on ``optim_step``) to get a correct global per-token mean across
+            all accumulation steps.
     """
 
     def loss_fn(

@@ -603,7 +603,7 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     monkeypatch.setattr(module, "wandb_log", lambda payload, step: events["wandb_logs"].append((step, payload)))
 
     class FakePolicy:
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 

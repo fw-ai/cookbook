@@ -92,6 +92,11 @@ class Config:
     job_id: str | None = None
     output_model_id: str | None = None
 
+    grad_accumulation_normalization: str | None = "num_sequences"
+    """Normalization mode for accumulated gradients at optim_step.
+    Defaults to "num_sequences" so gradients are correctly averaged
+    across all accumulation steps regardless of grad_accum setting."""
+
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
     )
@@ -261,7 +266,10 @@ def main(
 
             loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
             result = client.forward_backward_custom(datums, loss_fn)
-            client.optim_step(adam_params)
+            client.optim_step(
+                adam_params,
+                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            )
             step += 1
 
             step_elapsed = time.monotonic() - step_started_at
