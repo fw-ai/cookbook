@@ -61,6 +61,7 @@ from training.utils import (
     build_renderer,
     render_preference_pair,
     resolve_renderer_name,
+    validate_config,
 )
 from training.utils.checkpoint_utils import resolve_resume
 
@@ -121,10 +122,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    if not cfg.base_model or not cfg.base_model.startswith("accounts/"):
-        raise ValueError(f"Invalid base_model: '{cfg.base_model}' (expected accounts/...)")
-    if not cfg.dataset:
-        raise ValueError("Config.dataset is required.")
+    validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -342,14 +340,16 @@ def main(
             result = client.save_weights_for_sampler_ext(
                 cp_name, checkpoint_type="base"
             )
-            logger.info("Final base checkpoint saved: %s", result.path)
+            from training.utils.checkpoint_utils import get_sampler_checkpoint_id
+            sampler_checkpoint_id = get_sampler_checkpoint_id(result)
+            logger.info("Final base checkpoint saved: %s", sampler_checkpoint_id)
             
             if getattr(cfg, "output_model_id", None):
                 from training.utils.checkpoint_utils import promote_checkpoint
                 promote_checkpoint(
                     rlor_mgr,
                     job_id,
-                    cp_name,
+                    sampler_checkpoint_id,
                     cfg.output_model_id,
                 )
 

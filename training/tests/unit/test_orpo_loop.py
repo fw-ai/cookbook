@@ -12,7 +12,21 @@ def test_main_rejects_invalid_base_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(log_path="/tmp/orpo_test_logs", base_model="qwen3-4b", dataset="/tmp/pairs.jsonl", tokenizer_model="Qwen/Qwen3-4B")
 
-    with pytest.raises(ValueError, match="Invalid base_model"):
+    with pytest.raises(RuntimeError, match="Invalid base_model"):
+        module.main(cfg)
+
+
+def test_main_rejects_invalid_output_model_id(monkeypatch):
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    cfg = module.Config(
+        log_path="/tmp/orpo_test_logs",
+        base_model="accounts/test/models/qwen3-4b",
+        dataset="/tmp/pairs.jsonl",
+        tokenizer_model="Qwen/Qwen3-4B",
+        output_model_id="bad_name",
+    )
+
+    with pytest.raises(RuntimeError, match="Invalid output_model_id"):
         module.main(cfg)
 
 
@@ -29,6 +43,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         "wandb_finished": 0,
         "metrics_logs": [],
         "wandb_logs": [],
+        "promotions": [],
     }
 
     class FakeMgr:
@@ -45,7 +60,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     class FakeInner:
         def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
             events["save_weights"].append((name, checkpoint_type))
-            return SimpleNamespace(path=f"gs://unit/{name}")
+            return SimpleNamespace(path=f"gs://unit/{name}-session", snapshot_name=f"{name}-session")
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -72,7 +87,10 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
 
         def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
             events["save_weights"].append((name, checkpoint_type))
-            return SimpleNamespace(path=f"tinker://unit/sampler/{name}")
+            return SimpleNamespace(
+                path=f"tinker://unit/sampler/{name}-session",
+                snapshot_name=f"{name}-session",
+            )
 
         def load_state_with_optimizer(self, path):
             pass
@@ -119,6 +137,12 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "make_orpo_loss_fn", lambda response_start, orpo_lambda: ("loss", response_start, orpo_lambda))
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
+    monkeypatch.setattr(
+        "training.utils.checkpoint_utils.promote_checkpoint",
+        lambda mgr, job_id, checkpoint_id, output_model_id: events["promotions"].append(
+            (job_id, checkpoint_id, output_model_id)
+        ),
+    )
 
     mgr = FakeMgr()
     cfg = module.Config(
@@ -130,6 +154,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         epochs=1,
         grad_accum=1,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1"),
+        output_model_id="promoted-orpo-model",
     )
 
     result = module.main(cfg, rlor_mgr=mgr)
@@ -143,6 +168,9 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     ]
     assert events["optim_steps"] == 2
     assert events["save_weights"] == [("final-step-2", "base")]
+    assert events["promotions"] == [
+        ("job-orpo", "final-step-2-session", "promoted-orpo-model"),
+    ]
     assert events["deleted_jobs"] == ["job-orpo"]
     assert events["wandb_finished"] == 1
     assert [step for step, _ in events["metrics_logs"]] == [1, 2]

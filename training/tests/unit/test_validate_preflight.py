@@ -17,6 +17,7 @@ def _cfg(**overrides):
         weight_sync_interval=0,
         hot_load_deployment_id=None,
         weight_sync_before_training=False,
+        output_model_id=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -77,6 +78,11 @@ class TestModelNameFormat:
         args = _cfg(base_model="accounts/fireworks/models/qwen3-8b")
         validate_preflight(args, fw_api_key="k", fw_account_id="a")
 
+    def test_invalid_output_model_id_raises(self):
+        args = _cfg(output_model_id="bad_name")
+        with pytest.raises(RuntimeError, match="Invalid output_model_id"):
+            validate_preflight(args, fw_api_key="k", fw_account_id="a")
+
 
 # ---------------------------------------------------------------------------
 # Multiple errors collected
@@ -98,12 +104,14 @@ class TestMultipleErrors:
             dataset="",
             weight_sync_interval=5,
             hot_load_deployment_id=None,
+            output_model_id="bad_name",
         )
         with pytest.raises(RuntimeError) as exc_info:
             validate_preflight(args, fw_api_key="k", fw_account_id="a")
         msg = str(exc_info.value)
         assert "Invalid base_model" in msg
         assert "Missing dataset" in msg
+        assert "Invalid output_model_id" in msg
 
 
 # ---------------------------------------------------------------------------

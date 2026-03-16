@@ -114,7 +114,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset)
+    validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
     setup_wandb(
         cfg.wandb,
         {
@@ -313,7 +313,7 @@ def main(
         if step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
-            save_checkpoint(client, cp_name, cfg.log_path, {
+            paths = save_checkpoint(client, cp_name, cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
                 "source_job_id": job_id,
@@ -324,7 +324,7 @@ def main(
                 promote_checkpoint(
                     rlor_mgr,
                     job_id,
-                    cp_name,
+                    paths["sampler_path"],
                     cfg.output_model_id,
                 )
 

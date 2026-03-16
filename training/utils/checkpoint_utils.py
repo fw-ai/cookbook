@@ -21,8 +21,21 @@ from tinker_cookbook.checkpoint_utils import (
     get_last_checkpoint,
     CHECKPOINTS_BASE_NAME,
 )
+from training.utils.validation import validate_output_model_id
 
 logger = logging.getLogger(__name__)
+
+def get_sampler_checkpoint_id(save_result: Any) -> str:
+    """Extract the promotable sampler checkpoint id from a save result."""
+    snapshot_name = getattr(save_result, "snapshot_name", None)
+    if snapshot_name:
+        return snapshot_name
+
+    path = getattr(save_result, "path", None)
+    if not path:
+        raise ValueError("save_weights_for_sampler_ext() returned no checkpoint identifier")
+
+    return str(path).rstrip("/").rsplit("/", 1)[-1]
 
 def promote_checkpoint(
     job_mgr: Any,
@@ -31,6 +44,7 @@ def promote_checkpoint(
     output_model_id: str,
 ) -> dict:
     """Promote a checkpoint to a model via control plane API."""
+    validate_output_model_id(output_model_id)
     url = f"{job_mgr.base_url}/v1/accounts/{job_mgr.account_id}/rlorTrainerJobs/{job_id}/checkpoints/{checkpoint_id}:promote"
     output_model = f"accounts/{job_mgr.account_id}/models/{output_model_id}"
     logger.info("Promoting checkpoint '%s' -> model '%s'", checkpoint_id, output_model)
@@ -158,7 +172,8 @@ def save_checkpoint(
             name, source_job_id=client.job_id,
         )
     if kind in (CheckpointKind.SAMPLER, CheckpointKind.BOTH):
-        paths["sampler_path"] = client.save_weights_for_sampler_ext(name, checkpoint_type="base").path
+        save_result = client.save_weights_for_sampler_ext(name, checkpoint_type="base")
+        paths["sampler_path"] = get_sampler_checkpoint_id(save_result)
 
     full_dict = {"name": name, **loop_state, **paths}
     os.makedirs(log_path, exist_ok=True)
