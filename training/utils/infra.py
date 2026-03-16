@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import logging
 from typing import Any
+from urllib.parse import urlencode
 
 from fireworks.training.sdk.client import (
     FiretitanServiceClient,
@@ -20,6 +21,11 @@ from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, 
 from training.utils.config import InfraConfig, DeployConfig
 
 logger = logging.getLogger(__name__)
+
+_DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("NVIDIA_H200", "US_VIRGINIA_1"),
+    ("NVIDIA_B200", "US_OHIO_1"),
+)
 
 
 class ResourceCleanup:
@@ -180,6 +186,10 @@ def setup_deployment(
     info = deploy_mgr.get(deploy_cfg.deployment_id)
     if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
+        if dep_config.region is None and dep_config.deployment_shape:
+            dep_config.region = _infer_region_from_deployment_shape(
+                deploy_mgr, dep_config.deployment_shape
+            )
         if dep_config.region is None:
             info = _create_deployment_via_cookbook(deploy_mgr, dep_config)
         else:
@@ -191,6 +201,62 @@ def setup_deployment(
             timeout_s=deploy_cfg.deployment_timeout_s,
         )
     return info
+
+
+def _infer_region_from_deployment_shape(
+    deploy_mgr: DeploymentManager,
+    deployment_shape: str,
+) -> str | None:
+    """Infer a rollout region from a validated deployment shape snapshot."""
+    version = _get_deployment_shape_version(deploy_mgr, deployment_shape)
+    snapshot = version.get("snapshot", {}) or {}
+    accelerator = snapshot.get("acceleratorType", "")
+    for prefix, region in _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES:
+        if accelerator.startswith(prefix):
+            logger.info(
+                "Inferred deployment region %s from deployment shape %s (accelerator=%s)",
+                region,
+                deployment_shape,
+                accelerator,
+            )
+            return region
+    if accelerator:
+        logger.info(
+            "No cookbook deployment-region override for deployment shape %s (accelerator=%s); using auto placement",
+            deployment_shape,
+            accelerator,
+        )
+    else:
+        logger.info(
+            "Deployment shape %s returned no accelerator type; using auto placement",
+            deployment_shape,
+        )
+    return None
+
+
+def _get_deployment_shape_version(
+    deploy_mgr: DeploymentManager,
+    deployment_shape: str,
+) -> dict[str, Any]:
+    """Fetch an exact or latest-validated deployment-shape version."""
+    if "/versions/" in deployment_shape:
+        path = f"/v1/{deployment_shape}"
+    else:
+        path = (
+            f"/v1/{deployment_shape}/versions?"
+            f"{urlencode({'filter': 'latest_validated=true', 'pageSize': 1})}"
+        )
+    resp = deploy_mgr._get(path, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if "/versions/" in deployment_shape:
+        return data
+    versions = data.get("deploymentShapeVersions", []) or []
+    if not versions:
+        raise RuntimeError(
+            f"No latest validated deployment-shape version was returned for '{deployment_shape}'"
+        )
+    return versions[0]
 
 
 def _create_deployment_via_cookbook(
