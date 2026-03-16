@@ -253,7 +253,10 @@ def main(
             with timer("fwd_bwd"):
                 result = client.forward_backward(batch_buf)
             agg_loss_sum += result.metrics.get("loss:sum", 0.0)
-            agg_resp_tokens += sum(sum(d.loss_fn_inputs["weights"].data) for d in batch_buf)
+            response_tokens = result.metrics.get("response_tokens")
+            if response_tokens is None:
+                response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch_buf)
+            agg_resp_tokens += response_tokens
 
             with timer("optim_step"):
                 optim_result = client.optim_step(adam_params)
