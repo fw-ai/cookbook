@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""DPO training loop with concurrent reference caching and pipelined training.
+"""DPO training loop with concurrent reference caching and fused train steps.
 
 Optimisations:
 
   - **Concurrent ref caching**: ``gather_with_progress`` computes reference
     logprobs for all pairs in parallel instead of sequentially.
-  - **Pipelined training**: ``forward_backward_custom`` and ``optim_step``
-    futures are issued back-to-back so they land on the same trainer
-    clock cycle, matching tinker-cookbook's ``train_step`` pattern.
+  - **Client-side fused train steps**: all datums for one optimizer window
+    are sent in a single ``forward_backward_custom`` call so the backend can
+    batch the whole step more efficiently.
 
 Architecture:
     - Policy RLOR job:    forward_backward_custom + optim_step (trainable)
@@ -230,7 +230,7 @@ async def _cache_ref_logprobs(
 
 
 # ---------------------------------------------------------------------------
-# Pipelined training loop
+# Batched training loop
 # ---------------------------------------------------------------------------
 
 
@@ -238,6 +238,7 @@ def _flush_batch(
     batch_pairs: list[dict[str, Any]],
     policy: ReconnectableClient,
     beta: float,
+    microbatch_sizes: list[int] | None = None,
 ) -> Any:
     """Send a batch of pairs through forward_backward_custom.
 
@@ -256,7 +257,11 @@ def _flush_batch(
         response_starts.append(cached["response_start"])
 
     loss_fn = make_batch_dpo_loss_fn(
-        ref_chosen_list, ref_rejected_list, response_starts, beta,
+        ref_chosen_list,
+        ref_rejected_list,
+        response_starts,
+        beta,
+        microbatch_sizes=microbatch_sizes,
     )
     return policy.forward_backward_custom(datums, loss_fn)
 
@@ -270,7 +275,7 @@ async def _train_loop(
     cfg: Config,
     step_offset: int,
 ) -> int:
-    """DPO training with batched forward_backward + optim_step.
+    """DPO training with client-side fused optimizer windows.
 
     Accumulates ``batch_size`` pairs into a single ``forward_backward_custom``
     call (matching SFT's batching pattern), then runs ``grad_accum`` such
@@ -279,27 +284,25 @@ async def _train_loop(
     batch_size = cfg.batch_size
     step = step_offset
     total_steps = len(valid_indices) * cfg.epochs // (cfg.grad_accum * batch_size)
-    accum_count = 0
-    agg: dict[str, float] = {"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.0, "count": 0}
 
-    fwd_bwd_futures: list[Any] = []
+    def _run_train_step(
+        epoch: int,
+        step_pairs: list[dict[str, Any]],
+        microbatch_sizes: list[int],
+    ) -> None:
+        nonlocal step
 
-    def _do_optim_step(epoch: int) -> None:
-        nonlocal step, accum_count, agg, fwd_bwd_futures
-
+        with timer("fwd_bwd"):
+            fwd_bwd_result = _flush_batch(
+                step_pairs,
+                policy,
+                cfg.beta,
+                microbatch_sizes=microbatch_sizes,
+            )
         optim_result = policy.optim_step(adam_params)
+        step += 1
 
         step_metrics: dict[str, Any] = {}
-        for result in fwd_bwd_futures:
-            fwd_metrics = result.metrics
-            agg["dpo_loss"] += fwd_metrics["dpo_loss"]
-            agg["margin"] += fwd_metrics["margin"]
-            agg["accuracy"] += fwd_metrics["accuracy"]
-            agg["count"] += 1
-        fwd_bwd_futures = []
-        step += 1
-        accum_count = 0
-
         if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
             for k, v in optim_result.metrics.items():
                 step_metrics[f"train/{k}"] = v
@@ -314,61 +317,48 @@ async def _train_loop(
 
         step_metrics.update(flush_timing())
 
-        n = agg["count"]
-        if n > 0:
-            avg_loss = agg["dpo_loss"] / n
-            avg_margin = agg["margin"] / n
-            avg_acc = agg["accuracy"] / n
-            logger.info(
-                "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%%",
-                step, total_steps, avg_loss, avg_margin, avg_acc * 100,
-            )
-            log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc)
-            step_metrics.update({
-                "train/step": step,
-                "train/dpo_loss": avg_loss,
-                "train/margin": avg_margin,
-                "train/accuracy": avg_acc,
-                "train/epoch": epoch + 1,
-            })
-            wandb_log(step_metrics, step)
-
-        agg = {"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.0, "count": 0}
+        fwd_metrics = fwd_bwd_result.metrics
+        avg_loss = fwd_metrics["dpo_loss"]
+        avg_margin = fwd_metrics["margin"]
+        avg_acc = fwd_metrics["accuracy"]
+        logger.info(
+            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%%",
+            step, total_steps, avg_loss, avg_margin, avg_acc * 100,
+        )
+        log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc)
+        step_metrics.update({
+            "train/step": step,
+            "train/dpo_loss": avg_loss,
+            "train/margin": avg_margin,
+            "train/accuracy": avg_acc,
+            "train/epoch": epoch + 1,
+        })
+        wandb_log(step_metrics, step)
 
     for epoch in range(cfg.epochs):
-        batch_buffer: list[dict[str, Any]] = []
+        microbatch_buffer: list[dict[str, Any]] = []
+        step_pairs: list[dict[str, Any]] = []
+        step_microbatch_sizes: list[int] = []
+
         for idx in valid_indices:
-            batch_buffer.append(ref_cache[idx])
+            microbatch_buffer.append(ref_cache[idx])
 
-            if len(batch_buffer) >= batch_size:
-                with timer("fwd_bwd"):
-                    fwd_bwd_result = _flush_batch(batch_buffer, policy, cfg.beta)
-                fwd_bwd_futures.append(fwd_bwd_result)
-                batch_buffer = []
-                accum_count += 1
+            if len(microbatch_buffer) >= batch_size:
+                step_pairs.extend(microbatch_buffer)
+                step_microbatch_sizes.append(len(microbatch_buffer))
+                microbatch_buffer = []
 
-                if accum_count >= cfg.grad_accum:
-                    _do_optim_step(epoch)
+                if len(step_microbatch_sizes) >= cfg.grad_accum:
+                    _run_train_step(epoch, step_pairs, step_microbatch_sizes)
+                    step_pairs = []
+                    step_microbatch_sizes = []
 
-        if batch_buffer:
-            with timer("fwd_bwd"):
-                fwd_bwd_result = _flush_batch(batch_buffer, policy, cfg.beta)
-            fwd_bwd_futures.append(fwd_bwd_result)
-            batch_buffer = []
-            accum_count += 1
+        if microbatch_buffer:
+            step_pairs.extend(microbatch_buffer)
+            step_microbatch_sizes.append(len(microbatch_buffer))
 
-        if accum_count > 0:
-            for result in fwd_bwd_futures:
-                metrics = result.metrics
-                agg["dpo_loss"] += metrics["dpo_loss"]
-                agg["margin"] += metrics["margin"]
-                agg["accuracy"] += metrics["accuracy"]
-                agg["count"] += 1
-            fwd_bwd_futures = []
-
-            policy.optim_step(adam_params)
-            step += 1
-            accum_count = 0
+        if step_pairs:
+            _run_train_step(epoch, step_pairs, step_microbatch_sizes)
 
     return step
 

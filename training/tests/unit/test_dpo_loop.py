@@ -211,11 +211,12 @@ def test_cache_ref_logprobs_preserves_multi_turn_preference_history():
 def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
     captured = {}
 
-    def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta):
+    def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta, microbatch_sizes=None):
         captured["ref_chosen"] = ref_chosen
         captured["ref_rejected"] = ref_rejected
         captured["response_starts"] = response_starts
         captured["beta"] = beta
+        captured["microbatch_sizes"] = microbatch_sizes
         return "loss-fn"
 
     class FakePolicy:
@@ -257,6 +258,7 @@ def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
     assert captured["ref_rejected"] == [[-0.2], [-0.4]]
     assert captured["response_starts"] == [3, 5]
     assert captured["beta"] == 0.25
+    assert captured["microbatch_sizes"] is None
 
 
 def test_main_requires_tokenizer_model(monkeypatch):
@@ -590,7 +592,9 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     monkeypatch.setattr(
         module,
         "_flush_batch",
-        lambda batch, policy, beta: events["flush_batches"].append((list(batch), beta)) or SimpleNamespace(
+        lambda batch, policy, beta, microbatch_sizes=None: events["flush_batches"].append(
+            (list(batch), beta, list(microbatch_sizes or []))
+        ) or SimpleNamespace(
             metrics={"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75}
         ),
     )
@@ -637,8 +641,7 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
 
     assert step == 1
     assert events["flush_batches"] == [
-        ([ref_cache[0]], 0.2),
-        ([ref_cache[1]], 0.2),
+        ([ref_cache[0], ref_cache[1]], 0.2, [1, 1]),
     ]
     assert events["optim_steps"] == 1
     assert events["weight_syncs"] == ["step-1"]
