@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from eval_protocol.models import EvaluationRow, InputMetadata, Message
 import httpx
+import pytest
 
 import training.examples.frozen_lake.train_frozen_lake as train_module
 from training.examples.frozen_lake.masking import (
@@ -55,6 +56,17 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
     assert cfg.observation_mode == "image"
     assert cfg.allow_plaintext_action_fallback is True
     assert cfg.training_shape == "ts-qwen3-4b-smoke-v1"
+
+
+def test_main_rejects_invalid_output_model_id(monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    cfg = FrozenLakeConfig(output_model_id="bad_name")
+
+    with pytest.raises(RuntimeError, match="Invalid output_model_id"):
+        train_module.main(cfg)
 
 
 def test_load_seed_contexts_respects_limit_and_defaults(tmp_path):

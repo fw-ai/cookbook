@@ -215,6 +215,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "build_loss_fn_calls": [],
         "routing_matrix_calls": [],
         "sampler_calls": [],
+        "promotions": [],
     }
 
     class FakeRlorMgr:
@@ -296,7 +297,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             return SimpleNamespace(path=f"tinker://unit/state/{name}")
 
         def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
-            return SimpleNamespace(path=f"tinker://unit/sampler/{name}")
+            return SimpleNamespace(
+                path=f"tinker://unit/sampler/{name}-session",
+                snapshot_name=f"{name}-session",
+            )
 
         def load_state_with_optimizer(self, path):
             pass
@@ -433,6 +437,12 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "Datum",
         lambda model_input, loss_fn_inputs: SimpleNamespace(model_input=model_input, loss_fn_inputs=loss_fn_inputs),
     )
+    monkeypatch.setattr(
+        "training.utils.checkpoint_utils.promote_checkpoint",
+        lambda mgr, job_id, checkpoint_id, output_model_id: events["promotions"].append(
+            (job_id, checkpoint_id, output_model_id)
+        ),
+    )
 
     cfg = module.Config(
         log_path=str(tmp_path / "rl_logs"),
@@ -449,6 +459,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             tokenizer_model="Qwen/Qwen3-4B",
         ),
         infra=module.InfraConfig(training_shape_id="shape-a", ref_training_shape_id="ref-shape"),
+        output_model_id="promoted-rl-model",
     )
 
     result = module.main(
@@ -479,6 +490,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     weight_sync_names = [name for name, _ in events["weight_sync_saves"]]
     assert "step-2" in weight_sync_names
     assert events.get("saved_state") == ("step-2", None)
+    assert events["promotions"] == [
+        ("policy-job", "step-2-session", "promoted-rl-model"),
+    ]
     assert len(events["build_loss_fn_calls"]) == 1
     advantages = events["build_loss_fn_calls"][0]["advantages"]
     assert len(advantages) == 2

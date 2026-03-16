@@ -232,7 +232,13 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment)
+    validate_config(
+        cfg.base_model,
+        cfg.dataset,
+        cfg.weight_sync,
+        cfg.deployment,
+        output_model_id=cfg.output_model_id,
+    )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -640,7 +646,7 @@ def main(
             try:
                 _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
                 cp_name = f"step-{global_step}"
-                save_checkpoint(policy, cp_name, cfg.log_path, {
+                paths = save_checkpoint(policy, cp_name, cfg.log_path, {
                     "step": global_step,
                     "data_consumed": _data_consumed,
                     "source_job_id": policy_job_id,
@@ -651,7 +657,7 @@ def main(
                     promote_checkpoint(
                         rlor_mgr,
                         policy_job_id,
-                        cp_name,
+                        paths["sampler_path"],
                         cfg.output_model_id,
                     )
             except Exception as e:

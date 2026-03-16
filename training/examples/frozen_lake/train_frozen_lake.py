@@ -64,6 +64,7 @@ from training.utils import (
     create_trainer_job,
     compute_advantages,
     build_datum_from_token_mask,
+    validate_config,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
@@ -333,6 +334,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         entity=cfg.wandb_entity or None,
         project=cfg.wandb_project,
         run_name=cfg.deployment_id or f"frozen-lake-{int(time.time()) % 100000}",
+    )
+
+    validate_config(
+        cfg.base_model,
+        cfg.seed_jsonl_path,
+        weight_sync_cfg,
+        deploy_cfg,
+        output_model_id=cfg.output_model_id,
     )
 
     setup_wandb(wandb_cfg, {
@@ -778,7 +787,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     cp_name = f"step-{global_step}"
                     _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
                     from training.utils.checkpoint_utils import save_checkpoint
-                    save_checkpoint(policy, cp_name, cfg.log_path, {
+                    paths = save_checkpoint(policy, cp_name, cfg.log_path, {
                         "step": global_step,
                         "data_consumed": _data_consumed,
                         "source_job_id": policy_job_id,
@@ -789,7 +798,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         promote_checkpoint(
                             rlor_mgr,
                             policy_job_id,
-                            cp_name,
+                            paths["sampler_path"],
                             cfg.output_model_id,
                         )
                 except Exception as e:

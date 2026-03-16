@@ -393,7 +393,13 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment)
+    validate_config(
+        cfg.base_model,
+        cfg.dataset,
+        cfg.weight_sync,
+        cfg.deployment,
+        output_model_id=cfg.output_model_id,
+    )
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -543,18 +549,29 @@ def main(
 
         hl = cfg.weight_sync
         if step > step_offset:
-            cp_name = f"step-{step}"
-            weight_syncer.save_dcp(cp_name)
-            if hl.weight_sync_interval > 0:
-                cp_name = f"final-step-{step}"
-                weight_syncer.save_and_hotload(cp_name)
-                
+            dcp_name = f"step-{step}"
+            weight_syncer.save_dcp(dcp_name)
+            final_sampler_checkpoint_id: str | None = None
             if getattr(cfg, "output_model_id", None):
+                final_cp_name = f"final-step-{step}"
+                final_sampler_checkpoint_id = weight_syncer.save_only(
+                    final_cp_name,
+                    checkpoint_type="base",
+                )
+                if hl.weight_sync_interval > 0 and final_sampler_checkpoint_id:
+                    weight_syncer.hotload(final_sampler_checkpoint_id)
+            elif hl.weight_sync_interval > 0:
+                final_cp_name = f"final-step-{step}"
+                weight_syncer.save_and_hotload(final_cp_name)
+
+            if getattr(cfg, "output_model_id", None):
+                if not final_sampler_checkpoint_id:
+                    raise RuntimeError("Failed to save final base checkpoint for promotion")
                 from training.utils.checkpoint_utils import promote_checkpoint
                 promote_checkpoint(
                     rlor_mgr,
                     policy_job_id,
-                    cp_name,
+                    final_sampler_checkpoint_id,
                     cfg.output_model_id,
                 )
 

@@ -7,11 +7,41 @@ Infra-field validation lives in the SDK's ``TrainerJobConfig.validate()``.
 from __future__ import annotations
 
 import logging
+import re
 
 from fireworks.training.sdk.errors import format_sdk_error, DOCS_SDK
 from training.utils.config import DeployConfig, WeightSyncConfig
 
 logger = logging.getLogger(__name__)
+_RESOURCE_ID_LEGACY_RE = re.compile(r"^[a-z0-9-]+$")
+
+
+def validate_output_model_id(output_model_id: str | None) -> None:
+    """Validate cookbook output model IDs against backend resource-name rules."""
+    if output_model_id in (None, ""):
+        return
+
+    errors: list[str] = []
+    if len(output_model_id) > 63:
+        errors.append("must be at most 63 characters")
+    if output_model_id.startswith("-"):
+        errors.append("must not start with '-'")
+    if output_model_id.endswith("-"):
+        errors.append("must not end with '-'")
+    if not _RESOURCE_ID_LEGACY_RE.fullmatch(output_model_id):
+        errors.append("must contain only lowercase a-z, 0-9, and hyphen (-)")
+
+    if errors:
+        raise RuntimeError(
+            format_sdk_error(
+                "Invalid output_model_id",
+                f"'{output_model_id}' is not a valid Fireworks model ID.",
+                "Use 1-63 characters of lowercase a-z, 0-9, or hyphen (-).\n"
+                "  Underscores, spaces, slashes, and uppercase letters are not allowed.\n"
+                "  The ID must not start or end with '-'.\n"
+                "  Example: deepmath-qwen3-8b-dev",
+            )
+        )
 
 
 def validate_config(
@@ -19,6 +49,7 @@ def validate_config(
     dataset: str,
     hotload: WeightSyncConfig | None = None,
     deploy: DeployConfig | None = None,
+    output_model_id: str | None = None,
 ) -> None:
     """Pre-flight validation. Catches misconfiguration before provisioning GPUs."""
     errors: list[str] = []
@@ -49,6 +80,11 @@ def validate_config(
                 "Set dataset to a local path or URL to a JSONL file.",
             )
         )
+
+    try:
+        validate_output_model_id(output_model_id)
+    except RuntimeError as e:
+        errors.append(str(e))
 
     if errors:
         raise RuntimeError("\n\n".join(errors))
@@ -99,4 +135,5 @@ def validate_preflight(
         deploy=DeployConfig(
             deployment_id=getattr(args, "hot_load_deployment_id", None),
         ),
+        output_model_id=getattr(args, "output_model_id", None),
     )
