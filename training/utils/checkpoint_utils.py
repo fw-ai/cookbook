@@ -21,6 +21,7 @@ from tinker_cookbook.checkpoint_utils import (
     get_last_checkpoint,
     CHECKPOINTS_BASE_NAME,
 )
+from training.utils.validation import validate_output_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,7 @@ def promote_checkpoint(
     output_model_id: str,
 ) -> dict:
     """Promote a checkpoint to a model via control plane API."""
-    from training.utils.validation import _validate_output_model_id
-    errors = _validate_output_model_id(output_model_id)
+    errors = validate_output_model_id(output_model_id)
     assert not errors, f"output_model_id should have been caught by pre-flight: {errors}"
 
     url = f"{job_mgr.base_url}/v1/accounts/{job_mgr.account_id}/rlorTrainerJobs/{job_id}/checkpoints/{checkpoint_id}:promote"

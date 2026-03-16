@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 _RESOURCE_ID_LEGACY_RE = re.compile(r"^[a-z0-9-]+$")
 
 
-def _validate_output_model_id(output_model_id: str | None) -> list[str]:
+def validate_output_model_id(output_model_id: str | None) -> list[str]:
     """Return a list of error strings for invalid output model IDs (empty if valid)."""
     if output_model_id in (None, ""):
         return []
@@ -82,7 +82,7 @@ def validate_config(
             )
         )
 
-    errors.extend(_validate_output_model_id(output_model_id))
+    errors.extend(validate_output_model_id(output_model_id))
 
     if errors:
         raise RuntimeError("\n\n".join(errors))
