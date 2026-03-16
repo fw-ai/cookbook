@@ -11,7 +11,7 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.dro import DROConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.importance_sampling import ISConfig
+from training.utils.rl.tis import TISConfig
 
 
 def _cispo_kernel_config(
@@ -54,20 +54,16 @@ def _dapo_kernel_config(
 
 
 def _grpo_kernel_config(
-    *, is_config: ISConfig | None = None, **_kw: Any,
+    *, eps_clip: float = 0.2, eps_clip_high: float | None = None, **_kw: Any,
 ) -> tuple[str, dict[str, Any]]:
-    cfg = is_config or ISConfig()
-    eps_high = cfg.eps_clip_high or cfg.eps_clip
+    high = eps_clip_high or eps_clip
     return "ppo", {
-        "clip_low_threshold": 1.0 - cfg.eps_clip,
-        "clip_high_threshold": 1.0 + eps_high,
+        "clip_low_threshold": 1.0 - eps_clip,
+        "clip_high_threshold": 1.0 + high,
     }
 
 
-def _is_kernel_config(
-    *, is_config: ISConfig | None = None, **_kw: Any,
-) -> tuple[str, dict[str, Any]]:
-    cfg = is_config or ISConfig()
+def _is_kernel_config(**_kw: Any) -> tuple[str, dict[str, Any]]:
     return "importance_sampling", {
         "ratio_log_cap": 20.0,
     }
@@ -128,7 +124,8 @@ def get_builtin_loss_config(
     dro_config: DROConfig | None = None,
     gspo_config: GSPOConfig | None = None,
     cispo_config: CISPOConfig | None = None,
-    is_config: ISConfig | None = None,
+    eps_clip: float = 0.2,
+    eps_clip_high: float | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
     """Return ``(kernel_loss_name, kernel_config)`` for a supported built-in loss.
 
@@ -143,7 +140,8 @@ def get_builtin_loss_config(
         dro_config=dro_config,
         gspo_config=gspo_config,
         cispo_config=cispo_config,
-        is_config=is_config,
+        eps_clip=eps_clip,
+        eps_clip_high=eps_clip_high,
     )
 
 
@@ -201,7 +199,7 @@ def build_builtin_loss_datums(
     prox_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
-    is_config: ISConfig | None = None,
+    tis_config: TISConfig | None = None,
 ) -> List[tinker.Datum]:
     """Build datums with per-token sampling_logprobs and advantages for server-side built-in loss.
 
@@ -209,16 +207,15 @@ def build_builtin_loss_datums(
     server only sees ``sampling_logprobs`` (= prox_lp) and ``advantages``
     (= advantage * tis_weight * loss_mask).
 
-    Uses ``compute_tis_weight`` for behavioral IS correction and
-    ``_get_loss_mask`` for multi-turn tool-call masking (matching the
-    pattern in grpo/dapo/cispo).
+    Uses ``compute_tis_weight`` for behavioral TIS correction and
+    ``_get_loss_mask`` for multi-turn tool-call masking.
     """
     import torch
     from training.utils.rl.common import _get_loss_mask
-    from training.utils.rl.importance_sampling import compute_tis_weight
+    from training.utils.rl.tis import compute_tis_weight
 
-    if is_config is None:
-        is_config = ISConfig()
+    if tis_config is None:
+        tis_config = TISConfig()
     result: List[tinker.Datum] = []
     adv_idx = 0
 
@@ -234,7 +231,7 @@ def build_builtin_loss_datums(
         if resp_len > 0 and inf_lp:
             resp_prox = torch.tensor(prox_lp[response_start:response_start + resp_len], dtype=torch.float32)
             resp_inf = torch.tensor(inf_lp[response_start:response_start + resp_len], dtype=torch.float32)
-            tis_weight, _ = compute_tis_weight(resp_prox, resp_inf, is_config)
+            tis_weight, _ = compute_tis_weight(resp_prox, resp_inf, tis_config)
         else:
             tis_weight = torch.ones(resp_len, dtype=torch.float32)
 
@@ -279,15 +276,17 @@ def build_loss_fn(
     dro_config: Any = None,
     gspo_config: Any = None,
     cispo_config: Any = None,
-    is_config: ISConfig | None = None,
+    tis_config: TISConfig | None = None,
+    eps_clip: float = 0.2,
+    eps_clip_high: float | None = None,
 ) -> LossFnBuilder:
-    """Create a loss builder that dispatches to grpo/dapo/gspo/cispo.
+    """Create a loss builder that dispatches to grpo/dapo/gspo/cispo/is/dro.
 
     Returns a callable:
       (advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs) -> loss_fn
     """
-    if is_config is None:
-        is_config = ISConfig()
+    if tis_config is None:
+        tis_config = TISConfig()
 
     from training.utils.rl.dapo import make_dapo_loss_fn
     from training.utils.rl.dro import make_dro_loss_fn
@@ -307,38 +306,40 @@ def build_loss_fn(
             return make_is_loss_fn(
                 advantages, ref_logprobs, inf_logprobs,
                 prompt_lens, prox_logprobs,
-                is_config=is_config,
+                tis_config=tis_config,
             )
         if policy_loss == "dapo":
             return make_dapo_loss_fn(
                 advantages, ref_logprobs, inf_logprobs,
                 prompt_lens, prox_logprobs,
-                dapo_config, is_config=is_config,
+                dapo_config, tis_config=tis_config,
             )
         if policy_loss == "dro":
             return make_dro_loss_fn(
                 advantages, ref_logprobs, inf_logprobs,
                 prompt_lens, prox_logprobs,
-                dro_config, is_config=is_config,
+                dro_config, tis_config=tis_config,
             )
         if policy_loss == "gspo":
             return make_gspo_loss_fn(
                 advantages, ref_logprobs, inf_logprobs,
                 prompt_lens, prox_logprobs,
-                gspo_config, is_config=is_config,
+                gspo_config, tis_config=tis_config,
             )
         if policy_loss == "cispo":
             return make_cispo_loss_fn(
                 advantages, ref_logprobs, inf_logprobs,
                 prompt_lens, prox_logprobs,
-                cispo_config, is_config=is_config,
+                cispo_config, tis_config=tis_config,
             )
         if policy_loss == "grpo":
             return make_grpo_loss_fn(
                 advantages, ref_logprobs,
                 prompt_lens, inf_logprobs=inf_logprobs,
                 prox_logprobs=prox_logprobs,
-                kl_beta=kl_beta, is_config=is_config,
+                kl_beta=kl_beta,
+                eps_clip=eps_clip, eps_clip_high=eps_clip_high,
+                tis_config=tis_config,
             )
         raise ValueError(
             f"Unsupported policy_loss '{policy_loss}'. "

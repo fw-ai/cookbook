@@ -56,7 +56,7 @@ from training.utils.checkpoint_utils import (
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
-from training.utils.rl.importance_sampling import ISConfig
+from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
@@ -112,8 +112,12 @@ class Config:
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
-    is_correction: ISConfig = field(default_factory=ISConfig)
-    """AReaL-style decoupled IS correction: PPO ratio + behavioral weight."""
+    eps_clip: float = 0.2
+    """PPO clip epsilon for the off-policy ratio (GRPO only)."""
+    eps_clip_high: float | None = None
+    """Asymmetric upper clip bound (GRPO only)."""
+    tis: TISConfig = field(default_factory=TISConfig)
+    """TIS (Train-Inference IS) weight correction config."""
 
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files.  Each file contains
@@ -420,7 +424,8 @@ def main(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
             dapo_config=cfg.dapo, gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
-            is_config=cfg.is_correction,
+            tis_config=cfg.tis,
+            eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high,
         )
 
         sample_kwargs: dict = dict(
@@ -545,7 +550,7 @@ def main(
             dapo_config=cfg.dapo,
             gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
-            is_config=cfg.is_correction,
+            eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high,
         )
 
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
@@ -564,7 +569,7 @@ def main(
             if builtin is not None:
                 kernel_loss, kernel_config = builtin
                 rl_datums = build_builtin_loss_datums(
-                    data, adv, prox_lp, inf_lp, prompt_lens, cfg.is_correction,
+                    data, adv, prox_lp, inf_lp, prompt_lens, cfg.tis,
                 )
                 fwd_bwd_result = policy.forward_backward(
                     rl_datums, kernel_loss, loss_fn_config=kernel_config,

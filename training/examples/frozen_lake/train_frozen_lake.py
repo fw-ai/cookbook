@@ -24,7 +24,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, cast
 
 import tinker
 
@@ -32,10 +32,9 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from eval_protocol.models import EvaluationRow, InputMetadata, Message
+from eval_protocol.models import EvaluationRow, InputMetadata
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
-from training.examples.frozen_lake.frozen_lake_env import build_frozen_lake_tool_env
 from training.examples.frozen_lake.frozen_lake_rollout import (
     DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
     FrozenLakeToolRolloutProcessor,
@@ -69,7 +68,7 @@ from training.utils import (
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
 from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
-from training.utils.rl.importance_sampling import ISConfig
+from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
@@ -566,7 +565,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
-            is_config=ISConfig(),
+            tis_config=TISConfig(),
         )
 
         # -- Trajectory logging -----------------------------------------------

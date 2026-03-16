@@ -198,7 +198,7 @@ def test_main_builds_rl_config_and_calls_recipe(monkeypatch):
     assert cfg.trajectory_dir == "/tmp/traj"
     assert cfg.router_replay is True
     assert cfg.router_replay_completion_only is True
-    assert cfg.is_correction.tis_cap == 2.0
+    assert cfg.tis.cap == 2.0
     assert cfg.infra.training_shape_id == "ts-qwen3-4b-smoke-v1"
     assert cfg.infra.region == "US_OHIO_1"
     assert cfg.deployment.deployment_id == "dep-123"

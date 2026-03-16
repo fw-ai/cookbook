@@ -15,12 +15,13 @@ def test_grpo_max_completion_tokens():
     assert Config(log_path="/tmp/test").max_completion_tokens == 1024
 
 
-def test_is_config_defaults():
-    from training.utils.rl.importance_sampling import ISConfig
+def test_tis_config_defaults():
+    from training.utils.rl.tis import TISConfig
 
-    cfg = ISConfig()
-    assert cfg.eps_clip == 0.2
-    assert cfg.tis_cap == 5.0
+    cfg = TISConfig()
+    assert cfg.cap == 5.0
+    assert cfg.level == "token"
+
 
 
 def test_cispo_config_defaults():

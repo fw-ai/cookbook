@@ -550,7 +550,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     ]
     assert "fwd_bwd_call" in events
     from training.utils.rl.losses import get_builtin_loss_config
-    expected_kernel, expected_config = get_builtin_loss_config(cfg.policy_loss, is_config=cfg.is_correction)
+    expected_kernel, expected_config = get_builtin_loss_config(cfg.policy_loss, eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
     assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
     assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
