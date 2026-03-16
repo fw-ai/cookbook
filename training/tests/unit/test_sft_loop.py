@@ -172,3 +172,83 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     assert datum.loss_fn_inputs["target_tokens"].data == [101, 102, 103, 104, 105, 106]
     assert datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 1.0, 1.0]
     assert events["deleted_jobs"] == ["job-sft"]
+
+
+def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monkeypatch):
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": "u1"}, {"role": "assistant", "content": "a1"}]},
+            {"messages": [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]},
+        ],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {"batches": [], "optim_steps": 0, "deleted_jobs": []}
+
+    class FakeMgr:
+        def delete(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+    class FakeClient:
+        job_id = "job-sft"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward_custom(self, batch, loss_fn):
+            events["batches"].append(list(batch))
+            return SimpleNamespace(metrics={"ce_loss_sum": 4.0, "response_tokens": 8})
+
+        def optim_step(self, _params):
+            events["optim_steps"] += 1
+            return SimpleNamespace(metrics={})
+
+        def save_state(self, name):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"{name}-sampler")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"cross_job://{source_job_id}/{name}" if source_job_id else name
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datum",
+        lambda messages, **kwargs: SimpleNamespace(
+            token_ids=[1, 2, 3],
+            datum={"id": messages[-1]["content"]},
+        ),
+    )
+
+    cfg = module.Config(
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        epochs=1,
+        batch_size=1,
+        grad_accum=2,
+        log_path=str(tmp_path / "sft_logs"),
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert result["steps"] == 1
+    assert events["optim_steps"] == 1
+    assert events["batches"] == [[{"id": "a1"}, {"id": "a2"}]]
+    assert events["deleted_jobs"] == ["job-sft"]
