@@ -287,7 +287,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             events["fwd_bwd_call"] = {"data": data, "loss_fn": loss_fn}
             return SimpleNamespace(metrics={"loss": 1.0})
 
-        def optim_step(self, _params, **kwargs):
+        def optim_step(self, _params):
             events["optim_step_called"] = True
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
@@ -410,6 +410,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
+    monkeypatch.setattr(module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
     monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {
         "rollout/reward": 0.5,
         "rollout/accuracy": 0.5,

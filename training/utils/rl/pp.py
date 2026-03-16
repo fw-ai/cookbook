@@ -44,10 +44,6 @@ def compute_pp_recommendation(
 ) -> PPBatchRecommendation:
     """Compute optimal batch config for pipeline-parallel training.
 
-    TODO: This recommendation needs improvement -- it doesn't account for
-    grad accumulation normalization, variable sequence lengths, or the
-    interaction between PP bubble ratio and batch partitioning strategy.
-
     Replicates the server-side ``local_batch_size`` calculation from
     ``torchtitan_trainer_factory.py`` so the client can align its batch
     dimensions for zero padding waste and minimal bubble.

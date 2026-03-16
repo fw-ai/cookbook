@@ -91,11 +91,6 @@ class Config:
     job_id: str | None = None
     output_model_id: str | None = None
 
-    grad_accumulation_normalization: str | None = "num_sequences"
-    """Normalization mode for accumulated gradients at optim_step.
-    Defaults to "num_sequences" so gradients are correctly averaged
-    across all accumulation steps regardless of grad_accum setting."""
-
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
     )
@@ -265,18 +260,13 @@ def main(
             "count": 0,
         }
 
-        # NOTE: raw_sum=True when server-side normalization is active to
-        # avoid double-normalization (client divides by count AND server
-        # divides again). raw_sum=False only with "none".
-        use_raw_sum = cfg.grad_accumulation_normalization != "none"
-
         for epoch in range(cfg.epochs):
             random.shuffle(pair_cache)
             step_t0 = time.monotonic()
             for pair in pair_cache:
                 chosen_tokens = pair["chosen_tokens"]
                 rejected_tokens = pair["rejected_tokens"]
-                loss_fn = make_orpo_loss_fn(pair["response_start"], cfg.orpo_lambda, raw_sum=use_raw_sum)
+                loss_fn = make_orpo_loss_fn(pair["response_start"], cfg.orpo_lambda)
                 result = client.forward_backward_custom(
                     [pair["chosen_datum"], pair["rejected_datum"]], loss_fn
                 )
@@ -292,10 +282,7 @@ def main(
                 accum_count += 1
 
                 if accum_count >= cfg.grad_accum:
-                    client.optim_step(
-                        adam_params,
-                        grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-                    )
+                    client.optim_step(adam_params)
                     step += 1
                     accum_count = 0
 
@@ -340,10 +327,7 @@ def main(
                     step_t0 = time.monotonic()
 
             if accum_count > 0:
-                client.optim_step(
-                    adam_params,
-                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-                ).result()
+                client.optim_step(adam_params).result()
                 step += 1
                 accum_count = 0
 
