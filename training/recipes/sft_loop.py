@@ -247,7 +247,11 @@ def main(
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
 
-        def _flush_step(batch_buf: list[tinker.Datum], step: int) -> int:
+        def _flush_step(
+            batch_buf: list[tinker.Datum],
+            microbatch_sizes: list[int],
+            step: int,
+        ) -> int:
             nonlocal agg_loss_sum, agg_resp_tokens
 
             with timer("fwd_bwd"):
@@ -309,12 +313,12 @@ def main(
                 step_microbatch_sizes.append(len(batch))
 
                 if len(step_microbatch_sizes) >= cfg.grad_accum:
-                    step = _flush_step(step_batch_buffer, step)
+                    step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
                     step_batch_buffer = []
                     step_microbatch_sizes = []
 
         if step_batch_buffer:
-            step = _flush_step(step_batch_buffer, step)
+            step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
 
         # -- Final checkpoint --------------------------------------------------
 
