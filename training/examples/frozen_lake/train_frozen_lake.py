@@ -693,10 +693,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0)
 
                 t0 = time.time()
-                optim_result = policy.optim_step(
-                    adam_params,
-                    grad_accumulation_normalization="num_loss_tokens",
-                )
+                optim_result = policy.optim_step(adam_params)
                 step += 1
                 logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
 

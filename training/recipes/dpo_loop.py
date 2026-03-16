@@ -119,11 +119,6 @@ class Config:
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
 
-    grad_accumulation_normalization: str | None = "num_sequences"
-    """Normalization mode for accumulated gradients at optim_step.
-    Defaults to "num_sequences" so gradients are correctly averaged
-    across all accumulation steps regardless of grad_accum setting."""
-
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=lambda: WeightSyncConfig(weight_sync_interval=0))
@@ -243,7 +238,6 @@ def _flush_batch(
     batch_pairs: list[dict[str, Any]],
     policy: ReconnectableClient,
     beta: float,
-    raw_sum: bool = False,
 ) -> Any:
     """Send a batch of pairs through forward_backward_custom.
 
@@ -263,7 +257,6 @@ def _flush_batch(
 
     loss_fn = make_batch_dpo_loss_fn(
         ref_chosen_list, ref_rejected_list, response_starts, beta,
-        raw_sum=raw_sum,
     )
     return policy.forward_backward_custom(datums, loss_fn)
 
@@ -288,20 +281,13 @@ async def _train_loop(
     total_steps = len(valid_indices) * cfg.epochs // (cfg.grad_accum * batch_size)
     accum_count = 0
     agg: dict[str, float] = {"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.0, "count": 0}
-    # NOTE: raw_sum=True when server-side normalization is active to
-    # avoid double-normalization (client divides by count AND server
-    # divides again). raw_sum=False only with "none".
-    use_raw_sum = cfg.grad_accumulation_normalization != "none"
 
     fwd_bwd_futures: list[Any] = []
 
     def _do_optim_step(epoch: int) -> None:
         nonlocal step, accum_count, agg, fwd_bwd_futures
 
-        optim_result = policy.optim_step(
-            adam_params,
-            grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-        )
+        optim_result = policy.optim_step(adam_params)
 
         step_metrics: dict[str, Any] = {}
         for result in fwd_bwd_futures:
@@ -356,7 +342,7 @@ async def _train_loop(
 
             if len(batch_buffer) >= batch_size:
                 with timer("fwd_bwd"):
-                    fwd_bwd_result = _flush_batch(batch_buffer, policy, cfg.beta, raw_sum=use_raw_sum)
+                    fwd_bwd_result = _flush_batch(batch_buffer, policy, cfg.beta)
                 fwd_bwd_futures.append(fwd_bwd_result)
                 batch_buffer = []
                 accum_count += 1
@@ -366,7 +352,7 @@ async def _train_loop(
 
         if batch_buffer:
             with timer("fwd_bwd"):
-                fwd_bwd_result = _flush_batch(batch_buffer, policy, cfg.beta, raw_sum=use_raw_sum)
+                fwd_bwd_result = _flush_batch(batch_buffer, policy, cfg.beta)
             fwd_bwd_futures.append(fwd_bwd_result)
             batch_buffer = []
             accum_count += 1
@@ -380,10 +366,7 @@ async def _train_loop(
                 agg["count"] += 1
             fwd_bwd_futures = []
 
-            policy.optim_step(
-                adam_params,
-                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-            )
+            policy.optim_step(adam_params)
             step += 1
             accum_count = 0
 

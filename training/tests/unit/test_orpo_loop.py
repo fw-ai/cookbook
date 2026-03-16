@@ -63,7 +63,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
                 }
             )
 
-        def optim_step(self, _params, **kwargs):
+        def optim_step(self, _params):
             events["optim_steps"] += 1
             return SimpleNamespace()
 
@@ -117,7 +117,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     monkeypatch.setattr(module, "render_preference_pair", lambda *args, **kwargs: next(pair_outputs))
     monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-orpo"))
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
-    monkeypatch.setattr(module, "make_orpo_loss_fn", lambda response_start, orpo_lambda, **kwargs: ("loss", response_start, orpo_lambda))
+    monkeypatch.setattr(module, "make_orpo_loss_fn", lambda response_start, orpo_lambda: ("loss", response_start, orpo_lambda))
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
 
     mgr = FakeMgr()
