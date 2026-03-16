@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from training.utils.rl.importance_sampling import (
-    ISConfig,
+from training.utils.rl.tis import (
+    TISConfig,
     compute_tis_weight,
 )
 
@@ -15,7 +15,7 @@ class TestComputeTISWeight:
         prox = torch.tensor([-0.5, -0.3, -0.8])
         inf = torch.tensor([-0.5, -0.3, -0.8])
 
-        weight, metrics = compute_tis_weight(prox, inf, ISConfig())
+        weight, metrics = compute_tis_weight(prox, inf, TISConfig())
 
         torch.testing.assert_close(weight, torch.ones(3))
         assert metrics["tis/clip_frac"] == 0.0
@@ -24,7 +24,7 @@ class TestComputeTISWeight:
         prox = torch.tensor([-0.1, -0.1])
         inf = torch.tensor([-3.0, -3.0])
 
-        weight, _ = compute_tis_weight(prox, inf, ISConfig(tis_cap=2.0))
+        weight, _ = compute_tis_weight(prox, inf, TISConfig(cap=2.0))
 
         assert weight.max().item() <= 2.0 + 1e-6
 
@@ -34,7 +34,7 @@ class TestSequenceLevelTIS:
         prox = torch.tensor([-0.5, -0.3, -0.8])
         inf = torch.tensor([-0.6, -0.4, -0.9])
 
-        weight, metrics = compute_tis_weight(prox, inf, ISConfig(tis_level="sequence"))
+        weight, metrics = compute_tis_weight(prox, inf, TISConfig(level="sequence"))
 
         assert weight[0] == weight[1] == weight[2]
         assert "tis/seq_ratio" in metrics
@@ -43,7 +43,7 @@ class TestSequenceLevelTIS:
         prox = torch.tensor([-0.2, -0.4])
         inf = torch.tensor([-0.5, -0.3])
 
-        weight, _ = compute_tis_weight(prox, inf, ISConfig(tis_level="sequence", tis_cap=100.0))
+        weight, _ = compute_tis_weight(prox, inf, TISConfig(level="sequence", cap=100.0))
 
         expected = torch.exp((prox - inf).mean())
         torch.testing.assert_close(weight[0], expected)
@@ -52,6 +52,6 @@ class TestSequenceLevelTIS:
         prox = torch.tensor([-0.2, -0.8])
         inf = torch.tensor([-0.5, -0.3])
 
-        weight, _ = compute_tis_weight(prox, inf, ISConfig(tis_cap=100.0))
+        weight, _ = compute_tis_weight(prox, inf, TISConfig(cap=100.0))
 
         assert weight[0] != weight[1]

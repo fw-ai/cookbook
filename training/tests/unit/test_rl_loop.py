@@ -431,6 +431,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         return SimpleNamespace(job_id=job_id)
 
     def fake_build_loss_fn(**kwargs):
+        events["build_loss_fn_kwargs"] = kwargs
         def _builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp):
             events["build_loss_fn_calls"].append(
                 {
@@ -504,6 +505,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/prompts.jsonl",
         kl_beta=0.1,
+        ratio_log_cap=13.0,
         completions_per_prompt=2,
         prompt_groups_per_step=1,
         router_replay=True,
@@ -549,8 +551,14 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         ("policy-job", "step-2-session", "promoted-rl-model"),
     ]
     assert "fwd_bwd_call" in events
+    assert events["build_loss_fn_kwargs"]["ratio_log_cap"] == 13.0
     from training.utils.rl.losses import get_builtin_loss_config
-    expected_kernel, expected_config = get_builtin_loss_config(cfg.policy_loss, is_config=cfg.is_correction)
+    expected_kernel, expected_config = get_builtin_loss_config(
+        cfg.policy_loss,
+        ratio_log_cap=cfg.ratio_log_cap,
+        eps_clip=cfg.eps_clip,
+        eps_clip_high=cfg.eps_clip_high,
+    )
     assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
     assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
@@ -695,6 +703,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         return SimpleNamespace(job_id="policy-job")
 
     def fake_build_loss_fn(**kwargs):
+        events["build_loss_fn_kwargs"] = kwargs
         def _builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp):
             events["build_loss_fn_calls"].append(True)
             return "custom-loss-fn"
@@ -733,6 +742,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/prompts.jsonl",
         policy_loss="my_custom_loss",
+        ratio_log_cap=17.0,
         completions_per_prompt=2,
         prompt_groups_per_step=1,
         deployment=module.DeployConfig(deployment_id="dep-123", tokenizer_model="Qwen/Qwen3-4B"),
@@ -744,6 +754,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
     assert events["fwd_bwd_method"] == "forward_backward_custom", (
         "Custom policy_loss not in builtin registry should use two-pass forward_backward_custom"
     )
+    assert events["build_loss_fn_kwargs"]["ratio_log_cap"] == 17.0
     assert len(events["build_loss_fn_calls"]) == 1, (
         "Two-pass path should invoke the loss builder from build_loss_fn"
     )

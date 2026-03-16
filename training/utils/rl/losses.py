@@ -1,4 +1,4 @@
-"""RL loss dispatch and rollout data types."""
+"""RL loss dispatch, builtin resolution, and rollout data types."""
 
 from __future__ import annotations
 
@@ -7,79 +7,87 @@ from dataclasses import field, dataclass
 
 import tinker
 
-from training.utils.rl.dapo import DAPOConfig
-from training.utils.rl.dro import DROConfig
-from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.importance_sampling import ISConfig
+from training.utils.rl.cispo import CISPOConfig, LOSS_SPEC as CISPO_LOSS_SPEC
+from training.utils.rl.dapo import DAPOConfig, LOSS_SPEC as DAPO_LOSS_SPEC
+from training.utils.rl.dro import DROConfig, LOSS_SPEC as DRO_LOSS_SPEC
+from training.utils.rl.gspo import GSPOConfig, LOSS_SPEC as GSPO_LOSS_SPEC
+from training.utils.rl.grpo import LOSS_SPEC as GRPO_LOSS_SPEC
+from training.utils.rl.is_loss import LOSS_SPEC as IS_LOSS_SPEC
+from training.utils.rl.spec import LossSpec
+from training.utils.rl.tis import TISConfig
 
 
-def _cispo_kernel_config(
-    *, cispo_config: CISPOConfig | None = None, **_kw: Any,
-) -> tuple[str, dict[str, Any]]:
-    cfg = cispo_config or CISPOConfig()
-    return "cispo", {
-        "clip_low_threshold": 1.0 - cfg.eps_low,
-        "clip_high_threshold": 1.0 + cfg.eps_high,
-        "ratio_log_cap": cfg.ratio_log_cap,
-    }
+LOSS_REGISTRY: dict[str, LossSpec] = {
+    spec.name: spec
+    for spec in (
+        GRPO_LOSS_SPEC,
+        IS_LOSS_SPEC,
+        DAPO_LOSS_SPEC,
+        DRO_LOSS_SPEC,
+        GSPO_LOSS_SPEC,
+        CISPO_LOSS_SPEC,
+    )
+}
+"""Single source of truth for both RL execution paths.
+
+Each :class:`~training.utils.rl.spec.LossSpec` can provide:
+- ``builtin_config_builder`` for the server-side ``forward_backward(...)`` path
+- ``client_loss_factory`` for the client-side ``forward_backward_custom(...)`` path
+
+Losses may support both paths, or may be intentionally registered as
+client-side-only by leaving ``builtin_config_builder=None``.
+"""
+
+SUPPORTED_POLICY_LOSSES: tuple[str, ...] = tuple(LOSS_REGISTRY)
 
 
-def _gspo_kernel_config(
-    *, gspo_config: GSPOConfig | None = None, **_kw: Any,
-) -> tuple[str, dict[str, Any]]:
-    cfg = gspo_config or GSPOConfig()
-    clip_low = cfg.clip_ratio_low or cfg.clip_ratio
-    clip_high = cfg.clip_ratio_high or cfg.clip_ratio
-    return "gspo", {
-        "clip_low_threshold": 1.0 - clip_low,
-        "clip_high_threshold": 1.0 + clip_high,
-        "seq_ratio_log_cap": cfg.seq_ratio_log_cap,
-    }
+def _supported_policy_losses_text() -> str:
+    return ", ".join(SUPPORTED_POLICY_LOSSES)
 
 
-def _dapo_kernel_config(
-    *, dapo_config: DAPOConfig | None = None, **_kw: Any,
-) -> tuple[str, dict[str, Any]]:
-    cfg = dapo_config or DAPOConfig()
-    config: dict[str, Any] = {
-        "clip_low_threshold": 1.0 - cfg.eps_clip,
-        "clip_high_threshold": 1.0 + cfg.eps_clip_high,
-        "ratio_log_cap": cfg.ratio_log_cap,
-    }
-    if cfg.eps_clip_c is not None:
-        config["eps_clip_c"] = cfg.eps_clip_c
-        return "dapo", config
-    return "ppo", config
+def resolve_builtin_loss(
+    policy_loss: str,
+    profile: Any | None = None,
+    *,
+    dapo_config: DAPOConfig | None = None,
+    dro_config: DROConfig | None = None,
+    gspo_config: GSPOConfig | None = None,
+    cispo_config: CISPOConfig | None = None,
+    ratio_log_cap: float = 20.0,
+    eps_clip: float = 0.2,
+    eps_clip_high: float | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Resolve the builtin server-side loss kernel for a policy loss.
 
+    Returns ``None`` when *policy_loss* is registered as client-side-only, or
+    when it otherwise has no builtin kernel config. In both cases the caller
+    should fall back to ``forward_backward_custom(...)``.
 
-def _grpo_kernel_config(
-    *, is_config: ISConfig | None = None, **_kw: Any,
-) -> tuple[str, dict[str, Any]]:
-    cfg = is_config or ISConfig()
-    eps_high = cfg.eps_clip_high or cfg.eps_clip
-    return "ppo", {
-        "clip_low_threshold": 1.0 - cfg.eps_clip,
-        "clip_high_threshold": 1.0 + eps_high,
-    }
+    Raises ``ValueError`` when the current *profile* cannot use builtin losses
+    (for example, PP > 1), instead of silently falling back.
+    """
+    spec = LOSS_REGISTRY.get(policy_loss)
+    if spec is None or spec.builtin_config_builder is None:
+        return None
 
+    if profile is not None:
+        pp = getattr(profile, "pipeline_parallelism", 1)
+        if pp > 1:
+            raise ValueError(
+                f"Pipeline parallelism (PP={pp}) is not supported with server-side "
+                f"built-in loss '{policy_loss}'. Use a training shape with PP=1, "
+                f"or use a custom policy_loss (which falls back to two-pass)."
+            )
 
-def _is_kernel_config(
-    *, is_config: ISConfig | None = None, **_kw: Any,
-) -> tuple[str, dict[str, Any]]:
-    cfg = is_config or ISConfig()
-    return "importance_sampling", {
-        "ratio_log_cap": 20.0,
-    }
-
-
-def _dro_kernel_config(
-    *, dro_config: DROConfig | None = None, **_kw: Any,
-) -> tuple[str, dict[str, Any]]:
-    cfg = dro_config or DROConfig()
-    return "dro", {
-        "beta": cfg.beta,
-    }
+    return spec.builtin_config_builder(
+        dapo_config=dapo_config,
+        dro_config=dro_config,
+        gspo_config=gspo_config,
+        cispo_config=cispo_config,
+        ratio_log_cap=ratio_log_cap,
+        eps_clip=eps_clip,
+        eps_clip_high=eps_clip_high,
+    )
 
 
 def check_builtin_loss_eligibility(
@@ -94,31 +102,7 @@ def check_builtin_loss_eligibility(
     - Any builtin loss is used with PP > 1 (server kernels don't support PP)
     - GSPO + TP/CP is caught server-side only (profile doesn't expose TP/CP)
     """
-    if profile is None:
-        return
-    if policy_loss not in BUILTIN_LOSS_REGISTRY:
-        return
-    pp = getattr(profile, "pipeline_parallelism", 1)
-    if pp > 1:
-        raise ValueError(
-            f"Pipeline parallelism (PP={pp}) is not supported with server-side "
-            f"built-in loss '{policy_loss}'. Use a training shape with PP=1, "
-            f"or use a custom policy_loss (which falls back to two-pass)."
-        )
-
-
-BUILTIN_LOSS_REGISTRY: dict[str, Callable[..., tuple[str, dict[str, Any]]]] = {
-    "grpo": _grpo_kernel_config,
-    "importance_sampling": _is_kernel_config,
-    "cispo": _cispo_kernel_config,
-    "gspo": _gspo_kernel_config,
-    "dapo": _dapo_kernel_config,
-    "dro": _dro_kernel_config,
-}
-"""Mapping from ``policy_loss`` name to a builder that returns
-``(kernel_loss_name, kernel_config_dict)`` for the server-side built-in loss
-kernel.  Any ``policy_loss`` not in this registry falls back to the two-pass
-``forward_backward_custom`` path."""
+    resolve_builtin_loss(policy_loss, profile)
 
 
 def get_builtin_loss_config(
@@ -128,22 +112,25 @@ def get_builtin_loss_config(
     dro_config: DROConfig | None = None,
     gspo_config: GSPOConfig | None = None,
     cispo_config: CISPOConfig | None = None,
-    is_config: ISConfig | None = None,
+    ratio_log_cap: float = 20.0,
+    eps_clip: float = 0.2,
+    eps_clip_high: float | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
     """Return ``(kernel_loss_name, kernel_config)`` for a supported built-in loss.
 
-    Returns ``None`` if *policy_loss* is not in :data:`BUILTIN_LOSS_REGISTRY`,
-    signalling the caller to fall back to ``forward_backward_custom``.
+    Returns ``None`` for losses that are registered as client-side-only, or
+    that otherwise have no builtin kernel config.
     """
-    builder = BUILTIN_LOSS_REGISTRY.get(policy_loss)
-    if builder is None:
-        return None
-    return builder(
+    return resolve_builtin_loss(
+        policy_loss,
+        None,
         dapo_config=dapo_config,
         dro_config=dro_config,
         gspo_config=gspo_config,
         cispo_config=cispo_config,
-        is_config=is_config,
+        ratio_log_cap=ratio_log_cap,
+        eps_clip=eps_clip,
+        eps_clip_high=eps_clip_high,
     )
 
 
@@ -201,7 +188,8 @@ def build_builtin_loss_datums(
     prox_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
-    is_config: ISConfig | None = None,
+    tis_config: TISConfig | None = None,
+    policy_loss: str = "rl_loss",
 ) -> List[tinker.Datum]:
     """Build datums with per-token sampling_logprobs and advantages for server-side built-in loss.
 
@@ -209,16 +197,15 @@ def build_builtin_loss_datums(
     server only sees ``sampling_logprobs`` (= prox_lp) and ``advantages``
     (= advantage * tis_weight * loss_mask).
 
-    Uses ``compute_tis_weight`` for behavioral IS correction and
-    ``_get_loss_mask`` for multi-turn tool-call masking (matching the
-    pattern in grpo/dapo/cispo).
+    Uses ``compute_tis_weight`` for behavioral TIS correction and
+    ``_get_loss_mask`` for multi-turn tool-call masking.
     """
     import torch
-    from training.utils.rl.common import _get_loss_mask
-    from training.utils.rl.importance_sampling import compute_tis_weight
+    from training.utils.rl.common import _get_loss_mask, validate_inference_logprobs_for_sample
+    from training.utils.rl.tis import compute_tis_weight
 
-    if is_config is None:
-        is_config = ISConfig()
+    if tis_config is None:
+        tis_config = TISConfig()
     result: List[tinker.Datum] = []
     adv_idx = 0
 
@@ -228,19 +215,23 @@ def build_builtin_loss_datums(
         n_tokens = len(target_tokens)
         response_start = max(0, prompt_lens[i] - 1)
         prox_lp = list(prox_logprobs[i])
-        inf_lp = list(inf_logprobs[i]) if inf_logprobs else [0.0] * len(prox_lp)
+        inf_lp = list(inf_logprobs[i]) if i < len(inf_logprobs) else []
 
         resp_len = max(0, n_tokens - response_start)
-        if resp_len > 0 and inf_lp:
-            resp_prox = torch.tensor(prox_lp[response_start:response_start + resp_len], dtype=torch.float32)
-            resp_inf = torch.tensor(inf_lp[response_start:response_start + resp_len], dtype=torch.float32)
-            tis_weight, _ = compute_tis_weight(resp_prox, resp_inf, is_config)
-        else:
-            tis_weight = torch.ones(resp_len, dtype=torch.float32)
-
         loss_mask = _get_loss_mask(
             datum, response_start, resp_len, dtype=torch.float32, device=torch.device("cpu"),
         )
+        active_count = int((loss_mask > 0.5).sum().item())
+
+        if resp_len > 0 and active_count > 0:
+            validate_inference_logprobs_for_sample(
+                policy_loss, i, inf_lp, response_start + resp_len,
+            )
+            resp_prox = torch.tensor(prox_lp[response_start:response_start + resp_len], dtype=torch.float32)
+            resp_inf = torch.tensor(inf_lp[response_start:response_start + resp_len], dtype=torch.float32)
+            tis_weight, _ = compute_tis_weight(resp_prox, resp_inf, tis_config)
+        else:
+            tis_weight = torch.ones(resp_len, dtype=torch.float32)
 
         per_token_adv = [0.0] * response_start
         adv_val = advantages[adv_idx] if adv_idx < len(advantages) else 0.0
@@ -268,8 +259,8 @@ def build_builtin_loss_datums(
     return result
 
 
-LossFnBuilder = Callable[..., Any]
-"""Signature for the loss builder returned by ``build_loss_fn``."""
+ClientLossBuilder = Callable[..., Any]
+"""Signature for the client-side loss builder used by ``forward_backward_custom``."""
 
 
 def build_loss_fn(
@@ -279,22 +270,24 @@ def build_loss_fn(
     dro_config: Any = None,
     gspo_config: Any = None,
     cispo_config: Any = None,
-    is_config: ISConfig | None = None,
-) -> LossFnBuilder:
-    """Create a loss builder that dispatches to grpo/dapo/gspo/cispo.
+    tis_config: TISConfig | None = None,
+    ratio_log_cap: float = 20.0,
+    eps_clip: float = 0.2,
+    eps_clip_high: float | None = None,
+) -> ClientLossBuilder:
+    """Create the client-side loss builder for one registered RL policy loss.
+
+    The returned callable is only used on the
+    ``forward_backward_custom(...)`` path. Builtin server-side kernels are
+    resolved separately by :func:`resolve_builtin_loss`. Losses registered with
+    ``builtin_config_builder=None`` always take this client-side path.
 
     Returns a callable:
-      (advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs) -> loss_fn
+    ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs) -> loss_fn``
     """
-    if is_config is None:
-        is_config = ISConfig()
-
-    from training.utils.rl.dapo import make_dapo_loss_fn
-    from training.utils.rl.dro import make_dro_loss_fn
-    from training.utils.rl.grpo import make_grpo_loss_fn
-    from training.utils.rl.gspo import make_gspo_loss_fn
-    from training.utils.rl.cispo import make_cispo_loss_fn
-    from training.utils.rl.is_loss import make_is_loss_fn
+    if tis_config is None:
+        tis_config = TISConfig()
+    spec = LOSS_REGISTRY.get(policy_loss)
 
     def build(
         advantages: List[float],
@@ -303,46 +296,27 @@ def build_loss_fn(
         inf_logprobs: List[List[float]],
         prox_logprobs: List[List[float]],
     ) -> Any:
-        if policy_loss == "importance_sampling":
-            return make_is_loss_fn(
-                advantages, ref_logprobs, inf_logprobs,
-                prompt_lens, prox_logprobs,
-                is_config=is_config,
+        if spec is None:
+            supported = _supported_policy_losses_text()
+            raise ValueError(
+                f"Unsupported policy_loss '{policy_loss}'. "
+                f"Expected one of: {supported}."
             )
-        if policy_loss == "dapo":
-            return make_dapo_loss_fn(
-                advantages, ref_logprobs, inf_logprobs,
-                prompt_lens, prox_logprobs,
-                dapo_config, is_config=is_config,
-            )
-        if policy_loss == "dro":
-            return make_dro_loss_fn(
-                advantages, ref_logprobs, inf_logprobs,
-                prompt_lens, prox_logprobs,
-                dro_config, is_config=is_config,
-            )
-        if policy_loss == "gspo":
-            return make_gspo_loss_fn(
-                advantages, ref_logprobs, inf_logprobs,
-                prompt_lens, prox_logprobs,
-                gspo_config, is_config=is_config,
-            )
-        if policy_loss == "cispo":
-            return make_cispo_loss_fn(
-                advantages, ref_logprobs, inf_logprobs,
-                prompt_lens, prox_logprobs,
-                cispo_config, is_config=is_config,
-            )
-        if policy_loss == "grpo":
-            return make_grpo_loss_fn(
-                advantages, ref_logprobs,
-                prompt_lens, inf_logprobs=inf_logprobs,
-                prox_logprobs=prox_logprobs,
-                kl_beta=kl_beta, is_config=is_config,
-            )
-        raise ValueError(
-            f"Unsupported policy_loss '{policy_loss}'. "
-            f"Expected one of: grpo, importance_sampling, dapo, dro, gspo, cispo."
+        return spec.client_loss_factory(
+            advantages=advantages,
+            ref_logprobs=ref_logprobs,
+            prompt_lens=prompt_lens,
+            inf_logprobs=inf_logprobs,
+            prox_logprobs=prox_logprobs,
+            kl_beta=kl_beta,
+            dapo_config=dapo_config,
+            dro_config=dro_config,
+            gspo_config=gspo_config,
+            cispo_config=cispo_config,
+            tis_config=tis_config,
+            ratio_log_cap=ratio_log_cap,
+            eps_clip=eps_clip,
+            eps_clip_high=eps_clip_high,
         )
 
     return build

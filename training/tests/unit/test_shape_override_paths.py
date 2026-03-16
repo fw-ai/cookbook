@@ -51,6 +51,16 @@ class _CapturingMgr:
         return SimpleNamespace(job_id="job-smoke")
 
 
+class _FailingMgr:
+    account_id = "test-account"
+
+    def __init__(self, message: str):
+        self.message = message
+
+    def create_and_wait(self, config, **kwargs):
+        raise RuntimeError(self.message)
+
+
 # -----------------------------------------------------------------------
 # Path 1: Shape path (profile provided, shape owns infra)
 # -----------------------------------------------------------------------
@@ -88,6 +98,46 @@ class TestShapePath:
             profile=PROFILE,
         )
         assert mgr.captured.extra_args == ["--foo"]
+
+    def test_reference_failure_is_explicit(self, caplog):
+        mgr = _FailingMgr("shape not valid for forward-only")
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(
+                RuntimeError,
+                match="Failed to create reference trainer job 'grpo-reference'",
+            ) as exc_info:
+                infra_module.create_trainer_job(
+                    mgr,
+                    base_model=BASE_MODEL,
+                    infra=InfraConfig(region="US_VIRGINIA_1"),
+                    profile=PROFILE,
+                    display_name="grpo-reference",
+                    forward_only=True,
+                )
+
+        assert "Failed to create reference trainer job 'grpo-reference'" in caplog.text
+        assert str(exc_info.value.__cause__) == "shape not valid for forward-only"
+
+    def test_policy_failure_is_explicit(self, caplog):
+        mgr = _FailingMgr("shape not valid for policy")
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(
+                RuntimeError,
+                match="Failed to create policy trainer job 'grpo-policy'",
+            ) as exc_info:
+                infra_module.create_trainer_job(
+                    mgr,
+                    base_model=BASE_MODEL,
+                    infra=InfraConfig(region="US_VIRGINIA_1"),
+                    profile=PROFILE,
+                    display_name="grpo-policy",
+                    forward_only=False,
+                )
+
+        assert "Failed to create policy trainer job 'grpo-policy'" in caplog.text
+        assert str(exc_info.value.__cause__) == "shape not valid for policy"
 
 
 # -----------------------------------------------------------------------

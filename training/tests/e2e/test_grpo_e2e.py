@@ -18,7 +18,7 @@ import time
 import pytest
 
 from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
-from training.utils.rl import ISConfig
+from training.utils.rl import TISConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
 
@@ -67,7 +67,7 @@ class TestGRPOE2E:
             max_rows=10,
             epochs=1,
             router_replay=True,
-            is_correction=ISConfig(tis_cap=10.0),
+            tis=TISConfig(cap=10.0),
             infra=InfraConfig(
                 region=e2e_region,
                 accelerator_type=e2e_training_accelerator,
