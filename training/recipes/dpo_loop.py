@@ -241,13 +241,13 @@ async def _cache_ref_logprobs(
 # ---------------------------------------------------------------------------
 
 
-def _flush_batch(
+def _forward_backward_pairs(
     batch_pairs: list[dict[str, Any]],
     policy: ReconnectableClient,
     beta: float,
     microbatch_sizes: list[int] | None = None,
 ) -> Any:
-    """Send a batch of pairs through forward_backward_custom.
+    """Run forward_backward_custom on a batch of preference pairs.
 
     Arranges datums as [chosen_0, rejected_0, chosen_1, rejected_1, ...].
     """
@@ -305,7 +305,7 @@ async def _train_loop(
         )
 
         with timer("fwd_bwd"):
-            fwd_bwd_result = _flush_batch(
+            fwd_bwd_result = _forward_backward_pairs(
                 step_pairs,
                 policy,
                 cfg.beta,

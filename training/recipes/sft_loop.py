@@ -262,7 +262,7 @@ def main(
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
 
-        def _flush_step(
+        def _run_train_step(
             batch_buf: list[tinker.Datum],
             microbatch_sizes: list[int],
             step: int,
@@ -326,7 +326,7 @@ def main(
             agg_resp_tokens = 0
             return step
 
-        step_batch_buffer: list[tinker.Datum] = []
+        step_datums: list[tinker.Datum] = []
         step_microbatch_sizes: list[int] = []
 
         for epoch in range(cfg.epochs):
@@ -335,16 +335,16 @@ def main(
             for i_batch in range(epoch_start, total_batches_per_epoch):
                 batch = sft_dataset.get_batch(i_batch)
                 data_consumed += len(batch)
-                step_batch_buffer.extend(batch)
+                step_datums.extend(batch)
                 step_microbatch_sizes.append(len(batch))
 
                 if len(step_microbatch_sizes) >= cfg.grad_accum:
-                    step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
-                    step_batch_buffer = []
+                    step = _run_train_step(step_datums, step_microbatch_sizes, step)
+                    step_datums = []
                     step_microbatch_sizes = []
 
-        if step_batch_buffer:
-            step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
+        if step_datums:
+            step = _run_train_step(step_datums, step_microbatch_sizes, step)
 
         # -- Final checkpoint --------------------------------------------------
 
