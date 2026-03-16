@@ -119,10 +119,11 @@ class Config:
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
 
-    grad_accumulation_normalization: str | None = "num_sequences"
-    """Normalization mode for accumulated gradients at optim_step.
-    Defaults to "num_sequences" so gradients are correctly averaged
-    across all accumulation steps regardless of grad_accum setting."""
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The DPO loss function
+    already computes per-pair means client-side, so server-side
+    normalization would double-normalize."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)

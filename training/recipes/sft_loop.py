@@ -89,13 +89,13 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
-    grad_accumulation_normalization: str | None = "num_loss_tokens"
-    """Normalization mode for accumulated gradients at optim_step.
-    ``"num_loss_tokens"``: per-token mean (verl ``token-mean``).
-    ``"num_sequences"``: per-sequence mean (verl ``seq-mean-token-sum``
-    if loss is raw sum, ``seq-mean-token-mean`` if loss is pre-normalized).
-    ``"none"``: no normalization.
-    ``None``: server default (currently per-token)."""
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The SFT loss function
+    already computes per-token means client-side via microbatch_sizes,
+    so server-side normalization would double-normalize.
+    ``"num_loss_tokens"``: per-token mean -- only use with raw-sum losses.
+    ``"num_sequences"``: per-sequence mean."""
 
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 = no clipping."""
