@@ -95,9 +95,7 @@ class Config:
     ``"num_sequences"``: per-sequence mean (verl ``seq-mean-token-sum``
     if loss is raw sum, ``seq-mean-token-mean`` if loss is pre-normalized).
     ``"none"``: no normalization.
-    ``None``: server default (currently per-token).
-    Requires the loss function to return raw token sums (raw_sum=True),
-    which is set automatically when this is not ``"none"``."""
+    ``None``: server default (currently per-token)."""
 
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 = no clipping."""
