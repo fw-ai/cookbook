@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import time
 import signal
 import asyncio
 import logging
@@ -297,6 +298,11 @@ async def _train_loop(
         microbatch_sizes: list[int],
     ) -> None:
         nonlocal step
+        step_t0 = time.monotonic()
+        step_tokens = sum(
+            len(p["chosen_tokens"]) + len(p["rejected_tokens"])
+            for p in step_pairs
+        )
 
         with timer("fwd_bwd"):
             fwd_bwd_result = _flush_batch(
@@ -324,6 +330,8 @@ async def _train_loop(
             with timer("dcp_save"):
                 weight_syncer.save_dcp(f"step-{step}")
 
+        step_elapsed = time.monotonic() - step_t0
+        tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
         step_metrics.update(flush_timing())
 
         fwd_metrics = fwd_bwd_result.metrics
@@ -331,16 +339,21 @@ async def _train_loop(
         avg_margin = fwd_metrics["margin"]
         avg_acc = fwd_metrics["accuracy"]
         logger.info(
-            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%%",
+            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | %.1f tok/s (%.1fs)",
             step, total_steps, avg_loss, avg_margin, avg_acc * 100,
+            tokens_per_sec, step_elapsed,
         )
-        log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc)
+        log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc,
+                         tokens_per_sec=tokens_per_sec)
         step_metrics.update({
             "train/step": step,
             "train/dpo_loss": avg_loss,
             "train/margin": avg_margin,
             "train/accuracy": avg_acc,
             "train/epoch": epoch + 1,
+            "train/tokens_per_sec": tokens_per_sec,
+            "train/step_time_sec": step_elapsed,
+            "train/step_tokens": step_tokens,
         })
         wandb_log(step_metrics, step)
 

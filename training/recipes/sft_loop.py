@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import time
 import signal
 import logging
 from typing import Any, Dict, List
@@ -267,6 +268,8 @@ def main(
             step: int,
         ) -> int:
             nonlocal agg_loss_sum, agg_resp_tokens
+            step_t0 = time.monotonic()
+            step_tokens = sum(len(d.loss_fn_inputs["target_tokens"].data) for d in batch_buf)
 
             with timer("fwd_bwd"):
                 result = client.forward_backward(batch_buf)
@@ -292,6 +295,8 @@ def main(
                         "source_job_id": job_id,
                     }, kind=CheckpointKind.STATE)
 
+            step_elapsed = time.monotonic() - step_t0
+            tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
             step_metrics: Dict[str, Any] = flush_timing()
 
             if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
@@ -302,14 +307,18 @@ def main(
                 avg_loss = agg_loss_sum / agg_resp_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f",
+                    "Step %d/%d | Loss: %.4f | PPL: %.2f | %.1f tok/s (%.1fs)",
                     step, total_steps_estimate, avg_loss, ppl,
+                    tokens_per_sec, step_elapsed,
                 )
-                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
+                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tokens_per_sec)
                 step_metrics.update({
                     "train/step": step,
                     "train/ce_loss": avg_loss,
                     "train/ppl": ppl,
+                    "train/tokens_per_sec": tokens_per_sec,
+                    "train/step_time_sec": step_elapsed,
+                    "train/step_tokens": step_tokens,
                 })
                 wandb_log(step_metrics, step)
 
