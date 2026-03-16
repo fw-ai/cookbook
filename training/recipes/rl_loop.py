@@ -64,7 +64,7 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 
@@ -359,6 +359,7 @@ def main(
             if not cfg.policy_job_id:
                 cleanup.trainer(policy_job_id)
             reference_ep = None
+            reference_job_id = None
 
         policy = ReconnectableClient(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
@@ -538,6 +539,15 @@ def main(
                 ]
                 idx += n
 
+        check_builtin_loss_eligibility(cfg.policy_loss, profile)
+        builtin = get_builtin_loss_config(
+            cfg.policy_loss,
+            dapo_config=cfg.dapo,
+            gspo_config=cfg.gspo,
+            cispo_config=cfg.cispo,
+            is_config=cfg.is_correction,
+        )
+
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
             """One minibatch forward/backward call after reference forward."""
             if not prompt_groups:
@@ -551,9 +561,18 @@ def main(
             logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
 
             t0 = _time.time()
-            fwd_bwd_result = policy.forward_backward_custom(
-                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
-            )
+            if builtin is not None:
+                kernel_loss, kernel_config = builtin
+                rl_datums = build_builtin_loss_datums(
+                    data, adv, prox_lp, inf_lp, prompt_lens, cfg.is_correction,
+                )
+                fwd_bwd_result = policy.forward_backward(
+                    rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                )
+            else:
+                fwd_bwd_result = policy.forward_backward_custom(
+                    data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+                )
             logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
 

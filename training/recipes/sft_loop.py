@@ -43,7 +43,6 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     create_trainer_job,
-    make_batch_weighted_sft_loss_fn,
     build_renderer,
     parse_train_on_what,
     render_messages_to_datum,
@@ -55,7 +54,6 @@ from training.utils.checkpoint_utils import (
     CheckpointKind,
 )
 from training.utils.timer import timer, flush_timing
-
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -199,7 +197,9 @@ def main(
                 filtered_count += 1
                 return None
             rendered = render_messages_to_datum(
-                messages, renderer=renderer, train_on_what=train_on_what,
+                messages,
+                renderer=renderer,
+                train_on_what=train_on_what,
             )
             if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
                 filtered_count += 1
@@ -210,7 +210,9 @@ def main(
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count, len(raw_data), max_seq_len,
+                filtered_count,
+                len(raw_data),
+                max_seq_len,
             )
         logger.info("Prepared %d training examples", len(training_data))
         if not training_data:
@@ -222,8 +224,12 @@ def main(
             map_fn=lambda row: training_data[row["datum_idx"]],
         )
         total_batches_per_epoch = len(sft_dataset)
-        logger.info("Dataset: %d examples, %d batches/epoch, %d epochs",
-                     len(training_data), total_batches_per_epoch, cfg.epochs)
+        logger.info(
+            "Dataset: %d examples, %d batches/epoch, %d epochs",
+            len(training_data),
+            total_batches_per_epoch,
+            cfg.epochs,
+        )
 
         # -- Resume ---------------------------------------------------------------
 
@@ -248,13 +254,14 @@ def main(
         ) -> int:
             nonlocal agg_loss_sum, agg_resp_tokens
 
-            loss_fn = make_batch_weighted_sft_loss_fn(microbatch_sizes=microbatch_sizes)
             with timer("fwd_bwd"):
-                result = client.forward_backward_custom(batch_buf, loss_fn)
+                result = client.forward_backward(batch_buf)
+            agg_loss_sum += result.metrics.get("loss:sum", 0.0)
+            response_tokens = result.metrics.get("response_tokens")
+            if response_tokens is None:
+                response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch_buf)
+            agg_resp_tokens += response_tokens
 
-            fwd_metrics = result.metrics
-            agg_loss_sum += fwd_metrics.get("ce_loss_sum", 0.0)
-            agg_resp_tokens += fwd_metrics.get("response_tokens", 0)
             with timer("optim_step"):
                 optim_result = client.optim_step(adam_params)
             step += 1
@@ -324,7 +331,6 @@ def main(
                 "data_consumed": data_consumed,
                 "source_job_id": job_id,
             }, kind=CheckpointKind.BOTH)
-            
             if getattr(cfg, "output_model_id", None):
                 from training.utils.checkpoint_utils import promote_checkpoint
                 promote_checkpoint(
