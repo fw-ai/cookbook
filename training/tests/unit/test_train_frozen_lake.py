@@ -308,6 +308,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
     assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
     assert "train_fns" in events["run_rl_loop_kwargs"]
+    assert "max_concurrent" not in events["run_rl_loop_kwargs"]
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1
