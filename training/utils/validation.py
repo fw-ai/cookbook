@@ -16,23 +16,23 @@ logger = logging.getLogger(__name__)
 _RESOURCE_ID_LEGACY_RE = re.compile(r"^[a-z0-9-]+$")
 
 
-def validate_output_model_id(output_model_id: str | None) -> None:
-    """Validate cookbook output model IDs against backend resource-name rules."""
+def _validate_output_model_id(output_model_id: str | None) -> list[str]:
+    """Return a list of error strings for invalid output model IDs (empty if valid)."""
     if output_model_id in (None, ""):
-        return
+        return []
 
-    errors: list[str] = []
+    problems: list[str] = []
     if len(output_model_id) > 63:
-        errors.append("must be at most 63 characters")
+        problems.append("must be at most 63 characters")
     if output_model_id.startswith("-"):
-        errors.append("must not start with '-'")
+        problems.append("must not start with '-'")
     if output_model_id.endswith("-"):
-        errors.append("must not end with '-'")
+        problems.append("must not end with '-'")
     if not _RESOURCE_ID_LEGACY_RE.fullmatch(output_model_id):
-        errors.append("must contain only lowercase a-z, 0-9, and hyphen (-)")
+        problems.append("must contain only lowercase a-z, 0-9, and hyphen (-)")
 
-    if errors:
-        raise RuntimeError(
+    if problems:
+        return [
             format_sdk_error(
                 "Invalid output_model_id",
                 f"'{output_model_id}' is not a valid Fireworks model ID.",
@@ -41,7 +41,8 @@ def validate_output_model_id(output_model_id: str | None) -> None:
                 "  The ID must not start or end with '-'.\n"
                 "  Example: deepmath-qwen3-8b-dev",
             )
-        )
+        ]
+    return []
 
 
 def validate_config(
@@ -81,10 +82,7 @@ def validate_config(
             )
         )
 
-    try:
-        validate_output_model_id(output_model_id)
-    except RuntimeError as e:
-        errors.append(str(e))
+    errors.extend(_validate_output_model_id(output_model_id))
 
     if errors:
         raise RuntimeError("\n\n".join(errors))
