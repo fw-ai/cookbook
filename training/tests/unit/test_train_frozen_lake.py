@@ -420,7 +420,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
             events["fwd_bwd_call"] = {"data_len": len(data), "loss_fn": loss_fn}
             return SimpleNamespace(metrics={"loss": 1.0})
 
-        def optim_step(self, _params, **kwargs):
+        def optim_step(self, _params):
             events["optim_step_called"] = True
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 

@@ -102,12 +102,8 @@ class ReconnectableClient:
             timeout=self._default_timeout,
         )
 
-    # Default per-token norm so grad accumulation is batch-size invariant.
-    def optim_step(self, params, grad_accumulation_normalization: str = "num_loss_tokens"):
-        return self._client.optim_step(
-            params,
-            grad_accumulation_normalization=grad_accumulation_normalization,
-        ).result(
+    def optim_step(self, params):
+        return self._client.optim_step(params).result(
             timeout=self._default_timeout,
         )
 
