@@ -62,22 +62,12 @@ class ReconnectableClient:
         fw_api_key: str | None = None,
         default_timeout: int = DEFAULT_TIMEOUT_S,
         endpoint: TrainerServiceEndpoint | None = None,
-        *,
-        api_key: str | None = None,
     ):
         self._rlor_mgr = rlor_mgr
         self._job_id = job_id
         self._base_model = base_model
         self._lora_rank = lora_rank
         self._fw_api_key = fw_api_key or os.environ.get("FIREWORKS_API_KEY")
-        if api_key is not None:
-            logger.warning(
-                "ReconnectableClient(api_key=...) is deprecated; "
-                "pass fw_api_key instead. FiretitanServiceClient now "
-                "handles API key remapping automatically."
-            )
-            if not self._fw_api_key:
-                self._fw_api_key = api_key
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
         self._client: FiretitanTrainingClient | None = None
