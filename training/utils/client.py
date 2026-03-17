@@ -59,17 +59,25 @@ class ReconnectableClient:
         job_id: str,
         base_model: str,
         lora_rank: int = 0,
-        api_key: str = "tml-local",
         fw_api_key: str | None = None,
         default_timeout: int = DEFAULT_TIMEOUT_S,
         endpoint: TrainerServiceEndpoint | None = None,
+        *,
+        api_key: str | None = None,
     ):
         self._rlor_mgr = rlor_mgr
         self._job_id = job_id
         self._base_model = base_model
         self._lora_rank = lora_rank
-        self._api_key = api_key
         self._fw_api_key = fw_api_key or os.environ.get("FIREWORKS_API_KEY")
+        if api_key is not None:
+            logger.warning(
+                "ReconnectableClient(api_key=...) is deprecated; "
+                "pass fw_api_key instead. FiretitanServiceClient now "
+                "handles API key remapping automatically."
+            )
+            if not self._fw_api_key:
+                self._fw_api_key = api_key
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
         self._client: FiretitanTrainingClient | None = None
@@ -135,16 +143,9 @@ class ReconnectableClient:
     # -- Internal --------------------------------------------------------------
 
     def _use_endpoint(self, ep: TrainerServiceEndpoint) -> None:
-        kwargs: dict = {}
-        if self._fw_api_key:
-            kwargs["default_headers"] = {
-                "X-API-Key": self._fw_api_key,
-                "Authorization": f"Bearer {self._fw_api_key}",
-            }
         svc = FiretitanServiceClient(
             base_url=ep.base_url,
-            api_key=self._api_key,
-            **kwargs,
+            api_key=self._fw_api_key,
         )
         self._client = svc.create_training_client(
             base_model=self._base_model,
