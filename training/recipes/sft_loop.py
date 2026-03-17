@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import time
 import signal
 import logging
 from typing import Any, Dict, List
@@ -261,12 +262,14 @@ def main(
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
 
-        def _flush_step(
+        def _run_train_step(
             batch_buf: list[tinker.Datum],
             microbatch_sizes: list[int],
             step: int,
         ) -> int:
             nonlocal agg_loss_sum, agg_resp_tokens
+            step_t0 = time.monotonic()
+            step_tokens = sum(len(d.loss_fn_inputs["target_tokens"].data) for d in batch_buf)
 
             with timer("fwd_bwd"):
                 result = client.forward_backward(batch_buf)
@@ -292,6 +295,8 @@ def main(
                         "source_job_id": job_id,
                     }, kind=CheckpointKind.STATE)
 
+            step_elapsed = time.monotonic() - step_t0
+            tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
             step_metrics: Dict[str, Any] = flush_timing()
 
             if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
@@ -302,14 +307,18 @@ def main(
                 avg_loss = agg_loss_sum / agg_resp_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f",
+                    "Step %d/%d | Loss: %.4f | PPL: %.2f | %.1f tok/s (%.1fs)",
                     step, total_steps_estimate, avg_loss, ppl,
+                    tokens_per_sec, step_elapsed,
                 )
-                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
+                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tokens_per_sec)
                 step_metrics.update({
                     "train/step": step,
                     "train/ce_loss": avg_loss,
                     "train/ppl": ppl,
+                    "train/tokens_per_sec": tokens_per_sec,
+                    "train/step_time_sec": step_elapsed,
+                    "train/step_tokens": step_tokens,
                 })
                 wandb_log(step_metrics, step)
 
@@ -317,7 +326,7 @@ def main(
             agg_resp_tokens = 0
             return step
 
-        step_batch_buffer: list[tinker.Datum] = []
+        step_datums: list[tinker.Datum] = []
         step_microbatch_sizes: list[int] = []
 
         for epoch in range(cfg.epochs):
@@ -326,16 +335,16 @@ def main(
             for i_batch in range(epoch_start, total_batches_per_epoch):
                 batch = sft_dataset.get_batch(i_batch)
                 data_consumed += len(batch)
-                step_batch_buffer.extend(batch)
+                step_datums.extend(batch)
                 step_microbatch_sizes.append(len(batch))
 
                 if len(step_microbatch_sizes) >= cfg.grad_accum:
-                    step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
-                    step_batch_buffer = []
+                    step = _run_train_step(step_datums, step_microbatch_sizes, step)
+                    step_datums = []
                     step_microbatch_sizes = []
 
-        if step_batch_buffer:
-            step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
+        if step_datums:
+            step = _run_train_step(step_datums, step_microbatch_sizes, step)
 
         # -- Final checkpoint --------------------------------------------------
 

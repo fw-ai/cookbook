@@ -208,7 +208,7 @@ def test_cache_ref_logprobs_preserves_multi_turn_preference_history():
     assert [m["content"] for m in rejected_messages] == ["u1", "a1", "u2", "rejected"]
 
 
-def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
+def test_forward_backward_pairs_interleaves_and_builds_loss_fn(monkeypatch):
     captured = {}
 
     def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta, microbatch_sizes=None):
@@ -244,7 +244,7 @@ def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
         },
     ]
 
-    result = module._flush_batch(batch_pairs, FakePolicy(), beta=0.25)
+    result = module._forward_backward_pairs(batch_pairs, FakePolicy(), beta=0.25)
 
     assert result == "result"
     assert captured["datums"] == [
@@ -591,7 +591,7 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
 
     monkeypatch.setattr(
         module,
-        "_flush_batch",
+        "_forward_backward_pairs",
         lambda batch, policy, beta, microbatch_sizes=None: events["flush_batches"].append(
             (list(batch), beta, list(microbatch_sizes or []))
         ) or SimpleNamespace(
@@ -615,8 +615,8 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
             events["dcp_saves"].append(name)
 
     ref_cache = {
-        0: {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"}, "ref_chosen": [-0.1], "ref_rejected": [-0.2], "response_start": 3},
-        1: {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"}, "ref_chosen": [-0.3], "ref_rejected": [-0.4], "response_start": 4},
+        0: {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"}, "chosen_tokens": [1, 2, 3], "rejected_tokens": [1, 2, 4], "ref_chosen": [-0.1], "ref_rejected": [-0.2], "response_start": 3},
+        1: {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"}, "chosen_tokens": [5, 6], "rejected_tokens": [5, 7], "ref_chosen": [-0.3], "ref_rejected": [-0.4], "response_start": 4},
     }
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",
@@ -646,5 +646,9 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     assert events["optim_steps"] == 1
     assert events["weight_syncs"] == ["step-1"]
     assert events["dcp_saves"] == ["step-1"]
-    assert events["metrics_logs"] == [(1, {"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75})]
+    assert events["metrics_logs"][0][0] == 1
+    assert events["metrics_logs"][0][1]["dpo_loss"] == 1.5
+    assert events["metrics_logs"][0][1]["margin"] == 0.25
+    assert events["metrics_logs"][0][1]["accuracy"] == 0.75
+    assert "tokens_per_sec" in events["metrics_logs"][0][1]
     assert len(events["wandb_logs"]) == 1
