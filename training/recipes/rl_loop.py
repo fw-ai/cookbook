@@ -63,7 +63,7 @@ from training.utils.timer import timer, flush_timing
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import RolloutStats, run_rl_loop
 from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -98,10 +98,23 @@ class Config:
     lora_rank: int = 0
 
     prompt_groups_per_step: int = 1
-    """Number of prompt groups per optimizer step.
+    """Number of prompt groups per optimizer step (mini-batch size).
 
     All groups are collected before a single ``forward_backward_custom`` +
-    ``optim_step`` pair fires (1:1 ratio)."""
+    ``optim_step`` pair fires."""
+
+    rollout_batch_size: int | None = None
+    """Groups to sample per rollout iteration (off-policy batch size).
+
+    ``None`` = on-policy (equals ``prompt_groups_per_step``).  Set higher
+    to decouple sampling from training -- e.g.
+    ``rollout_batch_size=16, prompt_groups_per_step=4`` samples 16 groups,
+    then trains 4 steps before the next rollout.  The existing IS
+    correction (``ISConfig``) handles the off-policy gap automatically.
+
+    For off-policy, set ``weight_sync.weight_sync_interval`` to
+    ``rollout_batch_size // prompt_groups_per_step`` so deployment
+    weights update once per rollout iteration."""
 
     router_replay: bool = False
     router_replay_completion_only: bool = True
@@ -579,9 +592,9 @@ def main(
         def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
-            loop_stats: dict | None = None,
+            rollout_stats: RolloutStats | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
+            """ref_forward + fwd_bwd + optim_step + weight_sync + metrics."""
             t0 = _time.time()
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
@@ -618,7 +631,7 @@ def main(
                 optim_result=optim_result,
                 n_accum=1,
                 timing_metrics=flush_timing(),
-                loop_stats=loop_stats,
+                    rollout_stats=rollout_stats,
                 completions_per_prompt=completions_per_prompt,
             )
             metrics["train/step"] = step
@@ -644,17 +657,18 @@ def main(
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
-        train_fns = TrainStepFns(train_step=train_step)
-
         remaining_rows = []
         for i_step in range(step_offset, len(rl_dataset)):
             remaining_rows.extend(rl_dataset.get_batch(i_step))
 
+        rollout_batch_size = cfg.rollout_batch_size or prompt_groups_per_step
+
         global_step = asyncio.run(run_rl_loop(
             sample_fns=(sample_one_prompt(row) for row in remaining_rows),
-            train_fns=train_fns,
+            train_step=train_step,
             prompt_groups_per_step=prompt_groups_per_step,
-            dynamic_filter_fn=should_accept,
+            rollout_batch_size=rollout_batch_size,
+            filter_fn=should_accept,
             global_step=step_offset,
             metrics_callback=_loop_metrics_callback,
         ))

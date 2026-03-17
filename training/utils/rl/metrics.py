@@ -100,13 +100,16 @@ def compute_step_metrics(
     optim_result: Any,
     n_accum: int,
     timing_metrics: dict[str, Any],
-    loop_stats: dict | None = None,
+    rollout_stats: Any | None = None,
     completions_per_prompt: int = 1,
 ) -> dict[str, Any]:
     """Compute all per-step wandb metrics from prompt groups and remote results.
 
     Consolidates reward/accuracy/entropy/truncation/filter/batch stats
     into a single metrics dict.  Called by ``finish_step`` in the recipe.
+
+    ``rollout_stats`` is a :class:`~training.utils.rl.train.RolloutStats`
+    instance from the training loop.
     """
     metrics = dict(timing_metrics)
 
@@ -156,34 +159,27 @@ def compute_step_metrics(
     if entropy_vals:
         metrics["rollout/entropy"] = sum(entropy_vals) / len(entropy_vals)
 
-    if loop_stats:
-        valid = loop_stats["valid_prompt_groups"]
-        filtered = loop_stats["filter_drops"]
-        filter_ratio = filtered / max(1, valid + filtered)
-        metrics["rollout/valid_prompt_groups"] = valid
-        metrics["rollout/total_sampled"] = loop_stats["total_sampled"]
+    rs = rollout_stats
+    if rs is not None:
+        filter_ratio = rs.filtered / max(1, rs.accepted + rs.filtered)
+        metrics["rollout/valid_prompt_groups"] = rs.accepted
+        metrics["rollout/total_sampled"] = rs.sampled
         metrics["rollout/filter_reject_ratio"] = filter_ratio
-        metrics["rollout/sample_fail_count"] = loop_stats["sample_fails"]
+        metrics["rollout/sample_fail_count"] = rs.failed
         metrics["rollout/fwd_bwd_count"] = n_accum
 
-        sample_wait_time = float(loop_stats["sample_wait_time"])
-        metrics["perf/sample_wait_time"] = sample_wait_time
-        # The ratio is defined over the same sampling window that drives
-        # fwd_bwd firing: queue-wait time divided by sampling-loop wall time.
-        step_wall_time = float(loop_stats["step_wall_time"])
-        if step_wall_time > 0:
-            wait_ratio = sample_wait_time / step_wall_time
+        metrics["perf/sample_wait_time"] = rs.wait_time
+        if rs.wall_time > 0:
+            wait_ratio = rs.wait_time / rs.wall_time
             metrics["perf/wait_time_ratio"] = wait_ratio
             metrics["perf/overlap_ratio"] = 1.0 - wait_ratio
 
-        throughput_time = step_wall_time
-        if throughput_time > 0:
-            metrics["perf/step_wall_time"] = throughput_time
-            metrics["perf/rollout_samples_per_s"] = total_samples / throughput_time
-            metrics["perf/rollout_tokens_per_s"] = sum(all_comp_lens) / throughput_time
+        if rs.wall_time > 0:
+            metrics["perf/step_wall_time"] = rs.wall_time
+            metrics["perf/rollout_samples_per_s"] = total_samples / rs.wall_time
+            metrics["perf/rollout_tokens_per_s"] = sum(all_comp_lens) / rs.wall_time
 
-        raw_rewards = loop_stats["all_raw_rewards"]
-        if raw_rewards:
-            metrics["rollout/raw_reward"] = sum(raw_rewards) / len(raw_rewards)
+        if rs.rewards:
+            metrics["rollout/raw_reward"] = sum(rs.rewards) / len(rs.rewards)
 
     return metrics

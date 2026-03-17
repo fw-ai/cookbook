@@ -67,7 +67,7 @@ from training.utils import (
     validate_config,
 )
 from training.utils.rl import PromptGroup
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import RolloutStats, run_rl_loop
 from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, check_builtin_loss_eligibility, combine_prompt_groups, get_builtin_loss_config
 from training.utils.rl.importance_sampling import ISConfig
 from training.utils.rl.metrics import compute_step_metrics
@@ -701,9 +701,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             def train_step(
                 step: int,
                 prompt_groups: list[PromptGroup],
-                loop_stats: dict | None = None,
+                rollout_stats: RolloutStats | None = None,
             ) -> tuple[int, dict]:
-                """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
+                """ref_forward + fwd_bwd + optim_step + weight_sync + metrics."""
                 t0 = time.time()
                 ref_forward_batch(prompt_groups)
                 logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
@@ -737,13 +737,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     optim_result=optim_result,
                     n_accum=1,
                     timing_metrics=flush_timing(),
-                    loop_stats=loop_stats,
+                    rollout_stats=rollout_stats,
                     completions_per_prompt=completions_per_prompt,
                 )
                 metrics["train/step"] = step
-                if loop_stats:
-                    metrics["rollout/sample_fail_count"] = loop_stats.get("sample_fails", 0)
-                    metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
+                if rollout_stats is not None:
+                    metrics["rollout/sample_fail_count"] = rollout_stats.failed
+                    metrics["rollout/filter_drops"] = rollout_stats.filtered
 
                 avg_reward = metrics.get("rollout/reward", 0.0)
                 avg_kl = metrics.get("train/mean_kl", 0.0)
@@ -762,8 +762,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 _wandb_step[0] = max(_wandb_step[0] + 1, step)
                 wandb_log(metrics, _wandb_step[0])
                 return step, metrics
-
-            train_fns = TrainStepFns(train_step=train_step)
 
             def should_accept(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
@@ -784,9 +782,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             global_step = asyncio.run(run_rl_loop(
                 sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
-                train_fns=train_fns,
+                train_step=train_step,
                 prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=should_accept,
+                rollout_batch_size=prompt_groups_per_step,
+                filter_fn=should_accept,
                 global_step=step_offset,
                 metrics_callback=_filtered_step_callback,
             ))

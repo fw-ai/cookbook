@@ -1,18 +1,22 @@
-"""RL training loop orchestration for Fireworks recipes.
+"""RL training loop: rollout -> filter -> shuffle -> train.
 
-Provides ``run_rl_loop`` -- an on-policy loop that samples
-``prompt_groups_per_step`` prompts per optimizer step, then runs a single
-``train_step`` callback (1:1 ratio).
+Each iteration samples ``rollout_batch_size`` groups concurrently,
+applies an optional filter, shuffles for mini-batch diversity, and
+trains in chunks of ``prompt_groups_per_step``.  IS correction
+(``ISConfig`` / ``compute_tis_weight``) handles the off-policy gap
+between the sampling policy and the current training policy
+automatically, following the AReaL / slime decoupled pattern.
 """
 
 from __future__ import annotations
 
 import time
+import random
 import asyncio
 import logging
 import itertools
 from typing import Any, Callable, Iterable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tqdm import tqdm
 
@@ -21,151 +25,146 @@ from training.utils.rl.losses import PromptGroup
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "TrainStepFns",
-    "DynamicFilterFn",
+    "RolloutStats",
     "run_rl_loop",
 ]
 
-DynamicFilterFn = Callable[[PromptGroup], bool]
-"""Filter callback applied after sampling, before training.
-
-Return ``True`` to accept the group into the training buffer,
-``False`` to discard it.
-"""
+FilterFn = Callable[[PromptGroup], bool]
+TrainStepFn = Callable[[int, list[PromptGroup], "RolloutStats"], tuple[int, dict]]
 
 
 @dataclass
-class TrainStepFns:
-    """Training callbacks for the 1:1 loop.
+class RolloutStats:
+    """Stats from one rollout iteration, passed to train_step and metrics."""
 
-    A single ``train_step`` callback receives all prompt groups for one
-    optimizer step and is responsible for ref_forward + fwd_bwd + optim_step.
-    """
+    accepted: int = 0
+    sampled: int = 0
+    failed: int = 0
+    filtered: int = 0
+    completions: int = 0
+    rewards: list[float] = field(default_factory=list)
+    wall_time: float = 0.0
+    wait_time: float = 0.0
+    iteration: int = 0
+    train_step_in_rollout: int = 0
+    total_groups: int = 0
 
-    train_step: Callable[[int, list[PromptGroup], dict | None], tuple[int, dict]]
+
+async def _collect_rollout(
+    coros: list,
+    filter_fn: FilterFn | None,
+    rollout_id: int,
+) -> tuple[list[PromptGroup], RolloutStats]:
+    """Fire all sampling coroutines concurrently and collect accepted groups."""
+    stats = RolloutStats(iteration=rollout_id)
+    groups: list[PromptGroup] = []
+    t0 = time.time()
+
+    results = await asyncio.gather(*coros, return_exceptions=True)
+
+    for result in results:
+        if isinstance(result, BaseException):
+            stats.failed += 1
+            stats.sampled += 1
+            logger.warning("Sampling failed for one prompt: %s", result)
+            continue
+
+        if result is None:
+            stats.sampled += 1
+            continue
+
+        stats.sampled += 1
+        stats.completions += len(result.rewards)
+        stats.rewards.extend(result.rewards)
+
+        if filter_fn is not None and not filter_fn(result):
+            stats.filtered += 1
+            continue
+
+        groups.append(result)
+
+    stats.accepted = len(groups)
+    stats.wall_time = time.time() - t0
+    return groups, stats
 
 
 async def run_rl_loop(
     sample_fns: Iterable[Coroutine[Any, Any, PromptGroup | None]],
     *,
-    train_fns: TrainStepFns,
-    prompt_groups_per_step: int = 1,
-    dynamic_filter_fn: DynamicFilterFn | None = None,
+    train_step: TrainStepFn,
+    prompt_groups_per_step: int,
+    rollout_batch_size: int,
+    shuffle: bool = True,
+    filter_fn: FilterFn | None = None,
     global_step: int = 0,
     metrics_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
-    """Run the on-policy RL training loop.
+    """RL training loop: rollout -> filter -> shuffle -> train.
 
-    All ``prompt_groups_per_step`` sampling coroutines fire concurrently.
-    Request-level throttling is handled by the ``request_semaphore``
-    passed into ``sample_with_tokens`` by the caller -- this loop does
-    not limit concurrency itself.
+    Each iteration samples ``rollout_batch_size`` groups concurrently,
+    applies ``filter_fn``, shuffles, and trains in chunks of
+    ``prompt_groups_per_step``.  IS correction handles the off-policy
+    gap automatically.
+
+    Set ``rollout_batch_size == prompt_groups_per_step`` for on-policy
+    (1:1 ratio).  Set higher for off-policy.
+
+    Tip: for off-policy, set ``weight_sync_interval`` to
+    ``rollout_batch_size // prompt_groups_per_step`` so deployment
+    weights update once per rollout iteration.
     """
-    coros = list(sample_fns)
+    if rollout_batch_size < prompt_groups_per_step:
+        raise ValueError(
+            f"rollout_batch_size ({rollout_batch_size}) must be >= "
+            f"prompt_groups_per_step ({prompt_groups_per_step})"
+        )
 
-    queue: asyncio.Queue[PromptGroup | None] = asyncio.Queue()
-    worker_error: BaseException | None = None
+    logger.info(
+        "RL loop: rollout_batch_size=%d, prompt_groups_per_step=%d "
+        "(%.1fx train steps per rollout)",
+        rollout_batch_size, prompt_groups_per_step,
+        rollout_batch_size / prompt_groups_per_step,
+    )
 
-    async def _worker(coro: Coroutine) -> None:
-        nonlocal worker_error
-        try:
-            result = await coro
-            queue.put_nowait(result)
-        except BaseException as exc:
-            if worker_error is None:
-                worker_error = exc
-            queue.put_nowait(None)
+    coro_iter = iter(list(sample_fns))
 
-    coro_iter = iter(coros)
-    while True:
-        step_coros = list(itertools.islice(coro_iter, prompt_groups_per_step))
-        if not step_coros:
+    for rollout_id in itertools.count():
+        batch = list(itertools.islice(coro_iter, rollout_batch_size))
+        if not batch:
             break
 
-        for c in step_coros:
-            asyncio.create_task(_worker(c))
+        groups, stats = await _collect_rollout(batch, filter_fn, rollout_id)
 
-        total_wait_time = 0.0
-        filter_drops = 0
-        sample_fails = 0
-        all_raw_rewards: list[float] = []
-        total_sampled = 0
-        total_completions = 0
-        step_start_time = time.time()
-        step_prompt_groups: list[PromptGroup] = []
-
-        pbar = tqdm(total=len(step_coros), desc="sampling", unit="group", dynamic_ncols=True)
-
-        for _ in range(len(step_coros)):
-            t_wait = time.time()
-            item = await queue.get()
-            total_wait_time += time.time() - t_wait
-
-            if worker_error is not None:
-                pbar.close()
-                raise RuntimeError(f"Sampling worker failed: {worker_error}") from worker_error
-
-            if item is None:
-                sample_fails += 1
-                total_sampled += 1
-                pbar.set_postfix(
-                    groups=f"{len(step_prompt_groups)}/{prompt_groups_per_step}",
-                    failed=sample_fails, filtered=filter_drops,
-                )
-                continue
-
-            total_sampled += 1
-            n_completions = len(item.rewards)
-            total_completions += n_completions
-            all_raw_rewards.extend(item.rewards)
-            if dynamic_filter_fn is not None and not dynamic_filter_fn(item):
-                filter_drops += 1
-                pbar.update(1)
-                pbar.set_postfix(completions=total_completions, failed=sample_fails, filtered=filter_drops)
-                continue
-
-            step_prompt_groups.append(item)
-            pbar.update(1)
-            pbar.set_postfix(completions=total_completions, failed=sample_fails, filtered=filter_drops)
-            if len(step_prompt_groups) % 5 == 0 or len(step_prompt_groups) == prompt_groups_per_step:
-                logger.info(
-                    "Sampling %d/%d groups (%d completions, failed=%d, filtered=%d, %.0fs elapsed)",
-                    len(step_prompt_groups), prompt_groups_per_step,
-                    total_completions, sample_fails, filter_drops,
-                    time.time() - step_start_time,
-                )
-
-        pbar.close()
-
-        if not step_prompt_groups:
-            logger.warning("[step %d] no valid prompt groups after filtering, skipping", global_step + 1)
+        if not groups:
+            logger.warning("[rollout %d] no groups survived filtering", rollout_id)
             continue
 
-        step_wall_time = time.time() - step_start_time
         logger.info(
-            "Sampling complete: %d/%d groups (%d completions) in %.1fs (failed=%d, filtered=%d)",
-            len(step_prompt_groups), prompt_groups_per_step,
-            total_completions, step_wall_time, sample_fails, filter_drops,
-        )
-        loop_stats = {
-            "valid_prompt_groups": len(step_prompt_groups),
-            "total_sampled": total_sampled,
-            "filter_drops": filter_drops,
-            "sample_fails": sample_fails,
-            "sample_wait_time": total_wait_time,
-            "step_wall_time": step_wall_time,
-            "all_raw_rewards": list(all_raw_rewards),
-        }
-
-        global_step, _ = await asyncio.to_thread(
-            train_fns.train_step, global_step, step_prompt_groups, loop_stats,
+            "Rollout %d: %d/%d groups (%d completions) in %.1fs",
+            rollout_id, stats.accepted, stats.sampled,
+            stats.completions, stats.wall_time,
         )
 
-        if metrics_callback is not None:
-            metrics_callback({
-                "train/step": global_step,
-                "rollout/sample_fails": sample_fails,
-                "rollout/filter_drops": filter_drops,
-            })
+        if shuffle and len(groups) > prompt_groups_per_step:
+            random.shuffle(groups)
+
+        stats.total_groups = len(groups)
+
+        for i in range(0, len(groups), prompt_groups_per_step):
+            chunk = groups[i:i + prompt_groups_per_step]
+            stats.train_step_in_rollout = i // prompt_groups_per_step
+
+            global_step, _ = await asyncio.to_thread(
+                train_step, global_step, chunk, stats,
+            )
+
+            if metrics_callback is not None:
+                metrics_callback({
+                    "train/step": global_step,
+                    "rollout/iteration": rollout_id,
+                    "rollout/failed": stats.failed,
+                    "rollout/filtered": stats.filtered,
+                    "rollout/train_step_in_rollout": stats.train_step_in_rollout,
+                })
 
     return global_step

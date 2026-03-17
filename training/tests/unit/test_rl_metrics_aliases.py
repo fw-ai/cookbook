@@ -54,15 +54,15 @@ class TestComputeStepMetrics:
             optim_result=SimpleNamespace(metrics={"lr": 1e-5}),
             n_accum=4,
             timing_metrics={"perf/fwd_bwd_time": 1.0},
-            loop_stats={
-                "valid_prompt_groups": 6,
-                "total_sampled": 7,
-                "filter_drops": 1,
-                "sample_fails": 2,
-                "sample_wait_time": 3.0,
-                "step_wall_time": 4.0,
-                "all_raw_rewards": [1.0, 0.0],
-            },
+            rollout_stats=SimpleNamespace(
+                accepted=6,
+                sampled=7,
+                filtered=1,
+                failed=2,
+                wait_time=3.0,
+                wall_time=4.0,
+                rewards=[1.0, 0.0],
+            ),
             completions_per_prompt=8,
         )
 
