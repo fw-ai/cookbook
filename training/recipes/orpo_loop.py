@@ -337,9 +337,7 @@ def main(
             logger.info("Final base checkpoint saved: %s", sampler_checkpoint_id)
             
             if getattr(cfg, "output_model_id", None):
-                from training.utils.checkpoint_utils import promote_checkpoint
-                promote_checkpoint(
-                    rlor_mgr,
+                rlor_mgr.promote_checkpoint(
                     job_id,
                     sampler_checkpoint_id,
                     cfg.output_model_id,

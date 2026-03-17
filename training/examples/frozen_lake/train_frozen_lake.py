@@ -836,9 +836,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     }, kind="both")
 
                     if getattr(cfg, "output_model_id", None):
-                        from training.utils.checkpoint_utils import promote_checkpoint
-                        promote_checkpoint(
-                            rlor_mgr,
+                        rlor_mgr.promote_checkpoint(
                             policy_job_id,
                             paths["sampler_path"],
                             cfg.output_model_id,

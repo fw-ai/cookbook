@@ -289,6 +289,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
 
+        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
+            events["promotions"].append((job_id, checkpoint_id, output_model_id))
+
     class FakeDeployMgr:
         inference_url = "https://inference.unit.test"
         boot_time_s = 1.5
@@ -493,13 +496,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "Datum",
         lambda model_input, loss_fn_inputs: SimpleNamespace(model_input=model_input, loss_fn_inputs=loss_fn_inputs),
     )
-    monkeypatch.setattr(
-        "training.utils.checkpoint_utils.promote_checkpoint",
-        lambda mgr, job_id, checkpoint_id, output_model_id: events["promotions"].append(
-            (job_id, checkpoint_id, output_model_id)
-        ),
-    )
-
     cfg = module.Config(
         log_path=str(tmp_path / "rl_logs"),
         base_model="accounts/test/models/qwen3-4b",
