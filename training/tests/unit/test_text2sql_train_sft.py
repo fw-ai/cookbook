@@ -63,12 +63,21 @@ def test_parse_args_reads_overrides(monkeypatch):
     assert args.lora_rank == 8
 
 
+def test_parse_args_uses_bundled_text2sql_dataset_by_default(monkeypatch):
+    module = _load_module(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["train_sft.py", "--output-model-id", "out-model"])
+
+    args = module.parse_args()
+
+    assert os.path.basename(args.dataset_path) == "text2sql_dataset.jsonl"
+
+
 def test_main_raises_when_dataset_is_missing(monkeypatch):
     module = _load_module(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["train_sft.py", "--dataset-path", "/tmp/missing.jsonl", "--output-model-id", "out"])
     monkeypatch.setattr(module.os.path, "exists", lambda path: False)
 
-    with pytest.raises(FileNotFoundError, match="Dataset not found"):
+    with pytest.raises(FileNotFoundError, match="text2sql_dataset.jsonl|Dataset not found"):
         module.main()
 
 
