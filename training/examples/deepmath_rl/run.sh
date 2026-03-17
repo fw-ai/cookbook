@@ -1,13 +1,15 @@
-HERE=$(dirname $(realpath $0))
-echo $HERE
+#!/usr/bin/env bash
+set -euo pipefail
 
-export PYTHONPATH=$PYTHONPATH:$HERE/../../../../../
-echo $PYTHONPATH
-python train_deepmath.py \
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
+python "$HERE/train_deepmath.py" \
     --base-model accounts/fireworks/models/qwen3-4b \
-    --tokenizer-model Qwen/Qwen3-4b \
-    --dataset-path dataset.jsonl \
-    --training-shape acounts/fireworks/trainingShapes/qwen3-4b-minimum-h200 \
+    --tokenizer-model Qwen/Qwen3-4B \
+    --dataset-path "$HERE/dataset.jsonl" \
+    --training-shape accounts/fireworks/trainingShapes/qwen3-4b-minimum-h200 \
     --ref-training-shape accounts/fireworks/trainingShapes/qwen3-4b-minimum-h200-forward \
     --deployment-id deepmath-qwen3-4b-$(date +%s) \
     --region US_VIRGINIA_1 \
