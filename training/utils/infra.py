@@ -41,9 +41,14 @@ class ResourceCleanup:
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
         self._deployments: list[tuple[str, str]] = []
+        self._job_ids: set[str] = set()
+        self._deployment_actions: dict[str, str] = {}
 
     def trainer(self, job_id: str) -> None:
         """Register a trainer job for deletion on exit."""
+        if job_id in self._job_ids:
+            return
+        self._job_ids.add(job_id)
         self._jobs.append(job_id)
 
     def deployment(self, dep_id: str, action: str = "delete") -> None:
@@ -51,6 +56,18 @@ class ResourceCleanup:
 
         *action*: ``"delete"`` (default) or ``"scale_to_zero"``.
         """
+        existing_action = self._deployment_actions.get(dep_id)
+        if existing_action is not None:
+            if existing_action != action:
+                logger.info(
+                    "Cleanup: deployment %s already registered with action %s; "
+                    "ignoring duplicate action %s",
+                    dep_id,
+                    existing_action,
+                    action,
+                )
+            return
+        self._deployment_actions[dep_id] = action
         self._deployments.append((dep_id, action))
 
     def __enter__(self) -> ResourceCleanup:
@@ -91,6 +108,7 @@ def create_trainer_job(
     job_id: str | None = None,
     forward_only: bool = False,
     base_url_override: str | None = None,
+    cleanup: ResourceCleanup | None = None,
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
@@ -156,6 +174,17 @@ def create_trainer_job(
         display_name,
         forward_only,
     )
+    create = getattr(rlor_mgr, "create", None)
+    wait_for_ready = getattr(rlor_mgr, "wait_for_ready", None)
+    if callable(create) and callable(wait_for_ready):
+        created = create(config)
+        if cleanup is not None:
+            cleanup.trainer(created.job_id)
+        return wait_for_ready(
+            created.job_id,
+            job_name=created.job_name,
+            timeout_s=infra.trainer_timeout_s,
+        )
     return rlor_mgr.create_and_wait(config, timeout_s=infra.trainer_timeout_s)
 
 
@@ -164,6 +193,8 @@ def setup_deployment(
     deploy_cfg: DeployConfig,
     base_model: str,
     infra: InfraConfig,
+    cleanup: ResourceCleanup | None = None,
+    cleanup_action: str = "delete",
 ) -> DeploymentInfo:
     """Set up an inference deployment.
 
@@ -180,6 +211,8 @@ def setup_deployment(
     if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
         info = deploy_mgr.create_or_get(dep_config)
+        if cleanup is not None:
+            cleanup.deployment(deploy_cfg.deployment_id, action=cleanup_action)
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(

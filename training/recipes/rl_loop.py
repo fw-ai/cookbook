@@ -305,9 +305,15 @@ def main(
     _infra_start = _time.time()
 
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
-        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+        dep_info = setup_deployment(
+            deploy_mgr,
+            cfg.deployment,
+            cfg.base_model,
+            cfg.infra,
+            cleanup=cleanup if cleanup_on_exit else None,
+        )
         if cleanup_on_exit:
-            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
+            cleanup.deployment(cfg.deployment.deployment_id)
 
         logger.info(
             "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
@@ -326,6 +332,7 @@ def main(
                     hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
                     job_id=cfg.policy_job_id,
                     base_url_override=cfg.policy_base_url,
+                    cleanup=cleanup,
                 )
                 ref_fut = pool.submit(
                     create_trainer_job, rlor_mgr,
@@ -335,6 +342,7 @@ def main(
                     display_name="grpo-reference", forward_only=True,
                     job_id=cfg.reference_job_id,
                     base_url_override=cfg.reference_base_url,
+                    cleanup=cleanup,
                 )
                 policy_ep = pol_fut.result()
                 policy_job_id = policy_ep.job_id
@@ -354,6 +362,7 @@ def main(
                 hot_load_deployment_id=cfg.deployment.deployment_id,
                 job_id=cfg.policy_job_id,
                 base_url_override=cfg.policy_base_url,
+                cleanup=cleanup,
             )
             policy_job_id = policy_ep.job_id
             if not cfg.policy_job_id:

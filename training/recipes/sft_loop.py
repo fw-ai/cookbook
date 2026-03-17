@@ -161,6 +161,7 @@ def main(
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             display_name="sft-trainer",
+            cleanup=cleanup,
         )
         job_id = endpoint.job_id
         cleanup.trainer(job_id)
@@ -254,6 +255,14 @@ def main(
         ) -> int:
             nonlocal agg_loss_sum, agg_resp_tokens
 
+            # Count total tokens in this step for throughput tracking
+            step_total_tokens = sum(
+                len(chunk.tokens)
+                for d in batch_buf
+                for chunk in d.model_input.chunks
+                if hasattr(chunk, "tokens")
+            )
+
             with timer("fwd_bwd"):
                 result = client.forward_backward(batch_buf)
             agg_loss_sum += result.metrics.get("loss:sum", 0.0)
@@ -281,12 +290,23 @@ def main(
                 for k, v in optim_result.metrics.items():
                     step_metrics[f"train/{k}"] = v
 
+            # Compute tokens/sec from fwd_bwd wall-clock time
+            fwd_bwd_time = step_metrics.get("perf/fwd_bwd_time", 0.0)
+            step_wall_time = fwd_bwd_time + step_metrics.get("perf/optim_step_time", 0.0)
+            if step_wall_time > 0:
+                step_metrics["train/tokens_per_sec"] = step_total_tokens / step_wall_time
+                step_metrics["train/tokens_per_sec_fwd_bwd"] = step_total_tokens / fwd_bwd_time if fwd_bwd_time > 0 else 0.0
+            step_metrics["train/total_tokens"] = step_total_tokens
+            step_metrics["train/response_tokens"] = agg_resp_tokens
+
             if agg_resp_tokens > 0:
                 avg_loss = agg_loss_sum / agg_resp_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
+                tps = step_metrics.get("train/tokens_per_sec", 0.0)
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f",
+                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
                     step, total_steps_estimate, avg_loss, ppl,
+                    tps, step_total_tokens,
                 )
                 log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
                 step_metrics.update({
@@ -323,14 +343,14 @@ def main(
         # -- Final checkpoint --------------------------------------------------
 
         start_step = resume_info.step if resume_info else 0
-        if step > start_step:
+        if cfg.dcp_save_interval != -1 and step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
             paths = save_checkpoint(client, cp_name, cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
                 "source_job_id": job_id,
-            }, kind=CheckpointKind.BOTH)
+            }, kind=CheckpointKind.SAMPLER)
             if getattr(cfg, "output_model_id", None):
                 from training.utils.checkpoint_utils import promote_checkpoint
                 promote_checkpoint(

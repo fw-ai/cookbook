@@ -429,7 +429,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             dep_info = None
             logger.info("Skipping deployment setup — using pre-created resources")
         else:
-            dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
+            keep_deployment = os.environ.get("KEEP_DEPLOYMENT", "0") == "1"
+            dep_info = setup_deployment(
+                deploy_mgr,
+                deploy_cfg,
+                cfg.base_model,
+                infra,
+                cleanup=cleanup if not cfg.deployment_id and not keep_deployment else None,
+            )
             if not cfg.deployment_id and deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
                 cleanup.deployment(deploy_cfg.deployment_id)
             elif deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") == "1":
@@ -452,6 +459,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 learning_rate=cfg.learning_rate,
                 display_name=f"frozen-lake-{label}",
                 hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,  # weight sync target deployment
+                cleanup=cleanup,
                 **extra_kw,
             )
             return ep, ep.job_id, False

@@ -454,6 +454,7 @@ def main(
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-policy",
                 hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
+                cleanup=cleanup,
             )
             ref_fut = pool.submit(
                 create_trainer_job,
@@ -466,6 +467,7 @@ def main(
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-reference",
                 forward_only=True,
+                cleanup=cleanup,
             )
             policy_ep = pol_fut.result()
             reference_ep = ref_fut.result()

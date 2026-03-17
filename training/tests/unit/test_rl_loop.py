@@ -99,7 +99,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         "create_trainer_job": [],
         "wandb_logs": [],
         "deleted_jobs": [],
-        "scaled_deployments": [],
+        "deleted_deployments": [],
         "wandb_finished": 0,
     }
 
@@ -118,8 +118,8 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         inference_url = "https://inference.unit.test"
         boot_time_s = 3.5
 
-        def scale_to_zero(self, deployment_id):
-            events["scaled_deployments"].append(deployment_id)
+        def delete(self, deployment_id):
+            events["deleted_deployments"].append(deployment_id)
 
     class FakePolicyClient:
         def __init__(self, *args, **kwargs):
@@ -196,7 +196,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
     assert events["deleted_jobs"] == ["policy-job"]
-    assert events["scaled_deployments"] == ["dep-123"]
+    assert events["deleted_deployments"] == ["dep-123"]
     assert events["wandb_finished"] == 0
 
 
@@ -222,7 +222,7 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
         inference_url = "https://inference.unit.test"
         boot_time_s = 1.0
 
-        def scale_to_zero(self, deployment_id):
+        def delete(self, deployment_id):
             pass
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
@@ -260,7 +260,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     events: dict[str, object] = {
         "create_trainer_job": [],
         "deleted_jobs": [],
-        "scaled_deployments": [],
+        "deleted_deployments": [],
         "wandb_logs": [],
         "weight_sync_saves": [],
         "weight_sync_dcp": [],
@@ -293,8 +293,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         inference_url = "https://inference.unit.test"
         boot_time_s = 1.5
 
-        def scale_to_zero(self, deployment_id):
-            events["scaled_deployments"].append(deployment_id)
+        def delete(self, deployment_id):
+            events["deleted_deployments"].append(deployment_id)
 
     class FakeFuture:
         def __init__(self, value):
@@ -554,7 +554,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
     assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
-    assert events["scaled_deployments"] == ["dep-123"]
+    assert events["deleted_deployments"] == ["dep-123"]
 
 
 def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
@@ -568,7 +568,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         "fwd_bwd_method": None,
         "build_loss_fn_calls": [],
         "deleted_jobs": [],
-        "scaled_deployments": [],
+        "deleted_deployments": [],
         "wandb_logs": [],
         "weight_sync_saves": [],
         "weight_sync_dcp": [],
@@ -590,8 +590,8 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         inference_url = "https://inference.unit.test"
         boot_time_s = 1.5
 
-        def scale_to_zero(self, deployment_id):
-            events["scaled_deployments"].append(deployment_id)
+        def delete(self, deployment_id):
+            events["deleted_deployments"].append(deployment_id)
 
     class FakeFuture:
         def __init__(self, value):
