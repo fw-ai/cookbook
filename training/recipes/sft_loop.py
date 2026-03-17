@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import time
 import signal
 import logging
 from typing import Any, Dict, List
@@ -43,7 +44,6 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     create_trainer_job,
-    make_batch_weighted_sft_loss_fn,
     build_renderer,
     parse_train_on_what,
     render_messages_to_datum,
@@ -55,7 +55,6 @@ from training.utils.checkpoint_utils import (
     CheckpointKind,
 )
 from training.utils.timer import timer, flush_timing
-
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -91,6 +90,17 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The SFT loss function
+    already computes per-token means client-side via microbatch_sizes,
+    so server-side normalization would double-normalize.
+    ``"num_loss_tokens"``: per-token mean -- only use with raw-sum losses.
+    ``"num_sequences"``: per-sequence mean."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 = no clipping."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
 
@@ -114,7 +124,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset)
+    validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
     setup_wandb(
         cfg.wandb,
         {
@@ -199,7 +209,9 @@ def main(
                 filtered_count += 1
                 return None
             rendered = render_messages_to_datum(
-                messages, renderer=renderer, train_on_what=train_on_what,
+                messages,
+                renderer=renderer,
+                train_on_what=train_on_what,
             )
             if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
                 filtered_count += 1
@@ -210,7 +222,9 @@ def main(
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count, len(raw_data), max_seq_len,
+                filtered_count,
+                len(raw_data),
+                max_seq_len,
             )
         logger.info("Prepared %d training examples", len(training_data))
         if not training_data:
@@ -222,8 +236,12 @@ def main(
             map_fn=lambda row: training_data[row["datum_idx"]],
         )
         total_batches_per_epoch = len(sft_dataset)
-        logger.info("Dataset: %d examples, %d batches/epoch, %d epochs",
-                     len(training_data), total_batches_per_epoch, cfg.epochs)
+        logger.info(
+            "Dataset: %d examples, %d batches/epoch, %d epochs",
+            len(training_data),
+            total_batches_per_epoch,
+            cfg.epochs,
+        )
 
         # -- Resume ---------------------------------------------------------------
 
@@ -232,68 +250,84 @@ def main(
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)
 
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        if cfg.grad_clip_norm > 0:
+            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Training loop (batch-indexed) -------------------------------------
 
         start_batch = data_consumed // cfg.batch_size
         total_steps_estimate = (total_batches_per_epoch * cfg.epochs) // cfg.grad_accum
-        accum = 0
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
 
-        def _flush_batch(batch_buf: list[tinker.Datum], step: int, accum: int) -> tuple[int, int]:
+        def _run_train_step(
+            batch_buf: list[tinker.Datum],
+            microbatch_sizes: list[int],
+            step: int,
+        ) -> int:
             nonlocal agg_loss_sum, agg_resp_tokens
+            step_t0 = time.monotonic()
+            step_tokens = sum(len(d.loss_fn_inputs["target_tokens"].data) for d in batch_buf)
 
-            loss_fn = make_batch_weighted_sft_loss_fn()
             with timer("fwd_bwd"):
-                result = client.forward_backward_custom(batch_buf, loss_fn)
+                result = client.forward_backward(batch_buf)
+            agg_loss_sum += result.metrics.get("loss:sum", 0.0)
+            response_tokens = result.metrics.get("response_tokens")
+            if response_tokens is None:
+                response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch_buf)
+            agg_resp_tokens += response_tokens
 
-            fwd_metrics = result.metrics
-            agg_loss_sum += fwd_metrics.get("ce_loss_sum", 0.0)
-            agg_resp_tokens += fwd_metrics.get("response_tokens", 0)
-            accum += 1
+            with timer("optim_step"):
+                optim_result = client.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                )
+            step += 1
 
-            if accum >= cfg.grad_accum:
-                with timer("optim_step"):
-                    optim_result = client.optim_step(adam_params)
-                step += 1
-                accum = 0
+            if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
+                with timer("dcp_save"):
+                    logger.info("Saving DCP checkpoint at step %d", step)
+                    save_checkpoint(client, f"step-{step}", cfg.log_path, {
+                        "step": step,
+                        "data_consumed": data_consumed,
+                        "source_job_id": job_id,
+                    }, kind=CheckpointKind.STATE)
 
-                if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
-                    with timer("dcp_save"):
-                        logger.info("Saving DCP checkpoint at step %d", step)
-                        save_checkpoint(client, f"step-{step}", cfg.log_path, {
-                            "step": step,
-                            "data_consumed": data_consumed,
-                            "source_job_id": job_id,
-                        }, kind=CheckpointKind.STATE)
+            step_elapsed = time.monotonic() - step_t0
+            tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
+            step_metrics: Dict[str, Any] = flush_timing()
 
-                step_metrics: Dict[str, Any] = flush_timing()
+            if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
+                for k, v in optim_result.metrics.items():
+                    step_metrics[f"train/{k}"] = v
 
-                if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
-                    for k, v in optim_result.metrics.items():
-                        step_metrics[f"train/{k}"] = v
+            if agg_resp_tokens > 0:
+                avg_loss = agg_loss_sum / agg_resp_tokens
+                ppl = torch.exp(torch.tensor(avg_loss)).item()
+                logger.info(
+                    "Step %d/%d | Loss: %.4f | PPL: %.2f | %.1f tok/s (%.1fs)",
+                    step, total_steps_estimate, avg_loss, ppl,
+                    tokens_per_sec, step_elapsed,
+                )
+                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tokens_per_sec)
+                step_metrics.update({
+                    "train/step": step,
+                    "train/ce_loss": avg_loss,
+                    "train/ppl": ppl,
+                    "train/tokens_per_sec": tokens_per_sec,
+                    "train/step_time_sec": step_elapsed,
+                    "train/step_tokens": step_tokens,
+                })
+                wandb_log(step_metrics, step)
 
-                if agg_resp_tokens > 0:
-                    avg_loss = agg_loss_sum / agg_resp_tokens
-                    ppl = torch.exp(torch.tensor(avg_loss)).item()
-                    logger.info(
-                        "Step %d/%d | Loss: %.4f | PPL: %.2f",
-                        step, total_steps_estimate, avg_loss, ppl,
-                    )
-                    log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
-                    step_metrics.update({
-                        "train/step": step,
-                        "train/ce_loss": avg_loss,
-                        "train/ppl": ppl,
-                    })
-                    wandb_log(step_metrics, step)
+            agg_loss_sum = 0.0
+            agg_resp_tokens = 0
+            return step
 
-                agg_loss_sum = 0.0
-                agg_resp_tokens = 0
-
-            return step, accum
+        step_datums: list[tinker.Datum] = []
+        step_microbatch_sizes: list[int] = []
 
         for epoch in range(cfg.epochs):
             sft_dataset.set_epoch(epoch)
@@ -301,11 +335,16 @@ def main(
             for i_batch in range(epoch_start, total_batches_per_epoch):
                 batch = sft_dataset.get_batch(i_batch)
                 data_consumed += len(batch)
-                step, accum = _flush_batch(batch, step, accum)
+                step_datums.extend(batch)
+                step_microbatch_sizes.append(len(batch))
 
-        if accum > 0:
-            client.optim_step(adam_params)
-            step += 1
+                if len(step_microbatch_sizes) >= cfg.grad_accum:
+                    step = _run_train_step(step_datums, step_microbatch_sizes, step)
+                    step_datums = []
+                    step_microbatch_sizes = []
+
+        if step_datums:
+            step = _run_train_step(step_datums, step_microbatch_sizes, step)
 
         # -- Final checkpoint --------------------------------------------------
 
@@ -313,18 +352,17 @@ def main(
         if step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
-            save_checkpoint(client, cp_name, cfg.log_path, {
+            paths = save_checkpoint(client, cp_name, cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
                 "source_job_id": job_id,
             }, kind=CheckpointKind.BOTH)
-            
             if getattr(cfg, "output_model_id", None):
                 from training.utils.checkpoint_utils import promote_checkpoint
                 promote_checkpoint(
                     rlor_mgr,
                     job_id,
-                    cp_name,
+                    paths["sampler_path"],
                     cfg.output_model_id,
                 )
 

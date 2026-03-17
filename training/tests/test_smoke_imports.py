@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
 
 import pytest
 
@@ -51,7 +50,8 @@ UTIL_MODULES = [
     "training.utils.rl.dapo",
     "training.utils.rl.grpo",
     "training.utils.rl.gspo",
-    "training.utils.rl.importance_sampling",
+    "training.utils.rl.tis",
+    "training.utils.rl.is_loss",
     "training.utils.rl.losses",
     "training.utils.rl.metrics",
     "training.utils.rl.pp",

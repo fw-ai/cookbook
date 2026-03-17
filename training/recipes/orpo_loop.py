@@ -55,12 +55,13 @@ from training.utils import (
     setup_wandb,
     wandb_finish,
     log_metrics_json,
-    make_orpo_loss_fn,
+    make_batch_orpo_loss_fn,
     create_trainer_job,
     load_preference_dataset,
     build_renderer,
     render_preference_pair,
     resolve_renderer_name,
+    validate_config,
 )
 from training.utils.checkpoint_utils import resolve_resume
 
@@ -90,6 +91,12 @@ class Config:
     lora_rank: int = 0
     job_id: str | None = None
     output_model_id: str | None = None
+
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The ORPO loss function
+    already computes per-pair means client-side, so server-side
+    normalization would double-normalize."""
 
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
@@ -121,10 +128,7 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    if not cfg.base_model or not cfg.base_model.startswith("accounts/"):
-        raise ValueError(f"Invalid base_model: '{cfg.base_model}' (expected accounts/...)")
-    if not cfg.dataset:
-        raise ValueError("Config.dataset is required.")
+    validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -249,87 +253,73 @@ def main(
 
         step = step_offset
         total_steps = len(pair_cache) * cfg.epochs // cfg.grad_accum
-        accum_count = 0
-        agg = {
-            "orpo_loss": 0.0,
-            "sft_loss": 0.0,
-            "or_loss": 0.0,
-            "log_odds_ratio": 0.0,
-            "accuracy": 0.0,
-            "tokens": 0,
-            "count": 0,
-        }
+
+        def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
+            nonlocal step
+
+            datums: list[tinker.Datum] = []
+            response_starts: list[int] = []
+            step_tokens = 0
+            for pair in step_pairs:
+                datums.extend([pair["chosen_datum"], pair["rejected_datum"]])
+                response_starts.append(pair["response_start"])
+                step_tokens += len(pair["chosen_tokens"]) + len(pair["rejected_tokens"])
+
+            loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
+            result = client.forward_backward_custom(datums, loss_fn)
+            client.optim_step(
+                adam_params,
+                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            )
+            step += 1
+
+            step_elapsed = time.monotonic() - step_started_at
+            tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
+            metrics = result.metrics
+
+            logger.info(
+                "Step %d/%d | ORPO: %.4f | SFT: %.4f | OR: %.4f | "
+                "LogOR: %+.4f | Acc: %.1f%% | %.1f tok/s (%.1fs)",
+                step,
+                total_steps,
+                metrics["orpo_loss"],
+                metrics["sft_loss"],
+                metrics["or_loss"],
+                metrics["log_odds_ratio"],
+                metrics["accuracy"] * 100,
+                tokens_per_sec,
+                step_elapsed,
+            )
+            log_metrics_json(step, tokens_per_sec=tokens_per_sec, **metrics)
+            wandb_log(
+                {
+                    "train/step": step,
+                    "train/orpo_loss": metrics["orpo_loss"],
+                    "train/sft_loss": metrics["sft_loss"],
+                    "train/or_loss": metrics["or_loss"],
+                    "train/log_odds_ratio": metrics["log_odds_ratio"],
+                    "train/accuracy": metrics["accuracy"],
+                    "train/tokens_per_sec": tokens_per_sec,
+                    "train/step_time_sec": step_elapsed,
+                    "train/step_tokens": step_tokens,
+                    "train/epoch": epoch + 1,
+                },
+                step,
+            )
+            return time.monotonic()
 
         for epoch in range(cfg.epochs):
             random.shuffle(pair_cache)
             step_t0 = time.monotonic()
+            step_pairs: list[dict] = []
             for pair in pair_cache:
-                chosen_tokens = pair["chosen_tokens"]
-                rejected_tokens = pair["rejected_tokens"]
-                loss_fn = make_orpo_loss_fn(pair["response_start"], cfg.orpo_lambda)
-                result = client.forward_backward_custom(
-                    [pair["chosen_datum"], pair["rejected_datum"]], loss_fn
-                )
+                step_pairs.append(pair)
+                if len(step_pairs) >= cfg.grad_accum:
+                    step_t0 = _run_train_step(epoch, step_pairs, step_t0)
+                    step_pairs = []
 
-                metrics = result.metrics
-                agg["orpo_loss"] += metrics["orpo_loss"]
-                agg["sft_loss"] += metrics["sft_loss"]
-                agg["or_loss"] += metrics["or_loss"]
-                agg["log_odds_ratio"] += metrics["log_odds_ratio"]
-                agg["accuracy"] += metrics["accuracy"]
-                agg["tokens"] += len(chosen_tokens) + len(rejected_tokens)
-                agg["count"] += 1
-                accum_count += 1
-
-                if accum_count >= cfg.grad_accum:
-                    client.optim_step(adam_params)
-                    step += 1
-                    accum_count = 0
-
-                    step_elapsed = time.monotonic() - step_t0
-                    step_tokens = agg["tokens"]
-                    tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
-
-                    n = agg["count"]
-                    if n > 0:
-                        avg = {k: agg[k] / n for k in agg if k not in ("count", "tokens")}
-                        logger.info(
-                            "Step %d/%d | ORPO: %.4f | SFT: %.4f | OR: %.4f | "
-                            "LogOR: %+.4f | Acc: %.1f%% | %.1f tok/s (%.1fs)",
-                            step,
-                            total_steps,
-                            avg["orpo_loss"],
-                            avg["sft_loss"],
-                            avg["or_loss"],
-                            avg["log_odds_ratio"],
-                            avg["accuracy"] * 100,
-                            tokens_per_sec,
-                            step_elapsed,
-                        )
-                        log_metrics_json(step, tokens_per_sec=tokens_per_sec, **avg)
-                        wandb_log(
-                            {
-                                "train/step": step,
-                                "train/orpo_loss": avg["orpo_loss"],
-                                "train/sft_loss": avg["sft_loss"],
-                                "train/or_loss": avg["or_loss"],
-                                "train/log_odds_ratio": avg["log_odds_ratio"],
-                                "train/accuracy": avg["accuracy"],
-                                "train/tokens_per_sec": tokens_per_sec,
-                                "train/step_time_sec": step_elapsed,
-                                "train/step_tokens": step_tokens,
-                                "train/epoch": epoch + 1,
-                            },
-                            step,
-                        )
-
-                    agg = {k: 0.0 for k in agg}
-                    step_t0 = time.monotonic()
-
-            if accum_count > 0:
-                client.optim_step(adam_params).result()
-                step += 1
-                accum_count = 0
+            if step_pairs:
+                _run_train_step(epoch, step_pairs, step_t0)
 
         # -- Final checkpoint ------------------------------------------------
 
@@ -342,14 +332,16 @@ def main(
             result = client.save_weights_for_sampler_ext(
                 cp_name, checkpoint_type="base"
             )
-            logger.info("Final base checkpoint saved: %s", result.path)
+            from training.utils.checkpoint_utils import get_sampler_checkpoint_id
+            sampler_checkpoint_id = get_sampler_checkpoint_id(result)
+            logger.info("Final base checkpoint saved: %s", sampler_checkpoint_id)
             
             if getattr(cfg, "output_model_id", None):
                 from training.utils.checkpoint_utils import promote_checkpoint
                 promote_checkpoint(
                     rlor_mgr,
                     job_id,
-                    cp_name,
+                    sampler_checkpoint_id,
                     cfg.output_model_id,
                 )
 

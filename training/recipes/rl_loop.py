@@ -6,7 +6,13 @@ Fork this script and customise the reward function, loss, or sampling
 strategy to fit your task.
 
 Each optimizer step samples ``prompt_groups_per_step`` prompts concurrently,
-then runs a single ``forward_backward_custom`` + ``optim_step`` (1:1 ratio).
+then runs a single training update + ``optim_step`` (1:1 ratio).
+
+RL losses can execute in two places:
+- Server-side builtin path: ``forward_backward(...)`` with a builtin kernel
+  resolved by :func:`training.utils.rl.losses.resolve_builtin_loss`.
+- Client-side custom path: ``forward_backward_custom(...)`` with a Python
+  loss closure built by :func:`training.utils.rl.losses.build_loss_fn`.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -56,15 +62,14 @@ from training.utils.checkpoint_utils import (
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
-from training.utils.rl.importance_sampling import ISConfig
+from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
-from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, resolve_builtin_loss
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 
@@ -106,14 +111,29 @@ class Config:
     router_replay: bool = False
     router_replay_completion_only: bool = True
 
+    grad_accumulation_normalization: str | None = "num_loss_tokens"
+    """Normalization mode for accumulated gradients at optim_step.
+    Defaults to "num_loss_tokens" (per-token mean)."""
+
     policy_loss: str = "grpo"
-    """``"grpo"``, ``"dapo"``, ``"gspo"``, or ``"cispo"``."""
+    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, or ``"cispo"``.
+
+    If an eligible builtin kernel exists for the selected loss, training uses
+    the server-side ``forward_backward(...)`` path. Otherwise it falls back to
+    the client-side ``forward_backward_custom(...)`` path.
+    """
 
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
-    is_correction: ISConfig = field(default_factory=ISConfig)
-    """AReaL-style decoupled IS correction: PPO ratio + behavioral weight."""
+    eps_clip: float = 0.2
+    """PPO clip epsilon for the off-policy ratio (GRPO only)."""
+    eps_clip_high: float | None = None
+    """Asymmetric upper clip bound (GRPO only)."""
+    ratio_log_cap: float = 20.0
+    """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
+    tis: TISConfig = field(default_factory=TISConfig)
+    """TIS (Train-Inference IS) weight correction config."""
 
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files.  Each file contains
@@ -232,7 +252,13 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    validate_config(cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment)
+    validate_config(
+        cfg.base_model,
+        cfg.dataset,
+        cfg.weight_sync,
+        cfg.deployment,
+        output_model_id=cfg.output_model_id,
+    )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -269,14 +295,6 @@ def main(
         dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
         if dep_shape and not cfg.deployment.deployment_shape:
             cfg.deployment.deployment_shape = dep_shape
-
-    if profile and profile.pipeline_parallelism > 1:
-        pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
-        logger.info(
-            "PP recommendation: set prompt_groups_per_step=%d for optimal efficiency (current=%d)",
-            pp_rec.recommended_prompts_per_step,
-            prompt_groups_per_step,
-        )
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -353,6 +371,7 @@ def main(
             if not cfg.policy_job_id:
                 cleanup.trainer(policy_job_id)
             reference_ep = None
+            reference_job_id = None
 
         policy = ReconnectableClient(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
@@ -409,11 +428,15 @@ def main(
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-        loss_builder = build_loss_fn(
+        # Client-side fallback: build the Python loss closure used by
+        # forward_backward_custom(...) when no eligible builtin kernel exists.
+        client_loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
             dapo_config=cfg.dapo, gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
-            is_config=cfg.is_correction,
+            ratio_log_cap=cfg.ratio_log_cap,
+            tis_config=cfg.tis,
+            eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high,
         )
 
         sample_kwargs: dict = dict(
@@ -532,8 +555,21 @@ def main(
                 ]
                 idx += n
 
+        # Server-side fast path: resolve the builtin kernel/config used by
+        # forward_backward(...). Returns None when this loss has no builtin
+        # implementation, and raises when the current profile is ineligible.
+        builtin_server_loss = resolve_builtin_loss(
+            cfg.policy_loss,
+            profile,
+            dapo_config=cfg.dapo,
+            gspo_config=cfg.gspo,
+            cispo_config=cfg.cispo,
+            ratio_log_cap=cfg.ratio_log_cap,
+            eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high,
+        )
+
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
-            """One minibatch forward/backward call after reference forward."""
+            """One minibatch update using the builtin or client-side loss path."""
             if not prompt_groups:
                 raise ValueError("fwd_bwd_one requires at least one prompt group")
 
@@ -545,9 +581,29 @@ def main(
             logger.info("prox_forward: done (%.1fs)", _time.time() - t0)
 
             t0 = _time.time()
-            fwd_bwd_result = policy.forward_backward_custom(
-                data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
-            )
+            if builtin_server_loss is not None:
+                # Server-side builtin path: pre-pack the rollout tensors into
+                # datums the trainer kernel understands, then call
+                # forward_backward(...).
+                kernel_loss, kernel_config = builtin_server_loss
+                rl_datums = build_builtin_loss_datums(
+                    data,
+                    adv,
+                    prox_lp,
+                    inf_lp,
+                    prompt_lens,
+                    cfg.tis,
+                    policy_loss=cfg.policy_loss,
+                )
+                fwd_bwd_result = policy.forward_backward(
+                    rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                )
+            else:
+                # Client-side custom path: execute the Python loss closure
+                # returned by build_loss_fn(...) via forward_backward_custom(...).
+                fwd_bwd_result = policy.forward_backward_custom(
+                    data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+                )
             logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
 
@@ -566,7 +622,10 @@ def main(
             logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _time.time() - t0)
 
             t0 = _time.time()
-            optim_result = policy.optim_step(adam_params)
+            optim_result = policy.optim_step(
+                adam_params,
+                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            )
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
@@ -640,7 +699,7 @@ def main(
             try:
                 _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
                 cp_name = f"step-{global_step}"
-                save_checkpoint(policy, cp_name, cfg.log_path, {
+                paths = save_checkpoint(policy, cp_name, cfg.log_path, {
                     "step": global_step,
                     "data_consumed": _data_consumed,
                     "source_job_id": policy_job_id,
@@ -651,7 +710,7 @@ def main(
                     promote_checkpoint(
                         rlor_mgr,
                         policy_job_id,
-                        cp_name,
+                        paths["sampler_path"],
                         cfg.output_model_id,
                     )
             except Exception as e:

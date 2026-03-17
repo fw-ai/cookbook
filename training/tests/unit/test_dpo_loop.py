@@ -208,14 +208,15 @@ def test_cache_ref_logprobs_preserves_multi_turn_preference_history():
     assert [m["content"] for m in rejected_messages] == ["u1", "a1", "u2", "rejected"]
 
 
-def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
+def test_forward_backward_pairs_interleaves_and_builds_loss_fn(monkeypatch):
     captured = {}
 
-    def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta):
+    def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta, microbatch_sizes=None):
         captured["ref_chosen"] = ref_chosen
         captured["ref_rejected"] = ref_rejected
         captured["response_starts"] = response_starts
         captured["beta"] = beta
+        captured["microbatch_sizes"] = microbatch_sizes
         return "loss-fn"
 
     class FakePolicy:
@@ -243,7 +244,7 @@ def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
         },
     ]
 
-    result = module._flush_batch(batch_pairs, FakePolicy(), beta=0.25)
+    result = module._forward_backward_pairs(batch_pairs, FakePolicy(), beta=0.25)
 
     assert result == "result"
     assert captured["datums"] == [
@@ -257,6 +258,7 @@ def test_flush_batch_interleaves_pairs_and_builds_loss_fn(monkeypatch):
     assert captured["ref_rejected"] == [[-0.2], [-0.4]]
     assert captured["response_starts"] == [3, 5]
     assert captured["beta"] == 0.25
+    assert captured["microbatch_sizes"] is None
 
 
 def test_main_requires_tokenizer_model(monkeypatch):
@@ -417,6 +419,166 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     assert events["wandb_finished"] == 1
 
 
+def test_main_promotes_final_base_checkpoint(monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {
+        "create_trainer_job": [],
+        "deleted_jobs": [],
+        "setup_deployment": [],
+        "save_only_calls": [],
+        "hotload_calls": [],
+        "save_and_hotload_calls": [],
+        "dcp_saves": [],
+        "promotions": [],
+        "wandb_finished": 0,
+    }
+
+    class FakeRlorMgr:
+        def resolve_training_profile(self, shape_id):
+            return SimpleNamespace(max_supported_context_length=96)
+
+        def delete(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+    class FakeDeployMgr:
+        pass
+
+    class FakeFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class FakeThreadPoolExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            return FakeFuture(fn(*args, **kwargs))
+
+    class FakeClient:
+        def __init__(self, _rlor_mgr, job_id, *_args, **_kwargs):
+            self.job_id = job_id
+            self.inner = object()
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
+
+    class FakeWeightSyncer:
+        def __init__(self, **kwargs):
+            events["weight_syncer_init"] = kwargs
+
+        def save_and_hotload(self, name, checkpoint_type=None):
+            events["save_and_hotload_calls"].append((name, checkpoint_type))
+            return f"{name}-session"
+
+        def save_only(self, name, checkpoint_type=None):
+            events["save_only_calls"].append((name, checkpoint_type))
+            return f"{name}-session"
+
+        def hotload(self, snapshot_name):
+            events["hotload_calls"].append(snapshot_name)
+            return True
+
+        def save_dcp(self, name):
+            events["dcp_saves"].append(name)
+
+    async def fake_cache_ref_logprobs(*args, **kwargs):
+        events["cache_args"] = {"args": args, "kwargs": kwargs}
+        return (
+            {
+                0: {
+                    "chosen_datum": {"id": "chosen"},
+                    "rejected_datum": {"id": "rejected"},
+                    "ref_chosen": [-0.1],
+                    "ref_rejected": [-0.2],
+                    "response_start": 3,
+                }
+            },
+            0,
+        )
+
+    async def fake_train_loop(ref_cache, valid_indices, policy, adam_params, weight_syncer, cfg, step_offset):
+        events["train_loop"] = {
+            "ref_cache": ref_cache,
+            "valid_indices": valid_indices,
+            "policy_job_id": policy.job_id,
+        }
+        return 2
+
+    def fake_create_trainer_job(*args, **kwargs):
+        events["create_trainer_job"].append(kwargs)
+        display_name = kwargs["display_name"]
+        job_id = "policy-job" if display_name == "dpo-policy" else "reference-job"
+        return SimpleNamespace(job_id=job_id)
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
+    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: events["setup_deployment"].append((args, kwargs)))
+    monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
+    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
+    monkeypatch.setattr(module, "_cache_ref_logprobs", fake_cache_ref_logprobs)
+    monkeypatch.setattr(module, "_train_loop", fake_train_loop)
+    monkeypatch.setattr(module, "load_preference_dataset", lambda *args, **kwargs: [{"chosen": {}, "rejected": {}}])
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "training.utils.checkpoint_utils.promote_checkpoint",
+        lambda mgr, job_id, checkpoint_id, output_model_id: events["promotions"].append(
+            (job_id, checkpoint_id, output_model_id)
+        ),
+    )
+
+    cfg = module.Config(
+        log_path="/tmp/dpo_test_logs",
+        base_model="accounts/test/models/qwen3-4b",
+        dataset="/tmp/pairs.jsonl",
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=None,
+        infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1"),
+        deployment=module.DeployConfig(deployment_id="dep-123"),
+        weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
+        output_model_id="promoted-dpo-model",
+    )
+
+    result = module.main(
+        cfg,
+        rlor_mgr=FakeRlorMgr(),
+        deploy_mgr=FakeDeployMgr(),
+    )
+
+    assert result == {
+        "steps": 2,
+        "policy_job_id": "policy-job",
+        "reference_job_id": "reference-job",
+    }
+    assert events["save_only_calls"] == [("final-step-2", "base")]
+    assert events["hotload_calls"] == ["final-step-2-session"]
+    assert events["save_and_hotload_calls"] == []
+    assert events["dcp_saves"] == ["step-2"]
+    assert events["promotions"] == [
+        ("policy-job", "final-step-2-session", "promoted-dpo-model"),
+    ]
+    assert events["deleted_jobs"] == ["reference-job", "policy-job"]
+    assert events["wandb_finished"] == 1
+
+
 def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     events: dict[str, object] = {
         "flush_batches": [],
@@ -429,8 +591,10 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
 
     monkeypatch.setattr(
         module,
-        "_flush_batch",
-        lambda batch, policy, beta: events["flush_batches"].append((list(batch), beta)) or SimpleNamespace(
+        "_forward_backward_pairs",
+        lambda batch, policy, beta, microbatch_sizes=None: events["flush_batches"].append(
+            (list(batch), beta, list(microbatch_sizes or []))
+        ) or SimpleNamespace(
             metrics={"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75}
         ),
     )
@@ -439,7 +603,7 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     monkeypatch.setattr(module, "wandb_log", lambda payload, step: events["wandb_logs"].append((step, payload)))
 
     class FakePolicy:
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
@@ -451,8 +615,8 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
             events["dcp_saves"].append(name)
 
     ref_cache = {
-        0: {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"}, "ref_chosen": [-0.1], "ref_rejected": [-0.2], "response_start": 3},
-        1: {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"}, "ref_chosen": [-0.3], "ref_rejected": [-0.4], "response_start": 4},
+        0: {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"}, "chosen_tokens": [1, 2, 3], "rejected_tokens": [1, 2, 4], "ref_chosen": [-0.1], "ref_rejected": [-0.2], "response_start": 3},
+        1: {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"}, "chosen_tokens": [5, 6], "rejected_tokens": [5, 7], "ref_chosen": [-0.3], "ref_rejected": [-0.4], "response_start": 4},
     }
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",
@@ -477,11 +641,14 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
 
     assert step == 1
     assert events["flush_batches"] == [
-        ([ref_cache[0]], 0.2),
-        ([ref_cache[1]], 0.2),
+        ([ref_cache[0], ref_cache[1]], 0.2, [1, 1]),
     ]
     assert events["optim_steps"] == 1
     assert events["weight_syncs"] == ["step-1"]
     assert events["dcp_saves"] == ["step-1"]
-    assert events["metrics_logs"] == [(1, {"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75})]
+    assert events["metrics_logs"][0][0] == 1
+    assert events["metrics_logs"][0][1]["dpo_loss"] == 1.5
+    assert events["metrics_logs"][0][1]["margin"] == 0.25
+    assert events["metrics_logs"][0][1]["accuracy"] == 0.75
+    assert "tokens_per_sec" in events["metrics_logs"][0][1]
     assert len(events["wandb_logs"]) == 1

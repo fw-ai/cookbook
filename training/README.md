@@ -7,7 +7,7 @@ Each recipe is a single Python file you can fork and customize.
 
 | Recipe | File | Description |
 | --- | --- | --- |
-| GRPO / DAPO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"dapo"`, `"gspo"`, or `"cispo"`. |
+| GRPO / IS / DAPO / DRO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"importance_sampling"`, `"dapo"`, `"dro"`, `"gspo"`, or `"cispo"`. |
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
 | SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |

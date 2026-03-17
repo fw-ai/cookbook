@@ -34,7 +34,8 @@ def _make_mock_client(job_id="test-job"):
 
     def _save_sampler(name, checkpoint_type="base"):
         result = MagicMock()
-        result.path = f"{name}-sampler"
+        result.path = f"gs://unit/sampler/{name}"
+        result.snapshot_name = f"{name}-sampler"
         return result
 
     client.save_state.side_effect = _save_state
@@ -139,6 +140,7 @@ class TestSaveCheckpoint:
 
         assert "state_path" in paths
         assert "sampler_path" in paths
+        assert paths["sampler_path"] == "step-5-sampler"
 
     def test_appends_entries(self, log_dir):
         client = _make_mock_client()

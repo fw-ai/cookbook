@@ -115,10 +115,17 @@ def create_trainer_job(
     Otherwise for pre-created jobs, the SDK routes through the gateway
     via /training/v1/rlorTrainerJobs/{accountId}/{jobId}/*.
     """
+    trainer_role = "reference" if forward_only else "policy"
+
     if job_id:
         if base_url_override:
             job_name = f"accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}"
-            logger.info("Using pre-created job %s at %s", job_id, base_url_override)
+            logger.info(
+                "Using pre-created %s trainer job %s at %s",
+                trainer_role,
+                job_id,
+                base_url_override,
+            )
             return TrainerServiceEndpoint(
                 job_name=job_name,
                 job_id=job_id,
@@ -159,11 +166,33 @@ def create_trainer_job(
         )
 
     logger.info(
-        "Creating trainer job '%s' (forward_only=%s)...",
+        "Creating %s trainer job '%s' (forward_only=%s)...",
+        trainer_role,
         display_name,
         forward_only,
     )
-    return rlor_mgr.create_and_wait(config, timeout_s=infra.trainer_timeout_s)
+    try:
+        endpoint = rlor_mgr.create_and_wait(config, timeout_s=infra.trainer_timeout_s)
+    except Exception as e:
+        logger.error(
+            "Failed to create %s trainer job '%s' (forward_only=%s): %s",
+            trainer_role,
+            display_name,
+            forward_only,
+            e,
+        )
+        raise RuntimeError(
+            f"Failed to create {trainer_role} trainer job '{display_name}' "
+            f"(forward_only={forward_only})"
+        ) from e
+
+    logger.info(
+        "Created %s trainer job '%s': %s",
+        trainer_role,
+        display_name,
+        endpoint.job_id,
+    )
+    return endpoint
 
 
 def setup_deployment(

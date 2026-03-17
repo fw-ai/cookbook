@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SFT training on DeepMath dataset with ground-truth answers."""
+"""SFT getting-started example for the bundled text2sql dataset."""
 
 from __future__ import annotations
 
@@ -36,11 +36,14 @@ def _signal_handler(signum, frame):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="SFT on DeepMath")
+    parser = argparse.ArgumentParser(description="SFT on the bundled text2sql dataset")
     parser.add_argument("--output-model-id", type=str, required=True, help="Final output model name")
     parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
-    parser.add_argument("--dataset-path", default=os.path.join(os.path.dirname(__file__), "sft_dataset.jsonl"))
+    parser.add_argument(
+        "--dataset-path",
+        default=os.path.join(os.path.dirname(__file__), "text2sql_dataset.jsonl"),
+    )
     parser.add_argument("--training-shape", default="")
     parser.add_argument("--region", default="US_VIRGINIA_1")
     parser.add_argument("--max-examples", type=int, default=500)
@@ -50,6 +53,16 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
+    parser.add_argument("--grad-acc-norm", default=None,
+                        choices=["num_sequences", "num_loss_tokens", "none"],
+                        help="Server-side gradient normalization (default: none, SFT normalizes client-side)")
+    parser.add_argument("--no-checkpoint", action="store_true",
+                        help="Skip final checkpoint save")
+    parser.add_argument("--grad-clip-norm", type=float, default=0.0,
+                        help="Max gradient norm for clipping (0 = no clipping)")
+    parser.add_argument("--wandb-project", default="sft-tinker")
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-entity", default="myh97")
     return parser.parse_args()
 
 
@@ -58,10 +71,13 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
 
     args = parse_args()
-    logger.info("SFT DeepMath training: model=%s shape=%s", args.base_model, args.training_shape)
+    logger.info("SFT text2sql training: model=%s shape=%s", args.base_model, args.training_shape)
 
     if not os.path.exists(args.dataset_path):
-        raise FileNotFoundError(f"Dataset not found at {args.dataset_path}. Run prepare_sft_data.py first.")
+        raise FileNotFoundError(
+            f"Dataset not found at {args.dataset_path}. "
+            "Use the bundled text2sql_dataset.jsonl or pass --dataset-path explicitly."
+        )
 
     os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
     os.environ["FIREWORKS_ACCOUNT_ID"] = FIREWORKS_ACCOUNT_ID
@@ -86,13 +102,17 @@ def main():
         max_examples=args.max_examples,
         lora_rank=args.lora_rank,
         output_model_id=args.output_model_id,
+        grad_accumulation_normalization=args.grad_acc_norm,
+        grad_clip_norm=args.grad_clip_norm,
+        dcp_save_interval=-1 if args.no_checkpoint else 0,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,
         ),
         wandb=WandBConfig(
-            project="sft-tinker",
-            run_name=f"sft-{args.base_model.rsplit('/', 1)[-1]}",
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            run_name=args.wandb_run_name or f"sft-{args.base_model.rsplit('/', 1)[-1]}",
         ),
     )
 

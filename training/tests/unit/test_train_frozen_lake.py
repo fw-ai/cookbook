@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from eval_protocol.models import EvaluationRow, InputMetadata, Message
 import httpx
+import pytest
 
 import training.examples.frozen_lake.train_frozen_lake as train_module
 from training.examples.frozen_lake.masking import (
@@ -56,6 +57,17 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
     assert cfg.allow_plaintext_action_fallback is True
     assert cfg.training_shape == "ts-qwen3-4b-smoke-v1"
     assert cfg.deployment_region is None
+
+
+def test_main_rejects_invalid_output_model_id(monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    cfg = FrozenLakeConfig(output_model_id="bad_name")
+
+    with pytest.raises(RuntimeError, match="Invalid output_model_id"):
+        train_module.main(cfg)
 
 
 def test_load_seed_contexts_respects_limit_and_defaults(tmp_path):
@@ -175,7 +187,7 @@ def test_evaluation_row_to_training_data_handles_multimodal_row_messages():
     assert datums[0].loss_fn_inputs["weights"].data == [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]
 
 
-def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
+def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
@@ -189,6 +201,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     }
 
     cfg = train_module.FrozenLakeConfig(
+        log_path=str(tmp_path / "frozen_lake_logs"),
         base_model="accounts/test/models/qwen3-4b",
         tokenizer_model="Qwen/Qwen3-4B",
         completions_per_prompt=2,
@@ -309,12 +322,13 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
     assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
     assert "train_fns" in events["run_rl_loop_kwargs"]
+    assert "max_concurrent" not in events["run_rl_loop_kwargs"]
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1
 
 
-def test_main_runs_sampling_and_training_with_reference(monkeypatch):
+def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
@@ -328,9 +342,11 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         "weight_sync_dcp": [],
         "build_loss_fn_calls": [],
         "sleeps": [],
+        "promotions": [],
     }
 
     cfg = train_module.FrozenLakeConfig(
+        log_path=str(tmp_path / "frozen_lake_logs"),
         base_model="accounts/test/models/qwen3-4b",
         tokenizer_model="Qwen/Qwen3-4B",
         completions_per_prompt=2,
@@ -339,10 +355,12 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         max_steps=5,
         max_seeds=1,
         kl_beta=0.1,
+        ratio_log_cap=9.0,
         training_shape="ts-qwen3-4b-smoke-v1",
         deployment_id="dep-123",
         observation_mode="image",
         allow_plaintext_action_fallback=True,
+        output_model_id="promoted-rl-model",
     )
 
     class FakeTrainerJobManager:
@@ -357,7 +375,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
             events.setdefault("resolved_shapes", []).append(shape_id)
             return SimpleNamespace(
                 deployment_shape_version="shape/versions/7",
-                pipeline_parallelism=2,
+                pipeline_parallelism=1,
                 max_supported_context_length=256,
             )
 
@@ -412,21 +430,34 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         def forward(self, data, loss_fn):
             return SimpleNamespace(
                 loss_fn_outputs=[
-                    {"logprobs": SimpleNamespace(data=[-0.31, -0.32])}
-                    for _ in data
+                    {"logprobs": SimpleNamespace(data=[-0.3] * len(d.loss_fn_inputs["target_tokens"].data))}
+                    for d in data
                 ]
             )
+
+        def forward_backward(self, data, loss_fn="cross_entropy", loss_fn_config=None):
+            events["fwd_bwd_call"] = {"data_len": len(data), "loss_fn": loss_fn, "loss_fn_config": loss_fn_config}
+            return SimpleNamespace(metrics={"loss": 1.0})
 
         def forward_backward_custom(self, data, loss_fn):
             events["fwd_bwd_call"] = {"data_len": len(data), "loss_fn": loss_fn}
             return SimpleNamespace(metrics={"loss": 1.0})
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_step_called"] = True
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
         def save_state(self, name, timeout=None):
             events["final_save"] = (name, timeout)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(
+                path=f"tinker://unit/sampler/{name}-session",
+                snapshot_name=f"{name}-session",
+            )
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
 
     class FakeWeightSyncer:
         def __init__(self, **kwargs):
@@ -495,6 +526,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         return SimpleNamespace(inference_model="accounts/test/models/deployed")
 
     def fake_build_loss_fn(**kwargs):
+        events["build_loss_fn_kwargs"] = kwargs
         def _builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp):
             events["build_loss_fn_calls"].append(
                 {
@@ -547,6 +579,12 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
         train_module, "InfraConfig",
         lambda **kwargs: _OrigInfraConfig(ref_training_shape_id="ts-qwen3-4b-smoke-v1", **kwargs),
     )
+    monkeypatch.setattr(
+        "training.utils.checkpoint_utils.promote_checkpoint",
+        lambda mgr, job_id, checkpoint_id, output_model_id: events["promotions"].append(
+            (job_id, checkpoint_id, output_model_id)
+        ),
+    )
     monkeypatch.setattr(train_module.time, "sleep", lambda seconds: events["sleeps"].append(seconds))
     monkeypatch.setattr(
         httpx,
@@ -566,12 +604,18 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch):
     assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []
     assert events["final_save"] == ("step-1", None)
-    assert len(events["build_loss_fn_calls"]) == 1
-    advantages = events["build_loss_fn_calls"][0]["advantages"]
-    assert len(advantages) == 2
-    assert advantages[0] > 0
-    assert advantages[1] < 0
-    assert events["build_loss_fn_calls"][0]["prompt_lens"] == [3, 3]
+    assert events["promotions"] == [
+        ("policy-job", "step-1-session", "promoted-rl-model"),
+    ]
+    assert "fwd_bwd_call" in events
+    assert events["build_loss_fn_kwargs"]["ratio_log_cap"] == 9.0
+    from training.utils.rl.losses import get_builtin_loss_config
+    expected_kernel, expected_config = get_builtin_loss_config(
+        cfg.policy_loss,
+        ratio_log_cap=cfg.ratio_log_cap,
+    )
+    assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
+    assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1

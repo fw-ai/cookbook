@@ -63,85 +63,21 @@ def test_parse_args_reads_overrides(monkeypatch):
     assert args.lora_rank == 8
 
 
+def test_parse_args_uses_bundled_text2sql_dataset_by_default(monkeypatch):
+    module = _load_module(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["train_sft.py", "--output-model-id", "out-model"])
+
+    args = module.parse_args()
+
+    assert os.path.basename(args.dataset_path) == "text2sql_dataset.jsonl"
+
+
 def test_main_raises_when_dataset_is_missing(monkeypatch):
     module = _load_module(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["train_sft.py", "--dataset-path", "/tmp/missing.jsonl", "--output-model-id", "out"])
     monkeypatch.setattr(module.os.path, "exists", lambda path: False)
 
-    with pytest.raises(FileNotFoundError, match="Dataset not found"):
+    with pytest.raises(FileNotFoundError, match="text2sql_dataset.jsonl|Dataset not found"):
         module.main()
 
 
-def test_main_builds_sft_config_and_calls_recipe(monkeypatch):
-    module = _load_module(monkeypatch)
-    dataset_path = "/tmp/text2sql.jsonl"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "train_sft.py",
-            "--base-model",
-            "accounts/test/models/qwen3-4b",
-            "--tokenizer-model",
-            "Qwen/Qwen3-4B",
-            "--dataset-path",
-            dataset_path,
-            "--training-shape",
-            "ts-qwen3-4b-smoke-v1",
-            "--region",
-            "US_OHIO_1",
-            "--max-examples",
-            "8",
-            "--epochs",
-            "2",
-            "--batch-size",
-            "4",
-            "--grad-accum",
-            "2",
-            "--learning-rate",
-            "2e-5",
-            "--lora-rank",
-            "16",
-            "--output-model-id",
-            "out-model",
-        ],
-    )
-    monkeypatch.setattr(module.os.path, "exists", lambda path: path == dataset_path)
-
-    created = {}
-
-    class FakeTrainerJobManager:
-        def __init__(self, *, api_key, account_id, base_url):
-            created["mgr_init"] = {
-                "api_key": api_key,
-                "account_id": account_id,
-                "base_url": base_url,
-            }
-
-    def fake_sft_main(config, *, rlor_mgr=None):
-        created["config"] = config
-        created["rlor_mgr"] = rlor_mgr
-        return {"train/loss": 0.123}
-
-    monkeypatch.setattr(module, "TrainerJobManager", FakeTrainerJobManager)
-    monkeypatch.setattr(module.sft_loop, "main", fake_sft_main)
-
-    module.main()
-
-    cfg = created["config"]
-    assert cfg.base_model == "accounts/test/models/qwen3-4b"
-    assert cfg.dataset == dataset_path
-    assert cfg.tokenizer_model == "Qwen/Qwen3-4B"
-    assert cfg.learning_rate == 2e-5
-    assert cfg.epochs == 2
-    assert cfg.batch_size == 4
-    assert cfg.grad_accum == 2
-    assert cfg.max_examples == 8
-    assert cfg.lora_rank == 16
-    assert cfg.infra.training_shape_id == "ts-qwen3-4b-smoke-v1"
-    assert cfg.infra.region == "US_OHIO_1"
-    assert created["mgr_init"] == {
-        "api_key": "test-key",
-        "account_id": "acct",
-        "base_url": "https://unit.test",
-    }

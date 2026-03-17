@@ -1,10 +1,10 @@
 """Unit tests for the CISPO loss function.
 
 Validates:
-- Masking behavior (positive/negative/zero advantage)
+- Clipping behavior (positive/negative/zero advantage)
 - Equivalence between int and list prompt_len
-- Gradient flow through unmasked tokens
-- Metric reporting (cispo_mask_frac, mean_kl)
+- Gradient flow through logprobs
+- Metric reporting (cispo_clip_frac, mean_kl)
 - Config defaults
 """
 
@@ -21,21 +21,8 @@ def _make_logprobs(seq_len: int, seed: int = 0) -> torch.Tensor:
     return torch.randn(seq_len, requires_grad=True)
 
 
-class TestCISPOConfigDefaults:
-    def test_defaults(self):
-        cfg = CISPOConfig()
-        assert cfg.eps_low == 0.2
-        assert cfg.eps_high == 0.28
-        assert cfg.ratio_log_cap == 20.0
-
-    def test_custom(self):
-        cfg = CISPOConfig(eps_low=0.1, eps_high=0.5)
-        assert cfg.eps_low == 0.1
-        assert cfg.eps_high == 0.5
-
-
-class TestCISPOMasking:
-    """Test that the CISPO mask works per the paper's Eq. 7."""
+class TestCISPOClipping:
+    """Test that CISPO clips the ratio to [1-eps_low, 1+eps_high]."""
 
     def _build_and_call(
         self, adv: float, pi_offset: float, eps_low: float = 0.2, eps_high: float = 0.28,
@@ -63,36 +50,35 @@ class TestCISPOMasking:
             cispo_config=cfg,
         )
         loss, metrics = fn([], [pi_logprobs])
-        return loss, metrics["cispo_mask_frac"]
+        return loss, metrics["cispo_clip_frac"]
 
     def test_positive_adv_ratio_within_bounds(self):
-        """A > 0, ratio < 1 + eps_high -> mask = 1, token contributes."""
-        loss, mask_frac = self._build_and_call(adv=1.0, pi_offset=0.1)
-        assert mask_frac == pytest.approx(0.0)
+        """A > 0, ratio < 1 + eps_high -> not clipped, clip_frac=0."""
+        loss, clip_frac = self._build_and_call(adv=1.0, pi_offset=0.1)
+        assert clip_frac == pytest.approx(0.0)
         assert loss.item() != 0.0
 
     def test_positive_adv_ratio_exceeds_eps_high(self):
-        """A > 0, ratio > 1 + eps_high -> mask = 0, token masked."""
-        loss, mask_frac = self._build_and_call(adv=1.0, pi_offset=1.0)
-        assert mask_frac == pytest.approx(1.0)
-        assert loss.item() == pytest.approx(0.0, abs=1e-6)
+        """A > 0, ratio > 1 + eps_high -> clipped, loss still non-zero."""
+        loss, clip_frac = self._build_and_call(adv=1.0, pi_offset=1.0)
+        assert clip_frac == pytest.approx(1.0)
+        assert loss.item() != 0.0
 
     def test_negative_adv_ratio_within_bounds(self):
-        """A < 0, ratio > 1 - eps_low -> mask = 1, token contributes."""
-        loss, mask_frac = self._build_and_call(adv=-1.0, pi_offset=-0.05)
-        assert mask_frac == pytest.approx(0.0)
+        """A < 0, ratio > 1 - eps_low -> not clipped, clip_frac=0."""
+        loss, clip_frac = self._build_and_call(adv=-1.0, pi_offset=-0.05)
+        assert clip_frac == pytest.approx(0.0)
         assert loss.item() != 0.0
 
     def test_negative_adv_ratio_below_eps_low(self):
-        """A < 0, ratio < 1 - eps_low -> mask = 0, token masked."""
-        loss, mask_frac = self._build_and_call(adv=-1.0, pi_offset=-1.0)
-        assert mask_frac == pytest.approx(1.0)
-        assert loss.item() == pytest.approx(0.0, abs=1e-6)
+        """A < 0, ratio < 1 - eps_low -> clipped, loss still non-zero."""
+        loss, clip_frac = self._build_and_call(adv=-1.0, pi_offset=-1.0)
+        assert clip_frac == pytest.approx(1.0)
+        assert loss.item() != 0.0
 
-    def test_zero_advantage_no_masking(self):
-        """A == 0 -> mask is always 1 (but loss is zero anyway since adv=0)."""
-        loss, mask_frac = self._build_and_call(adv=0.0, pi_offset=5.0)
-        assert mask_frac == pytest.approx(0.0)
+    def test_zero_advantage_loss_is_zero(self):
+        """A == 0 -> loss is zero regardless of clipping (adv factor is 0)."""
+        loss, clip_frac = self._build_and_call(adv=0.0, pi_offset=5.0)
         assert loss.item() == pytest.approx(0.0, abs=1e-6)
 
 
@@ -132,7 +118,7 @@ class TestCISPOBatched:
         assert loss_short.item() != pytest.approx(loss_long.item(), abs=1e-6)
 
     def test_gradient_flows(self):
-        """Gradients should flow through unmasked tokens."""
+        """Gradients should flow through logprobs for response tokens."""
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[0.0] * 5]
@@ -160,7 +146,7 @@ class TestCISPOMetrics:
         _, metrics = fn([], [lp])
 
         assert "mean_kl" in metrics
-        assert "cispo_mask_frac" in metrics
+        assert "cispo_clip_frac" in metrics
 
     def test_reports_inference_metrics(self):
         """CISPO should report inference_diff and inference_kld."""

@@ -4,6 +4,8 @@
 Demonstrates reinforcement learning with multi-turn tool-calling:
   - eval-protocol handles the data plane (token-ID-based rollout with environment)
   - cookbook handles the training plane (GRPO loss, weight sync, reference model)
+  - training uses the server-side builtin loss path when available, otherwise
+    it falls back to the client-side custom loss path
 
 Usage:
     pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol
@@ -24,7 +26,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, cast
 
 import tinker
 
@@ -32,10 +34,9 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from eval_protocol.models import EvaluationRow, InputMetadata, Message
+from eval_protocol.models import EvaluationRow, InputMetadata
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
-from training.examples.frozen_lake.frozen_lake_env import build_frozen_lake_tool_env
 from training.examples.frozen_lake.frozen_lake_rollout import (
     DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
     FrozenLakeToolRolloutProcessor,
@@ -64,11 +65,12 @@ from training.utils import (
     create_trainer_job,
     compute_advantages,
     build_datum_from_token_mask,
+    validate_config,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
-from training.utils.rl.importance_sampling import ISConfig
+from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, resolve_builtin_loss
+from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
@@ -118,6 +120,13 @@ class FrozenLakeConfig:
     max_concurrent: int = 16
 
     policy_loss: str = "grpo"
+    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, or ``"cispo"``.
+
+    If an eligible builtin kernel exists for the selected loss, training uses
+    the server-side ``forward_backward(...)`` path. Otherwise it falls back to
+    the client-side ``forward_backward_custom(...)`` path.
+    """
+    ratio_log_cap: float = 20.0
     tis_enabled: bool = False
 
     seed_jsonl_path: str = field(
@@ -135,7 +144,7 @@ class FrozenLakeConfig:
     deployment_shape: str = ""
     accelerator_type: str = ""
     deployment_id: str | None = None
-    region: str = "US_VIRGINIA_1"
+    region: str | None = None
     deployment_region: str | None = None
 
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
@@ -171,6 +180,7 @@ def parse_args() -> FrozenLakeConfig:
     parser.add_argument("--completions-per-prompt", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--kl-beta", type=float, default=0.001)
+    parser.add_argument("--ratio-log-cap", type=float, default=20.0)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-completion-tokens", type=int, default=128)
     parser.add_argument("--prompt-groups-per-step", type=int, default=4)
@@ -333,6 +343,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         entity=cfg.wandb_entity or None,
         project=cfg.wandb_project,
         run_name=cfg.deployment_id or f"frozen-lake-{int(time.time()) % 100000}",
+    )
+
+    validate_config(
+        cfg.base_model,
+        cfg.seed_jsonl_path,
+        weight_sync_cfg,
+        deploy_cfg,
+        output_model_id=cfg.output_model_id,
     )
 
     setup_wandb(wandb_cfg, {
@@ -555,9 +573,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         )
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-        loss_builder = build_loss_fn(
+        # Client-side fallback: build the Python loss closure used by
+        # forward_backward_custom(...) when no eligible builtin kernel exists.
+        client_loss_builder = build_loss_fn(
             policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
-            is_config=ISConfig(),
+            ratio_log_cap=cfg.ratio_log_cap,
+            tis_config=TISConfig(),
         )
 
         # -- Trajectory logging -----------------------------------------------
@@ -670,12 +691,39 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     ]
                     idx += n
 
+            # Server-side fast path: resolve the builtin kernel/config used by
+            # forward_backward(...). Returns None when this loss has no builtin
+            # implementation, and raises when the current profile is ineligible.
+            builtin_server_loss = resolve_builtin_loss(
+                cfg.policy_loss,
+                profile,
+                ratio_log_cap=cfg.ratio_log_cap,
+            )
+
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 prox_fwd = policy.forward(data, "cross_entropy")
                 prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+                if builtin_server_loss is not None:
+                    # Server-side builtin path: pre-pack the rollout tensors
+                    # into datums the trainer kernel understands, then call
+                    # forward_backward(...).
+                    kernel_loss, kernel_config = builtin_server_loss
+                    rl_datums = build_builtin_loss_datums(
+                        data,
+                        adv,
+                        prox_lp,
+                        inf_lp,
+                        prompt_lens,
+                        policy_loss=cfg.policy_loss,
+                    )
+                    return policy.forward_backward(
+                        rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                    )
+                # Client-side custom path: execute the Python loss closure
+                # returned by build_loss_fn(...) via forward_backward_custom(...).
                 return policy.forward_backward_custom(
-                    data, loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp)
+                    data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
                 )
 
             def train_step(
@@ -693,7 +741,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0)
 
                 t0 = time.time()
-                optim_result = policy.optim_step(adam_params)
+                optim_result = policy.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization="num_loss_tokens",
+                )
                 step += 1
                 logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
 
@@ -766,7 +817,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
                 train_fns=train_fns,
                 prompt_groups_per_step=prompt_groups_per_step,
-                max_concurrent=cfg.max_concurrent,
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
                 metrics_callback=_filtered_step_callback,
@@ -779,18 +829,18 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     cp_name = f"step-{global_step}"
                     _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
                     from training.utils.checkpoint_utils import save_checkpoint
-                    save_checkpoint(policy, cp_name, cfg.log_path, {
+                    paths = save_checkpoint(policy, cp_name, cfg.log_path, {
                         "step": global_step,
                         "data_consumed": _data_consumed,
                         "source_job_id": policy_job_id,
                     }, kind="both")
-                    
+
                     if getattr(cfg, "output_model_id", None):
                         from training.utils.checkpoint_utils import promote_checkpoint
                         promote_checkpoint(
                             rlor_mgr,
                             policy_job_id,
-                            cp_name,
+                            paths["sampler_path"],
                             cfg.output_model_id,
                         )
                 except Exception as e:

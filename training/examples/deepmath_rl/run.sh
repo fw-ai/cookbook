@@ -7,7 +7,8 @@ python train_deepmath.py \
     --base-model accounts/fireworks/models/qwen3-4b \
     --tokenizer-model Qwen/Qwen3-4b \
     --dataset-path dataset.jsonl \
-    --training-shape qwen3-4b-minimum-h200 \
+    --training-shape acounts/fireworks/trainingShapes/qwen3-4b-minimum-h200 \
+    --ref-training-shape accounts/fireworks/trainingShapes/qwen3-4b-minimum-h200-forward \
     --deployment-id deepmath-qwen3-4b-$(date +%s) \
     --region US_VIRGINIA_1 \
     --max-rows 500 \

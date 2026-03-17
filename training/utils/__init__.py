@@ -27,6 +27,7 @@ __all__ = [
     "load_preference_dataset",
     "log_metrics_json",
     "make_orpo_loss_fn",
+    "make_batch_orpo_loss_fn",
     "make_batch_dpo_loss_fn",
     "make_batch_sft_loss_fn",
     "make_batch_weighted_sft_loss_fn",
@@ -86,6 +87,7 @@ from training.utils.config import (
 from training.utils.losses import (
     make_sft_loss_fn,
     make_orpo_loss_fn,
+    make_batch_orpo_loss_fn,
     make_batch_dpo_loss_fn,
     make_batch_sft_loss_fn,
     make_batch_weighted_sft_loss_fn,
