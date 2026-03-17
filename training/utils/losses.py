@@ -1,6 +1,6 @@
 """Loss functions for DPO, ORPO, and SFT training.
 
-RL losses (GRPO, DAPO, GSPO) live in ``utils.rl``.
+RL losses (GRPO, DAPO, GSPO, GSPO-token, CISPO) live in ``utils.rl``.
 """
 
 from __future__ import annotations

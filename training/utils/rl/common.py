@@ -92,7 +92,7 @@ class SampleContext:
     resp_mask: torch.Tensor
     """Per-token loss mask (1.0 = active, 0.0 = masked)."""
     adv: torch.Tensor
-    """Scalar advantage value (as a 0-d tensor)."""
+    """Scalar or per-token advantage tensor aligned with the response."""
     tis_weight: torch.Tensor
     """TIS importance weight per token."""
 
@@ -120,7 +120,7 @@ averaging.
 
 
 def run_loss_loop(
-    advantages: List[float],
+    advantages: List[float | List[float]],
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
