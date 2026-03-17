@@ -35,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 import tinker
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
+from fireworks.training.sdk.client import GradAccNormalization
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
@@ -111,9 +112,11 @@ class Config:
     router_replay: bool = False
     router_replay_completion_only: bool = True
 
-    grad_accumulation_normalization: str | None = "num_loss_tokens"
+    grad_accumulation_normalization: GradAccNormalization | str | None = (
+        GradAccNormalization.NUM_LOSS_TOKENS
+    )
     """Normalization mode for accumulated gradients at optim_step.
-    Defaults to "num_loss_tokens" (per-token mean)."""
+    Defaults to ``GradAccNormalization.NUM_LOSS_TOKENS`` (per-token mean)."""
 
     policy_loss: str = "grpo"
     """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, or ``"cispo"``.
