@@ -92,6 +92,12 @@ class Config:
     job_id: str | None = None
     output_model_id: str | None = None
 
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The ORPO loss function
+    already computes per-pair means client-side, so server-side
+    normalization would double-normalize."""
+
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
     )
@@ -262,7 +268,10 @@ def main(
 
             loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
             result = client.forward_backward_custom(datums, loss_fn)
-            client.optim_step(adam_params)
+            client.optim_step(
+                adam_params,
+                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            )
             step += 1
 
             step_elapsed = time.monotonic() - step_started_at

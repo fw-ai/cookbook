@@ -1,10 +1,10 @@
-"""RL utilities: losses, training loop, PP recommendation, importance sampling, router replay."""
+"""RL utilities: losses, training loop, PP recommendation, TIS, router replay."""
 
 __all__ = [
     # Losses & algorithms
     "CISPOConfig",
     "DAPOConfig",
-    "ISConfig",
+    "TISConfig",
     "GSPOConfig",
     "PPBatchRecommendation",
     "PromptGroup",
@@ -43,4 +43,4 @@ from training.utils.rl.metrics import (
     add_response_length_stats,
 )
 from training.utils.rl.router_replay import build_r3_routing_matrices
-from training.utils.rl.importance_sampling import ISConfig
+from training.utils.rl.tis import TISConfig

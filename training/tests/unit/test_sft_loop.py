@@ -127,7 +127,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
             events["batches"].append(batch)
             return SimpleNamespace(metrics={"ce_loss_sum": 2.0, "response_tokens": 4})
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
         def save_state(self, name):
@@ -210,7 +210,7 @@ def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monk
             events["batches"].append(list(batch))
             return SimpleNamespace(metrics={"ce_loss_sum": 4.0, "response_tokens": 8})
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={})
 
@@ -235,14 +235,18 @@ def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monk
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
-    monkeypatch.setattr(
-        module,
-        "render_messages_to_datum",
-        lambda messages, **kwargs: SimpleNamespace(
-            token_ids=[1, 2, 3],
-            datum={"id": messages[-1]["content"]},
-        ),
-    )
+    def _fake_render(messages, **kwargs):
+        content = messages[-1]["content"]
+        datum = SimpleNamespace(
+            loss_fn_inputs={
+                "target_tokens": SimpleNamespace(data=[0, 0]),
+                "weights": SimpleNamespace(data=[1.0, 1.0]),
+            },
+            _test_id=content,
+        )
+        return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
+
+    monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
 
     cfg = module.Config(
         dataset=str(dataset_path),
@@ -258,5 +262,6 @@ def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monk
 
     assert result["steps"] == 1
     assert events["optim_steps"] == 1
-    assert events["batches"] == [[{"id": "a1"}, {"id": "a2"}]]
+    assert len(events["batches"]) == 1
+    assert [d._test_id for d in events["batches"][0]] == ["a1", "a2"]
     assert events["deleted_jobs"] == ["job-sft"]

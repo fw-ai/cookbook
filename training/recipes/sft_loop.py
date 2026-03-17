@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import time
 import signal
 import logging
 from typing import Any, Dict, List
@@ -88,6 +89,17 @@ class Config:
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
+
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The SFT loss function
+    already computes per-token means client-side via microbatch_sizes,
+    so server-side normalization would double-normalize.
+    ``"num_loss_tokens"``: per-token mean -- only use with raw-sum losses.
+    ``"num_sequences"``: per-sequence mean."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 = no clipping."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
@@ -239,7 +251,10 @@ def main(
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)
 
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        if cfg.grad_clip_norm > 0:
+            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Training loop (batch-indexed) -------------------------------------
 
@@ -248,12 +263,14 @@ def main(
         agg_loss_sum = 0.0
         agg_resp_tokens = 0
 
-        def _flush_step(
+        def _run_train_step(
             batch_buf: list[tinker.Datum],
             microbatch_sizes: list[int],
             step: int,
         ) -> int:
             nonlocal agg_loss_sum, agg_resp_tokens
+            step_t0 = time.monotonic()
+            step_tokens = sum(len(d.loss_fn_inputs["target_tokens"].data) for d in batch_buf)
 
             # Count total tokens in this step for throughput tracking
             step_total_tokens = sum(
@@ -272,7 +289,10 @@ def main(
             agg_resp_tokens += response_tokens
 
             with timer("optim_step"):
-                optim_result = client.optim_step(adam_params)
+                optim_result = client.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                )
             step += 1
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
@@ -284,6 +304,8 @@ def main(
                         "source_job_id": job_id,
                     }, kind=CheckpointKind.STATE)
 
+            step_elapsed = time.monotonic() - step_t0
+            tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
             step_metrics: Dict[str, Any] = flush_timing()
 
             if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
@@ -308,11 +330,14 @@ def main(
                     step, total_steps_estimate, avg_loss, ppl,
                     tps, step_total_tokens,
                 )
-                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
+                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tokens_per_sec)
                 step_metrics.update({
                     "train/step": step,
                     "train/ce_loss": avg_loss,
                     "train/ppl": ppl,
+                    "train/tokens_per_sec": tokens_per_sec,
+                    "train/step_time_sec": step_elapsed,
+                    "train/step_tokens": step_tokens,
                 })
                 wandb_log(step_metrics, step)
 
@@ -320,7 +345,7 @@ def main(
             agg_resp_tokens = 0
             return step
 
-        step_batch_buffer: list[tinker.Datum] = []
+        step_datums: list[tinker.Datum] = []
         step_microbatch_sizes: list[int] = []
 
         for epoch in range(cfg.epochs):
@@ -329,16 +354,16 @@ def main(
             for i_batch in range(epoch_start, total_batches_per_epoch):
                 batch = sft_dataset.get_batch(i_batch)
                 data_consumed += len(batch)
-                step_batch_buffer.extend(batch)
+                step_datums.extend(batch)
                 step_microbatch_sizes.append(len(batch))
 
                 if len(step_microbatch_sizes) >= cfg.grad_accum:
-                    step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
-                    step_batch_buffer = []
+                    step = _run_train_step(step_datums, step_microbatch_sizes, step)
+                    step_datums = []
                     step_microbatch_sizes = []
 
-        if step_batch_buffer:
-            step = _flush_step(step_batch_buffer, step_microbatch_sizes, step)
+        if step_datums:
+            step = _run_train_step(step_datums, step_microbatch_sizes, step)
 
         # -- Final checkpoint --------------------------------------------------
 

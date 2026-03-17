@@ -56,6 +56,7 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
     assert cfg.observation_mode == "image"
     assert cfg.allow_plaintext_action_fallback is True
     assert cfg.training_shape == "ts-qwen3-4b-smoke-v1"
+    assert cfg.deployment_region is None
 
 
 def test_main_rejects_invalid_output_model_id(monkeypatch):
@@ -354,6 +355,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         max_steps=5,
         max_seeds=1,
         kl_beta=0.1,
+        ratio_log_cap=9.0,
         training_shape="ts-qwen3-4b-smoke-v1",
         deployment_id="dep-123",
         observation_mode="image",
@@ -441,7 +443,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             events["fwd_bwd_call"] = {"data_len": len(data), "loss_fn": loss_fn}
             return SimpleNamespace(metrics={"loss": 1.0})
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_step_called"] = True
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
@@ -524,6 +526,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         return SimpleNamespace(inference_model="accounts/test/models/deployed")
 
     def fake_build_loss_fn(**kwargs):
+        events["build_loss_fn_kwargs"] = kwargs
         def _builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp):
             events["build_loss_fn_calls"].append(
                 {
@@ -605,8 +608,12 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         ("policy-job", "step-1-session", "promoted-rl-model"),
     ]
     assert "fwd_bwd_call" in events
+    assert events["build_loss_fn_kwargs"]["ratio_log_cap"] == 9.0
     from training.utils.rl.losses import get_builtin_loss_config
-    expected_kernel, expected_config = get_builtin_loss_config(cfg.policy_loss)
+    expected_kernel, expected_config = get_builtin_loss_config(
+        cfg.policy_loss,
+        ratio_log_cap=cfg.ratio_log_cap,
+    )
     assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
     assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]

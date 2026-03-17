@@ -159,6 +159,7 @@ def make_batch_dpo_loss_fn(
         ref_rejected_list: Per-pair reference logprobs for rejected sequences.
         response_starts: Per-pair token index where the response begins.
         beta: DPO temperature parameter.
+        microbatch_sizes: Optional per-microbatch sizes for fused accumulation.
     """
     n_pairs = len(ref_chosen_list)
     assert len(ref_rejected_list) == n_pairs

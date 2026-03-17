@@ -31,7 +31,7 @@ from training.utils import (
     DeployConfig,
     WeightSyncConfig,
 )
-from training.utils.rl import ISConfig
+from training.utils.rl import TISConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -295,7 +295,7 @@ def main():
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
         trajectory_dir=args.trajectory_dir,
-        is_correction=ISConfig(tis_cap=2.0),
+        tis=TISConfig(cap=2.0),
         router_replay=args.router_replay,
         router_replay_completion_only=args.router_replay,
         policy_job_id=args.policy_job_id,

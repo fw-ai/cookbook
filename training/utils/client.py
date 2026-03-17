@@ -15,7 +15,11 @@ from __future__ import annotations
 import logging
 import os
 
-from fireworks.training.sdk.client import FiretitanServiceClient, FiretitanTrainingClient
+from fireworks.training.sdk.client import (
+    FiretitanServiceClient,
+    FiretitanTrainingClient,
+    GradAccNormalization,
+)
 from fireworks.training.sdk.trainer import TrainerJobManager, TrainerServiceEndpoint
 import tinker.lib.api_future_impl as tinker_api_future_impl
 from tinker.types.future_retrieve_request import FutureRetrieveRequest as _FutureRetrieveRequest
@@ -107,8 +111,17 @@ class ReconnectableClient:
             timeout=self._default_timeout,
         )
 
-    def optim_step(self, params):
-        return self._client.optim_step(params).result(
+    def optim_step(
+        self,
+        params,
+        grad_accumulation_normalization: str | GradAccNormalization | None = None,
+    ):
+        kwargs: dict = {}
+        if grad_accumulation_normalization is not None:
+            kwargs["grad_accumulation_normalization"] = _normalize_grad_accumulation_normalization(
+                grad_accumulation_normalization
+            )
+        return self._client.optim_step(params, **kwargs).result(
             timeout=self._default_timeout,
         )
 
@@ -152,3 +165,18 @@ class ReconnectableClient:
     def _connect(self) -> None:
         ep = self._rlor_mgr.wait_for_existing(self._job_id)
         self._use_endpoint(ep)
+
+
+def _normalize_grad_accumulation_normalization(
+    value: str | GradAccNormalization,
+) -> GradAccNormalization:
+    """Accept legacy string values and convert them to the SDK enum."""
+    if isinstance(value, GradAccNormalization):
+        return value
+    try:
+        return GradAccNormalization(str(value).lower())
+    except ValueError as exc:
+        valid = ", ".join(mode.value for mode in GradAccNormalization)
+        raise ValueError(
+            f"Unknown grad_accumulation_normalization '{value}'. Expected one of: {valid}"
+        ) from exc

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 import logging
+from typing import Any
+from urllib.parse import urlencode
 
 from fireworks.training.sdk.client import (
     FiretitanServiceClient,
@@ -15,10 +17,15 @@ from fireworks.training.sdk.trainer import (
     TrainingShapeProfile,
     TrainerServiceEndpoint,
 )
-from fireworks.training.sdk.deployment import DeploymentInfo, DeploymentManager
+from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
 from training.utils.config import InfraConfig, DeployConfig
 
 logger = logging.getLogger(__name__)
+
+_DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("NVIDIA_H200", "US_VIRGINIA_1"),
+    ("NVIDIA_B200", "US_OHIO_1"),
+)
 
 
 class ResourceCleanup:
@@ -126,10 +133,17 @@ def create_trainer_job(
     Otherwise for pre-created jobs, the SDK routes through the gateway
     via /training/v1/rlorTrainerJobs/{accountId}/{jobId}/*.
     """
+    trainer_role = "reference" if forward_only else "policy"
+
     if job_id:
         if base_url_override:
             job_name = f"accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}"
-            logger.info("Using pre-created job %s at %s", job_id, base_url_override)
+            logger.info(
+                "Using pre-created %s trainer job %s at %s",
+                trainer_role,
+                job_id,
+                base_url_override,
+            )
             return TrainerServiceEndpoint(
                 job_name=job_name,
                 job_id=job_id,
@@ -170,7 +184,8 @@ def create_trainer_job(
         )
 
     logger.info(
-        "Creating trainer job '%s' (forward_only=%s)...",
+        "Creating %s trainer job '%s' (forward_only=%s)...",
+        trainer_role,
         display_name,
         forward_only,
     )
@@ -210,7 +225,14 @@ def setup_deployment(
     info = deploy_mgr.get(deploy_cfg.deployment_id)
     if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
-        info = deploy_mgr.create_or_get(dep_config)
+        if dep_config.region is None and dep_config.deployment_shape:
+            dep_config.region = _infer_region_from_deployment_shape(
+                deploy_mgr, dep_config.deployment_shape
+            )
+        if dep_config.region is None:
+            info = _create_deployment_via_cookbook(deploy_mgr, dep_config)
+        else:
+            info = deploy_mgr.create_or_get(dep_config)
         if cleanup is not None:
             cleanup.deployment(deploy_cfg.deployment_id, action=cleanup_action)
 
@@ -220,6 +242,103 @@ def setup_deployment(
             timeout_s=deploy_cfg.deployment_timeout_s,
         )
     return info
+
+
+def _infer_region_from_deployment_shape(
+    deploy_mgr: DeploymentManager,
+    deployment_shape: str,
+) -> str | None:
+    """Infer a rollout region from a validated deployment shape snapshot."""
+    version = _get_deployment_shape_version(deploy_mgr, deployment_shape)
+    snapshot = version.get("snapshot", {}) or {}
+    accelerator = snapshot.get("acceleratorType", "")
+    for prefix, region in _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES:
+        if accelerator.startswith(prefix):
+            logger.info(
+                "Inferred deployment region %s from deployment shape %s (accelerator=%s)",
+                region,
+                deployment_shape,
+                accelerator,
+            )
+            return region
+    if accelerator:
+        logger.info(
+            "No cookbook deployment-region override for deployment shape %s (accelerator=%s); using auto placement",
+            deployment_shape,
+            accelerator,
+        )
+    else:
+        logger.info(
+            "Deployment shape %s returned no accelerator type; using auto placement",
+            deployment_shape,
+        )
+    return None
+
+
+def _get_deployment_shape_version(
+    deploy_mgr: DeploymentManager,
+    deployment_shape: str,
+) -> dict[str, Any]:
+    """Fetch an exact or latest-validated deployment-shape version."""
+    if "/versions/" in deployment_shape:
+        path = f"/v1/{deployment_shape}"
+    else:
+        path = (
+            f"/v1/{deployment_shape}/versions?"
+            f"{urlencode({'filter': 'latest_validated=true', 'pageSize': 1})}"
+        )
+    resp = deploy_mgr._get(path, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if "/versions/" in deployment_shape:
+        return data
+    versions = data.get("deploymentShapeVersions", []) or []
+    if not versions:
+        raise RuntimeError(
+            f"No latest validated deployment-shape version was returned for '{deployment_shape}'"
+        )
+    return versions[0]
+
+
+def _create_deployment_via_cookbook(
+    deploy_mgr: DeploymentManager,
+    config: DeploymentConfig,
+) -> DeploymentInfo:
+    """Create a deployment while leaving placement selection to the control plane."""
+    path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
+    if config.skip_shape_validation:
+        path += "&skipShapeValidation=true"
+    if config.disable_speculative_decoding:
+        path += "&disableSpeculativeDecoding=true"
+
+    body: dict[str, Any] = {
+        "baseModel": config.base_model,
+        "minReplicaCount": config.min_replica_count,
+        "maxReplicaCount": config.max_replica_count,
+        "enableHotLoad": True,
+    }
+    if config.hot_load_bucket_type:
+        body["hotLoadBucketType"] = config.hot_load_bucket_type
+    if config.deployment_shape:
+        body["deploymentShape"] = config.deployment_shape
+    if config.accelerator_type:
+        body["acceleratorType"] = config.accelerator_type
+    if config.extra_args:
+        flat: list[str] = []
+        for arg in config.extra_args:
+            flat.extend(arg.split()) if " " in arg else flat.append(arg)
+        body["extraArgs"] = flat
+    if config.extra_values:
+        body["extraValues"] = config.extra_values
+
+    logger.info(
+        "Creating deployment: %s (placement_region=auto, extra_values=%s)",
+        config.deployment_id,
+        bool(config.extra_values),
+    )
+    resp = deploy_mgr._post(path, json=body, timeout=60)
+    resp.raise_for_status()
+    return deploy_mgr._parse_deployment_info(config.deployment_id, resp.json())
 
 
 def setup_training_client(

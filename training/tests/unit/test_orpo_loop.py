@@ -78,7 +78,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
                 }
             )
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace()
 
@@ -210,7 +210,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
                 }
             )
 
-        def optim_step(self, _params):
+        def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace()
 

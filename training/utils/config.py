@@ -124,4 +124,3 @@ class WandBConfig:
     project: str | None = None
     run_name: str | None = None
 
-
