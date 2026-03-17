@@ -47,6 +47,7 @@ from training.examples.frozen_lake.masking import (
 )
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
+from fireworks.training.sdk.client import GradAccNormalization
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 
 from training.utils import (
@@ -743,7 +744,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 t0 = time.time()
                 optim_result = policy.optim_step(
                     adam_params,
-                    grad_accumulation_normalization="num_loss_tokens",
+                    grad_accumulation_normalization=GradAccNormalization.NUM_LOSS_TOKENS,
                 )
                 step += 1
                 logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
