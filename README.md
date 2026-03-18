@@ -2,7 +2,7 @@
 
 The Fireworks AI Cookbook provides ready-to-run recipes and utilities for training models on [Fireworks](https://fireworks.ai). It covers supervised fine-tuning (SFT), reinforcement learning (GRPO, DAPO, GSPO, CISPO), and preference optimization (DPO, ORPO) — all driven by the Fireworks Training SDK.
 
-For full SDK documentation, see the [Fireworks Training SDK Reference](https://docs.fireworks.ai/api-reference/training-sdk/overview).
+For full SDK documentation, see the [Fireworks Training SDK Reference](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction).
 
 ## Getting Started
 
