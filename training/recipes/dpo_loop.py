@@ -539,7 +539,7 @@ def main(
 
         logger.info("Reference caching complete — deleting reference trainer to free resources")
         try:
-            rlor_mgr.delete(reference_job_id)
+            cleanup.delete_trainer(reference_job_id)
             reference_job_id = None
         except Exception as e:
             logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
