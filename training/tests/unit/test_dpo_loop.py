@@ -271,7 +271,6 @@ def test_main_requires_tokenizer_model(monkeypatch):
 
 def test_main_uses_profile_and_runs_training(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
@@ -421,7 +420,6 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
 
 def test_main_promotes_final_base_checkpoint(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {

@@ -9,7 +9,6 @@ Validates the full Firetitan RL pipeline end-to-end:
 
 Required env vars:
   FIREWORKS_API_KEY
-  FIREWORKS_ACCOUNT_ID
   FROZEN_LAKE_DEPLOYMENT_ID    (pre-created deployment with weight sync)
 
 Optional env vars (CI script sets these):
@@ -45,7 +44,7 @@ def _env(name: str, default: str | None = None) -> str | None:
 def _preflight_deployment_check(
     base_url: str,
     api_key: str,
-    account_id: str,
+    deploy_mgr,
     deployment_id: str,
     timeout_s: int = 30,
 ) -> None:
@@ -54,6 +53,9 @@ def _preflight_deployment_check(
     Raises pytest.fail with a clear message if the deployment is not ready,
     avoiding a 50-minute hang in the training loop's readiness polling.
     """
+    account_id = getattr(deploy_mgr, "account_id", None)
+    if not account_id:
+        return
     url = f"{base_url}/inference/v1/completions"
     body = {
         "model": f"accounts/fireworks/models/qwen3-4b#accounts/{account_id}/deployments/{deployment_id}",
@@ -89,10 +91,6 @@ class TestFrozenLakeB300:
         if not api_key:
             pytest.skip("FIREWORKS_API_KEY not set")
 
-        account = _env("FIREWORKS_ACCOUNT_ID")
-        if not account:
-            pytest.skip("FIREWORKS_ACCOUNT_ID not set")
-
         deployment_id = _env("FROZEN_LAKE_DEPLOYMENT_ID")
         if not deployment_id:
             pytest.skip("FROZEN_LAKE_DEPLOYMENT_ID not set")
@@ -110,7 +108,10 @@ class TestFrozenLakeB300:
         # Pre-flight: fail fast if deployment is unreachable.
         # Skip when jobs are pre-created (CI script already verified via firectl).
         if not _env("FROZEN_LAKE_POLICY_JOB_ID"):
-            _preflight_deployment_check(base_url, api_key, account, deployment_id)
+            from fireworks.training.sdk import DeploymentManager
+
+            deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
+            _preflight_deployment_check(base_url, api_key, deploy_mgr, deployment_id)
 
         cfg = FrozenLakeConfig(
             base_model="accounts/fireworks/models/qwen3-4b",

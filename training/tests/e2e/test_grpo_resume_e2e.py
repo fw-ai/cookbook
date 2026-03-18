@@ -9,7 +9,6 @@ Two-phase test on qwen3-30b-a3b (MoE) with Router Replay and TIS:
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training/deployment access
-  FIREWORKS_ACCOUNT_ID  -- target account ID
   FIREWORKS_BASE_URL    -- optional (defaults to "https://api.fireworks.ai")
   FIREWORKS_E2E_DEPLOYMENT_SHAPE -- required for this MoE GRPO test
 """

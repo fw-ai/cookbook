@@ -5,7 +5,6 @@ dataset, and verifies metrics. No deployment or weight sync.
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training access
-  FIREWORKS_ACCOUNT_ID  -- target account ID
   FIREWORKS_BASE_URL    -- optional (defaults to "https://api.fireworks.ai")
 """
 

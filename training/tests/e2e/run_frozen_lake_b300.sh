@@ -11,8 +11,8 @@
 #
 # Prerequisites:
 #   FIREWORKS_API_KEY          API key for dev.api.fireworks.ai
-#   FIREWORKS_ACCOUNT_ID       Default: pyroworks-dev
-#   FIRECTL_BIN                Path to firectl-admin binary
+#   FIRECTL_ACCOUNT           Account for firectl -a (default: pyroworks-dev)
+#   FIRECTL_BIN               Path to firectl-admin binary
 #   FIRECTL_PROFILE            firectl profile for B300 gateway (default: dev-bennychen)
 #   DEPLOYMENT_ID              Pre-created deployment with weight sync
 #
@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # ── Configuration ────────────────────────────────────────────────────────────
-export FIREWORKS_ACCOUNT_ID="${FIREWORKS_ACCOUNT_ID:-pyroworks-dev}"
+FIRECTL_ACCOUNT="${FIRECTL_ACCOUNT:-pyroworks-dev}"
 export FIREWORKS_BASE_URL="${FIREWORKS_BASE_URL:-https://dev.api.fireworks.ai}"
 
 FIRECTL_BIN="${FIRECTL_BIN:-$REPO_ROOT/../fireworks/firectl/bin/firectl-admin}"
@@ -38,7 +38,7 @@ ACCELERATOR="${ACCELERATOR:-NVIDIA_B300_288GB}"
 JOB_WAIT_TIMEOUT="${JOB_WAIT_TIMEOUT:-80}"
 JOB_CREATE_RETRIES="${JOB_CREATE_RETRIES:-3}"
 
-export FIRECTL_AGENT_SAFE_ACCOUNTS="$FIREWORKS_ACCOUNT_ID"
+export FIRECTL_AGENT_SAFE_ACCOUNTS="$FIRECTL_ACCOUNT"
 
 POLICY_JOB_ID=""
 REFERENCE_JOB_ID=""
@@ -58,7 +58,7 @@ cleanup() {
     for jid in "$POLICY_JOB_ID" "$REFERENCE_JOB_ID"; do
         [[ -z "$jid" ]] && continue
         log "Cleanup: deleting job $jid"
-        "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor delete "$jid" \
+        "$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" rlor delete "$jid" \
             -p "$FIRECTL_PROFILE" 2>/dev/null || true
     done
     log "Finished in $(elapsed)s (exit=$exit_code)"
@@ -67,18 +67,18 @@ trap cleanup EXIT
 
 # ── 0. Clean stale CI jobs ──────────────────────────────────────────────────
 log "Cleaning stale CI jobs ..."
-stale_jobs=$("$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor list -p "$FIRECTL_PROFILE" 2>&1 \
+stale_jobs=$("$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" rlor list -p "$FIRECTL_PROFILE" 2>&1 \
     | grep -E "frozen-lake-ci-(policy|reference)" \
     | awk '{print $1}' || true)
 for jid in $stale_jobs; do
     log "  deleting stale job: $jid"
-    "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor delete "$jid" \
+    "$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" rlor delete "$jid" \
         -p "$FIRECTL_PROFILE" 2>/dev/null || true
 done
 
 # ── 1. Verify deployment ────────────────────────────────────────────────────
 log "Checking deployment $DEPLOYMENT_ID ..."
-DEP_STATE=$("$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" deployment get "$DEPLOYMENT_ID" \
+DEP_STATE=$("$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" deployment get "$DEPLOYMENT_ID" \
     -p dev 2>&1 | awk '/^State:/{print $2}' || true)
 
 if [[ "$DEP_STATE" != "READY" ]]; then
@@ -93,7 +93,7 @@ create_job() {
     local label=$1; shift
     local attempt output jid
     for attempt in $(seq 1 "$JOB_CREATE_RETRIES"); do
-        output=$("$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor create \
+        output=$("$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" rlor create \
             --base-model "accounts/fireworks/models/qwen3-4b" \
             --training-shape "$TRAINING_SHAPE" \
             --accelerator-type "$ACCELERATOR" --accelerator-count 8 \
@@ -124,7 +124,7 @@ log "  reference=$REFERENCE_JOB_ID"
 
 # ── 3. Wait for RUNNING ─────────────────────────────────────────────────────
 get_state() {
-    "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor get "$1" \
+    "$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" rlor get "$1" \
         -p "$FIRECTL_PROFILE" 2>&1 | awk '/^State:/{print $2}'
 }
 
@@ -136,8 +136,8 @@ for i in $(seq 1 "$JOB_WAIT_TIMEOUT"); do
     if [[ "$P" == "JOB_STATE_FAILED" || "$R" == "JOB_STATE_FAILED" ]]; then
         log "FATAL: trainer job failed (policy=$P, reference=$R)"
         # Print failure details
-        "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor get "$POLICY_JOB_ID" -p "$FIRECTL_PROFILE" 2>&1 | grep -E "^(State|Status):" || true
-        "$FIRECTL_BIN" -a "$FIREWORKS_ACCOUNT_ID" rlor get "$REFERENCE_JOB_ID" -p "$FIRECTL_PROFILE" 2>&1 | grep -E "^(State|Status):" || true
+        "$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" rlor get "$POLICY_JOB_ID" -p "$FIRECTL_PROFILE" 2>&1 | grep -E "^(State|Status):" || true
+        "$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" rlor get "$REFERENCE_JOB_ID" -p "$FIRECTL_PROFILE" 2>&1 | grep -E "^(State|Status):" || true
         exit 1
     fi
     if [[ "$P" == "JOB_STATE_RUNNING" && "$R" == "JOB_STATE_RUNNING" ]]; then
@@ -165,7 +165,7 @@ PF_DEPLOY_PID=""
 
 if [[ -n "$K8S_CONTEXT" ]]; then
     DEPLOY_POD=$(kubectl --context="$K8S_CONTEXT" get pods -n default \
-        -l "app.kubernetes.io/instance=${FIREWORKS_ACCOUNT_ID}-${DEPLOYMENT_ID}" \
+        -l "app.kubernetes.io/instance=${FIRECTL_ACCOUNT}-${DEPLOYMENT_ID}" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
     if [[ -n "$DEPLOY_POD" ]]; then

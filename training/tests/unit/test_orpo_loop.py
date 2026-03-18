@@ -32,7 +32,6 @@ def test_main_rejects_invalid_output_model_id(monkeypatch):
 
 def test_main_uses_profile_and_trains_pairs(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
@@ -174,7 +173,6 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
 
 def test_main_batches_pairs_per_optimizer_step(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {

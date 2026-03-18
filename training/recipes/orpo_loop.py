@@ -12,7 +12,6 @@ Dataset format (JSONL, same as DPO):
 
 Usage:
     export FIREWORKS_API_KEY=...
-    export FIREWORKS_ACCOUNT_ID=...
     export FIREWORKS_BASE_URL=...          # optional, defaults to https://api.fireworks.ai
     python -m recipes.orpo_loop
 
@@ -147,13 +146,10 @@ def main(
     # -- Infrastructure ------------------------------------------------------
 
     api_key = os.environ["FIREWORKS_API_KEY"]
-    account = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
     if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
-            api_key=api_key, account_id=account, base_url=base_url
-        )
+        rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
 
     profile = None
     if cfg.infra.training_shape_id:
@@ -352,7 +348,6 @@ def main(
 
 if __name__ == "__main__":
     import os
-    import pathlib
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"

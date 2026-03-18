@@ -61,7 +61,6 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
 
 def test_main_rejects_invalid_output_model_id(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     cfg = FrozenLakeConfig(output_model_id="bad_name")
@@ -189,7 +188,6 @@ def test_evaluation_row_to_training_data_handles_multimodal_row_messages():
 
 def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
@@ -217,10 +215,9 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     )
 
     class FakeTrainerJobManager:
-        def __init__(self, *, api_key, account_id, base_url):
+        def __init__(self, *, api_key, base_url):
             events["trainer_mgr_init"] = {
                 "api_key": api_key,
-                "account_id": account_id,
                 "base_url": base_url,
             }
 
@@ -241,10 +238,9 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     class FakeDeploymentManager:
         inference_url = "https://deployments.unit.test"
 
-        def __init__(self, *, api_key, account_id, base_url, hotload_api_url, inference_url=None):
+        def __init__(self, *, api_key, base_url, hotload_api_url, inference_url=None):
             events["deploy_mgr_init"] = {
                 "api_key": api_key,
-                "account_id": account_id,
                 "base_url": base_url,
                 "hotload_api_url": hotload_api_url,
             }
@@ -330,7 +326,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
 
 def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
@@ -364,10 +359,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     )
 
     class FakeTrainerJobManager:
-        def __init__(self, *, api_key, account_id, base_url):
+        def __init__(self, *, api_key, base_url):
             events["trainer_mgr_init"] = {
                 "api_key": api_key,
-                "account_id": account_id,
                 "base_url": base_url,
             }
 
@@ -391,10 +385,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     class FakeDeploymentManager:
         inference_url = "https://deployments.unit.test"
 
-        def __init__(self, *, api_key, account_id, base_url, hotload_api_url, inference_url=None):
+        def __init__(self, *, api_key, base_url, hotload_api_url, inference_url=None):
             events["deploy_mgr_init"] = {
                 "api_key": api_key,
-                "account_id": account_id,
                 "base_url": base_url,
                 "hotload_api_url": hotload_api_url,
             }

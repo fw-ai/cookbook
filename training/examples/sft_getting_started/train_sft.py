@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 import logging
 import signal
 
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
-FIREWORKS_ACCOUNT_ID = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
 FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
 
@@ -80,12 +78,10 @@ def main():
         )
 
     os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
-    os.environ["FIREWORKS_ACCOUNT_ID"] = FIREWORKS_ACCOUNT_ID
     os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
     rlor_mgr = TrainerJobManager(
         api_key=FIREWORKS_API_KEY,
-        account_id=FIREWORKS_ACCOUNT_ID,
         base_url=FIREWORKS_BASE_URL,
     )
 
