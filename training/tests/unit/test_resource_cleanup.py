@@ -37,6 +37,25 @@ class TestResourceCleanup:
 
         rlor_mgr.delete.assert_called_once_with("created-job")
 
+    def test_forget_trainer_prevents_duplicate_delete(self):
+        rlor_mgr = MagicMock()
+
+        with ResourceCleanup(rlor_mgr) as cleanup:
+            cleanup.trainer("job-keep")
+            cleanup.trainer("job-early")
+            cleanup.forget_trainer("job-early")
+
+        rlor_mgr.delete.assert_called_once_with("job-keep")
+
+    def test_forget_trainer_noop_for_unknown_job(self):
+        rlor_mgr = MagicMock()
+
+        with ResourceCleanup(rlor_mgr) as cleanup:
+            cleanup.trainer("job-a")
+            cleanup.forget_trainer("nonexistent")
+
+        rlor_mgr.delete.assert_called_once_with("job-a")
+
     def test_delete_trainer_deletes_and_unregisters(self):
         rlor_mgr = MagicMock()
 
