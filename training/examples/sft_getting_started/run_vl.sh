@@ -6,7 +6,6 @@ echo $PYTHONPATH
 
 missing_vars=""
 [ -z "${FIREWORKS_API_KEY:-}" ] && missing_vars="$missing_vars FIREWORKS_API_KEY"
-[ -z "${FIREWORKS_ACCOUNT_ID:-}" ] && missing_vars="$missing_vars FIREWORKS_ACCOUNT_ID"
 
 if [ -n "$missing_vars" ]; then
     echo "Error: missing required env var(s):$missing_vars" >&2

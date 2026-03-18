@@ -81,10 +81,6 @@ def smoke_sdk_managers():
     if not api_key:
         pytest.skip("FIREWORKS_API_KEY not set")
 
-    account_id = _get_env("FIREWORKS_ACCOUNT_ID")
-    if not account_id:
-        pytest.skip("FIREWORKS_ACCOUNT_ID not set")
-
     base_url = _get_env("FIREWORKS_BASE_URL", DEFAULT_SMOKE_BASE_URL)
     inference_url = _get_env("FIREWORKS_INFERENCE_URL", base_url)
     hotload_api_url = _get_env("FIREWORKS_HOTLOAD_API_URL", base_url)
@@ -96,13 +92,11 @@ def smoke_sdk_managers():
 
     rlor_mgr = TrainerJobManager(
         api_key=api_key,
-        account_id=account_id,
         base_url=base_url,
         additional_headers=additional_headers or None,
     )
     deploy_mgr = DeploymentManager(
         api_key=api_key,
-        account_id=account_id,
         base_url=base_url,
         inference_url=inference_url,
         hotload_api_url=hotload_api_url,

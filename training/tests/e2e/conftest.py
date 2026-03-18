@@ -3,11 +3,11 @@
 These tests create real RLOR jobs and deployments on Fireworks infrastructure.
 All algorithms run on qwen3-30b-a3b (MoE) by default.
 
-Requires FIREWORKS_API_KEY and FIREWORKS_ACCOUNT_ID to be set.
+Requires FIREWORKS_API_KEY to be set.
 
 Override defaults via environment variables:
   FIREWORKS_E2E_MODEL, FIREWORKS_E2E_REGION, FIREWORKS_E2E_DEPLOYMENT_SHAPE,
-  FIREWORKS_E2E_TOKENIZER_MODEL, FIREWORKS_ACCOUNT_ID, FIREWORKS_BASE_URL
+  FIREWORKS_E2E_TOKENIZER_MODEL, FIREWORKS_BASE_URL
 """
 
 from __future__ import annotations
@@ -49,15 +49,11 @@ def _get_env(name: str, default: str | None = None) -> str | None:
 def sdk_managers():
     """Create TrainerJobManager + DeploymentManager from env vars.
 
-    Skips the entire module if FIREWORKS_API_KEY or FIREWORKS_ACCOUNT_ID is not set.
+    Skips the entire module if FIREWORKS_API_KEY is not set.
     """
     api_key = _get_env("FIREWORKS_API_KEY")
     if not api_key:
         pytest.skip("FIREWORKS_API_KEY not set -- skipping E2E tests")
-
-    account_id = _get_env("FIREWORKS_ACCOUNT_ID")
-    if not account_id:
-        pytest.skip("FIREWORKS_ACCOUNT_ID not set -- skipping E2E tests")
 
     base_url = _get_env("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     inference_url = _get_env("FIREWORKS_INFERENCE_URL", base_url)
@@ -70,13 +66,11 @@ def sdk_managers():
 
     rlor_mgr = TrainerJobManager(
         api_key=api_key,
-        account_id=account_id,
         base_url=base_url,
         additional_headers=additional_headers or None,
     )
     deploy_mgr = DeploymentManager(
         api_key=api_key,
-        account_id=account_id,
         base_url=base_url,
         inference_url=inference_url,
         hotload_api_url=hotload_api_url,

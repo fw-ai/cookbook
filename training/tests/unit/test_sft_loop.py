@@ -45,7 +45,6 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
     )
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     deleted_jobs: list[str] = []
@@ -100,7 +99,6 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         ],
     )
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {"batches": [], "deleted_jobs": []}
@@ -187,7 +185,6 @@ def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monk
         ],
     )
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {"batches": [], "optim_steps": 0, "deleted_jobs": []}

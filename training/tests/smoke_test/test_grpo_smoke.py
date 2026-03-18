@@ -7,7 +7,6 @@ Runs 2 optimizer steps with weight syncing on a single GPU:
 
 Requires env vars (skipped if not set):
     FIREWORKS_API_KEY
-    FIREWORKS_ACCOUNT_ID
     FIREWORKS_BASE_URL      (optional, defaults to https://dev.api.fireworks.ai)
 
 Usage:
@@ -104,7 +103,8 @@ def test_grpo_smoke(
         assert "steps" in metrics, f"Missing 'steps' in metrics: {metrics}"
         assert metrics["steps"] >= 2, f"Expected >= 2 steps, got {metrics['steps']}"
 
-        import httpx, time
+        import httpx
+        import time
         time.sleep(3)
         policy_job_id = metrics.get("policy_job_id")
         if policy_job_id:

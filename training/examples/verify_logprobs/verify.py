@@ -8,7 +8,6 @@ tokens.
 
 Usage:
     export FIREWORKS_API_KEY=...
-    export FIREWORKS_ACCOUNT_ID=...
 
     # Policy-only (no reference KL):
     python verify.py \\
@@ -175,16 +174,16 @@ def main():
     logging.getLogger().addHandler(fh)
 
     api_key = os.environ["FIREWORKS_API_KEY"]
-    account = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
-    rlor_mgr = TrainerJobManager(api_key=api_key, account_id=account, base_url=base_url)
-    deploy_mgr = DeploymentManager(api_key=api_key, account_id=account, base_url=base_url)
+    rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
+    deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
 
     shape_account = args.shape_account
-    if shape_account and shape_account != account:
+    if shape_account:
         logger.info("Resolving training shapes under account '%s'", shape_account)
-        shape_mgr = TrainerJobManager(api_key=api_key, account_id=shape_account, base_url=base_url)
+        shape_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
+        shape_mgr._account_id = shape_account
     else:
         shape_mgr = rlor_mgr
 

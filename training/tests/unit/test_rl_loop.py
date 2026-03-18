@@ -92,7 +92,6 @@ def test_main_requires_deployment_tokenizer_model(monkeypatch):
 
 def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
@@ -203,7 +202,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
 def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
     """Builtin policy_loss + PP>1 should raise immediately."""
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     class FakeRlorMgr:
@@ -254,7 +252,6 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
 
 def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
@@ -565,7 +562,6 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
     """When policy_loss is not in the builtin registry, fwd_bwd_one should
     call forward_backward_custom (two-pass) and invoke the loss builder."""
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "acct")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {

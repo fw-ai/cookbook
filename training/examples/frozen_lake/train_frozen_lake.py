@@ -10,7 +10,6 @@ Demonstrates reinforcement learning with multi-turn tool-calling:
 Usage:
     pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol
     export FIREWORKS_API_KEY=...
-    export FIREWORKS_ACCOUNT_ID=...
     python train_frozen_lake.py --training-shape <shape_id>
 """
 
@@ -313,7 +312,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     logger.info("FrozenLake GRPO training: %s", cfg.base_model)
 
     api_key = os.environ["FIREWORKS_API_KEY"]
-    account = os.environ.get("FIREWORKS_ACCOUNT_ID", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
     completions_per_prompt = cfg.completions_per_prompt
@@ -364,9 +362,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         "max_seeds": cfg.max_seeds,
     })
 
-    rlor_mgr = TrainerJobManager(api_key=api_key, account_id=account, base_url=base_url)
+    rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
     deploy_mgr = DeploymentManager(
-        api_key=api_key, account_id=account,
+        api_key=api_key,
         base_url=base_url,
         hotload_api_url=base_url,
         inference_url=cfg.inference_base_url or base_url,
@@ -503,7 +501,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         if dep_info:
             inference_model = dep_info.inference_model
         elif deploy_cfg.deployment_id:
-            inference_model = f"{cfg.base_model}#accounts/{account}/deployments/{deploy_cfg.deployment_id}"
+            inference_model = f"{cfg.base_model}#accounts/{deploy_mgr.account_id}/deployments/{deploy_cfg.deployment_id}"
         else:
             inference_model = cfg.base_model
         weight_syncer = WeightSyncer(

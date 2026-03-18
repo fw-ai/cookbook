@@ -5,7 +5,6 @@ set -euo pipefail
 #
 # Requires:
 #   FIREWORKS_API_KEY      - Fireworks API key
-#   FIREWORKS_ACCOUNT_ID   - Account ID (e.g. pyroworks)
 #
 # Optional env overrides:
 #   FIREWORKS_BASE_URL     - API base URL (default: https://api.fireworks.ai)
@@ -17,7 +16,6 @@ set -euo pipefail
 #   ./run_qwen3_30b_a3b.sh <deployment-id>        # reuse existing deployment
 
 export FIREWORKS_API_KEY="${FIREWORKS_API_KEY:?Set FIREWORKS_API_KEY env var}"
-export FIREWORKS_ACCOUNT_ID="${FIREWORKS_ACCOUNT_ID:?Set FIREWORKS_ACCOUNT_ID env var}"
 export FIREWORKS_BASE_URL="${FIREWORKS_BASE_URL:-https://api.fireworks.ai}"
 export TRAINING_SHAPE="qwen3-30b-a3b-instruct-2507-128k-b200"
 
@@ -60,7 +58,6 @@ if [ -n "$DEPLOYMENT_ID" ]; then
 fi
 
 echo "=== DeepMath qwen3-30b-a3b B200 Training ==="
-echo "  Account:        $FIREWORKS_ACCOUNT_ID"
 echo "  Training shape: $TRAINING_SHAPE"
 echo "  Ref shape:      $REF_TRAINING_SHAPE"
 echo "  Region:         $REGION"

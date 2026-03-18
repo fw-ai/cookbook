@@ -46,14 +46,12 @@ Create a `.env` file in the `training/` directory (picked up automatically via `
 
 ```bash
 FIREWORKS_API_KEY="your-api-key"
-FIREWORKS_ACCOUNT_ID="your-account-id"
 ```
 
-Or export them directly:
+Or export it directly:
 
 ```bash
 export FIREWORKS_API_KEY="..."
-export FIREWORKS_ACCOUNT_ID="..."
 ```
 
 ### 3. Configure your recipe
