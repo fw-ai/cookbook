@@ -790,30 +790,5 @@ def main(
 
 
 if __name__ == "__main__":
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-    cfg = Config(
-        base_model="accounts/fireworks/models/qwen3-8b",
-        dataset="/shared/datasets/gsm8k_e2e_100/dataset.jsonl",
-        policy_loss="reinforce",
-        max_rows=100,
-        infra=InfraConfig(
-            training_shape_id="accounts/pyroworks/trainingShapes/qwen3-8b-128k-h200",
-            # custom_image_tag="0.75.2",
-            # skip_validations=True,
-        ),
-        policy_job_id="s2kwn0jxladde11m",
-        deployment=DeployConfig(
-            tokenizer_model="Qwen/Qwen3-8B",
-            deployment_id="qwen3-8b-1773847809",
-        ),
-        log_path="./rl_logs",
-        kl_beta=0,
-    )
-    main(cfg)
-    # logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    # main(Config(log_path="./rl_logs"))
+    main(Config(log_path="./rl_logs"))
