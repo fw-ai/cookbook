@@ -385,6 +385,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def get(self, _job_id):
             return None
 
+        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
+            events["promotions"].append((job_id, checkpoint_id, output_model_id))
+
     class FakeDeploymentManager:
         inference_url = "https://deployments.unit.test"
 
@@ -578,12 +581,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setattr(
         train_module, "InfraConfig",
         lambda **kwargs: _OrigInfraConfig(ref_training_shape_id="ts-qwen3-4b-smoke-v1", **kwargs),
-    )
-    monkeypatch.setattr(
-        "training.utils.checkpoint_utils.promote_checkpoint",
-        lambda mgr, job_id, checkpoint_id, output_model_id: events["promotions"].append(
-            (job_id, checkpoint_id, output_model_id)
-        ),
     )
     monkeypatch.setattr(train_module.time, "sleep", lambda seconds: events["sleeps"].append(seconds))
     monkeypatch.setattr(

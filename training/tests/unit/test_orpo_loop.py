@@ -57,6 +57,9 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
 
+        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
+            events["promotions"].append((job_id, checkpoint_id, output_model_id))
+
     class FakeInner:
         def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
             events["save_weights"].append((name, checkpoint_type))
@@ -137,13 +140,6 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "make_batch_orpo_loss_fn", lambda response_starts, orpo_lambda: ("loss", response_starts, orpo_lambda))
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
-    monkeypatch.setattr(
-        "training.utils.checkpoint_utils.promote_checkpoint",
-        lambda mgr, job_id, checkpoint_id, output_model_id: events["promotions"].append(
-            (job_id, checkpoint_id, output_model_id)
-        ),
-    )
-
     mgr = FakeMgr()
     cfg = module.Config(
         log_path="/tmp/orpo_test_logs",

@@ -443,6 +443,9 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
 
+        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
+            events["promotions"].append((job_id, checkpoint_id, output_model_id))
+
     class FakeDeployMgr:
         pass
 
@@ -538,13 +541,6 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(
-        "training.utils.checkpoint_utils.promote_checkpoint",
-        lambda mgr, job_id, checkpoint_id, output_model_id: events["promotions"].append(
-            (job_id, checkpoint_id, output_model_id)
-        ),
-    )
-
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",
         base_model="accounts/test/models/qwen3-4b",

@@ -358,9 +358,7 @@ def main(
                 "source_job_id": job_id,
             }, kind=CheckpointKind.BOTH)
             if getattr(cfg, "output_model_id", None):
-                from training.utils.checkpoint_utils import promote_checkpoint
-                promote_checkpoint(
-                    rlor_mgr,
+                rlor_mgr.promote_checkpoint(
                     job_id,
                     paths["sampler_path"],
                     cfg.output_model_id,

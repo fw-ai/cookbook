@@ -579,9 +579,7 @@ def main(
             if getattr(cfg, "output_model_id", None):
                 if not final_sampler_checkpoint_id:
                     raise RuntimeError("Failed to save final base checkpoint for promotion")
-                from training.utils.checkpoint_utils import promote_checkpoint
-                promote_checkpoint(
-                    rlor_mgr,
+                rlor_mgr.promote_checkpoint(
                     policy_job_id,
                     final_sampler_checkpoint_id,
                     cfg.output_model_id,

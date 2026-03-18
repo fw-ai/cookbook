@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import time
-import requests
 from dataclasses import dataclass
 from training.utils import ReconnectableClient
 from enum import Enum
@@ -21,7 +20,6 @@ from tinker_cookbook.checkpoint_utils import (
     get_last_checkpoint,
     CHECKPOINTS_BASE_NAME,
 )
-from training.utils.validation import validate_output_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,57 +34,6 @@ def get_sampler_checkpoint_id(save_result: Any) -> str:
         raise ValueError("save_weights_for_sampler_ext() returned no checkpoint identifier")
 
     return str(path).rstrip("/").rsplit("/", 1)[-1]
-
-def promote_checkpoint(
-    job_mgr: Any,
-    job_id: str,
-    checkpoint_id: str,
-    output_model_id: str,
-) -> dict:
-    """Promote a checkpoint to a model via control plane API."""
-    errors = validate_output_model_id(output_model_id)
-    assert not errors, f"output_model_id should have been caught by pre-flight: {errors}"
-
-    url = f"{job_mgr.base_url}/v1/accounts/{job_mgr.account_id}/rlorTrainerJobs/{job_id}/checkpoints/{checkpoint_id}:promote"
-    output_model = f"accounts/{job_mgr.account_id}/models/{output_model_id}"
-    logger.info("Promoting checkpoint '%s' -> model '%s'", checkpoint_id, output_model)
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {job_mgr.api_key}",
-        "x-api-key": job_mgr.api_key,
-    }
-    if hasattr(job_mgr, "additional_headers") and job_mgr.additional_headers:
-        headers.update(job_mgr.additional_headers)
-
-    verify_ssl = getattr(job_mgr, "_verify_ssl", True)
-
-    resp = requests.post(
-        url,
-        json={"output_model": output_model},
-        headers=headers,
-        timeout=300,
-        verify=verify_ssl,
-    )
-    resp.raise_for_status()
-
-    result = resp.json()
-    model = result.get("model", {})
-    state = model.get("state", "UNKNOWN")
-    kind = model.get("kind", "UNKNOWN")
-    logger.info("  Promoted! Model state=%s, kind=%s", state, kind)
-
-    peft = model.get("peftDetails", {})
-    if peft:
-        logger.info(
-            "  PEFT: base=%s, r=%s, targets=%s",
-            peft.get("baseModel"),
-            peft.get("r"),
-            peft.get("targetModules"),
-        )
-
-    return model
-
 
 # -- Resume info ---------------------------------------------------------------
 
