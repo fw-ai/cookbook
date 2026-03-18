@@ -154,7 +154,7 @@ class ReconnectableClient:
         self._endpoint = ep
 
     def _connect(self) -> None:
-        ep = self._rlor_mgr.reconnect_and_wait(self._job_id)
+        ep = self._rlor_mgr.wait_for_existing(self._job_id)
         self._use_endpoint(ep)
 
 
