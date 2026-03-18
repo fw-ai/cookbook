@@ -397,7 +397,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     assert result == {
         "steps": 2,
         "policy_job_id": "policy-job",
-        "reference_job_id": "reference-job",
+        "reference_job_id": None,
     }
     assert cfg.max_seq_len == 96
     assert len(events["setup_deployment"]) == 1
@@ -414,7 +414,12 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     assert events["train_loop"]["valid_indices"] == [0]
     assert events["train_loop"]["policy_job_id"] == "policy-job"
     assert events["weight_syncer_saves"] == ["final-step-2"]
-    assert events["deleted_jobs"] == ["reference-job", "policy-job"]
+
+    ref_del_idx = events["deleted_jobs"].index("reference-job")
+    pol_del_idx = events["deleted_jobs"].index("policy-job")
+    assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
+    assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
+    assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
     assert events["wandb_finished"] == 1
 
 
@@ -560,7 +565,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     assert result == {
         "steps": 2,
         "policy_job_id": "policy-job",
-        "reference_job_id": "reference-job",
+        "reference_job_id": None,
     }
     assert events["save_only_calls"] == [("final-step-2", "base")]
     assert events["hotload_calls"] == ["final-step-2-session"]
@@ -569,7 +574,12 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     assert events["promotions"] == [
         ("policy-job", "final-step-2-session", "promoted-dpo-model"),
     ]
-    assert events["deleted_jobs"] == ["reference-job", "policy-job"]
+
+    ref_del_idx = events["deleted_jobs"].index("reference-job")
+    pol_del_idx = events["deleted_jobs"].index("policy-job")
+    assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
+    assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
+    assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
     assert events["wandb_finished"] == 1
 
 
