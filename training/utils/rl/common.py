@@ -87,6 +87,8 @@ class SampleContext:
     """Reference model logprobs for response tokens."""
     resp_prox: torch.Tensor
     """Proximal forward-pass logprobs for response tokens."""
+    resp_inf: torch.Tensor
+    """Inference deployment logprobs for response tokens."""
     resp_mask: torch.Tensor
     """Per-token loss mask (1.0 = active, 0.0 = masked)."""
     adv: torch.Tensor
@@ -154,7 +156,11 @@ def run_loss_loop(
 
         if i < len(data):
             resp_mask = _get_loss_mask(
-                data[i], response_start, resp_len, resp_pi.dtype, resp_pi.device,
+                data[i],
+                response_start,
+                resp_len,
+                resp_pi.dtype,
+                resp_pi.device,
             )
         else:
             resp_mask = torch.ones(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
@@ -166,22 +172,28 @@ def run_loss_loop(
         ref_lp = ref_logprobs[i] if ref_logprobs else []
         resp_ref = torch.tensor(
             [ref_lp[response_start + j] if (response_start + j) < len(ref_lp) else 0.0 for j in range(resp_len)],
-            dtype=resp_pi.dtype, device=resp_pi.device,
+            dtype=resp_pi.dtype,
+            device=resp_pi.device,
         )
         pi_detached = resp_pi.detach()
 
         inf_lp = inf_logprobs[i] if i < len(inf_logprobs) else []
         validate_inference_logprobs_for_sample(
-            policy_loss, i, inf_lp, response_start + resp_len,
+            policy_loss,
+            i,
+            inf_lp,
+            response_start + resp_len,
         )
         resp_inf = torch.tensor(
-            inf_lp[response_start:response_start + resp_len],
-            dtype=resp_pi.dtype, device=resp_pi.device,
+            inf_lp[response_start : response_start + resp_len],
+            dtype=resp_pi.dtype,
+            device=resp_pi.device,
         )
         prox_lp = prox_logprobs[i]
         resp_prox = torch.tensor(
             [prox_lp[response_start + j] if (response_start + j) < len(prox_lp) else 0.0 for j in range(resp_len)],
-            dtype=resp_pi.dtype, device=resp_pi.device,
+            dtype=resp_pi.dtype,
+            device=resp_pi.device,
         )
 
         inf_log_diff = pi_detached - resp_inf
@@ -196,9 +208,14 @@ def run_loss_loop(
         adv_t = torch.as_tensor(advantages[i], dtype=resp_pi.dtype, device=resp_pi.device)
 
         ctx = SampleContext(
-            resp_pi=resp_pi, pi_detached=pi_detached,
-            resp_ref=resp_ref, resp_prox=resp_prox,
-            resp_mask=resp_mask, adv=adv_t, tis_weight=tis_weight,
+            resp_pi=resp_pi,
+            pi_detached=pi_detached,
+            resp_ref=resp_ref,
+            resp_prox=resp_prox,
+            resp_inf=resp_inf,
+            resp_mask=resp_mask,
+            adv=adv_t,
+            tis_weight=tis_weight,
         )
         per_token_loss, extra = policy_fn(ctx)
 

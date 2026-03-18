@@ -13,6 +13,7 @@ from training.utils.rl.dro import DROConfig, LOSS_SPEC as DRO_LOSS_SPEC
 from training.utils.rl.gspo import GSPOConfig, LOSS_SPEC as GSPO_LOSS_SPEC
 from training.utils.rl.grpo import LOSS_SPEC as GRPO_LOSS_SPEC
 from training.utils.rl.is_loss import LOSS_SPEC as IS_LOSS_SPEC
+from training.utils.rl.reinforce import LOSS_SPEC as REINFORCE_LOSS_SPEC
 from training.utils.rl.spec import LossSpec
 from training.utils.rl.tis import TISConfig
 
@@ -26,6 +27,7 @@ LOSS_REGISTRY: dict[str, LossSpec] = {
         DRO_LOSS_SPEC,
         GSPO_LOSS_SPEC,
         CISPO_LOSS_SPEC,
+        REINFORCE_LOSS_SPEC,
     )
 }
 """Single source of truth for both RL execution paths.
