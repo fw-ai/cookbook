@@ -176,6 +176,7 @@ def main(
             learning_rate=cfg.learning_rate,
             display_name="orpo-trainer",
             job_id=cfg.job_id,
+            cleanup=cleanup,
         )
         job_id = endpoint.job_id
         if not cfg.job_id:

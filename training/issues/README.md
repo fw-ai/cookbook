@@ -7,3 +7,7 @@ Current coverage work:
 
 - [training-script-coverage-baseline.md](./training-script-coverage-baseline.md)
 - [training-script-coverage-roadmap.md](./training-script-coverage-roadmap.md)
+
+Current resource-lifecycle work:
+
+- [resource-lifecycle-cleanup-design.md](./resource-lifecycle-cleanup-design.md)

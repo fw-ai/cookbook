@@ -247,7 +247,7 @@ def main():
 
             dep_info = dep_fut.result()
             if args.cleanup and not args.deployment_id:
-                cleanup.deployment(dep_id, action="scale_to_zero")
+                cleanup.deployment(dep_id)
 
             pol_ep = pol_fut.result()
             policy_job_id = pol_ep.job_id
