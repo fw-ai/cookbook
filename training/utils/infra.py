@@ -344,15 +344,4 @@ def setup_training_client(
 def _reuse_or_resume_job(
     rlor_mgr: TrainerJobManager, job_id: str
 ) -> TrainerServiceEndpoint:
-    job = rlor_mgr.get(job_id)
-    state = job.get("state", "")
-    resumable = (
-        "JOB_STATE_FAILED",
-        "JOB_STATE_CANCELLED",
-        "JOB_STATE_PAUSED",
-        "JOB_STATE_COMPLETED",
-    )
-    if state in resumable:
-        logger.info("Job %s is %s, resuming...", job_id, state)
-        return rlor_mgr.resume_and_wait(job_id)
-    return rlor_mgr.wait_for_existing(job_id)
+    return rlor_mgr.reconnect_and_wait(job_id)
