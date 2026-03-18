@@ -746,8 +746,10 @@ if __name__ == "__main__":
             # custom_image_tag="0.75.2",
             # skip_validations=True,
         ),
+        policy_job_id="s2kwn0jxladde11m",
         deployment=DeployConfig(
             tokenizer_model="Qwen/Qwen3-8B",
+            deployment_id="qwen3-8b-1773847809",
         ),
         hotload=HotloadConfig(
             hot_load_interval=1,
