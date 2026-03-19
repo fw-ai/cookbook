@@ -145,10 +145,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         def __init__(self, **kwargs):
             events["sampler_init"] = kwargs
 
-    async def fake_run_rl_loop(**kwargs):
-        events["run_loop_kwargs"] = kwargs
-        return 0
-
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
     monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
@@ -164,7 +160,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [])
     monkeypatch.setattr(module, "build_loss_fn", lambda **kwargs: ("loss-builder", kwargs))
-    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
 
     cfg = module.Config(
         log_path="/tmp/rl_test_logs",
@@ -193,7 +188,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["create_trainer_job"][0]["hot_load_deployment_id"] == "dep-123"
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
-    assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
+    # Sync loop runs inline — with empty dataset it exits immediately
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
     assert events["wandb_finished"] == 0
@@ -401,28 +396,24 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                 ),
             ]
 
-    async def fake_run_rl_loop(**kwargs):
-        events["run_loop_kwargs"] = kwargs
-        sample_iter = iter(kwargs["sample_fns"])
-        pg = await next(sample_iter)
-        assert pg is not None
-        assert kwargs["dynamic_filter_fn"](pg) is True
-        step, metrics = kwargs["train_fns"].train_step(
-            1,
-            [pg],
-            {
-                "valid_prompt_groups": 1,
-                "total_sampled": 1,
-                "filter_drops": 0,
-                "sample_fails": 0,
-                "sample_wait_time": 0.1,
-                "step_wall_time": 0.2,
-                "all_raw_rewards": list(pg.rewards),
-            },
-        )
-        kwargs["metrics_callback"]({"train/step": step, "rollout/sample_fail_count": 0})
-        events["finish_metrics"] = metrics
-        return step
+    def fake_train_one_step(ctx, step, groups, loop_stats=None, **kwargs):
+        """Mock train_one_step: record call, save checkpoint, sync weights."""
+        events["train_one_step_groups"] = groups
+        step += 1
+        # Simulate weight sync
+        ctx.weight_syncer.save_and_hotload(f"step-{step}")
+        # Simulate checkpoint
+        save_fn = kwargs.get("save_checkpoint_fn")
+        if save_fn:
+            save_fn(f"step-{step}", {"step": step, "data_consumed": step})
+        metrics = {
+            "rollout/reward": 0.5,
+            "rollout/accuracy": 0.5,
+            "train/mean_kl": 0.02,
+        }
+        if ctx.wandb_log:
+            ctx.wandb_log(metrics, step)
+        return step, metrics
 
     def fake_create_trainer_job(*args, **kwargs):
         events["create_trainer_job"].append(kwargs)
@@ -470,14 +461,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         }
     ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
-    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
-    monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {
-        "rollout/reward": 0.5,
-        "rollout/accuracy": 0.5,
-        "train/mean_kl": 0.02,
-    })
-    monkeypatch.setattr(module, "flush_timing", lambda: {"perf/step_time": 1.0})
-    monkeypatch.setattr(module, "build_r3_routing_matrices", lambda *args, **kwargs: events["routing_matrix_calls"].append((args, kwargs)) or {"rm": True})
+    monkeypatch.setattr(module, "train_one_step", fake_train_one_step)
+    import training.utils.rl.datum as datum_module
+    monkeypatch.setattr(datum_module, "build_r3_routing_matrices", lambda *args, **kwargs: events["routing_matrix_calls"].append((args, kwargs)) or {"rm": True})
     monkeypatch.setattr(
         module.tinker.ModelInput,
         "from_ints",
@@ -519,8 +505,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         cleanup_on_exit=True,
     )
 
+    # 1 dataset row, 1 epoch, prompt_groups_per_step=1 → 1 training step
     assert result == {
-        "steps": 2,
+        "steps": 1,
         "policy_job_id": "policy-job",
         "reference_job_id": "reference-job",
     }
@@ -530,30 +517,24 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "grpo-policy",
         "grpo-reference",
     ]
+    # Sampling closure correctly strips trailing assistant turn
     assert events["sampler_calls"][0]["messages"] == [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "Solve"},
     ]
     assert events["sampler_calls"][0]["include_routing_matrix"] is True
     assert len(events["routing_matrix_calls"]) == 2
+    # Initial base hotload
     assert events["weight_sync_saves"][0] == ("step-0-base", "base")
+    # Step-level weight sync from fake_train_one_step
     weight_sync_names = [name for name, _ in events["weight_sync_saves"]]
-    assert "step-2" in weight_sync_names
-    assert events.get("saved_state") == ("step-2", None)
+    assert "step-1" in weight_sync_names
+    # Final checkpoint
+    assert events.get("saved_state") == ("step-1", None)
     assert events["promotions"] == [
-        ("policy-job", "step-2-session", "promoted-rl-model"),
+        ("policy-job", "step-1-session", "promoted-rl-model"),
     ]
-    assert "fwd_bwd_call" in events
     assert events["build_loss_fn_kwargs"]["ratio_log_cap"] == 13.0
-    from training.utils.rl.losses import get_builtin_loss_config
-    expected_kernel, expected_config = get_builtin_loss_config(
-        cfg.policy_loss,
-        ratio_log_cap=cfg.ratio_log_cap,
-        eps_clip=cfg.eps_clip,
-        eps_clip_high=cfg.eps_clip_high,
-    )
-    assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
-    assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
 
@@ -685,12 +666,6 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
                 ),
             ]
 
-    async def fake_run_rl_loop(**kwargs):
-        sample_iter = iter(kwargs["sample_fns"])
-        pg = await next(sample_iter)
-        step, _ = kwargs["train_fns"].train_step(0, [pg])
-        return step
-
     def fake_create_trainer_job(*args, **kwargs):
         return SimpleNamespace(job_id="policy-job")
 
@@ -719,9 +694,6 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         {"messages": [{"role": "user", "content": "Solve"}], "ground_truth": "<answer>7</answer>"}
     ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
-    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
-    monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {"rollout/reward": 0.5, "rollout/accuracy": 0.5, "train/mean_kl": 0.02})
-    monkeypatch.setattr(module, "flush_timing", lambda: {})
     monkeypatch.setattr(
         module.tinker.ModelInput, "from_ints",
         lambda ints, routing_matrices=None: SimpleNamespace(tokens=list(ints), routing_matrices=routing_matrices),
@@ -866,10 +838,15 @@ def test_async_rollout_injects_hot_load_flag(monkeypatch):
     ])
     from training.utils.checkpoint_utils import ResumeInfo
     monkeypatch.setattr(module, "resolve_resume", lambda *a, **kw: ResumeInfo(step=0))
-    monkeypatch.setattr(module, "compute_step_metrics", lambda **kw: {
-        "rollout/reward": 0.5, "rollout/accuracy": 0.5, "train/mean_kl": 0.01,
-    })
-    monkeypatch.setattr(module, "flush_timing", lambda: {})
+
+    def fake_train_one_step(ctx, step, groups, loop_stats=None, **kwargs):
+        step += 1
+        metrics = {"rollout/reward": 0.5, "rollout/accuracy": 0.5, "train/mean_kl": 0.01}
+        if ctx.wandb_log:
+            ctx.wandb_log(metrics, step)
+        return step, metrics
+
+    monkeypatch.setattr(module, "train_one_step", fake_train_one_step)
     monkeypatch.setattr(
         module.tinker.ModelInput, "from_ints",
         lambda ints, routing_matrices=None: SimpleNamespace(tokens=list(ints)),
@@ -901,12 +878,12 @@ def test_async_rollout_injects_hot_load_flag(monkeypatch):
     assert len(step_metrics) >= 1, "Async loop should log async/version metric"
 
 
-def test_sync_default_still_routes_to_run_rl_loop(monkeypatch):
-    """async_rollout=False (default) should use run_rl_loop, not the async path."""
+def test_sync_default_uses_collect_sync_batch(monkeypatch):
+    """async_rollout=False (default) should use the inline sync loop with collect_sync_batch."""
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
-    events: dict[str, object] = {"sync_called": False}
+    events: dict[str, object] = {"collect_sync_batch_called": False}
 
     class FakeRlorMgr:
         def resolve_training_profile(self, shape_id):
@@ -925,9 +902,12 @@ def test_sync_default_still_routes_to_run_rl_loop(monkeypatch):
         def scale_to_zero(self, d):
             pass
 
-    async def fake_run_rl_loop(**kwargs):
-        events["sync_called"] = True
-        return 0
+    from training.utils.rl.rollout import RolloutStats
+
+    async def fake_collect_sync_batch(coros, filter_fn=None, target=1):
+        events["collect_sync_batch_called"] = True
+        events["collect_batch_size"] = len(coros)
+        return [], RolloutStats()
 
     monkeypatch.setattr(module, "setup_wandb", lambda *a, **kw: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
@@ -939,8 +919,10 @@ def test_sync_default_still_routes_to_run_rl_loop(monkeypatch):
     monkeypatch.setattr(module, "DeploymentSampler", lambda **kw: None)
     monkeypatch.setattr(module, "WeightSyncer", lambda **kw: None)
     monkeypatch.setattr(module, "build_loss_fn", lambda **kw: None)
-    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [])
-    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
+    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [
+        {"messages": [{"role": "user", "content": "Q"}], "ground_truth": "A"},
+    ])
+    monkeypatch.setattr(module, "collect_sync_batch", fake_collect_sync_batch)
 
     cfg = module.Config(
         log_path="/tmp/sync_test",
@@ -950,7 +932,7 @@ def test_sync_default_still_routes_to_run_rl_loop(monkeypatch):
     )
 
     module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr())
-    assert events["sync_called"] is True
+    assert events["collect_sync_batch_called"] is True
 
 
 def test_async_rollout_validates_step_target(monkeypatch):
