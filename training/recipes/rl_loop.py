@@ -113,6 +113,11 @@ class Config:
     All groups are collected before a single ``forward_backward_custom`` +
     ``optim_step`` pair fires (1:1 ratio)."""
 
+    prompt_groups_per_policy: int = 1
+    """Prompt groups launched under one deployment policy version before
+    hotloading the next policy. Set equal to ``prompt_groups_per_step`` for
+    on-policy behavior."""
+
     router_replay: bool = False
     router_replay_completion_only: bool = True
 
@@ -268,6 +273,13 @@ def main(
     )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
+    prompt_groups_per_policy = cfg.prompt_groups_per_policy
+    if prompt_groups_per_policy <= 0:
+        raise ValueError("prompt_groups_per_policy must be positive")
+    if prompt_groups_per_policy % prompt_groups_per_step != 0:
+        raise ValueError(
+            "prompt_groups_per_policy must be a multiple of prompt_groups_per_step"
+        )
     if not cfg.deployment.tokenizer_model:
         raise ValueError(
             "deployment.tokenizer_model is required for client-side tokenization. "
@@ -278,6 +290,7 @@ def main(
         {
             "completions_per_prompt": completions_per_prompt,
             "prompt_groups_per_step": prompt_groups_per_step,
+            "prompt_groups_per_policy": prompt_groups_per_policy,
             "kl_beta": cfg.kl_beta,
             "lr": cfg.learning_rate,
         },
@@ -329,8 +342,9 @@ def main(
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         logger.info(
-            "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
+            "Training: prompt_groups_per_step=%d | prompt_groups_per_policy=%d | completions_per_prompt=%d",
             prompt_groups_per_step,
+            prompt_groups_per_policy,
             completions_per_prompt,
         )
 
@@ -672,12 +686,6 @@ def main(
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
-            if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
-                logger.info("[step %d] weight_sync: saving + loading...", step)
-                t0 = _time.time()
-                with timer("weight_sync"):
-                    weight_syncer.save_and_hotload(f"step-{step}")
-                logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
             if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
@@ -733,6 +741,21 @@ def main(
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
         train_fns = TrainStepFns(train_step=train_step)
+        last_hotloaded_step = [step_offset]
+
+        def _policy_boundary(step: int) -> None:
+            if step <= last_hotloaded_step[0]:
+                logger.info(
+                    "[step %d] policy boundary reached with no optimizer progress; skipping weight sync",
+                    step,
+                )
+                return
+            logger.info("[step %d] weight_sync: saving + loading...", step)
+            t0 = _time.time()
+            with timer("weight_sync"):
+                weight_syncer.save_and_hotload(f"step-{step}")
+            logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
+            last_hotloaded_step[0] = step
 
         remaining_rows = []
         for i_step in range(step_offset, len(rl_dataset)):
@@ -743,9 +766,11 @@ def main(
                 sample_fns=(sample_one_prompt(row) for row in remaining_rows),
                 train_fns=train_fns,
                 prompt_groups_per_step=prompt_groups_per_step,
+                prompt_groups_per_policy=prompt_groups_per_policy,
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
                 metrics_callback=_loop_metrics_callback,
+                policy_boundary_fn=_policy_boundary,
             )
         )
 
