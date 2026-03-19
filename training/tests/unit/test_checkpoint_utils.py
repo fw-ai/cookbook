@@ -65,6 +65,9 @@ class TestResolveResume:
             "name": "step-5",
             "step": 5,
             "data_consumed": 40,
+            "rows_submitted": 52,
+            "accepted_total": 44,
+            "current_launch_version": 3,
             "state_path": "cross_job://job-abc/step-5",
             "source_job_id": "job-abc",
         })
@@ -73,6 +76,9 @@ class TestResolveResume:
         assert result is not None
         assert result.step == 5
         assert result.data_consumed == 40
+        assert result.rows_submitted == 52
+        assert result.accepted_total == 44
+        assert result.current_launch_version == 3
         assert result.source_job_id == "job-abc"
         client.load_state_with_optimizer.assert_called_once_with("cross_job://job-abc/step-5")
 

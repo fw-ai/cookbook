@@ -250,6 +250,93 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
         module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr())
 
 
+def test_main_routes_to_async_rl_loop(monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {}
+
+    class FakeRlorMgr:
+        def resolve_training_profile(self, shape_id):
+            return SimpleNamespace(
+                deployment_shape="dep-shape-v1",
+                pipeline_parallelism=1,
+                max_supported_context_length=128,
+            )
+
+        def delete(self, job_id):
+            pass
+
+    class FakeDeployMgr:
+        inference_url = "https://inference.unit.test"
+        boot_time_s = 1.0
+
+        def scale_to_zero(self, deployment_id):
+            pass
+
+    class FakePolicyClient:
+        def __init__(self, *args, **kwargs):
+            self.inner = object()
+
+        def save_state(self, name, timeout=None):
+            return SimpleNamespace(path=f"tinker://unit/state/{name}")
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"tinker://unit/sampler/{name}")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
+
+    async def fake_async_rl_loop(**kwargs):
+        events["async_kwargs"] = kwargs
+        return module.AsyncRLState(
+            global_step=0,
+            current_launch_version=0,
+            rows_submitted=0,
+            accepted_total=0,
+            buffered_accepted=0,
+            running=0,
+            oldest_unfinished_version=0,
+            consumed_in_current_policy=0,
+        )
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="policy-job"))
+    monkeypatch.setattr(module, "ReconnectableClient", FakePolicyClient)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "DeploymentSampler", lambda **kwargs: object())
+    monkeypatch.setattr(module, "WeightSyncer", lambda **kwargs: object())
+    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [])
+    monkeypatch.setattr(module, "build_loss_fn", lambda **kwargs: None)
+    monkeypatch.setattr(module, "async_rl_loop", fake_async_rl_loop)
+    monkeypatch.setattr(module, "run_rl_loop", lambda **kwargs: (_ for _ in ()).throw(AssertionError("run_rl_loop should not be used")))
+
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        async_rollout=True,
+        prompt_groups_per_step=2,
+        prompt_groups_per_fwd_bkwd=1,
+        prompt_groups_per_policy=4,
+        max_head_offpolicy_versions=1,
+        deployment=module.DeployConfig(deployment_id="dep-123", tokenizer_model="Qwen/Qwen3-4B"),
+        infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1"),
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr())
+
+    assert result is None
+    assert events["async_kwargs"]["prompt_groups_per_step"] == 2
+    assert events["async_kwargs"]["prompt_groups_per_policy"] == 4
+    assert events["async_kwargs"]["max_head_offpolicy_versions"] == 1
+
+
 def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")

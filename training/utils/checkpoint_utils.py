@@ -45,6 +45,9 @@ class ResumeInfo:
     step: int = 0
     data_consumed: int = 0
     source_job_id: str | None = None
+    rows_submitted: int = 0
+    accepted_total: int = 0
+    current_launch_version: int = 0
 
 
 def _parse_cross_job(spec: str) -> tuple[str | None, str]:
@@ -85,6 +88,9 @@ def resolve_resume(
             step=last.get("step", 0),
             data_consumed=last.get("data_consumed", 0),
             source_job_id=last.get("source_job_id"),
+            rows_submitted=last.get("rows_submitted", last.get("data_consumed", 0)),
+            accepted_total=last.get("accepted_total", last.get("data_consumed", 0)),
+            current_launch_version=last.get("current_launch_version", 0),
         )
 
     logger.info("Fresh start (no checkpoint)")

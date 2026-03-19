@@ -74,6 +74,8 @@ class DeployConfig:
     Increase for R3 + long completions where responses can be very large."""
     disable_speculative_decoding: bool = True
     """Disable base model's default draft/EAGLE speculation for hotload compatibility."""
+    hot_load_async_transition: bool = False
+    """Enable serving-side async hotload transition via ``--hot-load-async-transition``."""
     extra_values: dict[str, str] | None = None
     """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
 
@@ -87,6 +89,9 @@ class DeployConfig:
         accel = None if self.deployment_shape else self.deployment_accelerator_type
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type
+        extra_args = list(self.deployment_extra_args or [])
+        if self.hot_load_async_transition and "--hot-load-async-transition" not in extra_args:
+            extra_args.append("--hot-load-async-transition")
         return DeploymentConfig(
             deployment_id=self.deployment_id,
             base_model=base_model,
@@ -94,7 +99,7 @@ class DeployConfig:
             region=self.deployment_region or None,
             hot_load_bucket_type=self.hot_load_bucket_type,
             skip_shape_validation=skip_validation,
-            extra_args=self.deployment_extra_args,
+            extra_args=extra_args or None,
             min_replica_count=1,
             max_replica_count=1,
             accelerator_type=accel,

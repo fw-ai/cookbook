@@ -33,3 +33,17 @@ def test_to_deployment_config_does_not_infer_region_from_trainer():
 
     assert isinstance(deployment_config, DeploymentConfig)
     assert deployment_config.region is None
+
+
+def test_to_deployment_config_adds_hot_load_async_transition_flag():
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        hot_load_async_transition=True,
+    )
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(),
+    )
+
+    assert deployment_config.extra_args == ["--hot-load-async-transition"]
