@@ -166,29 +166,6 @@ class TestAsyncRolloutSchedulerCapacity:
         assert sched._capacity() == 0
 
 
-class TestAsyncRolloutSchedulerOldestVersionStop:
-    @pytest.mark.asyncio
-    async def test_hard_stop_blocks_submissions(self):
-        sched = AsyncRolloutScheduler(
-            step_target=1,
-            max_head_offpolicy_versions=1,
-        )
-        sched._oldest_inflight_version = 0
-        sched._current_version = 1
-        assert sched._oldest_version_blocked() is True
-        assert sched._capacity() == 0
-
-    @pytest.mark.asyncio
-    async def test_not_blocked_when_within_threshold(self):
-        sched = AsyncRolloutScheduler(
-            step_target=1,
-            max_head_offpolicy_versions=2,
-        )
-        sched._oldest_inflight_version = 0
-        sched._current_version = 1
-        assert sched._oldest_version_blocked() is False
-
-
 class TestAsyncRolloutSchedulerCollectBatch:
     @pytest.mark.asyncio
     async def test_basic_collect(self):
@@ -198,6 +175,28 @@ class TestAsyncRolloutSchedulerCollectBatch:
         assert len(groups) == 2
         assert stats.valid_groups == 2
         assert stats.sample_fails == 0
+
+    @pytest.mark.asyncio
+    async def test_version_offsets_tracked(self):
+        """Accepted groups should record staleness (current_version - sample_version)."""
+        sched = AsyncRolloutScheduler(step_target=2, max_head_offpolicy_versions=3)
+        rows = iter([{}, {}, {}, {}])
+
+        # Step 0: collect 2 groups — all submitted at version 0, collected at version 0
+        groups, stats = await sched.collect_batch(_sample_factory(), rows)
+        assert len(groups) == 2
+        assert stats.version_offsets == [0, 0]
+
+        # Bump version (simulates train step)
+        sched.bump_version()
+        assert sched.current_version == 1
+
+        # Step 1: any in-flight from version 0 + new from version 1
+        groups2, stats2 = await sched.collect_batch(_sample_factory(), rows)
+        assert len(groups2) == 2
+        # All offsets should be 0 or 1 (submitted at version 0 or 1, collected at version 1)
+        for offset in stats2.version_offsets:
+            assert 0 <= offset <= 1
 
     @pytest.mark.asyncio
     async def test_filtering_triggers_refill(self):

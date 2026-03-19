@@ -186,4 +186,10 @@ def compute_step_metrics(
         if raw_rewards:
             metrics["rollout/raw_reward"] = sum(raw_rewards) / len(raw_rewards)
 
+        version_offsets = loop_stats.get("version_offsets")
+        if version_offsets:
+            metrics["async/version_offset_mean"] = sum(version_offsets) / len(version_offsets)
+            metrics["async/version_offset_max"] = max(version_offsets)
+            metrics["async/version_offset_min"] = min(version_offsets)
+
     return metrics

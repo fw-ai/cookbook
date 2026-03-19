@@ -44,6 +44,8 @@ class RolloutStats:
     sample_fails: int = 0
     wall_time: float = 0.0
     raw_rewards: list[float] = field(default_factory=list)
+    version_offsets: list[int] = field(default_factory=list)
+    """Per-accepted-group staleness: ``current_version - sample_version``."""
 
 
 async def collect_sync_batch(
@@ -107,10 +109,10 @@ class AsyncRolloutScheduler:
 
     Manages in-flight asyncio tasks across ``collect_batch`` calls,
     enabling overlap between rollout and training.  Capacity is gated
-    by a cumulative staleness formula and an oldest-unfinished-version
-    hard stop.
+    by a cumulative staleness formula and a concurrency cap — the same
+    two-level gate AReaL uses (without pause/resume).
 
-    The scheduler does NOT own the training loop -- the recipe
+    The scheduler does NOT own the training loop — the recipe
     (``rl_loop.py``) calls ``collect_batch``, runs training, then calls
     ``bump_version``.
     """
@@ -139,7 +141,6 @@ class AsyncRolloutScheduler:
         self._in_flight: set[asyncio.Task] = set()
         self._result_queue: asyncio.Queue[tuple[PromptGroup | None, int]] = asyncio.Queue()
         self._rows_exhausted = False
-        self._oldest_inflight_version: int | None = None
 
     # -- public properties -----------------------------------------------------
 
@@ -164,14 +165,7 @@ class AsyncRolloutScheduler:
     def _concurrency_cap(self) -> int:
         return max(self._max_concurrent - len(self._in_flight), 0)
 
-    def _oldest_version_blocked(self) -> bool:
-        if self._oldest_inflight_version is None:
-            return False
-        return (self._current_version - self._oldest_inflight_version) >= self._max_offpolicy
-
     def _capacity(self) -> int:
-        if self._oldest_version_blocked():
-            return 0
         return min(self._staleness_cap(), self._concurrency_cap())
 
     # -- task management -------------------------------------------------------
@@ -197,21 +191,6 @@ class AsyncRolloutScheduler:
         task.add_done_callback(self._in_flight.discard)
         self._rows_submitted += 1
 
-        if self._oldest_inflight_version is None:
-            self._oldest_inflight_version = version
-
-    def _drain_ready_results(self) -> list[tuple[PromptGroup | None, int]]:
-        """Collect all results currently in the queue without blocking."""
-        results = []
-        while not self._result_queue.empty():
-            results.append(self._result_queue.get_nowait())
-        return results
-
-    def _update_oldest_version(self) -> None:
-        """Recompute oldest in-flight version after draining results."""
-        if not self._in_flight:
-            self._oldest_inflight_version = None
-
     # -- collect_batch ---------------------------------------------------------
 
     async def collect_batch(
@@ -229,7 +208,7 @@ class AsyncRolloutScheduler:
         stats = RolloutStats()
         t0 = time.time()
 
-        def _process_one(item: PromptGroup | None, _version: int) -> None:
+        def _process_one(item: PromptGroup | None, version: int) -> None:
             if item is None:
                 stats.sample_fails += 1
                 stats.total_sampled += 1
@@ -242,15 +221,16 @@ class AsyncRolloutScheduler:
                 return
             accepted.append(item)
             self._total_accepted += 1
+            stats.version_offsets.append(self._current_version - version)
 
         def _drain_and_process() -> None:
-            for pair in self._drain_ready_results():
+            while not self._result_queue.empty():
+                pair = self._result_queue.get_nowait()
                 _process_one(*pair)
                 if len(accepted) >= self._step_target:
                     break
 
         _drain_and_process()
-        self._update_oldest_version()
 
         while len(accepted) < self._step_target:
             if not self._rows_exhausted:
@@ -275,10 +255,8 @@ class AsyncRolloutScheduler:
                 _process_one(item, version)
                 if len(accepted) < self._step_target:
                     _drain_and_process()
-                self._update_oldest_version()
             except asyncio.TimeoutError:
                 _drain_and_process()
-                self._update_oldest_version()
 
         stats.valid_groups = len(accepted)
         stats.wall_time = time.time() - t0

@@ -542,6 +542,7 @@ def main(
                         "sample_wait_time": stats.wall_time,
                         "step_wall_time": stats.wall_time,
                         "all_raw_rewards": list(stats.raw_rewards),
+                        "version_offsets": list(stats.version_offsets),
                     }
 
                     step, metrics = train_one_step(
