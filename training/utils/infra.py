@@ -301,8 +301,8 @@ def _create_deployment_via_cookbook(
 
     body: dict[str, Any] = {
         "baseModel": config.base_model,
-        "minReplicaCount": config.min_replica_count,
-        "maxReplicaCount": config.max_replica_count,
+        "minReplicaCount": config.replica_count,
+        "maxReplicaCount": config.replica_count,
         "enableHotLoad": True,
     }
     if config.hot_load_bucket_type:

@@ -69,6 +69,8 @@ class DeployConfig:
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).
     Required for client-side tokenization (GRPO)."""
+    replica_count: int = 4
+    """Fixed deployment replica count used for both min and max replicas."""
     sample_timeout: int = 600
     """HTTP read timeout in seconds for sampling completions (default 10 min).
     Increase for R3 + long completions where responses can be very large."""
@@ -95,8 +97,7 @@ class DeployConfig:
             hot_load_bucket_type=self.hot_load_bucket_type,
             skip_shape_validation=skip_validation,
             extra_args=self.deployment_extra_args,
-            min_replica_count=1,
-            max_replica_count=1,
+            replica_count=self.replica_count,
             accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,

@@ -17,19 +17,20 @@ set -euo pipefail
 
 export FIREWORKS_API_KEY="${FIREWORKS_API_KEY:?Set FIREWORKS_API_KEY env var}"
 export FIREWORKS_BASE_URL="${FIREWORKS_BASE_URL:-https://api.fireworks.ai}"
-export TRAINING_SHAPE="qwen3-30b-a3b-instruct-2507-128k-b200"
+export TRAINING_SHAPE="${TRAINING_SHAPE:-accounts/fireworks/trainingShapes/qwen3-30b-a3b-instruct-2507-128k-b200}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}/fireworks-ai-python/src:${REPO_ROOT}:${PYTHONPATH:-}"
 
-REF_TRAINING_SHAPE="qwen3-30b-a3b-instruct-2507-128k-b200-ref"
+REF_TRAINING_SHAPE="${REF_TRAINING_SHAPE:-accounts/fireworks/trainingShapes/qwen3-30b-a3b-instruct-2507-128k-b200-ref}"
 REGION="US_OHIO_1"
 MAX_ROWS=200
 EPOCHS=1
 MAX_COMPLETION_TOKENS=122880
 COMPLETIONS_PER_PROMPT=8
 PROMPT_GROUPS_PER_STEP=32
+REPLICA_COUNT="${REPLICA_COUNT:-4}"
 
 DEPLOYMENT_ID="${1:-}"
 
@@ -44,6 +45,7 @@ ARGS=(
     --max-completion-tokens "$MAX_COMPLETION_TOKENS"
     --completions-per-prompt "$COMPLETIONS_PER_PROMPT"
     --prompt-groups-per-step "$PROMPT_GROUPS_PER_STEP"
+    --replica-count "$REPLICA_COUNT"
     --skip-cleanup
     --output-model-id deepmath-rl-$(date +%Y%m%d%H%M)
 )
@@ -61,6 +63,7 @@ echo "=== DeepMath qwen3-30b-a3b B200 Training ==="
 echo "  Training shape: $TRAINING_SHAPE"
 echo "  Ref shape:      $REF_TRAINING_SHAPE"
 echo "  Region:         $REGION"
+echo "  Replicas:       $REPLICA_COUNT"
 echo "  Max rows:       $MAX_ROWS"
 echo "  Completions:    $COMPLETIONS_PER_PROMPT"
 echo "  Groups/step:    $PROMPT_GROUPS_PER_STEP"

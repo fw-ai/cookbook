@@ -4,6 +4,8 @@
 Run prepare_data.py first, then: python train_deepmath.py
 """
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -46,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
+FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY")
 FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
 
@@ -76,6 +78,7 @@ class TrainArgs:
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files."""
     deployment_extra_values: dict[str, str] | None = None
+    replica_count: int = 4
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
     skip_cleanup: bool = False
@@ -127,6 +130,7 @@ def parse_args() -> TrainArgs:
         help="Extra Helm values for the deployment as key=value pairs "
              "(e.g. --deployment-extra-values priorityClass=deployment)",
     )
+    parser.add_argument("--replica-count", type=int)
     parser.add_argument("--wandb-entity")
     parser.add_argument("--wandb-project")
     parser.add_argument("--skip-cleanup", action="store_true",
@@ -260,6 +264,9 @@ def main():
 
     logger.info("GRPO DeepMath-Probability-Hard training with Qwen3-30B-A3B-Instruct")
 
+    if not FIREWORKS_API_KEY:
+        raise RuntimeError("Set FIREWORKS_API_KEY")
+
     if not os.path.exists(args.dataset_path):
         raise FileNotFoundError(
             f"Dataset not found at {args.dataset_path}. Run prepare_data.py first."
@@ -306,6 +313,7 @@ def main():
             deployment_id=args.deployment_id,
             deployment_region=args.deployment_region,
             tokenizer_model=args.tokenizer_model,
+            replica_count=args.replica_count,
             sample_timeout=1200,
             extra_values=args.deployment_extra_values,
         ),
@@ -325,10 +333,11 @@ def main():
     )
 
     logger.info(
-        "model=%s | training_shape=%s | deployment_shape=(parsed from training shape) | region=%s",
+        "model=%s | training_shape=%s | deployment_shape=(parsed from training shape) | region=%s | replicas=%d",
         args.base_model,
         args.training_shape,
         args.region,
+        args.replica_count,
     )
     logger.info(
         "max_rows=%d | epochs=%d | completions_per_prompt=%d | temp=%.1f | lr=%g | kl_beta=%g",
