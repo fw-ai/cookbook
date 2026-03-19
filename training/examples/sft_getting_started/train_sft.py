@@ -47,13 +47,11 @@ def parse_args():
     parser.add_argument("--max-examples", type=int, default=500)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--grad-accum", type=int, default=1,
+                        help="(deprecated, ignored -- use --batch-size instead)")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
-    parser.add_argument("--grad-acc-norm", default=None,
-                        choices=["num_sequences", "num_loss_tokens", "none"],
-                        help="Server-side gradient normalization (default: none, SFT normalizes client-side)")
     parser.add_argument("--no-checkpoint", action="store_true",
                         help="Skip final checkpoint save")
     parser.add_argument("--grad-clip-norm", type=float, default=0.0,
@@ -98,7 +96,6 @@ def main():
         max_examples=args.max_examples,
         lora_rank=args.lora_rank,
         output_model_id=args.output_model_id,
-        grad_accumulation_normalization=args.grad_acc_norm,
         grad_clip_norm=args.grad_clip_norm,
         dcp_save_interval=-1 if args.no_checkpoint else 0,
         infra=InfraConfig(

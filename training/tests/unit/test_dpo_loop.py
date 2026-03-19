@@ -211,12 +211,11 @@ def test_cache_ref_logprobs_preserves_multi_turn_preference_history():
 def test_forward_backward_pairs_interleaves_and_builds_loss_fn(monkeypatch):
     captured = {}
 
-    def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta, microbatch_sizes=None):
+    def fake_make_batch_dpo_loss_fn(ref_chosen, ref_rejected, response_starts, beta):
         captured["ref_chosen"] = ref_chosen
         captured["ref_rejected"] = ref_rejected
         captured["response_starts"] = response_starts
         captured["beta"] = beta
-        captured["microbatch_sizes"] = microbatch_sizes
         return "loss-fn"
 
     class FakePolicy:
@@ -258,7 +257,6 @@ def test_forward_backward_pairs_interleaves_and_builds_loss_fn(monkeypatch):
     assert captured["ref_rejected"] == [[-0.2], [-0.4]]
     assert captured["response_starts"] == [3, 5]
     assert captured["beta"] == 0.25
-    assert captured["microbatch_sizes"] is None
 
 
 def test_main_requires_tokenizer_model(monkeypatch):
@@ -573,7 +571,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     assert events["wandb_finished"] == 1
 
 
-def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
+def test_train_loop_batches_and_weight_sync(monkeypatch):
     events: dict[str, object] = {
         "flush_batches": [],
         "optim_steps": 0,
@@ -586,8 +584,8 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
     monkeypatch.setattr(
         module,
         "_forward_backward_pairs",
-        lambda batch, policy, beta, microbatch_sizes=None: events["flush_batches"].append(
-            (list(batch), beta, list(microbatch_sizes or []))
+        lambda batch, policy, beta: events["flush_batches"].append(
+            (list(batch), beta)
         ) or SimpleNamespace(
             metrics={"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75}
         ),
@@ -616,8 +614,7 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
         log_path="/tmp/dpo_test_logs",
         beta=0.2,
         epochs=1,
-        batch_size=1,
-        grad_accum=2,
+        batch_size=2,
         weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1),
     )
 
@@ -635,7 +632,7 @@ def test_train_loop_runs_accumulation_and_weight_sync(monkeypatch):
 
     assert step == 1
     assert events["flush_batches"] == [
-        ([ref_cache[0], ref_cache[1]], 0.2, [1, 1]),
+        ([ref_cache[0], ref_cache[1]], 0.2),
     ]
     assert events["optim_steps"] == 1
     assert events["weight_syncs"] == ["step-1"]

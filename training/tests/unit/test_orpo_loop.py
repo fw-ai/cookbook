@@ -147,7 +147,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=None,
         epochs=1,
-        grad_accum=1,
+        batch_size=1,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1"),
         output_model_id="promoted-orpo-model",
     )
@@ -267,7 +267,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=None,
         epochs=1,
-        grad_accum=2,
+        batch_size=2,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1"),
     )
 

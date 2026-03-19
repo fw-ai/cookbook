@@ -107,9 +107,10 @@ class Config:
     beta: float = 0.1
     learning_rate: float = 1e-5
     epochs: int = 1
-    batch_size: int = 1
-    """Number of preference pairs per forward_backward_custom call."""
-    grad_accum: int = 4
+    batch_size: int = 4
+    """Number of preference pairs per optimizer step."""
+    grad_accum: int = 1
+    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
@@ -118,12 +119,6 @@ class Config:
     """Max concurrent reference forward passes during cache warm-up."""
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
-
-    grad_accumulation_normalization: str | None = None
-    """Server-side gradient normalization mode passed to optim_step.
-    ``None``: no server normalization (default). The DPO loss function
-    already computes per-pair means client-side, so server-side
-    normalization would double-normalize."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -244,7 +239,6 @@ def _forward_backward_pairs(
     batch_pairs: list[dict[str, Any]],
     policy: ReconnectableClient,
     beta: float,
-    microbatch_sizes: list[int] | None = None,
 ) -> Any:
     """Run forward_backward_custom on a batch of preference pairs.
 
@@ -267,7 +261,6 @@ def _forward_backward_pairs(
         ref_rejected_list,
         response_starts,
         beta,
-        microbatch_sizes=microbatch_sizes,
     )
     return policy.forward_backward_custom(datums, loss_fn)
 
@@ -281,21 +274,12 @@ async def _train_loop(
     cfg: Config,
     step_offset: int,
 ) -> int:
-    """DPO training with client-side fused optimizer windows.
-
-    Accumulates ``batch_size`` pairs into a single ``forward_backward_custom``
-    call (matching SFT's batching pattern), then runs ``grad_accum`` such
-    micro-batches before each ``optim_step``.
-    """
+    """DPO training -- one forward_backward_custom + optim_step per batch."""
     batch_size = cfg.batch_size
     step = step_offset
-    total_steps = len(valid_indices) * cfg.epochs // (cfg.grad_accum * batch_size)
+    total_steps = len(valid_indices) * cfg.epochs // batch_size
 
-    def _run_train_step(
-        epoch: int,
-        step_pairs: list[dict[str, Any]],
-        microbatch_sizes: list[int],
-    ) -> None:
+    def _run_train_step(epoch: int, step_pairs: list[dict[str, Any]]) -> None:
         nonlocal step
         step_t0 = time.monotonic()
         step_tokens = sum(
@@ -304,16 +288,8 @@ async def _train_loop(
         )
 
         with timer("fwd_bwd"):
-            fwd_bwd_result = _forward_backward_pairs(
-                step_pairs,
-                policy,
-                cfg.beta,
-                microbatch_sizes=microbatch_sizes,
-            )
-        optim_result = policy.optim_step(
-            adam_params,
-            grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-        )
+            fwd_bwd_result = _forward_backward_pairs(step_pairs, policy, cfg.beta)
+        optim_result = policy.optim_step(adam_params)
         step += 1
 
         step_metrics: dict[str, Any] = {}
@@ -357,29 +333,17 @@ async def _train_loop(
         wandb_log(step_metrics, step)
 
     for epoch in range(cfg.epochs):
-        microbatch_buffer: list[dict[str, Any]] = []
-        step_pairs: list[dict[str, Any]] = []
-        step_microbatch_sizes: list[int] = []
+        batch_buffer: list[dict[str, Any]] = []
 
         for idx in valid_indices:
-            microbatch_buffer.append(ref_cache[idx])
+            batch_buffer.append(ref_cache[idx])
 
-            if len(microbatch_buffer) >= batch_size:
-                step_pairs.extend(microbatch_buffer)
-                step_microbatch_sizes.append(len(microbatch_buffer))
-                microbatch_buffer = []
+            if len(batch_buffer) >= batch_size:
+                _run_train_step(epoch, batch_buffer)
+                batch_buffer = []
 
-                if len(step_microbatch_sizes) >= cfg.grad_accum:
-                    _run_train_step(epoch, step_pairs, step_microbatch_sizes)
-                    step_pairs = []
-                    step_microbatch_sizes = []
-
-        if microbatch_buffer:
-            step_pairs.extend(microbatch_buffer)
-            step_microbatch_sizes.append(len(microbatch_buffer))
-
-        if step_pairs:
-            _run_train_step(epoch, step_pairs, step_microbatch_sizes)
+        if batch_buffer:
+            _run_train_step(epoch, batch_buffer)
 
     return step
 
@@ -416,12 +380,18 @@ def main(
             "Config.tokenizer_model is required for client-side tokenization. "
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
+
+    if cfg.grad_accum > 1:
+        logger.warning(
+            "grad_accum is deprecated and ignored. "
+            "Increase batch_size instead for larger effective batches."
+        )
+
     setup_wandb(cfg.wandb, {
         "beta": cfg.beta,
         "lr": cfg.learning_rate,
         "epochs": cfg.epochs,
         "batch_size": cfg.batch_size,
-        "grad_accum": cfg.grad_accum,
     })
 
     # -- Setup infrastructure ----------------------------------------------

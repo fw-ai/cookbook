@@ -60,7 +60,6 @@ class TestSFTE2E:
                 tokenizer_model="Qwen/Qwen3-30B-A3B",
                 learning_rate=1e-4,
                 epochs=2,
-                grad_accum=2,
                 max_examples=10,
                 infra=InfraConfig(
                     region=e2e_region,

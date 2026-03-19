@@ -176,7 +176,8 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     assert events["deleted_jobs"] == ["job-sft"]
 
 
-def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monkeypatch):
+def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
+    """With grad_accum removed, each batch gets its own forward_backward + optim_step."""
     dataset_path = _write_dataset(
         tmp_path,
         [
@@ -202,10 +203,6 @@ def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monk
         def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
             events["batches"].append(list(batch))
             return SimpleNamespace(metrics={"loss:sum": 4.0, "ce_loss_sum": 4.0, "response_tokens": 8})
-
-        def forward_backward_custom(self, batch, loss_fn):
-            events["batches"].append(list(batch))
-            return SimpleNamespace(metrics={"ce_loss_sum": 4.0, "response_tokens": 8})
 
         def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
@@ -251,14 +248,14 @@ def test_main_batches_grad_accum_window_into_one_forward_backward(tmp_path, monk
         max_seq_len=32,
         epochs=1,
         batch_size=1,
-        grad_accum=2,
         log_path=str(tmp_path / "sft_logs"),
     )
 
     result = module.main(cfg, rlor_mgr=FakeMgr())
 
-    assert result["steps"] == 1
-    assert events["optim_steps"] == 1
-    assert len(events["batches"]) == 1
-    assert [d._test_id for d in events["batches"][0]] == ["a1", "a2"]
+    assert result["steps"] == 2
+    assert events["optim_steps"] == 2
+    assert len(events["batches"]) == 2
+    assert [d._test_id for d in events["batches"][0]] == ["a1"]
+    assert [d._test_id for d in events["batches"][1]] == ["a2"]
     assert events["deleted_jobs"] == ["job-sft"]
