@@ -68,7 +68,7 @@ from training.utils.timer import timer, flush_timing
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import AsyncRLState, TrainStepFns, async_rl_loop, run_rl_loop
 from training.utils.rl.losses import (
     build_builtin_loss_datums,
     build_loss_fn,
@@ -112,6 +112,21 @@ class Config:
 
     All groups are collected before a single ``forward_backward_custom`` +
     ``optim_step`` pair fires (1:1 ratio)."""
+
+    async_rollout: bool = False
+    """If True, use ``async_rl_loop(...)`` instead of the current sync loop."""
+
+    prompt_groups_per_fwd_bkwd: int | None = None
+    """Accepted prompt groups consumed by one ``forward_backward*`` call.
+    Defaults to ``prompt_groups_per_step`` when unset."""
+
+    prompt_groups_per_policy: int | None = None
+    """Accepted prompt groups consumed under one deployment policy version
+    before the next hotload. Defaults to ``prompt_groups_per_step`` when unset."""
+
+    max_head_offpolicy_versions: int = 0
+    """Extra hard stop for async admission: stop launching new requests once
+    ``current_launch_version - oldest_unfinished_version`` exceeds this value."""
 
     router_replay: bool = False
     router_replay_completion_only: bool = True
@@ -268,6 +283,21 @@ def main(
     )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
+    prompt_groups_per_fwd_bkwd = cfg.prompt_groups_per_fwd_bkwd or prompt_groups_per_step
+    prompt_groups_per_policy = cfg.prompt_groups_per_policy or prompt_groups_per_step
+    async_rollout = cfg.async_rollout
+    if prompt_groups_per_fwd_bkwd <= 0:
+        raise ValueError("prompt_groups_per_fwd_bkwd must be positive")
+    if prompt_groups_per_policy <= 0:
+        raise ValueError("prompt_groups_per_policy must be positive")
+    if prompt_groups_per_step % prompt_groups_per_fwd_bkwd != 0:
+        raise ValueError(
+            "prompt_groups_per_step must be a multiple of prompt_groups_per_fwd_bkwd"
+        )
+    if prompt_groups_per_policy % prompt_groups_per_step != 0:
+        raise ValueError(
+            "prompt_groups_per_policy must be a multiple of prompt_groups_per_step"
+        )
     if not cfg.deployment.tokenizer_model:
         raise ValueError(
             "deployment.tokenizer_model is required for client-side tokenization. "
@@ -278,6 +308,9 @@ def main(
         {
             "completions_per_prompt": completions_per_prompt,
             "prompt_groups_per_step": prompt_groups_per_step,
+            "prompt_groups_per_fwd_bkwd": prompt_groups_per_fwd_bkwd,
+            "prompt_groups_per_policy": prompt_groups_per_policy,
+            "async_rollout": int(async_rollout),
             "kl_beta": cfg.kl_beta,
             "lr": cfg.learning_rate,
         },
@@ -329,8 +362,13 @@ def main(
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         logger.info(
-            "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
+            "Training: async=%s | prompt_groups_per_fwd_bkwd=%d | "
+            "prompt_groups_per_step=%d | prompt_groups_per_policy=%d | "
+            "completions_per_prompt=%d",
+            async_rollout,
+            prompt_groups_per_fwd_bkwd,
             prompt_groups_per_step,
+            prompt_groups_per_policy,
             completions_per_prompt,
         )
 
@@ -650,6 +688,41 @@ def main(
             logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
 
+        def _log_step_metrics(
+            step: int,
+            prompt_groups: list[PromptGroup],
+            fwd_bwd_results: list,
+            optim_result,
+            loop_stats: dict | None = None,
+        ) -> dict:
+            metrics = compute_step_metrics(
+                prompt_groups=prompt_groups,
+                fwd_bwd_results=fwd_bwd_results,
+                optim_result=optim_result,
+                n_accum=len(fwd_bwd_results),
+                timing_metrics=flush_timing(),
+                loop_stats=loop_stats,
+                completions_per_prompt=completions_per_prompt,
+            )
+            metrics["train/step"] = step
+
+            avg_reward = metrics.get("rollout/reward", 0.0)
+            avg_acc = metrics.get("rollout/accuracy", 0.0)
+            avg_kl = metrics.get("train/mean_kl", 0.0)
+            logger.info(
+                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
+                step,
+                avg_reward,
+                avg_acc * 100,
+                avg_kl,
+            )
+            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
+            wandb_log(metrics, step)
+
+            if cfg.trajectory_dir:
+                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
+            return metrics
+
         def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
@@ -697,33 +770,56 @@ def main(
                     kind=CheckpointKind.STATE,
                 )
 
-            metrics = compute_step_metrics(
-                prompt_groups=prompt_groups,
-                fwd_bwd_results=[fwd_bwd_result],
-                optim_result=optim_result,
-                n_accum=1,
-                timing_metrics=flush_timing(),
-                loop_stats=loop_stats,
-                completions_per_prompt=completions_per_prompt,
-            )
-            metrics["train/step"] = step
-
-            avg_reward = metrics.get("rollout/reward", 0.0)
-            avg_acc = metrics.get("rollout/accuracy", 0.0)
-            avg_kl = metrics.get("train/mean_kl", 0.0)
-            logger.info(
-                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
+            metrics = _log_step_metrics(
                 step,
-                avg_reward,
-                avg_acc * 100,
-                avg_kl,
+                prompt_groups,
+                [fwd_bwd_result],
+                optim_result,
+                loop_stats,
             )
-            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
-            wandb_log(metrics, step)
+            return step, metrics
 
-            if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
+        def train_step_async(
+            step: int,
+            prompt_groups: list[PromptGroup],
+            loop_stats: dict | None = None,
+        ) -> tuple[int, dict]:
+            """ref_forward + microbatched fwd_bwd + optim_step + metrics."""
+            t0 = _time.time()
+            ref_forward(prompt_groups)
+            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
+            fwd_bwd_results = []
+            n_chunks = (len(prompt_groups) + prompt_groups_per_fwd_bkwd - 1) // prompt_groups_per_fwd_bkwd
+            for chunk_idx in range(n_chunks):
+                start = chunk_idx * prompt_groups_per_fwd_bkwd
+                end = start + prompt_groups_per_fwd_bkwd
+                sub_groups = prompt_groups[start:end]
+                t0 = _time.time()
+                fwd_bwd_results.append(fwd_bwd_one(sub_groups))
+                logger.info(
+                    "[step %d] fwd_bwd chunk %d/%d: done (%.1fs)",
+                    step + 1,
+                    chunk_idx + 1,
+                    n_chunks,
+                    _time.time() - t0,
+                )
+
+            t0 = _time.time()
+            optim_result = policy.optim_step(
+                adam_params,
+                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            )
+            step += 1
+            logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
+
+            metrics = _log_step_metrics(
+                step,
+                prompt_groups,
+                fwd_bwd_results,
+                optim_result,
+                loop_stats,
+            )
             return step, metrics
 
         # -- Run ----------------------------------------------------------------
@@ -732,40 +828,111 @@ def main(
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
-        train_fns = TrainStepFns(train_step=train_step)
+        async_state: AsyncRLState | None = None
+        if async_rollout:
+            def _async_post_step(state: AsyncRLState) -> None:
+                step = state.global_step
+                if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
+                    logger.info("[step %d] dcp_save...", step)
+                    t0 = _time.time()
+                    save_checkpoint(
+                        policy,
+                        f"step-{step}",
+                        cfg.log_path,
+                        {
+                            "step": step,
+                            "data_consumed": state.rows_submitted,
+                            "rows_submitted": state.rows_submitted,
+                            "accepted_total": state.accepted_total,
+                            "current_launch_version": state.current_launch_version,
+                            "source_job_id": policy_job_id,
+                        },
+                        kind=CheckpointKind.STATE,
+                    )
+                    logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
-        remaining_rows = []
-        for i_step in range(step_offset, len(rl_dataset)):
-            remaining_rows.extend(rl_dataset.get_batch(i_step))
+            def _async_policy_boundary(state: AsyncRLState) -> None:
+                logger.info(
+                    "[step %d] policy boundary: launch_version=%d | weight_sync: saving + loading...",
+                    state.global_step,
+                    state.current_launch_version,
+                )
+                t0 = _time.time()
+                with timer("weight_sync"):
+                    weight_syncer.save_and_hotload(f"step-{state.global_step}")
+                logger.info(
+                    "[step %d] weight_sync: done (%.1fs)",
+                    state.global_step,
+                    _time.time() - t0,
+                )
 
-        global_step = asyncio.run(
-            run_rl_loop(
-                sample_fns=(sample_one_prompt(row) for row in remaining_rows),
-                train_fns=train_fns,
-                prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=should_accept,
-                global_step=step_offset,
-                metrics_callback=_loop_metrics_callback,
+            train_fns = TrainStepFns(train_step=train_step_async)
+            remaining_rows = all_rows[(resume_info.rows_submitted if resume_info else 0):]
+            async_state = asyncio.run(
+                async_rl_loop(
+                    sample_fns=(sample_one_prompt(row) for row in remaining_rows),
+                    train_fns=train_fns,
+                    prompt_groups_per_step=prompt_groups_per_step,
+                    prompt_groups_per_policy=prompt_groups_per_policy,
+                    max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
+                    dynamic_filter_fn=should_accept,
+                    global_step=step_offset,
+                    metrics_callback=_loop_metrics_callback,
+                    current_launch_version=resume_info.current_launch_version if resume_info else 0,
+                    rows_submitted=resume_info.rows_submitted if resume_info else 0,
+                    accepted_total=resume_info.accepted_total if resume_info else 0,
+                    post_step_fn=_async_post_step,
+                    policy_boundary_fn=_async_policy_boundary,
+                )
             )
-        )
+            global_step = async_state.global_step
+        else:
+            train_fns = TrainStepFns(train_step=train_step)
+
+            remaining_rows = []
+            for i_step in range(step_offset, len(rl_dataset)):
+                remaining_rows.extend(rl_dataset.get_batch(i_step))
+
+            global_step = asyncio.run(
+                run_rl_loop(
+                    sample_fns=(sample_one_prompt(row) for row in remaining_rows),
+                    train_fns=train_fns,
+                    prompt_groups_per_step=prompt_groups_per_step,
+                    dynamic_filter_fn=should_accept,
+                    global_step=step_offset,
+                    metrics_callback=_loop_metrics_callback,
+                )
+            )
 
         # -- Final checkpoint ----------------------------------------------------
 
         if global_step > step_offset:
             try:
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    global_step - step_offset
-                ) * prompt_groups_per_step
+                if async_rollout and async_state is not None:
+                    _data_consumed = async_state.rows_submitted
+                    loop_state = {
+                        "step": global_step,
+                        "data_consumed": _data_consumed,
+                        "rows_submitted": async_state.rows_submitted,
+                        "accepted_total": async_state.accepted_total,
+                        "current_launch_version": async_state.current_launch_version,
+                        "source_job_id": policy_job_id,
+                    }
+                else:
+                    _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+                        global_step - step_offset
+                    ) * prompt_groups_per_step
+                    loop_state = {
+                        "step": global_step,
+                        "data_consumed": _data_consumed,
+                        "source_job_id": policy_job_id,
+                    }
                 cp_name = f"step-{global_step}"
                 paths = save_checkpoint(
                     policy,
                     cp_name,
                     cfg.log_path,
-                    {
-                        "step": global_step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
+                    loop_state,
                     kind=CheckpointKind.BOTH,
                 )
 
