@@ -121,7 +121,8 @@ class Config:
     Defaults to ``GradAccNormalization.NUM_LOSS_TOKENS`` (per-token mean)."""
 
     policy_loss: str = "grpo"
-    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, ``"reinforce"``, or ``"cispo"``.
+    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``,
+    ``"gspo-token"``, ``"reinforce"``, or ``"cispo"``.
 
     If an eligible builtin kernel exists for the selected loss, training uses
     the server-side ``forward_backward(...)`` path. Otherwise it falls back to
