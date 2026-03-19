@@ -53,6 +53,14 @@ class ResourceCleanup:
         """Register a trainer job for deletion on exit."""
         self._jobs.append(job_id)
 
+    def delete_trainer(self, job_id: str) -> None:
+        """Delete a trainer job now and unregister it from cleanup."""
+        self._rlor_mgr.delete(job_id)
+        try:
+            self._jobs.remove(job_id)
+        except ValueError:
+            pass
+
     def deployment(self, dep_id: str, action: str = "delete") -> None:
         """Register a deployment for cleanup on exit.
 
