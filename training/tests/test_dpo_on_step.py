@@ -358,12 +358,12 @@ def test_main_passes_on_step_to_train_loop(monkeypatch: pytest.MonkeyPatch) -> N
     assert captured_on_step[0] is sentinel
 
 
-def test_main_calls_on_trainers_created(monkeypatch: pytest.MonkeyPatch) -> None:
-    """on_trainers_created is called with correct IDs before training starts."""
+def test_main_calls_on_trainer_created_per_trainer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """on_trainer_created fires per-trainer (not batched) before training starts."""
     events: list[tuple[str, Any]] = []
 
-    def on_trainers_created_cb(policy_job_id: str, reference_job_id: str | None) -> None:
-        events.append(("on_trainers_created", (policy_job_id, reference_job_id)))
+    def on_trainer_created_cb(job_id: str, role: str) -> None:
+        events.append(("on_trainer_created", (job_id, role)))
 
     async def fake_train_loop(
         ref_cache: Any,
@@ -452,7 +452,12 @@ def test_main_calls_on_trainers_created(monkeypatch: pytest.MonkeyPatch) -> None
     def fake_create_trainer_job(*args: Any, **kwargs: Any) -> SimpleNamespace:
         display_name = kwargs.get("display_name", "")
         job_id = "policy-job" if display_name == "dpo-policy" else "reference-job"
-        return SimpleNamespace(job_id=job_id)
+        role = "policy" if not kwargs.get("forward_only") else "reference"
+        cb = kwargs.get("on_trainer_created")
+        ep = SimpleNamespace(job_id=job_id)
+        if cb is not None:
+            cb(ep.job_id, role)
+        return ep
 
     monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
     monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
@@ -460,7 +465,7 @@ def test_main_calls_on_trainers_created(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
 
     cfg = module.Config(
-        log_path="/tmp/dpo_test_on_trainers_created",
+        log_path="/tmp/dpo_test_on_trainer_created",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-1.7B",
         infra=module.InfraConfig(
@@ -474,9 +479,16 @@ def test_main_calls_on_trainers_created(monkeypatch: pytest.MonkeyPatch) -> None
         cfg,
         rlor_mgr=FakeRlorMgr(),
         deploy_mgr=FakeDeployMgr(),
-        on_trainers_created=on_trainers_created_cb,
+        on_trainer_created=on_trainer_created_cb,
     )
 
-    assert len(events) >= 2
-    assert events[0] == ("on_trainers_created", ("policy-job", "reference-job"))
-    assert events[1] == ("_train_loop", None)
+    trainer_events = [e for e in events if e[0] == "on_trainer_created"]
+    assert len(trainer_events) == 2
+    job_ids_and_roles = {e[1] for e in trainer_events}
+    assert ("policy-job", "policy") in job_ids_and_roles
+    assert ("reference-job", "reference") in job_ids_and_roles
+
+    train_loop_idx = next(i for i, e in enumerate(events) if e[0] == "_train_loop")
+    for i, e in enumerate(events):
+        if e[0] == "on_trainer_created":
+            assert i < train_loop_idx, "on_trainer_created must fire before _train_loop"

@@ -20,6 +20,7 @@ __all__ = [
     "compute_advantages",
     "compute_pass_at_k",
     "create_trainer_job",
+    "TrainerCreatedCallback",
     "encode_text",
     "extract_text",
     "find_common_prefix_length",
@@ -68,6 +69,7 @@ from training.utils.data import (
 )
 from training.utils.infra import (
     ResourceCleanup,
+    TrainerCreatedCallback,
     setup_deployment,
     create_trainer_job,
     setup_training_client,

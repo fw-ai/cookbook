@@ -41,6 +41,7 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     ResourceCleanup,
+    TrainerCreatedCallback,
     WandBConfig,
     DeployConfig,
     WeightSyncConfig,
@@ -389,7 +390,7 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
     on_step: StepCallback | None = None,
-    on_trainers_created: Callable[[str, str | None], None] | None = None,
+    on_trainer_created: TrainerCreatedCallback | None = None,
 ):
     cfg = config
 
@@ -476,7 +477,8 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
+                hot_load_deployment_id=cfg.deployment.deployment_id,
+                on_trainer_created=on_trainer_created,
             )
             ref_fut = pool.submit(
                 create_trainer_job,
@@ -489,6 +491,7 @@ def main(
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-reference",
                 forward_only=True,
+                on_trainer_created=on_trainer_created,
             )
             policy_ep = pol_fut.result()
             reference_ep = ref_fut.result()
@@ -497,9 +500,6 @@ def main(
         reference_job_id = reference_ep.job_id
         cleanup.trainer(policy_job_id)
         cleanup.trainer(reference_job_id)
-
-        if on_trainers_created is not None:
-            on_trainers_created(policy_job_id, reference_job_id)
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
         reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
