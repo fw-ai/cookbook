@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""GRPO training on DeepMath-Probability-Hard with Qwen3-30B-A3B-Instruct/or model passed by args.
+"""Async GRPO training on DeepMath-Probability-Hard.
 
-Run prepare_data.py first, then: python train_deepmath.py
+Same as train_deepmath.py but uses async rollout scheduling:
+rollouts overlap with training via AsyncRolloutScheduler, with
+1:1:1 cadence (fwd_bwd + optim + hotload every step).
+
+Run prepare_data.py first, then: python train_deepmath_async.py
 """
 
 from __future__ import annotations
@@ -40,10 +44,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Fixed configuration
-# ---------------------------------------------------------------------------
-
 load_dotenv()
 
 FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
@@ -59,12 +59,9 @@ class TrainArgs:
     )
     training_shape: str = field(default_factory=lambda: os.environ.get("TRAINING_SHAPE", ""))
     ref_training_shape: str | None = None
-    """Separate training shape for the forward-only reference model."""
     deployment_id: str | None = None
-    """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "US_OHIO_1"
     deployment_region: str | None = None
-    deployment_replica_count: int | None = None
     max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8
@@ -73,27 +70,25 @@ class TrainArgs:
     temperature: float = 1.0
     max_completion_tokens: int = 30 * 1024
     prompt_groups_per_step: int = 32
+    valid_prompt_groups_per_step: int | None = None
+    """Target accepted groups per step (async mode). Defaults to prompt_groups_per_step."""
+    max_head_offpolicy_versions: int = 2
+    """Max staleness: how many versions ahead the newest rollout can be."""
     router_replay: bool = False
     trajectory_dir: str | None = None
-    """Directory to save per-step trajectory JSONL files."""
     deployment_extra_values: dict[str, str] | None = None
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
     skip_cleanup: bool = False
-    """Do not delete deployment and trainer jobs on exit."""
     policy_job_id: str | None = None
-    """Pre-created policy trainer job ID to reuse."""
     reference_job_id: str | None = None
-    """Pre-created reference trainer job ID to reuse."""
     output_model_id: str | None = None
-    """Promote final checkpoint to this model ID."""
 
 
 def parse_args() -> TrainArgs:
-    """Parse CLI args into TrainArgs. Defaults come from the dataclass above."""
     defaults = TrainArgs()
     parser = argparse.ArgumentParser(
-        description="Train GRPO on DeepMath-Probability-Hard"
+        description="Async GRPO training on DeepMath-Probability-Hard"
     )
     parser.add_argument("--base-model")
     parser.add_argument("--tokenizer-model")
@@ -101,13 +96,10 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--training-shape")
     parser.add_argument("--ref-training-shape",
                         help="Separate training shape for the forward-only reference model")
-    parser.add_argument(
-        "--deployment-id",
-        help="Existing deployment ID to reuse; omit to auto-create",
-    )
+    parser.add_argument("--deployment-id",
+                        help="Existing deployment ID to reuse; omit to auto-create")
     parser.add_argument("--region")
     parser.add_argument("--deployment-region")
-    parser.add_argument("--deployment-replica-count", type=int)
 
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--epochs", type=int)
@@ -118,6 +110,10 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--max-completion-tokens", type=int)
 
     parser.add_argument("--prompt-groups-per-step", type=int)
+    parser.add_argument("--valid-prompt-groups-per-step", type=int,
+                        help="Target accepted groups per async step (default: prompt_groups_per_step)")
+    parser.add_argument("--max-head-offpolicy-versions", type=int,
+                        help="Max rollout staleness in versions (default: 2)")
 
     parser.add_argument("--trajectory-dir",
                         help="Directory to save per-step trajectory JSONL files")
@@ -126,22 +122,16 @@ def parse_args() -> TrainArgs:
         "--deployment-extra-values",
         nargs="*",
         default=None,
-        help="Extra Helm values for the deployment as key=value pairs "
-             "(e.g. --deployment-extra-values priorityClass=deployment)",
+        help="Extra Helm values as key=value pairs",
     )
     parser.add_argument("--wandb-entity")
     parser.add_argument("--wandb-project")
-    parser.add_argument("--skip-cleanup", action="store_true",
-                        help="Do not delete deployment and trainer jobs on exit")
-    parser.add_argument("--policy-job-id",
-                        help="Pre-created policy trainer job ID to reuse")
-    parser.add_argument("--reference-job-id",
-                        help="Pre-created reference trainer job ID to reuse")
-    parser.add_argument("--output-model-id", type=str, required=True,
-                        help="Promote final checkpoint to this model ID")
+    parser.add_argument("--skip-cleanup", action="store_true")
+    parser.add_argument("--policy-job-id")
+    parser.add_argument("--reference-job-id")
+    parser.add_argument("--output-model-id", type=str, required=True)
 
     parsed = parser.parse_args(namespace=defaults)
-    # Convert --deployment-extra-values key=value pairs to a dict.
     raw = getattr(parsed, "deployment_extra_values", None)
     if raw:
         ev = {}
@@ -157,14 +147,13 @@ def parse_args() -> TrainArgs:
 
 
 # ---------------------------------------------------------------------------
-# Reward function
+# Reward function (identical to sync version)
 # ---------------------------------------------------------------------------
 
 _BOXED_RE = re.compile(r"\\boxed\s*\{", re.DOTALL)
 
 
 def extract_boxed(text: str) -> str | None:
-    """Extract content from the last \\boxed{...} in *text*, handling nested braces."""
     matches = list(_BOXED_RE.finditer(text))
     if not matches:
         return None
@@ -184,30 +173,19 @@ def extract_boxed(text: str) -> str | None:
 
 
 def extract_answer_from_completion(text: str) -> str | None:
-    """Extract the final answer from a model completion.
-
-    Tries (in order):
-      1. \\boxed{...}  (last occurrence, handles nested braces)
-      2. <answer>...</answer> XML tags
-      3. **Answer:** ... markdown prefix
-    """
     ans = extract_boxed(text)
     if ans is not None:
         return ans
-
     m = re.search(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
     if m:
         return m.group(1).strip()
-
     m = re.search(r"\*\*(?:Answer|ANSWER)\s*[:：]\*\*\s*(.+?)(?:\n|$)", text)
     if m:
         return m.group(1).strip()
-
     return None
 
 
 def _normalize_text(s: str) -> str:
-    """Strip whitespace and common LaTeX wrappers for string comparison."""
     s = s.strip()
     s = re.sub(r"\\(?:text|mathrm|operatorname)\{([^}]*)\}", r"\1", s)
     s = re.sub(r"\\(?:left|right|displaystyle|,|;|!|quad|qquad)", "", s)
@@ -218,10 +196,6 @@ def _normalize_text(s: str) -> str:
 
 
 def deepmath_reward(completion: str, row: dict) -> float:
-    """Return 1.0 if the model's answer matches the ground truth, 0.0 otherwise.
-
-    Uses math_verify for symbolic comparison, with string and numeric fallbacks.
-    """
     ground_truth = str(row.get("ground_truth", ""))
     predicted = extract_answer_from_completion(completion)
     if predicted is None:
@@ -260,7 +234,7 @@ def deepmath_reward(completion: str, row: dict) -> float:
 def main():
     args = parse_args()
 
-    logger.info("GRPO DeepMath-Probability-Hard training with Qwen3-30B-A3B-Instruct")
+    logger.info("Async GRPO DeepMath training")
 
     if not os.path.exists(args.dataset_path):
         raise FileNotFoundError(
@@ -281,7 +255,7 @@ def main():
     )
 
     config = rl_loop.Config(
-        log_path=args.trajectory_dir or "./deepmath_logs",
+        log_path=args.trajectory_dir or "./deepmath_async_logs",
         base_model=args.base_model,
         dataset=args.dataset_path,
         learning_rate=args.learning_rate,
@@ -292,6 +266,9 @@ def main():
         epochs=args.epochs,
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
+        async_rollout=True,
+        valid_prompt_groups_per_step=args.valid_prompt_groups_per_step,
+        max_head_offpolicy_versions=args.max_head_offpolicy_versions,
         trajectory_dir=args.trajectory_dir,
         tis=TISConfig(cap=2.0),
         router_replay=args.router_replay,
@@ -308,7 +285,6 @@ def main():
         deployment=DeployConfig(
             deployment_id=args.deployment_id,
             deployment_region=args.deployment_region,
-            replica_count=args.deployment_replica_count,
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
             extra_values=args.deployment_extra_values,
@@ -324,28 +300,24 @@ def main():
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            run_name=args.deployment_id or f"deepmath-{int(time.time()) % 100000}",
+            run_name=args.deployment_id or f"deepmath-async-{int(time.time()) % 100000}",
         ),
     )
 
     logger.info(
-        "model=%s | training_shape=%s | deployment_shape=(parsed from training shape) | region=%s",
-        args.base_model,
-        args.training_shape,
-        args.region,
+        "model=%s | training_shape=%s | region=%s",
+        args.base_model, args.training_shape, args.region,
     )
     logger.info(
-        "max_rows=%d | epochs=%d | completions_per_prompt=%d | temp=%.1f | lr=%g | kl_beta=%g",
-        args.max_rows,
-        args.epochs,
-        args.completions_per_prompt,
-        args.temperature,
-        args.learning_rate,
-        args.kl_beta,
+        "max_rows=%d | epochs=%d | completions=%d | temp=%.1f | lr=%g | kl_beta=%g",
+        args.max_rows, args.epochs, args.completions_per_prompt,
+        args.temperature, args.learning_rate, args.kl_beta,
     )
     logger.info(
-        "prompt_groups_per_step=%d",
+        "prompt_groups_per_step=%d | valid_target=%s | max_offpolicy=%d | async=True",
         args.prompt_groups_per_step,
+        args.valid_prompt_groups_per_step or args.prompt_groups_per_step,
+        args.max_head_offpolicy_versions,
     )
 
     metrics = rl_loop.main(
@@ -355,7 +327,7 @@ def main():
         cleanup_on_exit=not args.skip_cleanup,
     )
 
-    logger.info("Training complete. Final metrics: %s", metrics)
+    logger.info("Async training complete. Final metrics: %s", metrics)
 
 
 if __name__ == "__main__":
