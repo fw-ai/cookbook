@@ -352,13 +352,14 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         )
 
     async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
-                              weight_syncer, cfg, step_offset, on_ref_done=None):
+                              weight_syncer, cfg, step_offset, on_ref_done=None, on_step=None):
         events["train_loop"] = {
             "tokenized_pairs": tokenized_pairs,
             "reference_job_id": reference.job_id,
             "policy_job_id": policy.job_id,
             "cfg": cfg,
             "step_offset": step_offset,
+            "on_step": on_step,
         }
         if on_ref_done is not None:
             on_ref_done()
@@ -520,7 +521,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         )
 
     async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
-                              weight_syncer, cfg, step_offset, on_ref_done=None):
+                              weight_syncer, cfg, step_offset, on_ref_done=None, on_step=None):
         events["train_loop"] = {
             "tokenized_pairs": tokenized_pairs,
             "policy_job_id": policy.job_id,

@@ -65,6 +65,13 @@ from training.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
 
+StepCallback = Callable[[int, int, int, dict[str, Any]], None]
+"""on_step(step, total_steps, step_tokens, step_metrics) -> None.
+
+step_tokens is an explicit required parameter (not a dict key) so
+token counting correctness is enforced at the type level.
+"""
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -248,6 +255,7 @@ async def _train_loop(
     cfg: Config,
     step_offset: int,
     on_ref_done: Callable[[], None] | None = None,
+    on_step: StepCallback | None = None,
 ) -> int:
     """Pipelined DPO training -- ref forward overlaps with policy training.
 
@@ -320,6 +328,9 @@ async def _train_loop(
         })
         wandb_log(step_metrics, step)
 
+        if on_step is not None:
+            on_step(step, total_steps, step_tokens, step_metrics)
+
     # -- Epoch 0: pipelined ref forward + training -----------------------------
 
     multi_epoch = cfg.epochs > 1
@@ -377,6 +388,8 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
+    on_step: StepCallback | None = None,
+    on_trainers_created: Callable[[str, str | None], None] | None = None,
 ):
     cfg = config
 
@@ -485,6 +498,9 @@ def main(
         cleanup.trainer(policy_job_id)
         cleanup.trainer(reference_job_id)
 
+        if on_trainers_created is not None:
+            on_trainers_created(policy_job_id, reference_job_id)
+
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
         reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
 
@@ -543,6 +559,7 @@ def main(
             _train_loop(
                 tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
                 on_ref_done=_on_ref_done,
+                on_step=on_step,
             )
         )
 

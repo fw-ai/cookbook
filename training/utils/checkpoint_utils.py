@@ -16,6 +16,13 @@ from training.utils import ReconnectableClient
 from enum import Enum
 from typing import Any
 
+try:
+    import fsspec
+    FSSPEC_AVAILABLE = True
+except ImportError:
+    fsspec = None  # type: ignore[assignment]
+    FSSPEC_AVAILABLE = False
+
 from tinker_cookbook.checkpoint_utils import (
     get_last_checkpoint,
     CHECKPOINTS_BASE_NAME,
@@ -125,8 +132,18 @@ def save_checkpoint(
         paths["sampler_path"] = get_sampler_checkpoint_id(save_result)
 
     full_dict = {"name": name, **loop_state, **paths}
-    os.makedirs(log_path, exist_ok=True)
-    with open(os.path.join(log_path, CHECKPOINTS_BASE_NAME), "a") as f:
-        f.write(json.dumps(full_dict) + "\n")
+    if log_path.startswith("gs://"):
+        if not FSSPEC_AVAILABLE:
+            raise ImportError(
+                "fsspec is required for GCS paths (gs://). "
+                "Install with: pip install fsspec gcsfs"
+            )
+        gcs_path = log_path.rstrip("/") + "/" + CHECKPOINTS_BASE_NAME
+        with fsspec.open(gcs_path, "a") as f:
+            f.write(json.dumps(full_dict) + "\n")
+    else:
+        os.makedirs(log_path, exist_ok=True)
+        with open(os.path.join(log_path, CHECKPOINTS_BASE_NAME), "a") as f:
+            f.write(json.dumps(full_dict) + "\n")
     logger.info("Saved checkpoint: %s", full_dict)
     return paths
