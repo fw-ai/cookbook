@@ -84,10 +84,9 @@ class TrainArgs:
     policy_job_id: str | None = None
     reference_job_id: str | None = None
     output_model_id: str | None = None
-    dp_shard: int = 1
-    """FSDP sharding degree. 1 = disabled (pure DDP)."""
     dp_replicate: int = 2
-    """DDP replication degree. 2 = two data-parallel replicas."""
+    """DDP replication degree. 2 = two data-parallel replicas.
+    The trainer auto-infers dp_shard = world_size / (tp * pp * cp * ep * dp_replicate)."""
 
 
 def parse_args() -> TrainArgs:
@@ -123,8 +122,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--policy-job-id")
     parser.add_argument("--reference-job-id")
     parser.add_argument("--output-model-id", type=str, required=True)
-    parser.add_argument("--dp-shard", type=int, default=1,
-                        help="FSDP sharding degree (1=disabled for pure DDP)")
     parser.add_argument("--dp-replicate", type=int, default=2,
                         help="DDP replication degree")
 
@@ -227,8 +224,7 @@ def main():
     args = parse_args()
 
     logger.info(
-        "GRPO DeepMath training with DDP (dp_shard=%d, dp_replicate=%d)",
-        args.dp_shard,
+        "GRPO DeepMath training with DDP (dp_replicate=%d)",
         args.dp_replicate,
     )
 
@@ -250,9 +246,9 @@ def main():
         hotload_api_url=FIREWORKS_BASE_URL,
     )
 
-    # Pass --dp-shard and --dp-replicate via extra_args to the trainer.
+    # Pass --dp-replicate via extra_args to the trainer.
+    # The trainer auto-infers dp_shard = world_size / (tp * pp * cp * ep * dp_replicate).
     extra_args = [
-        f"--dp-shard={args.dp_shard}",
         f"--dp-replicate={args.dp_replicate}",
     ]
 
@@ -305,11 +301,10 @@ def main():
     )
 
     logger.info(
-        "model=%s | training_shape=%s | region=%s | dp_shard=%d | dp_replicate=%d",
+        "model=%s | training_shape=%s | region=%s | dp_replicate=%d",
         args.base_model,
         args.training_shape,
         args.region,
-        args.dp_shard,
         args.dp_replicate,
     )
 

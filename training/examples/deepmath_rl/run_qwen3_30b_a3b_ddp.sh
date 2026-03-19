@@ -4,13 +4,9 @@ set -euo pipefail
 # GRPO training for qwen3-30b-a3b-instruct-2507 on B200 (Ohio) with DDP (dp_replicate=2).
 #
 # This variant tests DDP (DistributedDataParallel) replication by passing
-# --dp-shard 1 --dp-replicate 2 via extra_args to the trainer.  This means
-# each data-parallel replica holds a full copy of the model (no FSDP sharding)
-# and gradients are all-reduced across the 2 replicas.
-#
-# NOTE: Pure DDP requires each GPU group to hold the full model.  Make sure
-# the training shape has enough GPUs so that after accounting for TP/PP/EP,
-# dp_replicate replicas fit in the remaining world_size.
+# --dp-replicate 2 via extra_args to the trainer.  The trainer auto-infers
+# dp_shard = world_size / (tp * pp * cp * ep * dp_replicate), so setting
+# dp_replicate=2 halves the FSDP shard degree and adds 2-way DDP replication.
 #
 # Requires:
 #   FIREWORKS_API_KEY      - Fireworks API key
@@ -73,7 +69,7 @@ echo "  Region:         $REGION"
 echo "  Max rows:       $MAX_ROWS"
 echo "  Completions:    $COMPLETIONS_PER_PROMPT"
 echo "  Groups/step:    $PROMPT_GROUPS_PER_STEP"
-echo "  DDP:            dp_shard=1, dp_replicate=2"
+echo "  DDP:            dp_replicate=2"
 echo ""
 
 exec python train_deepmath_ddp.py "${ARGS[@]}"
