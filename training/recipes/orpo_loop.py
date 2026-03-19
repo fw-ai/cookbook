@@ -25,7 +25,7 @@ Config args:
     orpo_lambda      Weight for odds-ratio loss term (default: 1.0)
     learning_rate    Adam learning rate (default: 1e-5)
     epochs           Number of passes over the dataset (default: 1)
-    grad_accum       Gradient accumulation steps (default: 4)
+    batch_size       Number of preference pairs per optimizer step (default: 4)
     max_seq_len      Max token length per sequence (auto from training shape)
     lora_rank        LoRA rank, 0 for full fine-tuning (default: 0)
 
@@ -84,18 +84,15 @@ class Config:
     orpo_lambda: float = 1.0
     learning_rate: float = 1e-5
     epochs: int = 1
-    grad_accum: int = 4
+    batch_size: int = 4
+    """Number of preference pairs per optimizer step."""
+    grad_accum: int = 1
+    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
     job_id: str | None = None
     output_model_id: str | None = None
-
-    grad_accumulation_normalization: str | None = None
-    """Server-side gradient normalization mode passed to optim_step.
-    ``None``: no server normalization (default). The ORPO loss function
-    already computes per-pair means client-side, so server-side
-    normalization would double-normalize."""
 
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
@@ -128,6 +125,13 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
+
+    if cfg.grad_accum > 1:
+        logger.warning(
+            "grad_accum is deprecated and ignored. "
+            "Increase batch_size instead for larger effective batches."
+        )
+
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -248,7 +252,7 @@ def main(
         # -- Training loop -------------------------------------------------------
 
         step = step_offset
-        total_steps = len(pair_cache) * cfg.epochs // cfg.grad_accum
+        total_steps = len(pair_cache) * cfg.epochs // cfg.batch_size
 
         def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
             nonlocal step
@@ -263,10 +267,7 @@ def main(
 
             loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
             result = client.forward_backward_custom(datums, loss_fn)
-            client.optim_step(
-                adam_params,
-                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-            )
+            client.optim_step(adam_params)
             step += 1
 
             step_elapsed = time.monotonic() - step_started_at
@@ -307,15 +308,15 @@ def main(
         for epoch in range(cfg.epochs):
             random.shuffle(pair_cache)
             step_t0 = time.monotonic()
-            step_pairs: list[dict] = []
+            batch_buffer: list[dict] = []
             for pair in pair_cache:
-                step_pairs.append(pair)
-                if len(step_pairs) >= cfg.grad_accum:
-                    step_t0 = _run_train_step(epoch, step_pairs, step_t0)
-                    step_pairs = []
+                batch_buffer.append(pair)
+                if len(batch_buffer) >= cfg.batch_size:
+                    step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
+                    batch_buffer = []
 
-            if step_pairs:
-                _run_train_step(epoch, step_pairs, step_t0)
+            if batch_buffer:
+                _run_train_step(epoch, batch_buffer, step_t0)
 
         # -- Final checkpoint ------------------------------------------------
 

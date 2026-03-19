@@ -68,7 +68,6 @@ class TestDPOE2E:
                 beta=0.1,
                 learning_rate=1e-5,
                 epochs=2,
-                grad_accum=2,
                 max_pairs=10,
                 infra=InfraConfig(
                     region=e2e_region,
