@@ -33,3 +33,19 @@ def test_to_deployment_config_does_not_infer_region_from_trainer():
 
     assert isinstance(deployment_config, DeploymentConfig)
     assert deployment_config.region is None
+
+
+def test_to_deployment_config_sets_fixed_replica_count():
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        replica_count=3,
+    )
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(),
+    )
+
+    assert isinstance(deployment_config, DeploymentConfig)
+    assert deployment_config.min_replica_count == 3
+    assert deployment_config.max_replica_count == 3

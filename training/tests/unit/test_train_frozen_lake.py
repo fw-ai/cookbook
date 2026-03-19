@@ -41,6 +41,8 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
             "--allow-plaintext-action-fallback",
             "--training-shape",
             "ts-qwen3-4b-smoke-v1",
+            "--deployment-replica-count",
+            "3",
             "--output-model-id",
             "out-model",
         ],
@@ -57,6 +59,7 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
     assert cfg.allow_plaintext_action_fallback is True
     assert cfg.training_shape == "ts-qwen3-4b-smoke-v1"
     assert cfg.deployment_region is None
+    assert cfg.deployment_replica_count == 3
 
 
 def test_main_rejects_invalid_output_model_id(monkeypatch):
@@ -210,6 +213,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
         kl_beta=0.0,
         training_shape="ts-qwen3-4b-smoke-v1",
         deployment_id="dep-123",
+        deployment_replica_count=2,
         observation_mode="image",
         allow_plaintext_action_fallback=True,
     )
@@ -293,11 +297,12 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(train_module, "TrainerJobManager", FakeTrainerJobManager)
     monkeypatch.setattr(train_module, "DeploymentManager", FakeDeploymentManager)
-    monkeypatch.setattr(
-        train_module,
-        "setup_deployment",
-        lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"),
-    )
+
+    def fake_setup_deployment(_deploy_mgr, deploy_cfg, *_args, **_kwargs):
+        events["deploy_config"] = deploy_cfg
+        return SimpleNamespace(inference_model="accounts/test/models/deployed")
+
+    monkeypatch.setattr(train_module, "setup_deployment", fake_setup_deployment)
     monkeypatch.setattr(train_module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(train_module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(train_module, "WeightSyncer", FakeWeightSyncer)
@@ -313,6 +318,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     assert len(events["trainer_jobs"]) == 1
     assert events["trainer_jobs"][0]["display_name"] == "frozen-lake-policy"
     assert events["trainer_jobs"][0]["hot_load_deployment_id"] == "dep-123"
+    assert events["deploy_config"].replica_count == 2
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["rollout_processor_init"]["observation_mode"] == "image"
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
