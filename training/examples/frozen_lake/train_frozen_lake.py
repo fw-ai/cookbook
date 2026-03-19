@@ -146,6 +146,7 @@ class FrozenLakeConfig:
     deployment_id: str | None = None
     region: str | None = None
     deployment_region: str | None = None
+    deployment_replica_count: int | None = None
 
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(
@@ -168,6 +169,7 @@ def parse_args() -> FrozenLakeConfig:
     parser.add_argument("--deployment-id", default=None)
     parser.add_argument("--region", default="US_VIRGINIA_1")
     parser.add_argument("--deployment-region", default=None)
+    parser.add_argument("--deployment-replica-count", type=int, default=None)
 
     parser.add_argument("--seed-jsonl-path",
                         default=os.path.join(os.path.dirname(__file__), "seeds.jsonl"))
@@ -327,6 +329,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         deployment_shape=cfg.deployment_shape or None,
         deployment_accelerator_type=cfg.accelerator_type or None,
         deployment_region=cfg.deployment_region,
+        replica_count=cfg.deployment_replica_count,
         tokenizer_model=cfg.tokenizer_model,
         sample_timeout=1200,
     )

@@ -74,6 +74,8 @@ class DeployConfig:
     Increase for R3 + long completions where responses can be very large."""
     disable_speculative_decoding: bool = True
     """Disable base model's default draft/EAGLE speculation for hotload compatibility."""
+    replica_count: int | None = None
+    """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
     """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
 
@@ -87,6 +89,7 @@ class DeployConfig:
         accel = None if self.deployment_shape else self.deployment_accelerator_type
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type
+        replica_count = 1 if self.replica_count is None else self.replica_count
         return DeploymentConfig(
             deployment_id=self.deployment_id,
             base_model=base_model,
@@ -95,8 +98,8 @@ class DeployConfig:
             hot_load_bucket_type=self.hot_load_bucket_type,
             skip_shape_validation=skip_validation,
             extra_args=self.deployment_extra_args,
-            min_replica_count=1,
-            max_replica_count=1,
+            min_replica_count=replica_count,
+            max_replica_count=replica_count,
             accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
