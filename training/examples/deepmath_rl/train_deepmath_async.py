@@ -27,7 +27,7 @@ if _SRC not in sys.path:
 
 from math_verify import parse as math_parse, verify as math_verify
 
-import training.recipes.rl_loop as rl_loop
+import training.recipes.async_rl_loop as rl_loop
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
     InfraConfig,
