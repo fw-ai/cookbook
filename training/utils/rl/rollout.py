@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Iterator
+from typing import Any, AsyncIterator, Callable, Coroutine, Iterator
 
 from training.utils.rl.losses import PromptGroup
 
@@ -263,6 +263,64 @@ class AsyncRolloutScheduler:
         stats.valid_groups = len(accepted)
         stats.wall_time = time.time() - t0
         return accepted, stats
+
+    # -- stream_groups ---------------------------------------------------------
+
+    async def stream_groups(
+        self,
+        sample_fn_factory: Callable[[dict], Coroutine[Any, Any, PromptGroup | None]],
+        rows: Iterator[dict],
+    ) -> AsyncIterator[tuple[PromptGroup, int]]:
+        """Yield accepted ``(PromptGroup, version)`` one at a time.
+
+        Like ``collect_batch`` but yields each accepted group immediately
+        instead of buffering.  The caller can process each group
+        incrementally (e.g. ref_forward + fwd_bwd with server-side grad
+        accumulation) while sampling continues in the background.
+
+        Yields exactly ``step_target`` accepted groups then returns.
+        """
+        accepted = 0
+
+        def _try_submit() -> None:
+            if self._rows_exhausted:
+                return
+            cap = self._capacity()
+            for _ in range(cap):
+                try:
+                    row = next(rows)
+                except StopIteration:
+                    self._rows_exhausted = True
+                    break
+                self._submit_one(sample_fn_factory, row)
+
+        _try_submit()
+
+        while accepted < self._step_target:
+            if not self._in_flight and self._result_queue.empty():
+                break
+
+            try:
+                item, version = await asyncio.wait_for(
+                    self._result_queue.get(), timeout=0.1,
+                )
+            except asyncio.TimeoutError:
+                _try_submit()
+                continue
+
+            if item is None:
+                _try_submit()
+                continue
+
+            if self._filter_fn is not None and not self._filter_fn(item):
+                self._total_rejected += 1
+                _try_submit()
+                continue
+
+            self._total_accepted += 1
+            accepted += 1
+            yield item, version
+            _try_submit()
 
     # -- version management ----------------------------------------------------
 

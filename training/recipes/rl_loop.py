@@ -65,7 +65,9 @@ from training.utils.config import DeployConfig, InfraConfig, WeightSyncConfig  #
 from training.utils.rl.config import Config
 from training.utils.rl.datum import build_prompt_group
 from training.utils.rl.losses import build_loss_fn, resolve_builtin_loss
-from training.utils.rl.train import TrainContext, train_one_step
+import time as _time
+
+from training.utils.rl.train import TrainContext, train_one_step, train_one_group, finish_step
 from training.utils.rl.rollout import AsyncRolloutScheduler, collect_sync_batch
 
 logger = logging.getLogger(__name__)
@@ -538,37 +540,53 @@ def main(
                 step = infra.step_offset
 
                 while not scheduler.data_exhausted:
-                    groups, stats = await scheduler.collect_batch(
+                    # -- Stream groups: train each immediately, server accumulates --
+                    groups: list = []
+                    fwd_bwd_results: list = []
+                    version_offsets: list[int] = []
+                    raw_rewards: list[float] = []
+                    t0 = _time.time()
+
+                    async for group, version in scheduler.stream_groups(
                         sample_one_prompt, row_iter
-                    )
+                    ):
+                        groups.append(group)
+                        version_offsets.append(scheduler.current_version - version)
+                        raw_rewards.extend(group.rewards)
+
+                        # Train this group now — server accumulates gradients
+                        result = train_one_group(ctx, group)
+                        fwd_bwd_results.append(result)
+                        logger.info(
+                            "[async step %d] trained group %d/%d",
+                            step + 1, len(groups), step_target,
+                        )
+
                     if not groups:
                         break
 
+                    wall_time = _time.time() - t0
                     logger.info(
-                        "[async step %d] collected %d groups "
-                        "(%.1fs, failed=%d, filtered=%d)",
-                        step + 1,
-                        stats.valid_groups,
-                        stats.wall_time,
-                        stats.sample_fails,
-                        stats.filter_drops,
+                        "[async step %d] streamed %d groups (%.1fs)",
+                        step + 1, len(groups), wall_time,
                     )
 
                     loop_stats = {
-                        "valid_prompt_groups": stats.valid_groups,
-                        "total_sampled": stats.total_sampled,
-                        "filter_drops": stats.filter_drops,
-                        "sample_fails": stats.sample_fails,
-                        "sample_wait_time": stats.wall_time,
-                        "step_wall_time": stats.wall_time,
-                        "all_raw_rewards": list(stats.raw_rewards),
-                        "version_offsets": list(stats.version_offsets),
+                        "valid_prompt_groups": len(groups),
+                        "total_sampled": len(groups),
+                        "filter_drops": 0,
+                        "sample_fails": 0,
+                        "sample_wait_time": wall_time,
+                        "step_wall_time": wall_time,
+                        "all_raw_rewards": raw_rewards,
+                        "version_offsets": version_offsets,
                     }
 
-                    step, metrics = train_one_step(
+                    step, metrics = finish_step(
                         ctx,
                         step,
                         groups,
+                        fwd_bwd_results,
                         loop_stats,
                         save_checkpoint_fn=lambda name, extra: save_checkpoint(
                             ctx.policy,

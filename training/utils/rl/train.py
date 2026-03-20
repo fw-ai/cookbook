@@ -39,6 +39,8 @@ __all__ = [
     "TrainContext",
     "DynamicFilterFn",
     "train_one_step",
+    "train_one_group",
+    "finish_step",
     "run_rl_loop",
 ]
 
@@ -165,10 +167,22 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
     )
 
 
-def train_one_step(
+def train_one_group(ctx: TrainContext, group: PromptGroup) -> Any:
+    """Process ONE prompt group: ref_forward + fwd_bwd.
+
+    The server accumulates gradients across calls.  Call ``finish_step``
+    after processing ``step_target`` groups to fire optim_step.
+    """
+    with timer("ref_forward"):
+        _ref_forward(ctx, [group])
+    return _fwd_bwd(ctx, [group])
+
+
+def finish_step(
     ctx: TrainContext,
     step: int,
     prompt_groups: list[PromptGroup],
+    fwd_bwd_results: list[Any],
     loop_stats: dict | None = None,
     *,
     save_checkpoint_fn: Callable[..., Any] | None = None,
@@ -177,17 +191,13 @@ def train_one_step(
     resume_data_consumed: int = 0,
     step_offset: int = 0,
 ) -> tuple[int, dict]:
-    """Execute one training step: ref_forward + fwd_bwd + optim + weight_sync + metrics.
+    """Complete a training step: optim_step + weight_sync + metrics.
 
-    Shared by both sync and async paths in ``rl_loop.py``.
+    Called after ``train_one_group`` has been invoked for every group in
+    the step.  The server has accumulated gradients from each call.
 
     Returns ``(new_step, metrics_dict)``.
     """
-    with timer("ref_forward"):
-        _ref_forward(ctx, prompt_groups)
-
-    fwd_bwd_result = _fwd_bwd(ctx, prompt_groups)
-
     with timer("optim_step"):
         optim_result = ctx.policy.optim_step(
             ctx.adam_params,
@@ -213,9 +223,9 @@ def train_one_step(
 
     metrics = compute_step_metrics(
         prompt_groups=prompt_groups,
-        fwd_bwd_results=[fwd_bwd_result],
+        fwd_bwd_results=fwd_bwd_results,
         optim_result=optim_result,
-        n_accum=1,
+        n_accum=len(fwd_bwd_results),
         timing_metrics=flush_timing(),
         loop_stats=loop_stats,
         completions_per_prompt=ctx.completions_per_prompt,
@@ -239,6 +249,35 @@ def train_one_step(
         _dump_trajectory(ctx.trajectory_dir, step, prompt_groups)
 
     return step, metrics
+
+
+def train_one_step(
+    ctx: TrainContext,
+    step: int,
+    prompt_groups: list[PromptGroup],
+    loop_stats: dict | None = None,
+    *,
+    save_checkpoint_fn: Callable[..., Any] | None = None,
+    checkpoint_extra: dict | None = None,
+    step_target: int | None = None,
+    resume_data_consumed: int = 0,
+    step_offset: int = 0,
+) -> tuple[int, dict]:
+    """Execute one training step: ref_forward + fwd_bwd + optim + weight_sync + metrics.
+
+    Backward-compatible wrapper around ``train_one_group`` + ``finish_step``.
+
+    Returns ``(new_step, metrics_dict)``.
+    """
+    fwd_bwd_results = [train_one_group(ctx, g) for g in prompt_groups]
+    return finish_step(
+        ctx, step, prompt_groups, fwd_bwd_results, loop_stats,
+        save_checkpoint_fn=save_checkpoint_fn,
+        checkpoint_extra=checkpoint_extra,
+        step_target=step_target,
+        resume_data_consumed=resume_data_consumed,
+        step_offset=step_offset,
+    )
 
 
 # ---------------------------------------------------------------------------
