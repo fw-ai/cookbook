@@ -902,7 +902,7 @@ def test_sync_default_uses_collect_sync_batch(monkeypatch):
         def scale_to_zero(self, d):
             pass
 
-    from training.utils.rl.rollout import RolloutStats
+    from training.utils.rl.train import RolloutStats
 
     async def fake_collect_sync_batch(coros, filter_fn=None, target=1):
         events["collect_sync_batch_called"] = True

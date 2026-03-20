@@ -44,7 +44,7 @@ from training.utils.rl.train import (
     train_one_step,
     run_rl_loop,
 )
-from training.utils.rl.rollout import RolloutStats
+from training.utils.rl.train import RolloutStats
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.metrics import (
     build_loop_metrics,

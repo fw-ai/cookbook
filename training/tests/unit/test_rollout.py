@@ -15,7 +15,7 @@ from typing import List
 import pytest
 
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.rollout import (
+from training.utils.rl.train import (
     DynamicFilterFn,
     RolloutStats,
     collect_sync_batch,

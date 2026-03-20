@@ -24,11 +24,70 @@ from training.utils.rl.losses import (
     build_builtin_loss_datums,
     combine_prompt_groups,
 )
-from training.utils.rl.rollout import (
-    DynamicFilterFn,
-    collect_sync_batch,
-    RolloutStats,
-)
+from dataclasses import field as _field
+from typing import Coroutine as _Coroutine
+
+DynamicFilterFn = Callable[[PromptGroup], bool]
+"""Filter callback: ``(PromptGroup) -> bool``.  Return True to keep."""
+
+
+@dataclass
+class RolloutStats:
+    """Statistics from one batch collection round."""
+    valid_groups: int = 0
+    total_sampled: int = 0
+    filter_drops: int = 0
+    sample_fails: int = 0
+    wall_time: float = 0.0
+    raw_rewards: list[float] = _field(default_factory=list)
+    version_offsets: list[int] = _field(default_factory=list)
+
+
+async def collect_sync_batch(
+    coros: list[_Coroutine[Any, Any, PromptGroup | None]],
+    filter_fn: DynamicFilterFn | None = None,
+    target: int = 1,
+) -> tuple[list[PromptGroup], RolloutStats]:
+    """Submit coroutines concurrently, collect up to *target* accepted groups."""
+    import time as _t
+    queue: asyncio.Queue[PromptGroup | None] = asyncio.Queue()
+    worker_error: BaseException | None = None
+
+    async def _worker(coro):
+        nonlocal worker_error
+        try:
+            result = await coro
+            queue.put_nowait(result)
+        except BaseException as exc:
+            if worker_error is None:
+                worker_error = exc
+            queue.put_nowait(None)
+
+    for c in coros:
+        asyncio.create_task(_worker(c))
+
+    stats = RolloutStats()
+    accepted: list[PromptGroup] = []
+    t0 = _t.time()
+
+    for _ in range(len(coros)):
+        item = await queue.get()
+        if worker_error is not None:
+            raise RuntimeError(f"Sampling worker failed: {worker_error}") from worker_error
+        if item is None:
+            stats.sample_fails += 1
+            stats.total_sampled += 1
+            continue
+        stats.total_sampled += 1
+        stats.raw_rewards.extend(item.rewards)
+        if filter_fn is not None and not filter_fn(item):
+            stats.filter_drops += 1
+            continue
+        accepted.append(item)
+
+    stats.valid_groups = len(accepted)
+    stats.wall_time = _t.time() - t0
+    return accepted, stats
 from training.utils.timer import timer, flush_timing
 from training.utils.rl.metrics import compute_step_metrics
 

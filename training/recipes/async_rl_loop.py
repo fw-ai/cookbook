@@ -364,7 +364,7 @@ class AsyncRolloutScheduler:
 
         Re-implements the batch collection with full stats tracking.
         """
-        from training.utils.rl.rollout import RolloutStats
+        from training.utils.rl.train import RolloutStats
 
         accepted = []
         stats = RolloutStats()
