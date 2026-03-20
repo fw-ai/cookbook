@@ -29,7 +29,6 @@ import asyncio
 import logging
 from typing import List, Optional
 from dataclasses import field, dataclass
-from concurrent.futures import ThreadPoolExecutor
 
 import tinker
 
@@ -43,6 +42,7 @@ from training.utils import (
     DeployConfig,
     WeightSyncConfig,
     ReconnectableClient,
+    TrainingSessionClient,
     RLPromptDataset,
     wandb_log,
     setup_wandb,
@@ -151,10 +151,21 @@ class Config:
     """Base URL for the policy trainer (bypass direct route)."""
 
     reference_job_id: str | None = None
-    """Pre-created RLOR reference trainer job ID (skip creation if set)."""
+    """Legacy dedicated reference trainer job ID.
+
+    `rl_loop` now ignores this and always uses a shared training session for
+    reference logprobs.
+    """
 
     reference_base_url: str | None = None
-    """Base URL for the reference trainer (bypass direct route)."""
+    """Legacy dedicated reference trainer base URL.
+
+    `rl_loop` now ignores this and always uses a shared training session for
+    reference logprobs.
+    """
+
+    reference_warm_start_from: str | None = None
+    """Optional adapter directory to warm-start the shared reference session."""
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
@@ -311,13 +322,12 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    ref_profile = None
-    if cfg.infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+    if cfg.infra.ref_training_shape_id or cfg.reference_job_id or cfg.reference_base_url:
+        logger.info(
+            "Ignoring dedicated reference trainer config; rl_loop now uses shared training sessions for reference logprobs"
+        )
 
-    use_reference = ref_profile is not None
-    if not use_reference:
-        logger.info("No ref_training_shape_id set, skipping reference model")
+    use_reference = True
 
     import time as _time
 
@@ -334,63 +344,22 @@ def main(
             completions_per_prompt,
         )
 
-        if use_reference:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(
-                    create_trainer_job,
-                    rlor_mgr,
-                    base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=profile,
-                    lora_rank=cfg.lora_rank,
-                    max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate,
-                    display_name="grpo-policy",
-                    hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
-                    job_id=cfg.policy_job_id,
-                    base_url_override=cfg.policy_base_url,
-                )
-                ref_fut = pool.submit(
-                    create_trainer_job,
-                    rlor_mgr,
-                    base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=ref_profile,
-                    lora_rank=cfg.lora_rank,
-                    max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate,
-                    display_name="grpo-reference",
-                    forward_only=True,
-                    job_id=cfg.reference_job_id,
-                    base_url_override=cfg.reference_base_url,
-                )
-                policy_ep = pol_fut.result()
-                policy_job_id = policy_ep.job_id
-                if not cfg.policy_job_id:
-                    cleanup.trainer(policy_job_id)
-                reference_ep = ref_fut.result()
-                reference_job_id = reference_ep.job_id
-                if not cfg.reference_job_id:
-                    cleanup.trainer(reference_job_id)
-        else:
-            policy_ep = create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name="grpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,
-                job_id=cfg.policy_job_id,
-                base_url_override=cfg.policy_base_url,
-            )
-            policy_job_id = policy_ep.job_id
-            if not cfg.policy_job_id:
-                cleanup.trainer(policy_job_id)
-            reference_ep = None
-            reference_job_id = None
+        policy_ep = create_trainer_job(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            profile=profile,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            display_name="grpo-policy",
+            hot_load_deployment_id=cfg.deployment.deployment_id,
+            job_id=cfg.policy_job_id,
+            base_url_override=cfg.policy_base_url,
+        )
+        policy_job_id = policy_ep.job_id
+        if not cfg.policy_job_id:
+            cleanup.trainer(policy_job_id)
 
         policy = ReconnectableClient(
             rlor_mgr,
@@ -400,18 +369,10 @@ def main(
             fw_api_key=api_key,
             endpoint=policy_ep if cfg.policy_base_url else None,
         )
-        reference = (
-            ReconnectableClient(
-                rlor_mgr,
-                reference_ep.job_id,
-                cfg.base_model,
-                cfg.lora_rank,
-                fw_api_key=api_key,
-                endpoint=reference_ep if cfg.reference_base_url else None,
-            )
-            if reference_ep
-            else None
-        )
+        reference = TrainingSessionClient(api_key=api_key, base_url=base_url).create_session(cfg.base_model)
+        reference_job_id = getattr(reference, "_job_id", None)
+        if cfg.reference_warm_start_from:
+            reference.load_state(cfg.reference_warm_start_from)
 
         import transformers
 

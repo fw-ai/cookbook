@@ -38,11 +38,12 @@ class InfraConfig:
     When set, infra config is auto-derived from the shape."""
 
     ref_training_shape_id: str | None = None
-    """Training shape ID for the reference (forward-only) trainer.
-    When set, a reference model is created.  When not set, no reference
-    model is created.  No implicit fallback.  Can be the same value as
-    ``training_shape_id`` -- the control plane auto-appends
-    ``--forward-only`` via ``applyForwardOnlyConfig``."""
+    """Training shape ID for a dedicated reference (forward-only) trainer.
+    Recipes that still provision a separate reference trainer use this field.
+    `training.recipes.rl_loop` now ignores it and uses shared training sessions
+    for reference logprobs instead. Can be the same value as
+    ``training_shape_id`` -- the control plane auto-appends ``--forward-only``
+    via ``applyForwardOnlyConfig``."""
 
     region: str | None = None
     custom_image_tag: str | None = None
