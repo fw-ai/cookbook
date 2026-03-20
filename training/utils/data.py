@@ -5,38 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import math
-from contextlib import contextmanager
-from typing import Any, Dict, Generator, IO, List
+from typing import Any, Dict, List
 
 import torch
 import requests
 
 from fireworks.training.sdk.errors import request_with_retries
-
-try:
-    import fsspec
-    FSSPEC_AVAILABLE = True
-except ImportError:
-    fsspec = None  # type: ignore[assignment]
-    FSSPEC_AVAILABLE = False
+from fireworks.training.sdk.path import open_path
 
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def _open_path(path: str, mode: str = "r") -> Generator[IO, None, None]:
-    """Open a local file or cloud URI (``gs://``, ``s3://``) via fsspec."""
-    if path.startswith(("gs://", "s3://")):
-        if not FSSPEC_AVAILABLE:
-            raise ImportError(
-                "fsspec is required for cloud paths (gs://, s3://). "
-                "Install with: pip install fsspec gcsfs s3fs"
-            )
-        with fsspec.open(path, mode) as fh:
-            yield fh
-    else:
-        with open(path, mode) as fh:
-            yield fh
 
 
 class RLPromptDataset:
@@ -66,7 +43,7 @@ def load_jsonl_dataset(path_or_url: str, max_rows: int | None = None) -> List[Di
         resp.raise_for_status()
         lines = resp.text.strip().split("\n")
     else:
-        with _open_path(path_or_url) as f:
+        with open_path(path_or_url) as f:
             lines = f.readlines()
 
     rows: list[dict] = []
@@ -84,7 +61,7 @@ def load_jsonl_dataset(path_or_url: str, max_rows: int | None = None) -> List[Di
 def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dict[str, Any]]:
     """Load preference dataset (chosen/rejected pairs)."""
     data = []
-    with _open_path(path) as f:
+    with open_path(path) as f:
         for line in f:
             row = json.loads(line)
             if "chosen" in row and "rejected" in row:

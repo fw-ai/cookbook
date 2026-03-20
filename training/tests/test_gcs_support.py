@@ -74,8 +74,8 @@ class TestLoadJsonlDataset:
         mock_open_cm.__enter__ = mock.Mock(return_value=fake_fh)
         mock_open_cm.__exit__ = mock.Mock(return_value=False)
 
-        with mock.patch("training.utils.data.fsspec") as mock_fsspec, \
-             mock.patch("training.utils.data.FSSPEC_AVAILABLE", True):
+        with mock.patch("fireworks.training.sdk.path.fsspec") as mock_fsspec, \
+             mock.patch("fireworks.training.sdk.path.FSSPEC_AVAILABLE", True):
             mock_fsspec.open.return_value = mock_open_cm
             rows = load_jsonl_dataset("gs://bucket/data.jsonl")
 
@@ -85,7 +85,7 @@ class TestLoadJsonlDataset:
     def test_gs_path_without_fsspec_raises(self) -> None:
         from training.utils.data import load_jsonl_dataset
 
-        with mock.patch("training.utils.data.FSSPEC_AVAILABLE", False):
+        with mock.patch("fireworks.training.sdk.path.FSSPEC_AVAILABLE", False):
             with pytest.raises(ImportError, match="fsspec is required"):
                 load_jsonl_dataset("gs://bucket/data.jsonl")
 
@@ -119,8 +119,8 @@ class TestLoadPreferenceDataset:
         mock_open_cm.__enter__ = mock.Mock(return_value=fake_fh)
         mock_open_cm.__exit__ = mock.Mock(return_value=False)
 
-        with mock.patch("training.utils.data.fsspec") as mock_fsspec, \
-             mock.patch("training.utils.data.FSSPEC_AVAILABLE", True):
+        with mock.patch("fireworks.training.sdk.path.fsspec") as mock_fsspec, \
+             mock.patch("fireworks.training.sdk.path.FSSPEC_AVAILABLE", True):
             mock_fsspec.open.return_value = mock_open_cm
             data = load_preference_dataset("gs://bucket/prefs.jsonl")
 
@@ -130,7 +130,7 @@ class TestLoadPreferenceDataset:
     def test_gs_path_without_fsspec_raises(self) -> None:
         from training.utils.data import load_preference_dataset
 
-        with mock.patch("training.utils.data.FSSPEC_AVAILABLE", False):
+        with mock.patch("fireworks.training.sdk.path.FSSPEC_AVAILABLE", False):
             with pytest.raises(ImportError, match="fsspec is required"):
                 load_preference_dataset("gs://bucket/prefs.jsonl")
 
@@ -179,8 +179,8 @@ class TestSaveCheckpoint:
         client = _make_mock_client()
         loop_state = {"step": 10}
 
-        with mock.patch("training.utils.checkpoint_utils.fsspec") as mock_fsspec, \
-             mock.patch("training.utils.checkpoint_utils.FSSPEC_AVAILABLE", True):
+        with mock.patch("fireworks.training.sdk.path.fsspec") as mock_fsspec, \
+             mock.patch("fireworks.training.sdk.path.FSSPEC_AVAILABLE", True):
             mock_fsspec.open.return_value = mock_open_cm
             save_checkpoint(
                 client, "ckpt-10", "gs://bucket/logs", loop_state, kind=CheckpointKind.STATE,
@@ -198,7 +198,7 @@ class TestSaveCheckpoint:
         from training.utils.checkpoint_utils import save_checkpoint, CheckpointKind
 
         client = _make_mock_client()
-        with mock.patch("training.utils.checkpoint_utils.FSSPEC_AVAILABLE", False):
+        with mock.patch("fireworks.training.sdk.path.FSSPEC_AVAILABLE", False):
             with pytest.raises(ImportError, match="fsspec is required"):
                 save_checkpoint(
                     client, "ckpt-1", "gs://bucket/logs", {"step": 1},
