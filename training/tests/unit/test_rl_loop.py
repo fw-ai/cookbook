@@ -194,6 +194,8 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
+    assert events["run_loop_kwargs"]["weight_sync_interval"] == cfg.weight_sync.weight_sync_interval
+    assert events["run_loop_kwargs"]["weight_sync_fn"] is not None
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
     assert events["wandb_finished"] == 0
@@ -420,6 +422,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                 "all_raw_rewards": list(pg.rewards),
             },
         )
+        if kwargs.get("weight_sync_fn") is not None:
+            kwargs["weight_sync_fn"](step)
         kwargs["metrics_callback"]({"train/step": step, "rollout/sample_fail_count": 0})
         events["finish_metrics"] = metrics
         return step
