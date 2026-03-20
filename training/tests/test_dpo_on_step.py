@@ -11,6 +11,38 @@ import pytest
 import training.recipes.dpo_loop as module
 
 
+class FakePolicy:
+    """Shared fake for _train_loop tests."""
+
+    def optim_step(self, _params: Any, **kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(metrics={})
+
+
+class FakeWeightSyncer:
+    """Shared fake for _train_loop tests."""
+
+    def save_and_hotload(self, name: str) -> None:
+        pass
+
+    def save_dcp(self, name: str) -> None:
+        pass
+
+
+@pytest.fixture()
+def patch_train_loop_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch heavy dependencies shared by _train_loop tests."""
+    monkeypatch.setattr(
+        module,
+        "_forward_backward_pairs",
+        lambda batch, policy, beta, microbatch_sizes=None: SimpleNamespace(
+            metrics={"dpo_loss": 0.5, "margin": 0.1, "accuracy": 0.8}
+        ),
+    )
+    monkeypatch.setattr(module, "flush_timing", lambda: {})
+    monkeypatch.setattr(module, "log_metrics_json", lambda step, **kw: None)
+    monkeypatch.setattr(module, "wandb_log", lambda payload, step: None)
+
+
 def test_main_signature_accepts_on_step() -> None:
     sig = inspect.signature(module.main)
     param = sig.parameters["on_step"]
@@ -35,30 +67,8 @@ def test_step_callback_type_alias_exists() -> None:
     assert hasattr(module, "StepCallback")
 
 
-def test_on_step_called_with_correct_args(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_on_step_called_with_correct_args(patch_train_loop_deps: None) -> None:
     callback = MagicMock()
-
-    monkeypatch.setattr(
-        module,
-        "_forward_backward_pairs",
-        lambda batch, policy, beta, microbatch_sizes=None: SimpleNamespace(
-            metrics={"dpo_loss": 0.5, "margin": 0.1, "accuracy": 0.8}
-        ),
-    )
-    monkeypatch.setattr(module, "flush_timing", lambda: {})
-    monkeypatch.setattr(module, "log_metrics_json", lambda step, **kw: None)
-    monkeypatch.setattr(module, "wandb_log", lambda payload, step: None)
-
-    class FakePolicy:
-        def optim_step(self, _params: Any, **kwargs: Any) -> SimpleNamespace:
-            return SimpleNamespace(metrics={})
-
-    class FakeWeightSyncer:
-        def save_and_hotload(self, name: str) -> None:
-            pass
-
-        def save_dcp(self, name: str) -> None:
-            pass
 
     ref_cache = {
         0: {
@@ -118,29 +128,7 @@ def test_on_step_called_with_correct_args(monkeypatch: pytest.MonkeyPatch) -> No
     assert step_tokens_arg == (3 + 2) + (2 + 3)
 
 
-def test_on_step_none_does_not_break(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        module,
-        "_forward_backward_pairs",
-        lambda batch, policy, beta, microbatch_sizes=None: SimpleNamespace(
-            metrics={"dpo_loss": 0.5, "margin": 0.1, "accuracy": 0.8}
-        ),
-    )
-    monkeypatch.setattr(module, "flush_timing", lambda: {})
-    monkeypatch.setattr(module, "log_metrics_json", lambda step, **kw: None)
-    monkeypatch.setattr(module, "wandb_log", lambda payload, step: None)
-
-    class FakePolicy:
-        def optim_step(self, _params: Any, **kwargs: Any) -> SimpleNamespace:
-            return SimpleNamespace(metrics={})
-
-    class FakeWeightSyncer:
-        def save_and_hotload(self, name: str) -> None:
-            pass
-
-        def save_dcp(self, name: str) -> None:
-            pass
-
+def test_on_step_none_does_not_break(patch_train_loop_deps: None) -> None:
     ref_cache = {
         0: {
             "chosen_datum": {"id": "c0"},
@@ -177,33 +165,11 @@ def test_on_step_none_does_not_break(monkeypatch: pytest.MonkeyPatch) -> None:
     assert step == 1
 
 
-def test_step_tokens_is_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_step_tokens_is_positive(patch_train_loop_deps: None) -> None:
     received_tokens: list[int] = []
 
     def capture_callback(step: int, total_steps: int, step_tokens: int, metrics: dict[str, Any]) -> None:
         received_tokens.append(step_tokens)
-
-    monkeypatch.setattr(
-        module,
-        "_forward_backward_pairs",
-        lambda batch, policy, beta, microbatch_sizes=None: SimpleNamespace(
-            metrics={"dpo_loss": 0.5, "margin": 0.1, "accuracy": 0.8}
-        ),
-    )
-    monkeypatch.setattr(module, "flush_timing", lambda: {})
-    monkeypatch.setattr(module, "log_metrics_json", lambda step, **kw: None)
-    monkeypatch.setattr(module, "wandb_log", lambda payload, step: None)
-
-    class FakePolicy:
-        def optim_step(self, _params: Any, **kwargs: Any) -> SimpleNamespace:
-            return SimpleNamespace(metrics={})
-
-    class FakeWeightSyncer:
-        def save_and_hotload(self, name: str) -> None:
-            pass
-
-        def save_dcp(self, name: str) -> None:
-            pass
 
     ref_cache = {
         0: {

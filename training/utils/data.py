@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 
 @contextmanager
 def _open_path(path: str, mode: str = "r") -> Generator[IO, None, None]:
-    """Open a local file or ``gs://`` URI via fsspec."""
-    if path.startswith("gs://"):
+    """Open a local file or cloud URI (``gs://``, ``s3://``) via fsspec."""
+    if path.startswith(("gs://", "s3://")):
         if not FSSPEC_AVAILABLE:
             raise ImportError(
-                "fsspec is required for GCS paths (gs://). "
-                "Install with: pip install fsspec gcsfs"
+                "fsspec is required for cloud paths (gs://, s3://). "
+                "Install with: pip install fsspec gcsfs s3fs"
             )
         with fsspec.open(path, mode) as fh:
             yield fh
