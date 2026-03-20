@@ -671,7 +671,7 @@ def main(
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
+            """ref_forward + fwd_bwd + optim_step + metrics (1:1)."""
             t0 = _time.time()
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
@@ -688,12 +688,6 @@ def main(
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
-            if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
-                logger.info("[step %d] weight_sync: saving + loading...", step)
-                t0 = _time.time()
-                with timer("weight_sync"):
-                    weight_syncer.save_and_hotload(f"step-{step}")
-                logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
             if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
@@ -754,6 +748,13 @@ def main(
 
         # -- Run ----------------------------------------------------------------
 
+        def _weight_sync(step: int) -> None:
+            logger.info("[step %d] weight_sync: saving + loading...", step)
+            t0 = _time.time()
+            with timer("weight_sync"):
+                weight_syncer.save_and_hotload(f"step-{step}")
+            logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
+
         def _loop_metrics_callback(loop_metrics: dict) -> None:
             """Called by run_rl_loop after each train step with loop-level metrics."""
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
@@ -777,6 +778,8 @@ def main(
                     dynamic_filter_fn=should_accept,
                     global_step=step_offset,
                     metrics_callback=_loop_metrics_callback,
+                    weight_sync_fn=_weight_sync if cfg.weight_sync.weight_sync_interval > 0 else None,
+                    weight_sync_interval=cfg.weight_sync.weight_sync_interval,
                 )
             )
 
