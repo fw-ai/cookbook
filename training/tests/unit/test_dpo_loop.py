@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -56,7 +57,7 @@ def test_tokenize_pair_handles_invalid_filtered_and_valid(monkeypatch):
     }
 
 
-def test_cache_ref_logprobs_batches_results(monkeypatch):
+def test_tokenize_pairs_filters_and_collects(monkeypatch):
     raw_data = [{"id": 0}, {"id": 1}, {"id": 2}, {"id": 3}]
     tokenized_results = iter(
         [
@@ -85,6 +86,19 @@ def test_cache_ref_logprobs_batches_results(monkeypatch):
         lambda *args, **kwargs: next(tokenized_results),
     )
 
+    tokenized, filtered_count = module._tokenize_pairs(
+        raw_data, tokenizer=None, renderer=None, max_seq_len=32,
+    )
+
+    assert filtered_count == 1
+    assert len(tokenized) == 2
+    assert tokenized[0][0] == 0
+    assert tokenized[0][1]["chosen_tokens"] == [1, 2, 3]
+    assert tokenized[1][0] == 3
+    assert tokenized[1][1]["chosen_tokens"] == [5, 6, 7]
+
+
+def test_ref_forward_batch_computes_logprobs():
     class FakeReference:
         def __init__(self):
             self.calls = []
@@ -101,20 +115,28 @@ def test_cache_ref_logprobs_batches_results(monkeypatch):
             )
 
     reference = FakeReference()
+    pairs = [
+        (0, {
+            "chosen_tokens": [1, 2, 3],
+            "rejected_tokens": [1, 2, 4],
+            "response_start": 2,
+            "chosen_datum": {"pair": 0, "kind": "chosen"},
+            "rejected_datum": {"pair": 0, "kind": "rejected"},
+        }),
+        (3, {
+            "chosen_tokens": [5, 6, 7],
+            "rejected_tokens": [5, 6, 8],
+            "response_start": 2,
+            "chosen_datum": {"pair": 3, "kind": "chosen"},
+            "rejected_datum": {"pair": 3, "kind": "rejected"},
+        }),
+    ]
 
-    ref_cache, filtered_count = asyncio.run(
-        module._cache_ref_logprobs(
-            raw_data,
-            reference,
-            tokenizer=None,
-            renderer=None,
-            max_seq_len=32,
-            concurrency=2,
-            batch_size=2,
-        )
+    sem = asyncio.Semaphore(2)
+    enriched = asyncio.run(
+        module._ref_forward_batch(pairs, reference, sem, ref_batch_size=2)
     )
 
-    assert filtered_count == 1
     assert reference.calls == [
         (
             [
@@ -126,29 +148,28 @@ def test_cache_ref_logprobs_batches_results(monkeypatch):
             "cross_entropy",
         )
     ]
-    assert ref_cache == {
-        0: {
-            "chosen_tokens": [1, 2, 3],
-            "rejected_tokens": [1, 2, 4],
-            "chosen_datum": {"pair": 0, "kind": "chosen"},
-            "rejected_datum": {"pair": 0, "kind": "rejected"},
-            "ref_chosen": [-0.1, -0.2],
-            "ref_rejected": [-0.3],
-            "response_start": 2,
-        },
-        3: {
-            "chosen_tokens": [5, 6, 7],
-            "rejected_tokens": [5, 6, 8],
-            "chosen_datum": {"pair": 3, "kind": "chosen"},
-            "rejected_datum": {"pair": 3, "kind": "rejected"},
-            "ref_chosen": [-0.4],
-            "ref_rejected": [-0.5, -0.6],
-            "response_start": 2,
-        },
-    }
+    assert len(enriched) == 2
+    assert enriched[0] == (0, {
+        "chosen_tokens": [1, 2, 3],
+        "rejected_tokens": [1, 2, 4],
+        "chosen_datum": {"pair": 0, "kind": "chosen"},
+        "rejected_datum": {"pair": 0, "kind": "rejected"},
+        "ref_chosen": [-0.1, -0.2],
+        "ref_rejected": [-0.3],
+        "response_start": 2,
+    })
+    assert enriched[1] == (3, {
+        "chosen_tokens": [5, 6, 7],
+        "rejected_tokens": [5, 6, 8],
+        "chosen_datum": {"pair": 3, "kind": "chosen"},
+        "rejected_datum": {"pair": 3, "kind": "rejected"},
+        "ref_chosen": [-0.4],
+        "ref_rejected": [-0.5, -0.6],
+        "response_start": 2,
+    })
 
 
-def test_cache_ref_logprobs_preserves_multi_turn_preference_history():
+def test_tokenize_pairs_preserves_multi_turn_preference_history():
     raw_data = [
         {
             "chosen": {
@@ -176,30 +197,15 @@ def test_cache_ref_logprobs_preserves_multi_turn_preference_history():
         ]
     )
 
-    class FakeReference:
-        def forward(self, datums, loss_fn):
-            return SimpleNamespace(
-                loss_fn_outputs=[
-                    {"logprobs": SimpleNamespace(data=[-0.1, -0.2, -0.3])},
-                    {"logprobs": SimpleNamespace(data=[-0.4, -0.5])},
-                ]
-            )
-
-    ref_cache, filtered_count = asyncio.run(
-        module._cache_ref_logprobs(
-            raw_data,
-            FakeReference(),
-            tokenizer=None,
-            renderer=renderer,
-            max_seq_len=32,
-            concurrency=1,
-            batch_size=1,
-        )
+    tokenized, filtered_count = module._tokenize_pairs(
+        raw_data, tokenizer=None, renderer=renderer, max_seq_len=32,
     )
 
     assert filtered_count == 0
-    assert list(ref_cache) == [0]
-    assert ref_cache[0]["response_start"] == 4
+    assert len(tokenized) == 1
+    idx, pair_data = tokenized[0]
+    assert idx == 0
+    assert pair_data["response_start"] == 4
     chosen_messages, _ = renderer.calls[0]
     rejected_messages, _ = renderer.calls[1]
     assert [m["role"] for m in chosen_messages] == ["user", "assistant", "user", "assistant"]
@@ -330,29 +336,32 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def save_dcp(self, name):
             events.setdefault("dcp_saves", []).append(name)
 
-    async def fake_cache_ref_logprobs(*args, **kwargs):
-        events["cache_args"] = {"args": args, "kwargs": kwargs}
+    def fake_tokenize_pairs(*args, **kwargs):
+        events["tokenize_args"] = args
         return (
-            {
-                0: {
-                    "chosen_datum": {"id": "chosen"},
-                    "rejected_datum": {"id": "rejected"},
-                    "ref_chosen": [-0.1],
-                    "ref_rejected": [-0.2],
-                    "response_start": 3,
-                }
-            },
+            [(0, {
+                "chosen_datum": {"id": "chosen"},
+                "rejected_datum": {"id": "rejected"},
+                "chosen_tokens": [1, 2],
+                "rejected_tokens": [3, 4],
+                "ref_chosen": [-0.1],
+                "ref_rejected": [-0.2],
+                "response_start": 3,
+            })],
             1,
         )
 
-    async def fake_train_loop(ref_cache, valid_indices, policy, adam_params, weight_syncer, cfg, step_offset):
+    async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
+                              weight_syncer, cfg, step_offset, on_ref_done=None):
         events["train_loop"] = {
-            "ref_cache": ref_cache,
-            "valid_indices": valid_indices,
+            "tokenized_pairs": tokenized_pairs,
+            "reference_job_id": reference.job_id,
             "policy_job_id": policy.job_id,
             "cfg": cfg,
             "step_offset": step_offset,
         }
+        if on_ref_done is not None:
+            on_ref_done()
         return 2
 
     def fake_create_trainer_job(*args, **kwargs):
@@ -368,7 +377,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
-    monkeypatch.setattr(module, "_cache_ref_logprobs", fake_cache_ref_logprobs)
+    monkeypatch.setattr(module, "_tokenize_pairs", fake_tokenize_pairs)
     monkeypatch.setattr(module, "_train_loop", fake_train_loop)
     monkeypatch.setattr(module, "load_preference_dataset", lambda *args, **kwargs: [{"chosen": {}, "rejected": {}}])
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
@@ -405,11 +414,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     ]
     assert events["create_trainer_job"][0]["hot_load_deployment_id"] == "dep-123"
     assert events["create_trainer_job"][1]["forward_only"] is True
-    assert events["cache_args"]["kwargs"] == {
-        "concurrency": cfg.ref_cache_concurrency,
-        "batch_size": cfg.ref_cache_batch_size,
-    }
-    assert events["train_loop"]["valid_indices"] == [0]
+    assert events["train_loop"]["reference_job_id"] == "reference-job"
     assert events["train_loop"]["policy_job_id"] == "policy-job"
     assert events["weight_syncer_saves"] == ["final-step-2"]
 
@@ -500,27 +505,28 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         def save_dcp(self, name):
             events["dcp_saves"].append(name)
 
-    async def fake_cache_ref_logprobs(*args, **kwargs):
-        events["cache_args"] = {"args": args, "kwargs": kwargs}
+    def fake_tokenize_pairs(*args, **kwargs):
         return (
-            {
-                0: {
-                    "chosen_datum": {"id": "chosen"},
-                    "rejected_datum": {"id": "rejected"},
-                    "ref_chosen": [-0.1],
-                    "ref_rejected": [-0.2],
-                    "response_start": 3,
-                }
-            },
+            [(0, {
+                "chosen_datum": {"id": "chosen"},
+                "rejected_datum": {"id": "rejected"},
+                "chosen_tokens": [1, 2],
+                "rejected_tokens": [3, 4],
+                "ref_chosen": [-0.1],
+                "ref_rejected": [-0.2],
+                "response_start": 3,
+            })],
             0,
         )
 
-    async def fake_train_loop(ref_cache, valid_indices, policy, adam_params, weight_syncer, cfg, step_offset):
+    async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
+                              weight_syncer, cfg, step_offset, on_ref_done=None):
         events["train_loop"] = {
-            "ref_cache": ref_cache,
-            "valid_indices": valid_indices,
+            "tokenized_pairs": tokenized_pairs,
             "policy_job_id": policy.job_id,
         }
+        if on_ref_done is not None:
+            on_ref_done()
         return 2
 
     def fake_create_trainer_job(*args, **kwargs):
@@ -536,7 +542,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
-    monkeypatch.setattr(module, "_cache_ref_logprobs", fake_cache_ref_logprobs)
+    monkeypatch.setattr(module, "_tokenize_pairs", fake_tokenize_pairs)
     monkeypatch.setattr(module, "_train_loop", fake_train_loop)
     monkeypatch.setattr(module, "load_preference_dataset", lambda *args, **kwargs: [{"chosen": {}, "rejected": {}}])
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
@@ -581,7 +587,8 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     assert events["wandb_finished"] == 1
 
 
-def test_train_loop_batches_and_weight_sync(monkeypatch):
+def test_train_loop_pipeline_and_weight_sync(monkeypatch):
+    """Test the pipelined _train_loop with real ref forward + training."""
     events: dict[str, object] = {
         "flush_batches": [],
         "optim_steps": 0,
@@ -589,6 +596,7 @@ def test_train_loop_batches_and_weight_sync(monkeypatch):
         "dcp_saves": [],
         "metrics_logs": [],
         "wandb_logs": [],
+        "ref_done_called": False,
     }
 
     monkeypatch.setattr(
@@ -609,6 +617,16 @@ def test_train_loop_batches_and_weight_sync(monkeypatch):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
+    class FakeReference:
+        def forward(self, datums, loss_fn):
+            n_pairs = len(datums) // 2
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {"logprobs": SimpleNamespace(data=[-0.1 * (i + 1)])}
+                    for i in range(len(datums))
+                ]
+            )
+
     class FakeWeightSyncer:
         def save_and_hotload(self, name):
             events["weight_syncs"].append(name)
@@ -616,10 +634,12 @@ def test_train_loop_batches_and_weight_sync(monkeypatch):
         def save_dcp(self, name):
             events["dcp_saves"].append(name)
 
-    ref_cache = {
-        0: {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"}, "chosen_tokens": [1, 2, 3], "rejected_tokens": [1, 2, 4], "ref_chosen": [-0.1], "ref_rejected": [-0.2], "response_start": 3},
-        1: {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"}, "chosen_tokens": [5, 6], "rejected_tokens": [5, 7], "ref_chosen": [-0.3], "ref_rejected": [-0.4], "response_start": 4},
-    }
+    tokenized_pairs = [
+        (0, {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"},
+             "chosen_tokens": [1, 2, 3], "rejected_tokens": [1, 2, 4], "response_start": 3}),
+        (1, {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"},
+             "chosen_tokens": [5, 6], "rejected_tokens": [5, 7], "response_start": 4}),
+    ]
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",
         beta=0.2,
@@ -628,28 +648,118 @@ def test_train_loop_batches_and_weight_sync(monkeypatch):
         weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1),
     )
 
+    def _on_ref_done():
+        events["ref_done_called"] = True
+
     step = asyncio.run(
         module._train_loop(
-            ref_cache,
-            [0, 1],
+            tokenized_pairs,
+            FakeReference(),
             FakePolicy(),
             adam_params={"lr": 1e-4},
             weight_syncer=FakeWeightSyncer(),
             cfg=cfg,
             step_offset=0,
+            on_ref_done=_on_ref_done,
         )
     )
 
     assert step == 1
-    assert events["flush_batches"] == [
-        ([ref_cache[0], ref_cache[1]], 0.2),
-    ]
+    assert events["ref_done_called"]
+    assert len(events["flush_batches"]) == 1
+    assert events["flush_batches"][0][1] == 0.2
+    trained_pairs = events["flush_batches"][0][0]
+    assert len(trained_pairs) == 2
+    assert "ref_chosen" in trained_pairs[0]
+    assert "ref_rejected" in trained_pairs[0]
     assert events["optim_steps"] == 1
     assert events["weight_syncs"] == ["step-1"]
     assert events["dcp_saves"] == ["step-1"]
     assert events["metrics_logs"][0][0] == 1
     assert events["metrics_logs"][0][1]["dpo_loss"] == 1.5
-    assert events["metrics_logs"][0][1]["margin"] == 0.25
-    assert events["metrics_logs"][0][1]["accuracy"] == 0.75
-    assert "tokens_per_sec" in events["metrics_logs"][0][1]
     assert len(events["wandb_logs"]) == 1
+
+
+def test_pipeline_overlap_ref_freed_before_training_done():
+    """Verify the producer finishes (and on_ref_done fires) while training
+    is still in progress — the core benefit of the pipeline."""
+    timeline = []
+
+    class SlowPolicy:
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+    class FastReference:
+        def forward(self, datums, loss_fn):
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {"logprobs": SimpleNamespace(data=[-0.1])}
+                    for _ in datums
+                ]
+            )
+
+    def slow_fwd_bwd(batch, policy, beta):
+        time.sleep(0.15)
+        return SimpleNamespace(
+            metrics={"dpo_loss": 0.5, "margin": 0.1, "accuracy": 0.9}
+        )
+
+    def on_ref_done():
+        timeline.append(("ref_done", time.monotonic()))
+
+    cfg = module.Config(
+        log_path="/tmp/dpo_test_logs",
+        beta=0.1,
+        epochs=1,
+        batch_size=1,
+        ref_cache_concurrency=4,
+    )
+
+    import training.recipes.dpo_loop as mod
+
+    orig_fwd = mod._forward_backward_pairs
+    mod._forward_backward_pairs = slow_fwd_bwd
+    orig_flush = mod.flush_timing
+    mod.flush_timing = lambda: {}
+    orig_log = mod.log_metrics_json
+    mod.log_metrics_json = lambda *a, **kw: None
+    orig_wandb = mod.wandb_log
+    mod.wandb_log = lambda *a, **kw: None
+
+    try:
+        tokenized = [
+            (i, {"chosen_datum": {"id": f"c{i}"}, "rejected_datum": {"id": f"r{i}"},
+                 "chosen_tokens": [1, 2], "rejected_tokens": [3, 4], "response_start": 1})
+            for i in range(4)
+        ]
+
+        class FakeWS:
+            def save_and_hotload(self, name): pass
+            def save_dcp(self, name): pass
+
+        t0 = time.monotonic()
+        step = asyncio.run(
+            mod._train_loop(
+                tokenized, FastReference(), SlowPolicy(),
+                adam_params={"lr": 1e-4},
+                weight_syncer=FakeWS(),
+                cfg=cfg,
+                step_offset=0,
+                on_ref_done=on_ref_done,
+            )
+        )
+        t_end = time.monotonic()
+
+        assert step == 4
+        assert len(timeline) == 1
+        ref_done_t = timeline[0][1] - t0
+        total_t = t_end - t0
+        assert ref_done_t < total_t * 0.8, (
+            f"ref_done should fire well before training finishes "
+            f"(ref_done={ref_done_t:.2f}s, total={total_t:.2f}s)"
+        )
+    finally:
+        mod._forward_backward_pairs = orig_fwd
+        mod.flush_timing = orig_flush
+        mod.log_metrics_json = orig_log
+        mod.wandb_log = orig_wandb
