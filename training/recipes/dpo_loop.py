@@ -501,8 +501,8 @@ def main(
         cleanup.trainer(policy_job_id)
         cleanup.trainer(reference_job_id)
 
-        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
-        reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
+        reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
 
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
