@@ -485,7 +485,7 @@ def main(
                     **sample_kwargs,
                 )
             except Exception as e:
-                logger.warning("Sampling failed: %s", e)
+                logger.warning("Sampling failed (%s): %s", type(e).__name__, e or repr(e))
                 return None
 
             return build_prompt_group(

@@ -184,7 +184,7 @@ class AsyncRolloutScheduler:
             try:
                 result = await coro
             except Exception as exc:
-                logger.warning("Rollout task failed: %s", exc)
+                logger.warning("Rollout task failed (%s): %s", type(exc).__name__, exc or repr(exc))
                 result = None
             self._result_queue.put_nowait((result, version))
 
