@@ -80,6 +80,23 @@ class Config:
     """Maximum staleness: how many versions ahead the newest rollout can
     be relative to the oldest in-flight rollout."""
 
+    sample_max_concurrency: int | None = None
+    """Maximum number of concurrent HTTP **requests** to the deployment.
+
+    ``sample_with_tokens(n=K)`` fans out into K individual HTTP
+    requests.  This limit gates each HTTP request, not each prompt.
+    With ``completions_per_prompt=8`` and ``sample_max_concurrency=32``,
+    at most 32 HTTP requests are in-flight — meaning at most 4 prompts
+    are being sampled concurrently (4 × 8 = 32).
+
+    This is the *resource* window (how many requests actually hit the
+    server), independent of the *policy* window (staleness cap).
+
+    When ``None`` (default), no HTTP-level gate is applied — all
+    requests from the rollout scheduler fire concurrently.
+    Set a lower value (e.g. 32) to protect the deployment when the
+    sample success rate drops below acceptable levels."""
+
     # -- Router replay (R3) -------------------------------------------------
 
     router_replay: bool = False

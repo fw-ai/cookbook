@@ -64,7 +64,6 @@ class TrainArgs:
     """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "US_OHIO_1"
     deployment_region: str | None = None
-    deployment_replica_count: int | None = None
     max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8
@@ -107,7 +106,6 @@ def parse_args() -> TrainArgs:
     )
     parser.add_argument("--region")
     parser.add_argument("--deployment-region")
-    parser.add_argument("--deployment-replica-count", type=int)
 
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--epochs", type=int)
@@ -296,7 +294,6 @@ def main():
         tis=TISConfig(cap=2.0),
         router_replay=args.router_replay,
         router_replay_completion_only=args.router_replay,
-        reward_fn=deepmath_reward,
         policy_job_id=args.policy_job_id,
         reference_job_id=args.reference_job_id,
         output_model_id=args.output_model_id,
@@ -308,7 +305,6 @@ def main():
         deployment=DeployConfig(
             deployment_id=args.deployment_id,
             deployment_region=args.deployment_region,
-            replica_count=args.deployment_replica_count,
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
             extra_values=args.deployment_extra_values,
@@ -348,6 +344,7 @@ def main():
         args.prompt_groups_per_step,
     )
 
+    rl_loop.reward_fn = deepmath_reward
     metrics = rl_loop.main(
         config,
         rlor_mgr=rlor_mgr,

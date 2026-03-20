@@ -126,6 +126,7 @@ class AsyncRolloutScheduler:
         total_accepted: int = 0,
         total_rejected: int = 0,
         rows_submitted: int = 0,
+        max_concurrent: int | None = None,
     ):
         self._step_target = step_target
         self._max_offpolicy = max_head_offpolicy_versions
@@ -136,7 +137,8 @@ class AsyncRolloutScheduler:
         self._total_rejected = total_rejected
         self._rows_submitted = rows_submitted
 
-        self._max_concurrent = (max_head_offpolicy_versions + 1) * step_target
+        policy_window = (max_head_offpolicy_versions + 1) * step_target
+        self._max_concurrent = min(max_concurrent, policy_window) if max_concurrent is not None else policy_window
 
         self._in_flight: set[asyncio.Task] = set()
         self._result_queue: asyncio.Queue[tuple[PromptGroup | None, int]] = asyncio.Queue()

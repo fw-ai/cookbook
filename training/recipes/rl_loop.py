@@ -450,6 +450,25 @@ def main(
             )
         sample_kwargs["logprobs"] = True
 
+        # Concurrency gate: limits actual HTTP requests to the deployment.
+        # sample_with_tokens(n=K) fans out into K individual HTTP requests
+        # via asyncio.gather, so the semaphore must gate each HTTP request,
+        # not each prompt.  We monkey-patch the sampler's _do_one_completion
+        # to acquire the semaphore before each request.
+        if cfg.sample_max_concurrency is not None:
+            _http_semaphore = asyncio.Semaphore(cfg.sample_max_concurrency)
+            _orig_do_one = infra.sampler._do_one_completion
+
+            async def _gated_do_one(*args, **kwargs):
+                async with _http_semaphore:
+                    return await _orig_do_one(*args, **kwargs)
+
+            infra.sampler._do_one_completion = _gated_do_one
+            logger.info(
+                "Sample concurrency gate: max %d concurrent HTTP requests",
+                cfg.sample_max_concurrency,
+            )
+
         async def sample_one_prompt(row: dict):
             """Sample completions for one prompt and return a PromptGroup."""
             messages = row.get("messages", [])
@@ -507,6 +526,7 @@ def main(
                     total_accepted=async_state.get("total_accepted", 0),
                     total_rejected=async_state.get("total_rejected", 0),
                     rows_submitted=async_state.get("rows_submitted", 0),
+                    max_concurrent=cfg.sample_max_concurrency,
                 )
                 row_iter = iter(infra.remaining_rows)
                 if async_state.get("rows_submitted", 0) > 0:

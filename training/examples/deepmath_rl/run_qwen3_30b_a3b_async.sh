@@ -34,6 +34,7 @@ MAX_COMPLETION_TOKENS=122880
 COMPLETIONS_PER_PROMPT=8
 PROMPT_GROUPS_PER_STEP=32
 MAX_HEAD_OFFPOLICY_VERSIONS=2
+SAMPLE_MAX_CONCURRENCY="${SAMPLE_MAX_CONCURRENCY:-}"
 
 DEPLOYMENT_ID="${1:-}"
 
@@ -53,6 +54,10 @@ ARGS=(
     --skip-cleanup
     --output-model-id deepmath-async-$(date +%Y%m%d%H%M)
 )
+
+if [ -n "${SAMPLE_MAX_CONCURRENCY:-}" ]; then
+    ARGS+=(--sample-max-concurrency "$SAMPLE_MAX_CONCURRENCY")
+fi
 
 if [ -n "${WANDB_ENTITY:-}" ]; then
     ARGS+=(--wandb-entity "$WANDB_ENTITY" --wandb-project "${WANDB_PROJECT:-grpo-tinker}")

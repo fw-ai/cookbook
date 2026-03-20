@@ -74,6 +74,9 @@ class TrainArgs:
     """Target accepted groups per step (async mode). Defaults to prompt_groups_per_step."""
     max_head_offpolicy_versions: int = 2
     """Max staleness: how many versions ahead the newest rollout can be."""
+    sample_max_concurrency: int | None = None
+    """Max concurrent HTTP requests to deployment (resource window).
+    Defaults to the policy window when None."""
     router_replay: bool = False
     trajectory_dir: str | None = None
     deployment_extra_values: dict[str, str] | None = None
@@ -114,6 +117,8 @@ def parse_args() -> TrainArgs:
                         help="Target accepted groups per async step (default: prompt_groups_per_step)")
     parser.add_argument("--max-head-offpolicy-versions", type=int,
                         help="Max rollout staleness in versions (default: 2)")
+    parser.add_argument("--sample-max-concurrency", type=int,
+                        help="Max concurrent HTTP requests to deployment (default: policy window)")
 
     parser.add_argument("--trajectory-dir",
                         help="Directory to save per-step trajectory JSONL files")
@@ -269,11 +274,11 @@ def main():
         async_rollout=True,
         valid_prompt_groups_per_step=args.valid_prompt_groups_per_step,
         max_head_offpolicy_versions=args.max_head_offpolicy_versions,
+        sample_max_concurrency=args.sample_max_concurrency,
         trajectory_dir=args.trajectory_dir,
         tis=TISConfig(cap=2.0),
         router_replay=args.router_replay,
         router_replay_completion_only=args.router_replay,
-        reward_fn=deepmath_reward,
         policy_job_id=args.policy_job_id,
         reference_job_id=args.reference_job_id,
         output_model_id=args.output_model_id,
@@ -320,6 +325,7 @@ def main():
         args.max_head_offpolicy_versions,
     )
 
+    rl_loop.reward_fn = deepmath_reward
     metrics = rl_loop.main(
         config,
         rlor_mgr=rlor_mgr,
