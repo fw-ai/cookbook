@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""DPO training loop with concurrent reference caching and fused train steps.
+"""DPO training loop with pipelined ref/training overlap and fused train steps.
 
 Optimisations:
 
-  - **Concurrent ref caching**: ``gather_with_progress`` computes reference
-    logprobs for all pairs in parallel instead of sequentially.
+  - **Pipelined ref/training**: reference logprobs are computed
+    concurrently with policy training via a producer/consumer pipeline.
+    The reference trainer is deleted as soon as all ref forwards
+    complete -- even while training continues.
   - **Client-side fused train steps**: all datums for one optimizer window
     are sent in a single ``forward_backward_custom`` call so the backend can
     batch the whole step more efficiently.
@@ -12,7 +14,8 @@ Optimisations:
 Architecture:
     - Policy RLOR job:    forward_backward_custom + optim_step (trainable)
     - Reference RLOR job: forward only (frozen base model, for KL baseline)
-    - Reference logprobs cached at initialisation from the frozen reference
+    - Epoch 0: ref forward and training overlap via unbounded asyncio.Queue
+    - Epochs 1+: ref logprobs cached from epoch 0, no ref GPU needed
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -26,7 +29,7 @@ import time
 import signal
 import asyncio
 import logging
-from typing import Any, TypeVar, Awaitable, Iterable
+from typing import Any, Callable
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -61,33 +64,6 @@ from training.utils.checkpoint_utils import resolve_resume
 from training.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
-_T = TypeVar("_T")
-
-
-async def gather_with_progress(
-    awaitables: Iterable[Awaitable[_T]],
-    *,
-    desc: str,
-) -> list[_T]:
-    """Await a collection of awaitables while showing a progress bar."""
-    tasks = [asyncio.create_task(awaitable) for awaitable in awaitables]
-    if not tasks:
-        return []
-
-    results: list[_T] = []
-    try:
-        with tqdm(total=len(tasks), desc=desc) as pbar:
-            for task in asyncio.as_completed(tasks):
-                results.append(await task)
-                pbar.update(1)
-    except Exception:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
-
-    return results
 
 # ---------------------------------------------------------------------------
 # Config
@@ -129,7 +105,7 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# Concurrent reference caching
+# Tokenization and reference forward
 # ---------------------------------------------------------------------------
 
 
@@ -160,21 +136,16 @@ def _tokenize_pair(
     }
 
 
-async def _cache_ref_logprobs(
+def _tokenize_pairs(
     raw_data: list[dict[str, Any]],
-    reference: ReconnectableClient,
     tokenizer: Any,
     renderer: Any,
     max_seq_len: int,
-    concurrency: int = 16,
-    batch_size: int = 1,
-) -> tuple[dict[int, dict[str, Any]], int]:
-    """Compute reference logprobs concurrently using ``gather_with_progress``.
+) -> tuple[list[tuple[int, dict[str, Any]]], int]:
+    """Tokenize all preference pairs (CPU only).
 
-    When ``batch_size > 1``, multiple pairs are sent in a single reference
-    forward call (2 * batch_size datums), reducing per-call overhead.
-
-    Returns ``(ref_cache, filtered_count)``.
+    Returns ``(tokenized, filtered_count)`` where each entry is
+    ``(original_index, pair_data_dict)``.
     """
     tokenized: list[tuple[int, dict[str, Any]]] = []
     filtered_count = 0
@@ -184,14 +155,23 @@ async def _cache_ref_logprobs(
             filtered_count += 1
         elif result is not None:
             tokenized.append((i, result))
+    return tokenized, filtered_count
 
-    batches: list[list[tuple[int, dict[str, Any]]]] = []
-    for start in range(0, len(tokenized), batch_size):
-        batches.append(tokenized[start : start + batch_size])
 
-    semaphore = asyncio.Semaphore(concurrency)
+async def _ref_forward_batch(
+    pairs: list[tuple[int, dict[str, Any]]],
+    reference: ReconnectableClient,
+    semaphore: asyncio.Semaphore,
+    ref_batch_size: int,
+) -> list[tuple[int, dict[str, Any]]]:
+    """Compute reference logprobs for *pairs*, sub-batched by *ref_batch_size*.
 
-    async def _process_batch(
+    Uses the semaphore for concurrency control.  Returns enriched pairs
+    with ``ref_chosen`` / ``ref_rejected`` logprobs attached.
+    """
+    sub_batches = [pairs[i:i + ref_batch_size] for i in range(0, len(pairs), ref_batch_size)]
+
+    async def _process_sub_batch(
         batch: list[tuple[int, dict[str, Any]]],
     ) -> list[tuple[int, dict[str, Any]]]:
         datums: list[tinker.Datum] = []
@@ -217,17 +197,8 @@ async def _cache_ref_logprobs(
             }))
         return results
 
-    batch_results = await gather_with_progress(
-        (_process_batch(b) for b in batches),
-        desc="Caching reference logprobs",
-    )
-
-    ref_cache: dict[int, dict[str, Any]] = {}
-    for batch_result in batch_results:
-        for idx, pair_data in batch_result:
-            ref_cache[idx] = pair_data
-
-    return ref_cache, filtered_count
+    batch_results = await asyncio.gather(*[_process_sub_batch(b) for b in sub_batches])
+    return [pair for batch in batch_results for pair in batch]
 
 
 # ---------------------------------------------------------------------------
@@ -265,19 +236,36 @@ def _forward_backward_pairs(
     return policy.forward_backward_custom(datums, loss_fn)
 
 
+_DONE = object()
+
+
 async def _train_loop(
-    ref_cache: dict[int, dict[str, Any]],
-    valid_indices: list[int],
+    tokenized_pairs: list[tuple[int, dict[str, Any]]],
+    reference: ReconnectableClient,
     policy: ReconnectableClient,
     adam_params: tinker.AdamParams,
     weight_syncer: WeightSyncer,
     cfg: Config,
     step_offset: int,
+    on_ref_done: Callable[[], None] | None = None,
 ) -> int:
-    """DPO training -- one forward_backward_custom + optim_step per batch."""
+    """Pipelined DPO training -- ref forward overlaps with policy training.
+
+    Epoch 0 runs a producer/consumer pipeline with an unbounded queue:
+    the producer computes reference logprobs at full speed (concurrent
+    via semaphore) while the consumer trains.  Once the producer finishes,
+    *on_ref_done* fires to delete the reference trainer immediately --
+    even while training continues.
+
+    Epochs 1+ reuse cached ref logprobs (no ref GPU needed).
+    """
     batch_size = cfg.batch_size
     step = step_offset
-    total_steps = len(valid_indices) * cfg.epochs // batch_size
+    total_steps = len(tokenized_pairs) * cfg.epochs // batch_size
+
+    ref_cache: dict[int, dict[str, Any]] = {}
+    pipe: asyncio.Queue = asyncio.Queue()
+    sem = asyncio.Semaphore(cfg.ref_cache_concurrency)
 
     def _run_train_step(epoch: int, step_pairs: list[dict[str, Any]]) -> None:
         nonlocal step
@@ -332,19 +320,51 @@ async def _train_loop(
         })
         wandb_log(step_metrics, step)
 
-    for epoch in range(cfg.epochs):
-        batch_buffer: list[dict[str, Any]] = []
+    # -- Epoch 0: pipelined ref forward + training -----------------------------
 
-        for idx in valid_indices:
-            batch_buffer.append(ref_cache[idx])
+    multi_epoch = cfg.epochs > 1
 
-            if len(batch_buffer) >= batch_size:
-                _run_train_step(epoch, batch_buffer)
-                batch_buffer = []
+    n_batches_epoch0 = (len(tokenized_pairs) + batch_size - 1) // batch_size
+    pbar = tqdm(total=total_steps, desc="DPO training", unit="step")
 
-        if batch_buffer:
-            _run_train_step(epoch, batch_buffer)
+    async def _ref_producer() -> None:
+        for start in range(0, len(tokenized_pairs), batch_size):
+            chunk = tokenized_pairs[start:start + batch_size]
+            enriched = await _ref_forward_batch(
+                chunk, reference, sem, cfg.ref_cache_batch_size,
+            )
+            if multi_epoch:
+                for idx, pair in enriched:
+                    ref_cache[idx] = pair
+            await pipe.put([pair for _, pair in enriched])
+        await pipe.put(_DONE)
 
+    async def _trainer() -> None:
+        while True:
+            item = await pipe.get()
+            if item is _DONE:
+                break
+            await asyncio.to_thread(_run_train_step, 0, item)
+            pbar.update(1)
+
+    producer = asyncio.create_task(_ref_producer())
+    consumer = asyncio.create_task(_trainer())
+    await producer
+    if on_ref_done is not None:
+        await asyncio.to_thread(on_ref_done)
+    await consumer
+
+    # -- Epochs 1+: iterate cached ref logprobs --------------------------------
+
+    for epoch in range(1, cfg.epochs):
+        ordered_pairs = [ref_cache[idx] for idx, _ in tokenized_pairs]
+        for start in range(0, len(ordered_pairs), batch_size):
+            chunk = ordered_pairs[start:start + batch_size]
+            _run_train_step(epoch, chunk)
+            pbar.update(1)
+
+    pbar.close()
+    ref_cache.clear()
     return step
 
 
@@ -483,7 +503,7 @@ def main(
         wandb_log({"train/step": step_offset}, step_offset)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
-        # -- Cache reference logprobs concurrently ------------------------------
+        # -- Tokenize + pipelined training -------------------------------------
 
         import transformers
 
@@ -498,38 +518,31 @@ def main(
         if not raw_data:
             raise RuntimeError(f"No data loaded from {cfg.dataset}")
 
-        logger.info("Computing reference logprobs for %d pairs...", len(raw_data))
-        ref_cache, filtered_count = asyncio.run(
-            _cache_ref_logprobs(
-                raw_data, reference, tokenizer, renderer, cfg.max_seq_len,
-                concurrency=cfg.ref_cache_concurrency,
-                batch_size=cfg.ref_cache_batch_size,
-            )
+        tokenized_pairs, filtered_count = _tokenize_pairs(
+            raw_data, tokenizer, renderer, cfg.max_seq_len,
         )
-
-        logger.info("Reference caching complete — deleting reference trainer to free resources")
-        try:
-            cleanup.delete_trainer(reference_job_id)
-            reference_job_id = None
-        except Exception as e:
-            logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
-        del reference
-
-        valid_indices = list(ref_cache.keys())
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d pairs filtered (chosen or rejected > %d tokens)",
                 filtered_count, len(raw_data), cfg.max_seq_len,
             )
-        logger.info("Prepared %d preference pairs", len(valid_indices))
-        if not valid_indices:
+        logger.info("Prepared %d preference pairs", len(tokenized_pairs))
+        if not tokenized_pairs:
             raise RuntimeError("No valid pairs after tokenization")
 
-        # -- Training loop (pipelined) -----------------------------------------
+        def _on_ref_done():
+            nonlocal reference_job_id
+            logger.info("Reference forward complete — deleting reference trainer to free GPU")
+            try:
+                cleanup.delete_trainer(reference_job_id)
+                reference_job_id = None
+            except Exception as e:
+                logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
 
         step = asyncio.run(
             _train_loop(
-                ref_cache, valid_indices, policy, adam_params, weight_syncer, cfg, step_offset,
+                tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
+                on_ref_done=_on_ref_done,
             )
         )
 
