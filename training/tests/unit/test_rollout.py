@@ -16,11 +16,11 @@ import pytest
 
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.rollout import (
-    AsyncRolloutScheduler,
     DynamicFilterFn,
     RolloutStats,
     collect_sync_batch,
 )
+from training.recipes.async_rl_loop import AsyncRolloutScheduler
 
 
 def _make_pg(rewards: list[float] | None = None) -> PromptGroup:

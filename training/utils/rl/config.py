@@ -18,7 +18,6 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.rewards import default_math_reward, default_variance_filter
 
 FilterFn = Callable[[PromptGroup], bool]
 """Signature: (prompt_group) -> keep."""
@@ -132,13 +131,14 @@ class Config:
 
     # -- Pluggable functions ------------------------------------------------
 
-    reward_fn: RewardFn = field(default=default_math_reward)
+    reward_fn: RewardFn | None = None
     """``(completion_text, dataset_row) -> float``.
-    Override this to use a custom reward for your task."""
+    Each loop file provides its own default; set here to override."""
 
-    filter_fn: FilterFn | None = field(default=default_variance_filter)
+    filter_fn: FilterFn | None = None
     """``(PromptGroup) -> bool``.  Return ``True`` to keep.
-    Set to ``None`` to accept all groups."""
+    Set to ``None`` to accept all groups.  Each loop file provides
+    its own default; set here to override."""
 
     # -- Trajectory logging -------------------------------------------------
 
