@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import logging
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlencode
 
 from fireworks.training.sdk.client import (
@@ -90,6 +90,14 @@ class ResourceCleanup:
                 logger.warning("Cleanup: failed to clean deployment %s: %s", did, e)
 
 
+TrainerCreatedCallback = Callable[[str, str], None]
+"""on_trainer_created(job_id, role) -> None.
+
+Fired immediately after a trainer job is created and ready. *role* is
+``"policy"`` or ``"reference"``, derived from *forward_only*.
+"""
+
+
 def create_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,
@@ -106,6 +114,7 @@ def create_trainer_job(
     job_id: str | None = None,
     forward_only: bool = False,
     base_url_override: str | None = None,
+    on_trainer_created: TrainerCreatedCallback | None = None,
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
@@ -125,6 +134,11 @@ def create_trainer_job(
     """
     trainer_role = "reference" if forward_only else "policy"
 
+    def _notify(endpoint: TrainerServiceEndpoint) -> TrainerServiceEndpoint:
+        if on_trainer_created is not None:
+            on_trainer_created(endpoint.job_id, trainer_role)
+        return endpoint
+
     if job_id:
         if base_url_override:
             job_name = f"accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}"
@@ -134,12 +148,12 @@ def create_trainer_job(
                 job_id,
                 base_url_override,
             )
-            return TrainerServiceEndpoint(
+            return _notify(TrainerServiceEndpoint(
                 job_name=job_name,
                 job_id=job_id,
                 base_url=base_url_override,
-            )
-        return _reuse_or_resume_job(rlor_mgr, job_id)
+            ))
+        return _notify(_reuse_or_resume_job(rlor_mgr, job_id))
 
     if profile is not None:
         config = TrainerJobConfig(
@@ -200,7 +214,7 @@ def create_trainer_job(
         display_name,
         endpoint.job_id,
     )
-    return endpoint
+    return _notify(endpoint)
 
 
 def setup_deployment(
