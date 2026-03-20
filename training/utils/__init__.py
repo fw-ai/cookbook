@@ -16,6 +16,8 @@ __all__ = [
     "RewardFn",
     "RLPromptDataset",
     "StepCallback",
+    "TrainingSessionClient",
+    "TrainingSessionHandle",
     "WandBConfig",
     "compute_advantages",
     "compute_pass_at_k",
@@ -74,6 +76,10 @@ from training.utils.infra import (
 )
 from training.utils.timer import timed, timer, flush_timing
 from training.utils.client import ReconnectableClient
+from training.utils.training_session_client import (
+    TrainingSessionClient,
+    TrainingSessionHandle,
+)
 from training.utils.config import (
     DEFAULT_ADAM,
     EvalFn,

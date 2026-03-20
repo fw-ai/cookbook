@@ -38,11 +38,12 @@ class InfraConfig:
     When set, infra config is auto-derived from the shape."""
 
     ref_training_shape_id: str | None = None
-    """Training shape ID for the reference (forward-only) trainer.
-    When set, a reference model is created.  When not set, no reference
-    model is created.  No implicit fallback.  Can be the same value as
-    ``training_shape_id`` -- the control plane auto-appends
-    ``--forward-only`` via ``applyForwardOnlyConfig``."""
+    """Training shape ID for a dedicated reference (forward-only) trainer.
+    Recipes that still provision a separate reference trainer use this field.
+    `training.recipes.rl_loop` now ignores it and uses shared training sessions
+    for reference logprobs instead. Can be the same value as
+    ``training_shape_id`` -- the control plane auto-appends ``--forward-only``
+    via ``applyForwardOnlyConfig``."""
 
     region: str | None = None
     custom_image_tag: str | None = None
@@ -74,6 +75,8 @@ class DeployConfig:
     Increase for R3 + long completions where responses can be very large."""
     disable_speculative_decoding: bool = True
     """Disable base model's default draft/EAGLE speculation for hotload compatibility."""
+    replica_count: int | None = None
+    """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
     """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
 
@@ -87,6 +90,7 @@ class DeployConfig:
         accel = None if self.deployment_shape else self.deployment_accelerator_type
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type
+        replica_count = 1 if self.replica_count is None else self.replica_count
         return DeploymentConfig(
             deployment_id=self.deployment_id,
             base_model=base_model,
@@ -95,8 +99,8 @@ class DeployConfig:
             hot_load_bucket_type=self.hot_load_bucket_type,
             skip_shape_validation=skip_validation,
             extra_args=self.deployment_extra_args,
-            min_replica_count=1,
-            max_replica_count=1,
+            min_replica_count=replica_count,
+            max_replica_count=replica_count,
             accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
