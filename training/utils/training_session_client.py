@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import logging
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlencode
 
 import requests
 from fireworks.training.sdk.trainer import TrainerJobManager
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 600
 
@@ -165,8 +162,6 @@ class TrainingSessionHandle:
             result = response.json()
         except requests.Timeout:
             self._usable = False
-            raise
-        except Exception:
             raise
 
         self._next_seq_id += 1

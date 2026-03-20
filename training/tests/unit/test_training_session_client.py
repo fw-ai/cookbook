@@ -64,6 +64,7 @@ class _FakeDatum:
 
 
 def test_create_session_reuses_newest_parent_job() -> None:
+    """Reuse the newest matching parent job before creating a child session."""
     manager = _FakeManager(
         list_payload={
             "trainingSessionJobs": [
@@ -96,6 +97,7 @@ def test_create_session_reuses_newest_parent_job() -> None:
 
 
 def test_create_session_creates_parent_when_missing() -> None:
+    """Create a parent job first when no matching parent exists."""
     manager = _FakeManager(
         list_payload={"trainingSessionJobs": []},
         post_payloads=[
@@ -129,6 +131,7 @@ def test_create_session_creates_parent_when_missing() -> None:
 
 
 def test_load_state_resets_private_sequence_counter() -> None:
+    """Reset the private forward sequence after a successful load_state call."""
     manager = _FakeManager(list_payload={"trainingSessionJobs": []}, post_payloads=[{}])
     handle = TrainingSessionHandle(
         manager=manager,
@@ -156,6 +159,7 @@ def test_load_state_resets_private_sequence_counter() -> None:
 
 
 def test_forward_uses_session_scoped_path_and_increments_sequence() -> None:
+    """Send forwards through the session-scoped gateway path and advance seq_id."""
     http_session = _FakeHTTPSession(
         _FakeResponse(
             {
@@ -203,6 +207,7 @@ def test_forward_uses_session_scoped_path_and_increments_sequence() -> None:
 
 
 def test_forward_failure_keeps_sequence_and_invalidates_handle() -> None:
+    """Keep seq_id unchanged and invalidate the handle after a timeout."""
     handle = TrainingSessionHandle(
         manager=_FakeManager(list_payload={"trainingSessionJobs": []}, post_payloads=[]),
         request_session=_FakeHTTPSession(requests.Timeout("timed out")),
@@ -222,6 +227,7 @@ def test_forward_failure_keeps_sequence_and_invalidates_handle() -> None:
 
 
 def test_forward_http_error_keeps_handle_usable() -> None:
+    """Keep the handle usable after non-timeout HTTP failures."""
     http_session = _FakeHTTPSession(_FakeResponse({"error": "boom"}, status_code=500))
     handle = TrainingSessionHandle(
         manager=_FakeManager(list_payload={"trainingSessionJobs": []}, post_payloads=[]),

@@ -151,10 +151,18 @@ class Config:
     """Base URL for the policy trainer (bypass direct route)."""
 
     reference_job_id: str | None = None
-    """Pre-created RLOR reference trainer job ID (skip creation if set)."""
+    """Legacy dedicated reference trainer job ID.
+
+    `rl_loop` now ignores this and always uses a shared training session for
+    reference logprobs.
+    """
 
     reference_base_url: str | None = None
-    """Base URL for the reference trainer (bypass direct route)."""
+    """Legacy dedicated reference trainer base URL.
+
+    `rl_loop` now ignores this and always uses a shared training session for
+    reference logprobs.
+    """
 
     reference_warm_start_from: str | None = None
     """Optional adapter directory to warm-start the shared reference session."""

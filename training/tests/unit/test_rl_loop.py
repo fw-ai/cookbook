@@ -120,7 +120,7 @@ def test_main_requires_deployment_tokenizer_model(monkeypatch):
         module.main(cfg)
 
 
-def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
+def test_main_bootstraps_with_shared_reference_session_and_cleans_up(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
@@ -410,39 +410,12 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def scale_to_zero(self, deployment_id):
             events["scaled_deployments"].append(deployment_id)
 
-    class FakeFuture:
-        def __init__(self, value):
-            self._value = value
-
-        def result(self):
-            return self._value
-
-    class FakeThreadPoolExecutor:
-        def __init__(self, max_workers):
-            self.max_workers = max_workers
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def submit(self, fn, *args, **kwargs):
-            return FakeFuture(fn(*args, **kwargs))
-
     class FakeClient:
         def __init__(self, _mgr, job_id, *_args, **_kwargs):
             self.job_id = job_id
             self.inner = object()
 
         def forward(self, data, loss_fn):
-            if self.job_id == "reference-job":
-                return SimpleNamespace(
-                    loss_fn_outputs=[
-                        {"logprobs": SimpleNamespace(data=[-0.11, -0.12])}
-                        for _ in data
-                    ]
-                )
             return SimpleNamespace(
                 loss_fn_outputs=[
                     {"logprobs": SimpleNamespace(data=[-0.21, -0.22])}
@@ -712,26 +685,6 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
 
         def scale_to_zero(self, deployment_id):
             events["scaled_deployments"].append(deployment_id)
-
-    class FakeFuture:
-        def __init__(self, value):
-            self._value = value
-
-        def result(self):
-            return self._value
-
-    class FakeThreadPoolExecutor:
-        def __init__(self, max_workers):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def submit(self, fn, *args, **kwargs):
-            return FakeFuture(fn(*args, **kwargs))
 
     class FakeClient:
         def __init__(self, _mgr, job_id, *_args, **_kwargs):
