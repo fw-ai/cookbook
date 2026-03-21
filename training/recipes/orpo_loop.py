@@ -48,6 +48,9 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     ResourceCleanup,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
     WandBConfig,
     ReconnectableClient,
     wandb_log,
@@ -102,6 +105,7 @@ class Config:
             project="dsv3-training",
         )
     )
+    runner: RunnerConfig = field(default_factory=RunnerConfig)
     init_from_checkpoint: str | None = None
 
 
@@ -115,6 +119,7 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
+    runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
@@ -274,6 +279,8 @@ def main(
             tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
             metrics = result.metrics
 
+            runner.add_tokens(step_tokens)
+
             logger.info(
                 "Step %d/%d | ORPO: %.4f | SFT: %.4f | OR: %.4f | "
                 "LogOR: %+.4f | Acc: %.1f%% | %.1f tok/s (%.1fs)",
@@ -288,35 +295,45 @@ def main(
                 step_elapsed,
             )
             log_metrics_json(step, tokens_per_sec=tokens_per_sec, **metrics)
-            wandb_log(
-                {
-                    "train/step": step,
-                    "train/orpo_loss": metrics["orpo_loss"],
-                    "train/sft_loss": metrics["sft_loss"],
-                    "train/or_loss": metrics["or_loss"],
-                    "train/log_odds_ratio": metrics["log_odds_ratio"],
-                    "train/accuracy": metrics["accuracy"],
-                    "train/tokens_per_sec": tokens_per_sec,
-                    "train/step_time_sec": step_elapsed,
-                    "train/step_tokens": step_tokens,
-                    "train/epoch": epoch + 1,
-                },
-                step,
-            )
+            step_metrics = {
+                "train/step": step,
+                "train/orpo_loss": metrics["orpo_loss"],
+                "train/sft_loss": metrics["sft_loss"],
+                "train/or_loss": metrics["or_loss"],
+                "train/log_odds_ratio": metrics["log_odds_ratio"],
+                "train/accuracy": metrics["accuracy"],
+                "train/tokens_per_sec": tokens_per_sec,
+                "train/step_time_sec": step_elapsed,
+                "train/step_tokens": step_tokens,
+                "train/epoch": epoch + 1,
+            }
+            wandb_log(step_metrics, step)
+            runner.append_metrics(step, step_metrics)
+            runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
+            runner.write_metadata()
             return time.monotonic()
 
-        for epoch in range(cfg.epochs):
-            random.shuffle(pair_cache)
-            step_t0 = time.monotonic()
-            batch_buffer: list[dict] = []
-            for pair in pair_cache:
-                batch_buffer.append(pair)
-                if len(batch_buffer) >= cfg.batch_size:
-                    step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
-                    batch_buffer = []
+        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+        runner.start_training()
+        runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 
-            if batch_buffer:
-                _run_train_step(epoch, batch_buffer, step_t0)
+        try:
+            for epoch in range(cfg.epochs):
+                random.shuffle(pair_cache)
+                step_t0 = time.monotonic()
+                batch_buffer: list[dict] = []
+                for pair in pair_cache:
+                    batch_buffer.append(pair)
+                    if len(batch_buffer) >= cfg.batch_size:
+                        step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
+                        batch_buffer = []
+
+                if batch_buffer:
+                    _run_train_step(epoch, batch_buffer, step_t0)
+        except BaseException as exc:
+            runner.write_status(RunStatus.FAILED, step=step, total_steps=total_steps, error=str(exc))
+            runner.write_metadata()
+            raise
 
         # -- Final checkpoint ------------------------------------------------
 
@@ -339,7 +356,12 @@ def main(
                     sampler_checkpoint_id,
                     cfg.output_model_id,
                 )
+                runner.write_output_model(
+                    model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
+                )
 
+        runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
+        runner.write_metadata()
         logger.info(
             "Training complete: %d optimizer steps (%d new)", step, step - step_offset
         )

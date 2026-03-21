@@ -39,6 +39,9 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     ResourceCleanup,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
     WandBConfig,
     DeployConfig,
     WeightSyncConfig,
@@ -166,6 +169,7 @@ class Config:
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
+    runner: RunnerConfig = field(default_factory=RunnerConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +253,7 @@ def main(
     cleanup_on_exit: bool = False,
 ):
     cfg = config
+    runner = RunnerIO(cfg.runner)
 
     # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
     def _signal_handler(signum, frame):
@@ -320,6 +325,9 @@ def main(
         logger.info("No ref_training_shape_id set, skipping reference model")
 
     import time as _time
+
+    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+    runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     _infra_start = _time.time()
 
@@ -708,6 +716,11 @@ def main(
             )
             metrics["train/step"] = step
 
+            step_tokens = sum(
+                len(d.loss_fn_inputs["target_tokens"].data) for pg in prompt_groups for d in pg.data
+            )
+            runner.add_tokens(step_tokens)
+
             avg_reward = metrics.get("rollout/reward", 0.0)
             avg_acc = metrics.get("rollout/accuracy", 0.0)
             avg_kl = metrics.get("train/mean_kl", 0.0)
@@ -720,6 +733,13 @@ def main(
             )
             log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
             wandb_log(metrics, step)
+
+            total_rl_steps = len(rl_dataset) - step_offset
+            runner.append_metrics(step, metrics)
+            runner.write_status(
+                RunStatus.RUNNING, step=step, total_steps=total_rl_steps, message="training",
+            )
+            runner.write_metadata()
 
             if cfg.trajectory_dir:
                 _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
@@ -738,16 +758,27 @@ def main(
         for i_step in range(step_offset, len(rl_dataset)):
             remaining_rows.extend(rl_dataset.get_batch(i_step))
 
-        global_step = asyncio.run(
-            run_rl_loop(
-                sample_fns=(sample_one_prompt(row) for row in remaining_rows),
-                train_fns=train_fns,
-                prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=should_accept,
-                global_step=step_offset,
-                metrics_callback=_loop_metrics_callback,
+        total_rl_steps = len(rl_dataset) - step_offset
+        runner.start_training()
+        runner.write_status(RunStatus.RUNNING, total_steps=total_rl_steps, message="training")
+
+        try:
+            global_step = asyncio.run(
+                run_rl_loop(
+                    sample_fns=(sample_one_prompt(row) for row in remaining_rows),
+                    train_fns=train_fns,
+                    prompt_groups_per_step=prompt_groups_per_step,
+                    dynamic_filter_fn=should_accept,
+                    global_step=step_offset,
+                    metrics_callback=_loop_metrics_callback,
+                )
             )
-        )
+        except BaseException as exc:
+            runner.write_status(
+                RunStatus.FAILED, step=step_offset, total_steps=total_rl_steps, error=str(exc),
+            )
+            runner.write_metadata()
+            raise
 
         # -- Final checkpoint ----------------------------------------------------
 
@@ -775,9 +806,16 @@ def main(
                         paths["sampler_path"],
                         cfg.output_model_id,
                     )
+                    runner.write_output_model(
+                        model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
+                    )
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
 
+            runner.write_status(
+                RunStatus.COMPLETED, step=global_step, total_steps=total_rl_steps, message="done",
+            )
+            runner.write_metadata()
             logger.info("Training complete: %d steps", global_step)
             wandb_finish()
             return {

@@ -1,0 +1,223 @@
+"""Runner contract for cookbook orchestration.
+
+Defines the file-based contract the orchestration layer consumes.
+All file paths are optional -- when unset, the corresponding output is skipped.
+
+Optional inputs (via ``RunnerConfig`` fields or environment variables):
+
+* ``status_file``  / ``COOKBOOK_STATUS_FILE``  -- training status + progress
+* ``metadata_file`` / ``COOKBOOK_METADATA_FILE`` -- accumulated tokens + accelerator-seconds
+* ``metrics_file``  / ``COOKBOOK_METRICS_FILE``  -- append-only JSONL per-step metrics
+* ``output_model_path`` / ``COOKBOOK_OUTPUT_MODEL_PATH`` -- where to write final model info
+
+File formats:
+
+``status_file`` (JSON, overwritten each update)::
+
+    {"status": "running", "step": 5, "total_steps": 100,
+     "progress": 0.05, "message": "training"}
+
+``metadata_file`` (JSON, overwritten each update)::
+
+    {"tokens_processed": 120000, "accelerator_seconds": 3600.0,
+     "accelerator_type": "NVIDIA_H100_80GB", "accelerator_count": 8}
+
+``metrics_file`` (JSONL, appended each step)::
+
+    {"step": 1, "train/ce_loss": 2.3, "train/ppl": 10.0, ...}
+
+``output_model_path`` (JSON, written once at completion)::
+
+    {"model_id": "accounts/.../models/my-model", "checkpoint": "step-100",
+     "job_id": "job-abc"}
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+class RunStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class RunnerConfig:
+    """Optional orchestration outputs.
+
+    Paths can be set directly or read from environment variables.
+    Direct values take precedence over env vars.
+    """
+
+    status_file: str | None = None
+    metadata_file: str | None = None
+    metrics_file: str | None = None
+    output_model_path: str | None = None
+
+    def resolve(self) -> RunnerConfig:
+        """Return a copy with env-var fallbacks applied."""
+        return RunnerConfig(
+            status_file=self.status_file or os.environ.get("COOKBOOK_STATUS_FILE"),
+            metadata_file=self.metadata_file or os.environ.get("COOKBOOK_METADATA_FILE"),
+            metrics_file=self.metrics_file or os.environ.get("COOKBOOK_METRICS_FILE"),
+            output_model_path=self.output_model_path or os.environ.get("COOKBOOK_OUTPUT_MODEL_PATH"),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        """True if any output path is configured."""
+        return any([self.status_file, self.metadata_file, self.metrics_file, self.output_model_path])
+
+
+class RunnerIO:
+    """Writes orchestration contract files.
+
+    Constructed once per recipe run.  Call methods at the appropriate
+    points in the training loop to keep the orchestration layer informed.
+
+    All write operations are best-effort -- failures are logged but never
+    raise so the training loop is not interrupted.
+    """
+
+    def __init__(self, config: RunnerConfig | None = None):
+        cfg = (config or RunnerConfig()).resolve()
+        self._status_file = cfg.status_file
+        self._metadata_file = cfg.metadata_file
+        self._metrics_file = cfg.metrics_file
+        self._output_model_path = cfg.output_model_path
+
+        self._tokens_processed: int = 0
+        self._training_start: float | None = None
+        self._accelerator_type: str | None = None
+        self._accelerator_count: int | None = None
+
+    # -- status ----------------------------------------------------------------
+
+    def write_status(
+        self,
+        status: RunStatus,
+        *,
+        step: int = 0,
+        total_steps: int = 0,
+        message: str = "",
+        error: str | None = None,
+    ) -> None:
+        if not self._status_file:
+            return
+        progress = step / total_steps if total_steps > 0 else 0.0
+        payload: dict[str, Any] = {
+            "status": status.value,
+            "step": step,
+            "total_steps": total_steps,
+            "progress": round(progress, 6),
+        }
+        if message:
+            payload["message"] = message
+        if error:
+            payload["error"] = error
+        self._write_json(self._status_file, payload)
+
+    # -- metadata --------------------------------------------------------------
+
+    def set_accelerator_info(
+        self,
+        accelerator_type: str | None,
+        accelerator_count: int | None,
+    ) -> None:
+        self._accelerator_type = accelerator_type
+        self._accelerator_count = accelerator_count
+
+    def start_training(self) -> None:
+        """Mark training start for accelerator-seconds calculation."""
+        self._training_start = time.monotonic()
+
+    def add_tokens(self, count: int) -> None:
+        self._tokens_processed += count
+
+    def write_metadata(self) -> None:
+        if not self._metadata_file:
+            return
+        accel_seconds = 0.0
+        if self._training_start is not None:
+            wall_seconds = time.monotonic() - self._training_start
+            n_devices = self._accelerator_count or 1
+            accel_seconds = round(wall_seconds * n_devices, 3)
+        payload: dict[str, Any] = {
+            "tokens_processed": self._tokens_processed,
+            "accelerator_seconds": accel_seconds,
+        }
+        if self._accelerator_type:
+            payload["accelerator_type"] = self._accelerator_type
+        if self._accelerator_count:
+            payload["accelerator_count"] = self._accelerator_count
+        self._write_json(self._metadata_file, payload)
+
+    # -- metrics ---------------------------------------------------------------
+
+    def append_metrics(self, step: int, metrics: dict[str, Any]) -> None:
+        if not self._metrics_file:
+            return
+        record = {"step": step}
+        for k, v in metrics.items():
+            if isinstance(v, float) and (v != v):  # NaN guard
+                v = None
+            record[k] = v
+        self._append_jsonl(self._metrics_file, record)
+
+    # -- output model ----------------------------------------------------------
+
+    def write_output_model(
+        self,
+        *,
+        model_id: str | None = None,
+        checkpoint: str | None = None,
+        job_id: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        if not self._output_model_path:
+            return
+        payload: dict[str, Any] = {}
+        if model_id:
+            payload["model_id"] = model_id
+        if checkpoint:
+            payload["checkpoint"] = checkpoint
+        if job_id:
+            payload["job_id"] = job_id
+        if extra:
+            payload.update(extra)
+        self._write_json(self._output_model_path, payload)
+
+    # -- helpers ---------------------------------------------------------------
+
+    def _write_json(self, path: str, data: dict[str, Any]) -> None:
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f, separators=(",", ":"))
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except Exception:
+            logger.warning("Failed to write %s", path, exc_info=True)
+
+    def _append_jsonl(self, path: str, record: dict[str, Any]) -> None:
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "a") as f:
+                f.write(json.dumps(record, separators=(",", ":")) + "\n")
+                f.flush()
+        except Exception:
+            logger.warning("Failed to append to %s", path, exc_info=True)

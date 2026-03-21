@@ -41,6 +41,9 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     ResourceCleanup,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
     WandBConfig,
     DeployConfig,
     WeightSyncConfig,
@@ -102,6 +105,7 @@ class Config:
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
+    runner: RunnerConfig = field(default_factory=RunnerConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +252,7 @@ async def _train_loop(
     cfg: Config,
     step_offset: int,
     on_ref_done: Callable[[], None] | None = None,
+    runner: RunnerIO | None = None,
 ) -> int:
     """Pipelined DPO training -- ref forward overlaps with policy training.
 
@@ -263,6 +268,8 @@ async def _train_loop(
     step = step_offset
     total_steps = len(tokenized_pairs) * cfg.epochs // batch_size
 
+    if runner is None:
+        runner = RunnerIO()
     ref_cache: dict[int, dict[str, Any]] = {}
     pipe: asyncio.Queue = asyncio.Queue()
     sem = asyncio.Semaphore(cfg.ref_cache_concurrency)
@@ -297,6 +304,8 @@ async def _train_loop(
         tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
         step_metrics.update(flush_timing())
 
+        runner.add_tokens(step_tokens)
+
         fwd_metrics = fwd_bwd_result.metrics
         avg_loss = fwd_metrics["dpo_loss"]
         avg_margin = fwd_metrics["margin"]
@@ -319,6 +328,9 @@ async def _train_loop(
             "train/step_tokens": step_tokens,
         })
         wandb_log(step_metrics, step)
+        runner.append_metrics(step, step_metrics)
+        runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
+        runner.write_metadata()
 
     # -- Epoch 0: pipelined ref forward + training -----------------------------
 
@@ -379,6 +391,7 @@ def main(
     deploy_mgr: DeploymentManager | None = None,
 ):
     cfg = config
+    runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
@@ -530,6 +543,9 @@ def main(
         if not tokenized_pairs:
             raise RuntimeError("No valid pairs after tokenization")
 
+        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+        runner.write_status(RunStatus.RUNNING, message="provisioning")
+
         def _on_ref_done():
             nonlocal reference_job_id
             logger.info("Reference forward complete — deleting reference trainer to free GPU")
@@ -539,12 +555,19 @@ def main(
             except Exception as e:
                 logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
 
-        step = asyncio.run(
-            _train_loop(
-                tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
-                on_ref_done=_on_ref_done,
+        runner.start_training()
+        try:
+            step = asyncio.run(
+                _train_loop(
+                    tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
+                    on_ref_done=_on_ref_done,
+                    runner=runner,
+                )
             )
-        )
+        except BaseException as exc:
+            runner.write_status(RunStatus.FAILED, step=step_offset, error=str(exc))
+            runner.write_metadata()
+            raise
 
         # -- Final checkpoint --------------------------------------------------
 
@@ -573,7 +596,12 @@ def main(
                     final_sampler_checkpoint_id,
                     cfg.output_model_id,
                 )
+                runner.write_output_model(
+                    model_id=cfg.output_model_id, checkpoint=f"final-step-{step}", job_id=policy_job_id,
+                )
 
+        runner.write_status(RunStatus.COMPLETED, step=step, message="done")
+        runner.write_metadata()
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()
         return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
