@@ -34,7 +34,7 @@ import signal
 import asyncio
 import logging
 import time as _time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -66,15 +66,124 @@ from training.utils.checkpoint_utils import (
 from typing import Callable, List
 
 from training.utils import compute_advantages
-from training.utils.config import DeployConfig, InfraConfig, WeightSyncConfig  # noqa: F401
-from training.utils.rl.config import Config
+from training.utils.config import DeployConfig, InfraConfig, WeightSyncConfig, RewardFn, WandBConfig
 from training.utils.rl.losses import PromptGroup, build_loss_fn, resolve_builtin_loss
 from training.utils.rl.router_replay import build_r3_routing_matrices
 from training.utils.rl.train import TrainContext, train_one_group, finish_step
+from training.utils.rl.tis import TISConfig
+from training.utils.rl.dapo import DAPOConfig
+from training.utils.rl.gspo import GSPOConfig
+from training.utils.rl.cispo import CISPOConfig
+from fireworks.training.sdk.client import GradAccNormalization
 
 logger = logging.getLogger(__name__)
 
-RewardFn = Callable[[str, dict], float]
+FilterFn = Callable[[PromptGroup], bool]
+
+
+# ---------------------------------------------------------------------------
+# Config — everything the user can configure
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Config:
+    """Full configuration for async RL training.
+
+    Customisation points visible in this file:
+    - ``reward_fn`` / module-level ``reward_fn`` — score completions
+    - ``filter_fn`` / ``_default_filter`` — reject untrainable groups
+    - ``policy_loss`` — select a registered loss algorithm
+    """
+
+    log_path: str
+    """Directory for checkpoints and logs. Required."""
+
+    # -- Model & data -------------------------------------------------------
+
+    base_model: str = "accounts/fireworks/models/qwen3-8b"
+    dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
+
+    learning_rate: float = 1e-5
+    kl_beta: float = 0.001
+    completions_per_prompt: int = 4
+    max_completion_tokens: int = 1024
+    temperature: float = 1.0
+    epochs: int = 1
+    max_rows: int = 100
+    max_seq_len: int | None = None
+    """Auto-populated from training shape's max_supported_context_length."""
+    lora_rank: int = 0
+
+    # -- Sampling & batching ------------------------------------------------
+
+    prompt_groups_per_step: int = 1
+    """Number of prompt groups per optimizer step."""
+
+    # -- Async rollout ------------------------------------------------------
+
+    async_rollout: bool = False
+    """Enable async rollout scheduling (streaming pipeline)."""
+
+    valid_prompt_groups_per_step: int | None = None
+    """Target accepted groups per step.  Defaults to prompt_groups_per_step."""
+
+    max_head_offpolicy_versions: int = 2
+    """Maximum staleness: how many versions ahead rollouts can be."""
+
+    sample_max_concurrency: int | None = None
+    """Max concurrent HTTP requests to the deployment (resource window).
+
+    sample_with_tokens(n=K) fans out into K individual HTTP requests.
+    This gates each request, not each prompt.  With completions_per_prompt=8
+    and sample_max_concurrency=32, at most 4 prompts sample concurrently."""
+
+    # -- Router replay (R3) -------------------------------------------------
+
+    router_replay: bool = False
+    router_replay_completion_only: bool = True
+
+    # -- Training -----------------------------------------------------------
+
+    grad_accumulation_normalization: GradAccNormalization | str | None = GradAccNormalization.NUM_LOSS_TOKENS
+
+    # -- Loss ---------------------------------------------------------------
+
+    policy_loss: str = "grpo"
+    """grpo, importance_sampling, dapo, dro, gspo, reinforce, or cispo."""
+
+    dapo: DAPOConfig = field(default_factory=DAPOConfig)
+    gspo: GSPOConfig = field(default_factory=GSPOConfig)
+    cispo: CISPOConfig = field(default_factory=CISPOConfig)
+    eps_clip: float = 0.2
+    eps_clip_high: float | None = None
+    ratio_log_cap: float = 20.0
+    tis: TISConfig = field(default_factory=TISConfig)
+
+    # -- Pluggable functions ------------------------------------------------
+
+    reward_fn: RewardFn | None = None
+    """(completion_text, dataset_row) -> float.  None = use module-level default."""
+
+    filter_fn: FilterFn | None = None
+    """(PromptGroup) -> bool.  None = accept all groups."""
+
+    # -- Trajectory / resume ------------------------------------------------
+
+    trajectory_dir: str | None = None
+    policy_job_id: str | None = None
+    policy_base_url: str | None = None
+    reference_job_id: str | None = None
+    reference_base_url: str | None = None
+    init_from_checkpoint: str | None = None
+    output_model_id: str | None = None
+
+    # -- Sub-configs (infra plumbing) ---------------------------------------
+
+    infra: InfraConfig = field(default_factory=InfraConfig)
+    deployment: DeployConfig = field(default_factory=DeployConfig)
+    weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
+    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
 
 
 # ---------------------------------------------------------------------------

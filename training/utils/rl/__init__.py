@@ -1,8 +1,6 @@
 """RL utilities: losses, training loop, PP recommendation, TIS, router replay."""
 
 __all__ = [
-    # Config
-    "Config",
     # Losses & algorithms
     "CISPOConfig",
     "DAPOConfig",
@@ -31,7 +29,6 @@ __all__ = [
     "total_target_tokens",
 ]
 
-from training.utils.rl.config import Config
 from training.utils.rl.pp import PPBatchRecommendation, compute_pp_recommendation
 from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
 from training.utils.rl.grpo import make_grpo_loss_fn
