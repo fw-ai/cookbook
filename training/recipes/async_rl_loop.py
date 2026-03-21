@@ -78,6 +78,11 @@ from fireworks.training.sdk.client import GradAccNormalization
 
 logger = logging.getLogger(__name__)
 
+logger.warning(
+    "async_rl_loop is EXPERIMENTAL. APIs may change without notice. "
+    "For stable training, use rl_loop.py instead."
+)
+
 FilterFn = Callable[[PromptGroup], bool]
 
 

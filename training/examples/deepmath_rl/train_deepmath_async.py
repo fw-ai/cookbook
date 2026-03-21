@@ -28,13 +28,7 @@ if _SRC not in sys.path:
 from math_verify import parse as math_parse, verify as math_verify
 
 import training.recipes.async_rl_loop as rl_loop
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
-from training.utils import (
-    InfraConfig,
-    WandBConfig,
-    DeployConfig,
-    WeightSyncConfig,
-)
+from training.utils import InfraConfig, WandBConfig, DeployConfig, WeightSyncConfig
 from training.utils.rl import TISConfig
 
 logging.basicConfig(
@@ -45,9 +39,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-
-FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
-FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
 
 @dataclass
@@ -246,19 +237,6 @@ def main():
             f"Dataset not found at {args.dataset_path}. Run prepare_data.py first."
         )
 
-    os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
-    os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
-
-    rlor_mgr = TrainerJobManager(
-        api_key=FIREWORKS_API_KEY,
-        base_url=FIREWORKS_BASE_URL,
-    )
-    deploy_mgr = DeploymentManager(
-        api_key=FIREWORKS_API_KEY,
-        base_url=FIREWORKS_BASE_URL,
-        hotload_api_url=FIREWORKS_BASE_URL,
-    )
-
     config = rl_loop.Config(
         log_path=args.trajectory_dir or "./deepmath_async_logs",
         base_model=args.base_model,
@@ -328,8 +306,6 @@ def main():
     rl_loop.reward_fn = deepmath_reward
     metrics = rl_loop.main(
         config,
-        rlor_mgr=rlor_mgr,
-        deploy_mgr=deploy_mgr,
         cleanup_on_exit=not args.skip_cleanup,
     )
 
