@@ -944,8 +944,9 @@ def main(
         sample_kwargs["logprobs"] = True
 
         # -- HTTP concurrency gate --------------------------------------
-        # TODO: Move this into the SDK (DeploymentSampler) as a first-class
-        #       parameter instead of monkey-patching _do_one_completion.
+        # sample_with_tokens(n=K) fans out into K individual HTTP requests
+        # via asyncio.gather.  The semaphore gates each request so we don't
+        # overwhelm the deployment.
 
         if cfg.sample_max_concurrency is not None:
             _http_semaphore = asyncio.Semaphore(cfg.sample_max_concurrency)
