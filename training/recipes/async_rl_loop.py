@@ -741,6 +741,7 @@ def _setup_infra(
         model=inference_model,
         api_key=api_key,
         tokenizer=tokenizer,
+        max_concurrency=cfg.sample_max_concurrency,
     )
     weight_syncer = WeightSyncer(
         policy_client=policy.inner,
@@ -942,25 +943,6 @@ def main(
                 include_routing_matrix=True, echo=True, logprobs=True
             )
         sample_kwargs["logprobs"] = True
-
-        # -- HTTP concurrency gate --------------------------------------
-        # sample_with_tokens(n=K) fans out into K individual HTTP requests
-        # via asyncio.gather.  The semaphore gates each request so we don't
-        # overwhelm the deployment.
-
-        if cfg.sample_max_concurrency is not None:
-            _http_semaphore = asyncio.Semaphore(cfg.sample_max_concurrency)
-            _orig_do_one = infra.sampler._do_one_completion
-
-            async def _gated_do_one(*args, **kwargs):
-                async with _http_semaphore:
-                    return await _orig_do_one(*args, **kwargs)
-
-            infra.sampler._do_one_completion = _gated_do_one
-            logger.info(
-                "Sample concurrency gate: max %d concurrent HTTP requests",
-                cfg.sample_max_concurrency,
-            )
 
         async def sample_one_prompt(row: dict):
             """Sample completions for one prompt and return a PromptGroup."""
