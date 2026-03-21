@@ -98,7 +98,8 @@ __all__ = [
     "TrainContext",
     "DynamicFilterFn",
     "train_one_step",
-    "train_one_group",
+    "ref_fwd_bwd",
+    "train_one_group",  # backward-compatible alias
     "finish_step",
     "run_rl_loop",
 ]
@@ -226,8 +227,8 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
     )
 
 
-def train_one_group(ctx: TrainContext, group: PromptGroup) -> Any:
-    """Process ONE prompt group: ref_forward + fwd_bwd.
+def ref_fwd_bwd(ctx: TrainContext, group: PromptGroup) -> Any:
+    """ref_forward + fwd_bwd for ONE prompt group.
 
     The server accumulates gradients across calls.  Call ``finish_step``
     after processing ``step_target`` groups to fire optim_step.
@@ -235,6 +236,10 @@ def train_one_group(ctx: TrainContext, group: PromptGroup) -> Any:
     with timer("ref_forward"):
         _ref_forward(ctx, [group])
     return _fwd_bwd(ctx, [group])
+
+
+# Backward-compatible alias
+train_one_group = ref_fwd_bwd
 
 
 def finish_step(

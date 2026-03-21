@@ -3,7 +3,7 @@
 
 An async-first RL training loop that streams prompt groups to the trainer
 as they arrive from sampling, instead of collecting a full batch first.
-The tinker server accumulates gradients across ``train_one_group`` calls;
+The tinker server accumulates gradients across ``ref_fwd_bwd`` calls;
 ``finish_step`` fires ``optim_step`` + weight sync after all groups in a
 step have been processed.
 
@@ -81,7 +81,7 @@ from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.losses import PromptGroup, build_loss_fn, resolve_builtin_loss
 from training.utils.rl.router_replay import build_r3_routing_matrices
 from training.utils.rl.tis import TISConfig
-from training.utils.rl.train import TrainContext, RolloutStats, train_one_group, finish_step
+from training.utils.rl.train import TrainContext, RolloutStats, ref_fwd_bwd, finish_step
 
 logger = logging.getLogger(__name__)
 
@@ -857,7 +857,7 @@ def main(
     """Async GRPO training with streaming rollout-training overlap.
 
     Uses ``AsyncRolloutScheduler.stream_groups()`` to yield groups one at a
-    time, sending each to the trainer immediately via ``train_one_group()``.
+    time, sending each to the trainer immediately via ``ref_fwd_bwd()``.
     The server accumulates gradients; ``finish_step()`` fires ``optim_step``
     after all groups in the step.
     """
@@ -1037,7 +1037,7 @@ def main(
                     raw_rewards.extend(group.rewards)
 
                     # Train this group now — server accumulates gradients
-                    result = train_one_group(ctx, group)
+                    result = ref_fwd_bwd(ctx, group)
                     fwd_bwd_results.append(result)
                     logger.info(
                         "[async step %d] trained group %d/%d",
