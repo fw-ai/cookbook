@@ -35,6 +35,9 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     ResourceCleanup,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
     WandBConfig,
     ReconnectableClient,
     wandb_log,
@@ -95,6 +98,7 @@ class Config:
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
+    runner: RunnerConfig = field(default_factory=RunnerConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +111,7 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
+    runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
@@ -159,6 +164,9 @@ def main(
             "max_seq_len is required. Set it in Config, or use a training shape "
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
+
+    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+    runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     with ResourceCleanup(rlor_mgr) as cleanup:
         endpoint = create_trainer_job(
@@ -289,6 +297,8 @@ def main(
                 for k, v in optim_result.metrics.items():
                     step_metrics[f"train/{k}"] = v
 
+            runner.add_tokens(step_tokens)
+
             if response_tokens > 0:
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
@@ -308,15 +318,29 @@ def main(
                 })
                 wandb_log(step_metrics, step)
 
+            runner.append_metrics(step, step_metrics)
+            runner.write_status(
+                RunStatus.RUNNING, step=step, total_steps=total_steps_estimate, message="training",
+            )
+            runner.write_metadata()
+
             return step
 
-        for epoch in range(cfg.epochs):
-            sft_dataset.set_epoch(epoch)
-            epoch_start = start_batch if epoch == 0 else 0
-            for i_batch in range(epoch_start, total_batches_per_epoch):
-                batch = sft_dataset.get_batch(i_batch)
-                data_consumed += len(batch)
-                step = _run_train_step(batch, step)
+        runner.start_training()
+        runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
+
+        try:
+            for epoch in range(cfg.epochs):
+                sft_dataset.set_epoch(epoch)
+                epoch_start = start_batch if epoch == 0 else 0
+                for i_batch in range(epoch_start, total_batches_per_epoch):
+                    batch = sft_dataset.get_batch(i_batch)
+                    data_consumed += len(batch)
+                    step = _run_train_step(batch, step)
+        except BaseException as exc:
+            runner.write_status(RunStatus.FAILED, step=step, total_steps=total_steps_estimate, error=str(exc))
+            runner.write_metadata()
+            raise
 
         # -- Final checkpoint --------------------------------------------------
 
@@ -335,7 +359,14 @@ def main(
                     paths["sampler_path"],
                     cfg.output_model_id,
                 )
+                runner.write_output_model(
+                    model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
+                )
 
+        runner.write_status(
+            RunStatus.COMPLETED, step=step, total_steps=total_steps_estimate, message="done",
+        )
+        runner.write_metadata()
         logger.info("Training complete: %d optimizer steps", step)
         wandb_finish()
         return {"steps": step, "job_id": job_id}
