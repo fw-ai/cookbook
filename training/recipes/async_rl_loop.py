@@ -36,17 +36,21 @@ TODO: Once stable, merge the infra extraction (_Infra, _setup_infra) and
 from __future__ import annotations
 
 import os
+import re
 import signal
 import asyncio
 import logging
+import warnings
 import time as _time
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Callable, List
 
 import tinker
+import transformers
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
+from fireworks.training.sdk.client import GradAccNormalization
 from fireworks.training.sdk.deployment import DeploymentSampler
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
@@ -54,6 +58,7 @@ from training.utils import (
     ResourceCleanup,
     ReconnectableClient,
     RLPromptDataset,
+    compute_advantages,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -69,22 +74,17 @@ from training.utils.checkpoint_utils import (
     save_checkpoint,
     CheckpointKind,
 )
-from typing import Callable, List
-
-from training.utils import compute_advantages
 from training.utils.config import DeployConfig, InfraConfig, WeightSyncConfig, RewardFn, WandBConfig
-from training.utils.rl.losses import PromptGroup, build_loss_fn, resolve_builtin_loss
-from training.utils.rl.router_replay import build_r3_routing_matrices
-from training.utils.rl.train import TrainContext, train_one_group, finish_step
-from training.utils.rl.tis import TISConfig
+from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.cispo import CISPOConfig
-from fireworks.training.sdk.client import GradAccNormalization
+from training.utils.rl.losses import PromptGroup, build_loss_fn, resolve_builtin_loss
+from training.utils.rl.router_replay import build_r3_routing_matrices
+from training.utils.rl.tis import TISConfig
+from training.utils.rl.train import TrainContext, RolloutStats, train_one_group, finish_step
 
 logger = logging.getLogger(__name__)
 
-import warnings
 warnings.warn(
     "\n"
     "╔══════════════════════════════════════════════════════════════╗\n"
@@ -213,8 +213,6 @@ def _default_reward(completion: str, row: dict) -> float:
     Override by setting ``reward_fn`` at module level or passing a custom
     ``Config.reward_fn``.
     """
-    import re
-
     def _extract(text: str):
         m = re.search(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
         if not m:
@@ -489,8 +487,6 @@ class AsyncRolloutScheduler:
 
         Re-implements the batch collection with full stats tracking.
         """
-        from training.utils.rl.train import RolloutStats
-
         accepted = []
         stats = RolloutStats()
         t0 = _time.time()
@@ -735,8 +731,6 @@ def _setup_infra(
         if reference_ep
         else None
     )
-
-    import transformers
 
     inference_model = dep_info.inference_model if dep_info else cfg.base_model
     tokenizer = transformers.AutoTokenizer.from_pretrained(
