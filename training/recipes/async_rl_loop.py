@@ -18,10 +18,16 @@ Key differences from ``rl_loop.py``:
 - **Extracted infra**: ``_setup_infra()`` separates infrastructure setup
   from the training loop.
 
+Acknowledgements:
+
+  The ``AsyncRolloutScheduler`` and two-level capacity gating (staleness
+  cap + concurrency cap) are inspired by AReaL's ``BatchTaskDispatcher``
+  and ``StalenessManager``:
+  https://github.com/inclusionAI/AReaL
+
 Usage::
 
     from training.recipes.async_rl_loop import main, Config
-    # Config is re-exported from training.utils.rl.config
 
 TODO: Once stable, merge the infra extraction (_Infra, _setup_infra) and
       the streaming pipeline back into rl_loop.py and retire this module.
