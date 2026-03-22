@@ -305,6 +305,61 @@ class TestRunnerIOAtomicWrite:
         assert os.path.exists(path)
 
 
+# -- RunnerIO: context manager -------------------------------------------------
+
+
+class TestRunnerIOContextManager:
+    def test_exception_writes_failed_status(self, tmp_path):
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+        runner.write_status(RunStatus.RUNNING, step=5, total_steps=10)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with runner:
+                raise RuntimeError("boom")
+
+        data = json.loads(open(path).read())
+        assert data["status"] == "failed"
+        assert data["error"] == "boom"
+        assert data["step"] == 5
+        assert data["total_steps"] == 10
+
+    def test_exception_flushes_metadata(self, tmp_path):
+        meta = str(tmp_path / "meta.json")
+        runner = RunnerIO(RunnerConfig(metadata_file=meta))
+        runner.start_training()
+        runner.add_tokens(1000)
+
+        with pytest.raises(ValueError):
+            with runner:
+                raise ValueError("fail")
+
+        data = json.loads(open(meta).read())
+        assert data["tokens_processed"] == 1000
+
+    def test_exception_propagates(self):
+        runner = RunnerIO()
+        with pytest.raises(KeyboardInterrupt):
+            with runner:
+                raise KeyboardInterrupt
+
+    def test_clean_exit_does_not_write_completed(self, tmp_path):
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+        runner.write_status(RunStatus.RUNNING, step=1, total_steps=10)
+
+        with runner:
+            pass  # no exception
+
+        data = json.loads(open(path).read())
+        assert data["status"] == "running"  # unchanged by __exit__
+
+    def test_noop_runner_context_manager_does_not_raise(self):
+        runner = RunnerIO()
+        with runner:
+            pass
+
+
 # -- RunnerIO: default noop ---------------------------------------------------
 
 

@@ -328,7 +328,7 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 
-        try:
+        with runner:
             for epoch in range(cfg.epochs):
                 random.shuffle(pair_cache)
                 step_t0 = time.monotonic()
@@ -341,10 +341,6 @@ def main(
 
                 if batch_buffer:
                     _run_train_step(epoch, batch_buffer, step_t0)
-        except BaseException as exc:
-            runner.write_status(RunStatus.FAILED, step=step, total_steps=total_steps, error=str(exc))
-            runner.write_metadata()
-            raise
 
         # -- Final checkpoint ------------------------------------------------
 

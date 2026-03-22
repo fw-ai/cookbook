@@ -773,7 +773,7 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_rl_steps, message="training")
 
-        try:
+        with runner:
             global_step = asyncio.run(
                 run_rl_loop(
                     sample_fns=(sample_one_prompt(row) for row in remaining_rows),
@@ -784,12 +784,6 @@ def main(
                     metrics_callback=_loop_metrics_callback,
                 )
             )
-        except BaseException as exc:
-            runner.write_status(
-                RunStatus.FAILED, step=step_offset, total_steps=total_rl_steps, error=str(exc),
-            )
-            runner.write_metadata()
-            raise
 
         # -- Final checkpoint ----------------------------------------------------
 

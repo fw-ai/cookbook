@@ -340,7 +340,7 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
-        try:
+        with runner:
             for epoch in range(cfg.epochs):
                 sft_dataset.set_epoch(epoch)
                 epoch_start = start_batch if epoch == 0 else 0
@@ -348,10 +348,6 @@ def main(
                     batch = sft_dataset.get_batch(i_batch)
                     data_consumed += len(batch)
                     step = _run_train_step(batch, step)
-        except BaseException as exc:
-            runner.write_status(RunStatus.FAILED, step=step, total_steps=total_steps_estimate, error=str(exc))
-            runner.write_metadata()
-            raise
 
         # -- Final checkpoint --------------------------------------------------
 

@@ -101,6 +101,24 @@ class RunnerIO:
         self._training_start: float | None = None
         self._accelerator_type: str | None = None
         self._accelerator_count: int | None = None
+        self._last_step: int = 0
+        self._last_total_steps: int = 0
+
+    # -- context manager -------------------------------------------------------
+
+    def __enter__(self) -> "RunnerIO":
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, tb: object) -> bool:
+        if exc_type is not None:
+            self.write_status(
+                RunStatus.FAILED,
+                step=self._last_step,
+                total_steps=self._last_total_steps,
+                error=str(exc_val),
+            )
+            self.write_metadata()
+        return False  # never suppress the exception
 
     # -- status ----------------------------------------------------------------
 
@@ -113,6 +131,8 @@ class RunnerIO:
         message: str = "",
         error: str | None = None,
     ) -> None:
+        self._last_step = step
+        self._last_total_steps = total_steps
         if not self._status_file:
             return
         progress = step / total_steps if total_steps > 0 else 0.0

@@ -567,7 +567,7 @@ def main(
                 logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
 
         runner.start_training()
-        try:
+        with runner:
             step = asyncio.run(
                 _train_loop(
                     tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
@@ -575,10 +575,6 @@ def main(
                     runner=runner,
                 )
             )
-        except BaseException as exc:
-            runner.write_status(RunStatus.FAILED, step=step_offset, error=str(exc))
-            runner.write_metadata()
-            raise
 
         # -- Final checkpoint --------------------------------------------------
 
