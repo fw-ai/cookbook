@@ -308,8 +308,6 @@ def main(
                 for k, v in optim_result.metrics.items():
                     step_metrics[f"train/{k}"] = v
 
-            runner.add_tokens(step_tokens)
-
             if response_tokens > 0:
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
@@ -329,7 +327,7 @@ def main(
                 })
                 wandb_log(step_metrics, step)
 
-            runner.append_metrics(step, step_metrics)
+            runner.append_metrics(step, step_metrics, tokens=step_tokens)
             runner.write_status(
                 RunStatus.RUNNING, step=step, total_steps=total_steps_estimate, message="training",
             )

@@ -139,8 +139,8 @@ class TestRunnerIOMetadata:
         runner.set_accelerator_info("NVIDIA_H100_80GB", 8)
         runner.start_training()
 
-        runner.add_tokens(5000)
-        runner.add_tokens(3000)
+        runner.append_metrics(1, {}, tokens=5000)
+        runner.append_metrics(2, {}, tokens=3000)
         time.sleep(0.01)
         runner.write_metadata()
 
@@ -172,7 +172,7 @@ class TestRunnerIOMetadata:
 
     def test_write_metadata_noop_when_no_file(self):
         runner = RunnerIO(RunnerConfig())
-        runner.add_tokens(100)
+        runner.append_metrics(1, {}, tokens=100)
         runner.write_metadata()
 
     def test_metadata_omits_none_accelerator_fields(self, tmp_path):
@@ -328,7 +328,7 @@ class TestRunnerIOContextManager:
         meta = str(tmp_path / "meta.json")
         runner = RunnerIO(RunnerConfig(metadata_file=meta))
         runner.start_training()
-        runner.add_tokens(1000)
+        runner.append_metrics(1, {}, tokens=1000)
 
         with pytest.raises(ValueError):
             with runner:
@@ -368,7 +368,7 @@ class TestRunnerIONoop:
         """When constructed with no config, all writes are silent noops."""
         runner = RunnerIO()
         runner.write_status(RunStatus.RUNNING)
-        runner.add_tokens(100)
+        runner.append_metrics(1, {}, tokens=100)
         runner.write_metadata()
         runner.append_metrics(1, {"x": 1})
         runner.write_output_model(model_id="m")

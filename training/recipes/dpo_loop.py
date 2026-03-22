@@ -315,8 +315,6 @@ async def _train_loop(
         tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
         step_metrics.update(flush_timing())
 
-        runner.add_tokens(step_tokens)
-
         fwd_metrics = fwd_bwd_result.metrics
         avg_loss = fwd_metrics["dpo_loss"]
         avg_margin = fwd_metrics["margin"]
@@ -339,7 +337,7 @@ async def _train_loop(
             "train/step_tokens": step_tokens,
         })
         wandb_log(step_metrics, step)
-        runner.append_metrics(step, step_metrics)
+        runner.append_metrics(step, step_metrics, tokens=step_tokens)
         runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
         runner.write_metadata()
 

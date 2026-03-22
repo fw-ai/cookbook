@@ -162,9 +162,6 @@ class RunnerIO:
         """Mark training start for accelerator-seconds calculation."""
         self._training_start = time.monotonic()
 
-    def add_tokens(self, count: int) -> None:
-        self._tokens_processed += count
-
     def write_metadata(self) -> None:
         if not self._metadata_file:
             return
@@ -185,7 +182,9 @@ class RunnerIO:
 
     # -- metrics ---------------------------------------------------------------
 
-    def append_metrics(self, step: int, metrics: dict[str, Any]) -> None:
+    def append_metrics(self, step: int, metrics: dict[str, Any], *, tokens: int = 0) -> None:
+        if tokens:
+            self._tokens_processed += tokens
         if not self._metrics_file:
             return
         record = {"step": step}

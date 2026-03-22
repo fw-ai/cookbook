@@ -730,8 +730,6 @@ def main(
             step_tokens = sum(
                 len(d.loss_fn_inputs["target_tokens"].data) for pg in prompt_groups for d in pg.data
             )
-            runner.add_tokens(step_tokens)
-
             avg_reward = metrics.get("rollout/reward", 0.0)
             avg_acc = metrics.get("rollout/accuracy", 0.0)
             avg_kl = metrics.get("train/mean_kl", 0.0)
@@ -746,7 +744,7 @@ def main(
             wandb_log(metrics, step)
 
             total_rl_steps = len(rl_dataset) - step_offset
-            runner.append_metrics(step, metrics)
+            runner.append_metrics(step, metrics, tokens=step_tokens)
             runner.write_status(
                 RunStatus.RUNNING, step=step, total_steps=total_rl_steps, message="training",
             )

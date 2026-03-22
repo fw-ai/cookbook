@@ -290,8 +290,6 @@ def main(
             tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
             metrics = result.metrics
 
-            runner.add_tokens(step_tokens)
-
             logger.info(
                 "Step %d/%d | ORPO: %.4f | SFT: %.4f | OR: %.4f | "
                 "LogOR: %+.4f | Acc: %.1f%% | %.1f tok/s (%.1fs)",
@@ -319,7 +317,7 @@ def main(
                 "train/epoch": epoch + 1,
             }
             wandb_log(step_metrics, step)
-            runner.append_metrics(step, step_metrics)
+            runner.append_metrics(step, step_metrics, tokens=step_tokens)
             runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
             runner.write_metadata()
             return time.monotonic()
