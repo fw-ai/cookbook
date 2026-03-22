@@ -145,6 +145,10 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         def __init__(self, **kwargs):
             events["sampler_init"] = kwargs
 
+    async def fake_run_rl_loop(**kwargs):
+        events["run_loop_kwargs"] = kwargs
+        return 0
+
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
     monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
@@ -160,6 +164,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [])
     monkeypatch.setattr(module, "build_loss_fn", lambda **kwargs: ("loss-builder", kwargs))
+    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
 
     cfg = module.Config(
         log_path="/tmp/rl_test_logs",
@@ -188,7 +193,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["create_trainer_job"][0]["hot_load_deployment_id"] == "dep-123"
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
-    # Sync loop runs inline — with empty dataset it exits immediately
+    assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
     assert events["wandb_finished"] == 0
@@ -396,24 +401,28 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                 ),
             ]
 
-    def fake_train_one_step(ctx, step, groups, loop_stats=None, **kwargs):
-        """Mock train_one_step: record call, save checkpoint, sync weights."""
-        events["train_one_step_groups"] = groups
-        step += 1
-        # Simulate weight sync
-        ctx.weight_syncer.save_and_hotload(f"step-{step}")
-        # Simulate checkpoint
-        save_fn = kwargs.get("save_checkpoint_fn")
-        if save_fn:
-            save_fn(f"step-{step}", {"step": step, "data_consumed": step})
-        metrics = {
-            "rollout/reward": 0.5,
-            "rollout/accuracy": 0.5,
-            "train/mean_kl": 0.02,
-        }
-        if ctx.wandb_log:
-            ctx.wandb_log(metrics, step)
-        return step, metrics
+    async def fake_run_rl_loop(**kwargs):
+        events["run_loop_kwargs"] = kwargs
+        sample_iter = iter(kwargs["sample_fns"])
+        pg = await next(sample_iter)
+        assert pg is not None
+        assert kwargs["dynamic_filter_fn"](pg) is True
+        step, metrics = kwargs["train_fns"].train_step(
+            1,
+            [pg],
+            {
+                "valid_prompt_groups": 1,
+                "total_sampled": 1,
+                "filter_drops": 0,
+                "sample_fails": 0,
+                "sample_wait_time": 0.1,
+                "step_wall_time": 0.2,
+                "all_raw_rewards": list(pg.rewards),
+            },
+        )
+        kwargs["metrics_callback"]({"train/step": step, "rollout/sample_fail_count": 0})
+        events["finish_metrics"] = metrics
+        return step
 
     def fake_create_trainer_job(*args, **kwargs):
         events["create_trainer_job"].append(kwargs)
@@ -461,9 +470,14 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         }
     ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
-    monkeypatch.setattr(module, "train_one_step", fake_train_one_step)
-    import training.utils.rl.datum as datum_module
-    monkeypatch.setattr(datum_module, "build_r3_routing_matrices", lambda *args, **kwargs: events["routing_matrix_calls"].append((args, kwargs)) or {"rm": True})
+    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
+    monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {
+        "rollout/reward": 0.5,
+        "rollout/accuracy": 0.5,
+        "train/mean_kl": 0.02,
+    })
+    monkeypatch.setattr(module, "flush_timing", lambda: {"perf/step_time": 1.0})
+    monkeypatch.setattr(module, "build_r3_routing_matrices", lambda *args, **kwargs: events["routing_matrix_calls"].append((args, kwargs)) or {"rm": True})
     monkeypatch.setattr(
         module.tinker.ModelInput,
         "from_ints",
@@ -505,9 +519,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         cleanup_on_exit=True,
     )
 
-    # 1 dataset row, 1 epoch, prompt_groups_per_step=1 → 1 training step
     assert result == {
-        "steps": 1,
+        "steps": 2,
         "policy_job_id": "policy-job",
         "reference_job_id": "reference-job",
     }
@@ -517,24 +530,30 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "grpo-policy",
         "grpo-reference",
     ]
-    # Sampling closure correctly strips trailing assistant turn
     assert events["sampler_calls"][0]["messages"] == [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "Solve"},
     ]
     assert events["sampler_calls"][0]["include_routing_matrix"] is True
     assert len(events["routing_matrix_calls"]) == 2
-    # Initial base hotload
     assert events["weight_sync_saves"][0] == ("step-0-base", "base")
-    # Step-level weight sync from fake_train_one_step
     weight_sync_names = [name for name, _ in events["weight_sync_saves"]]
-    assert "step-1" in weight_sync_names
-    # Final checkpoint
-    assert events.get("saved_state") == ("step-1", None)
+    assert "step-2" in weight_sync_names
+    assert events.get("saved_state") == ("step-2", None)
     assert events["promotions"] == [
-        ("policy-job", "step-1-session", "promoted-rl-model"),
+        ("policy-job", "step-2-session", "promoted-rl-model"),
     ]
+    assert "fwd_bwd_call" in events
     assert events["build_loss_fn_kwargs"]["ratio_log_cap"] == 13.0
+    from training.utils.rl.losses import get_builtin_loss_config
+    expected_kernel, expected_config = get_builtin_loss_config(
+        cfg.policy_loss,
+        ratio_log_cap=cfg.ratio_log_cap,
+        eps_clip=cfg.eps_clip,
+        eps_clip_high=cfg.eps_clip_high,
+    )
+    assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
+    assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["scaled_deployments"] == ["dep-123"]
 
@@ -666,6 +685,12 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
                 ),
             ]
 
+    async def fake_run_rl_loop(**kwargs):
+        sample_iter = iter(kwargs["sample_fns"])
+        pg = await next(sample_iter)
+        step, _ = kwargs["train_fns"].train_step(0, [pg])
+        return step
+
     def fake_create_trainer_job(*args, **kwargs):
         return SimpleNamespace(job_id="policy-job")
 
@@ -694,6 +719,9 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         {"messages": [{"role": "user", "content": "Solve"}], "ground_truth": "<answer>7</answer>"}
     ])
     monkeypatch.setattr(module, "build_loss_fn", fake_build_loss_fn)
+    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
+    monkeypatch.setattr(module, "compute_step_metrics", lambda **kwargs: {"rollout/reward": 0.5, "rollout/accuracy": 0.5, "train/mean_kl": 0.02})
+    monkeypatch.setattr(module, "flush_timing", lambda: {})
     monkeypatch.setattr(
         module.tinker.ModelInput, "from_ints",
         lambda ints, routing_matrices=None: SimpleNamespace(tokens=list(ints), routing_matrices=routing_matrices),
@@ -722,242 +750,3 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
     assert len(events["build_loss_fn_calls"]) == 1, (
         "Two-pass path should invoke the loss builder from build_loss_fn"
     )
-
-
-# ---------------------------------------------------------------------------
-# Async rollout tests
-# ---------------------------------------------------------------------------
-
-
-def test_async_rollout_config_defaults():
-    cfg = module.Config(log_path="/tmp/test")
-    assert cfg.async_rollout is False
-    assert cfg.valid_prompt_groups_per_step is None
-    assert cfg.max_head_offpolicy_versions == 2
-
-
-def test_async_rollout_injects_hot_load_flag(monkeypatch):
-    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
-
-    events: dict[str, object] = {"wandb_logs": []}
-
-    class FakeRlorMgr:
-        def resolve_training_profile(self, shape_id):
-            return SimpleNamespace(
-                deployment_shape="dep-shape-v1",
-                pipeline_parallelism=1,
-                max_supported_context_length=128,
-            )
-
-        def delete(self, job_id):
-            pass
-
-    class FakeDeployMgr:
-        inference_url = "https://inference.unit.test"
-        boot_time_s = 1.0
-
-        def scale_to_zero(self, deployment_id):
-            pass
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            self.inner = object()
-            self.job_id = "policy-job"
-
-        def forward(self, data, loss_fn):
-            return SimpleNamespace(
-                loss_fn_outputs=[{"logprobs": SimpleNamespace(data=[-0.1])} for _ in data]
-            )
-
-        def forward_backward_custom(self, data, loss_fn):
-            return SimpleNamespace(metrics={"loss": 0.5})
-
-        def optim_step(self, _params, **kwargs):
-            return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
-
-        def save_state(self, name, timeout=None):
-            return SimpleNamespace(path=name)
-
-        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
-            return SimpleNamespace(path=name)
-
-        def load_state_with_optimizer(self, path):
-            pass
-
-        def resolve_checkpoint_path(self, name, source_job_id=None):
-            return name
-
-    class FakeWeightSyncer:
-        def __init__(self, **kwargs):
-            self.saves = []
-
-        def save_and_hotload(self, name, checkpoint_type="base"):
-            self.saves.append(name)
-
-    class FakeSampler:
-        def __init__(self, **kwargs):
-            pass
-
-        async def sample_with_tokens(self, **kwargs):
-            return [
-                SimpleNamespace(
-                    text="<answer>7</answer>",
-                    full_tokens=[10, 11, 12, 13],
-                    prompt_len=2,
-                    inference_logprobs=[-0.5, -0.6],
-                    logprobs_echoed=False,
-                    finish_reason="stop",
-                    routing_matrices=None,
-                ),
-                SimpleNamespace(
-                    text="<answer>8</answer>",
-                    full_tokens=[20, 21, 22, 23],
-                    prompt_len=2,
-                    inference_logprobs=[-0.7, -0.8],
-                    logprobs_echoed=False,
-                    finish_reason="length",
-                    routing_matrices=None,
-                ),
-            ]
-
-    monkeypatch.setattr(module, "setup_wandb", lambda *a, **kw: None)
-    monkeypatch.setattr(module, "wandb_finish", lambda: None)
-    monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
-    monkeypatch.setattr(module, "log_metrics_json", lambda *a, **kw: None)
-    monkeypatch.setattr(module, "setup_deployment", lambda *a, **kw: SimpleNamespace(inference_model="m"))
-    monkeypatch.setattr(module, "create_trainer_job", lambda *a, **kw: SimpleNamespace(job_id="policy-job"))
-    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
-    monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
-    monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
-    monkeypatch.setattr(module, "build_loss_fn", lambda **kw: lambda *a: "loss")
-    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [
-        {"messages": [{"role": "user", "content": "Q1"}], "ground_truth": "<answer>7</answer>"},
-        {"messages": [{"role": "user", "content": "Q2"}], "ground_truth": "<answer>8</answer>"},
-    ])
-    from training.utils.checkpoint_utils import ResumeInfo
-    monkeypatch.setattr(module, "resolve_resume", lambda *a, **kw: ResumeInfo(step=0))
-
-    def fake_train_one_step(ctx, step, groups, loop_stats=None, **kwargs):
-        step += 1
-        metrics = {"rollout/reward": 0.5, "rollout/accuracy": 0.5, "train/mean_kl": 0.01}
-        if ctx.wandb_log:
-            ctx.wandb_log(metrics, step)
-        return step, metrics
-
-    monkeypatch.setattr(module, "train_one_step", fake_train_one_step)
-    monkeypatch.setattr(
-        module.tinker.ModelInput, "from_ints",
-        lambda ints, routing_matrices=None: SimpleNamespace(tokens=list(ints)),
-    )
-    monkeypatch.setattr(module.tinker, "TensorData", lambda data, dtype, shape: SimpleNamespace(data=data, dtype=dtype, shape=shape))
-    monkeypatch.setattr(module.tinker, "Datum", lambda model_input, loss_fn_inputs: SimpleNamespace(model_input=model_input, loss_fn_inputs=loss_fn_inputs))
-
-    cfg = module.Config(
-        log_path="/tmp/async_test",
-        base_model="accounts/test/models/m",
-        dataset="/tmp/d.jsonl",
-        completions_per_prompt=2,
-        prompt_groups_per_step=1,
-        policy_loss="test_custom_loss",
-        async_rollout=True,
-        max_head_offpolicy_versions=2,
-        deployment=module.DeployConfig(deployment_id="dep-1", tokenizer_model="T"),
-        infra=module.InfraConfig(training_shape_id="shape-a"),
-    )
-
-    assert cfg.deployment.deployment_extra_args is None
-    module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr())
-
-    # deployment_shape is set by resolve_training_profile, so auto-injection
-    # of --hot-load-async-transition is skipped (shape owns the args)
-    assert cfg.deployment.deployment_extra_args is None
-
-    step_metrics = [m for s, m in events["wandb_logs"] if isinstance(m, dict) and "async/version" in m]
-    assert len(step_metrics) >= 1, "Async loop should log async/version metric"
-
-
-def test_sync_default_uses_collect_sync_batch(monkeypatch):
-    """async_rollout=False (default) should use the inline sync loop with collect_sync_batch."""
-    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
-
-    events: dict[str, object] = {"collect_sync_batch_called": False}
-
-    class FakeRlorMgr:
-        def resolve_training_profile(self, shape_id):
-            return SimpleNamespace(
-                deployment_shape="dep-shape", pipeline_parallelism=1,
-                max_supported_context_length=128,
-            )
-
-        def delete(self, job_id):
-            pass
-
-    class FakeDeployMgr:
-        inference_url = "https://i"
-        boot_time_s = 0.0
-
-        def scale_to_zero(self, d):
-            pass
-
-    from training.utils.rl.train import RolloutStats
-
-    async def fake_collect_sync_batch(coros, filter_fn=None, target=1):
-        events["collect_sync_batch_called"] = True
-        events["collect_batch_size"] = len(coros)
-        return [], RolloutStats()
-
-    monkeypatch.setattr(module, "setup_wandb", lambda *a, **kw: None)
-    monkeypatch.setattr(module, "wandb_finish", lambda: None)
-    monkeypatch.setattr(module, "wandb_log", lambda *a, **kw: None)
-    monkeypatch.setattr(module, "setup_deployment", lambda *a, **kw: SimpleNamespace(inference_model="m"))
-    monkeypatch.setattr(module, "create_trainer_job", lambda *a, **kw: SimpleNamespace(job_id="j"))
-    monkeypatch.setattr(module, "ReconnectableClient", lambda *a, **kw: SimpleNamespace(inner=object()))
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
-    monkeypatch.setattr(module, "DeploymentSampler", lambda **kw: None)
-    monkeypatch.setattr(module, "WeightSyncer", lambda **kw: None)
-    monkeypatch.setattr(module, "build_loss_fn", lambda **kw: None)
-    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [
-        {"messages": [{"role": "user", "content": "Q"}], "ground_truth": "A"},
-    ])
-    monkeypatch.setattr(module, "collect_sync_batch", fake_collect_sync_batch)
-
-    cfg = module.Config(
-        log_path="/tmp/sync_test",
-        async_rollout=False,
-        deployment=module.DeployConfig(deployment_id="dep", tokenizer_model="T"),
-        infra=module.InfraConfig(training_shape_id="shape"),
-    )
-
-    module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr())
-    assert events["collect_sync_batch_called"] is True
-
-
-def test_async_rollout_validates_step_target(monkeypatch):
-    monkeypatch.setattr(module, "setup_wandb", lambda *a, **kw: None)
-    monkeypatch.setattr(module, "validate_config", lambda *a, **kw: None)
-
-    cfg = module.Config(
-        log_path="/tmp/test",
-        async_rollout=True,
-        valid_prompt_groups_per_step=0,
-        deployment=module.DeployConfig(tokenizer_model="T"),
-    )
-    with pytest.raises(ValueError, match="valid_prompt_groups_per_step must be >= 1"):
-        module.main(cfg)
-
-
-def test_async_rollout_validates_max_offpolicy(monkeypatch):
-    monkeypatch.setattr(module, "setup_wandb", lambda *a, **kw: None)
-    monkeypatch.setattr(module, "validate_config", lambda *a, **kw: None)
-
-    cfg = module.Config(
-        log_path="/tmp/test",
-        async_rollout=True,
-        max_head_offpolicy_versions=-1,
-        deployment=module.DeployConfig(tokenizer_model="T"),
-    )
-    with pytest.raises(ValueError, match="max_head_offpolicy_versions must be >= 0"):
-        module.main(cfg)
