@@ -106,6 +106,17 @@ class Config:
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
     runner: RunnerConfig = field(default_factory=RunnerConfig)
+    """Optional orchestration outputs written during training.
+
+    Paths can be set here or via environment variables:
+      COOKBOOK_STATUS_FILE      -- training status + progress (JSON, overwritten each step)
+      COOKBOOK_METADATA_FILE    -- tokens processed + accelerator-seconds (JSON)
+      COOKBOOK_METRICS_FILE     -- per-step metrics (JSONL, appended each step)
+      COOKBOOK_OUTPUT_MODEL_PATH -- final model info written on completion (JSON)
+
+    All paths are optional; unset paths are silently skipped.
+    See training/utils/runner.py for file format details.
+    """
 
 
 # ---------------------------------------------------------------------------
