@@ -106,6 +106,7 @@ def create_trainer_job(
     job_id: str | None = None,
     forward_only: bool = False,
     base_url_override: str | None = None,
+    cleanup: ResourceCleanup | None = None,
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
@@ -180,7 +181,14 @@ def create_trainer_job(
         forward_only,
     )
     try:
-        endpoint = rlor_mgr.create_and_wait(config, timeout_s=infra.trainer_timeout_s)
+        created_job = rlor_mgr.create(config)
+        if cleanup:
+            cleanup.trainer(created_job.job_id)
+        endpoint = rlor_mgr.wait_for_ready(
+            created_job.job_id,
+            job_name=created_job.job_name,
+            timeout_s=infra.trainer_timeout_s,
+        )
     except Exception as e:
         logger.error(
             "Failed to create %s trainer job '%s' (forward_only=%s): %s",
@@ -223,10 +231,12 @@ def setup_deployment(
     info = deploy_mgr.get(deploy_cfg.deployment_id)
     if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
+        logging.info(f"dep_config: {dep_config}")
         if dep_config.region is None and dep_config.deployment_shape:
             dep_config.region = _infer_region_from_deployment_shape(
                 deploy_mgr, dep_config.deployment_shape
             )
+        logging.info(f"dep_config 2: {dep_config}")
         if dep_config.region is None:
             info = _create_deployment_via_cookbook(deploy_mgr, dep_config)
         else:
