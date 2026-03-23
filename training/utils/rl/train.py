@@ -14,6 +14,7 @@ import json
 import asyncio
 import logging
 import itertools
+import time as _time
 from typing import Any, Callable, Iterable, Coroutine
 from dataclasses import dataclass
 
@@ -233,9 +234,15 @@ def ref_fwd_bwd(ctx: TrainContext, group: PromptGroup) -> Any:
     The server accumulates gradients across calls.  Call ``finish_step``
     after processing ``step_target`` groups to fire optim_step.
     """
+    t0 = _time.time()
     with timer("ref_forward"):
         _ref_forward(ctx, [group])
-    return _fwd_bwd(ctx, [group])
+    logger.info("ref_forward: done (%.1fs)", _time.time() - t0)
+
+    t0 = _time.time()
+    result = _fwd_bwd(ctx, [group])
+    logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
+    return result
 
 
 # Backward-compatible alias
@@ -262,16 +269,21 @@ def finish_step(
 
     Returns ``(new_step, metrics_dict)``.
     """
+    t0 = _time.time()
     with timer("optim_step"):
         optim_result = ctx.policy.optim_step(
             ctx.adam_params,
             grad_accumulation_normalization=ctx.grad_accumulation_normalization,
         )
     step += 1
+    logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
     if ctx.weight_sync_interval > 0 and step % ctx.weight_sync_interval == 0:
+        logger.info("[step %d] weight_sync: saving + loading...", step)
+        t0 = _time.time()
         with timer("weight_sync"):
             ctx.weight_syncer.save_and_hotload(f"step-{step}")
+        logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
 
     if (
         ctx.dcp_save_interval > 0

@@ -94,9 +94,6 @@ warnings.warn(
     stacklevel=2,
 )
 
-FilterFn = Callable[[PromptGroup], bool]
-
-
 # ---------------------------------------------------------------------------
 # Config — everything the user can configure
 # ---------------------------------------------------------------------------
@@ -107,8 +104,8 @@ class Config:
     """Full configuration for async RL training.
 
     Customisation points visible in this file:
-    - ``reward_fn`` / module-level ``reward_fn`` — score completions
-    - ``filter_fn`` / ``_default_filter`` — reject untrainable groups
+    - ``reward_fn`` — module-level reward function (override via assignment)
+    - ``should_accept`` — module-level rollout filter (override via assignment)
     - ``policy_loss`` — select a registered loss algorithm
     """
 
@@ -137,9 +134,6 @@ class Config:
     """Number of prompt groups per optimizer step."""
 
     # -- Async rollout ------------------------------------------------------
-
-    async_rollout: bool = False
-    """Enable async rollout scheduling (streaming pipeline)."""
 
     valid_prompt_groups_per_step: int | None = None
     """Target accepted groups per step.  Defaults to prompt_groups_per_step."""
@@ -176,14 +170,6 @@ class Config:
     ratio_log_cap: float = 20.0
     tis: TISConfig = field(default_factory=TISConfig)
 
-    # -- Pluggable functions ------------------------------------------------
-
-    reward_fn: RewardFn | None = None
-    """(completion_text, dataset_row) -> float.  None = use module-level default."""
-
-    filter_fn: FilterFn | None = None
-    """(PromptGroup) -> bool.  None = accept all groups."""
-
     # -- Trajectory / resume ------------------------------------------------
 
     trajectory_dir: str | None = None
@@ -203,43 +189,38 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# Reward function — customise this for your task
+# Reward function -- customise this for your task
 # ---------------------------------------------------------------------------
 
 
-def _default_reward(completion: str, row: dict) -> float:
-    """Return 1.0 if the model's numeric answer matches the ground truth.
+def extract_answer(text: str) -> str | None:
+    match = re.search(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    digits = re.search(r"(-?\d+)", match.group(1))
+    return digits.group(1) if digits else None
 
-    Override by setting ``reward_fn`` at module level or passing a custom
-    ``Config.reward_fn``.
-    """
-    def _extract(text: str):
-        m = re.search(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
-        if not m:
-            return None
-        d = re.search(r"(-?\d+)", m.group(1))
-        return d.group(1) if d else None
 
-    predicted = _extract(completion)
-    truth = _extract(str(row.get("ground_truth", "")))
+def reward_fn(completion: str, row: dict) -> float:
+    """Return 1.0 if the model's numeric answer matches the ground truth."""
+    predicted = extract_answer(completion)
+    truth = extract_answer(str(row.get("ground_truth", "")))
     if predicted is None or truth is None:
         return 0.0
     return 1.0 if predicted == truth else 0.0
 
 
-# Allow callers to override the reward function at module level:
-#   import training.recipes.async_rl_loop as rl_loop
-#   rl_loop.reward_fn = my_custom_reward
-reward_fn: RewardFn | None = None
-
-
 # ---------------------------------------------------------------------------
-# Rollout filter — customise this for your task
+# Rollout filter -- customise this for your task
 # ---------------------------------------------------------------------------
 
 
-def _default_filter(pg: PromptGroup) -> bool:
-    """Reject groups where all rewards are identical (zero-variance)."""
+def should_accept(pg: PromptGroup) -> bool:
+    """Reject groups where all rewards are identical (zero-variance).
+
+    Passed to ``AsyncRolloutScheduler`` as a pluggable filter.  Replace with your
+    own logic (e.g. minimum reward threshold, response length filter).
+    """
     return len(set(pg.rewards)) > 1
 
 
@@ -619,21 +600,20 @@ def _setup_infra(
     if not use_reference:
         logger.info("No ref_training_shape_id set, skipping reference model")
 
-    if cfg.async_rollout:
-        if not cfg.deployment.deployment_shape:
-            extra = cfg.deployment.deployment_extra_args or []
-            if "--hot-load-async-transition" not in extra:
-                cfg.deployment.deployment_extra_args = extra + [
-                    "--hot-load-async-transition"
-                ]
-                logger.info(
-                    "Auto-injected --hot-load-async-transition for async rollout"
-                )
-        else:
+    if not cfg.deployment.deployment_shape:
+        extra = cfg.deployment.deployment_extra_args or []
+        if "--hot-load-async-transition" not in extra:
+            cfg.deployment.deployment_extra_args = extra + [
+                "--hot-load-async-transition"
+            ]
             logger.info(
-                "Async rollout: deployment shape is set, ensure it includes "
-                "--hot-load-async-transition in its extra_args"
+                "Auto-injected --hot-load-async-transition for async rollout"
             )
+    else:
+        logger.info(
+            "Async rollout: deployment shape is set, ensure it includes "
+            "--hot-load-async-transition in its extra_args"
+        )
 
     # -- Deployment + trainers ------------------------------------------
 
@@ -921,7 +901,12 @@ def main(
         deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
 
     # Force 1:1 weight sync for streaming pipeline
-    cfg.weight_sync.weight_sync_interval = 1
+    if cfg.weight_sync.weight_sync_interval != 1:
+        logger.warning(
+            "Async pipeline requires weight_sync_interval=1, overriding configured value %d",
+            cfg.weight_sync.weight_sync_interval,
+        )
+        cfg.weight_sync.weight_sync_interval = 1
 
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
         infra = _setup_infra(
@@ -961,13 +946,10 @@ def main(
                 logger.warning("Sampling failed (%s): %s", type(e).__name__, e or repr(e))
                 return None
 
-            # Resolve reward: module-level override > Config > default
-            _reward = reward_fn or cfg.reward_fn or _default_reward
-
             return build_prompt_group(
                 sampled,
                 row,
-                reward_fn_=_reward,
+                reward_fn_=reward_fn,
                 completions_per_prompt=completions_per_prompt,
                 use_reference=infra.use_reference,
                 router_replay=cfg.router_replay,
@@ -988,7 +970,7 @@ def main(
             scheduler = AsyncRolloutScheduler(
                 step_target=step_target,
                 max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
-                filter_fn=cfg.filter_fn,
+                filter_fn=should_accept,
                 global_step=infra.step_offset,
                 total_accepted=async_state.get("total_accepted", 0),
                 total_rejected=async_state.get("total_rejected", 0),

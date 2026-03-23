@@ -251,7 +251,6 @@ def main():
         epochs=args.epochs,
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
-        async_rollout=True,
         valid_prompt_groups_per_step=args.valid_prompt_groups_per_step,
         max_head_offpolicy_versions=args.max_head_offpolicy_versions,
         sample_max_concurrency=args.sample_max_concurrency,
