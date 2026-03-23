@@ -107,7 +107,7 @@ def deployment(deploy_mgr, api_key):
         created = True
 
     logger.info("Waiting for deployment %s to be READY...", dep_id)
-    deploy_mgr.wait_for_ready(dep_id, timeout_seconds=600)
+    deploy_mgr.wait_for_ready(dep_id, timeout_s=600)
     logger.info("Deployment %s is READY", dep_id)
 
     inference_model = f"accounts/{deploy_mgr.account_id}/deployments/{dep_id}"

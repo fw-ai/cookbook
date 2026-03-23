@@ -149,11 +149,6 @@ class Config:
     uses a static semaphore; ``"adaptive"`` adjusts the window based on
     server-side prefill queue latency.  Adaptive mode requires ``stream=True``."""
 
-    stream_inference: bool = False
-    """Use SSE streaming for inference completions.  Enables server-side
-    metric collection (prefill queue, TTFT, cache hits) and is required
-    for adaptive concurrency."""
-
     prefix_aware_scheduling: bool = False
     """Reorder prompts within each step so that prompts sharing a token
     prefix are submitted consecutively, maximising server KV-cache reuse."""
@@ -452,7 +447,6 @@ def main(
         # -- Concurrency controller ------------------------------------------------
         concurrency_controller = None
         max_concurrency = None
-        use_stream = cfg.stream_inference
 
         if cfg.concurrency.mode == "adaptive":
             concurrency_controller = AdaptiveConcurrencyController(
@@ -461,7 +455,6 @@ def main(
                 max_window=cfg.concurrency.max_window,
                 prefill_queue_target=cfg.concurrency.prefill_queue_target,
             )
-            use_stream = True  # Adaptive mode requires streaming for metrics.
             logger.info(
                 "Using adaptive concurrency (window=%d-%d, target_pq=%.2fs)",
                 cfg.concurrency.min_window,
@@ -534,7 +527,6 @@ def main(
             temperature=cfg.temperature,
             max_seq_len=cfg.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
-            stream=use_stream,
         )
         if cfg.router_replay:
             sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
