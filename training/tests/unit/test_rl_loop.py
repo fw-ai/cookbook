@@ -95,7 +95,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
-        "create_trainer_job": [],
         "wandb_logs": [],
         "deleted_jobs": [],
         "scaled_deployments": [],
@@ -108,7 +107,15 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
                 deployment_shape="dep-shape-v1",
                 pipeline_parallelism=1,
                 max_supported_context_length=128,
+                training_shape_version="accounts/test/trainingShapes/ts-v1/versions/1",
             )
+
+        def create(self, config):
+            events.setdefault("created_configs", []).append(config)
+            return SimpleNamespace(job_id="policy-job", job_name="jobs/policy-job")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
@@ -153,15 +160,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
     monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
     monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
-    monkeypatch.setattr(
-        module,
-        "create_trainer_job",
-        lambda *args, **kwargs: (
-            events["create_trainer_job"].append(kwargs),
-            kwargs.get("cleanup") and kwargs["cleanup"].trainer("policy-job"),
-            SimpleNamespace(job_id="policy-job"),
-        )[-1],
-    )
     monkeypatch.setattr(module, "ReconnectableClient", FakePolicyClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
@@ -192,9 +190,9 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert result is None
     assert cfg.max_seq_len == 128
     assert cfg.deployment.deployment_shape == "dep-shape-v1"
-    assert len(events["create_trainer_job"]) == 1
-    assert events["create_trainer_job"][0]["display_name"] == "grpo-policy"
-    assert events["create_trainer_job"][0]["hot_load_deployment_id"] == "dep-123"
+    assert len(events["created_configs"]) == 1
+    assert events["created_configs"][0].display_name == "grpo-policy"
+    assert events["created_configs"][0].hot_load_deployment_id == "dep-123"
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
@@ -259,7 +257,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
-        "create_trainer_job": [],
         "deleted_jobs": [],
         "scaled_deployments": [],
         "wandb_logs": [],
@@ -271,6 +268,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "promotions": [],
     }
 
+    _JOB_IDS = {"grpo-policy": "policy-job", "grpo-reference": "reference-job"}
+
     class FakeRlorMgr:
         def resolve_training_profile(self, shape_id):
             if shape_id == "ref-shape":
@@ -279,13 +278,23 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                     deployment_shape_version=None,
                     pipeline_parallelism=1,
                     max_supported_context_length=96,
+                    training_shape_version="accounts/test/trainingShapes/ref/versions/1",
                 )
             return SimpleNamespace(
                 deployment_shape="dep-shape-v2",
                 deployment_shape_version=None,
                 pipeline_parallelism=1,
                 max_supported_context_length=96,
+                training_shape_version="accounts/test/trainingShapes/pol/versions/1",
             )
+
+        def create(self, config):
+            events.setdefault("created_configs", []).append(config)
+            jid = _JOB_IDS.get(config.display_name, "job-unknown")
+            return SimpleNamespace(job_id=jid, job_name=f"jobs/{jid}")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
@@ -428,15 +437,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         events["finish_metrics"] = metrics
         return step
 
-    def fake_create_trainer_job(*args, **kwargs):
-        events["create_trainer_job"].append(kwargs)
-        display_name = kwargs["display_name"]
-        job_id = "policy-job" if display_name == "grpo-policy" else "reference-job"
-        cleanup = kwargs.get("cleanup")
-        if cleanup:
-            cleanup.trainer(job_id)
-        return SimpleNamespace(job_id=job_id)
-
     def fake_build_loss_fn(**kwargs):
         events["build_loss_fn_kwargs"] = kwargs
         def _builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp):
@@ -459,7 +459,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "log_metrics_json", lambda step, **kwargs: events.setdefault("metrics_logs", []).append((step, kwargs)))
     monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
     monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
-    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
@@ -533,7 +532,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     }
     assert cfg.max_seq_len == 96
     assert cfg.deployment.deployment_shape == "dep-shape-v2"
-    assert [call["display_name"] for call in events["create_trainer_job"]] == [
+    assert [cfg.display_name for cfg in events["created_configs"]] == [
         "grpo-policy",
         "grpo-reference",
     ]
@@ -588,7 +587,14 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
                 deployment_shape_version=None,
                 pipeline_parallelism=1,
                 max_supported_context_length=96,
+                training_shape_version="accounts/test/trainingShapes/pol/versions/1",
             )
+
+        def create(self, config):
+            return SimpleNamespace(job_id="policy-job", job_name="jobs/policy-job")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
@@ -698,12 +704,6 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         step, _ = kwargs["train_fns"].train_step(0, [pg])
         return step
 
-    def fake_create_trainer_job(*args, **kwargs):
-        cleanup = kwargs.get("cleanup")
-        if cleanup:
-            cleanup.trainer("policy-job")
-        return SimpleNamespace(job_id="policy-job")
-
     def fake_build_loss_fn(**kwargs):
         events["build_loss_fn_kwargs"] = kwargs
         def _builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp):
@@ -718,7 +718,6 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
     monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
-    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)

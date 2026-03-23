@@ -278,16 +278,28 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
-        "create_trainer_job": [],
         "deleted_jobs": [],
         "setup_deployment": [],
         "weight_syncer_saves": [],
         "wandb_finished": 0,
     }
 
+    _DPO_JOB_IDS = {"dpo-policy": "policy-job", "dpo-reference": "reference-job"}
+
     class FakeRlorMgr:
         def resolve_training_profile(self, shape_id):
-            return SimpleNamespace(max_supported_context_length=96)
+            return SimpleNamespace(
+                max_supported_context_length=96,
+                training_shape_version="accounts/test/trainingShapes/dpo/versions/1",
+            )
+
+        def create(self, config):
+            events.setdefault("created_configs", []).append(config)
+            jid = _DPO_JOB_IDS.get(config.display_name, "job-unknown")
+            return SimpleNamespace(job_id=jid, job_name=f"jobs/{jid}")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
@@ -364,20 +376,10 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
             on_ref_done()
         return 2
 
-    def fake_create_trainer_job(*args, **kwargs):
-        events["create_trainer_job"].append(kwargs)
-        display_name = kwargs["display_name"]
-        job_id = "policy-job" if display_name == "dpo-policy" else "reference-job"
-        cleanup = kwargs.get("cleanup")
-        if cleanup:
-            cleanup.trainer(job_id)
-        return SimpleNamespace(job_id=job_id)
-
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
     monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: events["setup_deployment"].append((args, kwargs)))
     monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
-    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(module, "_tokenize_pairs", fake_tokenize_pairs)
@@ -411,12 +413,12 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     }
     assert cfg.max_seq_len == 96
     assert len(events["setup_deployment"]) == 1
-    assert [call["display_name"] for call in events["create_trainer_job"]] == [
+    assert [cfg.display_name for cfg in events["created_configs"]] == [
         "dpo-policy",
         "dpo-reference",
     ]
-    assert events["create_trainer_job"][0]["hot_load_deployment_id"] == "dep-123"
-    assert events["create_trainer_job"][1]["forward_only"] is True
+    assert events["created_configs"][0].hot_load_deployment_id == "dep-123"
+    assert events["created_configs"][1].forward_only is True
     assert events["train_loop"]["reference_job_id"] == "reference-job"
     assert events["train_loop"]["policy_job_id"] == "policy-job"
     assert events["weight_syncer_saves"] == ["final-step-2"]
@@ -434,7 +436,6 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
     events: dict[str, object] = {
-        "create_trainer_job": [],
         "deleted_jobs": [],
         "setup_deployment": [],
         "save_only_calls": [],
@@ -445,9 +446,21 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         "wandb_finished": 0,
     }
 
+    _DPO_JOB_IDS2 = {"dpo-policy": "policy-job", "dpo-reference": "reference-job"}
+
     class FakeRlorMgr:
         def resolve_training_profile(self, shape_id):
-            return SimpleNamespace(max_supported_context_length=96)
+            return SimpleNamespace(
+                max_supported_context_length=96,
+                training_shape_version="accounts/test/trainingShapes/dpo/versions/1",
+            )
+
+        def create(self, config):
+            jid = _DPO_JOB_IDS2.get(config.display_name, "job-unknown")
+            return SimpleNamespace(job_id=jid, job_name=f"jobs/{jid}")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
@@ -532,20 +545,10 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
             on_ref_done()
         return 2
 
-    def fake_create_trainer_job(*args, **kwargs):
-        events["create_trainer_job"].append(kwargs)
-        display_name = kwargs["display_name"]
-        job_id = "policy-job" if display_name == "dpo-policy" else "reference-job"
-        cleanup = kwargs.get("cleanup")
-        if cleanup:
-            cleanup.trainer(job_id)
-        return SimpleNamespace(job_id=job_id)
-
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
     monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: events["setup_deployment"].append((args, kwargs)))
     monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
-    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(module, "_tokenize_pairs", fake_tokenize_pairs)
