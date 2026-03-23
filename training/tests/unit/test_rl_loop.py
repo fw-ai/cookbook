@@ -156,7 +156,11 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(
         module,
         "create_trainer_job",
-        lambda *args, **kwargs: events["create_trainer_job"].append(kwargs) or SimpleNamespace(job_id="policy-job"),
+        lambda *args, **kwargs: (
+            events["create_trainer_job"].append(kwargs),
+            kwargs.get("cleanup") and kwargs["cleanup"].trainer("policy-job"),
+            SimpleNamespace(job_id="policy-job"),
+        )[-1],
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakePolicyClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
@@ -428,6 +432,9 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         events["create_trainer_job"].append(kwargs)
         display_name = kwargs["display_name"]
         job_id = "policy-job" if display_name == "grpo-policy" else "reference-job"
+        cleanup = kwargs.get("cleanup")
+        if cleanup:
+            cleanup.trainer(job_id)
         return SimpleNamespace(job_id=job_id)
 
     def fake_build_loss_fn(**kwargs):
@@ -692,6 +699,9 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         return step
 
     def fake_create_trainer_job(*args, **kwargs):
+        cleanup = kwargs.get("cleanup")
+        if cleanup:
+            cleanup.trainer("policy-job")
         return SimpleNamespace(job_id="policy-job")
 
     def fake_build_loss_fn(**kwargs):
