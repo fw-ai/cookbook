@@ -256,3 +256,55 @@ class TestLogPathRequired:
         assert result.step == 3
         assert result.data_consumed == 24
         client2.load_state_with_optimizer.assert_called_once()
+
+
+class TestAsyncStateCheckpoint:
+    """Verify async_state is persisted and restored through checkpoint cycle."""
+
+    def test_resume_without_async_state_returns_none(self, log_dir):
+        _write_checkpoint(log_dir, {
+            "name": "step-2",
+            "step": 2,
+            "data_consumed": 8,
+            "state_path": "path/step-2",
+        })
+        client = _make_mock_client()
+        result = resolve_resume(client, log_dir)
+        assert result.async_state is None
+
+    def test_resume_with_async_state(self, log_dir):
+        async_blob = {
+            "rows_submitted": 25,
+            "total_accepted": 10,
+            "total_rejected": 3,
+        }
+        _write_checkpoint(log_dir, {
+            "name": "step-5",
+            "step": 5,
+            "data_consumed": 40,
+            "state_path": "path/step-5",
+            "async_state": async_blob,
+        })
+        client = _make_mock_client()
+        result = resolve_resume(client, log_dir)
+        assert result.async_state == async_blob
+
+    def test_save_with_async_state_roundtrip(self, log_dir):
+        async_blob = {
+            "rows_submitted": 12,
+            "total_accepted": 6,
+            "total_rejected": 1,
+        }
+        client = _make_mock_client(job_id="j-async")
+        save_checkpoint(client, "step-3", log_dir, {
+            "step": 3,
+            "data_consumed": 18,
+            "source_job_id": "j-async",
+            "async_state": async_blob,
+        })
+
+        client2 = _make_mock_client(job_id="j-new")
+        result = resolve_resume(client2, log_dir)
+        assert result.step == 3
+        assert result.async_state == async_blob
+        assert result.async_state["rows_submitted"] == 12

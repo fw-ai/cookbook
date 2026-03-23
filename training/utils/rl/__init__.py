@@ -16,8 +16,12 @@ __all__ = [
     "make_gspo_loss_fn",
     # Training loop
     "DynamicFilterFn",
+    "TrainContext",
     "TrainStepFns",
+    "train_one_step",
     "run_rl_loop",
+    # Rollout scheduling
+    "RolloutStats",
     # Metrics helpers
     "add_response_length_stats",
     "add_train_perf_metrics",
@@ -32,9 +36,12 @@ from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
 from training.utils.rl.train import (
     DynamicFilterFn,
+    TrainContext,
     TrainStepFns,
+    train_one_step,
     run_rl_loop,
 )
+from training.utils.rl.train import RolloutStats
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.metrics import (
     build_loop_metrics,

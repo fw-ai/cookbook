@@ -45,6 +45,10 @@ class ResumeInfo:
     step: int = 0
     data_consumed: int = 0
     source_job_id: str | None = None
+    async_state: dict | None = None
+    """Optional async rollout scheduler counters (rows_submitted,
+    total_accepted, total_rejected).  Present only when resuming
+    from a checkpoint saved during async training."""
 
 
 def _parse_cross_job(spec: str) -> tuple[str | None, str]:
@@ -85,6 +89,7 @@ def resolve_resume(
             step=last.get("step", 0),
             data_consumed=last.get("data_consumed", 0),
             source_job_id=last.get("source_job_id"),
+            async_state=last.get("async_state"),
         )
 
     logger.info("Fresh start (no checkpoint)")
