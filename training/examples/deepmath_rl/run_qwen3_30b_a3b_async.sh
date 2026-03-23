@@ -23,7 +23,7 @@ export TRAINING_SHAPE="${TRAINING_SHAPE:-accounts/fireworks/trainingShapes/ts-qw
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}/fireworks-ai-python/src:${REPO_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 BASE_MODEL="accounts/fireworks/models/qwen3-30b-a3b"
 REF_TRAINING_SHAPE="${REF_TRAINING_SHAPE:-accounts/fireworks/trainingShapes/ts-qwen3-30b-a3b-128k-ref}"

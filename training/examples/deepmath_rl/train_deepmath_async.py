@@ -53,6 +53,7 @@ class TrainArgs:
     deployment_id: str | None = None
     region: str = "US_OHIO_1"
     deployment_region: str | None = None
+    deployment_replica_count: int | None = None
     max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8
@@ -94,6 +95,7 @@ def parse_args() -> TrainArgs:
                         help="Existing deployment ID to reuse; omit to auto-create")
     parser.add_argument("--region")
     parser.add_argument("--deployment-region")
+    parser.add_argument("--deployment-replica-count", type=int)
 
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--epochs", type=int)
@@ -268,6 +270,7 @@ def main():
         deployment=DeployConfig(
             deployment_id=args.deployment_id,
             deployment_region=args.deployment_region,
+            replica_count=args.deployment_replica_count,
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
             extra_values=args.deployment_extra_values,
