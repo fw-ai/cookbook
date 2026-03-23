@@ -793,6 +793,10 @@ def main(
 
         def _loop_metrics_callback(loop_metrics: dict) -> None:
             """Called by run_rl_loop after each train step with loop-level metrics."""
+            if concurrency_controller is not None:
+                cc_summary = concurrency_controller.step_completed()
+                for k, v in cc_summary.items():
+                    loop_metrics[f"concurrency/{k}"] = v
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
         train_fns = TrainStepFns(train_step=train_step)
