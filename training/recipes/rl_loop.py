@@ -37,6 +37,7 @@ from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
 from training.utils import (
     DEFAULT_ADAM,
+    ConcurrencyConfig,
     InfraConfig,
     ResourceCleanup,
     RunnerConfig,
@@ -63,7 +64,7 @@ from training.utils.checkpoint_utils import (
     save_checkpoint,
     CheckpointKind,
 )
-from fireworks.training.sdk.deployment import DeploymentSampler
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -142,6 +143,20 @@ class Config:
     """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
+
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
+    """Concurrency control for inference sampling.  ``"fixed"`` (default)
+    uses a static semaphore; ``"adaptive"`` adjusts the window based on
+    server-side prefill queue latency.  Adaptive mode requires ``stream=True``."""
+
+    stream_inference: bool = False
+    """Use SSE streaming for inference completions.  Enables server-side
+    metric collection (prefill queue, TTFT, cache hits) and is required
+    for adaptive concurrency."""
+
+    prefix_aware_scheduling: bool = False
+    """Reorder prompts within each step so that prompts sharing a token
+    prefix are submitted consecutively, maximising server KV-cache reuse."""
 
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files.  Each file contains
@@ -433,12 +448,37 @@ def main(
 
         inference_model = dep_info.inference_model if dep_info else cfg.base_model
         tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
+
+        # -- Concurrency controller ------------------------------------------------
+        concurrency_controller = None
+        max_concurrency = None
+        use_stream = cfg.stream_inference
+
+        if cfg.concurrency.mode == "adaptive":
+            concurrency_controller = AdaptiveConcurrencyController(
+                initial_window=cfg.concurrency.initial_window,
+                min_window=cfg.concurrency.min_window,
+                max_window=cfg.concurrency.max_window,
+                prefill_queue_target=cfg.concurrency.prefill_queue_target,
+            )
+            use_stream = True  # Adaptive mode requires streaming for metrics.
+            logger.info(
+                "Using adaptive concurrency (window=%d-%d, target_pq=%.2fs)",
+                cfg.concurrency.min_window,
+                cfg.concurrency.max_window,
+                cfg.concurrency.prefill_queue_target,
+            )
+        elif cfg.concurrency.max_concurrency is not None:
+            max_concurrency = cfg.concurrency.max_concurrency
+            logger.info("Using fixed concurrency: %d", max_concurrency)
+
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
             model=inference_model,
             api_key=api_key,
             tokenizer=tokenizer,
-            max_concurrency=cfg.weight_sync.max_concurrent or None,
+            max_concurrency=max_concurrency,
+            concurrency_controller=concurrency_controller,
         )
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
@@ -494,6 +534,7 @@ def main(
             temperature=cfg.temperature,
             max_seq_len=cfg.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
+            stream=use_stream,
         )
         if cfg.router_replay:
             sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
@@ -767,6 +808,26 @@ def main(
         remaining_rows = []
         for i_step in range(step_offset, len(rl_dataset)):
             remaining_rows.extend(rl_dataset.get_batch(i_step))
+
+        # -- Optional prefix-aware reordering --------------------------------------
+        if cfg.prefix_aware_scheduling and remaining_rows:
+            from training.utils.prefix_scheduler import reorder_by_prefix
+
+            logger.info("Prefix-aware scheduling: tokenizing %d prompts for reordering...", len(remaining_rows))
+            prompt_token_lists = []
+            for row in remaining_rows:
+                msgs = row.get("messages", [])
+                input_msgs = prepare_sampling_messages(msgs)
+                if input_msgs:
+                    toks = tokenizer.apply_chat_template(
+                        input_msgs, tokenize=True, add_generation_prompt=True, return_dict=False,
+                    )
+                    prompt_token_lists.append(toks)
+                else:
+                    prompt_token_lists.append([])
+            reordered_indices = reorder_by_prefix(prompt_token_lists)
+            remaining_rows = [remaining_rows[i] for i in reordered_indices]
+            logger.info("Prefix-aware scheduling: reordered %d prompts", len(remaining_rows))
 
         total_rl_steps = len(rl_dataset) - step_offset
         runner.start_training()

@@ -21,6 +21,39 @@ StepCallback = Callable[[int, Dict[str, float]], None]
 
 
 @dataclass
+class ConcurrencyConfig:
+    """Concurrency control settings for inference sampling.
+
+    Two modes:
+
+    * **fixed** (default): Uses a fixed ``asyncio.Semaphore(max_concurrency)``.
+      Equivalent to the previous ``max_concurrency`` parameter.
+    * **adaptive**: Uses ``AdaptiveConcurrencyController`` which adjusts
+      the concurrency window based on server-side ``prefill_queue_duration``.
+      Requires ``stream=True`` on the sampler to receive metrics.
+    """
+
+    mode: str = "fixed"
+    """``"fixed"`` or ``"adaptive"``."""
+
+    max_concurrency: int | None = None
+    """Fixed concurrency limit.  Used when ``mode="fixed"``.
+    ``None`` means unlimited."""
+
+    initial_window: int = 8
+    """Starting concurrency window for adaptive mode."""
+
+    min_window: int = 1
+    """Minimum concurrency window for adaptive mode."""
+
+    max_window: int = 64
+    """Maximum concurrency window for adaptive mode."""
+
+    prefill_queue_target: float = 0.5
+    """Target prefill queue duration (seconds) for the AIMD controller."""
+
+
+@dataclass
 class InfraConfig:
     """GPU, region, and image settings.
 

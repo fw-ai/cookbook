@@ -81,6 +81,7 @@ from training.utils.config import (
     DEFAULT_ADAM,
     EvalFn,
     RewardFn,
+    ConcurrencyConfig,
     InfraConfig,
     WandBConfig,
     DeployConfig,
