@@ -3,6 +3,8 @@
 Ready-to-run training recipes for reinforcement learning, preference optimization, and supervised fine-tuning on [Fireworks](https://fireworks.ai).
 Each recipe is a single Python file you can fork and customize.
 
+> **Full documentation**: For detailed guides on each recipe, configuration reference, and the Training SDK, see the [Training SDK documentation](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction).
+
 ## Recipes
 
 | Recipe | File | Description |
@@ -93,57 +95,13 @@ cd cookbook/training
 python -m recipes.sft_loop      # or whichever recipe you configured
 ```
 
-## Example: SFT quick start
+## Documentation
 
-```python
-# At the bottom of recipes/sft_loop.py, edit the __main__ block:
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfg = Config(
-        base_model="accounts/fireworks/models/qwen3-8b",
-        dataset="path/to/your_data.jsonl",
-        tokenizer_model="Qwen/Qwen3-8B",
-        max_seq_len=4096,
-        max_examples=100,                           # optional: limit for testing
-        infra=InfraConfig(
-            training_shape_id="your-training-shape",
-        ),
-        # learning_rate=1e-4,
-        # epochs=3,
-        # batch_size=32,
-        # lora_rank=0,                              # set > 0 for LoRA
-        # wandb=WandBConfig(project="my-sft"),
-    )
-    main(cfg)
-```
+For detailed guides, configuration reference, and examples, see the official documentation:
 
-Then run:
-
-```bash
-python -m recipes.sft_loop
-```
-
-## Dataset format
-
-All recipes expect JSONL files with OpenAI chat format:
-
-```json
-{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
-```
-
-- **SFT**: trains on assistant response tokens only (prompt tokens are masked).
-- **DPO / ORPO**: each row needs `chosen` and `rejected` message lists.
-- **RL**: each row needs a `messages` list with at least a user prompt; the reward function scores completions.
-
-## Configuration reference
-
-All recipes use composable dataclass configs:
-
-- **`InfraConfig`** -- region, accelerators, training shapes. When `training_shape_id` is set (shape path), `max_seq_len` and GPU config are auto-derived from the shape. When `training_shape_id` is not set (manual path), all infra fields are sent directly.
-- **`DeployConfig`** -- inference deployment for RL rollouts. Set `deployment_id` to reuse an existing deployment, or omit to auto-create.
-- **`WeightSyncConfig`** -- weight sync cadence and checkpoint settings. Set `dcp_save_interval` to save DCP checkpoints for resume.
-- **`WandBConfig`** -- optional Weights & Biases logging.
-- **`log_path`** (required on all Configs) -- directory for `checkpoints.jsonl` and logs. Resume is automatic: if `checkpoints.jsonl` exists in `log_path`, training continues from the last checkpoint. Use `init_from_checkpoint` to start from a specific checkpoint with fresh data.
+- [Introduction & Quickstart](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction)
+- [Cookbook recipes (SFT, RL, DPO, ORPO)](https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/overview)
+- [Configuration reference](https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/reference)
 
 ## Directory layout
 
