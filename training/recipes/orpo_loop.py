@@ -196,10 +196,9 @@ def main(
             learning_rate=cfg.learning_rate,
             display_name="orpo-trainer",
             job_id=cfg.job_id,
+            cleanup=cleanup if not cfg.job_id else None,
         )
         job_id = endpoint.job_id
-        if not cfg.job_id:
-            cleanup.trainer(job_id)
         client = ReconnectableClient(
             rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank
         )

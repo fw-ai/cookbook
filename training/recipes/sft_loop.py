@@ -189,9 +189,9 @@ def main(
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             display_name="sft-trainer",
+            cleanup=cleanup,
         )
         job_id = endpoint.job_id
-        cleanup.trainer(job_id)
         client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
 
         # -- Prepare data ------------------------------------------------------
