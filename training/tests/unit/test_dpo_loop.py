@@ -359,6 +359,9 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         events["create_trainer_job"].append(kwargs)
         display_name = kwargs["display_name"]
         job_id = "policy-job" if display_name == "dpo-policy" else "reference-job"
+        cleanup = kwargs.get("cleanup")
+        if cleanup:
+            cleanup.trainer(job_id)
         return SimpleNamespace(job_id=job_id)
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
@@ -527,6 +530,9 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         events["create_trainer_job"].append(kwargs)
         display_name = kwargs["display_name"]
         job_id = "policy-job" if display_name == "dpo-policy" else "reference-job"
+        cleanup = kwargs.get("cleanup")
+        if cleanup:
+            cleanup.trainer(job_id)
         return SimpleNamespace(job_id=job_id)
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)

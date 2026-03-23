@@ -135,7 +135,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         ],
     )
     monkeypatch.setattr(module, "render_preference_pair", lambda *args, **kwargs: next(pair_outputs))
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-orpo"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: (kwargs.get("cleanup") and kwargs["cleanup"].trainer("job-orpo"), SimpleNamespace(job_id="job-orpo"))[-1])
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "make_batch_orpo_loss_fn", lambda response_starts, orpo_lambda: ("loss", response_starts, orpo_lambda))
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
@@ -255,7 +255,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
         ],
     )
     monkeypatch.setattr(module, "render_preference_pair", lambda *args, **kwargs: next(pair_outputs))
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-orpo"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: (kwargs.get("cleanup") and kwargs["cleanup"].trainer("job-orpo"), SimpleNamespace(job_id="job-orpo"))[-1])
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "make_batch_orpo_loss_fn", lambda response_starts, orpo_lambda: ("loss", response_starts, orpo_lambda))
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)

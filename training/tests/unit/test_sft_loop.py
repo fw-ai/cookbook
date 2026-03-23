@@ -67,7 +67,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         "render_messages_to_datum",
         lambda *args, **kwargs: SimpleNamespace(token_ids=[1], datum={"id": "too-short"}),
     )
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: (kwargs.get("cleanup") and kwargs["cleanup"].trainer("job-sft"), SimpleNamespace(job_id="job-sft"))[-1])
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
@@ -147,7 +147,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: renderer)
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: (kwargs.get("cleanup") and kwargs["cleanup"].trainer("job-sft"), SimpleNamespace(job_id="job-sft"))[-1])
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
@@ -227,7 +227,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: (kwargs.get("cleanup") and kwargs["cleanup"].trainer("job-sft"), SimpleNamespace(job_id="job-sft"))[-1])
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     def _fake_render(messages, **kwargs):
         content = messages[-1]["content"]

@@ -646,6 +646,7 @@ def _setup_infra(
                 hot_load_deployment_id=cfg.deployment.deployment_id,
                 job_id=cfg.policy_job_id,
                 base_url_override=cfg.policy_base_url,
+                cleanup=cleanup if not cfg.policy_job_id else None,
             )
             ref_fut = pool.submit(
                 create_trainer_job,
@@ -660,15 +661,12 @@ def _setup_infra(
                 forward_only=True,
                 job_id=cfg.reference_job_id,
                 base_url_override=cfg.reference_base_url,
+                cleanup=cleanup if not cfg.reference_job_id else None,
             )
             policy_ep = pol_fut.result()
             policy_job_id = policy_ep.job_id
-            if not cfg.policy_job_id:
-                cleanup.trainer(policy_job_id)
             reference_ep = ref_fut.result()
             reference_job_id = reference_ep.job_id
-            if not cfg.reference_job_id:
-                cleanup.trainer(reference_job_id)
     else:
         policy_ep = create_trainer_job(
             rlor_mgr,
@@ -682,10 +680,9 @@ def _setup_infra(
             hot_load_deployment_id=cfg.deployment.deployment_id,
             job_id=cfg.policy_job_id,
             base_url_override=cfg.policy_base_url,
+            cleanup=cleanup if not cfg.policy_job_id else None,
         )
         policy_job_id = policy_ep.job_id
-        if not cfg.policy_job_id:
-            cleanup.trainer(policy_job_id)
         reference_ep = None
         reference_job_id = None
 
