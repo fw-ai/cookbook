@@ -153,11 +153,13 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
     monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
     monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
-    monkeypatch.setattr(
-        module,
-        "create_trainer_job",
-        lambda *args, **kwargs: events["create_trainer_job"].append(kwargs) or SimpleNamespace(job_id="policy-job"),
-    )
+    def fake_create_trainer_job(*args, **kwargs):
+        events["create_trainer_job"].append(kwargs)
+        if cleanup := kwargs.get("cleanup"):
+            cleanup.trainer("policy-job")
+        return SimpleNamespace(job_id="policy-job")
+
+    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakePolicyClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
@@ -428,6 +430,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         events["create_trainer_job"].append(kwargs)
         display_name = kwargs["display_name"]
         job_id = "policy-job" if display_name == "grpo-policy" else "reference-job"
+        if cleanup := kwargs.get("cleanup"):
+            cleanup.trainer(job_id)
         return SimpleNamespace(job_id=job_id)
 
     def fake_build_loss_fn(**kwargs):
@@ -692,6 +696,8 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         return step
 
     def fake_create_trainer_job(*args, **kwargs):
+        if cleanup := kwargs.get("cleanup"):
+            cleanup.trainer("policy-job")
         return SimpleNamespace(job_id="policy-job")
 
     def fake_build_loss_fn(**kwargs):

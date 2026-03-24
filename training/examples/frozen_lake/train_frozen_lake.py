@@ -23,6 +23,7 @@ import os
 import signal
 import sys
 import time
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, cast
@@ -435,7 +436,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
+    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
         if cfg.policy_job_id and cfg.deployment_id:
             dep_info = None
             logger.info("Skipping deployment setup — using pre-created resources")
@@ -492,6 +493,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             fw_api_key=api_key,
             endpoint=policy_ep,
         )
+        if hasattr(policy, "close"):
+            stack.callback(policy.close)
         reference = (
             ReconnectableClient(
                 rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
@@ -500,6 +503,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             )
             if reference_ep else None
         )
+        if reference is not None and hasattr(reference, "close"):
+            stack.callback(reference.close)
 
         if dep_info:
             inference_model = dep_info.inference_model

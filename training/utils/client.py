@@ -75,6 +75,7 @@ class ReconnectableClient:
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
         self._client: FiretitanTrainingClient | None = None
+        self._closed = False
         if endpoint:
             self._use_endpoint(endpoint)
         else:
@@ -139,6 +140,66 @@ class ReconnectableClient:
 
     def list_checkpoints(self) -> list[str]:
         return self.inner.list_checkpoints()
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Stop local Tinker background tasks for this trainer client.
+
+        The underlying Tinker holder owns background heartbeat / telemetry tasks.
+        Best-effort flush queued telemetry, then stop those tasks before remote
+        trainer cleanup so local tasks do not continue talking to a trainer
+        that has already been deleted.
+        """
+        if self._closed:
+            return
+        self._closed = True
+
+        client = self._client
+        self._client = None
+        self._endpoint = None
+        if client is None:
+            return
+
+        holder = client.holder
+        if holder is None:
+            return
+
+        telemetry = holder.get_telemetry()
+        if telemetry is not None:
+            try:
+                # trigger_flush = getattr(telemetry, "_trigger_flush", None)
+                telemetry._trigger_flush()
+                telemetry._wait_until_drained_sync()
+            except Exception as e:
+                logger.warning(
+                    "ReconnectableClient.close: failed to drain telemetry for job %s: %s",
+                    self._job_id,
+                    e,
+                )
+            finally:
+                try:
+                    telemetry.stop()
+                except Exception as e:
+                    logger.warning(
+                        "ReconnectableClient.close: failed to stop telemetry for job %s: %s",
+                        self._job_id,
+                        e,
+                    )
+
+        try:
+            cleanup_future = holder.run_coroutine_threadsafe(holder._async_cleanup())
+            cleanup_future.result(timeout=timeout)
+        except Exception as e:
+            logger.warning(
+                "ReconnectableClient.close: failed to stop holder for job %s: %s",
+                self._job_id,
+                e,
+            )
+
+    def __enter__(self) -> ReconnectableClient:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
     # -- Internal --------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 import logging
 from typing import Any
@@ -27,6 +28,21 @@ _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_B200", "US_OHIO_1"),
 )
 
+_TRAINER_DELETE_GRACE_ENV = "FW_TRAINER_DELETE_GRACE_PERIOD_S"
+
+
+def _default_trainer_delete_grace_period_s() -> float:
+    raw = os.environ.get(_TRAINER_DELETE_GRACE_ENV, "30")
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; falling back to 30s trainer delete grace period",
+            _TRAINER_DELETE_GRACE_ENV,
+            raw,
+        )
+        return 30.0
+
 
 class ResourceCleanup:
     """Register resource IDs for automatic cleanup on scope exit.
@@ -43,11 +59,17 @@ class ResourceCleanup:
         self,
         rlor_mgr: TrainerJobManager,
         deploy_mgr: DeploymentManager | None = None,
+        trainer_delete_grace_period_s: float | None = None,
     ):
         self._rlor_mgr = rlor_mgr
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
         self._deployments: list[tuple[str, str]] = []
+        self._trainer_delete_grace_period_s = (
+            _default_trainer_delete_grace_period_s()
+            if trainer_delete_grace_period_s is None
+            else max(0.0, float(trainer_delete_grace_period_s))
+        )
 
     def trainer(self, job_id: str) -> None:
         """Register a trainer job for deletion on exit."""
@@ -55,7 +77,7 @@ class ResourceCleanup:
 
     def delete_trainer(self, job_id: str) -> None:
         """Delete a trainer job now and unregister it from cleanup."""
-        self._rlor_mgr.delete(job_id)
+        self._delete_trainer_with_grace(job_id)
         try:
             self._jobs.remove(job_id)
         except ValueError:
@@ -71,11 +93,21 @@ class ResourceCleanup:
     def __enter__(self) -> ResourceCleanup:
         return self
 
+    def _delete_trainer_with_grace(self, job_id: str) -> None:
+        if self._trainer_delete_grace_period_s > 0:
+            logger.info(
+                "Cleanup: waiting %.1fs before deleting trainer job %s",
+                self._trainer_delete_grace_period_s,
+                job_id,
+            )
+            time.sleep(self._trainer_delete_grace_period_s)
+        logger.info("Cleanup: deleting trainer job %s", job_id)
+        self._rlor_mgr.delete(job_id)
+
     def __exit__(self, *exc) -> None:
         for jid in reversed(self._jobs):
             try:
-                logger.info("Cleanup: deleting trainer job %s", jid)
-                self._rlor_mgr.delete(jid)
+                self._delete_trainer_with_grace(jid)
             except Exception as e:
                 logger.warning("Cleanup: failed to delete trainer %s: %s", jid, e)
         for did, action in reversed(self._deployments):

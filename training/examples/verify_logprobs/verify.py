@@ -31,6 +31,7 @@ import json
 import time
 import logging
 import argparse
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
@@ -219,7 +220,7 @@ def main():
     policy_job_id = None
     ref_job_id = None
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
+    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
         n_workers = 3 if use_reference else 2
         logger.info(
             "\n[1/4] Setting up deployment + trainers in parallel (%s)...",
@@ -267,11 +268,15 @@ def main():
         policy = ReconnectableClient(
             rlor_mgr, pol_ep.job_id, args.base_model, lora_rank=0, fw_api_key=api_key,
         )
+        if hasattr(policy, "close"):
+            stack.callback(policy.close)
         reference = None
         if ref_ep is not None:
             reference = ReconnectableClient(
                 rlor_mgr, ref_ep.job_id, args.base_model, lora_rank=0, fw_api_key=api_key,
             )
+            if hasattr(reference, "close"):
+                stack.callback(reference.close)
 
         inference_model = dep_info.inference_model or args.base_model
         tokenizer = transformers.AutoTokenizer.from_pretrained(

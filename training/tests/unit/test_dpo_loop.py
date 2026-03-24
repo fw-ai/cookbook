@@ -280,6 +280,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     events: dict[str, object] = {
         "create_trainer_job": [],
         "deleted_jobs": [],
+        "lifecycle": [],
         "setup_deployment": [],
         "weight_syncer_saves": [],
         "wandb_finished": 0,
@@ -290,6 +291,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
             return SimpleNamespace(max_supported_context_length=96)
 
         def delete(self, job_id):
+            events["lifecycle"].append(("delete", job_id))
             events["deleted_jobs"].append(job_id)
 
     class FakeDeployMgr:
@@ -325,6 +327,9 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
 
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"tinker://unit/state/{name}"
+
+        def close(self):
+            events["lifecycle"].append(("close", self.job_id))
 
     class FakeWeightSyncer:
         def __init__(self, **kwargs):
@@ -368,6 +373,8 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         events["create_trainer_job"].append(kwargs)
         display_name = kwargs["display_name"]
         job_id = "policy-job" if display_name == "dpo-policy" else "reference-job"
+        if cleanup := kwargs.get("cleanup"):
+            cleanup.trainer(job_id)
         return SimpleNamespace(job_id=job_id)
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
@@ -423,6 +430,12 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
     assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
     assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
+    ref_close_idx = events["lifecycle"].index(("close", "reference-job"))
+    ref_delete_idx = events["lifecycle"].index(("delete", "reference-job"))
+    pol_close_idx = events["lifecycle"].index(("close", "policy-job"))
+    pol_delete_idx = events["lifecycle"].index(("delete", "policy-job"))
+    assert ref_close_idx < ref_delete_idx
+    assert pol_close_idx < pol_delete_idx
     assert events["wandb_finished"] == 1
 
 
@@ -533,6 +546,8 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         events["create_trainer_job"].append(kwargs)
         display_name = kwargs["display_name"]
         job_id = "policy-job" if display_name == "dpo-policy" else "reference-job"
+        if cleanup := kwargs.get("cleanup"):
+            cleanup.trainer(job_id)
         return SimpleNamespace(job_id=job_id)
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)

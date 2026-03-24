@@ -67,7 +67,12 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         "render_messages_to_datum",
         lambda *args, **kwargs: SimpleNamespace(token_ids=[1], datum={"id": "too-short"}),
     )
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
+    def _fake_create_trainer_job(*args, **kwargs):
+        if cleanup := kwargs.get("cleanup"):
+            cleanup.trainer("job-sft")
+        return SimpleNamespace(job_id="job-sft")
+
+    monkeypatch.setattr(module, "create_trainer_job", _fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
@@ -101,7 +106,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
-    events: dict[str, object] = {"batches": [], "deleted_jobs": []}
+    events: dict[str, object] = {"batches": [], "deleted_jobs": [], "lifecycle": []}
     renderer = StubRenderer(
         tokens=[100, 101, 102, 103, 104, 105, 106],
         weights=[0, 0, 1, 1, 0, 1, 1],
@@ -109,6 +114,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
 
     class FakeMgr:
         def delete(self, job_id):
+            events["lifecycle"].append(("delete", job_id))
             events["deleted_jobs"].append(job_id)
 
     class FakeClient:
@@ -140,6 +146,9 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"cross_job://{source_job_id}/{name}" if source_job_id else name
 
+        def close(self):
+            events["lifecycle"].append(("close", self.job_id))
+
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
@@ -147,7 +156,12 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: renderer)
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
+    def _fake_create_trainer_job(*args, **kwargs):
+        if cleanup := kwargs.get("cleanup"):
+            cleanup.trainer("job-sft")
+        return SimpleNamespace(job_id="job-sft")
+
+    monkeypatch.setattr(module, "create_trainer_job", _fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
@@ -174,6 +188,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     assert datum.loss_fn_inputs["target_tokens"].data == [101, 102, 103, 104, 105, 106]
     assert datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 1.0, 1.0]
     assert events["deleted_jobs"] == ["job-sft"]
+    assert events["lifecycle"] == [("close", "job-sft"), ("delete", "job-sft")]
 
 
 def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
@@ -227,11 +242,17 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="job-sft"))
+    def _fake_create_trainer_job(*args, **kwargs):
+        if cleanup := kwargs.get("cleanup"):
+            cleanup.trainer("job-sft")
+        return SimpleNamespace(job_id="job-sft")
+
+    monkeypatch.setattr(module, "create_trainer_job", _fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     def _fake_render(messages, **kwargs):
         content = messages[-1]["content"]
         datum = SimpleNamespace(
+            model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
             loss_fn_inputs={
                 "target_tokens": SimpleNamespace(data=[0, 0]),
                 "weights": SimpleNamespace(data=[1.0, 1.0]),

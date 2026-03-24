@@ -34,12 +34,15 @@ Infrastructure defaults target Qwen3-235B on 2 nodes with CP=16, EP=8.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 import signal
 import random
 import logging
+from contextlib import ExitStack
 from dataclasses import field, dataclass
+import torch
 
 import tinker
 
@@ -94,6 +97,22 @@ class Config:
     job_id: str | None = None
     output_model_id: str | None = None
 
+    warmup_ratio: float = 0.0
+    """Fraction of total steps used for linear LR warmup (0.0 = no warmup)."""
+
+    min_lr_ratio: float = 0.0
+    """Minimum LR as a fraction of ``learning_rate``. Cosine/linear decay
+    anneals to ``learning_rate * min_lr_ratio``."""
+
+    lr_schedule: str = "constant"
+    """LR schedule after warmup: ``"constant"``, ``"cosine"``, or ``"linear"``."""
+
+    grad_accumulation_normalization: str | None = None
+    """Server-side gradient normalization mode passed to optim_step.
+    ``None``: no server normalization (default). The ORPO loss function
+    already computes per-pair means client-side, so server-side
+    normalization would double-normalize."""
+
     infra: InfraConfig = field(
         default_factory=lambda: InfraConfig()
     )
@@ -102,7 +121,46 @@ class Config:
             project="dsv3-training",
         )
     )
+    eval_split: float = 0.0
+    """Fraction of dataset held out for evaluation (0.0 = no eval)."""
+
+    eval_every_steps: int = 0
+    """Run eval every N optimizer steps (0 = only at end of training)."""
+
     init_from_checkpoint: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# LR schedule
+# ---------------------------------------------------------------------------
+
+
+def _compute_lr(
+    step: int,
+    total_steps: int,
+    peak_lr: float,
+    warmup_ratio: float,
+    min_lr_ratio: float,
+    schedule: str,
+) -> float:
+    """Linear warmup then cosine/linear/constant decay."""
+    min_lr = peak_lr * min_lr_ratio
+    warmup_steps = int(total_steps * warmup_ratio)
+
+    if step < warmup_steps:
+        return min_lr + (peak_lr - min_lr) * step / max(warmup_steps, 1)
+
+    if schedule == "constant":
+        return peak_lr
+
+    decay_step = step - warmup_steps
+    decay_total = max(total_steps - warmup_steps, 1)
+    if schedule == "cosine":
+        return min_lr + 0.5 * (peak_lr - min_lr) * (1 + math.cos(math.pi * decay_step / decay_total))
+    if schedule == "linear":
+        return peak_lr - (peak_lr - min_lr) * decay_step / decay_total
+
+    raise ValueError(f"Unknown lr_schedule: {schedule!r}. Use 'constant', 'cosine', or 'linear'.")
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +227,7 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    with ResourceCleanup(rlor_mgr) as cleanup:
+    with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         endpoint = create_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
@@ -186,9 +244,10 @@ def main(
         client = ReconnectableClient(
             rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank
         )
+        if hasattr(client, "close"):
+            stack.callback(client.close)
         resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
         step_offset = resume_info.step if resume_info else 0
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         # -- Data ----------------------------------------------------------------
 
@@ -248,10 +307,49 @@ def main(
         if not pair_cache:
             raise RuntimeError("No valid pairs after tokenization")
 
+        # -- Train / eval split --------------------------------------------------
+
+        eval_cache: list[dict] = []
+        if cfg.eval_split > 0:
+            random.shuffle(pair_cache)
+            n_eval = max(1, int(len(pair_cache) * cfg.eval_split))
+            eval_cache = pair_cache[:n_eval]
+            pair_cache = pair_cache[n_eval:]
+            logger.info(
+                "Dataset split: %d train, %d eval (%.1f%%)",
+                len(pair_cache),
+                len(eval_cache),
+                cfg.eval_split * 100,
+            )
+
         # -- Training loop -------------------------------------------------------
 
         step = step_offset
-        total_steps = len(pair_cache) * cfg.epochs // cfg.batch_size
+        total_steps = ((len(pair_cache) + cfg.batch_size - 1) // cfg.batch_size) * cfg.epochs
+
+        has_lr_schedule = cfg.warmup_ratio > 0 or cfg.lr_schedule != "constant"
+        if has_lr_schedule:
+            logger.info(
+                "LR schedule: %s | warmup_ratio=%.2f (%d steps) | "
+                "peak_lr=%g | min_lr=%g",
+                cfg.lr_schedule,
+                cfg.warmup_ratio,
+                int(total_steps * cfg.warmup_ratio),
+                cfg.learning_rate,
+                cfg.learning_rate * cfg.min_lr_ratio,
+            )
+
+        has_lr_schedule = cfg.warmup_ratio > 0 or cfg.lr_schedule != "constant"
+        if has_lr_schedule:
+            logger.info(
+                "LR schedule: %s | warmup_ratio=%.2f (%d steps) | "
+                "peak_lr=%g | min_lr=%g",
+                cfg.lr_schedule,
+                cfg.warmup_ratio,
+                int(total_steps * cfg.warmup_ratio),
+                cfg.learning_rate,
+                cfg.learning_rate * cfg.min_lr_ratio,
+            )
 
         def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
             nonlocal step
@@ -264,6 +362,12 @@ def main(
                 response_starts.append(pair["response_start"])
                 step_tokens += len(pair["chosen_tokens"]) + len(pair["rejected_tokens"])
 
+            current_lr = _compute_lr(
+                step, total_steps, cfg.learning_rate,
+                cfg.warmup_ratio, cfg.min_lr_ratio, cfg.lr_schedule,
+            )
+            adam_params = tinker.AdamParams(learning_rate=current_lr, **DEFAULT_ADAM)
+
             loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
             result = client.forward_backward_custom(datums, loss_fn)
             client.optim_step(adam_params)
@@ -274,10 +378,11 @@ def main(
             metrics = result.metrics
 
             logger.info(
-                "Step %d/%d | ORPO: %.4f | SFT: %.4f | OR: %.4f | "
+                "Step %d/%d | lr=%.2e | ORPO: %.4f | SFT: %.4f | OR: %.4f | "
                 "LogOR: %+.4f | Acc: %.1f%% | %.1f tok/s (%.1fs)",
                 step,
                 total_steps,
+                current_lr,
                 metrics["orpo_loss"],
                 metrics["sft_loss"],
                 metrics["or_loss"],
@@ -286,10 +391,11 @@ def main(
                 tokens_per_sec,
                 step_elapsed,
             )
-            log_metrics_json(step, tokens_per_sec=tokens_per_sec, **metrics)
+            log_metrics_json(step, lr=current_lr, tokens_per_sec=tokens_per_sec, **metrics)
             wandb_log(
                 {
                     "train/step": step,
+                    "train/lr": current_lr,
                     "train/orpo_loss": metrics["orpo_loss"],
                     "train/sft_loss": metrics["sft_loss"],
                     "train/or_loss": metrics["or_loss"],
@@ -304,6 +410,81 @@ def main(
             )
             return time.monotonic()
 
+        def _run_eval(tag: str = "eval") -> dict[str, float] | None:
+            """Forward-only pass over the eval set. Returns averaged metrics."""
+            if not eval_cache:
+                return None
+            logger.info(f"Running evaluation with batch size {cfg.batch_size}...")
+
+            eval_t0 = time.monotonic()
+            accum: dict[str, float] = {}
+            n_batches = 0
+            total_eval_batches = (len(eval_cache) + cfg.batch_size - 1) // cfg.batch_size
+
+            for batch_start in range(0, len(eval_cache), cfg.batch_size):
+                batch = eval_cache[batch_start : batch_start + cfg.batch_size]
+                datums: list[tinker.Datum] = []
+                response_starts: list[int] = []
+                for pair in batch:
+                    datums.extend([pair["chosen_datum"], pair["rejected_datum"]])
+                    response_starts.append(pair["response_start"])
+
+                fwd = client.forward(datums, "cross_entropy")
+                logprobs_list = [
+                    torch.tensor(fwd.loss_fn_outputs[i]["logprobs"].data)
+                    for i in range(len(datums))
+                ]
+                loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
+                _, metrics = loss_fn(datums, logprobs_list)
+                for k, v in metrics.items():
+                    accum[k] = accum.get(k, 0.0) + v
+                n_batches += 1
+
+                if n_batches % 10 == 0 or n_batches == total_eval_batches:
+                    logger.info(
+                        "  eval batch %d/%d (%.0fs)",
+                        n_batches,
+                        total_eval_batches,
+                        time.monotonic() - eval_t0,
+                    )
+
+            if n_batches == 0:
+                return None
+
+            avg = {k: v / n_batches for k, v in accum.items()}
+            eval_elapsed = time.monotonic() - eval_t0
+
+            logger.info(
+                "Eval @ step %d | ORPO: %.4f | SFT: %.4f | OR: %.4f | "
+                "LogOR: %+.4f | Acc: %.1f%% | %d pairs (%.1fs)",
+                step,
+                avg.get("orpo_loss", 0),
+                avg.get("sft_loss", 0),
+                avg.get("or_loss", 0),
+                avg.get("log_odds_ratio", 0),
+                avg.get("accuracy", 0) * 100,
+                len(eval_cache),
+                eval_elapsed,
+            )
+            wandb_log(
+                {
+                    f"{tag}/step": step,
+                    f"{tag}/orpo_loss": avg.get("orpo_loss", 0),
+                    f"{tag}/sft_loss": avg.get("sft_loss", 0),
+                    f"{tag}/or_loss": avg.get("or_loss", 0),
+                    f"{tag}/log_odds_ratio": avg.get("log_odds_ratio", 0),
+                    f"{tag}/accuracy": avg.get("accuracy", 0),
+                    f"{tag}/eval_time_sec": eval_elapsed,
+                },
+                step,
+            )
+            return avg
+
+        eval_interval = cfg.eval_every_steps if cfg.eval_every_steps > 0 else None
+
+        if eval_cache:
+            _run_eval()
+
         for epoch in range(cfg.epochs):
             random.shuffle(pair_cache)
             step_t0 = time.monotonic()
@@ -312,16 +493,24 @@ def main(
                 batch_buffer.append(pair)
                 if len(batch_buffer) >= cfg.batch_size:
                     step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
+                    if eval_interval and step % eval_interval == 0:
+                        _run_eval()
+                        step_t0 = time.monotonic()
                     batch_buffer = []
 
             if batch_buffer:
                 _run_train_step(epoch, batch_buffer, step_t0)
+                if eval_interval and step % eval_interval == 0:
+                    _run_eval()
+
+        if eval_cache:
+            _run_eval()
 
         # -- Final checkpoint ------------------------------------------------
 
         if step > step_offset:
             logger.info("Saving final DCP checkpoint (step %d)...", step)
-            client.save_state(f"step-{step}")
+            # client.save_state(f"step-{step}")
 
             logger.info("Saving final base checkpoint (step %d)...", step)
             cp_name = f"final-step-{step}"
