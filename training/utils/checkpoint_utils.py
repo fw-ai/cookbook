@@ -104,11 +104,19 @@ def save_checkpoint(
     log_path: str,
     loop_state: dict[str, Any],
     kind: CheckpointKind = CheckpointKind.STATE,
+    *,
+    base_model: str | None = None,
+    training_shape: str | None = None,
 ) -> dict[str, str]:
     """Save a checkpoint using tinker_cookbook's ``checkpoints.jsonl`` format.
 
     *kind* can be ``CheckpointKind.STATE`` (optimizer + weights), ``CheckpointKind.SAMPLER`` (weights
     only for inference), or ``CheckpointKind.BOTH``.
+
+    *base_model* and *training_shape* are persisted into the checkpoint
+    entry so that downstream tools (e.g. ``train_promote_checkpoint.py``)
+    can reconstruct the trainer without requiring the user to pass them
+    again manually.
 
     The ``state_path`` stored is resolved to a cross-job checkpoint
     reference at save time, so any future trainer job can load it
@@ -125,8 +133,13 @@ def save_checkpoint(
         paths["sampler_path"] = get_sampler_checkpoint_id(save_result)
 
     full_dict = {"name": name, **loop_state, **paths}
+    if base_model:
+        full_dict["base_model"] = base_model
+    if training_shape:
+        full_dict["training_shape"] = training_shape
     os.makedirs(log_path, exist_ok=True)
     with open(os.path.join(log_path, CHECKPOINTS_BASE_NAME), "a") as f:
         f.write(json.dumps(full_dict) + "\n")
     logger.info("Saved checkpoint: %s", full_dict)
     return paths
+

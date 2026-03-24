@@ -34,6 +34,7 @@ PROFILE = TrainingShapeProfile(
     accelerator_type="NVIDIA_H100_80GB",
     accelerator_count=1,
     base_model_weight_precision="bfloat16",
+    base_model=BASE_MODEL,
     pipeline_parallelism=1,
 )
 
@@ -47,6 +48,7 @@ class _CapturingMgr:
         self.captured: TrainerJobConfig | None = None
 
     def create(self, config):
+        config.validate()
         self.captured = config
         return SimpleNamespace(job_id="job-smoke", job_name="jobs/job-smoke")
 

@@ -142,6 +142,28 @@ class TestSaveCheckpoint:
         assert "sampler_path" in paths
         assert paths["sampler_path"] == "step-5-sampler"
 
+    def test_save_with_base_model_and_training_shape(self, log_dir):
+        client = _make_mock_client(job_id="job-shape")
+        save_checkpoint(
+            client, "step-2", log_dir, {"step": 2},
+            base_model="accounts/fireworks/models/qwen3-8b",
+            training_shape="accounts/fireworks/trainingShapes/ts-qwen3-8b-policy",
+        )
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        with open(ckpt_path) as f:
+            entry = json.loads(f.readline())
+        assert entry["base_model"] == "accounts/fireworks/models/qwen3-8b"
+        assert entry["training_shape"] == "accounts/fireworks/trainingShapes/ts-qwen3-8b-policy"
+
+    def test_save_without_model_metadata_omits_fields(self, log_dir):
+        client = _make_mock_client()
+        save_checkpoint(client, "step-1", log_dir, {"step": 1})
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        with open(ckpt_path) as f:
+            entry = json.loads(f.readline())
+        assert "base_model" not in entry
+        assert "training_shape" not in entry
+
     def test_appends_entries(self, log_dir):
         client = _make_mock_client()
         save_checkpoint(client, "step-1", log_dir, {"step": 1})
@@ -256,3 +278,73 @@ class TestLogPathRequired:
         assert result.step == 3
         assert result.data_consumed == 24
         client2.load_state_with_optimizer.assert_called_once()
+
+
+class TestCheckpointMetadataForPromote:
+    """Verify base_model/training_shape saved in checkpoints are readable
+    by the promote_checkpoint script's _resolve_checkpoint_from_jsonl."""
+
+    def test_metadata_roundtrip_latest(self, log_dir):
+        """Save checkpoints with metadata, read back the latest entry."""
+        client = _make_mock_client(job_id="job-meta")
+        save_checkpoint(client, "step-1", log_dir, {
+            "step": 1, "data_consumed": 8, "source_job_id": "job-meta",
+        }, base_model="accounts/fw/models/qwen3-8b",
+           training_shape="accounts/fw/trainingShapes/ts-qwen3-8b-policy")
+
+        save_checkpoint(client, "step-2", log_dir, {
+            "step": 2, "data_consumed": 16, "source_job_id": "job-meta",
+        }, base_model="accounts/fw/models/qwen3-8b",
+           training_shape="accounts/fw/trainingShapes/ts-qwen3-8b-policy")
+
+        # Read back all entries
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        entries = []
+        with open(ckpt_path) as f:
+            for line in f:
+                if line.strip():
+                    entries.append(json.loads(line))
+
+        assert len(entries) == 2
+        # Latest entry has the metadata promote needs
+        latest = entries[-1]
+        assert latest["step"] == 2
+        assert latest["base_model"] == "accounts/fw/models/qwen3-8b"
+        assert latest["training_shape"] == "accounts/fw/trainingShapes/ts-qwen3-8b-policy"
+        assert "state_path" in latest
+        assert latest["state_path"].startswith("cross_job://")
+
+    def test_metadata_absent_for_old_checkpoints(self, log_dir):
+        """Checkpoints saved without metadata lack base_model/training_shape."""
+        client = _make_mock_client(job_id="job-old")
+        save_checkpoint(client, "step-1", log_dir, {
+            "step": 1, "source_job_id": "job-old",
+        })
+
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        with open(ckpt_path) as f:
+            entry = json.loads(f.readline())
+        assert "base_model" not in entry
+        assert "training_shape" not in entry
+
+    def test_select_checkpoint_by_step(self, log_dir):
+        """Verify the right entry is selected when filtering by step."""
+        client = _make_mock_client(job_id="job-step")
+        for step in (1, 2, 3):
+            save_checkpoint(client, f"step-{step}", log_dir, {
+                "step": step, "source_job_id": "job-step",
+            }, base_model=f"model-v{step}",
+               training_shape="shape-a")
+
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        entries = []
+        with open(ckpt_path) as f:
+            for line in f:
+                if line.strip():
+                    entries.append(json.loads(line))
+
+        # Filter for step 2
+        step2 = [e for e in entries if e.get("step") == 2]
+        assert len(step2) == 1
+        assert step2[0]["base_model"] == "model-v2"
+
