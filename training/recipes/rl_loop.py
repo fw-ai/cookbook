@@ -449,14 +449,17 @@ def main(
         max_concurrency = None
 
         if cfg.concurrency.mode == "adaptive":
+            replica_count = cfg.deployment.replica_count or 1
+            initial_window = cfg.concurrency.initial_window or (8 * replica_count)
             concurrency_controller = AdaptiveConcurrencyController(
-                initial_window=cfg.concurrency.initial_window,
+                initial_window=initial_window,
                 min_window=cfg.concurrency.min_window,
                 max_window=cfg.concurrency.max_window,
                 prefill_queue_target=cfg.concurrency.prefill_queue_target,
             )
             logger.info(
-                "Using adaptive concurrency (window=%d-%d, target_pq=%.2fs)",
+                "Using adaptive concurrency (initial=%d, range=%d-%d, target_pq=%.2fs)",
+                initial_window,
                 cfg.concurrency.min_window,
                 cfg.concurrency.max_window,
                 cfg.concurrency.prefill_queue_target,

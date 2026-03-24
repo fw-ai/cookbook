@@ -40,8 +40,9 @@ class ConcurrencyConfig:
     """Fixed concurrency limit.  Used when ``mode="fixed"``.
     ``None`` means unlimited."""
 
-    initial_window: int = 8
-    """Starting concurrency window for adaptive mode."""
+    initial_window: int | None = None
+    """Starting concurrency window for adaptive mode.
+    Defaults to ``8 * replica_count`` when ``None``."""
 
     min_window: int = 1
     """Minimum concurrency window for adaptive mode."""
