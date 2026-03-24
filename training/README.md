@@ -97,7 +97,7 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 
 ## Useful examples
 
-- `examples/promote_checkpoint/train_promote_checkpoint.py` spins up a fresh trainer, loads a DCP checkpoint from `gs://...`, saves a promotable sampler checkpoint, and promotes it to a model with only `checkpoint`, `model`, and `shape` required for full-parameter checkpoints.
+- `examples/promote_checkpoint/train_promote_checkpoint.py` spins up a fresh trainer, loads a DCP checkpoint from the saved `state_path` in `checkpoints.jsonl` (or directly from `cross_job://...` / `gs://...`), saves a promotable sampler checkpoint, and promotes it to a model.
 
 ## Documentation
 
