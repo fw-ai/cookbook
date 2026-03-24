@@ -65,12 +65,15 @@ async def _run_pipeline_window(
 ) -> int:
     """Process one policy window with pipelined sampling/training.
 
-    All sampling coroutines fire at once.  Backpressure is handled by
-    the SDK's ``DeploymentSampler(max_concurrency=...)`` which gates
-    individual HTTP requests.  Results stream back in completion order;
-    every ``prompt_groups_per_step`` valid groups are sent to the trainer
-    via an unbounded queue so the sampler can pre-build batches while
-    the trainer is busy.
+    All sampling coroutines fire at once.  As results arrive they are
+    filtered and accumulated; every ``prompt_groups_per_step`` valid
+    groups are sent to the trainer via an unbounded queue so the sampler
+    can pre-build batches while the trainer is busy.  Training for batch
+    K overlaps with sampling still in-flight for later batches -- early
+    arrivals get trained first.
+
+    HTTP-level concurrency limiting is handled by
+    ``DeploymentSampler(max_concurrency=...)`` in the SDK.
     """
     pipe: asyncio.Queue = asyncio.Queue()
     results_q: asyncio.Queue[PromptGroup | None] = asyncio.Queue()
@@ -235,12 +238,13 @@ async def run_rl_loop(
 
     Coroutines are grouped into **policy windows** of
     ``weight_sync_interval * prompt_groups_per_step`` coroutines each.
-    All coroutines in a window fire concurrently.  Backpressure is
-    handled by the SDK's ``DeploymentSampler(max_concurrency=...)``
-    which gates individual HTTP requests.  Results stream back in
-    completion order -- early arrivals get trained first while slower
+    All coroutines in a window fire concurrently.  Results stream back
+    in completion order -- early arrivals get trained first while slower
     rollouts are still in-flight.  Each ``prompt_groups_per_step``
     valid groups form one training step.
+
+    HTTP-level concurrency limiting is handled by the SDK's
+    ``DeploymentSampler(max_concurrency=...)``.
 
     At window boundaries the pipeline drains, ``weight_sync_fn`` fires
     (hotload) if at least one training step ran, and new sampling starts

@@ -438,7 +438,7 @@ def main(
             model=inference_model,
             api_key=api_key,
             tokenizer=tokenizer,
-            max_concurrency=cfg.deployment.max_concurrency,
+            max_concurrency=cfg.weight_sync.max_concurrent or None,
         )
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
