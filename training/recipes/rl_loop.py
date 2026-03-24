@@ -62,7 +62,11 @@ from training.utils import (
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    save_reconnect_state,
+    try_client_reconnect,
     CheckpointKind,
+    ReconnectState,
+    ResumeInfo,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
@@ -161,8 +165,33 @@ class Config:
     """Base URL for the reference trainer (bypass direct route)."""
 
     init_from_checkpoint: str | None = None
-    """Load pretrained DCP weights on a fresh dataset. Supports cross-job
-    format ``"job_id:checkpoint_name"``."""
+    """Resume from a DCP checkpoint (heavy-weight, full optimizer + weights).
+
+    Loads pretrained DCP weights into a *new* trainer job via
+    ``load_state_with_optimizer``.  Use when the remote trainer has died
+    and a new job must be created.  Supports cross-job format
+    ``"job_id:checkpoint_name"``.
+
+    For recovering from *client-side* crashes only (trainer still alive),
+    use ``reconnect_state_path`` instead — it is much faster because it
+    skips the DCP load entirely.
+    """
+
+    reconnect_state_path: str | None = None
+    """Path to a client-side reconnect state file (light-weight resume).
+
+    When set, the recipe reads this JSON file, verifies the saved trainer
+    job(s) are still healthy, and resumes the training loop from the
+    saved step — **without** any DCP load.
+
+    Use this when the *client script* crashed but the remote trainer pod
+    is still alive.  If the trainer has died, this will fail with a clear
+    error telling you to use DCP checkpoint resume
+    (``init_from_checkpoint``) instead.
+
+    The file is written automatically after each training step.  Pass
+    any file path you like (e.g. ``"./my_run/reconnect.json"``).
+    """
 
     output_model_id: str | None = None
 
@@ -338,6 +367,17 @@ def main(
     if not use_reference:
         logger.info("No ref_training_shape_id set, skipping reference model")
 
+    # -- Client-side reconnect -------------------------------------------------
+
+    reconnect: ReconnectState | None = None
+    if cfg.reconnect_state_path:
+        reconnect = try_client_reconnect(cfg.reconnect_state_path, rlor_mgr)
+        cfg.policy_job_id = reconnect.policy_job_id
+        if reconnect.reference_job_id:
+            cfg.reference_job_id = reconnect.reference_job_id
+        if reconnect.deployment_id:
+            cfg.deployment.deployment_id = reconnect.deployment_id
+
     import time as _time
 
     runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
@@ -463,11 +503,16 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        if reconnect:
+            # Lightweight client-side reconnect: no DCP load needed.
+            resume_info = ResumeInfo(step=reconnect.step, data_consumed=reconnect.data_consumed)
+            logger.info("Client reconnect: skipping DCP load, resuming from step %d", reconnect.step)
+        else:
+            resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
 
-        if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:
+        if not reconnect and cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
@@ -754,6 +799,19 @@ def main(
 
             if cfg.trajectory_dir:
                 _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
+
+            if cfg.reconnect_state_path:
+                _data = (resume_info.data_consumed if resume_info else 0) + (
+                    step - step_offset
+                ) * prompt_groups_per_step
+                save_reconnect_state(cfg.reconnect_state_path, ReconnectState(
+                    step=step,
+                    data_consumed=_data,
+                    policy_job_id=policy_job_id,
+                    reference_job_id=reference_job_id,
+                    deployment_id=cfg.deployment.deployment_id,
+                    base_model=cfg.base_model,
+                ))
 
             return step, metrics
 

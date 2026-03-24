@@ -1,8 +1,17 @@
-"""Checkpoint utilities using tinker_cookbook's checkpoints.jsonl format.
+"""Checkpoint and reconnect utilities.
 
-Reading uses ``get_last_checkpoint`` from tinker_cookbook directly.
-Writing (``save_checkpoint``) and resume (``resolve_resume``) are
-implemented locally for Fireworks RLOR compatibility.
+Two resume paths:
+
+* **DCP checkpoint resume** (``resolve_resume`` / ``checkpoints.jsonl``):
+  Heavy-weight.  Loads full optimizer + weight state into a *new* trainer
+  job via ``load_state_with_optimizer``.  Use when the remote trainer has
+  died and a new job must be created.
+
+* **Client-side reconnect** (``save_reconnect_state`` / ``load_reconnect_state``):
+  Light-weight.  The remote trainer is still alive — only the client
+  script crashed.  Reads a local JSON state file, verifies the trainer is
+  healthy, and resumes the training loop from where it left off with no
+  DCP load.
 """
 
 from __future__ import annotations
@@ -11,7 +20,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict, field
 from training.utils import ReconnectableClient
 from enum import Enum
 from typing import Any
@@ -142,3 +151,120 @@ def save_checkpoint(
         f.write(json.dumps(full_dict) + "\n")
     logger.info("Saved checkpoint: %s", full_dict)
     return paths
+
+
+# -- Client-side reconnect state -----------------------------------------------
+
+
+@dataclass
+class ReconnectState:
+    """Client-side loop progress for lightweight reconnect.
+
+    Saved to a local JSON file after each training step.  When the
+    *client script* crashes but the remote trainer pod is still alive,
+    this state lets the loop resume without the expensive DCP
+    ``load_state_with_optimizer`` call.
+
+    **This is NOT a DCP checkpoint.**  If the trainer itself died, use
+    ``resolve_resume`` with ``checkpoints.jsonl`` instead.
+    """
+
+    step: int
+    data_consumed: int
+    policy_job_id: str
+    reference_job_id: str | None = None
+    deployment_id: str | None = None
+    base_model: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
+    """Arbitrary extra state recipes can stash (e.g. epoch number)."""
+
+
+def save_reconnect_state(path: str, state: ReconnectState) -> None:
+    """Atomically write *state* to *path*.
+
+    Uses write-to-tmp + ``os.replace`` so a crash mid-write never
+    leaves a corrupt file.
+    """
+    data = asdict(state)
+    data["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def load_reconnect_state(path: str) -> ReconnectState | None:
+    """Read a reconnect state file.  Returns ``None`` if the file does not exist."""
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        data = json.load(f)
+    # Drop fields that aren't in the dataclass (e.g. timestamp).
+    known = {f.name for f in ReconnectState.__dataclass_fields__.values()}
+    filtered = {k: v for k, v in data.items() if k in known}
+    return ReconnectState(**filtered)
+
+
+def try_client_reconnect(
+    path: str,
+    rlor_mgr: Any,
+) -> ReconnectState:
+    """Verify the saved trainer is still healthy and return reconnect state.
+
+    Raises ``FileNotFoundError`` if the state file is missing, or
+    ``RuntimeError`` if the trainer is no longer alive (with guidance to
+    use DCP checkpoint resume instead).
+    """
+    state = load_reconnect_state(path)
+    if state is None:
+        raise FileNotFoundError(
+            f"Reconnect state file not found: {path}\n"
+            "Cannot reconnect — no previous client state saved."
+        )
+
+    # Check job state via control plane.
+    job_id = state.policy_job_id
+    try:
+        job = rlor_mgr.get(job_id)
+    except Exception as e:
+        raise RuntimeError(
+            f"Cannot query trainer job {job_id}: {e}\n"
+            "The trainer may have been deleted. "
+            "Use DCP checkpoint resume (init_from_checkpoint or checkpoints.jsonl) instead."
+        ) from e
+
+    job_state = job.get("state", "")
+    if job_state != "JOB_STATE_RUNNING":
+        raise RuntimeError(
+            f"Trainer job {job_id} is in state '{job_state}', not RUNNING.\n"
+            "The trainer has died since the client disconnected.\n"
+            "Use DCP checkpoint resume (init_from_checkpoint or "
+            "checkpoints.jsonl) instead."
+        )
+
+    # Verify endpoint is actually responsive.
+    base_url = rlor_mgr._get_trainer_gateway_url(job_id)
+    if not rlor_mgr._check_healthz(base_url):
+        raise RuntimeError(
+            f"Trainer job {job_id} is RUNNING but /healthz failed.\n"
+            "The trainer may be restarting or unhealthy.\n"
+            "Use DCP checkpoint resume (init_from_checkpoint or "
+            "checkpoints.jsonl) instead."
+        )
+
+    # Check reference trainer if present.
+    if state.reference_job_id:
+        ref_url = rlor_mgr._get_trainer_gateway_url(state.reference_job_id)
+        if not rlor_mgr._check_healthz(ref_url):
+            raise RuntimeError(
+                f"Reference trainer {state.reference_job_id} is not healthy.\n"
+                "Use DCP checkpoint resume instead."
+            )
+
+    logger.info(
+        "Client reconnect OK: step=%d, policy=%s, ref=%s",
+        state.step, state.policy_job_id, state.reference_job_id,
+    )
+    return state

@@ -347,3 +347,89 @@ class TestCheckpointMetadataForPromote:
         step2 = [e for e in entries if e.get("step") == 2]
         assert len(step2) == 1
         assert step2[0]["base_model"] == "model-v2"
+
+
+# -- Client-side reconnect --------------------------------------------------
+
+from training.utils.checkpoint_utils import (
+    ReconnectState,
+    save_reconnect_state,
+    load_reconnect_state,
+    try_client_reconnect,
+)
+
+
+class TestReconnectState:
+    def test_save_and_load_roundtrip(self, log_dir):
+        path = os.path.join(log_dir, "reconnect.json")
+        state = ReconnectState(
+            step=5, data_consumed=40,
+            policy_job_id="job-abc",
+            reference_job_id="job-ref",
+            deployment_id="dep-1",
+            base_model="accounts/fw/models/qwen3-8b",
+        )
+        save_reconnect_state(path, state)
+        loaded = load_reconnect_state(path)
+
+        assert loaded is not None
+        assert loaded.step == 5
+        assert loaded.data_consumed == 40
+        assert loaded.policy_job_id == "job-abc"
+        assert loaded.reference_job_id == "job-ref"
+        assert loaded.deployment_id == "dep-1"
+        assert loaded.base_model == "accounts/fw/models/qwen3-8b"
+
+    def test_load_missing_file_returns_none(self, log_dir):
+        result = load_reconnect_state(os.path.join(log_dir, "nope.json"))
+        assert result is None
+
+    def test_save_is_atomic(self, log_dir):
+        """Overwriting an existing file doesn't corrupt on re-save."""
+        path = os.path.join(log_dir, "reconnect.json")
+        save_reconnect_state(path, ReconnectState(step=1, data_consumed=8, policy_job_id="j1"))
+        save_reconnect_state(path, ReconnectState(step=2, data_consumed=16, policy_job_id="j1"))
+        loaded = load_reconnect_state(path)
+        assert loaded.step == 2
+
+    def test_try_reconnect_healthy(self, log_dir):
+        path = os.path.join(log_dir, "reconnect.json")
+        save_reconnect_state(path, ReconnectState(
+            step=3, data_consumed=24, policy_job_id="job-ok",
+        ))
+        mgr = MagicMock()
+        mgr.get.return_value = {"state": "JOB_STATE_RUNNING"}
+        mgr._get_trainer_gateway_url.return_value = "http://fake"
+        mgr._check_healthz.return_value = True
+
+        state = try_client_reconnect(path, mgr)
+        assert state.step == 3
+        assert state.policy_job_id == "job-ok"
+
+    def test_try_reconnect_dead_trainer(self, log_dir):
+        path = os.path.join(log_dir, "reconnect.json")
+        save_reconnect_state(path, ReconnectState(
+            step=3, data_consumed=24, policy_job_id="job-dead",
+        ))
+        mgr = MagicMock()
+        mgr.get.return_value = {"state": "JOB_STATE_FAILED"}
+
+        with pytest.raises(RuntimeError, match="DCP checkpoint resume"):
+            try_client_reconnect(path, mgr)
+
+    def test_try_reconnect_unhealthy_endpoint(self, log_dir):
+        path = os.path.join(log_dir, "reconnect.json")
+        save_reconnect_state(path, ReconnectState(
+            step=3, data_consumed=24, policy_job_id="job-sick",
+        ))
+        mgr = MagicMock()
+        mgr.get.return_value = {"state": "JOB_STATE_RUNNING"}
+        mgr._get_trainer_gateway_url.return_value = "http://fake"
+        mgr._check_healthz.return_value = False
+
+        with pytest.raises(RuntimeError, match="healthz failed"):
+            try_client_reconnect(path, mgr)
+
+    def test_try_reconnect_missing_file(self, log_dir):
+        with pytest.raises(FileNotFoundError, match="not found"):
+            try_client_reconnect(os.path.join(log_dir, "nope.json"), MagicMock())

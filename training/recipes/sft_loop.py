@@ -55,7 +55,11 @@ from training.utils import (
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    save_reconnect_state,
+    try_client_reconnect,
     CheckpointKind,
+    ReconnectState,
+    ResumeInfo,
 )
 from training.utils.timer import timer, flush_timing
 
@@ -91,8 +95,19 @@ class Config:
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
 
     init_from_checkpoint: str | None = None
-    """Load pretrained DCP weights on a fresh dataset. Supports cross-job
-    format ``"job_id:checkpoint_name"``."""
+    """Resume from a DCP checkpoint (heavy-weight, full optimizer + weights).
+
+    Use when the remote trainer has died.  For recovering from
+    *client-side* crashes (trainer still alive), use
+    ``reconnect_state_path`` instead.
+    """
+
+    reconnect_state_path: str | None = None
+    """Path to a client-side reconnect state file (light-weight resume).
+
+    When set, verifies the saved trainer is healthy and resumes without
+    DCP load.  See ``rl_loop.Config.reconnect_state_path`` for details.
+    """
 
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 = no clipping."""
@@ -179,22 +194,32 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
+    # -- Client-side reconnect -------------------------------------------------
+
+    reconnect: ReconnectState | None = None
+    if cfg.reconnect_state_path:
+        reconnect = try_client_reconnect(cfg.reconnect_state_path, rlor_mgr)
+
     runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     with ResourceCleanup(rlor_mgr) as cleanup:
-        endpoint = create_trainer_job(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            infra=cfg.infra,
-            profile=profile,
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            display_name="sft-trainer",
-            cleanup=cleanup,
-        )
-        job_id = endpoint.job_id
+        if reconnect:
+            job_id = reconnect.policy_job_id
+            endpoint = rlor_mgr.wait_for_existing(job_id)
+        else:
+            endpoint = create_trainer_job(
+                rlor_mgr,
+                base_model=cfg.base_model,
+                infra=cfg.infra,
+                profile=profile,
+                lora_rank=cfg.lora_rank,
+                max_seq_len=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate,
+                display_name="sft-trainer",
+                cleanup=cleanup,
+            )
+            job_id = endpoint.job_id
         client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
 
         # -- Prepare data ------------------------------------------------------
@@ -264,7 +289,11 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+        if reconnect:
+            resume_info = ResumeInfo(step=reconnect.step, data_consumed=reconnect.data_consumed)
+            logger.info("Client reconnect: skipping DCP load, resuming from step %d", reconnect.step)
+        else:
+            resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
         step = resume_info.step if resume_info else 0
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)
@@ -336,6 +365,14 @@ def main(
                 RunStatus.RUNNING, step=step, total_steps=total_steps_estimate, message="training",
             )
             runner.write_metadata()
+
+            if cfg.reconnect_state_path:
+                save_reconnect_state(cfg.reconnect_state_path, ReconnectState(
+                    step=step,
+                    data_consumed=data_consumed,
+                    policy_job_id=job_id,
+                    base_model=cfg.base_model,
+                ))
 
             return step
 
