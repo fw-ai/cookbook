@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402
-"""Promote the latest DCP checkpoint from an existing trainer job.
+"""Promote a GCS DCP checkpoint by loading it into a fresh trainer.
 
-This example creates a temporary trainer from a training shape, restores the
-latest DCP checkpoint from a previous job, saves a promotable sampler
-checkpoint, and promotes that checkpoint into a Fireworks model.
+This example creates a temporary trainer from a training shape, loads an
+existing DCP checkpoint from GCS or a local absolute path, saves a promotable
+sampler checkpoint, and promotes that checkpoint into a Fireworks model.
 
 Usage:
     export FIREWORKS_API_KEY=...
 
     python train_promote_checkpoint.py \
-        --job-id <source-trainer-job> \
+        --checkpoint gs://bucket/path/to/checkpoint \
         --model accounts/fireworks/models/qwen3-8b \
         --shape accounts/fireworks/trainingShapes/ts-qwen3-8b-policy
 """
@@ -24,7 +24,6 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any
 
 from dotenv import load_dotenv
 
@@ -62,33 +61,24 @@ _VERSIONED_TRAINING_SHAPE_RE = re.compile(
 
 @dataclass(frozen=True)
 class PromoteConfig:
-    source_job_id: str
+    checkpoint_path: str
     base_model: str
     training_shape: str
-    checkpoint_name: str | None
+    lora_rank: int
     output_model_id: str | None
     trainer_timeout_s: float
     dcp_timeout_s: int
     keep_trainer: bool
 
 
-@dataclass(frozen=True)
-class JobCheckpoint:
-    checkpoint_id: str
-    checkpoint_type: str
-    name: str
-    promotable: bool
-    create_time: str | None = None
-
-
 def parse_args() -> PromoteConfig:
     parser = argparse.ArgumentParser(
-        description="Restore a DCP checkpoint into a temporary trainer and promote it",
+        description="Load a GCS DCP checkpoint into a temporary trainer and promote it",
     )
     parser.add_argument(
-        "--job-id",
+        "--checkpoint",
         required=True,
-        help="Source trainer job that owns the DCP checkpoint",
+        help="GCS or absolute local path to the DCP checkpoint directory",
     )
     parser.add_argument(
         "--model", required=True, help="Base model to launch in the temporary trainer"
@@ -102,14 +92,15 @@ def parse_args() -> PromoteConfig:
         ),
     )
     parser.add_argument(
-        "--checkpoint-name",
-        default=None,
-        help="Specific DCP checkpoint name to restore. Defaults to the latest training checkpoint for the job.",
+        "--lora-rank",
+        type=int,
+        default=0,
+        help="LoRA rank for the temporary trainer. Leave at 0 for full-parameter checkpoints.",
     )
     parser.add_argument(
         "--output-model-id",
         default=None,
-        help="Promoted model ID. Defaults to an auto-generated value derived from the model and source job.",
+        help="Promoted model ID. Defaults to an auto-generated value derived from the model and checkpoint path.",
     )
     parser.add_argument(
         "--trainer-timeout-s",
@@ -130,10 +121,10 @@ def parse_args() -> PromoteConfig:
     )
     args = parser.parse_args()
     return PromoteConfig(
-        source_job_id=args.job_id,
+        checkpoint_path=args.checkpoint,
         base_model=args.model,
         training_shape=args.shape,
-        checkpoint_name=args.checkpoint_name,
+        lora_rank=args.lora_rank,
         output_model_id=args.output_model_id,
         trainer_timeout_s=args.trainer_timeout_s,
         dcp_timeout_s=args.dcp_timeout_s,
@@ -162,167 +153,61 @@ def _sanitize_resource_id(value: str, *, default: str) -> str:
     return cleaned or default
 
 
-def _default_output_model_id(base_model: str, source_job_id: str) -> str:
+def _checkpoint_name_from_path(checkpoint_path: str) -> str:
+    return checkpoint_path.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _validate_checkpoint_path(checkpoint_path: str) -> None:
+    if checkpoint_path.startswith("gs://") or checkpoint_path.startswith("/"):
+        return
+    raise ValueError(
+        "checkpoint must be a full gs:// or absolute local path so the promotion trainer can load it directly"
+    )
+
+
+def _default_output_model_id(base_model: str, checkpoint_path: str) -> str:
     model_short = base_model.rsplit("/", 1)[-1]
-    suffix = f"{source_job_id[-8:]}-{int(time.time()) % 100000}"
+    checkpoint_short = _checkpoint_name_from_path(checkpoint_path)
+    suffix = f"{checkpoint_short}-{int(time.time()) % 100000}"
     return _sanitize_resource_id(
         f"{model_short}-promote-{suffix}", default="promoted-model"
     )[:63].rstrip("-")
 
 
-def _default_display_name(base_model: str, source_job_id: str) -> str:
+def _default_display_name(base_model: str, checkpoint_path: str) -> str:
     model_short = base_model.rsplit("/", 1)[-1]
-    suffix = source_job_id[-8:]
+    checkpoint_short = _checkpoint_name_from_path(checkpoint_path)
     return _sanitize_resource_id(
-        f"promote-{model_short}-{suffix}", default="promote-checkpoint"
+        f"promote-{model_short}-{checkpoint_short}", default="promote-checkpoint"
     )[:63].rstrip("-")
-
-
-def _source_training_config(job: dict) -> dict:
-    return job.get("trainingConfig", {}) or {}
-
-
-def _source_lora_rank(job: dict) -> int:
-    value = _source_training_config(job).get("loraRank", 0)
-    return int(value or 0)
-
-
-def _normalize_job_checkpoint(checkpoint: Any) -> JobCheckpoint:
-    """Normalize SDK or raw control-plane checkpoint metadata."""
-    if hasattr(checkpoint, "checkpoint_id") and hasattr(checkpoint, "checkpoint_type"):
-        return JobCheckpoint(
-            checkpoint_id=str(checkpoint.checkpoint_id),
-            checkpoint_type=str(checkpoint.checkpoint_type),
-            name=str(getattr(checkpoint, "name", "")),
-            promotable=bool(getattr(checkpoint, "promotable", False)),
-            create_time=getattr(checkpoint, "create_time", None),
-        )
-
-    checkpoint_dict = dict(checkpoint)
-    name = str(checkpoint_dict.get("name", ""))
-    checkpoint_id = name.rsplit("/", 1)[-1] if name else ""
-    raw_checkpoint_type = str(checkpoint_dict.get("checkpointType", ""))
-    promotable = bool(checkpoint_dict.get("promotable", False))
-
-    if promotable and ("LORA" in raw_checkpoint_type or "BASE" in raw_checkpoint_type):
-        checkpoint_type = "sampler"
-    elif "TRAINING_LORA" in raw_checkpoint_type:
-        checkpoint_type = "training_lora"
-    elif "TRAINING" in raw_checkpoint_type:
-        checkpoint_type = "training"
-    elif "ARC_V2" in raw_checkpoint_type:
-        checkpoint_type = "sampler"
-    else:
-        checkpoint_type = "sampler" if promotable else "training"
-
-    return JobCheckpoint(
-        checkpoint_id=checkpoint_id,
-        checkpoint_type=checkpoint_type,
-        name=name,
-        promotable=promotable,
-        create_time=checkpoint_dict.get("createTime"),
-    )
-
-
-def _list_job_checkpoints(
-    rlor_mgr: TrainerJobManager,
-    job_id: str,
-) -> list[JobCheckpoint]:
-    list_job_checkpoints = getattr(rlor_mgr, "list_job_checkpoints", None)
-    if callable(list_job_checkpoints):
-        return [
-            _normalize_job_checkpoint(checkpoint)
-            for checkpoint in list_job_checkpoints(job_id)
-        ]
-
-    path = f"/v1/accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}/checkpoints"
-    response = rlor_mgr._get(path, timeout=30)
-    response.raise_for_status()
-    payload = response.json()
-    checkpoints = payload.get("checkpoints", []) or []
-    return [_normalize_job_checkpoint(checkpoint) for checkpoint in checkpoints]
-
-
-def _checkpoint_sort_key(checkpoint: JobCheckpoint) -> tuple[int, object]:
-    if checkpoint.create_time:
-        return (2, checkpoint.create_time)
-    match = re.search(r"(\d+)$", checkpoint.checkpoint_id)
-    if match:
-        return (1, int(match.group(1)))
-    return (0, checkpoint.checkpoint_id)
-
-
-def _select_dcp_checkpoint(
-    checkpoints: list[JobCheckpoint],
-    requested_name: str | None,
-) -> JobCheckpoint:
-    if requested_name:
-        for checkpoint in checkpoints:
-            if (
-                checkpoint.checkpoint_id == requested_name
-                or checkpoint.name == requested_name
-            ):
-                if checkpoint.checkpoint_type not in {"training", "training_lora"}:
-                    raise ValueError(
-                        f"Checkpoint '{requested_name}' is a {checkpoint.checkpoint_type} checkpoint, not a DCP checkpoint"
-                    )
-                return checkpoint
-        raise ValueError(
-            f"Checkpoint '{requested_name}' was not found in the source job"
-        )
-
-    candidates = [
-        checkpoint
-        for checkpoint in checkpoints
-        if checkpoint.checkpoint_type in {"training", "training_lora"}
-    ]
-    if not candidates:
-        raise ValueError("No training DCP checkpoints were found for the source job")
-    return max(candidates, key=_checkpoint_sort_key)
 
 
 def main() -> None:
     cfg = parse_args()
+    _validate_checkpoint_path(cfg.checkpoint_path)
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
     rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
 
-    source_job = rlor_mgr.get(cfg.source_job_id)
-    source_training = _source_training_config(source_job)
-    source_base_model = source_training.get("baseModel")
-    lora_rank = _source_lora_rank(source_job)
-
-    if source_base_model and source_base_model != cfg.base_model:
-        logger.warning(
-            "Source job base model is %s, but the temporary trainer will use %s",
-            source_base_model,
-            cfg.base_model,
-        )
-
     training_shape = _normalize_training_shape(cfg.training_shape, rlor_mgr.account_id)
     profile = rlor_mgr.resolve_training_profile(training_shape)
-    checkpoint = _select_dcp_checkpoint(
-        _list_job_checkpoints(rlor_mgr, cfg.source_job_id),
-        cfg.checkpoint_name,
-    )
 
     output_model_id = cfg.output_model_id or _default_output_model_id(
-        cfg.base_model, cfg.source_job_id
+        cfg.base_model, cfg.checkpoint_path
     )
-    display_name = _default_display_name(cfg.base_model, cfg.source_job_id)
+    display_name = _default_display_name(cfg.base_model, cfg.checkpoint_path)
     sampler_name = _sanitize_resource_id(
-        f"promote-{cfg.source_job_id[-8:]}-{int(time.time()) % 100000}",
+        f"promote-{_checkpoint_name_from_path(cfg.checkpoint_path)}-{int(time.time()) % 100000}",
         default="promote-checkpoint",
     )
 
-    logger.info("Source job:          %s", cfg.source_job_id)
+    logger.info("Checkpoint path:     %s", cfg.checkpoint_path)
     logger.info("Base model:          %s", cfg.base_model)
     logger.info("Training shape:      %s", training_shape)
     logger.info("Resolved shape ver.: %s", profile.training_shape_version)
-    logger.info("DCP checkpoint:      %s", checkpoint.checkpoint_id)
-    logger.info("Source LoRA rank:    %d", lora_rank)
+    logger.info("LoRA rank:           %d", cfg.lora_rank)
     logger.info("Output model ID:     %s", output_model_id)
 
     cleanup = ResourceCleanup(rlor_mgr)
@@ -332,7 +217,7 @@ def main() -> None:
             base_model=cfg.base_model,
             infra=InfraConfig(trainer_timeout_s=cfg.trainer_timeout_s),
             profile=profile,
-            lora_rank=lora_rank,
+            lora_rank=cfg.lora_rank,
             display_name=display_name,
             cleanup=None if cfg.keep_trainer else cleanup,
         )
@@ -341,15 +226,12 @@ def main() -> None:
             rlor_mgr=rlor_mgr,
             job_id=endpoint.job_id,
             base_model=cfg.base_model,
-            lora_rank=lora_rank,
+            lora_rank=cfg.lora_rank,
             fw_api_key=api_key,
             endpoint=endpoint,
         )
 
-        checkpoint_ref = client.resolve_checkpoint_path(
-            checkpoint.checkpoint_id,
-            source_job_id=cfg.source_job_id,
-        )
+        checkpoint_ref = client.resolve_checkpoint_path(cfg.checkpoint_path)
         logger.info("Loading DCP checkpoint: %s", checkpoint_ref)
         t0 = time.time()
         client.load_state_with_optimizer(checkpoint_ref, timeout=cfg.dcp_timeout_s)
