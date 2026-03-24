@@ -35,7 +35,7 @@ from fireworks.training.sdk.deployment import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-API_KEY = os.environ.get("FIREWORKS_API_KEY", "fw_58efLjimG74e2zwAf69iqS")
+API_KEY = os.environ["FIREWORKS_API_KEY"]
 BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 DEPLOYMENT_ID = "e2e-thorough-chengxili-v1"
 DEPLOYMENT_SHAPE = "accounts/fireworks/deploymentShapes/rft-qwen3-30b-a3b-throughput/versions/ai5r0aoy"

@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-API_KEY = os.environ.get("FIREWORKS_API_KEY", "fw_58efLjimG74e2zwAf69iqS")
+API_KEY = os.environ["FIREWORKS_API_KEY"]
 BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 DEPLOYMENT_ID = "e2e-pressure-chengxili-v2"
 TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3-30b-a3b-instruct-2507-128k-b200"
