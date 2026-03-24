@@ -7,9 +7,9 @@ existing DCP checkpoint referenced from cookbook `checkpoints.jsonl`, saves a
 promotable sampler checkpoint, and promotes that checkpoint into a Fireworks
 model.
 
-When checkpoints were saved with ``base_model`` and ``training_shape`` fields
-(cookbook >= v2), ``--model`` and ``--shape`` are auto-populated from the
-checkpoint and can be omitted.
+When checkpoints were saved with ``base_model`` and ``training_shape`` fields,
+``--model`` and ``--shape`` are auto-populated from the checkpoint and can be
+omitted.
 
 Usage:
     export FIREWORKS_API_KEY=...
