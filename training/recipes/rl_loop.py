@@ -460,7 +460,7 @@ def main(
                     "Install from source or upgrade: pip install --upgrade fireworks-ai"
                 )
             replica_count = cfg.deployment.replica_count or 1
-            initial_window = cfg.concurrency.initial_window or (8 * replica_count)
+            initial_window = cfg.concurrency.initial_window or (16 * replica_count)
             concurrency_controller = AdaptiveConcurrencyController(
                 initial_window=initial_window,
                 min_window=cfg.concurrency.min_window,
