@@ -561,6 +561,10 @@ def main(
                     **sample_kwargs,
                 )
             except Exception as e:
+                # TODO: HTTP 425 (deployment hot-loading after weight sync)
+                # can cause transient failures here.  Currently the prompt is
+                # silently dropped (counted as sample_fails).  Consider adding
+                # a retry loop so no training data is lost during hotload.
                 logger.warning("Sampling failed: %s", e)
                 return None
 
