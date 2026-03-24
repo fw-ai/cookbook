@@ -53,7 +53,7 @@ FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks
 @dataclass
 class TrainArgs:
     base_model: str = "accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
-    hf_tokenizer_name: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    tokenizer_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     dataset_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "dataset.jsonl")
     )
@@ -96,10 +96,7 @@ def parse_args() -> TrainArgs:
         description="Train GRPO on DeepMath-Probability-Hard"
     )
     parser.add_argument("--base-model")
-    parser.add_argument("--hf-tokenizer-name")
-    # TODO: remove --tokenizer-model deprecated alias in 5 releases
-    parser.add_argument("--tokenizer-model", default=None, dest="tokenizer_model_deprecated",
-                        help="(deprecated, use --hf-tokenizer-name instead)")
+    parser.add_argument("--tokenizer-model")
     parser.add_argument("--dataset-path")
     parser.add_argument("--training-shape")
     parser.add_argument("--ref-training-shape",
@@ -262,12 +259,6 @@ def deepmath_reward(completion: str, row: dict) -> float:
 
 def main():
     args = parse_args()
-    from training.utils.deprecation import warn_deprecated_param
-    # TODO: remove deprecated aliases in 5 releases
-    if args.tokenizer_model_deprecated is not None:
-        warn_deprecated_param("--tokenizer-model", "--hf-tokenizer-name")
-        if not args.hf_tokenizer_name:
-            args.hf_tokenizer_name = args.tokenizer_model_deprecated
 
     logger.info("GRPO DeepMath-Probability-Hard training with Qwen3-30B-A3B-Instruct")
 
@@ -317,7 +308,7 @@ def main():
             deployment_id=args.deployment_id,
             deployment_region=args.deployment_region,
             replica_count=args.deployment_replica_count,
-            hf_tokenizer_name=args.hf_tokenizer_name,
+            tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
             extra_values=args.deployment_extra_values,
         ),

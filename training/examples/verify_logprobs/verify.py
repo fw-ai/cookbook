@@ -213,7 +213,7 @@ def main():
     deploy_cfg = DeployConfig(
         deployment_id=dep_id,
         deployment_shape=profile.deployment_shape,
-        hf_tokenizer_name=args.tokenizer,
+        tokenizer_model=args.tokenizer,
     )
 
     policy_job_id = None

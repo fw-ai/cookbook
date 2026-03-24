@@ -66,9 +66,9 @@ def _looks_like_kimi_target(value: object) -> bool:
     return "kimi-k2.5" in lowered or "kimi-k2p5" in lowered
 
 
-def _resolve_hf_tokenizer_name(model_id: str, hf_tokenizer_name: str | None) -> str:
-    if hf_tokenizer_name:
-        return str(hf_tokenizer_name)
+def _resolve_tokenizer_model(model_id: str, tokenizer_model: str | None) -> str:
+    if tokenizer_model:
+        return str(tokenizer_model)
     env_tokenizer = os.environ.get("FROZEN_LAKE_VERIFY_TOKENIZER_MODEL", "").strip()
     if env_tokenizer:
         return env_tokenizer
@@ -99,7 +99,7 @@ async def run_rollouts(
     seed_values: list[int] | None = None,
 ):
     api_key = os.environ["FIREWORKS_API_KEY"]
-    resolved_tokenizer = _resolve_hf_tokenizer_name(model_id=model_id, hf_tokenizer_name=tokenizer)
+    resolved_tokenizer = _resolve_tokenizer_model(model_id=model_id, tokenizer_model=tokenizer)
 
     seed_path = str(FROZEN_LAKE_DIR / "seeds.jsonl")
     seed_contexts = load_seed_contexts(seed_path, max_seeds=num_rollouts, seed_values=seed_values)
@@ -773,9 +773,9 @@ def main():
     parser.add_argument("--seed", action="append", type=int, default=[])
     parser.add_argument("--open-browser", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
-    resolved_hf_tokenizer_name = _resolve_hf_tokenizer_name(
+    resolved_tokenizer_model = _resolve_tokenizer_model(
         model_id=args.model_id,
-        hf_tokenizer_name=args.hf_tokenizer_name,
+        tokenizer_model=args.tokenizer_model,
     )
 
     if args.serve_only:
@@ -794,7 +794,7 @@ def main():
             num_rollouts=args.num_rollouts,
             rows_per_seed=args.rows_per_seed,
             model_id=args.model_id,
-            tokenizer=resolved_hf_tokenizer_name,
+            tokenizer=resolved_tokenizer_model,
             visual=args.visual,
             allow_plaintext_action_fallback=args.allow_plaintext_action_fallback,
             temperature=args.temperature,
@@ -806,7 +806,7 @@ def main():
         return
 
     logger.info("Enriching rows...")
-    enrich_rows(results, resolved_hf_tokenizer_name, model_id=args.model_id, visual=args.visual)
+    enrich_rows(results, resolved_tokenizer_model, model_id=args.model_id, visual=args.visual)
     write_debug_report(results, args.report_path)
 
     rewards = []
@@ -828,7 +828,7 @@ def main():
             sum(rewards) / len(rewards),
             args.visual,
             args.model_id,
-            resolved_hf_tokenizer_name,
+            resolved_tokenizer_model,
             float(args.temperature),
             validation_passes,
         )

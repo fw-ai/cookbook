@@ -33,14 +33,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="ORPO on IFEval preference pairs"
     )
-    parser.add_argument("--model", default="accounts/fireworks/models/qwen3-8b")
-    # TODO: remove --base-model deprecated alias in 5 releases
-    parser.add_argument("--base-model", default=None, dest="base_model_deprecated",
-                        help="(deprecated, use --model instead)")
-    parser.add_argument("--hf-tokenizer-name", default="Qwen/Qwen3-8B")
-    # TODO: remove --tokenizer-model deprecated alias in 5 releases
-    parser.add_argument("--tokenizer-model", default=None, dest="tokenizer_model_deprecated",
-                        help="(deprecated, use --hf-tokenizer-name instead)")
+    parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
+    parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument(
         "--dataset-path",
         default=os.path.join(os.path.dirname(__file__), "dataset.jsonl"),
@@ -67,20 +61,10 @@ def parse_args():
 
 def main():
     args = parse_args()
-    from training.utils.deprecation import warn_deprecated_param
-    # TODO: remove deprecated aliases in 5 releases
-    if args.base_model_deprecated is not None:
-        warn_deprecated_param("--base-model", "--model")
-        if args.model == "accounts/fireworks/models/qwen3-8b":
-            args.model = args.base_model_deprecated
-    if args.tokenizer_model_deprecated is not None:
-        warn_deprecated_param("--tokenizer-model", "--hf-tokenizer-name")
-        if args.hf_tokenizer_name == "Qwen/Qwen3-8B":
-            args.hf_tokenizer_name = args.tokenizer_model_deprecated
 
     logger.info(
         "ORPO IFEval training: model=%s shape=%s",
-        args.model,
+        args.base_model,
         args.training_shape,
     )
 
@@ -99,9 +83,9 @@ def main():
 
     config = orpo_loop.Config(
         log_path="./ifeval_orpo_logs",
-        base_model=args.model,
+        base_model=args.base_model,
         dataset=args.dataset_path,
-        hf_tokenizer_name=args.hf_tokenizer_name,
+        tokenizer_model=args.tokenizer_model,
         orpo_lambda=args.orpo_lambda,
         learning_rate=args.learning_rate,
         epochs=args.epochs,
