@@ -116,3 +116,13 @@ def e2e_deployment_shape() -> str | None:
 @pytest.fixture(scope="module")
 def custom_image_tag() -> str | None:
     return _get_env("FIREWORKS_CUSTOM_IMAGE_TAG")
+
+
+@pytest.fixture(scope="module")
+def e2e_training_shape() -> str | None:
+    """Training shape ID for shape-path E2E tests.
+
+    When set, tests use the shape path (base_model auto-resolved from shape).
+    When None, shape-path tests are skipped.
+    """
+    return _get_env("FIREWORKS_E2E_TRAINING_SHAPE")

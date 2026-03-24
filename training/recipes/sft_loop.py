@@ -167,6 +167,8 @@ def main(
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
 
+    if profile and getattr(profile, "base_model", ""):
+        cfg.base_model = profile.base_model
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
         logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)

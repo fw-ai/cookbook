@@ -318,6 +318,8 @@ def main(
         if dep_shape and not cfg.deployment.deployment_shape:
             cfg.deployment.deployment_shape = dep_shape
 
+    if profile and getattr(profile, "base_model", ""):
+        cfg.base_model = profile.base_model
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
         logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
