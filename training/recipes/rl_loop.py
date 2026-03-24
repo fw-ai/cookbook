@@ -64,7 +64,12 @@ from training.utils.checkpoint_utils import (
     save_checkpoint,
     CheckpointKind,
 )
-from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
+from fireworks.training.sdk.deployment import DeploymentSampler
+
+try:
+    from fireworks.training.sdk.deployment import AdaptiveConcurrencyController
+except ImportError:
+    AdaptiveConcurrencyController = None  # type: ignore[misc,assignment]
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -449,6 +454,11 @@ def main(
         max_concurrency = None
 
         if cfg.concurrency.mode == "adaptive":
+            if AdaptiveConcurrencyController is None:
+                raise ImportError(
+                    "AdaptiveConcurrencyController requires fireworks-ai SDK >= 1.0.0a49. "
+                    "Install from source or upgrade: pip install --upgrade fireworks-ai"
+                )
             replica_count = cfg.deployment.replica_count or 1
             initial_window = cfg.concurrency.initial_window or (8 * replica_count)
             concurrency_controller = AdaptiveConcurrencyController(
