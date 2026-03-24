@@ -59,11 +59,13 @@ mgr.close()
 cd cookbook
 
 # Terminal 1: Fixed concurrency
-BENCH_DEPLOYMENT_ID=bench-fixed \
+FIREWORKS_API_KEY=$FIREWORKS_API_KEY \
+BENCH_DEPLOYMENT_ID=e2e-bench-fixed-chengxili-v1 \
   python training/tests/e2e/bench_fixed.py
 
 # Terminal 2: Adaptive concurrency
-BENCH_DEPLOYMENT_ID=bench-adaptive \
+FIREWORKS_API_KEY=$FIREWORKS_API_KEY \
+BENCH_DEPLOYMENT_ID=e2e-bench-adaptive-chengxili-v1 \
   python training/tests/e2e/bench_adaptive.py
 ```
 
