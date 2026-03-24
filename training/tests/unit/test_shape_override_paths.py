@@ -193,8 +193,27 @@ class TestManualPath:
 # -----------------------------------------------------------------------
 
 
+class _FlexibleConfig:
+    """Stand-in for TrainerJobConfig that accepts any keyword arg."""
+
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
 class TestUsePurpose:
-    def test_use_purpose_passed_to_shape_path(self):
+    """Verify use_purpose is forwarded to TrainerJobConfig when set.
+
+    The SDK may not support ``use_purpose`` yet, so we monkeypatch
+    TrainerJobConfig with a flexible stand-in that captures all kwargs.
+    """
+
+    @staticmethod
+    def _patch_trainer_config(monkeypatch):
+        monkeypatch.setattr(infra_module, "TrainerJobConfig", _FlexibleConfig)
+
+    def test_use_purpose_passed_to_shape_path(self, monkeypatch):
+        self._patch_trainer_config(monkeypatch)
         mgr = _CapturingMgr()
         infra_module.create_trainer_job(
             mgr,
@@ -204,7 +223,8 @@ class TestUsePurpose:
         )
         assert mgr.captured.use_purpose == "pilot"
 
-    def test_use_purpose_passed_to_manual_path(self):
+    def test_use_purpose_passed_to_manual_path(self, monkeypatch):
+        self._patch_trainer_config(monkeypatch)
         mgr = _CapturingMgr()
         infra_module.create_trainer_job(
             mgr,
@@ -221,4 +241,4 @@ class TestUsePurpose:
             infra=InfraConfig(),
             profile=PROFILE,
         )
-        assert mgr.captured.use_purpose is None
+        assert not hasattr(mgr.captured, "use_purpose") or mgr.captured.use_purpose is None

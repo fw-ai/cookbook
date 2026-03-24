@@ -143,7 +143,7 @@ def create_trainer_job(
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
     if profile is not None:
-        config = TrainerJobConfig(
+        kwargs: dict[str, Any] = dict(
             base_model=base_model,
             lora_rank=lora_rank,
             max_context_length=max_seq_len or profile.max_supported_context_length,
@@ -155,10 +155,9 @@ def create_trainer_job(
             extra_args=extra_args or infra.extra_args,
             forward_only=forward_only,
             training_shape_ref=profile.training_shape_version,
-            use_purpose=infra.use_purpose,
         )
     else:
-        config = TrainerJobConfig(
+        kwargs = dict(
             base_model=base_model,
             lora_rank=lora_rank,
             max_context_length=max_seq_len,
@@ -173,8 +172,12 @@ def create_trainer_job(
             accelerator_type=infra.accelerator_type,
             accelerator_count=infra.accelerator_count,
             forward_only=forward_only,
-            use_purpose=infra.use_purpose,
         )
+
+    if infra.use_purpose is not None:
+        kwargs["use_purpose"] = infra.use_purpose
+
+    config = TrainerJobConfig(**kwargs)
 
     logger.info(
         "Creating %s trainer job '%s' (forward_only=%s)...",
