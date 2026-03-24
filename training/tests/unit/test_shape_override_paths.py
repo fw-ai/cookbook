@@ -186,3 +186,39 @@ class TestManualPath:
         assert c.accelerator_type is None
         assert c.accelerator_count is None
         assert c.custom_image_tag is None
+
+
+# -----------------------------------------------------------------------
+# use_purpose propagation
+# -----------------------------------------------------------------------
+
+
+class TestUsePurpose:
+    def test_use_purpose_passed_to_shape_path(self):
+        mgr = _CapturingMgr()
+        infra_module.create_trainer_job(
+            mgr,
+            base_model=BASE_MODEL,
+            infra=InfraConfig(use_purpose="pilot"),
+            profile=PROFILE,
+        )
+        assert mgr.captured.use_purpose == "pilot"
+
+    def test_use_purpose_passed_to_manual_path(self):
+        mgr = _CapturingMgr()
+        infra_module.create_trainer_job(
+            mgr,
+            base_model=BASE_MODEL,
+            infra=InfraConfig(use_purpose="pilot"),
+        )
+        assert mgr.captured.use_purpose == "pilot"
+
+    def test_use_purpose_none_by_default(self):
+        mgr = _CapturingMgr()
+        infra_module.create_trainer_job(
+            mgr,
+            base_model=BASE_MODEL,
+            infra=InfraConfig(),
+            profile=PROFILE,
+        )
+        assert mgr.captured.use_purpose is None

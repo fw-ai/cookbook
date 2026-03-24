@@ -155,6 +155,7 @@ def create_trainer_job(
             extra_args=extra_args or infra.extra_args,
             forward_only=forward_only,
             training_shape_ref=profile.training_shape_version,
+            use_purpose=infra.use_purpose,
         )
     else:
         config = TrainerJobConfig(
@@ -172,6 +173,7 @@ def create_trainer_job(
             accelerator_type=infra.accelerator_type,
             accelerator_count=infra.accelerator_count,
             forward_only=forward_only,
+            use_purpose=infra.use_purpose,
         )
 
     logger.info(
@@ -238,7 +240,9 @@ def setup_deployment(
             )
         logging.info(f"dep_config 2: {dep_config}")
         if dep_config.region is None:
-            info = _create_deployment_via_cookbook(deploy_mgr, dep_config)
+            info = _create_deployment_via_cookbook(
+                deploy_mgr, dep_config, use_purpose=infra.use_purpose,
+            )
         else:
             info = deploy_mgr.create_or_get(dep_config)
 
@@ -309,6 +313,8 @@ def _get_deployment_shape_version(
 def _create_deployment_via_cookbook(
     deploy_mgr: DeploymentManager,
     config: DeploymentConfig,
+    *,
+    use_purpose: str | None = None,
 ) -> DeploymentInfo:
     """Create a deployment while leaving placement selection to the control plane."""
     path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
@@ -336,10 +342,13 @@ def _create_deployment_via_cookbook(
         body["extraArgs"] = flat
     if config.extra_values:
         body["extraValues"] = config.extra_values
+    if use_purpose:
+        body["annotations"] = {"internal/purpose": use_purpose}
 
     logger.info(
-        "Creating deployment: %s (placement_region=auto, extra_values=%s)",
+        "Creating deployment: %s (placement_region=auto, use_purpose=%s, extra_values=%s)",
         config.deployment_id,
+        use_purpose,
         bool(config.extra_values),
     )
     resp = deploy_mgr._post(path, json=body, timeout=60)

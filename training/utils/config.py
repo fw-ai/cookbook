@@ -51,6 +51,13 @@ class InfraConfig:
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
+    use_purpose: str | None = None
+    """Scheduling purpose label (e.g. ``"pilot"``).
+
+    Propagated to RLOR trainer jobs (proto ``use_purpose`` field) and
+    rollout deployments (annotation ``internal/purpose``).  The control
+    plane converts this to a node toleration so the workload lands on
+    the right GPU pool."""
 
 
 @dataclass
