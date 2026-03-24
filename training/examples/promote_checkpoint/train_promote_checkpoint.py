@@ -3,26 +3,21 @@
 """Promote a saved DCP checkpoint by loading it into a fresh trainer.
 
 This example creates a temporary trainer from a training shape, loads an
-existing DCP checkpoint, saves a promotable sampler checkpoint, and promotes
-that checkpoint into a Fireworks model.
-
-The checkpoint input should usually come from cookbook `checkpoints.jsonl`.
-You can either:
-  1. pass the saved `state_path` directly (for example
-     `cross_job://i8rkjo63mpxvv9qi/step-5`), or
-  2. pass the `checkpoints.jsonl` file and let the script pick the latest
-     saved `state_path` automatically.
+existing DCP checkpoint referenced from cookbook `checkpoints.jsonl`, saves a
+promotable sampler checkpoint, and promotes that checkpoint into a Fireworks
+model.
 
 Usage:
     export FIREWORKS_API_KEY=...
 
     python train_promote_checkpoint.py \
-        --checkpoint cross_job://i8rkjo63mpxvv9qi/step-5 \
+        --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
         --model accounts/fireworks/models/qwen3-8b \
         --shape accounts/fireworks/trainingShapes/ts-qwen3-8b-policy
 
     python train_promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
+        --step 5 \
         --model accounts/fireworks/models/qwen3-8b \
         --shape accounts/fireworks/trainingShapes/ts-qwen3-8b-policy
 """
@@ -70,14 +65,12 @@ _FULL_TRAINING_SHAPE_RE = re.compile(r"^accounts/[^/]+/trainingShapes/[^/]+$")
 _VERSIONED_TRAINING_SHAPE_RE = re.compile(
     r"^(accounts/[^/]+/trainingShapes/[^/]+)/versions/[^/]+$"
 )
-_CROSS_JOB_RE = re.compile(r"^cross_job://(?P<job_id>[^/]+)/(?P<checkpoint>.+)$")
 
 
 @dataclass(frozen=True)
 class PromoteConfig:
-    checkpoint_ref: str | None
-    checkpoints_jsonl: str | None
-    checkpoint_name: str | None
+    checkpoints_jsonl: str
+    step: int | None
     base_model: str
     training_shape: str
     lora_rank: int
@@ -98,27 +91,19 @@ def parse_args() -> PromoteConfig:
     parser = argparse.ArgumentParser(
         description="Load a saved DCP checkpoint into a temporary trainer and promote it",
     )
-    checkpoint_group = parser.add_mutually_exclusive_group(required=True)
-    checkpoint_group.add_argument(
-        "--checkpoint",
-        dest="checkpoint_ref",
-        help=(
-            "Checkpoint reference to load. Usually copy the `state_path` from "
-            "checkpoints.jsonl (for example `cross_job://job-id/step-5`). "
-            "Also accepts `gs://...` and absolute local paths."
-        ),
-    )
-    checkpoint_group.add_argument(
+    parser.add_argument(
         "--checkpoints-jsonl",
+        required=True,
         help=(
             "Path to cookbook checkpoints.jsonl. The script loads the latest "
-            "`state_path`, or the named one when --checkpoint-name is set."
+            "`state_path`, or the one for --step when provided."
         ),
     )
     parser.add_argument(
-        "--checkpoint-name",
+        "--step",
+        type=int,
         default=None,
-        help="Checkpoint name inside checkpoints.jsonl to load (for example `step-5`).",
+        help="Training step to promote. Defaults to the latest checkpoint in checkpoints.jsonl.",
     )
     parser.add_argument(
         "--model", required=True, help="Base model to launch in the temporary trainer"
@@ -161,9 +146,8 @@ def parse_args() -> PromoteConfig:
     )
     args = parser.parse_args()
     return PromoteConfig(
-        checkpoint_ref=args.checkpoint_ref,
         checkpoints_jsonl=args.checkpoints_jsonl,
-        checkpoint_name=args.checkpoint_name,
+        step=args.step,
         base_model=args.model,
         training_shape=args.shape,
         lora_rank=args.lora_rank,
@@ -208,13 +192,6 @@ def _validate_checkpoint_ref(checkpoint_ref: str) -> None:
     )
 
 
-def _parse_source_job_id(checkpoint_ref: str) -> str | None:
-    match = _CROSS_JOB_RE.match(checkpoint_ref)
-    if not match:
-        return None
-    return match.group("job_id")
-
-
 def _load_checkpoint_entries(checkpoints_jsonl: str) -> list[dict]:
     entries: list[dict] = []
     with open(checkpoints_jsonl) as f:
@@ -240,26 +217,17 @@ def _load_checkpoint_entries(checkpoints_jsonl: str) -> list[dict]:
 
 def _resolve_checkpoint_from_jsonl(
     checkpoints_jsonl: str,
-    checkpoint_name: str | None,
+    step: int | None,
 ) -> ResolvedCheckpoint:
     entries = _load_checkpoint_entries(checkpoints_jsonl)
     candidates = [entry for entry in entries if entry.get("state_path")]
     if not candidates:
-        raise ValueError(
-            f"No entries with state_path found in {checkpoints_jsonl}"
-        )
+        raise ValueError(f"No entries with state_path found in {checkpoints_jsonl}")
 
-    if checkpoint_name:
-        matches = [
-            entry
-            for entry in candidates
-            if entry.get("name") == checkpoint_name
-            or entry.get("state_path") == checkpoint_name
-        ]
+    if step is not None:
+        matches = [entry for entry in candidates if entry.get("step") == step]
         if not matches:
-            raise ValueError(
-                f"Checkpoint '{checkpoint_name}' was not found in {checkpoints_jsonl}"
-            )
+            raise ValueError(f"Step {step} was not found in {checkpoints_jsonl}")
         chosen = matches[-1]
     else:
         chosen = candidates[-1]
@@ -270,22 +238,6 @@ def _resolve_checkpoint_from_jsonl(
         checkpoint_ref=checkpoint_ref,
         checkpoint_name=str(chosen.get("name") or _checkpoint_label(checkpoint_ref)),
         source_job_id=chosen.get("source_job_id"),
-    )
-
-
-def _resolve_checkpoint(cfg: PromoteConfig) -> ResolvedCheckpoint:
-    if cfg.checkpoints_jsonl:
-        return _resolve_checkpoint_from_jsonl(
-            cfg.checkpoints_jsonl,
-            cfg.checkpoint_name,
-        )
-
-    assert cfg.checkpoint_ref is not None
-    _validate_checkpoint_ref(cfg.checkpoint_ref)
-    return ResolvedCheckpoint(
-        checkpoint_ref=cfg.checkpoint_ref,
-        checkpoint_name=cfg.checkpoint_name or _checkpoint_label(cfg.checkpoint_ref),
-        source_job_id=_parse_source_job_id(cfg.checkpoint_ref),
     )
 
 
@@ -306,7 +258,10 @@ def _default_display_name(base_model: str, checkpoint_name: str) -> str:
 
 def main() -> None:
     cfg = parse_args()
-    resolved_checkpoint = _resolve_checkpoint(cfg)
+    resolved_checkpoint = _resolve_checkpoint_from_jsonl(
+        cfg.checkpoints_jsonl,
+        cfg.step,
+    )
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -332,6 +287,9 @@ def main() -> None:
         default="promote-checkpoint",
     )
 
+    logger.info("Checkpoints jsonl:   %s", cfg.checkpoints_jsonl)
+    if cfg.step is not None:
+        logger.info("Requested step:      %d", cfg.step)
     logger.info("Checkpoint ref:      %s", resolved_checkpoint.checkpoint_ref)
     logger.info("Checkpoint name:     %s", resolved_checkpoint.checkpoint_name)
     if resolved_checkpoint.source_job_id:
