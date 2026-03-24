@@ -117,6 +117,9 @@ class WeightSyncConfig:
     first_checkpoint_type: str = "base"
     weight_sync_before_training: bool = False
     weight_sync_timeout: int = 600
+    max_concurrent: int = 0
+    """Max number of sampling requests in-flight at once within a pipeline
+    window.  0 = unlimited (fire all at once)."""
 
 
 @dataclass

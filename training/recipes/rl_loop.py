@@ -780,6 +780,7 @@ def main(
                     metrics_callback=_loop_metrics_callback,
                     weight_sync_fn=_weight_sync if cfg.weight_sync.weight_sync_interval > 0 else None,
                     weight_sync_interval=cfg.weight_sync.weight_sync_interval,
+                    max_concurrent=cfg.weight_sync.max_concurrent,
                 )
             )
 

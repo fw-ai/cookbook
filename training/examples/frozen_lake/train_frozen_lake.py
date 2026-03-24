@@ -824,6 +824,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 metrics_callback=_filtered_step_callback,
                 weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
                 weight_sync_interval=weight_sync_cfg.weight_sync_interval,
+                max_concurrent=weight_sync_cfg.max_concurrent,
             ))
 
             # -- Final checkpoint -----------------------------------------------

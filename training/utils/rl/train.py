@@ -54,107 +54,6 @@ class TrainStepFns:
     train_step: Callable[[int, list[PromptGroup], dict | None], tuple[int, dict]]
 
 
-async def _collect_samples(
-    coros: list[Coroutine],
-    prompt_groups_per_step: int,
-    dynamic_filter_fn: DynamicFilterFn | None,
-    step_label: int,
-) -> tuple[list[PromptGroup], dict] | None:
-    """Fire sampling coroutines concurrently, filter, return groups + stats.
-
-    Returns ``None`` when all groups are filtered out (caller should skip
-    the training step).
-    """
-    queue: asyncio.Queue[PromptGroup | None] = asyncio.Queue()
-    worker_error: BaseException | None = None
-
-    async def _worker(coro: Coroutine) -> None:
-        nonlocal worker_error
-        try:
-            result = await coro
-            queue.put_nowait(result)
-        except BaseException as exc:
-            if worker_error is None:
-                worker_error = exc
-            queue.put_nowait(None)
-
-    for c in coros:
-        asyncio.create_task(_worker(c))
-
-    total_wait_time = 0.0
-    filter_drops = 0
-    sample_fails = 0
-    all_raw_rewards: list[float] = []
-    total_sampled = 0
-    total_completions = 0
-    step_start = time.time()
-    groups: list[PromptGroup] = []
-
-    pbar = tqdm(total=len(coros), desc="sampling", unit="group", dynamic_ncols=True)
-
-    for _ in range(len(coros)):
-        t = time.time()
-        item = await queue.get()
-        total_wait_time += time.time() - t
-
-        if worker_error is not None:
-            pbar.close()
-            raise RuntimeError(f"Sampling worker failed: {worker_error}") from worker_error
-
-        if item is None:
-            sample_fails += 1
-            total_sampled += 1
-            pbar.set_postfix(
-                groups=f"{len(groups)}/{prompt_groups_per_step}",
-                failed=sample_fails, filtered=filter_drops,
-            )
-            continue
-
-        total_sampled += 1
-        total_completions += len(item.rewards)
-        all_raw_rewards.extend(item.rewards)
-
-        if dynamic_filter_fn is not None and not dynamic_filter_fn(item):
-            filter_drops += 1
-            pbar.update(1)
-            pbar.set_postfix(completions=total_completions, failed=sample_fails, filtered=filter_drops)
-            continue
-
-        groups.append(item)
-        pbar.update(1)
-        pbar.set_postfix(completions=total_completions, failed=sample_fails, filtered=filter_drops)
-        if len(groups) % 5 == 0 or len(groups) == prompt_groups_per_step:
-            logger.info(
-                "Sampling %d/%d groups (%d completions, failed=%d, filtered=%d, %.0fs elapsed)",
-                len(groups), prompt_groups_per_step,
-                total_completions, sample_fails, filter_drops,
-                time.time() - step_start,
-            )
-
-    pbar.close()
-
-    if not groups:
-        logger.warning("[step %d] no valid prompt groups after filtering, skipping", step_label)
-        return None
-
-    wall = time.time() - step_start
-    logger.info(
-        "Sampling complete: %d/%d groups (%d completions) in %.1fs (failed=%d, filtered=%d)",
-        len(groups), prompt_groups_per_step,
-        total_completions, wall, sample_fails, filter_drops,
-    )
-    stats = {
-        "valid_prompt_groups": len(groups),
-        "total_sampled": total_sampled,
-        "filter_drops": filter_drops,
-        "sample_fails": sample_fails,
-        "sample_wait_time": total_wait_time,
-        "step_wall_time": wall,
-        "all_raw_rewards": list(all_raw_rewards),
-    }
-    return groups, stats
-
-
 async def _run_pipeline_window(
     window_coros: list[Coroutine],
     *,
@@ -163,29 +62,144 @@ async def _run_pipeline_window(
     dynamic_filter_fn: DynamicFilterFn | None,
     global_step: int,
     metrics_callback: Callable[[dict[str, Any]], None] | None,
+    max_concurrent: int = 0,
 ) -> int:
     """Process one policy window with pipelined sampling/training.
 
-    The sampler and trainer run as independent coroutines connected by a
-    bounded queue (``maxsize=1``).  Sampling for step K+1 overlaps with
-    training for step K.  When the window's coroutines are exhausted the
-    sampler sends ``_DONE`` and the trainer drains.
+    All sampling coroutines fire at once (capped by ``max_concurrent``).
+    As results arrive they are filtered and accumulated; every
+    ``prompt_groups_per_step`` valid groups are sent to the trainer via an
+    unbounded queue so the sampler can pre-build batches while the trainer
+    is busy.  Training for batch K overlaps with sampling still in-flight
+    for later batches -- early arrivals get trained first.
     """
-    pipe: asyncio.Queue = asyncio.Queue(maxsize=1)
+    pipe: asyncio.Queue = asyncio.Queue()
+    results_q: asyncio.Queue[PromptGroup | None] = asyncio.Queue()
+    sem = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
+    worker_error: BaseException | None = None
+
+    async def _worker(coro: Coroutine) -> None:
+        nonlocal worker_error
+        try:
+            if sem is not None:
+                async with sem:
+                    result = await coro
+            else:
+                result = await coro
+            results_q.put_nowait(result)
+        except BaseException as exc:
+            if worker_error is None:
+                worker_error = exc
+            results_q.put_nowait(None)
+
+    def _make_stats(
+        n_groups: int, total_sampled: int, filter_drops: int,
+        sample_fails: int, all_raw_rewards: list[float], wall: float,
+    ) -> dict:
+        return {
+            "valid_prompt_groups": n_groups,
+            "total_sampled": total_sampled,
+            "filter_drops": filter_drops,
+            "sample_fails": sample_fails,
+            "sample_wait_time": 0.0,
+            "step_wall_time": wall,
+            "all_raw_rewards": list(all_raw_rewards),
+        }
 
     async def _sampler() -> None:
-        coro_iter = iter(window_coros)
+        for c in window_coros:
+            asyncio.create_task(_worker(c))
+
+        buffer: list[PromptGroup] = []
+        filter_drops = 0
+        sample_fails = 0
+        total_sampled = 0
+        total_completions = 0
+        all_raw_rewards: list[float] = []
+        step_start = time.time()
+
+        pbar = tqdm(
+            total=len(window_coros), desc="sampling", unit="group", dynamic_ncols=True,
+        )
         try:
-            while True:
-                batch = list(itertools.islice(coro_iter, prompt_groups_per_step))
-                if not batch:
-                    break
-                result = await _collect_samples(
-                    batch, prompt_groups_per_step, dynamic_filter_fn, global_step + 1,
+            for _ in range(len(window_coros)):
+                item = await results_q.get()
+
+                if worker_error is not None:
+                    raise RuntimeError(
+                        f"Sampling worker failed: {worker_error}"
+                    ) from worker_error
+
+                if item is None:
+                    sample_fails += 1
+                    total_sampled += 1
+                    pbar.update(1)
+                    pbar.set_postfix(
+                        groups=f"{len(buffer)}/{prompt_groups_per_step}",
+                        failed=sample_fails, filtered=filter_drops,
+                    )
+                    continue
+
+                total_sampled += 1
+                total_completions += len(item.rewards)
+                all_raw_rewards.extend(item.rewards)
+
+                if dynamic_filter_fn is not None and not dynamic_filter_fn(item):
+                    filter_drops += 1
+                    pbar.update(1)
+                    pbar.set_postfix(
+                        completions=total_completions,
+                        failed=sample_fails, filtered=filter_drops,
+                    )
+                    continue
+
+                buffer.append(item)
+                pbar.update(1)
+                pbar.set_postfix(
+                    completions=total_completions,
+                    failed=sample_fails, filtered=filter_drops,
                 )
-                if result is not None:
-                    await pipe.put(result)
+
+                if len(buffer) >= prompt_groups_per_step:
+                    step_groups = buffer[:prompt_groups_per_step]
+                    buffer = buffer[prompt_groups_per_step:]
+                    wall = time.time() - step_start
+                    logger.info(
+                        "Batch ready: %d groups (%d completions) in %.1fs "
+                        "(failed=%d, filtered=%d)",
+                        len(step_groups), total_completions, wall,
+                        sample_fails, filter_drops,
+                    )
+                    await pipe.put((
+                        step_groups,
+                        _make_stats(
+                            len(step_groups), total_sampled, filter_drops,
+                            sample_fails, all_raw_rewards, wall,
+                        ),
+                    ))
+                    filter_drops = 0
+                    sample_fails = 0
+                    total_sampled = 0
+                    total_completions = 0
+                    all_raw_rewards = []
+                    step_start = time.time()
+
+            if buffer:
+                wall = time.time() - step_start
+                logger.info(
+                    "Batch ready (partial): %d groups in %.1fs "
+                    "(failed=%d, filtered=%d)",
+                    len(buffer), wall, sample_fails, filter_drops,
+                )
+                await pipe.put((
+                    buffer,
+                    _make_stats(
+                        len(buffer), total_sampled, filter_drops,
+                        sample_fails, all_raw_rewards, wall,
+                    ),
+                ))
         finally:
+            pbar.close()
             await pipe.put(_DONE)
 
     async def _trainer() -> None:
@@ -222,12 +236,18 @@ async def run_rl_loop(
     metrics_callback: Callable[[dict[str, Any]], None] | None = None,
     weight_sync_fn: Callable[[int], None] | None = None,
     weight_sync_interval: int = 0,
+    max_concurrent: int = 0,
 ) -> int:
     """Run the pipelined RL training loop.
 
     Coroutines are grouped into **policy windows** of
     ``weight_sync_interval * prompt_groups_per_step`` coroutines each.
-    Within a window, sampling and training overlap via a bounded queue.
+    All coroutines in a window fire concurrently (capped by
+    ``max_concurrent``; 0 = unlimited).  Results stream back in
+    completion order -- early arrivals get trained first while slower
+    rollouts are still in-flight.  Each ``prompt_groups_per_step``
+    valid groups form one training step.
+
     At window boundaries the pipeline drains, ``weight_sync_fn`` fires
     (hotload) if at least one training step ran, and new sampling starts
     with the updated deployment.  Windows where all groups are filtered
@@ -260,6 +280,7 @@ async def run_rl_loop(
             dynamic_filter_fn=dynamic_filter_fn,
             global_step=global_step,
             metrics_callback=metrics_callback,
+            max_concurrent=max_concurrent,
         )
 
         if weight_sync_fn is not None and weight_sync_interval > 0 and global_step > step_before:

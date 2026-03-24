@@ -230,6 +230,65 @@ class TestPipelineOverlap:
                 "Sampling for step 2 should overlap with training for step 1"
             )
 
+    def test_early_arrivals_trained_first(self):
+        """Results arriving earlier should be trained before slower ones,
+        regardless of coroutine creation order."""
+        arrival_order = []
+
+        async def fast_sample():
+            await asyncio.sleep(0.01)
+            pg = _make_pg()
+            arrival_order.append("fast")
+            return pg
+
+        async def slow_sample():
+            await asyncio.sleep(0.2)
+            pg = _make_pg()
+            arrival_order.append("slow")
+            return pg
+
+        train_order = []
+
+        def ordered_train(step, groups, stats=None):
+            train_order.append(step)
+            return step + 1, {}
+
+        asyncio.run(run_rl_loop(
+            sample_fns=[slow_sample(), fast_sample()],
+            train_fns=TrainStepFns(train_step=ordered_train),
+            prompt_groups_per_step=1,
+            weight_sync_fn=lambda step: None,
+            weight_sync_interval=0,
+        ))
+        assert arrival_order[0] == "fast"
+        assert len(train_order) == 2
+
+    def test_max_concurrent_limits_inflight(self):
+        """max_concurrent should cap the number of sampling requests
+        running simultaneously."""
+        from threading import Lock
+        peak = [0]
+        current = [0]
+        lock = Lock()
+
+        async def counting_sample():
+            with lock:
+                current[0] += 1
+                peak[0] = max(peak[0], current[0])
+            await asyncio.sleep(0.05)
+            with lock:
+                current[0] -= 1
+            return _make_pg()
+
+        asyncio.run(run_rl_loop(
+            sample_fns=[counting_sample() for _ in range(8)],
+            train_fns=TrainStepFns(train_step=_make_train_step([])),
+            prompt_groups_per_step=1,
+            weight_sync_interval=0,
+            max_concurrent=2,
+        ))
+        assert peak[0] <= 2, f"Peak concurrency {peak[0]} exceeded limit of 2"
+
     def test_no_overlap_with_interval_1(self):
         """With weight_sync_interval=1, each step is its own window.
         No overlap should occur."""
