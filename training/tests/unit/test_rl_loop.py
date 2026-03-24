@@ -107,7 +107,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
                 deployment_shape="dep-shape-v1",
                 pipeline_parallelism=1,
                 max_supported_context_length=128,
-                training_shape_version="accounts/test/trainingShapes/ts-v1/versions/1",
+                base_model="accounts/test/models/qwen3-4b", training_shape_version="accounts/test/trainingShapes/ts-v1/versions/1",
             )
 
         def create(self, config):
@@ -278,14 +278,14 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                     deployment_shape_version=None,
                     pipeline_parallelism=1,
                     max_supported_context_length=96,
-                    training_shape_version="accounts/test/trainingShapes/ref/versions/1",
+                    base_model="accounts/test/models/qwen3-4b", training_shape_version="accounts/test/trainingShapes/ref/versions/1",
                 )
             return SimpleNamespace(
                 deployment_shape="dep-shape-v2",
                 deployment_shape_version=None,
                 pipeline_parallelism=1,
                 max_supported_context_length=96,
-                training_shape_version="accounts/test/trainingShapes/pol/versions/1",
+                base_model="accounts/test/models/qwen3-4b", training_shape_version="accounts/test/trainingShapes/pol/versions/1",
             )
 
         def create(self, config):
@@ -587,7 +587,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
                 deployment_shape_version=None,
                 pipeline_parallelism=1,
                 max_supported_context_length=96,
-                training_shape_version="accounts/test/trainingShapes/pol/versions/1",
+                base_model="accounts/test/models/qwen3-4b", training_shape_version="accounts/test/trainingShapes/pol/versions/1",
             )
 
         def create(self, config):

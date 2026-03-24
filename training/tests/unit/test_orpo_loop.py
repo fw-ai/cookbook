@@ -53,7 +53,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
             self.resolved_shapes.append(shape_id)
             return SimpleNamespace(
                 max_supported_context_length=48,
-                training_shape_version="accounts/test/trainingShapes/orpo/versions/1",
+                base_model="accounts/test/models/qwen3-4b", training_shape_version="accounts/test/trainingShapes/orpo/versions/1",
             )
 
         def create(self, config):
@@ -193,7 +193,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
         def resolve_training_profile(self, shape_id):
             return SimpleNamespace(
                 max_supported_context_length=48,
-                training_shape_version="accounts/test/trainingShapes/orpo/versions/1",
+                base_model="accounts/test/models/qwen3-4b", training_shape_version="accounts/test/trainingShapes/orpo/versions/1",
             )
 
         def create(self, config):

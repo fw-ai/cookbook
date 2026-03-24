@@ -290,7 +290,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def resolve_training_profile(self, shape_id):
             return SimpleNamespace(
                 max_supported_context_length=96,
-                training_shape_version="accounts/test/trainingShapes/dpo/versions/1",
+                base_model="accounts/test/models/qwen3-4b", training_shape_version="accounts/test/trainingShapes/dpo/versions/1",
             )
 
         def create(self, config):
@@ -452,7 +452,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         def resolve_training_profile(self, shape_id):
             return SimpleNamespace(
                 max_supported_context_length=96,
-                training_shape_version="accounts/test/trainingShapes/dpo/versions/1",
+                base_model="accounts/test/models/qwen3-4b", training_shape_version="accounts/test/trainingShapes/dpo/versions/1",
             )
 
         def create(self, config):

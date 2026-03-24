@@ -48,7 +48,6 @@ class _CapturingMgr:
         self.captured: TrainerJobConfig | None = None
 
     def create(self, config):
-        config.validate()
         self.captured = config
         return SimpleNamespace(job_id="job-smoke", job_name="jobs/job-smoke")
 

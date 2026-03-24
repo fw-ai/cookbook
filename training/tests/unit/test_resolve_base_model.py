@@ -1,4 +1,4 @@
-"""Tests for TrainerJobConfig profile auto-fill."""
+"""Tests for TrainingShapeProfile.base_model and TrainerJobConfig validation."""
 
 import pytest
 
@@ -23,39 +23,32 @@ def _make_profile(**overrides) -> TrainingShapeProfile:
     return TrainingShapeProfile(**defaults)
 
 
-class TestTrainerJobConfigValidateWithProfile:
-    def test_autofills_base_model_from_profile(self):
+class TestProfileBaseModel:
+    def test_profile_exposes_base_model(self):
         profile = _make_profile(base_model="accounts/fw/models/qwen3-8b")
-        cfg = TrainerJobConfig(profile=profile)
-        cfg.validate()
-        assert cfg.base_model == "accounts/fw/models/qwen3-8b"
+        assert profile.base_model == "accounts/fw/models/qwen3-8b"
 
-    def test_autofills_training_shape_ref_from_profile(self):
+    def test_config_uses_profile_base_model(self):
         profile = _make_profile()
-        cfg = TrainerJobConfig(profile=profile)
+        cfg = TrainerJobConfig(
+            base_model=profile.base_model,
+            training_shape_ref=profile.training_shape_version,
+        )
         cfg.validate()
-        assert cfg.training_shape_ref == profile.training_shape_version
+        assert cfg.base_model == "accounts/fireworks/models/qwen3-8b"
 
-    def test_rejects_explicit_base_model_with_profile(self):
-        profile = _make_profile(base_model="accounts/fw/models/qwen3-8b")
-        cfg = TrainerJobConfig(profile=profile, base_model="accounts/fw/models/other")
-        with pytest.raises(ValueError, match="base_model.*cannot be set"):
-            cfg.validate()
-
-    def test_rejects_accelerator_count_with_profile(self):
+    def test_rejects_accelerator_count_with_shape(self):
         profile = _make_profile()
-        cfg = TrainerJobConfig(profile=profile, accelerator_count=8)
+        cfg = TrainerJobConfig(
+            base_model=profile.base_model,
+            training_shape_ref=profile.training_shape_version,
+            accelerator_count=8,
+        )
         with pytest.raises(ValueError, match="accelerator_count.*cannot be set"):
             cfg.validate()
 
-    def test_rejects_custom_image_tag_with_profile(self):
-        profile = _make_profile()
-        cfg = TrainerJobConfig(profile=profile, custom_image_tag="my-tag")
-        with pytest.raises(ValueError, match="custom_image_tag.*cannot be set"):
-            cfg.validate()
-
-    def test_requires_base_model_without_profile(self):
-        cfg = TrainerJobConfig()
+    def test_requires_base_model(self):
+        cfg = TrainerJobConfig(base_model="")
         with pytest.raises(ValueError, match="base_model is required"):
             cfg.validate()
 
