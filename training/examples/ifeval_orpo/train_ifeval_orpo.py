@@ -33,7 +33,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="ORPO on IFEval preference pairs"
     )
-    parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
+    parser.add_argument("--base-model", default="",
+                        help="Base model resource name. Auto-resolved from training shape when empty.")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument(
         "--dataset-path",

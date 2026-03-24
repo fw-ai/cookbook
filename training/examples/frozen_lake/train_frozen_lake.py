@@ -102,7 +102,8 @@ DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS
 class FrozenLakeConfig:
     log_path: str = "./frozen_lake_logs"
 
-    base_model: str = "accounts/fireworks/models/qwen3-8b"
+    base_model: str = ""
+    """Base model resource name. Auto-resolved from the training shape when empty."""
     tokenizer_model: str = "Qwen/Qwen3-8B"
 
     learning_rate: float = 1e-5
@@ -161,7 +162,8 @@ class FrozenLakeConfig:
 
 def parse_args() -> FrozenLakeConfig:
     parser = argparse.ArgumentParser(description="GRPO training on FrozenLake tool calls")
-    parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
+    parser.add_argument("--base-model", default="",
+                        help="Base model resource name. Auto-resolved from training shape when empty.")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument("--training-shape", default=os.environ.get("TRAINING_SHAPE", ""))
     parser.add_argument("--deployment-shape", default="")
@@ -392,6 +394,25 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             idx = dsv.find("/versions/")
             deploy_cfg.deployment_shape = dsv[:idx] if idx >= 0 else dsv
             logger.info("Deployment shape from training shape: %s", deploy_cfg.deployment_shape)
+
+    if not cfg.base_model and profile and profile.base_model:
+        cfg.base_model = profile.base_model
+        logger.info("base_model from training shape: %s", cfg.base_model)
+    elif cfg.base_model and profile and profile.base_model:
+        import warnings
+        warnings.warn(
+            "Passing base_model explicitly when a training shape is set is deprecated "
+            "and will be removed in a future release. The training shape already "
+            f"specifies the base model ('{profile.base_model}'). Remove the explicit "
+            "base_model to use the one from the training shape.",
+            FutureWarning,
+            stacklevel=2,
+        )
+    if not cfg.base_model:
+        raise ValueError(
+            "base_model is required. Set it in Config, or use a training shape "
+            "that specifies a base model."
+        )
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
@@ -835,7 +856,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         "step": global_step,
                         "data_consumed": _data_consumed,
                         "source_job_id": policy_job_id,
-                    }, kind="both")
+                    }, kind="both",
+                    base_model=cfg.base_model,
+                    training_shape=cfg.training_shape)
 
                     if getattr(cfg, "output_model_id", None):
                         rlor_mgr.promote_checkpoint(

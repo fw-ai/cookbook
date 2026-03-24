@@ -78,7 +78,9 @@ class Config:
     log_path: str
     """Directory for checkpoints and logs. Required, no default."""
 
-    base_model: str = "accounts/fireworks/models/qwen3-8b"
+    base_model: str = ""
+    """Base model resource name (e.g. ``accounts/fireworks/models/qwen3-8b``).
+    Auto-resolved from the training shape when empty."""
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for client-side tokenization
     renderer_name: str = ""
@@ -446,12 +448,31 @@ def main(
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
 
-    if cfg.deployment.deployment_id:
-        setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
-
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+
+    if not cfg.base_model and profile and profile.base_model:
+        cfg.base_model = profile.base_model
+        logger.info("base_model from training shape: %s", cfg.base_model)
+    elif cfg.base_model and profile and profile.base_model:
+        import warnings
+        warnings.warn(
+            "Passing base_model explicitly when a training shape is set is deprecated "
+            "and will be removed in a future release. The training shape already "
+            f"specifies the base model ('{profile.base_model}'). Remove the explicit "
+            "base_model to use the one from the training shape.",
+            FutureWarning,
+            stacklevel=2,
+        )
+    if not cfg.base_model:
+        raise ValueError(
+            "base_model is required. Set it in Config, or use a training shape "
+            "(InfraConfig.training_shape_id) that specifies a base model."
+        )
+
+    if cfg.deployment.deployment_id:
+        setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
     ref_profile = None
     if cfg.infra.ref_training_shape_id:

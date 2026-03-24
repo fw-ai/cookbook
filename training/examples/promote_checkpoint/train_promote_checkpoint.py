@@ -7,19 +7,27 @@ existing DCP checkpoint referenced from cookbook `checkpoints.jsonl`, saves a
 promotable sampler checkpoint, and promotes that checkpoint into a Fireworks
 model.
 
+When checkpoints were saved with ``base_model`` and ``training_shape`` fields
+(cookbook >= v2), ``--model`` and ``--shape`` are auto-populated from the
+checkpoint and can be omitted.
+
 Usage:
     export FIREWORKS_API_KEY=...
 
+    # Auto-detect model and shape from checkpoint metadata:
+    python train_promote_checkpoint.py \
+        --checkpoints-jsonl ./sft_logs/checkpoints.jsonl
+
+    # Explicit (overrides checkpoint metadata):
     python train_promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
         --model accounts/fireworks/models/qwen3-8b \
         --shape accounts/fireworks/trainingShapes/ts-qwen3-8b-policy
 
+    # Specific step:
     python train_promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
-        --step 5 \
-        --model accounts/fireworks/models/qwen3-8b \
-        --shape accounts/fireworks/trainingShapes/ts-qwen3-8b-policy
+        --step 5
 """
 
 from __future__ import annotations
@@ -71,8 +79,8 @@ _VERSIONED_TRAINING_SHAPE_RE = re.compile(
 class PromoteConfig:
     checkpoints_jsonl: str
     step: int | None
-    base_model: str
-    training_shape: str
+    base_model: str | None
+    training_shape: str | None
     lora_rank: int
     output_model_id: str | None
     trainer_timeout_s: float
@@ -85,6 +93,8 @@ class ResolvedCheckpoint:
     checkpoint_ref: str
     checkpoint_name: str
     source_job_id: str | None
+    base_model: str | None = None
+    training_shape: str | None = None
 
 
 def parse_args() -> PromoteConfig:
@@ -106,13 +116,19 @@ def parse_args() -> PromoteConfig:
         help="Training step to promote. Defaults to the latest checkpoint in checkpoints.jsonl.",
     )
     parser.add_argument(
-        "--model", required=True, help="Base model to launch in the temporary trainer"
+        "--model",
+        default=None,
+        help=(
+            "Base model to launch in the temporary trainer. "
+            "Auto-detected from checkpoint metadata when omitted."
+        ),
     )
     parser.add_argument(
         "--shape",
-        required=True,
+        default=None,
         help=(
             "Training shape to use for the temporary trainer. "
+            "Auto-detected from checkpoint metadata when omitted. "
             "Accepts either accounts/<account>/trainingShapes/<shape> or a bare shape ID."
         ),
     )
@@ -238,6 +254,8 @@ def _resolve_checkpoint_from_jsonl(
         checkpoint_ref=checkpoint_ref,
         checkpoint_name=str(chosen.get("name") or _checkpoint_label(checkpoint_ref)),
         source_job_id=chosen.get("source_job_id"),
+        base_model=chosen.get("base_model"),
+        training_shape=chosen.get("training_shape"),
     )
 
 
@@ -263,23 +281,41 @@ def main() -> None:
         cfg.step,
     )
 
+    # Resolve base_model: CLI flag > checkpoint metadata
+    base_model = cfg.base_model or resolved_checkpoint.base_model
+    if not base_model:
+        raise SystemExit(
+            "ERROR: --model is required (checkpoint has no base_model metadata).\n"
+            "Older checkpoints don't store base_model. Pass it explicitly:\n"
+            "  --model accounts/fireworks/models/<model-name>"
+        )
+
+    # Resolve training_shape: CLI flag > checkpoint metadata
+    training_shape_raw = cfg.training_shape or resolved_checkpoint.training_shape
+    if not training_shape_raw:
+        raise SystemExit(
+            "ERROR: --shape is required (checkpoint has no training_shape metadata).\n"
+            "Older checkpoints don't store training_shape. Pass it explicitly:\n"
+            "  --shape accounts/fireworks/trainingShapes/<shape-name>"
+        )
+
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
     rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
 
     training_shape = _normalize_training_shape(
-        cfg.training_shape,
+        training_shape_raw,
         rlor_mgr.account_id,
     )
     profile = rlor_mgr.resolve_training_profile(training_shape)
 
     output_model_id = cfg.output_model_id or _default_output_model_id(
-        cfg.base_model,
+        base_model,
         resolved_checkpoint.checkpoint_name,
     )
     display_name = _default_display_name(
-        cfg.base_model,
+        base_model,
         resolved_checkpoint.checkpoint_name,
     )
     sampler_name = _sanitize_resource_id(
@@ -294,8 +330,8 @@ def main() -> None:
     logger.info("Checkpoint name:     %s", resolved_checkpoint.checkpoint_name)
     if resolved_checkpoint.source_job_id:
         logger.info("Source job ID:       %s", resolved_checkpoint.source_job_id)
-    logger.info("Base model:          %s", cfg.base_model)
-    logger.info("Training shape:      %s", training_shape)
+    logger.info("Base model:          %s%s", base_model, " (from checkpoint)" if not cfg.base_model else "")
+    logger.info("Training shape:      %s%s", training_shape, " (from checkpoint)" if not cfg.training_shape else "")
     logger.info("Resolved shape ver.: %s", profile.training_shape_version)
     logger.info("LoRA rank:           %d", cfg.lora_rank)
     logger.info("Output model ID:     %s", output_model_id)
@@ -304,7 +340,7 @@ def main() -> None:
     with cleanup:
         endpoint = create_trainer_job(
             rlor_mgr,
-            base_model=cfg.base_model,
+            base_model=base_model,
             infra=InfraConfig(trainer_timeout_s=cfg.trainer_timeout_s),
             profile=profile,
             lora_rank=cfg.lora_rank,
@@ -315,7 +351,7 @@ def main() -> None:
         client = ReconnectableClient(
             rlor_mgr=rlor_mgr,
             job_id=endpoint.job_id,
-            base_model=cfg.base_model,
+            base_model=base_model,
             lora_rank=cfg.lora_rank,
             fw_api_key=api_key,
             endpoint=endpoint,

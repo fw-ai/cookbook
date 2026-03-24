@@ -36,7 +36,8 @@ def _signal_handler(signum, frame):
 def parse_args():
     parser = argparse.ArgumentParser(description="SFT on the bundled text2sql dataset")
     parser.add_argument("--output-model-id", type=str, required=True, help="Final output model name")
-    parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
+    parser.add_argument("--base-model", default="",
+                        help="Base model resource name. Auto-resolved from training shape when empty.")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument(
         "--dataset-path",

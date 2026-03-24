@@ -142,6 +142,28 @@ class TestSaveCheckpoint:
         assert "sampler_path" in paths
         assert paths["sampler_path"] == "step-5-sampler"
 
+    def test_save_with_base_model_and_training_shape(self, log_dir):
+        client = _make_mock_client(job_id="job-shape")
+        save_checkpoint(
+            client, "step-2", log_dir, {"step": 2},
+            base_model="accounts/fireworks/models/qwen3-8b",
+            training_shape="accounts/fireworks/trainingShapes/ts-qwen3-8b-policy",
+        )
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        with open(ckpt_path) as f:
+            entry = json.loads(f.readline())
+        assert entry["base_model"] == "accounts/fireworks/models/qwen3-8b"
+        assert entry["training_shape"] == "accounts/fireworks/trainingShapes/ts-qwen3-8b-policy"
+
+    def test_save_without_model_metadata_omits_fields(self, log_dir):
+        client = _make_mock_client()
+        save_checkpoint(client, "step-1", log_dir, {"step": 1})
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        with open(ckpt_path) as f:
+            entry = json.loads(f.readline())
+        assert "base_model" not in entry
+        assert "training_shape" not in entry
+
     def test_appends_entries(self, log_dir):
         client = _make_mock_client()
         save_checkpoint(client, "step-1", log_dir, {"step": 1})
