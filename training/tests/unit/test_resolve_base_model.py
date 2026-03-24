@@ -1,5 +1,6 @@
 """Tests for TrainerJobConfig profile auto-fill."""
 
+import logging
 import pytest
 
 from fireworks.training.sdk.trainer import TrainerJobConfig, TrainingShapeProfile
@@ -36,11 +37,14 @@ class TestTrainerJobConfigValidateWithProfile:
         cfg.validate()
         assert cfg.training_shape_ref == profile.training_shape_version
 
-    def test_profile_overrides_explicit_base_model(self):
+    def test_profile_overrides_explicit_base_model_with_warning(self, caplog):
         profile = _make_profile(base_model="accounts/fw/models/qwen3-8b")
-        cfg = TrainerJobConfig(profile=profile, base_model="accounts/fw/models/other")
-        cfg.validate()
+        with caplog.at_level(logging.WARNING):
+            cfg = TrainerJobConfig(profile=profile, base_model="accounts/fw/models/other")
+            cfg.validate()
         assert cfg.base_model == "accounts/fw/models/qwen3-8b"
+        assert "shape-owned" in caplog.text
+        assert "will become an error" in caplog.text
 
     def test_rejects_accelerator_count_with_profile(self):
         profile = _make_profile()
