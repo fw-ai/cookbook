@@ -72,6 +72,10 @@ class DeployConfig:
     sample_timeout: int = 600
     """HTTP read timeout in seconds for sampling completions (default 10 min).
     Increase for R3 + long completions where responses can be very large."""
+    max_concurrency: int | None = None
+    """Max concurrent HTTP requests for the DeploymentSampler.  ``None``
+    (default) means no limit.  Set to e.g. 32 to prevent KV cache
+    exhaustion on the deployment when many prompts are in-flight."""
     disable_speculative_decoding: bool = True
     """Disable base model's default draft/EAGLE speculation for hotload compatibility."""
     replica_count: int | None = None
@@ -117,9 +121,6 @@ class WeightSyncConfig:
     first_checkpoint_type: str = "base"
     weight_sync_before_training: bool = False
     weight_sync_timeout: int = 600
-    max_concurrent: int = 0
-    """Max number of sampling requests in-flight at once within a pipeline
-    window.  0 = unlimited (fire all at once)."""
 
 
 @dataclass
