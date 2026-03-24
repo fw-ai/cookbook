@@ -66,11 +66,9 @@ class DeployConfig:
     hot_load_bucket_type: str = "FW_HOSTED"
     deployment_timeout_s: float = 5400
     deployment_extra_args: list[str] | None = None
-    hf_tokenizer_name: str | None = None
-    """HuggingFace model name used only for loading the tokenizer
-    (e.g. ``Qwen/Qwen3-1.7B``).  Required for client-side tokenization
-    (GRPO).  This is NOT the Fireworks base model — it is solely for
-    ``transformers.AutoTokenizer.from_pretrained()``."""
+    tokenizer_model: str | None = None
+    """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).
+    Required for client-side tokenization (GRPO)."""
     sample_timeout: int = 600
     """HTTP read timeout in seconds for sampling completions (default 10 min).
     Increase for R3 + long completions where responses can be very large."""
@@ -80,17 +78,6 @@ class DeployConfig:
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
     """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
-    # TODO: remove tokenizer_model deprecated alias in 5 releases
-    tokenizer_model: str | None = None
-    """Deprecated alias for ``hf_tokenizer_name``."""
-
-    def __post_init__(self):
-        if self.tokenizer_model is not None:
-            from training.utils.deprecation import warn_deprecated_param
-            warn_deprecated_param("tokenizer_model", "hf_tokenizer_name")
-            if not self.hf_tokenizer_name:
-                self.hf_tokenizer_name = self.tokenizer_model
-            self.tokenizer_model = None
 
     def to_deployment_config(
         self,

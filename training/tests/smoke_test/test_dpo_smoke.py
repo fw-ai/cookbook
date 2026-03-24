@@ -34,7 +34,7 @@ def _make_preference_dataset(path: str, num_pairs: int = 4) -> None:
 def test_dpo_smoke(
     smoke_sdk_managers,
     smoke_base_model,
-    smoke_hf_tokenizer_name,
+    smoke_tokenizer_model,
     smoke_dpo_infra,
 ):
     from training.recipes.dpo_loop import Config, main
@@ -51,7 +51,7 @@ def test_dpo_smoke(
             log_path=tempfile.mkdtemp(prefix="dpo_smoke_"),
             base_model=smoke_base_model,
             dataset=dataset_path,
-            hf_tokenizer_name=smoke_hf_tokenizer_name,
+            tokenizer_model=smoke_tokenizer_model,
             beta=0.1,
             learning_rate=1e-5,
             epochs=1,

@@ -50,7 +50,7 @@ def _constant_reward(_completion: str, _row: dict) -> float:
 def test_grpo_smoke(
     smoke_sdk_managers,
     smoke_base_model,
-    smoke_hf_tokenizer_name,
+    smoke_tokenizer_model,
     smoke_infra,
 ):
     """2-step GRPO on Qwen3-4B: train, weight sync, train again, cleanup."""
@@ -81,7 +81,7 @@ def test_grpo_smoke(
             epochs=1,
             infra=smoke_infra,
             deployment=DeployConfig(
-                hf_tokenizer_name=smoke_hf_tokenizer_name,
+                tokenizer_model=smoke_tokenizer_model,
             ),
             weight_sync=WeightSyncConfig(
                 weight_sync_interval=1,

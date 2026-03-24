@@ -26,7 +26,7 @@ def _make_chat_dataset(path: str, num_examples: int = 4) -> None:
 def test_sft_smoke(
     smoke_sdk_managers,
     smoke_base_model,
-    smoke_hf_tokenizer_name,
+    smoke_tokenizer_model,
     smoke_infra,
 ):
     from training.recipes.sft_loop import Config, main
@@ -43,7 +43,7 @@ def test_sft_smoke(
             log_path=tempfile.mkdtemp(prefix="sft_smoke_"),
             base_model=smoke_base_model,
             dataset=dataset_path,
-            hf_tokenizer_name=smoke_hf_tokenizer_name,
+            tokenizer_model=smoke_tokenizer_model,
             learning_rate=1e-4,
             epochs=1,
             batch_size=2,

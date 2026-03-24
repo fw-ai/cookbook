@@ -202,7 +202,7 @@ def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
 
     renderer = build_renderer(
         tokenizer="tok",
-        hf_tokenizer_name="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        tokenizer_model="Qwen/Qwen3-VL-30B-A3B-Instruct",
         renderer_name="qwen3_vl_instruct",
     )
 

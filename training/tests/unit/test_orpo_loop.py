@@ -10,7 +10,7 @@ import training.recipes.orpo_loop as module
 
 def test_main_rejects_invalid_base_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
-    cfg = module.Config(log_path="/tmp/orpo_test_logs", base_model="qwen3-4b", dataset="/tmp/pairs.jsonl", hf_tokenizer_name="Qwen/Qwen3-4B")
+    cfg = module.Config(log_path="/tmp/orpo_test_logs", base_model="qwen3-4b", dataset="/tmp/pairs.jsonl", tokenizer_model="Qwen/Qwen3-4B")
 
     with pytest.raises(RuntimeError, match="Invalid base_model"):
         module.main(cfg)
@@ -22,7 +22,7 @@ def test_main_rejects_invalid_output_model_id(monkeypatch):
         log_path="/tmp/orpo_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
-        hf_tokenizer_name="Qwen/Qwen3-4B",
+        tokenizer_model="Qwen/Qwen3-4B",
         output_model_id="bad_name",
     )
 
@@ -152,7 +152,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         log_path="/tmp/orpo_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
-        hf_tokenizer_name="Qwen/Qwen3-4B",
+        tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=None,
         epochs=1,
         batch_size=1,
@@ -280,7 +280,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
         log_path="/tmp/orpo_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
-        hf_tokenizer_name="Qwen/Qwen3-4B",
+        tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=None,
         epochs=1,
         batch_size=2,

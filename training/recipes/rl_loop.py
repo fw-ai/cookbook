@@ -55,9 +55,9 @@ from training.utils import (
     setup_deployment,
     compute_advantages,
     create_trainer_job,
-    resolve_base_model,
     load_jsonl_dataset,
     prepare_sampling_messages,
+    resolve_base_model,
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
@@ -95,8 +95,6 @@ class Config:
     """Directory for checkpoints and logs. Required, no default."""
 
     base_model: str = ""
-    """Fireworks model resource name. Auto-resolved from the training shape
-    when empty.  Ignored (with warning) when a training shape is set."""
     dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
     learning_rate: float = 1e-5
@@ -287,9 +285,9 @@ def main(
     )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
-    if not cfg.deployment.hf_tokenizer_name:
+    if not cfg.deployment.tokenizer_model:
         raise ValueError(
-            "deployment.hf_tokenizer_name is required for client-side tokenization. "
+            "deployment.tokenizer_model is required for client-side tokenization. "
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
     setup_wandb(
@@ -437,7 +435,7 @@ def main(
         import transformers
 
         inference_model = dep_info.inference_model if dep_info else cfg.base_model
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.hf_tokenizer_name, trust_remote_code=True)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
             model=inference_model,

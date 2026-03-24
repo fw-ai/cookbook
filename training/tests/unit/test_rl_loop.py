@@ -78,16 +78,16 @@ def test_dump_trajectory_writes_one_record_per_completion(tmp_path):
     ]
 
 
-def test_main_requires_deployment_hf_tokenizer_name(monkeypatch):
+def test_main_requires_deployment_tokenizer_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(
         log_path="/tmp/rl_test_logs",
-        base_model="accounts/fireworks/models/qwen3-4b",
+        base_model="accounts/fw/models/x",
         dataset="/tmp/prompts.jsonl",
-        deployment=module.DeployConfig(hf_tokenizer_name=""),
+        deployment=module.DeployConfig(tokenizer_model=""),
     )
 
-    with pytest.raises(ValueError, match="deployment.hf_tokenizer_name"):
+    with pytest.raises(ValueError, match="deployment.tokenizer_model"):
         module.main(cfg)
 
 
@@ -176,7 +176,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
         kl_beta=0.0,
         deployment=module.DeployConfig(
             deployment_id="dep-123",
-            hf_tokenizer_name="Qwen/Qwen3-4B",
+            tokenizer_model="Qwen/Qwen3-4B",
         ),
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1"),
     )
@@ -245,7 +245,7 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
         base_model="accounts/test/models/m",
         dataset="/tmp/d.jsonl",
         policy_loss="grpo",
-        deployment=module.DeployConfig(deployment_id="dep", hf_tokenizer_name="T"),
+        deployment=module.DeployConfig(deployment_id="dep", tokenizer_model="T"),
         infra=module.InfraConfig(training_shape_id="shape-pp4"),
     )
 
@@ -513,7 +513,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1, weight_sync_before_training=True),
         deployment=module.DeployConfig(
             deployment_id="dep-123",
-            hf_tokenizer_name="Qwen/Qwen3-4B",
+            tokenizer_model="Qwen/Qwen3-4B",
         ),
         infra=module.InfraConfig(training_shape_id="shape-a", ref_training_shape_id="ref-shape"),
         output_model_id="promoted-rl-model",
@@ -747,7 +747,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         ratio_log_cap=17.0,
         completions_per_prompt=2,
         prompt_groups_per_step=1,
-        deployment=module.DeployConfig(deployment_id="dep-123", hf_tokenizer_name="Qwen/Qwen3-4B"),
+        deployment=module.DeployConfig(deployment_id="dep-123", tokenizer_model="Qwen/Qwen3-4B"),
         infra=module.InfraConfig(training_shape_id="shape-a"),
     )
 

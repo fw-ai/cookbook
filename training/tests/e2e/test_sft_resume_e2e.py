@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOKENIZER = "Qwen/Qwen3-30B-A3B"
 
 
-def _get_hf_tokenizer_name(e2e_model: str) -> str:
+def _get_tokenizer_model(e2e_model: str) -> str:
     if "qwen3-1p7b" in e2e_model:
         return "Qwen/Qwen3-1.7B"
     if "qwen3-30b-a3b" in e2e_model.lower() or "qwen3-30b" in e2e_model.lower():
@@ -63,7 +63,7 @@ class TestSFTResumeE2E:
         custom_image_tag,
     ):
         rlor_mgr, deploy_mgr = sdk_managers
-        hf_tokenizer_name = _get_hf_tokenizer_name(e2e_model)
+        tokenizer_model = _get_tokenizer_model(e2e_model)
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             dataset_path = f.name
@@ -84,7 +84,7 @@ class TestSFTResumeE2E:
             phase1_config = Config(
                 base_model=e2e_model,
                 dataset=dataset_path,
-                hf_tokenizer_name=hf_tokenizer_name,
+                tokenizer_model=tokenizer_model,
                 learning_rate=1e-4,
                 epochs=2,
                 batch_size=4,
@@ -123,7 +123,7 @@ class TestSFTResumeE2E:
             phase2_config = Config(
                 base_model=e2e_model,
                 dataset=dataset_path,
-                hf_tokenizer_name=hf_tokenizer_name,
+                tokenizer_model=tokenizer_model,
                 learning_rate=1e-4,
                 epochs=2,
                 batch_size=4,

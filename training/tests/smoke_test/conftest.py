@@ -14,7 +14,7 @@ from training.utils.config import InfraConfig
 logger = logging.getLogger(__name__)
 
 DEFAULT_SMOKE_BASE_MODEL = "accounts/fireworks/models/qwen3-4b"
-DEFAULT_SMOKE_HF_TOKENIZER_NAME = "Qwen/Qwen3-4B"
+DEFAULT_SMOKE_TOKENIZER_MODEL = "Qwen/Qwen3-4B"
 DEFAULT_SMOKE_TRAINING_SHAPE = "ts-qwen3-4b-smoke-v1"
 DEFAULT_SMOKE_BASE_URL = "https://dev.api.fireworks.ai"
 
@@ -29,8 +29,8 @@ def smoke_base_model() -> str:
 
 
 @pytest.fixture(scope="session")
-def smoke_hf_tokenizer_name() -> str:
-    return _get_env("FIREWORKS_SMOKE_HF_TOKENIZER_NAME", DEFAULT_SMOKE_HF_TOKENIZER_NAME)
+def smoke_tokenizer_model() -> str:
+    return _get_env("FIREWORKS_SMOKE_TOKENIZER_MODEL", DEFAULT_SMOKE_TOKENIZER_MODEL)
 
 
 @pytest.fixture(scope="session")

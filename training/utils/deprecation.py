@@ -4,10 +4,9 @@ All deprecated parameters should use :func:`warn_deprecated_param` or
 :func:`warn_ignored_param` so that warnings are visually consistent
 and impossible to miss in logs.
 
-# TODO: remove all parameters listed here in 5 releases:
+# TODO: remove in 5 releases:
 #   - base_model  (auto-resolved from training shape)
 #   - grad_accum  (replaced by batch_size)
-#   - tokenizer_model  (replaced by hf_tokenizer_name)
 """
 
 from __future__ import annotations

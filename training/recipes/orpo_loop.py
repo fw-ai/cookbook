@@ -21,7 +21,7 @@ Usage:
 Config args:
     base_model       Fireworks model ID (default: qwen3-235b-a22b-instruct-2507)
     dataset          Path to preference JSONL file
-    hf_tokenizer_name  HuggingFace model name for client-side tokenization
+    tokenizer_model  HuggingFace model name for client-side tokenization
     orpo_lambda      Weight for odds-ratio loss term (default: 1.0)
     learning_rate    Adam learning rate (default: 1e-5)
     epochs           Number of passes over the dataset (default: 1)
@@ -59,12 +59,12 @@ from training.utils import (
     log_metrics_json,
     make_batch_orpo_loss_fn,
     create_trainer_job,
-    resolve_base_model,
     load_preference_dataset,
     build_renderer,
     render_preference_pair,
     resolve_renderer_name,
     validate_config,
+    resolve_base_model,
 )
 from training.utils.checkpoint_utils import resolve_resume
 
@@ -81,11 +81,8 @@ class Config:
     """Directory for checkpoints and logs. Required, no default."""
 
     base_model: str = ""
-    """Fireworks model resource name. Auto-resolved from the training shape
-    when empty.  Ignored (with warning) when a training shape is set."""
     dataset: str = ""
-    hf_tokenizer_name: str = ""
-    """HuggingFace model name used only for loading the tokenizer."""
+    tokenizer_model: str = ""
     renderer_name: str = ""
 
     orpo_lambda: float = 1.0
@@ -93,11 +90,8 @@ class Config:
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step."""
-    # TODO: remove grad_accum and tokenizer_model deprecated aliases in 5 releases
     grad_accum: int = 1
-    """Deprecated. Ignored. Use ``batch_size``."""
-    tokenizer_model: str | None = None
-    """Deprecated alias for ``hf_tokenizer_name``."""
+    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
@@ -126,17 +120,6 @@ class Config:
     """
     init_from_checkpoint: str | None = None
 
-    def __post_init__(self):
-        from training.utils.deprecation import warn_deprecated_param
-        if self.tokenizer_model is not None:
-            warn_deprecated_param("tokenizer_model", "hf_tokenizer_name")
-            if not self.hf_tokenizer_name:
-                self.hf_tokenizer_name = self.tokenizer_model
-            self.tokenizer_model = None
-        if self.grad_accum > 1:
-            warn_deprecated_param("grad_accum", "batch_size",
-                                  extra="grad_accum is ignored.")
-
 
 # ---------------------------------------------------------------------------
 # Main
@@ -160,9 +143,15 @@ def main(
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
 
-    if not cfg.hf_tokenizer_name:
+    if cfg.grad_accum > 1:
+        logger.warning(
+            "grad_accum is deprecated and ignored. "
+            "Increase batch_size instead for larger effective batches."
+        )
+
+    if not cfg.tokenizer_model:
         raise ValueError(
-            "Config.hf_tokenizer_name is required for client-side tokenization. "
+            "Config.tokenizer_model is required for client-side tokenization. "
             "Set it to the HuggingFace model name "
             "(e.g. 'Qwen/Qwen3-235B-A22B-Instruct-2507')."
         )
@@ -225,12 +214,12 @@ def main(
         import transformers
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.hf_tokenizer_name, trust_remote_code=True
+            cfg.tokenizer_model, trust_remote_code=True
         )
-        renderer = build_renderer(tokenizer, cfg.hf_tokenizer_name, cfg.renderer_name)
+        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
         logger.info(
             "Using renderer=%s for preference tokenization",
-            resolve_renderer_name(cfg.hf_tokenizer_name, cfg.renderer_name),
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
         )
 
         raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)

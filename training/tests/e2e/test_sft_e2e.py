@@ -57,7 +57,7 @@ class TestSFTE2E:
             config = Config(
                 base_model=e2e_model,
                 dataset=dataset_path,
-                hf_tokenizer_name="Qwen/Qwen3-30B-A3B",
+                tokenizer_model="Qwen/Qwen3-30B-A3B",
                 learning_rate=1e-4,
                 epochs=2,
                 max_examples=10,
