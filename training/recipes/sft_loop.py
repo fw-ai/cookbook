@@ -56,10 +56,8 @@ from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
     save_reconnect_state,
-    try_client_reconnect,
     CheckpointKind,
     ReconnectState,
-    ResumeInfo,
 )
 from training.utils.timer import timer, flush_timing
 
@@ -97,16 +95,25 @@ class Config:
     init_from_checkpoint: str | None = None
     """Resume from a DCP checkpoint (heavy-weight, full optimizer + weights).
 
-    Use when the remote trainer has died.  For recovering from
-    *client-side* crashes (trainer still alive), use
-    ``reconnect_state_path`` instead.
+    Loads weights + optimizer state into a *new* trainer via
+    ``load_state_with_optimizer``.  Use when the remote trainer died.
+
+    For recovering from *client-side* crashes (trainer still alive),
+    use ``try_client_reconnect()`` from the calling script instead —
+    it reads the reconnect state file and passes job IDs back into
+    this Config so the loop reuses existing resources.
     """
 
     reconnect_state_path: str | None = None
-    """Path to a client-side reconnect state file (light-weight resume).
+    """Path to write client-side reconnect state after each step.
 
-    When set, verifies the saved trainer is healthy and resumes without
-    DCP load.  See ``rl_loop.Config.reconnect_state_path`` for details.
+    When set, a JSON file is written atomically after every training
+    step with the current step, data_consumed, and job IDs.  An
+    external caller can later read this file via
+    ``try_client_reconnect()`` to resume without DCP load.
+
+    This field is **write-only** — the loop never reads from it.
+    Reconnect logic belongs in the caller, not the training loop.
     """
 
     grad_clip_norm: float = 0.0
@@ -194,32 +201,22 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    # -- Client-side reconnect -------------------------------------------------
-
-    reconnect: ReconnectState | None = None
-    if cfg.reconnect_state_path:
-        reconnect = try_client_reconnect(cfg.reconnect_state_path, rlor_mgr)
-
     runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     with ResourceCleanup(rlor_mgr) as cleanup:
-        if reconnect:
-            job_id = reconnect.policy_job_id
-            endpoint = rlor_mgr.wait_for_existing(job_id)
-        else:
-            endpoint = create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name="sft-trainer",
-                cleanup=cleanup,
-            )
-            job_id = endpoint.job_id
+        endpoint = create_trainer_job(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            profile=profile,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            display_name="sft-trainer",
+            cleanup=cleanup,
+        )
+        job_id = endpoint.job_id
         client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
 
         # -- Prepare data ------------------------------------------------------
@@ -289,11 +286,7 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        if reconnect:
-            resume_info = ResumeInfo(step=reconnect.step, data_consumed=reconnect.data_consumed)
-            logger.info("Client reconnect: skipping DCP load, resuming from step %d", reconnect.step)
-        else:
-            resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
         step = resume_info.step if resume_info else 0
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)
