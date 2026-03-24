@@ -24,6 +24,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -33,7 +34,7 @@ _COOKBOOK_ROOT = os.path.abspath(
 if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
-from fireworks.training.sdk import TrainerCheckpoint, TrainerJobManager
+from fireworks.training.sdk import TrainerJobManager
 from training.utils import (
     InfraConfig,
     ReconnectableClient,
@@ -69,6 +70,15 @@ class PromoteConfig:
     trainer_timeout_s: float
     dcp_timeout_s: int
     keep_trainer: bool
+
+
+@dataclass(frozen=True)
+class JobCheckpoint:
+    checkpoint_id: str
+    checkpoint_type: str
+    name: str
+    promotable: bool
+    create_time: str | None = None
 
 
 def parse_args() -> PromoteConfig:
@@ -177,7 +187,63 @@ def _source_lora_rank(job: dict) -> int:
     return int(value or 0)
 
 
-def _checkpoint_sort_key(checkpoint: TrainerCheckpoint) -> tuple[int, object]:
+def _normalize_job_checkpoint(checkpoint: Any) -> JobCheckpoint:
+    """Normalize SDK or raw control-plane checkpoint metadata."""
+    if hasattr(checkpoint, "checkpoint_id") and hasattr(checkpoint, "checkpoint_type"):
+        return JobCheckpoint(
+            checkpoint_id=str(checkpoint.checkpoint_id),
+            checkpoint_type=str(checkpoint.checkpoint_type),
+            name=str(getattr(checkpoint, "name", "")),
+            promotable=bool(getattr(checkpoint, "promotable", False)),
+            create_time=getattr(checkpoint, "create_time", None),
+        )
+
+    checkpoint_dict = dict(checkpoint)
+    name = str(checkpoint_dict.get("name", ""))
+    checkpoint_id = name.rsplit("/", 1)[-1] if name else ""
+    raw_checkpoint_type = str(checkpoint_dict.get("checkpointType", ""))
+    promotable = bool(checkpoint_dict.get("promotable", False))
+
+    if promotable and ("LORA" in raw_checkpoint_type or "BASE" in raw_checkpoint_type):
+        checkpoint_type = "sampler"
+    elif "TRAINING_LORA" in raw_checkpoint_type:
+        checkpoint_type = "training_lora"
+    elif "TRAINING" in raw_checkpoint_type:
+        checkpoint_type = "training"
+    elif "ARC_V2" in raw_checkpoint_type:
+        checkpoint_type = "sampler"
+    else:
+        checkpoint_type = "sampler" if promotable else "training"
+
+    return JobCheckpoint(
+        checkpoint_id=checkpoint_id,
+        checkpoint_type=checkpoint_type,
+        name=name,
+        promotable=promotable,
+        create_time=checkpoint_dict.get("createTime"),
+    )
+
+
+def _list_job_checkpoints(
+    rlor_mgr: TrainerJobManager,
+    job_id: str,
+) -> list[JobCheckpoint]:
+    list_job_checkpoints = getattr(rlor_mgr, "list_job_checkpoints", None)
+    if callable(list_job_checkpoints):
+        return [
+            _normalize_job_checkpoint(checkpoint)
+            for checkpoint in list_job_checkpoints(job_id)
+        ]
+
+    path = f"/v1/accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}/checkpoints"
+    response = rlor_mgr._get(path, timeout=30)
+    response.raise_for_status()
+    payload = response.json()
+    checkpoints = payload.get("checkpoints", []) or []
+    return [_normalize_job_checkpoint(checkpoint) for checkpoint in checkpoints]
+
+
+def _checkpoint_sort_key(checkpoint: JobCheckpoint) -> tuple[int, object]:
     if checkpoint.create_time:
         return (2, checkpoint.create_time)
     match = re.search(r"(\d+)$", checkpoint.checkpoint_id)
@@ -187,9 +253,9 @@ def _checkpoint_sort_key(checkpoint: TrainerCheckpoint) -> tuple[int, object]:
 
 
 def _select_dcp_checkpoint(
-    checkpoints: list[TrainerCheckpoint],
+    checkpoints: list[JobCheckpoint],
     requested_name: str | None,
-) -> TrainerCheckpoint:
+) -> JobCheckpoint:
     if requested_name:
         for checkpoint in checkpoints:
             if (
@@ -238,7 +304,7 @@ def main() -> None:
     training_shape = _normalize_training_shape(cfg.training_shape, rlor_mgr.account_id)
     profile = rlor_mgr.resolve_training_profile(training_shape)
     checkpoint = _select_dcp_checkpoint(
-        rlor_mgr.list_job_checkpoints(cfg.source_job_id),
+        _list_job_checkpoints(rlor_mgr, cfg.source_job_id),
         cfg.checkpoint_name,
     )
 
