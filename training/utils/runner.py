@@ -19,8 +19,7 @@ File formats:
 
 ``metadata_file`` (JSON, overwritten each update)::
 
-    {"tokens_processed": 120000, "accelerator_seconds": 3600.0,
-     "accelerator_type": "NVIDIA_H100_80GB", "accelerator_count": 8}
+    {"metadata": {"tokens": 120000, "accelerator_seconds": {"NVIDIA_H100_80GB": 3600}}}
 
 ``metrics_file`` (JSONL, appended each step)::
 
@@ -165,19 +164,19 @@ class RunnerIO:
     def write_metadata(self) -> None:
         if not self._metadata_file:
             return
-        accel_seconds = 0.0
+        accel_seconds: dict[str, int] = {}
         if self._training_start is not None:
             wall_seconds = time.monotonic() - self._training_start
             n_devices = self._accelerator_count or 1
-            accel_seconds = round(wall_seconds * n_devices, 3)
+            total = round(wall_seconds * n_devices)
+            accel_type = self._accelerator_type or "UNKNOWN"
+            accel_seconds[accel_type] = total
         payload: dict[str, Any] = {
-            "tokens_processed": self._tokens_processed,
-            "accelerator_seconds": accel_seconds,
+            "metadata": {
+                "tokens": self._tokens_processed,
+                "accelerator_seconds": accel_seconds,
+            }
         }
-        if self._accelerator_type:
-            payload["accelerator_type"] = self._accelerator_type
-        if self._accelerator_count:
-            payload["accelerator_count"] = self._accelerator_count
         self._write_json(self._metadata_file, payload)
 
     # -- metrics ---------------------------------------------------------------
