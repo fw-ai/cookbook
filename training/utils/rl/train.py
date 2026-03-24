@@ -229,7 +229,9 @@ async def run_rl_loop(
     ``weight_sync_interval * prompt_groups_per_step`` coroutines each.
     Within a window, sampling and training overlap via a bounded queue.
     At window boundaries the pipeline drains, ``weight_sync_fn`` fires
-    (hotload), and new sampling starts with the updated deployment.
+    (hotload) if at least one training step ran, and new sampling starts
+    with the updated deployment.  Windows where all groups are filtered
+    out do not trigger a sync (matching pre-pipeline behavior).
 
     ``weight_sync_interval=0`` puts all coroutines in a single window
     (full overlap, no syncs).  ``weight_sync_interval=1`` creates
@@ -250,6 +252,7 @@ async def run_rl_loop(
         if not window:
             break
 
+        step_before = global_step
         global_step = await _run_pipeline_window(
             window,
             train_fns=train_fns,
@@ -259,7 +262,7 @@ async def run_rl_loop(
             metrics_callback=metrics_callback,
         )
 
-        if weight_sync_fn is not None and weight_sync_interval > 0:
+        if weight_sync_fn is not None and weight_sync_interval > 0 and global_step > step_before:
             await asyncio.to_thread(weight_sync_fn, global_step)
 
     return global_step

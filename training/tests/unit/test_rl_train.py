@@ -158,6 +158,22 @@ class TestWeightSyncCoordination:
         ))
         assert len(log) == 4
 
+    def test_weight_sync_skipped_when_all_filtered(self):
+        """If every group in a window is filtered, no optim_step runs and
+        weight_sync_fn must NOT fire (matching pre-pipeline behavior)."""
+        log = []
+        sync_log = []
+        asyncio.run(run_rl_loop(
+            sample_fns=[_sample_ok() for _ in range(2)],
+            train_fns=TrainStepFns(train_step=_make_train_step(log)),
+            prompt_groups_per_step=2,
+            dynamic_filter_fn=lambda pg: False,
+            weight_sync_fn=lambda step: sync_log.append(step),
+            weight_sync_interval=1,
+        ))
+        assert len(log) == 0
+        assert sync_log == []
+
     def test_weight_sync_exception_propagates(self):
         def bad_sync(step):
             raise RuntimeError("hotload failed")
