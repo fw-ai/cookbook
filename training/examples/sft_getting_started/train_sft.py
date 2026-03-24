@@ -36,8 +36,10 @@ def _signal_handler(signum, frame):
 def parse_args():
     parser = argparse.ArgumentParser(description="SFT on the bundled text2sql dataset")
     parser.add_argument("--output-model-id", type=str, required=True, help="Final output model name")
-    parser.add_argument("--base-model", default="",
-                        help="Base model resource name. Auto-resolved from training shape when empty.")
+    parser.add_argument("--model", default="accounts/fireworks/models/qwen3-8b")
+    # TODO: remove --base-model deprecated alias in 5 releases
+    parser.add_argument("--base-model", default=None, dest="base_model_deprecated",
+                        help="(deprecated, use --model instead)")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument(
         "--dataset-path",
@@ -48,6 +50,7 @@ def parse_args():
     parser.add_argument("--max-examples", type=int, default=500)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
+    # TODO: remove --grad-accum deprecated alias in 5 releases
     parser.add_argument("--grad-accum", type=int, default=1,
                         help="(deprecated, ignored -- use --batch-size instead)")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
@@ -68,7 +71,15 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
 
     args = parse_args()
-    logger.info("SFT text2sql training: model=%s shape=%s", args.base_model, args.training_shape)
+    # TODO: remove --base-model deprecated alias in 5 releases
+    if args.base_model_deprecated is not None:
+        logger.warning(
+            "--base-model is deprecated and will be removed in a future release. "
+            "Use --model instead."
+        )
+        if args.model == "accounts/fireworks/models/qwen3-8b":
+            args.model = args.base_model_deprecated
+    logger.info("SFT text2sql training: model=%s shape=%s", args.model, args.training_shape)
 
     if not os.path.exists(args.dataset_path):
         raise FileNotFoundError(
@@ -86,7 +97,7 @@ def main():
 
     config = sft_loop.Config(
         log_path="./text2sql_logs",
-        base_model=args.base_model,
+        base_model=args.model,
         dataset=args.dataset_path,
         tokenizer_model=args.tokenizer_model,
         renderer_name=args.renderer_name,
@@ -106,7 +117,7 @@ def main():
         wandb=WandBConfig(
             project=args.wandb_project,
             entity=args.wandb_entity,
-            run_name=args.wandb_run_name or f"sft-{args.base_model.rsplit('/', 1)[-1]}",
+            run_name=args.wandb_run_name or f"sft-{args.model.rsplit('/', 1)[-1]}",
         ),
     )
 

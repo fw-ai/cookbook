@@ -102,8 +102,7 @@ DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS
 class FrozenLakeConfig:
     log_path: str = "./frozen_lake_logs"
 
-    base_model: str = ""
-    """Base model resource name. Auto-resolved from the training shape when empty."""
+    base_model: str = "accounts/fireworks/models/qwen3-8b"
     tokenizer_model: str = "Qwen/Qwen3-8B"
 
     learning_rate: float = 1e-5
@@ -162,8 +161,11 @@ class FrozenLakeConfig:
 
 def parse_args() -> FrozenLakeConfig:
     parser = argparse.ArgumentParser(description="GRPO training on FrozenLake tool calls")
-    parser.add_argument("--base-model", default="",
-                        help="Base model resource name. Auto-resolved from training shape when empty.")
+    parser.add_argument("--model", default="accounts/fireworks/models/qwen3-8b",
+                        dest="base_model")
+    # TODO: remove --base-model deprecated alias in 5 releases
+    parser.add_argument("--base-model", default=None, dest="base_model_deprecated",
+                        help="(deprecated, use --model instead)")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument("--training-shape", default=os.environ.get("TRAINING_SHAPE", ""))
     parser.add_argument("--deployment-shape", default="")
@@ -313,6 +315,16 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     if cfg is None:
         cfg = parse_args()
 
+    # TODO: remove --base-model deprecated alias in 5 releases
+    deprecated_val = getattr(cfg, "base_model_deprecated", None)
+    if deprecated_val is not None:
+        logger.warning(
+            "--base-model is deprecated and will be removed in a future release. "
+            "Use --model instead."
+        )
+        if cfg.base_model == "accounts/fireworks/models/qwen3-8b":
+            cfg.base_model = deprecated_val
+
     logger.info("FrozenLake GRPO training: %s", cfg.base_model)
 
     api_key = os.environ["FIREWORKS_API_KEY"]
@@ -394,25 +406,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             idx = dsv.find("/versions/")
             deploy_cfg.deployment_shape = dsv[:idx] if idx >= 0 else dsv
             logger.info("Deployment shape from training shape: %s", deploy_cfg.deployment_shape)
-
-    if not cfg.base_model and profile and profile.base_model:
-        cfg.base_model = profile.base_model
-        logger.info("base_model from training shape: %s", cfg.base_model)
-    elif cfg.base_model and profile and profile.base_model:
-        import warnings
-        warnings.warn(
-            "Passing base_model explicitly when a training shape is set is deprecated "
-            "and will be removed in a future release. The training shape already "
-            f"specifies the base model ('{profile.base_model}'). Remove the explicit "
-            "base_model to use the one from the training shape.",
-            FutureWarning,
-            stacklevel=2,
-        )
-    if not cfg.base_model:
-        raise ValueError(
-            "base_model is required. Set it in Config, or use a training shape "
-            "that specifies a base model."
-        )
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)

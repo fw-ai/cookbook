@@ -33,8 +33,10 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="ORPO on IFEval preference pairs"
     )
-    parser.add_argument("--base-model", default="",
-                        help="Base model resource name. Auto-resolved from training shape when empty.")
+    parser.add_argument("--model", default="accounts/fireworks/models/qwen3-8b")
+    # TODO: remove --base-model deprecated alias in 5 releases
+    parser.add_argument("--base-model", default=None, dest="base_model_deprecated",
+                        help="(deprecated, use --model instead)")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument(
         "--dataset-path",
@@ -62,10 +64,18 @@ def parse_args():
 
 def main():
     args = parse_args()
+    # TODO: remove --base-model deprecated alias in 5 releases
+    if args.base_model_deprecated is not None:
+        logger.warning(
+            "--base-model is deprecated and will be removed in a future release. "
+            "Use --model instead."
+        )
+        if args.model == "accounts/fireworks/models/qwen3-8b":
+            args.model = args.base_model_deprecated
 
     logger.info(
         "ORPO IFEval training: model=%s shape=%s",
-        args.base_model,
+        args.model,
         args.training_shape,
     )
 
@@ -84,7 +94,7 @@ def main():
 
     config = orpo_loop.Config(
         log_path="./ifeval_orpo_logs",
-        base_model=args.base_model,
+        base_model=args.model,
         dataset=args.dataset_path,
         tokenizer_model=args.tokenizer_model,
         orpo_lambda=args.orpo_lambda,

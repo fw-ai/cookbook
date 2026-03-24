@@ -126,16 +126,6 @@ def create_trainer_job(
     """
     trainer_role = "reference" if forward_only else "policy"
 
-    # Auto-fill base_model from training shape profile when not provided.
-    if not base_model and profile is not None and profile.base_model:
-        base_model = profile.base_model
-        logger.info("Using base_model from training shape: %s", base_model)
-    if not base_model:
-        raise ValueError(
-            "base_model is required. Either set it explicitly or use a training shape "
-            "that specifies a base model."
-        )
-
     if job_id:
         if base_url_override:
             job_name = f"accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}"
