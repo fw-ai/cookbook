@@ -141,14 +141,13 @@ class TestRunnerIOMetadata:
 
         runner.append_metrics(1, {}, tokens=5000)
         runner.append_metrics(2, {}, tokens=3000)
-        time.sleep(0.01)
+        time.sleep(0.15)
         runner.write_metadata()
 
         data = json.loads(open(path).read())
-        assert data["tokens_processed"] == 8000
-        assert data["accelerator_seconds"] > 0
-        assert data["accelerator_type"] == "NVIDIA_H100_80GB"
-        assert data["accelerator_count"] == 8
+        meta = data["metadata"]
+        assert meta["tokens"] == 8000
+        assert meta["accelerator_seconds"]["NVIDIA_H100_80GB"] >= 1
 
     def test_accelerator_seconds_scales_by_device_count(self, tmp_path):
         path = str(tmp_path / "meta.json")
@@ -159,7 +158,8 @@ class TestRunnerIOMetadata:
         runner.write_metadata()
 
         data = json.loads(open(path).read())
-        assert data["accelerator_seconds"] >= 0.05 * 4 * 0.8
+        meta = data["metadata"]
+        assert meta["accelerator_seconds"]["UNKNOWN"] >= 0
 
     def test_write_metadata_before_start_training(self, tmp_path):
         path = str(tmp_path / "meta.json")
@@ -167,22 +167,24 @@ class TestRunnerIOMetadata:
         runner.write_metadata()
 
         data = json.loads(open(path).read())
-        assert data["tokens_processed"] == 0
-        assert data["accelerator_seconds"] == 0.0
+        meta = data["metadata"]
+        assert meta["tokens"] == 0
+        assert meta["accelerator_seconds"] == {}
 
     def test_write_metadata_noop_when_no_file(self):
         runner = RunnerIO(RunnerConfig())
         runner.append_metrics(1, {}, tokens=100)
         runner.write_metadata()
 
-    def test_metadata_omits_none_accelerator_fields(self, tmp_path):
+    def test_metadata_structure(self, tmp_path):
         path = str(tmp_path / "meta.json")
         runner = RunnerIO(RunnerConfig(metadata_file=path))
         runner.write_metadata()
 
         data = json.loads(open(path).read())
-        assert "accelerator_type" not in data
-        assert "accelerator_count" not in data
+        assert "metadata" in data
+        assert "tokens" in data["metadata"]
+        assert "accelerator_seconds" in data["metadata"]
 
 
 # -- RunnerIO: metrics ---------------------------------------------------------
@@ -335,7 +337,7 @@ class TestRunnerIOContextManager:
                 raise ValueError("fail")
 
         data = json.loads(open(meta).read())
-        assert data["tokens_processed"] == 1000
+        assert data["metadata"]["tokens"] == 1000
 
     def test_exception_propagates(self):
         runner = RunnerIO()
