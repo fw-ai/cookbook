@@ -40,7 +40,7 @@ DATASET_PATH = os.environ.get(
 PROMPTS_PER_STEP = 32
 COMPLETIONS_PER_PROMPT = 8
 NUM_STEPS = 8
-MAX_TOKENS = 1024
+MAX_TOKENS = 131072
 INITIAL_WINDOW = 8 * REPLICA_COUNT
 
 
@@ -96,20 +96,32 @@ async def run_pressure_test(sampler: DeploymentSampler, ctrl: AdaptiveConcurrenc
                     max_tokens=MAX_TOKENS,
                     temperature=0.7,
                     logprobs=True,
+                    http_timeout=600,
                 )
-                return len(completions), 0
+                return completions
             except Exception as e:
                 logger.warning("Step %d prompt %d failed: %s", step + 1, prompt_idx, e)
-                return 0, 1
+                return []
 
         tasks = [_sample_one(row, i) for i, row in enumerate(step_rows)]
         results = await asyncio.gather(*tasks)
 
-        step_completions = sum(r[0] for r in results)
-        step_errors = sum(r[1] for r in results)
+        # Flatten all completions and compute metrics.
+        step_all_completions = [c for batch in results for c in batch]
+        step_completions = len(step_all_completions)
+        step_errors = sum(1 for batch in results if not batch)
         total_completions += step_completions
         total_errors += step_errors
         step_elapsed = time.time() - step_start
+
+        # Response length stats.
+        comp_lens = [c.completion_len for c in step_all_completions]
+        finish_reasons = {}
+        for c in step_all_completions:
+            finish_reasons[c.finish_reason] = finish_reasons.get(c.finish_reason, 0) + 1
+        avg_len = sum(comp_lens) / len(comp_lens) if comp_lens else 0
+        min_len = min(comp_lens) if comp_lens else 0
+        max_len = max(comp_lens) if comp_lens else 0
 
         summary = ctrl.step_completed()
 
@@ -118,6 +130,20 @@ async def run_pressure_test(sampler: DeploymentSampler, ctrl: AdaptiveConcurrenc
             step + 1, NUM_STEPS, step_completions, step_errors, step_elapsed,
             " ".join(f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}" for k, v in summary.items()),
         )
+        logger.info(
+            "  Response length: avg=%d min=%d max=%d tokens | finish: %s",
+            avg_len, min_len, max_len,
+            " ".join(f"{k}={v}" for k, v in finish_reasons.items()),
+        )
+        # Print first completion of the step.
+        if step_all_completions:
+            first = step_all_completions[0]
+            preview = first.text[:500].replace("\n", " ")
+            logger.info(
+                "  First completion (%d tokens, %s): %s%s",
+                first.completion_len, first.finish_reason, preview,
+                "..." if len(first.text) > 500 else "",
+            )
 
     total_elapsed = time.time() - total_start
     expected = NUM_STEPS * PROMPTS_PER_STEP * COMPLETIONS_PER_PROMPT
