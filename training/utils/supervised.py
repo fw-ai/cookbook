@@ -55,38 +55,38 @@ def parse_train_on_what(value: str | TrainOnWhat) -> TrainOnWhat:
 
 
 def resolve_renderer_name(
-    tokenizer_model: str,
+    hf_tokenizer_name: str,
     renderer_name: str = "",
 ) -> str:
     """Choose the renderer used for message -> token rendering."""
     if renderer_name:
         return renderer_name
-    normalized_model_name = tokenizer_model.lower()
+    normalized_model_name = hf_tokenizer_name.lower()
     if "moonshotai/kimi-k2.5" in normalized_model_name:
         return "kimi_k25"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
     try:
-        return get_recommended_renderer_name(tokenizer_model)
+        return get_recommended_renderer_name(hf_tokenizer_name)
     except Exception as exc:  # pragma: no cover - message only
         raise ValueError(
-            f"Could not infer a renderer for tokenizer_model={tokenizer_model!r}. "
+            f"Could not infer a renderer for hf_tokenizer_name={hf_tokenizer_name!r}. "
             "Set Config.renderer_name explicitly."
         ) from exc
 
 
 def build_renderer(
     tokenizer: Any,
-    tokenizer_model: str,
+    hf_tokenizer_name: str,
     renderer_name: str = "",
 ) -> Renderer:
     """Construct the Tinker renderer used for supervised formatting."""
-    resolved_name = resolve_renderer_name(tokenizer_model, renderer_name)
+    resolved_name = resolve_renderer_name(hf_tokenizer_name, renderer_name)
     if get_image_processor is not None and _renderer_uses_images(resolved_name):
         return get_renderer(
             resolved_name,
             tokenizer,
-            image_processor=get_image_processor(tokenizer_model),
+            image_processor=get_image_processor(hf_tokenizer_name),
         )
     return get_renderer(resolved_name, tokenizer)
 

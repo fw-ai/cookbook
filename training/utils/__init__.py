@@ -23,6 +23,7 @@ __all__ = [
     "compute_advantages",
     "compute_pass_at_k",
     "create_trainer_job",
+    "resolve_base_model",
     "encode_text",
     "extract_text",
     "find_common_prefix_length",
@@ -57,6 +58,8 @@ __all__ = [
     "validate_preflight",
     "wandb_finish",
     "wandb_log",
+    "warn_deprecated_param",
+    "warn_ignored_param",
 ]
 
 from training.utils.data import (
@@ -71,6 +74,7 @@ from training.utils.data import (
 )
 from training.utils.infra import (
     ResourceCleanup,
+    resolve_base_model,
     setup_deployment,
     create_trainer_job,
     setup_training_client,
@@ -117,3 +121,4 @@ from training.utils.logging import (
 )
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 from training.utils.validation import validate_config, validate_preflight
+from training.utils.deprecation import warn_deprecated_param, warn_ignored_param

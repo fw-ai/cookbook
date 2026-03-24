@@ -43,7 +43,7 @@ class TestGRPOE2E:
         sdk_managers,
         e2e_region,
         e2e_model,
-        e2e_tokenizer_model,
+        e2e_hf_tokenizer_name,
         e2e_training_accelerator,
         e2e_deployment_accelerator,
         e2e_deployment_shape,
@@ -76,7 +76,7 @@ class TestGRPOE2E:
                 deployment_id=f"grpo-e2e-{ts}",
                 deployment_shape=e2e_deployment_shape,
                 deployment_region=e2e_region,
-                tokenizer_model=e2e_tokenizer_model,
+                hf_tokenizer_name=e2e_hf_tokenizer_name,
             ),
             weight_sync=WeightSyncConfig(
                 weight_sync_interval=1,

@@ -90,10 +90,40 @@ class ResourceCleanup:
                 logger.warning("Cleanup: failed to clean deployment %s: %s", did, e)
 
 
+def resolve_base_model(
+    base_model: str,
+    profile: TrainingShapeProfile | None,
+) -> str:
+    """Resolve ``base_model`` from the training shape profile.
+
+    * If *profile* contains a ``base_model``, that value is used.  When
+      the caller also provided a non-empty *base_model*, a visible
+      "ignored" warning is emitted.
+    * If no profile (manual path), *base_model* is required.
+
+    Returns the resolved base model string.
+    """
+    profile_base_model = getattr(profile, "base_model", "") if profile is not None else ""
+    if profile_base_model:
+        if base_model:
+            from training.utils.deprecation import warn_ignored_param
+            warn_ignored_param(
+                "base_model",
+                "the training shape already specifies the base model "
+                f"('{profile_base_model}').",
+            )
+        return profile_base_model
+    if not base_model:
+        raise ValueError(
+            "base_model is required when no training shape is provided."
+        )
+    return base_model
+
+
 def create_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,
-    base_model: str,
+    base_model: str = "",
     infra: InfraConfig,
     profile: TrainingShapeProfile | None = None,
     lora_rank: int = 0,
@@ -144,6 +174,7 @@ def create_trainer_job(
 
     if profile is not None:
         config = TrainerJobConfig(
+            profile=profile,
             base_model=base_model,
             lora_rank=lora_rank,
             max_context_length=max_seq_len or profile.max_supported_context_length,
@@ -154,7 +185,6 @@ def create_trainer_job(
             region=infra.region,
             extra_args=extra_args or infra.extra_args,
             forward_only=forward_only,
-            training_shape_ref=profile.training_shape_version,
         )
     else:
         config = TrainerJobConfig(

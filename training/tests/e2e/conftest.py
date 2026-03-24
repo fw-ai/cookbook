@@ -7,7 +7,7 @@ Requires FIREWORKS_API_KEY to be set.
 
 Override defaults via environment variables:
   FIREWORKS_E2E_MODEL, FIREWORKS_E2E_REGION, FIREWORKS_E2E_DEPLOYMENT_SHAPE,
-  FIREWORKS_E2E_TOKENIZER_MODEL, FIREWORKS_BASE_URL
+  FIREWORKS_E2E_HF_TOKENIZER_NAME, FIREWORKS_BASE_URL
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from fireworks.training.sdk.trainer import TrainerJobManager
 from fireworks.training.sdk.deployment import DeploymentManager
 
 DEFAULT_MODEL = "accounts/fireworks/models/qwen3-30b-a3b"
-DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3-30B-A3B"
+DEFAULT_HF_TOKENIZER_NAME = "Qwen/Qwen3-30B-A3B"
 DEFAULT_REGION = "US_OHIO_1"
 DEFAULT_TRAINING_ACCELERATOR = None
 DEFAULT_DEPLOYMENT_ACCELERATOR = "NVIDIA_B200_180GB"
@@ -90,9 +90,9 @@ def e2e_model() -> str:
 
 
 @pytest.fixture(scope="module")
-def e2e_tokenizer_model() -> str:
+def e2e_hf_tokenizer_name() -> str:
     """HuggingFace model name for the tokenizer (client-side tokenization)."""
-    return _get_env("FIREWORKS_E2E_TOKENIZER_MODEL", DEFAULT_TOKENIZER_MODEL)
+    return _get_env("FIREWORKS_E2E_HF_TOKENIZER_NAME", DEFAULT_HF_TOKENIZER_NAME)
 
 
 @pytest.fixture(scope="module")

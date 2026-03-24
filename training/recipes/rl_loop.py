@@ -55,6 +55,7 @@ from training.utils import (
     setup_deployment,
     compute_advantages,
     create_trainer_job,
+    resolve_base_model,
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
@@ -93,7 +94,9 @@ class Config:
     log_path: str
     """Directory for checkpoints and logs. Required, no default."""
 
-    base_model: str = "accounts/fireworks/models/qwen3-8b"
+    base_model: str = ""
+    """Fireworks model resource name. Auto-resolved from the training shape
+    when empty.  Ignored (with warning) when a training shape is set."""
     dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
     learning_rate: float = 1e-5
@@ -284,9 +287,9 @@ def main(
     )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
-    if not cfg.deployment.tokenizer_model:
+    if not cfg.deployment.hf_tokenizer_name:
         raise ValueError(
-            "deployment.tokenizer_model is required for client-side tokenization. "
+            "deployment.hf_tokenizer_name is required for client-side tokenization. "
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
     setup_wandb(
@@ -317,6 +320,8 @@ def main(
         dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
         if dep_shape and not cfg.deployment.deployment_shape:
             cfg.deployment.deployment_shape = dep_shape
+
+    cfg.base_model = resolve_base_model(cfg.base_model, profile)
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -432,7 +437,7 @@ def main(
         import transformers
 
         inference_model = dep_info.inference_model if dep_info else cfg.base_model
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.hf_tokenizer_name, trust_remote_code=True)
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
             model=inference_model,

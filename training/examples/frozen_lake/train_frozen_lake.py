@@ -103,7 +103,7 @@ class FrozenLakeConfig:
     log_path: str = "./frozen_lake_logs"
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
-    tokenizer_model: str = "Qwen/Qwen3-8B"
+    hf_tokenizer_name: str = "Qwen/Qwen3-8B"
 
     learning_rate: float = 1e-5
     kl_beta: float = 0.001
@@ -166,7 +166,11 @@ def parse_args() -> FrozenLakeConfig:
     # TODO: remove --base-model deprecated alias in 5 releases
     parser.add_argument("--base-model", default=None, dest="base_model_deprecated",
                         help="(deprecated, use --model instead)")
-    parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
+    parser.add_argument("--hf-tokenizer-name", default="Qwen/Qwen3-8B",
+                        dest="hf_tokenizer_name")
+    # TODO: remove --tokenizer-model deprecated alias in 5 releases
+    parser.add_argument("--tokenizer-model", default=None, dest="tokenizer_model_deprecated",
+                        help="(deprecated, use --hf-tokenizer-name instead)")
     parser.add_argument("--training-shape", default=os.environ.get("TRAINING_SHAPE", ""))
     parser.add_argument("--deployment-shape", default="")
     parser.add_argument("--accelerator-type", default="")
@@ -315,15 +319,18 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     if cfg is None:
         cfg = parse_args()
 
-    # TODO: remove --base-model deprecated alias in 5 releases
+    from training.utils.deprecation import warn_deprecated_param
+    # TODO: remove deprecated aliases in 5 releases
     deprecated_val = getattr(cfg, "base_model_deprecated", None)
     if deprecated_val is not None:
-        logger.warning(
-            "--base-model is deprecated and will be removed in a future release. "
-            "Use --model instead."
-        )
+        warn_deprecated_param("--base-model", "--model")
         if cfg.base_model == "accounts/fireworks/models/qwen3-8b":
             cfg.base_model = deprecated_val
+    deprecated_tok = getattr(cfg, "tokenizer_model_deprecated", None)
+    if deprecated_tok is not None:
+        warn_deprecated_param("--tokenizer-model", "--hf-tokenizer-name")
+        if cfg.hf_tokenizer_name == "Qwen/Qwen3-8B":
+            cfg.hf_tokenizer_name = deprecated_tok
 
     logger.info("FrozenLake GRPO training: %s", cfg.base_model)
 
@@ -344,7 +351,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         deployment_accelerator_type=cfg.accelerator_type or None,
         deployment_region=cfg.deployment_region,
         replica_count=cfg.deployment_replica_count,
-        tokenizer_model=cfg.tokenizer_model,
+        tokenizer_model=cfg.hf_tokenizer_name,
         sample_timeout=1200,
     )
     weight_sync_cfg = WeightSyncConfig(
@@ -570,7 +577,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         rollout_base_url = inference_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
         rollout_processor = FrozenLakeToolRolloutProcessor(
             model_id=inference_model,
-            tokenizer_name_or_path=cfg.tokenizer_model,
+            tokenizer_name_or_path=cfg.hf_tokenizer_name,
             api_key=api_key,
             base_url=rollout_base_url,
             temperature=cfg.temperature,

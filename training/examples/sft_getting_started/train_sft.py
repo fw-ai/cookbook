@@ -40,7 +40,10 @@ def parse_args():
     # TODO: remove --base-model deprecated alias in 5 releases
     parser.add_argument("--base-model", default=None, dest="base_model_deprecated",
                         help="(deprecated, use --model instead)")
-    parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
+    parser.add_argument("--hf-tokenizer-name", default="Qwen/Qwen3-8B")
+    # TODO: remove --tokenizer-model deprecated alias in 5 releases
+    parser.add_argument("--tokenizer-model", default=None, dest="tokenizer_model_deprecated",
+                        help="(deprecated, use --hf-tokenizer-name instead)")
     parser.add_argument(
         "--dataset-path",
         default=os.path.join(os.path.dirname(__file__), "text2sql_dataset.jsonl"),
@@ -71,14 +74,16 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
 
     args = parse_args()
-    # TODO: remove --base-model deprecated alias in 5 releases
+    from training.utils.deprecation import warn_deprecated_param
+    # TODO: remove deprecated aliases in 5 releases
     if args.base_model_deprecated is not None:
-        logger.warning(
-            "--base-model is deprecated and will be removed in a future release. "
-            "Use --model instead."
-        )
+        warn_deprecated_param("--base-model", "--model")
         if args.model == "accounts/fireworks/models/qwen3-8b":
             args.model = args.base_model_deprecated
+    if args.tokenizer_model_deprecated is not None:
+        warn_deprecated_param("--tokenizer-model", "--hf-tokenizer-name")
+        if args.hf_tokenizer_name == "Qwen/Qwen3-8B":
+            args.hf_tokenizer_name = args.tokenizer_model_deprecated
     logger.info("SFT text2sql training: model=%s shape=%s", args.model, args.training_shape)
 
     if not os.path.exists(args.dataset_path):
@@ -99,7 +104,7 @@ def main():
         log_path="./text2sql_logs",
         base_model=args.model,
         dataset=args.dataset_path,
-        tokenizer_model=args.tokenizer_model,
+        hf_tokenizer_name=args.hf_tokenizer_name,
         renderer_name=args.renderer_name,
         learning_rate=args.learning_rate,
         epochs=args.epochs,

@@ -46,6 +46,7 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     create_trainer_job,
+    resolve_base_model,
     build_renderer,
     parse_train_on_what,
     render_messages_to_datum,
@@ -71,18 +72,24 @@ class Config:
     log_path: str
     """Directory for checkpoints and logs. Required, no default."""
 
-    base_model: str = "accounts/fireworks/models/qwen3-8b"
+    base_model: str = ""
+    """Fireworks model resource name. Auto-resolved from the training shape
+    when empty.  Ignored (with warning) when a training shape is set."""
     dataset: str = ""
-    tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
+    hf_tokenizer_name: str = ""
+    """HuggingFace model name used only for loading the tokenizer
+    (e.g. ``Qwen/Qwen3-1.7B``).  NOT the Fireworks base model."""
     renderer_name: str = ""
     train_on_what: str = "all_assistant_messages"
 
     learning_rate: float = 1e-4
     epochs: int = 3
     batch_size: int = 32
+    # TODO: remove grad_accum and tokenizer_model deprecated aliases in 5 releases
     grad_accum: int = 1
-    # TODO: remove grad_accum in 5 releases
     """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
+    tokenizer_model: str | None = None
+    """Deprecated alias for ``hf_tokenizer_name``."""
     max_seq_len: int | None = None
     max_examples: int | None = None
     lora_rank: int = 0
@@ -112,6 +119,17 @@ class Config:
     See training/utils/runner.py for file format details.
     """
 
+    def __post_init__(self):
+        from training.utils.deprecation import warn_deprecated_param
+        if self.tokenizer_model is not None:
+            warn_deprecated_param("tokenizer_model", "hf_tokenizer_name")
+            if not self.hf_tokenizer_name:
+                self.hf_tokenizer_name = self.tokenizer_model
+            self.tokenizer_model = None
+        if self.grad_accum > 1:
+            warn_deprecated_param("grad_accum", "batch_size",
+                                  extra="grad_accum is ignored.")
+
 
 # ---------------------------------------------------------------------------
 # Main training loop
@@ -135,12 +153,6 @@ def main(
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
 
-    if cfg.grad_accum > 1:
-        logger.warning(
-            "grad_accum is deprecated and ignored. "
-            "Increase batch_size instead for larger effective batches."
-        )
-
     setup_wandb(
         cfg.wandb,
         {
@@ -150,9 +162,9 @@ def main(
         },
     )
 
-    if not cfg.tokenizer_model:
+    if not cfg.hf_tokenizer_name:
         raise ValueError(
-            "Config.tokenizer_model is required for chat template formatting. "
+            "Config.hf_tokenizer_name is required for chat template formatting. "
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
 
@@ -167,6 +179,8 @@ def main(
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+
+    cfg.base_model = resolve_base_model(cfg.base_model, profile)
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -196,12 +210,12 @@ def main(
         client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
 
         # -- Prepare data ------------------------------------------------------
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
-        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.hf_tokenizer_name, trust_remote_code=True)
+        renderer = build_renderer(tokenizer, cfg.hf_tokenizer_name, cfg.renderer_name)
         train_on_what = parse_train_on_what(cfg.train_on_what)
         logger.info(
             "Using renderer=%s train_on_what=%s",
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            resolve_renderer_name(cfg.hf_tokenizer_name, cfg.renderer_name),
             train_on_what.value,
         )
 

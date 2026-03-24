@@ -265,11 +265,11 @@ def test_forward_backward_pairs_interleaves_and_builds_loss_fn(monkeypatch):
     assert captured["beta"] == 0.25
 
 
-def test_main_requires_tokenizer_model(monkeypatch):
+def test_main_requires_hf_tokenizer_name(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
-    cfg = module.Config(log_path="/tmp/dpo_test_logs", dataset="/tmp/pairs.jsonl", tokenizer_model="")
+    cfg = module.Config(log_path="/tmp/dpo_test_logs", base_model="accounts/fireworks/models/qwen3-4b", dataset="/tmp/pairs.jsonl", hf_tokenizer_name="")
 
-    with pytest.raises(ValueError, match="tokenizer_model"):
+    with pytest.raises(ValueError, match="hf_tokenizer_name"):
         module.main(cfg)
 
 
@@ -393,7 +393,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         log_path="/tmp/dpo_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
-        tokenizer_model="Qwen/Qwen3-4B",
+        hf_tokenizer_name="Qwen/Qwen3-4B",
         max_seq_len=None,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
         deployment=module.DeployConfig(deployment_id="dep-123"),
@@ -561,7 +561,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         log_path="/tmp/dpo_test_logs",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
-        tokenizer_model="Qwen/Qwen3-4B",
+        hf_tokenizer_name="Qwen/Qwen3-4B",
         max_seq_len=None,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1"),
         deployment=module.DeployConfig(deployment_id="dep-123"),
@@ -651,6 +651,7 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
     ]
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",
+        base_model="accounts/fireworks/models/qwen3-4b",
         beta=0.2,
         epochs=1,
         batch_size=2,
@@ -718,6 +719,7 @@ def test_pipeline_overlap_ref_freed_before_training_done():
 
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",
+        base_model="accounts/fireworks/models/qwen3-4b",
         beta=0.1,
         epochs=1,
         batch_size=1,

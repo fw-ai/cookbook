@@ -26,16 +26,16 @@ def _write_dataset(tmp_path, rows):
     return dataset_path
 
 
-def test_main_requires_tokenizer_model(tmp_path, monkeypatch):
+def test_main_requires_hf_tokenizer_name(tmp_path, monkeypatch):
     dataset_path = _write_dataset(
         tmp_path,
         [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
     )
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
 
-    cfg = module.Config(log_path=str(tmp_path / "logs"), dataset=str(dataset_path), tokenizer_model="", max_seq_len=32)
+    cfg = module.Config(log_path=str(tmp_path / "logs"), base_model="accounts/fireworks/models/qwen3-8b", dataset=str(dataset_path), hf_tokenizer_name="", max_seq_len=32)
 
-    with pytest.raises(ValueError, match="tokenizer_model"):
+    with pytest.raises(ValueError, match="hf_tokenizer_name"):
         module.main(cfg)
 
 
@@ -77,8 +77,9 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
 
     cfg = module.Config(
         log_path=str(tmp_path / "logs"),
+        base_model="accounts/fireworks/models/qwen3-4b",
         dataset=str(dataset_path),
-        tokenizer_model="Qwen/Qwen3-4B",
+        hf_tokenizer_name="Qwen/Qwen3-4B",
         max_seq_len=32,
     )
 
@@ -161,12 +162,12 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
+        base_model="accounts/fireworks/models/qwen3-4b",
         dataset=str(dataset_path),
-        tokenizer_model="Qwen/Qwen3-4B",
+        hf_tokenizer_name="Qwen/Qwen3-4B",
         max_seq_len=32,
         epochs=1,
         batch_size=1,
-        grad_accum=1,
         log_path=str(tmp_path / "sft_logs"),
     )
 
@@ -258,8 +259,9 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
 
     cfg = module.Config(
+        base_model="accounts/fireworks/models/qwen3-4b",
         dataset=str(dataset_path),
-        tokenizer_model="Qwen/Qwen3-4B",
+        hf_tokenizer_name="Qwen/Qwen3-4B",
         max_seq_len=32,
         epochs=1,
         batch_size=1,

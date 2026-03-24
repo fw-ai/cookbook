@@ -37,7 +37,10 @@ def parse_args():
     # TODO: remove --base-model deprecated alias in 5 releases
     parser.add_argument("--base-model", default=None, dest="base_model_deprecated",
                         help="(deprecated, use --model instead)")
-    parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
+    parser.add_argument("--hf-tokenizer-name", default="Qwen/Qwen3-8B")
+    # TODO: remove --tokenizer-model deprecated alias in 5 releases
+    parser.add_argument("--tokenizer-model", default=None, dest="tokenizer_model_deprecated",
+                        help="(deprecated, use --hf-tokenizer-name instead)")
     parser.add_argument(
         "--dataset-path",
         default=os.path.join(os.path.dirname(__file__), "dataset.jsonl"),
@@ -64,14 +67,16 @@ def parse_args():
 
 def main():
     args = parse_args()
-    # TODO: remove --base-model deprecated alias in 5 releases
+    from training.utils.deprecation import warn_deprecated_param
+    # TODO: remove deprecated aliases in 5 releases
     if args.base_model_deprecated is not None:
-        logger.warning(
-            "--base-model is deprecated and will be removed in a future release. "
-            "Use --model instead."
-        )
+        warn_deprecated_param("--base-model", "--model")
         if args.model == "accounts/fireworks/models/qwen3-8b":
             args.model = args.base_model_deprecated
+    if args.tokenizer_model_deprecated is not None:
+        warn_deprecated_param("--tokenizer-model", "--hf-tokenizer-name")
+        if args.hf_tokenizer_name == "Qwen/Qwen3-8B":
+            args.hf_tokenizer_name = args.tokenizer_model_deprecated
 
     logger.info(
         "ORPO IFEval training: model=%s shape=%s",
@@ -96,7 +101,7 @@ def main():
         log_path="./ifeval_orpo_logs",
         base_model=args.model,
         dataset=args.dataset_path,
-        tokenizer_model=args.tokenizer_model,
+        hf_tokenizer_name=args.hf_tokenizer_name,
         orpo_lambda=args.orpo_lambda,
         learning_rate=args.learning_rate,
         epochs=args.epochs,
