@@ -95,6 +95,10 @@ cd cookbook/training
 python -m recipes.sft_loop      # or whichever recipe you configured
 ```
 
+## Useful examples
+
+- `examples/promote_checkpoint/train_promote_checkpoint.py` restores the latest DCP checkpoint from a previous trainer job into a temporary trainer, saves a promotable sampler checkpoint, and promotes it to a model with only `job_id`, `model`, and `shape` required.
+
 ## Documentation
 
 For detailed guides, configuration reference, and examples, see the official documentation:
