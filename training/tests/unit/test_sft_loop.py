@@ -50,6 +50,12 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
     deleted_jobs: list[str] = []
 
     class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
         def delete(self, job_id):
             deleted_jobs.append(job_id)
 
@@ -67,12 +73,6 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         "render_messages_to_datum",
         lambda *args, **kwargs: SimpleNamespace(token_ids=[1], datum={"id": "too-short"}),
     )
-    def _fake_create_trainer_job(*args, **kwargs):
-        if cleanup := kwargs.get("cleanup"):
-            cleanup.trainer("job-sft")
-        return SimpleNamespace(job_id="job-sft")
-
-    monkeypatch.setattr(module, "create_trainer_job", _fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
@@ -113,6 +113,12 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     )
 
     class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
         def delete(self, job_id):
             events["lifecycle"].append(("delete", job_id))
             events["deleted_jobs"].append(job_id)
@@ -156,12 +162,6 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: renderer)
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    def _fake_create_trainer_job(*args, **kwargs):
-        if cleanup := kwargs.get("cleanup"):
-            cleanup.trainer("job-sft")
-        return SimpleNamespace(job_id="job-sft")
-
-    monkeypatch.setattr(module, "create_trainer_job", _fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
@@ -206,6 +206,12 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     events: dict[str, object] = {"batches": [], "optim_steps": 0, "deleted_jobs": []}
 
     class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
 
@@ -242,12 +248,6 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    def _fake_create_trainer_job(*args, **kwargs):
-        if cleanup := kwargs.get("cleanup"):
-            cleanup.trainer("job-sft")
-        return SimpleNamespace(job_id="job-sft")
-
-    monkeypatch.setattr(module, "create_trainer_job", _fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     def _fake_render(messages, **kwargs):
         content = messages[-1]["content"]

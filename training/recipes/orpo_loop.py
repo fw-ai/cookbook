@@ -51,6 +51,9 @@ from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
     ResourceCleanup,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
     WandBConfig,
     ReconnectableClient,
     wandb_log,
@@ -121,12 +124,18 @@ class Config:
             project="dsv3-training",
         )
     )
-    eval_split: float = 0.0
-    """Fraction of dataset held out for evaluation (0.0 = no eval)."""
+    runner: RunnerConfig = field(default_factory=RunnerConfig)
+    """Optional orchestration outputs written during training.
 
-    eval_every_steps: int = 0
-    """Run eval every N optimizer steps (0 = only at end of training)."""
+    Paths can be set here or via environment variables:
+      COOKBOOK_STATUS_FILE      -- training status + progress (JSON, overwritten each step)
+      COOKBOOK_METADATA_FILE    -- tokens processed + accelerator-seconds (JSON)
+      COOKBOOK_METRICS_FILE     -- per-step metrics (JSONL, appended each step)
+      COOKBOOK_OUTPUT_MODEL_PATH -- final model info written on completion (JSON)
 
+    All paths are optional; unset paths are silently skipped.
+    See training/utils/runner.py for file format details.
+    """
     init_from_checkpoint: str | None = None
 
 
@@ -173,6 +182,7 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
+    runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
@@ -307,37 +317,10 @@ def main(
         if not pair_cache:
             raise RuntimeError("No valid pairs after tokenization")
 
-        # -- Train / eval split --------------------------------------------------
-
-        eval_cache: list[dict] = []
-        if cfg.eval_split > 0:
-            random.shuffle(pair_cache)
-            n_eval = max(1, int(len(pair_cache) * cfg.eval_split))
-            eval_cache = pair_cache[:n_eval]
-            pair_cache = pair_cache[n_eval:]
-            logger.info(
-                "Dataset split: %d train, %d eval (%.1f%%)",
-                len(pair_cache),
-                len(eval_cache),
-                cfg.eval_split * 100,
-            )
-
         # -- Training loop -------------------------------------------------------
 
         step = step_offset
         total_steps = ((len(pair_cache) + cfg.batch_size - 1) // cfg.batch_size) * cfg.epochs
-
-        has_lr_schedule = cfg.warmup_ratio > 0 or cfg.lr_schedule != "constant"
-        if has_lr_schedule:
-            logger.info(
-                "LR schedule: %s | warmup_ratio=%.2f (%d steps) | "
-                "peak_lr=%g | min_lr=%g",
-                cfg.lr_schedule,
-                cfg.warmup_ratio,
-                int(total_steps * cfg.warmup_ratio),
-                cfg.learning_rate,
-                cfg.learning_rate * cfg.min_lr_ratio,
-            )
 
         has_lr_schedule = cfg.warmup_ratio > 0 or cfg.lr_schedule != "constant"
         if has_lr_schedule:
@@ -391,120 +374,42 @@ def main(
                 tokens_per_sec,
                 step_elapsed,
             )
-            log_metrics_json(step, lr=current_lr, tokens_per_sec=tokens_per_sec, **metrics)
-            wandb_log(
-                {
-                    "train/step": step,
-                    "train/lr": current_lr,
-                    "train/orpo_loss": metrics["orpo_loss"],
-                    "train/sft_loss": metrics["sft_loss"],
-                    "train/or_loss": metrics["or_loss"],
-                    "train/log_odds_ratio": metrics["log_odds_ratio"],
-                    "train/accuracy": metrics["accuracy"],
-                    "train/tokens_per_sec": tokens_per_sec,
-                    "train/step_time_sec": step_elapsed,
-                    "train/step_tokens": step_tokens,
-                    "train/epoch": epoch + 1,
-                },
-                step,
-            )
+            log_metrics_json(step, tokens_per_sec=tokens_per_sec, **metrics)
+            step_metrics = {
+                "train/step": step,
+                "train/orpo_loss": metrics["orpo_loss"],
+                "train/sft_loss": metrics["sft_loss"],
+                "train/or_loss": metrics["or_loss"],
+                "train/log_odds_ratio": metrics["log_odds_ratio"],
+                "train/accuracy": metrics["accuracy"],
+                "train/tokens_per_sec": tokens_per_sec,
+                "train/step_time_sec": step_elapsed,
+                "train/step_tokens": step_tokens,
+                "train/epoch": epoch + 1,
+            }
+            wandb_log(step_metrics, step)
+            runner.append_metrics(step, step_metrics, tokens=step_tokens)
+            runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
+            runner.write_metadata()
             return time.monotonic()
 
-        def _run_eval(tag: str = "eval") -> dict[str, float] | None:
-            """Forward-only pass over the eval set. Returns averaged metrics."""
-            if not eval_cache:
-                return None
-            logger.info(f"Running evaluation with batch size {cfg.batch_size}...")
+        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+        runner.start_training()
+        runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 
-            eval_t0 = time.monotonic()
-            accum: dict[str, float] = {}
-            n_batches = 0
-            total_eval_batches = (len(eval_cache) + cfg.batch_size - 1) // cfg.batch_size
+        with runner:
+            for epoch in range(cfg.epochs):
+                random.shuffle(pair_cache)
+                step_t0 = time.monotonic()
+                batch_buffer: list[dict] = []
+                for pair in pair_cache:
+                    batch_buffer.append(pair)
+                    if len(batch_buffer) >= cfg.batch_size:
+                        step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
+                        batch_buffer = []
 
-            for batch_start in range(0, len(eval_cache), cfg.batch_size):
-                batch = eval_cache[batch_start : batch_start + cfg.batch_size]
-                datums: list[tinker.Datum] = []
-                response_starts: list[int] = []
-                for pair in batch:
-                    datums.extend([pair["chosen_datum"], pair["rejected_datum"]])
-                    response_starts.append(pair["response_start"])
-
-                fwd = client.forward(datums, "cross_entropy")
-                logprobs_list = [
-                    torch.tensor(fwd.loss_fn_outputs[i]["logprobs"].data)
-                    for i in range(len(datums))
-                ]
-                loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
-                _, metrics = loss_fn(datums, logprobs_list)
-                for k, v in metrics.items():
-                    accum[k] = accum.get(k, 0.0) + v
-                n_batches += 1
-
-                if n_batches % 10 == 0 or n_batches == total_eval_batches:
-                    logger.info(
-                        "  eval batch %d/%d (%.0fs)",
-                        n_batches,
-                        total_eval_batches,
-                        time.monotonic() - eval_t0,
-                    )
-
-            if n_batches == 0:
-                return None
-
-            avg = {k: v / n_batches for k, v in accum.items()}
-            eval_elapsed = time.monotonic() - eval_t0
-
-            logger.info(
-                "Eval @ step %d | ORPO: %.4f | SFT: %.4f | OR: %.4f | "
-                "LogOR: %+.4f | Acc: %.1f%% | %d pairs (%.1fs)",
-                step,
-                avg.get("orpo_loss", 0),
-                avg.get("sft_loss", 0),
-                avg.get("or_loss", 0),
-                avg.get("log_odds_ratio", 0),
-                avg.get("accuracy", 0) * 100,
-                len(eval_cache),
-                eval_elapsed,
-            )
-            wandb_log(
-                {
-                    f"{tag}/step": step,
-                    f"{tag}/orpo_loss": avg.get("orpo_loss", 0),
-                    f"{tag}/sft_loss": avg.get("sft_loss", 0),
-                    f"{tag}/or_loss": avg.get("or_loss", 0),
-                    f"{tag}/log_odds_ratio": avg.get("log_odds_ratio", 0),
-                    f"{tag}/accuracy": avg.get("accuracy", 0),
-                    f"{tag}/eval_time_sec": eval_elapsed,
-                },
-                step,
-            )
-            return avg
-
-        eval_interval = cfg.eval_every_steps if cfg.eval_every_steps > 0 else None
-
-        if eval_cache:
-            _run_eval()
-
-        for epoch in range(cfg.epochs):
-            random.shuffle(pair_cache)
-            step_t0 = time.monotonic()
-            batch_buffer: list[dict] = []
-            for pair in pair_cache:
-                batch_buffer.append(pair)
-                if len(batch_buffer) >= cfg.batch_size:
-                    step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
-                    if eval_interval and step % eval_interval == 0:
-                        _run_eval()
-                        step_t0 = time.monotonic()
-                    batch_buffer = []
-
-            if batch_buffer:
-                _run_train_step(epoch, batch_buffer, step_t0)
-                if eval_interval and step % eval_interval == 0:
-                    _run_eval()
-
-        if eval_cache:
-            _run_eval()
+                if batch_buffer:
+                    _run_train_step(epoch, batch_buffer, step_t0)
 
         # -- Final checkpoint ------------------------------------------------
 
@@ -527,7 +432,12 @@ def main(
                     sampler_checkpoint_id,
                     cfg.output_model_id,
                 )
+                runner.write_output_model(
+                    model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
+                )
 
+        runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
+        runner.write_metadata()
         logger.info(
             "Training complete: %d optimizer steps (%d new)", step, step - step_offset
         )

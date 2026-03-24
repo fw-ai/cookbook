@@ -57,6 +57,7 @@ UTIL_MODULES = [
     "training.utils.rl.pp",
     "training.utils.rl.router_replay",
     "training.utils.rl.train",
+    "training.utils.runner",
 ]
 
 

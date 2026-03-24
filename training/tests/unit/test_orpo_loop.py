@@ -51,7 +51,16 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
 
         def resolve_training_profile(self, shape_id):
             self.resolved_shapes.append(shape_id)
-            return SimpleNamespace(max_supported_context_length=48)
+            return SimpleNamespace(
+                max_supported_context_length=48,
+                training_shape_version="accounts/test/trainingShapes/orpo/versions/1",
+            )
+
+        def create(self, config):
+            return SimpleNamespace(job_id="job-orpo", job_name="jobs/job-orpo")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
@@ -135,12 +144,6 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         ],
     )
     monkeypatch.setattr(module, "render_preference_pair", lambda *args, **kwargs: next(pair_outputs))
-    def _fake_create_trainer_job(*args, **kwargs):
-        if cleanup := kwargs.get("cleanup"):
-            cleanup.trainer("job-orpo")
-        return SimpleNamespace(job_id="job-orpo")
-
-    monkeypatch.setattr(module, "create_trainer_job", _fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "make_batch_orpo_loss_fn", lambda response_starts, orpo_lambda: ("loss", response_starts, orpo_lambda))
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
@@ -188,7 +191,16 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
 
     class FakeMgr:
         def resolve_training_profile(self, shape_id):
-            return SimpleNamespace(max_supported_context_length=48)
+            return SimpleNamespace(
+                max_supported_context_length=48,
+                training_shape_version="accounts/test/trainingShapes/orpo/versions/1",
+            )
+
+        def create(self, config):
+            return SimpleNamespace(job_id="job-orpo", job_name="jobs/job-orpo")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
@@ -260,12 +272,6 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
         ],
     )
     monkeypatch.setattr(module, "render_preference_pair", lambda *args, **kwargs: next(pair_outputs))
-    def _fake_create_trainer_job(*args, **kwargs):
-        if cleanup := kwargs.get("cleanup"):
-            cleanup.trainer("job-orpo")
-        return SimpleNamespace(job_id="job-orpo")
-
-    monkeypatch.setattr(module, "create_trainer_job", _fake_create_trainer_job)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "make_batch_orpo_loss_fn", lambda response_starts, orpo_lambda: ("loss", response_starts, orpo_lambda))
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
