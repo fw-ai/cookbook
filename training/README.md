@@ -95,6 +95,10 @@ cd cookbook/training
 python -m recipes.sft_loop      # or whichever recipe you configured
 ```
 
+## Useful examples
+
+- `examples/promote_checkpoint/train_promote_checkpoint.py` spins up a fresh trainer, loads a DCP checkpoint from the saved `state_path` in `checkpoints.jsonl`, optionally selects a specific training step, saves a promotable sampler checkpoint, and promotes it to a model.
+
 ## Documentation
 
 For detailed guides, configuration reference, and examples, see the official documentation:

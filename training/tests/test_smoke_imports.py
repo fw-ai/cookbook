@@ -69,12 +69,21 @@ def test_util_imports(module: str):
 # ── Example modules ─────────────────────────────────────────────────────────
 
 EXAMPLE_MODULES_WITH_ENV = [
-    ("training.examples.deepmath_rl.train_deepmath", "math_verify", {"FIREWORKS_API_KEY": "test"}),
-    ("training.examples.sft_getting_started.train_sft", "fireworks", {"FIREWORKS_API_KEY": "test"}),
+    (
+        "training.examples.deepmath_rl.train_deepmath",
+        "math_verify",
+        {"FIREWORKS_API_KEY": "test"},
+    ),
+    (
+        "training.examples.sft_getting_started.train_sft",
+        "fireworks",
+        {"FIREWORKS_API_KEY": "test"},
+    ),
 ]
 
 EXAMPLE_MODULES = [
     "training.examples.deepmath_rl.prepare_data",
+    "training.examples.promote_checkpoint.train_promote_checkpoint",
 ]
 
 
@@ -144,7 +153,9 @@ SDK_IMPORTS = [
 ]
 
 
-@pytest.mark.parametrize("module,attr", SDK_IMPORTS, ids=[f"{m}.{a}" for m, a in SDK_IMPORTS])
+@pytest.mark.parametrize(
+    "module,attr", SDK_IMPORTS, ids=[f"{m}.{a}" for m, a in SDK_IMPORTS]
+)
 def test_sdk_symbols(module: str, attr: str):
     mod = importlib.import_module(module)
     obj = getattr(mod, attr, None)
@@ -190,7 +201,9 @@ def test_utils_all_resolvable():
     import training.utils as utils_pkg
 
     for name in utils_pkg.__all__:
-        assert hasattr(utils_pkg, name), f"training.utils.__all__ lists '{name}' but it cannot be resolved"
+        assert hasattr(utils_pkg, name), (
+            f"training.utils.__all__ lists '{name}' but it cannot be resolved"
+        )
 
 
 def test_utils_rl_all_resolvable():
@@ -198,7 +211,9 @@ def test_utils_rl_all_resolvable():
     import training.utils.rl as rl_pkg
 
     for name in rl_pkg.__all__:
-        assert hasattr(rl_pkg, name), f"training.utils.rl.__all__ lists '{name}' but it cannot be resolved"
+        assert hasattr(rl_pkg, name), (
+            f"training.utils.rl.__all__ lists '{name}' but it cannot be resolved"
+        )
 
 
 # ── tinker_cookbook (optional — only runs if installed) ──────────────────────
