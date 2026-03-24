@@ -62,27 +62,30 @@ async def _run_pipeline_window(
     dynamic_filter_fn: DynamicFilterFn | None,
     global_step: int,
     metrics_callback: Callable[[dict[str, Any]], None] | None,
+    max_concurrent: int = 0,
 ) -> int:
     """Process one policy window with pipelined sampling/training.
 
-    All sampling coroutines fire at once.  As results arrive they are
-    filtered and accumulated; every ``prompt_groups_per_step`` valid
-    groups are sent to the trainer via an unbounded queue so the sampler
-    can pre-build batches while the trainer is busy.  Training for batch
-    K overlaps with sampling still in-flight for later batches -- early
-    arrivals get trained first.
-
-    HTTP-level concurrency limiting is handled by
-    ``DeploymentSampler(max_concurrency=...)`` in the SDK.
+    All sampling coroutines fire at once (capped by ``max_concurrent``
+    if > 0).  As results arrive they are filtered and accumulated; every
+    ``prompt_groups_per_step`` valid groups are sent to the trainer via
+    an unbounded queue so the sampler can pre-build batches while the
+    trainer is busy.  Training for batch K overlaps with sampling still
+    in-flight for later batches -- early arrivals get trained first.
     """
     pipe: asyncio.Queue = asyncio.Queue()
     results_q: asyncio.Queue[PromptGroup | None] = asyncio.Queue()
+    sem = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
     worker_error: BaseException | None = None
 
     async def _worker(coro: Coroutine) -> None:
         nonlocal worker_error
         try:
-            result = await coro
+            if sem is not None:
+                async with sem:
+                    result = await coro
+            else:
+                result = await coro
             results_q.put_nowait(result)
         except BaseException as exc:
             if worker_error is None:
@@ -233,18 +236,17 @@ async def run_rl_loop(
     metrics_callback: Callable[[dict[str, Any]], None] | None = None,
     weight_sync_fn: Callable[[int], None] | None = None,
     weight_sync_interval: int = 0,
+    max_concurrent: int = 0,
 ) -> int:
     """Run the pipelined RL training loop.
 
     Coroutines are grouped into **policy windows** of
     ``weight_sync_interval * prompt_groups_per_step`` coroutines each.
-    All coroutines in a window fire concurrently.  Results stream back
-    in completion order -- early arrivals get trained first while slower
-    rollouts are still in-flight.  Each ``prompt_groups_per_step``
-    valid groups form one training step.
-
-    HTTP-level concurrency limiting is handled by the SDK's
-    ``DeploymentSampler(max_concurrency=...)``.
+    All coroutines in a window fire concurrently (capped by
+    ``max_concurrent`` if > 0).  Results stream back in completion
+    order -- early arrivals get trained first while slower rollouts are
+    still in-flight.  Each ``prompt_groups_per_step`` valid groups form
+    one training step.
 
     At window boundaries the pipeline drains, ``weight_sync_fn`` fires
     (hotload) if at least one training step ran, and new sampling starts
@@ -278,6 +280,7 @@ async def run_rl_loop(
             dynamic_filter_fn=dynamic_filter_fn,
             global_step=global_step,
             metrics_callback=metrics_callback,
+            max_concurrent=max_concurrent,
         )
 
         if weight_sync_fn is not None and weight_sync_interval > 0 and global_step > step_before:

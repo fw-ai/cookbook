@@ -118,8 +118,9 @@ class WeightSyncConfig:
     weight_sync_before_training: bool = False
     weight_sync_timeout: int = 600
     max_concurrent: int = 0
-    """Passed to DeploymentSampler(max_concurrency=...) to cap concurrent
-    HTTP requests to the inference deployment.  0 = unlimited."""
+    """Cap concurrent sampling requests.  Passed to both
+    DeploymentSampler(max_concurrency=...) for HTTP-level gating and to
+    run_rl_loop for coroutine-level gating.  0 = unlimited."""
 
 
 @dataclass
