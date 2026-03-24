@@ -319,6 +319,12 @@ def main(
             cfg.deployment.deployment_shape = dep_shape
 
     if profile and getattr(profile, "base_model", ""):
+        if cfg.base_model and cfg.base_model != profile.base_model:
+            from training.utils.deprecation import warn_deprecated_param
+            warn_deprecated_param(
+                "base_model", "profile.base_model (from training shape)",
+                extra=f"The training shape specifies '{profile.base_model}'.",
+            )
         cfg.base_model = profile.base_model
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length

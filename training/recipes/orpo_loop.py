@@ -143,10 +143,8 @@ def main(
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
 
     if cfg.grad_accum > 1:
-        logger.warning(
-            "grad_accum is deprecated and ignored. "
-            "Increase batch_size instead for larger effective batches."
-        )
+        from training.utils.deprecation import warn_deprecated_param
+        warn_deprecated_param("grad_accum", "batch_size", extra="grad_accum is ignored.")
 
     if not cfg.tokenizer_model:
         raise ValueError(
@@ -176,6 +174,12 @@ def main(
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
 
     if profile and getattr(profile, "base_model", ""):
+        if cfg.base_model and cfg.base_model != profile.base_model:
+            from training.utils.deprecation import warn_deprecated_param
+            warn_deprecated_param(
+                "base_model", "profile.base_model (from training shape)",
+                extra=f"The training shape specifies '{profile.base_model}'.",
+            )
         cfg.base_model = profile.base_model
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
