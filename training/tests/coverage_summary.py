@@ -13,7 +13,7 @@ SCRIPT_TARGETS = [
     "training/recipes/rl_loop.py",
     "training/examples/frozen_lake/train_frozen_lake.py",
     "training/examples/deepmath_rl/train_deepmath.py",
-    "training/examples/text2sql_sft/train_sft.py",
+    "training/examples/sft_getting_started/train_sft.py",
     "training/examples/deepmath_rl/prepare_data.py",
 ]
 

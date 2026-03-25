@@ -3,7 +3,7 @@
 Runs 2 optimizer steps with weight syncing on a single GPU:
   Step 1: fwd/bkwd + optim_step -> weight sync to deployment
   Step 2: fwd/bkwd + optim_step (sampling from updated weights)
-  Cleanup: delete trainer job, scale deployment to zero
+  Cleanup: cancel trainer job, scale deployment to zero
 
 Requires env vars (skipped if not set):
     FIREWORKS_API_KEY

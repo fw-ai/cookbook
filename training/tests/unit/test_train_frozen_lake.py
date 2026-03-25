@@ -233,8 +233,11 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
                 max_supported_context_length=256,
             )
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
         def get(self, _job_id):
             return None
@@ -380,8 +383,11 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                 max_supported_context_length=256,
             )
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
         def get(self, _job_id):
             return None

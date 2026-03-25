@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 import logging
 from typing import Any
@@ -27,6 +28,26 @@ _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_B200", "US_OHIO_1"),
 )
 
+_TRAINER_CANCEL_GRACE_ENV = "FW_TRAINER_CANCEL_GRACE_PERIOD_S"
+_TRAINER_DELETE_GRACE_ENV = "FW_TRAINER_DELETE_GRACE_PERIOD_S"
+
+
+def _default_trainer_cancel_grace_period_s() -> float:
+    raw = os.environ.get(_TRAINER_CANCEL_GRACE_ENV)
+    source_env = _TRAINER_CANCEL_GRACE_ENV
+    if raw is None:
+        raw = os.environ.get(_TRAINER_DELETE_GRACE_ENV, "30")
+        source_env = _TRAINER_DELETE_GRACE_ENV
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; falling back to 30s trainer cancel grace period",
+            source_env,
+            raw,
+        )
+        return 30.0
+
 
 class ResourceCleanup:
     """Register resource IDs for automatic cleanup on scope exit.
@@ -34,7 +55,8 @@ class ResourceCleanup:
     Wrap recipe logic in ``with ResourceCleanup(...) as cleanup:`` and
     call ``cleanup.trainer(job_id)`` / ``cleanup.deployment(dep_id)``
     after creating each resource.  On scope exit (including exceptions),
-    registered resources are deleted in reverse creation order.
+    registered trainers are cancelled and deployments are cleaned in
+    reverse creation order.
 
     Pre-created resources that should survive simply aren't registered.
     """
@@ -43,23 +65,39 @@ class ResourceCleanup:
         self,
         rlor_mgr: TrainerJobManager,
         deploy_mgr: DeploymentManager | None = None,
+        trainer_delete_grace_period_s: float | None = None,
+        trainer_cancel_grace_period_s: float | None = None,
     ):
         self._rlor_mgr = rlor_mgr
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
         self._deployments: list[tuple[str, str]] = []
+        grace_period_s = (
+            trainer_cancel_grace_period_s
+            if trainer_cancel_grace_period_s is not None
+            else trainer_delete_grace_period_s
+        )
+        self._trainer_cancel_grace_period_s = (
+            _default_trainer_cancel_grace_period_s()
+            if grace_period_s is None
+            else max(0.0, float(grace_period_s))
+        )
 
     def trainer(self, job_id: str) -> None:
-        """Register a trainer job for deletion on exit."""
+        """Register a trainer job for cancellation on exit."""
         self._jobs.append(job_id)
 
-    def delete_trainer(self, job_id: str) -> None:
-        """Delete a trainer job now and unregister it from cleanup."""
-        self._rlor_mgr.delete(job_id)
+    def cancel_trainer(self, job_id: str) -> None:
+        """Cancel a trainer job now and unregister it from cleanup."""
+        self._cancel_trainer_with_grace(job_id)
         try:
             self._jobs.remove(job_id)
         except ValueError:
             pass
+
+    def delete_trainer(self, job_id: str) -> None:
+        """Backward-compatible alias for ``cancel_trainer``."""
+        self.cancel_trainer(job_id)
 
     def deployment(self, dep_id: str, action: str = "delete") -> None:
         """Register a deployment for cleanup on exit.
@@ -71,13 +109,41 @@ class ResourceCleanup:
     def __enter__(self) -> ResourceCleanup:
         return self
 
+    def _cancel_trainer(self, job_id: str) -> None:
+        cancel = getattr(self._rlor_mgr, "cancel", None)
+        if callable(cancel):
+            cancel(job_id)
+            return
+
+        post = getattr(self._rlor_mgr, "_post", None)
+        account_id = getattr(self._rlor_mgr, "account_id", None)
+        if callable(post) and account_id is not None:
+            path = f"/v1/accounts/{account_id}/rlorTrainerJobs/{job_id}:cancel"
+            resp = post(path, timeout=60)
+            resp.raise_for_status()
+            return
+
+        raise AttributeError(
+            "TrainerJobManager does not expose trainer cancellation support"
+        )
+
+    def _cancel_trainer_with_grace(self, job_id: str) -> None:
+        if self._trainer_cancel_grace_period_s > 0:
+            logger.info(
+                "Cleanup: waiting %.1fs before canceling trainer job %s",
+                self._trainer_cancel_grace_period_s,
+                job_id,
+            )
+            time.sleep(self._trainer_cancel_grace_period_s)
+        logger.info("Cleanup: canceling trainer job %s", job_id)
+        self._cancel_trainer(job_id)
+
     def __exit__(self, *exc) -> None:
         for jid in reversed(self._jobs):
             try:
-                logger.info("Cleanup: deleting trainer job %s", jid)
-                self._rlor_mgr.delete(jid)
+                self._cancel_trainer_with_grace(jid)
             except Exception as e:
-                logger.warning("Cleanup: failed to delete trainer %s: %s", jid, e)
+                logger.warning("Cleanup: failed to cancel trainer %s: %s", jid, e)
         for did, action in reversed(self._deployments):
             try:
                 if action == "scale_to_zero":

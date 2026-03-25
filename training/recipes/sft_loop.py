@@ -15,9 +15,9 @@ Usage:
 from __future__ import annotations
 
 import os
-import time
 import signal
 import logging
+from contextlib import ExitStack
 from typing import Any, Dict, List
 from dataclasses import field, dataclass
 
@@ -179,7 +179,7 @@ def main(
     runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
-    with ResourceCleanup(rlor_mgr) as cleanup:
+    with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         endpoint = create_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
@@ -193,6 +193,8 @@ def main(
         )
         job_id = endpoint.job_id
         client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
+        if hasattr(client, "close"):
+            stack.callback(client.close)
 
         # -- Prepare data ------------------------------------------------------
         tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
@@ -276,9 +278,18 @@ def main(
         start_batch = data_consumed // cfg.batch_size
         total_steps_estimate = total_batches_per_epoch * cfg.epochs
 
-        def _run_train_step(batch: list[tinker.Datum], step: int) -> int:
-            step_t0 = time.monotonic()
-            step_tokens = sum(len(d.loss_fn_inputs["target_tokens"].data) for d in batch)
+        def _run_train_step(
+            batch: list[tinker.Datum],
+            step: int,
+        ) -> int:
+
+            # Count total tokens for throughput tracking
+            step_total_tokens = sum(
+                len(chunk.tokens)
+                for d in batch
+                for chunk in d.model_input.chunks
+                if hasattr(chunk, "tokens")
+            )
 
             with timer("fwd_bwd"):
                 result = client.forward_backward(batch)
@@ -302,34 +313,36 @@ def main(
                     base_model=cfg.base_model,
                     training_shape=cfg.infra.training_shape_id)
 
-            step_elapsed = time.monotonic() - step_t0
-            tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
             step_metrics: Dict[str, Any] = flush_timing()
 
             if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
                 for k, v in optim_result.metrics.items():
                     step_metrics[f"train/{k}"] = v
 
+            # Compute tokens/sec
+            fwd_bwd_time = step_metrics.get("perf/fwd_bwd_time", 0.0)
+            step_wall_time = fwd_bwd_time + step_metrics.get("perf/optim_step_time", 0.0)
+            if step_wall_time > 0:
+                step_metrics["train/tokens_per_sec"] = step_total_tokens / step_wall_time
+                step_metrics["train/tokens_per_sec_fwd_bwd"] = step_total_tokens / fwd_bwd_time if fwd_bwd_time > 0 else 0.0
+            step_metrics["train/total_tokens"] = step_total_tokens
+
             if response_tokens > 0:
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f | %.1f tok/s (%.1fs)",
-                    step, total_steps_estimate, avg_loss, ppl,
-                    tokens_per_sec, step_elapsed,
+                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
+                    step, total_steps_estimate, avg_loss, ppl, step_metrics["train/tokens_per_sec"], step_total_tokens,
                 )
-                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tokens_per_sec)
+                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
                 step_metrics.update({
                     "train/step": step,
                     "train/ce_loss": avg_loss,
                     "train/ppl": ppl,
-                    "train/tokens_per_sec": tokens_per_sec,
-                    "train/step_time_sec": step_elapsed,
-                    "train/step_tokens": step_tokens,
                 })
                 wandb_log(step_metrics, step)
 
-            runner.append_metrics(step, step_metrics, tokens=step_tokens)
+            runner.append_metrics(step, step_metrics, tokens=step_total_tokens)
             runner.write_status(
                 RunStatus.RUNNING, step=step, total_steps=total_steps_estimate, message="training",
             )

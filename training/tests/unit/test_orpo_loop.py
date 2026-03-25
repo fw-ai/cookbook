@@ -62,8 +62,11 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         def wait_for_ready(self, job_id, **kwargs):
             return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
         def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
             events["promotions"].append((job_id, checkpoint_id, output_model_id))
@@ -202,8 +205,11 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
         def wait_for_ready(self, job_id, **kwargs):
             return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
     class FakeClient:
         def __init__(self, *args, **kwargs):

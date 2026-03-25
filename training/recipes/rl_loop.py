@@ -27,6 +27,7 @@ import json
 import signal
 import asyncio
 import logging
+from contextlib import ExitStack
 from typing import List, Optional
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
@@ -351,7 +352,7 @@ def main(
 
     _infra_start = _time.time()
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
+    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
         if cleanup_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
@@ -425,6 +426,8 @@ def main(
             fw_api_key=api_key,
             endpoint=policy_ep if cfg.policy_base_url else None,
         )
+        if hasattr(policy, "close"):
+            stack.callback(policy.close)
         reference = (
             ReconnectableClient(
                 rlor_mgr,
@@ -437,6 +440,8 @@ def main(
             if reference_ep
             else None
         )
+        if reference is not None and hasattr(reference, "close"):
+            stack.callback(reference.close)
 
         import transformers
 

@@ -56,8 +56,11 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         def wait_for_ready(self, job_id, **kwargs):
             return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             deleted_jobs.append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -106,7 +109,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
-    events: dict[str, object] = {"batches": [], "deleted_jobs": []}
+    events: dict[str, object] = {"batches": [], "deleted_jobs": [], "lifecycle": []}
     renderer = StubRenderer(
         tokens=[100, 101, 102, 103, 104, 105, 106],
         weights=[0, 0, 1, 1, 0, 1, 1],
@@ -119,8 +122,12 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         def wait_for_ready(self, job_id, **kwargs):
             return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
+            events["lifecycle"].append(("delete", job_id))
             events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
     class FakeClient:
         job_id = "job-sft"
@@ -150,6 +157,9 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
 
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"cross_job://{source_job_id}/{name}" if source_job_id else name
+
+        def close(self):
+            events["lifecycle"].append(("close", self.job_id))
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
@@ -184,6 +194,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     assert datum.loss_fn_inputs["target_tokens"].data == [101, 102, 103, 104, 105, 106]
     assert datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 1.0, 1.0]
     assert events["deleted_jobs"] == ["job-sft"]
+    assert events["lifecycle"] == [("close", "job-sft"), ("delete", "job-sft")]
 
 
 def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
@@ -207,8 +218,11 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
         def wait_for_ready(self, job_id, **kwargs):
             return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
     class FakeClient:
         job_id = "job-sft"
@@ -247,6 +261,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     def _fake_render(messages, **kwargs):
         content = messages[-1]["content"]
         datum = SimpleNamespace(
+            model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
             loss_fn_inputs={
                 "target_tokens": SimpleNamespace(data=[0, 0]),
                 "weights": SimpleNamespace(data=[1.0, 1.0]),

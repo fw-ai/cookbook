@@ -29,6 +29,7 @@ import time
 import signal
 import asyncio
 import logging
+from contextlib import ExitStack
 from typing import Any, Callable
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
@@ -473,7 +474,7 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    with ResourceCleanup(rlor_mgr) as cleanup:
+    with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         with ThreadPoolExecutor(max_workers=2) as pool:
             pol_fut = pool.submit(
                 create_trainer_job,
@@ -509,6 +510,10 @@ def main(
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
         reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+        if hasattr(policy, "close"):
+            stack.callback(policy.close)
+        if hasattr(reference, "close"):
+            stack.callback(reference.close)
 
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
@@ -557,9 +562,12 @@ def main(
 
         def _on_ref_done():
             nonlocal reference_job_id
-            logger.info("Reference forward complete — deleting reference trainer to free GPU")
+            logger.info("Reference forward complete — closing reference client before trainer cleanup")
             try:
-                cleanup.delete_trainer(reference_job_id)
+                if hasattr(reference, "close"):
+                    reference.close()
+                logger.info("Reference forward complete — canceling reference trainer to free GPU")
+                cleanup.cancel_trainer(reference_job_id)
                 reference_job_id = None
             except Exception as e:
                 logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
