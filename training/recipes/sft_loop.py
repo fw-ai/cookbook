@@ -298,7 +298,9 @@ def main(
                         "step": step,
                         "data_consumed": data_consumed,
                         "source_job_id": job_id,
-                    }, kind=CheckpointKind.STATE)
+                    }, kind=CheckpointKind.STATE,
+                    base_model=cfg.base_model,
+                    training_shape=cfg.infra.training_shape_id)
 
             step_elapsed = time.monotonic() - step_t0
             tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
@@ -357,7 +359,9 @@ def main(
                 "step": step,
                 "data_consumed": data_consumed,
                 "source_job_id": job_id,
-            }, kind=CheckpointKind.BOTH)
+            }, kind=CheckpointKind.BOTH,
+            base_model=cfg.base_model,
+            training_shape=cfg.infra.training_shape_id)
             if getattr(cfg, "output_model_id", None):
                 rlor_mgr.promote_checkpoint(
                     job_id,
