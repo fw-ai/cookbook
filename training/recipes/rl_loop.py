@@ -461,7 +461,8 @@ def main(
                     "Install from source or upgrade: pip install --upgrade fireworks-ai"
                 )
             gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
-            initial_window = cfg.concurrency.initial_window or (8 * gpu_count)
+            _SLOTS_PER_GPU = 8  # Default concurrent requests per GPU.
+            initial_window = cfg.concurrency.initial_window or (_SLOTS_PER_GPU * gpu_count)
             concurrency_controller = AdaptiveConcurrencyController(
                 initial_window=initial_window,
                 min_window=cfg.concurrency.min_window,
