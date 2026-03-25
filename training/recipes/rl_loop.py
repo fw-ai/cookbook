@@ -37,6 +37,7 @@ from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
 from training.utils import (
     DEFAULT_ADAM,
+    ConcurrencyConfig,
     InfraConfig,
     ResourceCleanup,
     RunnerConfig,
@@ -52,6 +53,7 @@ from training.utils import (
     wandb_finish,
     validate_config,
     log_metrics_json,
+    get_deployment_gpu_count,
     setup_deployment,
     compute_advantages,
     create_trainer_job,
@@ -64,6 +66,8 @@ from training.utils.checkpoint_utils import (
     CheckpointKind,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
+
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, FixedConcurrencyController
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -142,6 +146,11 @@ class Config:
     """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
+
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
+    """Concurrency control for inference sampling.  ``"fixed"`` (default)
+    uses a static semaphore; ``"adaptive"`` adjusts the window based on
+    server-side prefill queue latency.  Adaptive mode requires ``stream=True``."""
 
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files.  Each file contains
@@ -433,12 +442,50 @@ def main(
 
         inference_model = dep_info.inference_model if dep_info else cfg.base_model
         tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
+
+        # -- Concurrency controller ------------------------------------------------
+        if cfg.concurrency.mode == "adaptive":
+            gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
+            _SLOTS_PER_GPU = 8  # Default concurrent requests per GPU.
+            initial_window = cfg.concurrency.initial_window or (_SLOTS_PER_GPU * gpu_count)
+            concurrency_controller = AdaptiveConcurrencyController(
+                initial_window=initial_window,
+                min_window=cfg.concurrency.min_window,
+                max_window=cfg.concurrency.max_window,
+                prefill_queue_target=cfg.concurrency.prefill_queue_target,
+            )
+            logger.info(
+                "Using adaptive concurrency (initial=%d, range=%d-%d, target_pq=%.2fs)",
+                initial_window,
+                cfg.concurrency.min_window,
+                cfg.concurrency.max_window,
+                cfg.concurrency.prefill_queue_target,
+            )
+        elif cfg.concurrency.mode == "fixed":
+            concurrency_controller = None
+            logger.info("Using fixed concurrency: unlimited")
+        elif cfg.concurrency.mode is None and cfg.concurrency.max_concurrency is not None:
+            import warnings
+            warnings.warn(
+                "ConcurrencyConfig.max_concurrency is deprecated. "
+                "Use mode='adaptive' (default) or mode='fixed' with "
+                "FixedConcurrencyController instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            concurrency_controller = FixedConcurrencyController(cfg.concurrency.max_concurrency)
+            logger.info("Using fixed concurrency (deprecated max_concurrency=%d)", cfg.concurrency.max_concurrency)
+        else:
+            raise ValueError(
+                f"Unknown concurrency mode: {cfg.concurrency.mode!r}. Must be 'adaptive' or 'fixed'."
+            )
+
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
             model=inference_model,
             api_key=api_key,
             tokenizer=tokenizer,
-            max_concurrency=cfg.weight_sync.max_concurrent or None,
+            concurrency_controller=concurrency_controller,
         )
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
@@ -515,6 +562,10 @@ def main(
                     **sample_kwargs,
                 )
             except Exception as e:
+                # TODO: HTTP 425 (deployment hot-loading after weight sync)
+                # can cause transient failures here.  Currently the prompt is
+                # silently dropped (counted as sample_fails).  Consider adding
+                # a retry loop so no training data is lost during hotload.
                 logger.warning("Sampling failed: %s", e)
                 return None
 
@@ -760,6 +811,10 @@ def main(
 
         def _loop_metrics_callback(loop_metrics: dict) -> None:
             """Called by run_rl_loop after each train step with loop-level metrics."""
+            if concurrency_controller is not None:
+                cc_summary = concurrency_controller.step_completed()
+                for k, v in cc_summary.items():
+                    loop_metrics[f"concurrency/{k}"] = v
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
         train_fns = TrainStepFns(train_step=train_step)
