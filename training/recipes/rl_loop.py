@@ -155,10 +155,6 @@ class Config:
     uses a static semaphore; ``"adaptive"`` adjusts the window based on
     server-side prefill queue latency.  Adaptive mode requires ``stream=True``."""
 
-    prefix_aware_scheduling: bool = False
-    """Reorder prompts within each step so that prompts sharing a token
-    prefix are submitted consecutively, maximising server KV-cache reuse."""
-
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files.  Each file contains
     prompts, completions, and rewards for every prompt group in that step."""
@@ -823,26 +819,6 @@ def main(
         remaining_rows = []
         for i_step in range(step_offset, len(rl_dataset)):
             remaining_rows.extend(rl_dataset.get_batch(i_step))
-
-        # -- Optional prefix-aware reordering --------------------------------------
-        if cfg.prefix_aware_scheduling and remaining_rows:
-            from training.utils.prefix_scheduler import reorder_by_prefix
-
-            logger.info("Prefix-aware scheduling: tokenizing %d prompts for reordering...", len(remaining_rows))
-            prompt_token_lists = []
-            for row in remaining_rows:
-                msgs = row.get("messages", [])
-                input_msgs = prepare_sampling_messages(msgs)
-                if input_msgs:
-                    toks = tokenizer.apply_chat_template(
-                        input_msgs, tokenize=True, add_generation_prompt=True, return_dict=False,
-                    )
-                    prompt_token_lists.append(toks)
-                else:
-                    prompt_token_lists.append([])
-            reordered_indices = reorder_by_prefix(prompt_token_lists)
-            remaining_rows = [remaining_rows[i] for i in reordered_indices]
-            logger.info("Prefix-aware scheduling: reordered %d prompts", len(remaining_rows))
 
         total_rl_steps = len(rl_dataset) - step_offset
         runner.start_training()
