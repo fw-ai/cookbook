@@ -306,6 +306,34 @@ def _get_deployment_shape_version(
     return versions[0]
 
 
+def get_deployment_gpu_count(
+    deploy_mgr: DeploymentManager,
+    deploy_cfg: "DeployConfig",
+) -> int:
+    """Return total GPU count (accelerator_count × replica_count) for a deployment.
+
+    Reads accelerator_count from the deployment shape snapshot.
+    Falls back to 1 if the shape doesn't expose it.
+    """
+    replica_count = deploy_cfg.replica_count or 1
+    if not deploy_cfg.deployment_shape:
+        return replica_count  # no shape, assume 1 GPU per replica
+
+    try:
+        version = _get_deployment_shape_version(deploy_mgr, deploy_cfg.deployment_shape)
+        snapshot = version.get("snapshot", {}) or {}
+        accel_count = snapshot.get("acceleratorCount", 1) or 1
+        total = accel_count * replica_count
+        logger.info(
+            "Deployment GPU count: %d (accelerator_count=%d × replica_count=%d)",
+            total, accel_count, replica_count,
+        )
+        return total
+    except Exception as e:
+        logger.warning("Could not determine GPU count from shape: %s", e)
+        return replica_count
+
+
 def _create_deployment_via_cookbook(
     deploy_mgr: DeploymentManager,
     config: DeploymentConfig,

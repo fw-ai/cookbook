@@ -53,6 +53,7 @@ from training.utils import (
     wandb_finish,
     validate_config,
     log_metrics_json,
+    get_deployment_gpu_count,
     setup_deployment,
     compute_advantages,
     create_trainer_job,
@@ -459,8 +460,8 @@ def main(
                     "AdaptiveConcurrencyController requires fireworks-ai SDK >= 1.0.0a49. "
                     "Install from source or upgrade: pip install --upgrade fireworks-ai"
                 )
-            replica_count = cfg.deployment.replica_count or 1
-            initial_window = cfg.concurrency.initial_window or (16 * replica_count)
+            gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
+            initial_window = cfg.concurrency.initial_window or (8 * gpu_count)
             concurrency_controller = AdaptiveConcurrencyController(
                 initial_window=initial_window,
                 min_window=cfg.concurrency.min_window,

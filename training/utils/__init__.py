@@ -71,6 +71,7 @@ from training.utils.data import (
 )
 from training.utils.infra import (
     ResourceCleanup,
+    get_deployment_gpu_count,
     setup_deployment,
     create_trainer_job,
     setup_training_client,
