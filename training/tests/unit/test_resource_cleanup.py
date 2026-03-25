@@ -18,7 +18,7 @@ class TestResourceCleanup:
             cleanup.deployment("dep-1")
             cleanup.deployment("dep-2", action="scale_to_zero")
 
-        assert rlor_mgr.delete.call_args_list == [
+        assert rlor_mgr.cancel.call_args_list == [
             (("job-2",),),
             (("job-1",),),
         ]
@@ -35,9 +35,22 @@ class TestResourceCleanup:
         except RuntimeError:
             pass
 
-        rlor_mgr.delete.assert_called_once_with("created-job")
+        rlor_mgr.cancel.assert_called_once_with("created-job")
 
-    def test_delete_trainer_deletes_and_unregisters(self):
+    def test_cancel_trainer_cancels_and_unregisters(self):
+        rlor_mgr = MagicMock()
+
+        with ResourceCleanup(rlor_mgr) as cleanup:
+            cleanup.trainer("job-keep")
+            cleanup.trainer("job-early")
+            cleanup.cancel_trainer("job-early")
+
+        assert rlor_mgr.cancel.call_args_list == [
+            (("job-early",),),
+            (("job-keep",),),
+        ]
+
+    def test_delete_trainer_alias_cancels_and_unregisters(self):
         rlor_mgr = MagicMock()
 
         with ResourceCleanup(rlor_mgr) as cleanup:
@@ -45,7 +58,7 @@ class TestResourceCleanup:
             cleanup.trainer("job-early")
             cleanup.delete_trainer("job-early")
 
-        assert rlor_mgr.delete.call_args_list == [
+        assert rlor_mgr.cancel.call_args_list == [
             (("job-early",),),
             (("job-keep",),),
         ]
