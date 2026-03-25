@@ -67,10 +67,7 @@ from training.utils.checkpoint_utils import (
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 
-try:
-    from fireworks.training.sdk.deployment import AdaptiveConcurrencyController
-except ImportError:
-    AdaptiveConcurrencyController = None  # type: ignore[misc,assignment]
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -447,15 +444,7 @@ def main(
         tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
 
         # -- Concurrency controller ------------------------------------------------
-        concurrency_controller = None
-        max_concurrency = None
-
         if cfg.concurrency.mode == "adaptive":
-            if AdaptiveConcurrencyController is None:
-                raise ImportError(
-                    "AdaptiveConcurrencyController requires fireworks-ai SDK >= 1.0.0a49. "
-                    "Install from source or upgrade: pip install --upgrade fireworks-ai"
-                )
             gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
             _SLOTS_PER_GPU = 8  # Default concurrent requests per GPU.
             initial_window = cfg.concurrency.initial_window or (_SLOTS_PER_GPU * gpu_count)
@@ -472,16 +461,19 @@ def main(
                 cfg.concurrency.max_window,
                 cfg.concurrency.prefill_queue_target,
             )
-        elif cfg.concurrency.max_concurrency is not None:
-            max_concurrency = cfg.concurrency.max_concurrency
-            logger.info("Using fixed concurrency: %d", max_concurrency)
+        elif cfg.concurrency.mode == "fixed":
+            concurrency_controller = None
+            logger.info("Using fixed concurrency: %s", cfg.concurrency.max_concurrency or "unlimited")
+        else:
+            raise ValueError(
+                f"Unknown concurrency mode: {cfg.concurrency.mode!r}. Must be 'adaptive' or 'fixed'."
+            )
 
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
             model=inference_model,
             api_key=api_key,
             tokenizer=tokenizer,
-            max_concurrency=max_concurrency,
             concurrency_controller=concurrency_controller,
         )
         weight_syncer = WeightSyncer(

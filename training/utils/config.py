@@ -26,15 +26,13 @@ class ConcurrencyConfig:
 
     Two modes:
 
-    * **fixed** (default): Uses a fixed ``asyncio.Semaphore(max_concurrency)``.
-      Equivalent to the previous ``max_concurrency`` parameter.
-    * **adaptive**: Uses ``AdaptiveConcurrencyController`` which adjusts
+    * **adaptive** (default): Uses ``AdaptiveConcurrencyController`` which adjusts
       the concurrency window based on server-side ``prefill_queue_duration``.
-      Requires ``stream=True`` on the sampler to receive metrics.
+    * **fixed**: Uses a fixed ``asyncio.Semaphore(max_concurrency)``.
     """
 
-    mode: str = "fixed"
-    """``"fixed"`` or ``"adaptive"``."""
+    mode: str = "adaptive"
+    """``"adaptive"`` or ``"fixed"``."""
 
     max_concurrency: int | None = None
     """Fixed concurrency limit.  Used when ``mode="fixed"``.
