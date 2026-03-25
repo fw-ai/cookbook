@@ -1,8 +1,16 @@
-"""Tests for TrainingShapeProfile.base_model and TrainerJobConfig validation."""
+"""Tests for TrainingShapeProfile.base_model and TrainerJobConfig validation.
+
+Requires the SDK with base_model field on TrainingShapeProfile
+(stainless-sdks/fireworks-ai-python#82). Skipped when running
+against an older SDK release.
+"""
 
 import pytest
 
 from fireworks.training.sdk.trainer import TrainerJobConfig, TrainingShapeProfile
+
+_HAS_BASE_MODEL = "base_model" in {f.name for f in TrainingShapeProfile.__dataclass_fields__.values()}
+pytestmark = pytest.mark.skipif(not _HAS_BASE_MODEL, reason="SDK missing TrainingShapeProfile.base_model")
 
 
 def _make_profile(**overrides) -> TrainingShapeProfile:
