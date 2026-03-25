@@ -318,7 +318,7 @@ def main(
         if dep_shape and not cfg.deployment.deployment_shape:
             cfg.deployment.deployment_shape = dep_shape
 
-    if profile and getattr(profile, "base_model", ""):
+    if profile and profile.base_model:
         if cfg.base_model and cfg.base_model != profile.base_model:
             from training.utils.deprecation import warn_deprecated_param
             warn_deprecated_param(

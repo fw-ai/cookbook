@@ -213,6 +213,7 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
                 deployment_shape_version=None,
                 pipeline_parallelism=4,
                 max_supported_context_length=128,
+                base_model="accounts/test/models/qwen3-4b",
             )
 
         def delete(self, job_id):

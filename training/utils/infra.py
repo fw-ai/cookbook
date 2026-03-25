@@ -144,7 +144,7 @@ def create_trainer_job(
 
     if profile is not None:
         config = TrainerJobConfig(
-            base_model=getattr(profile, "base_model", "") or base_model,
+            base_model=profile.base_model,
             lora_rank=lora_rank,
             max_context_length=max_seq_len or profile.max_supported_context_length,
             learning_rate=learning_rate,

@@ -461,7 +461,7 @@ def main(
             "(can be the same as training_shape_id)."
         )
 
-    if profile and getattr(profile, "base_model", ""):
+    if profile and profile.base_model:
         if cfg.base_model and cfg.base_model != profile.base_model:
             from training.utils.deprecation import warn_deprecated_param
             warn_deprecated_param(

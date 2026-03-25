@@ -24,7 +24,7 @@ from fireworks.training.sdk.trainer import (
 
 BASE_MODEL = "accounts/fireworks/models/qwen3-1p7b"
 
-_profile_kwargs = dict(
+PROFILE = TrainingShapeProfile(
     training_shape_version="accounts/fw/trainingShapes/ts-qwen3-1p7b/versions/v42",
     trainer_image_tag="0.35.0",
     max_supported_context_length=4096,
@@ -34,12 +34,9 @@ _profile_kwargs = dict(
     accelerator_type="NVIDIA_H100_80GB",
     accelerator_count=1,
     base_model_weight_precision="bfloat16",
+    base_model=BASE_MODEL,
     pipeline_parallelism=1,
 )
-# base_model field added in SDK PR #82 — include when available.
-if "base_model" in {f.name for f in TrainingShapeProfile.__dataclass_fields__.values()}:
-    _profile_kwargs["base_model"] = BASE_MODEL
-PROFILE = TrainingShapeProfile(**_profile_kwargs)
 
 
 class _CapturingMgr:
