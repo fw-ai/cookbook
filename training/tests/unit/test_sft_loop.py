@@ -56,8 +56,11 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         def wait_for_ready(self, job_id, **kwargs):
             return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             deleted_jobs.append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -119,9 +122,12 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         def wait_for_ready(self, job_id, **kwargs):
             return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             events["lifecycle"].append(("delete", job_id))
             events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
     class FakeClient:
         job_id = "job-sft"
@@ -212,8 +218,11 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
         def wait_for_ready(self, job_id, **kwargs):
             return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
 
-        def delete(self, job_id):
+        def cancel(self, job_id):
             events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
 
     class FakeClient:
         job_id = "job-sft"

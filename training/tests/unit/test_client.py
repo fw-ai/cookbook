@@ -71,6 +71,9 @@ class _FakeHolder:
     async def _async_cleanup(self):
         return None
 
+    def get_telemetry(self):
+        return self._telemetry
+
     def run_coroutine_threadsafe(self, coro):
         try:
             coro.close()
