@@ -44,6 +44,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
 
+      - name: Install SDK from source (pre-merge)  # TODO: remove after SDK PR #78 is merged and released
+        run: |
+          python -m pip install "git+https://github.com/stainless-sdks/fireworks-ai-python.git@chengxi/streaming-adaptive-concurrency"
+
       - name: Run Unit Tests
         run: |
           pytest -q tests/unit tests/test_smoke_imports.py examples/frozen_lake/test_masking.py \
