@@ -47,7 +47,7 @@ class ConcurrencyConfig:
     min_window: int = 1
     """Minimum concurrency window for adaptive mode."""
 
-    max_window: int = 64
+    max_window: int = 256
     """Maximum concurrency window for adaptive mode."""
 
     prefill_queue_target: float = 0.5
