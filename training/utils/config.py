@@ -31,12 +31,13 @@ class ConcurrencyConfig:
     * **fixed**: Uses a fixed ``asyncio.Semaphore(max_concurrency)``.
     """
 
-    mode: str = "adaptive"
-    """``"adaptive"`` or ``"fixed"``."""
+    mode: str | None = "adaptive"
+    """``"adaptive"`` or ``"fixed"``.  ``None`` with ``max_concurrency`` set
+    triggers the deprecated backward-compat path."""
 
     max_concurrency: int | None = None
-    """Fixed concurrency limit.  Used when ``mode="fixed"``.
-    ``None`` means unlimited."""
+    """Deprecated.  Set ``mode="fixed"`` and use ``FixedConcurrencyController``
+    instead.  When set with ``mode=None``, creates a fixed controller and warns."""
 
     initial_window: int | None = None
     """Starting concurrency window for adaptive mode.

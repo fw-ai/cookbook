@@ -462,12 +462,19 @@ def main(
                 cfg.concurrency.prefill_queue_target,
             )
         elif cfg.concurrency.mode == "fixed":
-            concurrency_controller = (
-                FixedConcurrencyController(cfg.concurrency.max_concurrency)
-                if cfg.concurrency.max_concurrency
-                else None
+            concurrency_controller = None
+            logger.info("Using fixed concurrency: unlimited")
+        elif cfg.concurrency.mode is None and cfg.concurrency.max_concurrency is not None:
+            import warnings
+            warnings.warn(
+                "ConcurrencyConfig.max_concurrency is deprecated. "
+                "Use mode='adaptive' (default) or mode='fixed' with "
+                "FixedConcurrencyController instead.",
+                DeprecationWarning,
+                stacklevel=2,
             )
-            logger.info("Using fixed concurrency: %s", cfg.concurrency.max_concurrency or "unlimited")
+            concurrency_controller = FixedConcurrencyController(cfg.concurrency.max_concurrency)
+            logger.info("Using fixed concurrency (deprecated max_concurrency=%d)", cfg.concurrency.max_concurrency)
         else:
             raise ValueError(
                 f"Unknown concurrency mode: {cfg.concurrency.mode!r}. Must be 'adaptive' or 'fixed'."
