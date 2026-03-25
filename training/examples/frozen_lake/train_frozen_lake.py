@@ -733,7 +733,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 prompt_groups: list[PromptGroup],
                 loop_stats: dict | None = None,
             ) -> tuple[int, dict]:
-                """ref_forward + fwd_bwd + optim_step + weight_sync + metrics (1:1)."""
+                """ref_forward + fwd_bwd + optim_step + metrics (1:1)."""
                 t0 = time.time()
                 ref_forward_batch(prompt_groups)
                 logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
@@ -749,13 +749,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 )
                 step += 1
                 logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
-
-                if weight_sync_cfg.weight_sync_interval > 0 and step % weight_sync_cfg.weight_sync_interval == 0:
-                    logger.info("[step %d] weight_sync: saving + loading...", step)
-                    t0 = time.time()
-                    with timer("weight_sync"):
-                        weight_syncer.save_and_hotload(f"step-{step}")
-                    logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
 
                 if weight_sync_cfg.dcp_save_interval > 0 and step % weight_sync_cfg.dcp_save_interval == 0:
                     logger.info("[step %d] dcp_save...", step)
@@ -796,6 +789,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 wandb_log(metrics, _wandb_step[0])
                 return step, metrics
 
+            def _weight_sync(step: int) -> None:
+                logger.info("[step %d] weight_sync: saving + loading...", step)
+                t0 = time.time()
+                with timer("weight_sync"):
+                    weight_syncer.save_and_hotload(f"step-{step}")
+                logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
+
             train_fns = TrainStepFns(train_step=train_step)
 
             def should_accept(pg: PromptGroup) -> bool:
@@ -822,6 +822,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
                 metrics_callback=_filtered_step_callback,
+                weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
+                weight_sync_interval=weight_sync_cfg.weight_sync_interval,
+                max_concurrent=weight_sync_cfg.max_concurrent,
             ))
 
             # -- Final checkpoint -----------------------------------------------

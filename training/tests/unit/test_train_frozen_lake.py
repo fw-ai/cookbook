@@ -324,7 +324,9 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
     assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
     assert "train_fns" in events["run_rl_loop_kwargs"]
-    assert "max_concurrent" not in events["run_rl_loop_kwargs"]
+    assert events["run_rl_loop_kwargs"]["max_concurrent"] == 0
+    assert events["run_rl_loop_kwargs"]["weight_sync_interval"] == 1
+    assert events["run_rl_loop_kwargs"]["weight_sync_fn"] is not None
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1
@@ -513,6 +515,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                 "step_wall_time": 0.2,
             },
         )
+        if kwargs.get("weight_sync_fn") is not None:
+            kwargs["weight_sync_fn"](step)
         kwargs["metrics_callback"]({"train/step": step, "rollout/sample_fail_count": 0})
         events["finish_metrics"] = metrics
         return step
