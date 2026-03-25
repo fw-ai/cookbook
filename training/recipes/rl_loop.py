@@ -706,6 +706,8 @@ def main(
                         "source_job_id": policy_job_id,
                     },
                     kind=CheckpointKind.STATE,
+                    base_model=cfg.base_model,
+                    training_shape=cfg.infra.training_shape_id,
                 )
 
             metrics = compute_step_metrics(
@@ -803,6 +805,8 @@ def main(
                         "source_job_id": policy_job_id,
                     },
                     kind=CheckpointKind.BOTH,
+                    base_model=cfg.base_model,
+                    training_shape=cfg.infra.training_shape_id,
                 )
 
                 if getattr(cfg, "output_model_id", None):
