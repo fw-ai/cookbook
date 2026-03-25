@@ -24,6 +24,7 @@ import transformers
 
 from fireworks.training.sdk.deployment import (
     AdaptiveConcurrencyController,
+    FixedConcurrencyController,
     DeploymentSampler,
 )
 
@@ -153,11 +154,21 @@ async def main():
     ok1, err1, expected1 = await run_pressure(sampler, "adaptive", ctrl)
     sampler.close()
 
-    # -- Test 2: Deprecated max_concurrency (backward compat) ------------------
-    logger.info(">>> TEST 2: max_concurrency (deprecated compat)")
+    # -- Test 2: FixedConcurrencyController ------------------------------------
+    logger.info(">>> TEST 2: FixedConcurrencyController")
+    sampler2 = DeploymentSampler(
+        inference_url=BASE_URL, model=inference_model,
+        api_key=API_KEY, tokenizer=tokenizer,
+        concurrency_controller=FixedConcurrencyController(16),
+    )
+    ok2, err2, expected2 = await run_pressure(sampler2, "fixed")
+    sampler2.close()
+
+    # -- Test 3: Deprecated max_concurrency (backward compat) ------------------
+    logger.info(">>> TEST 3: max_concurrency (deprecated compat)")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        sampler2 = DeploymentSampler(
+        sampler3 = DeploymentSampler(
             inference_url=BASE_URL, model=inference_model,
             api_key=API_KEY, tokenizer=tokenizer,
             max_concurrency=16,
@@ -166,12 +177,13 @@ async def main():
         assert deprecation_warnings, "Expected DeprecationWarning for max_concurrency but got none"
         logger.info("DeprecationWarning correctly emitted: %s", deprecation_warnings[0].message)
 
-    ok2, err2, expected2 = await run_pressure(sampler2, "fixed-deprecated")
-    sampler2.close()
+    ok3, err3, expected3 = await run_pressure(sampler3, "deprecated-compat")
+    sampler3.close()
 
     # -- Assertions ------------------------------------------------------------
     assert ok1 == expected1, f"[adaptive] Expected {expected1}, got {ok1} (errors: {err1})"
-    assert ok2 == expected2, f"[fixed-deprecated] Expected {expected2}, got {ok2} (errors: {err2})"
+    assert ok2 == expected2, f"[fixed] Expected {expected2}, got {ok2} (errors: {err2})"
+    assert ok3 == expected3, f"[deprecated-compat] Expected {expected3}, got {ok3} (errors: {err3})"
 
     logger.info("ALL TESTS PASSED")
 

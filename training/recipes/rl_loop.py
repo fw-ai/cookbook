@@ -67,7 +67,7 @@ from training.utils.checkpoint_utils import (
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
 
-from fireworks.training.sdk.deployment import AdaptiveConcurrencyController
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, FixedConcurrencyController
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -462,7 +462,11 @@ def main(
                 cfg.concurrency.prefill_queue_target,
             )
         elif cfg.concurrency.mode == "fixed":
-            concurrency_controller = None
+            concurrency_controller = (
+                FixedConcurrencyController(cfg.concurrency.max_concurrency)
+                if cfg.concurrency.max_concurrency
+                else None
+            )
             logger.info("Using fixed concurrency: %s", cfg.concurrency.max_concurrency or "unlimited")
         else:
             raise ValueError(
