@@ -193,83 +193,37 @@ class TestManualPath:
 # -----------------------------------------------------------------------
 
 
-class _RestCapturingMgr:
-    """Fake TrainerJobManager that captures the REST payload from _post."""
-
-    account_id = "test-account"
-    base_url = "https://api.test"
-
-    def __init__(self):
-        self.captured_payload: dict | None = None
-        self.captured_config: TrainerJobConfig | None = None
-
-    class _FakeResp:
-        is_success = True
-        status_code = 200
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"name": "accounts/test-account/rlorTrainerJobs/job-p"}
-
-    def create(self, config):
-        self.captured_config = config
-        return SimpleNamespace(job_id="job-p", job_name="accounts/test-account/rlorTrainerJobs/job-p")
-
-    def _post(self, path, json=None, timeout=None):
-        self.captured_payload = json
-        return self._FakeResp()
-
-    @staticmethod
-    def _validate_shape_ref(ref):
-        pass
-
-    def wait_for_ready(self, job_id, **kwargs):
-        return SimpleNamespace(job_id=job_id)
-
-
 class TestPurpose:
-    """Verify purpose is forwarded correctly when set.
+    """Verify purpose is forwarded to TrainerJobConfig via the SDK."""
 
-    When purpose is set, the cookbook bypasses TrainerJobConfig and
-    constructs the REST payload directly so the Purpose enum string
-    (e.g. PURPOSE_PILOT) lands in the RLOR job proto.
-    """
-
-    def test_purpose_injected_into_rest_payload_shape_path(self):
-        mgr = _RestCapturingMgr()
+    def test_purpose_set_on_config_shape_path(self):
+        mgr = _CapturingMgr()
         infra_module.create_trainer_job(
             mgr,
             base_model=BASE_MODEL,
             infra=InfraConfig(purpose="PURPOSE_PILOT"),
             profile=PROFILE,
         )
-        assert mgr.captured_payload is not None
-        assert mgr.captured_payload["purpose"] == "PURPOSE_PILOT"
-        assert mgr.captured_config is None
+        assert mgr.captured.purpose == "PURPOSE_PILOT"
 
-    def test_purpose_injected_into_rest_payload_manual_path(self):
-        mgr = _RestCapturingMgr()
+    def test_purpose_set_on_config_manual_path(self):
+        mgr = _CapturingMgr()
         infra_module.create_trainer_job(
             mgr,
             base_model=BASE_MODEL,
             infra=InfraConfig(purpose="PURPOSE_PILOT"),
         )
-        assert mgr.captured_payload is not None
-        assert mgr.captured_payload["purpose"] == "PURPOSE_PILOT"
-        assert mgr.captured_config is None
+        assert mgr.captured.purpose == "PURPOSE_PILOT"
 
-    def test_purpose_none_uses_sdk_path(self):
-        mgr = _RestCapturingMgr()
+    def test_purpose_none_by_default(self):
+        mgr = _CapturingMgr()
         infra_module.create_trainer_job(
             mgr,
             base_model=BASE_MODEL,
             infra=InfraConfig(),
             profile=PROFILE,
         )
-        assert mgr.captured_config is not None
-        assert mgr.captured_payload is None
+        assert mgr.captured.purpose is None
 
 
 # -----------------------------------------------------------------------

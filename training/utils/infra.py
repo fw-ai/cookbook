@@ -12,7 +12,6 @@ from fireworks.training.sdk.client import (
     FiretitanTrainingClient,
 )
 from fireworks.training.sdk.trainer import (
-    CreatedTrainerJob,
     TrainerJobConfig,
     TrainerJobManager,
     TrainingShapeProfile,
@@ -175,6 +174,9 @@ def create_trainer_job(
             forward_only=forward_only,
         )
 
+    if infra.purpose:
+        kwargs["purpose"] = infra.purpose
+
     config = TrainerJobConfig(**kwargs)
 
     logger.info(
@@ -185,10 +187,7 @@ def create_trainer_job(
         infra.purpose,
     )
     try:
-        if infra.purpose:
-            created_job = _create_trainer_with_purpose(rlor_mgr, config, infra.purpose)
-        else:
-            created_job = rlor_mgr.create(config)
+        created_job = rlor_mgr.create(config)
         if cleanup:
             cleanup.trainer(created_job.job_id)
         endpoint = rlor_mgr.wait_for_ready(
@@ -377,90 +376,6 @@ def setup_training_client(
     cli = svc.create_training_client(base_model=base_model, lora_rank=lora_rank)
     return svc, cli
 
-
-def _create_trainer_with_purpose(
-    rlor_mgr: TrainerJobManager,
-    config: TrainerJobConfig,
-    purpose: str,
-) -> CreatedTrainerJob:
-    """Create a trainer job with the ``purpose`` proto field set.
-
-    The SDK's ``TrainerJobConfig`` does not expose ``purpose`` yet, so
-    this function replicates the SDK's ``_create`` payload construction
-    and injects ``"purpose": "PURPOSE_PILOT"`` (or whichever enum
-    string is configured) into the REST body.
-    """
-    config.validate()
-    if config.training_shape_ref:
-        rlor_mgr._validate_shape_ref(config.training_shape_ref)
-
-    path = f"/v1/accounts/{rlor_mgr.account_id}/rlorTrainerJobs"
-    query_params: list[tuple[str, str]] = []
-    if config.hot_load_deployment_id:
-        query_params.append(("deploymentId", config.hot_load_deployment_id))
-
-    is_shape_path = bool(config.training_shape_ref)
-    if is_shape_path:
-        query_params.append(("trainingShape", config.training_shape_ref))
-    else:
-        query_params.append(("skipValidations", "true"))
-
-    if query_params:
-        path = f"{path}?{urlencode(query_params)}"
-
-    training_config: dict[str, Any] = {
-        "baseModel": config.base_model,
-        "loraRank": config.lora_rank,
-        "learningRate": config.learning_rate,
-        "gradientAccumulationSteps": config.gradient_accumulation_steps,
-    }
-
-    payload: dict[str, Any] = {
-        "serviceMode": True,
-        "keepAlive": False,
-        "dataset": "",
-        "trainingConfig": training_config,
-        "purpose": purpose,
-    }
-
-    if not is_shape_path:
-        if config.max_context_length is not None:
-            training_config["maxContextLength"] = config.max_context_length
-        payload["nodeCount"] = config.node_count if config.node_count is not None else 1
-        if config.custom_image_tag:
-            training_config["customImageTag"] = config.custom_image_tag
-        if config.accelerator_type:
-            training_config["acceleratorType"] = config.accelerator_type
-        if config.accelerator_count:
-            training_config["acceleratorCount"] = config.accelerator_count
-
-    if config.display_name:
-        payload["displayName"] = config.display_name
-    if config.hot_load_deployment_id:
-        payload["hotLoadDeploymentId"] = config.hot_load_deployment_id
-    if config.region:
-        training_config["region"] = config.region
-    if config.extra_args:
-        flat: list[str] = []
-        for arg in config.extra_args:
-            flat.extend(arg.split()) if " " in arg else flat.append(arg)
-        training_config["extraArgs"] = flat
-    if config.forward_only:
-        payload["forwardOnly"] = True
-
-    logger.info(
-        "Creating RLOR job with purpose=%s: POST %s (model=%s)",
-        purpose,
-        f"{rlor_mgr.base_url}{path}",
-        config.base_model,
-    )
-    resp = rlor_mgr._post(path, json=payload, timeout=60)
-    resp.raise_for_status()
-    job = resp.json()
-    job_name = job.get("name", "")
-    job_id = job_name.split("/")[-1] if "/" in job_name else job_name
-    logger.info("Created trainer job with purpose: %s", job_id)
-    return CreatedTrainerJob(job_name=job_name, job_id=job_id)
 
 
 def _reuse_or_resume_job(
