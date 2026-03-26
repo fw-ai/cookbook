@@ -22,12 +22,16 @@ from nemotron_renderer import NemotronRenderer
 from tinker_cookbook.renderers.base import ToolCall
 
 
-TOKENIZER_MODEL = "/shared/nvidia-nemotron-3-nano-30b-a3b-bf16"
+_LOCAL_PATH = "/shared/nvidia-nemotron-3-nano-30b-a3b-bf16"
+_HF_REPO = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+TOKENIZER_MODEL = _LOCAL_PATH if Path(_LOCAL_PATH).exists() else _HF_REPO
 
 
 @pytest.fixture(scope="module")
 def tokenizer():
-    return transformers.AutoTokenizer.from_pretrained(TOKENIZER_MODEL, trust_remote_code=True)
+    return transformers.AutoTokenizer.from_pretrained(
+        TOKENIZER_MODEL, trust_remote_code=True,
+    )
 
 
 @pytest.fixture(scope="module")
