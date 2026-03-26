@@ -86,6 +86,7 @@ from training.utils.config import (
     DeployConfig,
     StepCallback,
     WeightSyncConfig,
+    purpose_annotation_value,
 )
 from training.utils.losses import (
     make_sft_loss_fn,

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import training.utils.infra as infra_module
-from training.utils.config import InfraConfig
+from training.utils.config import InfraConfig, purpose_annotation_value
 from fireworks.training.sdk.trainer import (
     TrainerJobConfig,
     TrainingShapeProfile,
@@ -189,56 +189,102 @@ class TestManualPath:
 
 
 # -----------------------------------------------------------------------
-# use_purpose propagation
+# purpose propagation
 # -----------------------------------------------------------------------
 
 
-class _FlexibleConfig:
-    """Stand-in for TrainerJobConfig that accepts any keyword arg."""
+class _RestCapturingMgr:
+    """Fake TrainerJobManager that captures the REST payload from _post."""
 
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    account_id = "test-account"
+    base_url = "https://api.test"
 
+    def __init__(self):
+        self.captured_payload: dict | None = None
+        self.captured_config: TrainerJobConfig | None = None
 
-class TestUsePurpose:
-    """Verify use_purpose is forwarded to TrainerJobConfig when set.
+    class _FakeResp:
+        is_success = True
+        status_code = 200
 
-    The SDK may not support ``use_purpose`` yet, so we monkeypatch
-    TrainerJobConfig with a flexible stand-in that captures all kwargs.
-    """
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"name": "accounts/test-account/rlorTrainerJobs/job-p"}
+
+    def create(self, config):
+        self.captured_config = config
+        return SimpleNamespace(job_id="job-p", job_name="accounts/test-account/rlorTrainerJobs/job-p")
+
+    def _post(self, path, json=None, timeout=None):
+        self.captured_payload = json
+        return self._FakeResp()
 
     @staticmethod
-    def _patch_trainer_config(monkeypatch):
-        monkeypatch.setattr(infra_module, "TrainerJobConfig", _FlexibleConfig)
+    def _validate_shape_ref(ref):
+        pass
 
-    def test_use_purpose_passed_to_shape_path(self, monkeypatch):
-        self._patch_trainer_config(monkeypatch)
-        mgr = _CapturingMgr()
+    def wait_for_ready(self, job_id, **kwargs):
+        return SimpleNamespace(job_id=job_id)
+
+
+class TestPurpose:
+    """Verify purpose is forwarded correctly when set.
+
+    When purpose is set, the cookbook bypasses TrainerJobConfig and
+    constructs the REST payload directly so the Purpose enum string
+    (e.g. PURPOSE_PILOT) lands in the RLOR job proto.
+    """
+
+    def test_purpose_injected_into_rest_payload_shape_path(self):
+        mgr = _RestCapturingMgr()
         infra_module.create_trainer_job(
             mgr,
             base_model=BASE_MODEL,
-            infra=InfraConfig(use_purpose="pilot"),
+            infra=InfraConfig(purpose="PURPOSE_PILOT"),
             profile=PROFILE,
         )
-        assert mgr.captured.use_purpose == "pilot"
+        assert mgr.captured_payload is not None
+        assert mgr.captured_payload["purpose"] == "PURPOSE_PILOT"
+        assert mgr.captured_config is None
 
-    def test_use_purpose_passed_to_manual_path(self, monkeypatch):
-        self._patch_trainer_config(monkeypatch)
-        mgr = _CapturingMgr()
+    def test_purpose_injected_into_rest_payload_manual_path(self):
+        mgr = _RestCapturingMgr()
         infra_module.create_trainer_job(
             mgr,
             base_model=BASE_MODEL,
-            infra=InfraConfig(use_purpose="pilot"),
+            infra=InfraConfig(purpose="PURPOSE_PILOT"),
         )
-        assert mgr.captured.use_purpose == "pilot"
+        assert mgr.captured_payload is not None
+        assert mgr.captured_payload["purpose"] == "PURPOSE_PILOT"
+        assert mgr.captured_config is None
 
-    def test_use_purpose_none_by_default(self):
-        mgr = _CapturingMgr()
+    def test_purpose_none_uses_sdk_path(self):
+        mgr = _RestCapturingMgr()
         infra_module.create_trainer_job(
             mgr,
             base_model=BASE_MODEL,
             infra=InfraConfig(),
             profile=PROFILE,
         )
-        assert not hasattr(mgr.captured, "use_purpose") or mgr.captured.use_purpose is None
+        assert mgr.captured_config is not None
+        assert mgr.captured_payload is None
+
+
+# -----------------------------------------------------------------------
+# purpose_annotation_value
+# -----------------------------------------------------------------------
+
+
+class TestPurposeAnnotationValue:
+    def test_pilot(self):
+        assert purpose_annotation_value("PURPOSE_PILOT") == "pilot"
+
+    def test_invalid_raises(self):
+        with pytest.raises(ValueError, match="Invalid purpose"):
+            purpose_annotation_value("bad_value")
+
+    def test_unspecified_raises(self):
+        with pytest.raises(ValueError, match="Invalid purpose"):
+            purpose_annotation_value("PURPOSE_UNSPECIFIED")

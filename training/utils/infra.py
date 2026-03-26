@@ -12,13 +12,14 @@ from fireworks.training.sdk.client import (
     FiretitanTrainingClient,
 )
 from fireworks.training.sdk.trainer import (
+    CreatedTrainerJob,
     TrainerJobConfig,
     TrainerJobManager,
     TrainingShapeProfile,
     TrainerServiceEndpoint,
 )
 from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
-from training.utils.config import InfraConfig, DeployConfig
+from training.utils.config import InfraConfig, DeployConfig, purpose_annotation_value
 
 logger = logging.getLogger(__name__)
 
@@ -174,19 +175,20 @@ def create_trainer_job(
             forward_only=forward_only,
         )
 
-    if infra.use_purpose is not None:
-        kwargs["use_purpose"] = infra.use_purpose
-
     config = TrainerJobConfig(**kwargs)
 
     logger.info(
-        "Creating %s trainer job '%s' (forward_only=%s)...",
+        "Creating %s trainer job '%s' (forward_only=%s, purpose=%s)...",
         trainer_role,
         display_name,
         forward_only,
+        infra.purpose,
     )
     try:
-        created_job = rlor_mgr.create(config)
+        if infra.purpose:
+            created_job = _create_trainer_with_purpose(rlor_mgr, config, infra.purpose)
+        else:
+            created_job = rlor_mgr.create(config)
         if cleanup:
             cleanup.trainer(created_job.job_id)
         endpoint = rlor_mgr.wait_for_ready(
@@ -242,12 +244,10 @@ def setup_deployment(
                 deploy_mgr, dep_config.deployment_shape
             )
         logging.info(f"dep_config 2: {dep_config}")
-        if dep_config.region is None:
-            info = _create_deployment_via_cookbook(
-                deploy_mgr, dep_config, use_purpose=infra.use_purpose,
-            )
-        else:
-            info = deploy_mgr.create_or_get(dep_config)
+        annotation = purpose_annotation_value(infra.purpose) if infra.purpose else None
+        info = _create_deployment_via_cookbook(
+            deploy_mgr, dep_config, purpose_annotation=annotation,
+        )
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
@@ -317,9 +317,13 @@ def _create_deployment_via_cookbook(
     deploy_mgr: DeploymentManager,
     config: DeploymentConfig,
     *,
-    use_purpose: str | None = None,
+    purpose_annotation: str | None = None,
 ) -> DeploymentInfo:
-    """Create a deployment while leaving placement selection to the control plane."""
+    """Create a deployment, constructing the REST payload directly.
+
+    This bypasses the SDK's ``create_or_get`` so we can inject fields
+    the SDK doesn't expose yet (``annotations``, ``placement``).
+    """
     path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
     if config.skip_shape_validation:
         path += "&skipShapeValidation=true"
@@ -332,6 +336,8 @@ def _create_deployment_via_cookbook(
         "maxReplicaCount": config.max_replica_count,
         "enableHotLoad": True,
     }
+    if config.region:
+        body["placement"] = {"region": config.region}
     if config.hot_load_bucket_type:
         body["hotLoadBucketType"] = config.hot_load_bucket_type
     if config.deployment_shape:
@@ -345,13 +351,14 @@ def _create_deployment_via_cookbook(
         body["extraArgs"] = flat
     if config.extra_values:
         body["extraValues"] = config.extra_values
-    if use_purpose:
-        body["annotations"] = {"internal/purpose": use_purpose}
+    if purpose_annotation:
+        body["annotations"] = {"internal/purpose": purpose_annotation}
 
     logger.info(
-        "Creating deployment: %s (placement_region=auto, use_purpose=%s, extra_values=%s)",
+        "Creating deployment: %s (region=%s, purpose=%s, extra_values=%s)",
         config.deployment_id,
-        use_purpose,
+        config.region,
+        purpose_annotation,
         bool(config.extra_values),
     )
     resp = deploy_mgr._post(path, json=body, timeout=60)
@@ -369,6 +376,91 @@ def setup_training_client(
     svc = FiretitanServiceClient(base_url=endpoint.base_url, api_key=api_key)
     cli = svc.create_training_client(base_model=base_model, lora_rank=lora_rank)
     return svc, cli
+
+
+def _create_trainer_with_purpose(
+    rlor_mgr: TrainerJobManager,
+    config: TrainerJobConfig,
+    purpose: str,
+) -> CreatedTrainerJob:
+    """Create a trainer job with the ``purpose`` proto field set.
+
+    The SDK's ``TrainerJobConfig`` does not expose ``purpose`` yet, so
+    this function replicates the SDK's ``_create`` payload construction
+    and injects ``"purpose": "PURPOSE_PILOT"`` (or whichever enum
+    string is configured) into the REST body.
+    """
+    config.validate()
+    if config.training_shape_ref:
+        rlor_mgr._validate_shape_ref(config.training_shape_ref)
+
+    path = f"/v1/accounts/{rlor_mgr.account_id}/rlorTrainerJobs"
+    query_params: list[tuple[str, str]] = []
+    if config.hot_load_deployment_id:
+        query_params.append(("deploymentId", config.hot_load_deployment_id))
+
+    is_shape_path = bool(config.training_shape_ref)
+    if is_shape_path:
+        query_params.append(("trainingShape", config.training_shape_ref))
+    else:
+        query_params.append(("skipValidations", "true"))
+
+    if query_params:
+        path = f"{path}?{urlencode(query_params)}"
+
+    training_config: dict[str, Any] = {
+        "baseModel": config.base_model,
+        "loraRank": config.lora_rank,
+        "learningRate": config.learning_rate,
+        "gradientAccumulationSteps": config.gradient_accumulation_steps,
+    }
+
+    payload: dict[str, Any] = {
+        "serviceMode": True,
+        "keepAlive": False,
+        "dataset": "",
+        "trainingConfig": training_config,
+        "purpose": purpose,
+    }
+
+    if not is_shape_path:
+        if config.max_context_length is not None:
+            training_config["maxContextLength"] = config.max_context_length
+        payload["nodeCount"] = config.node_count if config.node_count is not None else 1
+        if config.custom_image_tag:
+            training_config["customImageTag"] = config.custom_image_tag
+        if config.accelerator_type:
+            training_config["acceleratorType"] = config.accelerator_type
+        if config.accelerator_count:
+            training_config["acceleratorCount"] = config.accelerator_count
+
+    if config.display_name:
+        payload["displayName"] = config.display_name
+    if config.hot_load_deployment_id:
+        payload["hotLoadDeploymentId"] = config.hot_load_deployment_id
+    if config.region:
+        training_config["region"] = config.region
+    if config.extra_args:
+        flat: list[str] = []
+        for arg in config.extra_args:
+            flat.extend(arg.split()) if " " in arg else flat.append(arg)
+        training_config["extraArgs"] = flat
+    if config.forward_only:
+        payload["forwardOnly"] = True
+
+    logger.info(
+        "Creating RLOR job with purpose=%s: POST %s (model=%s)",
+        purpose,
+        f"{rlor_mgr.base_url}{path}",
+        config.base_model,
+    )
+    resp = rlor_mgr._post(path, json=payload, timeout=60)
+    resp.raise_for_status()
+    job = resp.json()
+    job_name = job.get("name", "")
+    job_id = job_name.split("/")[-1] if "/" in job_name else job_name
+    logger.info("Created trainer job with purpose: %s", job_id)
+    return CreatedTrainerJob(job_name=job_name, job_id=job_id)
 
 
 def _reuse_or_resume_job(

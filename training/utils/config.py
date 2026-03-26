@@ -51,13 +51,36 @@ class InfraConfig:
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
-    use_purpose: str | None = None
-    """Scheduling purpose label (e.g. ``"pilot"``).
+    purpose: str | None = None
+    """Scheduling purpose enum string (e.g. ``"PURPOSE_PILOT"``).
 
-    Propagated to RLOR trainer jobs (proto ``use_purpose`` field) and
+    Propagated to RLOR trainer jobs (proto ``Purpose`` enum field) and
     rollout deployments (annotation ``internal/purpose``).  The control
     plane converts this to a node toleration so the workload lands on
-    the right GPU pool."""
+    the right GPU pool.
+
+    Valid values match the ``Purpose`` proto enum names:
+    ``"PURPOSE_PILOT"``, etc.  ``"PURPOSE_UNSPECIFIED"`` is treated
+    the same as ``None``."""
+
+
+_VALID_PURPOSES = {"PURPOSE_PILOT"}
+
+
+def purpose_annotation_value(purpose: str) -> str:
+    """Convert a ``Purpose`` enum string to the deployment annotation value.
+
+    Mirrors the firectl ``purposeAnnotationValue`` function:
+    ``"PURPOSE_PILOT"`` -> ``"pilot"``.
+
+    Raises ``ValueError`` for unrecognised values.
+    """
+    if purpose not in _VALID_PURPOSES:
+        raise ValueError(
+            f"Invalid purpose: {purpose!r}. "
+            f"Valid values: {sorted(_VALID_PURPOSES)}"
+        )
+    return purpose.removeprefix("PURPOSE_").lower()
 
 
 @dataclass
