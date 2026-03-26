@@ -67,6 +67,7 @@ from training.utils import (
     compute_advantages,
     build_datum_from_token_mask,
     validate_config,
+    apply_recommended_training_shapes,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
@@ -382,6 +383,25 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         len(seed_contexts), os.path.abspath(cfg.seed_jsonl_path),
     )
 
+    selected_shapes = apply_recommended_training_shapes(
+        infra,
+        base_model=cfg.base_model,
+        lora_rank=cfg.lora_rank,
+        prefer_reference=cfg.kl_beta > 0,
+    )
+    if selected_shapes.inferred_policy:
+        logger.info(
+            "Using documented policy training shape for %s: %s",
+            cfg.base_model,
+            selected_shapes.policy,
+        )
+    if selected_shapes.inferred_reference:
+        logger.info(
+            "Using documented reference training shape for %s: %s",
+            cfg.base_model,
+            selected_shapes.reference,
+        )
+
     # -- Resolve training shapes --------------------------------------------
 
     profile = None
@@ -412,6 +432,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
     use_reference = ref_profile is not None
     if not use_reference:
+        if cfg.kl_beta > 0:
+            logger.warning(
+                "No ref_training_shape_id set for KL-enabled FrozenLake training; running without a reference model"
+            )
         logger.info("No ref_training_shape_id set, skipping reference model")
 
     # -- Infrastructure setup -----------------------------------------------

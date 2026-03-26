@@ -91,6 +91,104 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
     assert deleted_jobs == ["job-sft"]
 
 
+def test_main_infers_documented_training_shape_for_supported_model(tmp_path, monkeypatch):
+    dataset_path = _write_dataset(
+        tmp_path,
+        [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {"resolved_shapes": [], "deleted_jobs": []}
+
+    class FakeMgr:
+        def resolve_training_profile(self, shape_id):
+            events["resolved_shapes"].append(shape_id)
+            return SimpleNamespace(
+                max_supported_context_length=48,
+                training_shape_version="accounts/test/trainingShapes/sft/versions/1",
+            )
+
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(
+                job_id=job_id,
+                job_name=f"jobs/{job_id}",
+                base_url="https://unit.test",
+            )
+
+        def delete(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+    class FakeClient:
+        job_id = "job-sft"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": 1}
+            )
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def save_state(self, name):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"{name}-sampler")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return name
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datum",
+        lambda *args, **kwargs: SimpleNamespace(
+            token_ids=[1, 2, 3],
+            datum=SimpleNamespace(
+                loss_fn_inputs={
+                    "target_tokens": SimpleNamespace(data=[2, 3]),
+                    "weights": SimpleNamespace(data=[1.0, 1.0]),
+                }
+            ),
+        ),
+    )
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/fireworks/models/qwen3-8b",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-8B",
+        max_seq_len=None,
+        epochs=1,
+        batch_size=1,
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert result["steps"] == 1
+    assert cfg.max_seq_len == 48
+    assert cfg.infra.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-128k-h200"
+    assert events["resolved_shapes"] == ["accounts/fireworks/trainingShapes/qwen3-8b-128k-h200"]
+    assert events["deleted_jobs"] == ["job-sft"]
+
+
 def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     """Verify multi-turn rendering, training loop execution, and checkpoint save."""
     dataset_path = _write_dataset(

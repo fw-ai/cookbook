@@ -330,7 +330,7 @@ def main():
     logger.info(
         "model=%s | training_shape=%s | deployment_shape=(parsed from training shape) | region=%s",
         args.base_model,
-        args.training_shape,
+        args.training_shape or "auto",
         args.region,
     )
     logger.info(

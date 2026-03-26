@@ -53,6 +53,11 @@ __all__ = [
     "flush_timing",
     "timed",
     "timer",
+    "apply_recommended_training_shapes",
+    "canonical_base_model",
+    "get_recommended_training_shapes",
+    "recommend_training_shape",
+    "TRAINING_SHAPES_DOCS_URL",
     "validate_config",
     "validate_preflight",
     "wandb_finish",
@@ -88,6 +93,13 @@ from training.utils.config import (
     DeployConfig,
     StepCallback,
     WeightSyncConfig,
+)
+from training.utils.training_shapes import (
+    TRAINING_SHAPES_DOCS_URL,
+    apply_recommended_training_shapes,
+    canonical_base_model,
+    get_recommended_training_shapes,
+    recommend_training_shape,
 )
 from training.utils.losses import (
     make_sft_loss_fn,

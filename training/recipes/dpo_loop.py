@@ -59,6 +59,7 @@ from training.utils import (
     create_trainer_job,
     load_preference_dataset,
     build_renderer,
+    apply_recommended_training_shapes,
     render_preference_pair,
     resolve_renderer_name,
 )
@@ -457,6 +458,25 @@ def main(
         rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
+
+    selected_shapes = apply_recommended_training_shapes(
+        cfg.infra,
+        base_model=cfg.base_model,
+        lora_rank=cfg.lora_rank,
+        prefer_reference=True,
+    )
+    if selected_shapes.inferred_policy:
+        logger.info(
+            "Using documented policy training shape for %s: %s",
+            cfg.base_model,
+            selected_shapes.policy,
+        )
+    if selected_shapes.inferred_reference:
+        logger.info(
+            "Using documented reference training shape for %s: %s",
+            cfg.base_model,
+            selected_shapes.reference,
+        )
 
     if cfg.deployment.deployment_id:
         setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)

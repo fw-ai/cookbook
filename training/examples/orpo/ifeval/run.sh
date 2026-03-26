@@ -16,7 +16,6 @@ python train_ifeval_orpo.py \
     --base-model accounts/fireworks/models/qwen3-8b \
     --tokenizer-model Qwen/Qwen3-8B \
     --dataset-path dataset.jsonl \
-    --training-shape qwen3-8b-128k-h200 \
     --region US_VIRGINIA_1 \
     --max-pairs 200 \
     --epochs 1 \

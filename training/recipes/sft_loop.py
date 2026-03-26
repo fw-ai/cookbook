@@ -48,6 +48,7 @@ from training.utils import (
     create_trainer_job,
     build_renderer,
     parse_train_on_what,
+    apply_recommended_training_shapes,
     render_messages_to_datum,
     resolve_renderer_name,
 )
@@ -163,6 +164,18 @@ def main(
 
     if rlor_mgr is None:
         rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
+
+    selected_shapes = apply_recommended_training_shapes(
+        cfg.infra,
+        base_model=cfg.base_model,
+        lora_rank=cfg.lora_rank,
+    )
+    if selected_shapes.inferred_policy:
+        logger.info(
+            "Using documented training shape for %s: %s",
+            cfg.base_model,
+            selected_shapes.policy,
+        )
 
     profile = None
     if cfg.infra.training_shape_id:
