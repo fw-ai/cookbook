@@ -109,7 +109,6 @@ def create_trainer_job(
     job_id: str | None = None,
     forward_only: bool = False,
     base_url_override: str | None = None,
-    cleanup: ResourceCleanup | None = None,
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
@@ -180,6 +179,11 @@ def create_trainer_job(
     if infra.purpose and _SDK_HAS_PURPOSE:
         config.purpose = infra.purpose
 
+    if infra.purpose and not _SDK_HAS_PURPOSE:
+        ctx = _inject_into_post(rlor_mgr, lambda j: j.setdefault("purpose", infra.purpose))
+    else:
+        ctx = contextlib.nullcontext()
+
     logger.info(
         "Creating %s trainer job '%s' (forward_only=%s)...",
         trainer_role,
@@ -187,17 +191,8 @@ def create_trainer_job(
         forward_only,
     )
     try:
-        if infra.purpose and not _SDK_HAS_PURPOSE:
-            created_job = _create_with_purpose_shim(rlor_mgr, config, infra.purpose)
-        else:
-            created_job = rlor_mgr.create(config)
-        if cleanup:
-            cleanup.trainer(created_job.job_id)
-        endpoint = rlor_mgr.wait_for_ready(
-            created_job.job_id,
-            job_name=created_job.job_name,
-            timeout_s=infra.trainer_timeout_s,
-        )
+        with ctx:
+            endpoint = rlor_mgr.create_and_wait(config, timeout_s=infra.trainer_timeout_s)
     except Exception as e:
         logger.error(
             "Failed to create %s trainer job '%s' (forward_only=%s): %s",
@@ -390,12 +385,6 @@ def _inject_into_post(mgr, patch_fn):
         yield
     finally:
         mgr._post = original
-
-
-def _create_with_purpose_shim(rlor_mgr: TrainerJobManager, config: TrainerJobConfig, purpose: str):
-    """Let the SDK build the payload, inject ``purpose`` at send time."""
-    with _inject_into_post(rlor_mgr, lambda j: j.setdefault("purpose", purpose)):
-        return rlor_mgr.create(config)
 
 
 def _reuse_or_resume_job(

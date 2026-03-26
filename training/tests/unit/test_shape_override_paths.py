@@ -39,7 +39,7 @@ PROFILE = TrainingShapeProfile(
 
 
 class _CapturingMgr:
-    """Fake TrainerJobManager that captures config and outgoing JSON."""
+    """Fake TrainerJobManager that captures the TrainerJobConfig."""
 
     account_id = "test-account"
 
@@ -47,25 +47,17 @@ class _CapturingMgr:
         self.captured: TrainerJobConfig | None = None
         self.post_json: dict | None = None
 
-    class _Resp:
-        def raise_for_status(self): pass
-        def json(self): return {"name": "accounts/test-account/rlorTrainerJobs/j"}
-
-    def create(self, config):
+    def create_and_wait(self, config, **kwargs):
         self.captured = config
         payload = {"trainingConfig": {}}
         purpose = getattr(config, "purpose", None)
         if purpose:
             payload["purpose"] = purpose
         self._post("", json=payload)
-        return SimpleNamespace(job_id="job-smoke", job_name="jobs/job-smoke")
+        return SimpleNamespace(job_id="job-smoke")
 
     def _post(self, path, json=None, **kw):
         self.post_json = json
-        return self._Resp()
-
-    def wait_for_ready(self, job_id, **kwargs):
-        return SimpleNamespace(job_id=job_id)
 
 
 class _FailingMgr:
@@ -74,7 +66,7 @@ class _FailingMgr:
     def __init__(self, message: str):
         self.message = message
 
-    def create(self, config):
+    def create_and_wait(self, config, **kwargs):
         raise RuntimeError(self.message)
 
 
