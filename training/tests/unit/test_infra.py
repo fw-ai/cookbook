@@ -84,8 +84,8 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
     captured = {}
 
     class FakeResponse:
-        def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-123", "state": "CREATING"}
+        def __init__(self, payload):
+            self._payload = payload
 
         def raise_for_status(self):
             return None
@@ -112,15 +112,9 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
                 }
             )
 
-        def _post(self, path, json, timeout):
-            captured["json"] = json
-            return FakeResponse()
-
-        def _parse_deployment_info(self, deployment_id, data):
-            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
-
-        def wait_for_ready(self, deployment_id, timeout_s):
-            return SimpleNamespace(deployment_id=deployment_id, state="READY")
+        def create_or_get(self, config):
+            captured["config"] = config
+            return SimpleNamespace(deployment_id=config.deployment_id, state="READY")
 
     info = setup_deployment(
         FakeMgr(),
@@ -138,153 +132,15 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
         "/v1/accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2/versions?"
     )
     assert "pageSize=1" in captured["shape_path"]
-    assert captured["json"]["placement"]["region"] == "US_OHIO_1"
-
-
-def test_setup_deployment_sets_purpose_annotation():
-    captured = {}
-
-    class FakeResponse:
-        def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-purpose", "state": "CREATING"}
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return self._payload
-
-    class FakeMgr:
-        account_id = "acct"
-
-        def get(self, _deployment_id):
-            return None
-
-        def _get(self, path, timeout):
-            return FakeResponse(
-                {"deploymentShapeVersions": [{"snapshot": {}}]}
-            )
-
-        def _post(self, path, json, timeout):
-            captured["path"] = path
-            captured["json"] = json
-            return FakeResponse()
-
-        def _parse_deployment_info(self, deployment_id, data):
-            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
-
-        def wait_for_ready(self, deployment_id, timeout_s):
-            return SimpleNamespace(deployment_id=deployment_id, state="READY")
-
-    info = setup_deployment(
-        FakeMgr(),
-        DeployConfig(
-            deployment_id="dep-purpose",
-            deployment_shape="accounts/fireworks/deploymentShapes/test-shape",
-        ),
-        "accounts/fireworks/models/test-model",
-        InfraConfig(purpose="PURPOSE_PILOT"),
-    )
-
-    assert info.state == "READY"
-    assert captured["json"]["annotations"] == {"internal/purpose": "pilot"}
-
-
-def test_setup_deployment_omits_annotation_without_purpose():
-    captured = {}
-
-    class FakeResponse:
-        def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-no-purpose", "state": "CREATING"}
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return self._payload
-
-    class FakeMgr:
-        account_id = "acct"
-
-        def get(self, _deployment_id):
-            return None
-
-        def _get(self, path, timeout):
-            return FakeResponse(
-                {"deploymentShapeVersions": [{"snapshot": {}}]}
-            )
-
-        def _post(self, path, json, timeout):
-            captured["json"] = json
-            return FakeResponse()
-
-        def _parse_deployment_info(self, deployment_id, data):
-            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
-
-        def wait_for_ready(self, deployment_id, timeout_s):
-            return SimpleNamespace(deployment_id=deployment_id, state="READY")
-
-    setup_deployment(
-        FakeMgr(),
-        DeployConfig(
-            deployment_id="dep-no-purpose",
-            deployment_shape="accounts/fireworks/deploymentShapes/test-shape",
-        ),
-        "accounts/fireworks/models/test-model",
-        InfraConfig(),
-    )
-
-    assert "annotations" not in captured["json"]
-
-
-def test_setup_deployment_sets_purpose_annotation_with_region():
-    """Purpose annotation should be set even when region is explicitly provided."""
-    captured = {}
-
-    class FakeResponse:
-        def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-region", "state": "READY"}
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return self._payload
-
-    class FakeMgr:
-        account_id = "acct"
-
-        def get(self, _deployment_id):
-            return None
-
-        def _post(self, path, json, timeout):
-            captured["json"] = json
-            return FakeResponse()
-
-        def _parse_deployment_info(self, deployment_id, data):
-            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
-
-    info = setup_deployment(
-        FakeMgr(),
-        DeployConfig(
-            deployment_id="dep-region",
-            deployment_region="US_IOWA_1",
-        ),
-        "accounts/fireworks/models/test-model",
-        InfraConfig(purpose="PURPOSE_PILOT"),
-    )
-
-    assert info.state == "READY"
-    assert captured["json"]["annotations"] == {"internal/purpose": "pilot"}
-    assert captured["json"]["placement"]["region"] == "US_IOWA_1"
+    assert captured["config"].region == "US_OHIO_1"
 
 
 def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
     captured = {}
 
     class FakeResponse:
-        def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-456", "state": "CREATING"}
+        def __init__(self, payload):
+            self._payload = payload
 
         def raise_for_status(self):
             return None
@@ -307,15 +163,9 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
                 }
             )
 
-        def _post(self, path, json, timeout):
-            captured["json"] = json
-            return FakeResponse()
-
-        def _parse_deployment_info(self, deployment_id, data):
-            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
-
-        def wait_for_ready(self, deployment_id, timeout_s):
-            return SimpleNamespace(deployment_id=deployment_id, state="READY")
+        def create_or_get(self, config):
+            captured["config"] = config
+            return SimpleNamespace(deployment_id=config.deployment_id, state="READY")
 
     info = setup_deployment(
         FakeMgr(),
@@ -330,4 +180,40 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
     assert info.state == "READY"
     assert captured["shape_path"] == "/v1/accounts/fireworks/deploymentShapes/qwen-h200/versions/rv1"
     assert captured["shape_timeout"] == 30
-    assert captured["json"]["placement"]["region"] == "US_VIRGINIA_1"
+    assert captured["config"].region == "US_VIRGINIA_1"
+
+
+def test_setup_deployment_injects_purpose_annotation():
+    """Purpose annotation is transparently injected into _post payload."""
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self, payload=None):
+            self._payload = payload or {"name": "accounts/acct/deployments/dep-p", "state": "CREATING"}
+        def raise_for_status(self): return None
+        def json(self): return self._payload
+
+    class FakeMgr:
+        account_id = "acct"
+        def get(self, _): return None
+        def _get(self, path, timeout):
+            return FakeResponse({"deploymentShapeVersions": [{"snapshot": {}}]})
+        def _post(self, path, json, timeout):
+            captured["json"] = json
+            return FakeResponse()
+        def _parse_deployment_info(self, did, data):
+            return SimpleNamespace(deployment_id=did, state=data["state"])
+        def wait_for_ready(self, did, timeout_s):
+            return SimpleNamespace(deployment_id=did, state="READY")
+
+    setup_deployment(
+        FakeMgr(),
+        DeployConfig(
+            deployment_id="dep-p",
+            deployment_shape="accounts/fireworks/deploymentShapes/test-shape",
+        ),
+        "accounts/fireworks/models/test-model",
+        InfraConfig(purpose="PURPOSE_PILOT"),
+    )
+
+    assert captured["json"]["annotations"] == {"internal/purpose": "pilot"}

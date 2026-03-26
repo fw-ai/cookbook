@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 import logging
 from typing import Any
@@ -180,11 +181,10 @@ def create_trainer_job(
         config.purpose = infra.purpose
 
     logger.info(
-        "Creating %s trainer job '%s' (forward_only=%s, purpose=%s)...",
+        "Creating %s trainer job '%s' (forward_only=%s)...",
         trainer_role,
         display_name,
         forward_only,
-        infra.purpose,
     )
     try:
         if infra.purpose and not _SDK_HAS_PURPOSE:
@@ -244,10 +244,19 @@ def setup_deployment(
             dep_config.region = _infer_region_from_deployment_shape(
                 deploy_mgr, dep_config.deployment_shape
             )
-        annotation = purpose_annotation_value(infra.purpose) if infra.purpose else None
-        info = _create_deployment_via_cookbook(
-            deploy_mgr, dep_config, purpose_annotation=annotation,
-        )
+        if infra.purpose:
+            ann = purpose_annotation_value(infra.purpose)
+            ctx = _inject_into_post(
+                deploy_mgr,
+                lambda j: j.setdefault("annotations", {}).__setitem__("internal/purpose", ann),
+            )
+        else:
+            ctx = contextlib.nullcontext()
+        with ctx:
+            if dep_config.region is None:
+                info = _create_deployment_via_cookbook(deploy_mgr, dep_config)
+            else:
+                info = deploy_mgr.create_or_get(dep_config)
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
@@ -316,14 +325,8 @@ def _get_deployment_shape_version(
 def _create_deployment_via_cookbook(
     deploy_mgr: DeploymentManager,
     config: DeploymentConfig,
-    *,
-    purpose_annotation: str | None = None,
 ) -> DeploymentInfo:
-    """Create a deployment, constructing the REST payload directly.
-
-    This bypasses the SDK's ``create_or_get`` so we can inject fields
-    the SDK doesn't expose yet (``annotations``, ``placement``).
-    """
+    """Create a deployment while leaving placement selection to the control plane."""
     path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
     if config.skip_shape_validation:
         path += "&skipShapeValidation=true"
@@ -336,8 +339,6 @@ def _create_deployment_via_cookbook(
         "maxReplicaCount": config.max_replica_count,
         "enableHotLoad": True,
     }
-    if config.region:
-        body["placement"] = {"region": config.region}
     if config.hot_load_bucket_type:
         body["hotLoadBucketType"] = config.hot_load_bucket_type
     if config.deployment_shape:
@@ -351,14 +352,10 @@ def _create_deployment_via_cookbook(
         body["extraArgs"] = flat
     if config.extra_values:
         body["extraValues"] = config.extra_values
-    if purpose_annotation:
-        body["annotations"] = {"internal/purpose": purpose_annotation}
 
     logger.info(
-        "Creating deployment: %s (region=%s, purpose=%s, extra_values=%s)",
+        "Creating deployment: %s (placement_region=auto, extra_values=%s)",
         config.deployment_id,
-        config.region,
-        purpose_annotation,
         bool(config.extra_values),
     )
     resp = deploy_mgr._post(path, json=body, timeout=60)
@@ -378,27 +375,27 @@ def setup_training_client(
     return svc, cli
 
 
-def _create_with_purpose_shim(rlor_mgr: TrainerJobManager, config: TrainerJobConfig, purpose: str):
-    """Shim: let the SDK build the full payload, inject ``purpose`` at send time.
+@contextlib.contextmanager
+def _inject_into_post(mgr, patch_fn):
+    """Temporarily wrap ``mgr._post`` with *patch_fn* applied to the JSON."""
+    original = mgr._post
 
-    Temporarily wraps ``rlor_mgr._post`` so the SDK's ``_create``
-    constructs the payload from ``TrainerJobConfig`` as usual and we
-    only splice in the one extra field before the request is sent.
-
-    Remove this once the SDK ships ``TrainerJobConfig.purpose``.
-    """
-    original_post = rlor_mgr._post
-
-    def _post_with_purpose(path, json=None, **kw):
+    def _wrapped(path, json=None, **kw):
         if json is not None:
-            json["purpose"] = purpose
-        return original_post(path, json=json, **kw)
+            patch_fn(json)
+        return original(path, json=json, **kw)
 
-    rlor_mgr._post = _post_with_purpose
+    mgr._post = _wrapped
     try:
-        return rlor_mgr.create(config)
+        yield
     finally:
-        rlor_mgr._post = original_post
+        mgr._post = original
+
+
+def _create_with_purpose_shim(rlor_mgr: TrainerJobManager, config: TrainerJobConfig, purpose: str):
+    """Let the SDK build the payload, inject ``purpose`` at send time."""
+    with _inject_into_post(rlor_mgr, lambda j: j.setdefault("purpose", purpose)):
+        return rlor_mgr.create(config)
 
 
 def _reuse_or_resume_job(
