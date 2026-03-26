@@ -83,7 +83,7 @@ EXAMPLE_MODULES_WITH_ENV = [
 
 EXAMPLE_MODULES = [
     "training.examples.deepmath_rl.prepare_data",
-    "training.examples.promote_checkpoint.train_promote_checkpoint",
+    "training.examples.snippets.promote_checkpoint",
 ]
 
 

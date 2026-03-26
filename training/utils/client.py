@@ -127,6 +127,16 @@ class ReconnectableClient:
     def save_state(self, name: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.save_state(name).result(timeout=timeout)
 
+    def load_state(self, path: str, timeout: int = DCP_TIMEOUT_S):
+        """Load model weights only (optimizer state is reset to zero).
+
+        Use this when resuming from a checkpoint but starting with a fresh
+        optimizer — e.g. after a large learning rate change.  The server
+        loads the full DCP checkpoint then clears all Adam momentum (m)
+        and variance (v) buffers so the next ``optim_step`` starts fresh.
+        """
+        return self._client.load_state(path).result(timeout=timeout)
+
     def load_state_with_optimizer(self, path: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.load_state_with_optimizer(path).result(timeout=timeout)
 
