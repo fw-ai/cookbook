@@ -61,6 +61,7 @@ from training.utils import (
     load_jsonl_dataset,
     prepare_sampling_messages,
     apply_recommended_training_shapes,
+    prepare_training_shape_launch,
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
@@ -343,13 +344,18 @@ def main(
     # -- Resolve training shapes -----------------------------------------------
 
     profile = None
+    policy_infra = cfg.infra
+    policy_profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        # profile.deployment_shape returns the versioned path (e.g.
-        # .../versions/abc123) pinned by the training shape.  The server
-        # accepts versioned paths and pins to the exact version.
-        if profile.deployment_shape and not cfg.deployment.deployment_shape:
-            cfg.deployment.deployment_shape = profile.deployment_shape
+        dep_shape = getattr(profile, 'deployment_shape_version', None) or profile.deployment_shape
+        if dep_shape and not cfg.deployment.deployment_shape:
+            cfg.deployment.deployment_shape = dep_shape
+        policy_infra, policy_profile = prepare_training_shape_launch(
+            cfg.infra,
+            profile,
+            client_managed=selected_shapes.inferred_policy,
+        )
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -361,8 +367,15 @@ def main(
         )
 
     ref_profile = None
+    reference_infra = cfg.infra
+    reference_launch_profile = None
     if cfg.infra.ref_training_shape_id:
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+        reference_infra, reference_launch_profile = prepare_training_shape_launch(
+            cfg.infra,
+            ref_profile,
+            client_managed=selected_shapes.inferred_reference,
+        )
 
     use_reference = ref_profile is not None
     if not use_reference:
@@ -374,13 +387,17 @@ def main(
 
     import time as _time
 
-    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
+    runner.set_accelerator_info(
+        policy_infra.accelerator_type,
+        policy_infra.accelerator_count,
+        profile=profile,
+    )
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     _infra_start = _time.time()
 
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, policy_infra)
         if cleanup_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
@@ -396,8 +413,8 @@ def main(
                     create_trainer_job,
                     rlor_mgr,
                     base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=profile,
+                    infra=policy_infra,
+                    profile=policy_profile,
                     lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
@@ -411,8 +428,8 @@ def main(
                     create_trainer_job,
                     rlor_mgr,
                     base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=ref_profile,
+                    infra=reference_infra,
+                    profile=reference_launch_profile,
                     lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
@@ -430,8 +447,8 @@ def main(
             policy_ep = create_trainer_job(
                 rlor_mgr,
                 base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
+                infra=policy_infra,
+                profile=policy_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,

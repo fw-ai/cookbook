@@ -80,6 +80,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
 
     cfg = module.Config(
         log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
         dataset=str(dataset_path),
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,
@@ -107,9 +108,14 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
             return SimpleNamespace(
                 max_supported_context_length=48,
                 training_shape_version="accounts/test/trainingShapes/sft/versions/1",
+                trainer_image_tag="trainer:1",
+                accelerator_type="NVIDIA_H200_141GB",
+                accelerator_count=8,
+                node_count=2,
             )
 
         def create(self, config):
+            events["created_config"] = config
             return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
 
         def wait_for_ready(self, job_id, **kwargs):
@@ -186,6 +192,11 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
     assert cfg.max_seq_len == 48
     assert cfg.infra.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-128k-h200"
     assert events["resolved_shapes"] == ["accounts/fireworks/trainingShapes/qwen3-8b-128k-h200"]
+    assert events["created_config"].training_shape_ref is None
+    assert events["created_config"].custom_image_tag == "trainer:1"
+    assert events["created_config"].accelerator_type == "NVIDIA_H200_141GB"
+    assert events["created_config"].accelerator_count == 8
+    assert events["created_config"].node_count == 2
     assert events["deleted_jobs"] == ["job-sft"]
 
 
@@ -270,6 +281,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
 
     cfg = module.Config(
         dataset=str(dataset_path),
+        base_model="accounts/test/models/custom-sft",
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,
         epochs=1,
@@ -372,6 +384,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
 
     cfg = module.Config(
         dataset=str(dataset_path),
+        base_model="accounts/test/models/custom-sft",
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,
         epochs=1,

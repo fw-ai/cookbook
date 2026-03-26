@@ -7,8 +7,9 @@ https://docs.fireworks.ai/fine-tuning/training-sdk/training-shapes
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from fireworks.training.sdk.trainer import TrainingShapeProfile
 from training.utils.config import InfraConfig
 
 TRAINING_SHAPES_DOCS_URL = (
@@ -35,6 +36,32 @@ class SelectedTrainingShapes:
     reference: str | None
     inferred_policy: bool
     inferred_reference: bool
+
+
+def materialize_profile_infra(
+    infra: InfraConfig,
+    profile: TrainingShapeProfile,
+) -> InfraConfig:
+    """Return an InfraConfig copy populated from a resolved training shape."""
+    return replace(
+        infra,
+        custom_image_tag=getattr(profile, "trainer_image_tag", None) or infra.custom_image_tag,
+        accelerator_type=getattr(profile, "accelerator_type", None) or infra.accelerator_type,
+        accelerator_count=getattr(profile, "accelerator_count", None) or infra.accelerator_count,
+        node_count=getattr(profile, "node_count", None) or infra.node_count,
+    )
+
+
+def prepare_training_shape_launch(
+    infra: InfraConfig,
+    profile: TrainingShapeProfile | None,
+    *,
+    client_managed: bool,
+) -> tuple[InfraConfig, TrainingShapeProfile | None]:
+    """Choose manual-vs-shape launch config for a resolved profile."""
+    if not client_managed or profile is None:
+        return infra, profile
+    return materialize_profile_infra(infra, profile), None
 
 
 _MODEL_ALIASES: dict[str, str] = {

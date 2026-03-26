@@ -56,6 +56,8 @@ __all__ = [
     "apply_recommended_training_shapes",
     "canonical_base_model",
     "get_recommended_training_shapes",
+    "materialize_profile_infra",
+    "prepare_training_shape_launch",
     "recommend_training_shape",
     "TRAINING_SHAPES_DOCS_URL",
     "validate_config",
@@ -99,6 +101,8 @@ from training.utils.training_shapes import (
     apply_recommended_training_shapes,
     canonical_base_model,
     get_recommended_training_shapes,
+    materialize_profile_infra,
+    prepare_training_shape_launch,
     recommend_training_shape,
 )
 from training.utils.losses import (

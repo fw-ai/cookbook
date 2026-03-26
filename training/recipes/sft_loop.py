@@ -49,6 +49,7 @@ from training.utils import (
     build_renderer,
     parse_train_on_what,
     apply_recommended_training_shapes,
+    prepare_training_shape_launch,
     render_messages_to_datum,
     resolve_renderer_name,
 )
@@ -178,8 +179,15 @@ def main(
         )
 
     profile = None
+    trainer_infra = cfg.infra
+    trainer_profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+        trainer_infra, trainer_profile = prepare_training_shape_launch(
+            cfg.infra,
+            profile,
+            client_managed=selected_shapes.inferred_policy,
+        )
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -190,15 +198,19 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
+    runner.set_accelerator_info(
+        trainer_infra.accelerator_type,
+        trainer_infra.accelerator_count,
+        profile=profile,
+    )
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         endpoint = create_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
-            infra=cfg.infra,
-            profile=profile,
+            infra=trainer_infra,
+            profile=trainer_profile,
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,

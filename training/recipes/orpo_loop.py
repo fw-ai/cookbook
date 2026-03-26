@@ -65,6 +65,7 @@ from training.utils import (
     load_preference_dataset,
     build_renderer,
     apply_recommended_training_shapes,
+    prepare_training_shape_launch,
     render_preference_pair,
     resolve_renderer_name,
     validate_config,
@@ -237,8 +238,15 @@ def main(
         )
 
     profile = None
+    trainer_infra = cfg.infra
+    trainer_profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+        trainer_infra, trainer_profile = prepare_training_shape_launch(
+            cfg.infra,
+            profile,
+            client_managed=selected_shapes.inferred_policy,
+        )
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -254,8 +262,8 @@ def main(
         endpoint = create_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
-            infra=cfg.infra,
-            profile=profile,
+            infra=trainer_infra,
+            profile=trainer_profile,
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
@@ -406,7 +414,11 @@ def main(
             runner.write_metadata()
             return time.monotonic()
 
-        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
+        runner.set_accelerator_info(
+            trainer_infra.accelerator_type,
+            trainer_infra.accelerator_count,
+            profile=profile,
+        )
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 

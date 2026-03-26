@@ -68,6 +68,7 @@ from training.utils import (
     build_datum_from_token_mask,
     validate_config,
     apply_recommended_training_shapes,
+    prepare_training_shape_launch,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
@@ -405,6 +406,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     # -- Resolve training shapes --------------------------------------------
 
     profile = None
+    policy_infra = infra
+    policy_profile = None
     if infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
         # profile.deployment_shape returns the versioned path pinned by
@@ -412,6 +415,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         if profile.deployment_shape and not deploy_cfg.deployment_shape:
             deploy_cfg.deployment_shape = profile.deployment_shape
             logger.info("Deployment shape from training shape: %s", deploy_cfg.deployment_shape)
+        policy_infra, policy_profile = prepare_training_shape_launch(
+            infra,
+            profile,
+            client_managed=selected_shapes.inferred_policy,
+        )
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
@@ -428,8 +436,15 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         logger.info("max_seq_len defaulting to %d (no training shape)", cfg.max_seq_len)
 
     ref_profile = None
+    reference_infra = infra
+    reference_launch_profile = None
     if infra.ref_training_shape_id:
         ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
+        reference_infra, reference_launch_profile = prepare_training_shape_launch(
+            infra,
+            ref_profile,
+            client_managed=selected_shapes.inferred_reference,
+        )
     use_reference = ref_profile is not None
     if not use_reference:
         if cfg.kl_beta > 0:
@@ -464,7 +479,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             dep_info = None
             logger.info("Skipping deployment setup — using pre-created resources")
         else:
-            dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
+            dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, policy_infra)
             if not cfg.deployment_id and deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
                 cleanup.deployment(deploy_cfg.deployment_id)
             elif deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") == "1":
@@ -474,15 +489,15 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
         # firectl-admin for regions the main gateway doesn't support yet).
 
-        def _make_job(label: str, precreated_id: str | None, job_profile=None, **extra_kw):
+        def _make_job(label: str, precreated_id: str | None, job_infra, job_profile=None, **extra_kw):
             if precreated_id:
                 ep = create_trainer_job(
-                    rlor_mgr, base_model=cfg.base_model, infra=infra,
+                    rlor_mgr, base_model=cfg.base_model, infra=job_infra,
                     job_id=precreated_id,
                 )
                 return ep, precreated_id, True
             ep = create_trainer_job(
-                rlor_mgr, base_model=cfg.base_model, infra=infra, profile=job_profile,
+                rlor_mgr, base_model=cfg.base_model, infra=job_infra, profile=job_profile,
                 lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name=f"frozen-lake-{label}",
@@ -494,9 +509,22 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         precreated_policy = False
         precreated_reference = False
         with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(_make_job, "policy", cfg.policy_job_id, job_profile=profile)
+            pol_fut = pool.submit(
+                _make_job,
+                "policy",
+                cfg.policy_job_id,
+                job_infra=policy_infra,
+                job_profile=policy_profile,
+            )
             ref_fut = (
-                pool.submit(_make_job, "reference", cfg.reference_job_id, job_profile=ref_profile, forward_only=True)
+                pool.submit(
+                    _make_job,
+                    "reference",
+                    cfg.reference_job_id,
+                    job_infra=reference_infra,
+                    job_profile=reference_launch_profile,
+                    forward_only=True,
+                )
                 if use_reference else None
             )
 

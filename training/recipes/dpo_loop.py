@@ -60,6 +60,7 @@ from training.utils import (
     load_preference_dataset,
     build_renderer,
     apply_recommended_training_shapes,
+    prepare_training_shape_launch,
     render_preference_pair,
     resolve_renderer_name,
 )
@@ -478,22 +479,37 @@ def main(
             selected_shapes.reference,
         )
 
-    if cfg.deployment.deployment_id:
-        setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+    policy_infra = cfg.infra
+    policy_profile = None
 
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+        policy_infra, policy_profile = prepare_training_shape_launch(
+            cfg.infra,
+            profile,
+            client_managed=selected_shapes.inferred_policy,
+        )
 
     ref_profile = None
+    reference_infra = cfg.infra
+    reference_launch_profile = None
     if cfg.infra.ref_training_shape_id:
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+        reference_infra, reference_launch_profile = prepare_training_shape_launch(
+            cfg.infra,
+            ref_profile,
+            client_managed=selected_shapes.inferred_reference,
+        )
     elif profile is not None:
         raise ValueError(
             "ref_training_shape_id must be set when training_shape_id is set. "
             "DPO always requires a reference model. Set it explicitly "
             "(can be the same as training_shape_id)."
         )
+
+    if cfg.deployment.deployment_id:
+        setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, policy_infra)
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -511,8 +527,8 @@ def main(
                 create_trainer_job,
                 rlor_mgr,
                 base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
+                infra=policy_infra,
+                profile=policy_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
@@ -524,8 +540,8 @@ def main(
                 create_trainer_job,
                 rlor_mgr,
                 base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=ref_profile,
+                infra=reference_infra,
+                profile=reference_launch_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
@@ -588,7 +604,11 @@ def main(
         if not tokenized_pairs:
             raise RuntimeError("No valid pairs after tokenization")
 
-        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
+        runner.set_accelerator_info(
+            policy_infra.accelerator_type,
+            policy_infra.accelerator_count,
+            profile=profile,
+        )
         runner.write_status(RunStatus.RUNNING, message="provisioning")
 
         def _on_ref_done():

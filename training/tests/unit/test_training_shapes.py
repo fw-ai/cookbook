@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from training.utils import (
     InfraConfig,
     apply_recommended_training_shapes,
     canonical_base_model,
     get_recommended_training_shapes,
+    materialize_profile_infra,
+    prepare_training_shape_launch,
     recommend_training_shape,
 )
 
@@ -75,3 +79,45 @@ def test_apply_recommended_training_shapes_fills_policy_and_reference():
     assert infra.ref_training_shape_id == selected.reference
     assert selected.inferred_policy is True
     assert selected.inferred_reference is True
+
+
+def test_materialize_profile_infra_copies_shape_owned_fields():
+    infra = InfraConfig(training_shape_id="shape-a", region="US_VIRGINIA_1")
+    profile = SimpleNamespace(
+        trainer_image_tag="trainer:1",
+        accelerator_type="NVIDIA_H200_141GB",
+        accelerator_count=8,
+        node_count=2,
+    )
+
+    resolved = materialize_profile_infra(infra, profile)
+
+    assert resolved is not infra
+    assert resolved.training_shape_id == "shape-a"
+    assert resolved.region == "US_VIRGINIA_1"
+    assert resolved.custom_image_tag == "trainer:1"
+    assert resolved.accelerator_type == "NVIDIA_H200_141GB"
+    assert resolved.accelerator_count == 8
+    assert resolved.node_count == 2
+
+
+def test_prepare_training_shape_launch_uses_manual_path_for_client_managed_shape():
+    infra = InfraConfig(training_shape_id="shape-a")
+    profile = SimpleNamespace(
+        trainer_image_tag="trainer:1",
+        accelerator_type="NVIDIA_H200_141GB",
+        accelerator_count=8,
+        node_count=2,
+    )
+
+    launch_infra, launch_profile = prepare_training_shape_launch(
+        infra,
+        profile,
+        client_managed=True,
+    )
+
+    assert launch_profile is None
+    assert launch_infra.custom_image_tag == "trainer:1"
+    assert launch_infra.accelerator_type == "NVIDIA_H200_141GB"
+    assert launch_infra.accelerator_count == 8
+    assert launch_infra.node_count == 2
