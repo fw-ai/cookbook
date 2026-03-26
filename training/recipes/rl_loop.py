@@ -766,6 +766,27 @@ def main(
                     training_shape=cfg.infra.training_shape_id,
                 )
 
+            if cfg.weight_sync.deployment_checkpoint_save_interval > 0 and step % cfg.weight_sync.deployment_checkpoint_save_interval == 0:
+                logger.info("[step %d] deployment_checkpoint_save...", step)
+                t0 = _time.time()
+                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+                    step - step_offset
+                ) * prompt_groups_per_step
+                save_checkpoint(
+                    policy,
+                    f"deploy-step-{step}",
+                    cfg.log_path,
+                    {
+                        "step": step,
+                        "data_consumed": _data_consumed,
+                        "source_job_id": policy_job_id,
+                    },
+                    kind=CheckpointKind.SAMPLER,
+                    base_model=cfg.base_model,
+                    training_shape=cfg.infra.training_shape_id,
+                )
+                logger.info("[step %d] deployment_checkpoint_save: done (%.1fs)", step, _time.time() - t0)
+
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
                 fwd_bwd_results=[fwd_bwd_result],

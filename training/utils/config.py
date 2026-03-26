@@ -147,6 +147,10 @@ class WeightSyncConfig:
     dcp_save_interval: int = 0
     dcp_timeout: int = 2700
     """Timeout in seconds for DCP save_state / load_state_with_optimizer (default 45 min)."""
+    deployment_checkpoint_save_interval: int = 0
+    """Save a deployable (sampler) checkpoint every N training steps.
+    The checkpoint can be promoted to a standalone model or used to create
+    a separate deployment (e.g. for evaluation).  0 = disabled."""
     first_checkpoint_type: str = "base"
     weight_sync_before_training: bool = False
     weight_sync_timeout: int = 600
