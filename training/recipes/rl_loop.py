@@ -807,11 +807,17 @@ def main(
 
         # -- Run ----------------------------------------------------------------
 
+        _snapshot_file = os.path.join(cfg.log_path, "latest_snapshot.txt")
+
         def _weight_sync(step: int) -> None:
             logger.info("[step %d] weight_sync: saving + loading...", step)
             t0 = _time.time()
             with timer("weight_sync"):
-                weight_syncer.save_and_hotload(f"step-{step}")
+                snapshot = weight_syncer.save_and_hotload(f"step-{step}")
+            if snapshot:
+                os.makedirs(cfg.log_path, exist_ok=True)
+                with open(_snapshot_file, "w") as f:
+                    f.write(snapshot)
             logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
 
         def _loop_metrics_callback(loop_metrics: dict) -> None:
