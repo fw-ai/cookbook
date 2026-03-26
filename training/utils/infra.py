@@ -145,7 +145,7 @@ def create_trainer_job(
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
     if profile is not None:
-        kwargs: dict[str, Any] = dict(
+        config = TrainerJobConfig(
             base_model=base_model,
             lora_rank=lora_rank,
             max_context_length=max_seq_len or profile.max_supported_context_length,
@@ -159,7 +159,7 @@ def create_trainer_job(
             training_shape_ref=profile.training_shape_version,
         )
     else:
-        kwargs = dict(
+        config = TrainerJobConfig(
             base_model=base_model,
             lora_rank=lora_rank,
             max_context_length=max_seq_len,
@@ -177,9 +177,7 @@ def create_trainer_job(
         )
 
     if infra.purpose and _SDK_HAS_PURPOSE:
-        kwargs["purpose"] = infra.purpose
-
-    config = TrainerJobConfig(**kwargs)
+        config.purpose = infra.purpose
 
     logger.info(
         "Creating %s trainer job '%s' (forward_only=%s, purpose=%s)...",
