@@ -17,10 +17,10 @@ from fireworks.training.sdk.trainer import (
     TrainingShapeProfile,
     TrainerServiceEndpoint,
 )
-
-_SDK_HAS_PURPOSE = hasattr(TrainerJobConfig, "purpose")
 from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
 from training.utils.config import InfraConfig, DeployConfig, purpose_annotation_value
+
+_SDK_HAS_PURPOSE = hasattr(TrainerJobConfig, "purpose")
 
 logger = logging.getLogger(__name__)
 
@@ -240,12 +240,10 @@ def setup_deployment(
     info = deploy_mgr.get(deploy_cfg.deployment_id)
     if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
-        logging.info(f"dep_config: {dep_config}")
         if dep_config.region is None and dep_config.deployment_shape:
             dep_config.region = _infer_region_from_deployment_shape(
                 deploy_mgr, dep_config.deployment_shape
             )
-        logging.info(f"dep_config 2: {dep_config}")
         annotation = purpose_annotation_value(infra.purpose) if infra.purpose else None
         info = _create_deployment_via_cookbook(
             deploy_mgr, dep_config, purpose_annotation=annotation,

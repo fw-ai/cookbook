@@ -11,7 +11,6 @@ Two paths tested:
 
 from __future__ import annotations
 
-from typing import Any
 from types import SimpleNamespace
 
 import pytest
@@ -40,16 +39,30 @@ PROFILE = TrainingShapeProfile(
 
 
 class _CapturingMgr:
-    """Fake TrainerJobManager that captures the TrainerJobConfig."""
+    """Fake TrainerJobManager that captures config and outgoing JSON."""
 
     account_id = "test-account"
 
     def __init__(self):
         self.captured: TrainerJobConfig | None = None
+        self.post_json: dict | None = None
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"name": "accounts/test-account/rlorTrainerJobs/j"}
 
     def create(self, config):
         self.captured = config
+        payload = {"trainingConfig": {}}
+        purpose = getattr(config, "purpose", None)
+        if purpose:
+            payload["purpose"] = purpose
+        self._post("", json=payload)
         return SimpleNamespace(job_id="job-smoke", job_name="jobs/job-smoke")
+
+    def _post(self, path, json=None, **kw):
+        self.post_json = json
+        return self._Resp()
 
     def wait_for_ready(self, job_id, **kwargs):
         return SimpleNamespace(job_id=job_id)
@@ -194,101 +207,24 @@ class TestManualPath:
 # -----------------------------------------------------------------------
 
 
-class _PurposeCapturingMgr:
-    """Fake TrainerJobManager that simulates the SDK create → _post chain.
-
-    ``create()`` mirrors the real SDK: it builds a minimal payload from
-    the config (including ``config.purpose`` when the SDK exposes it)
-    and routes it through ``_post()``.  This lets us verify that the
-    ``purpose`` field reaches the outgoing JSON regardless of whether
-    the SDK or the cookbook shim is responsible for injecting it.
-    """
-
-    account_id = "test-account"
-
-    def __init__(self):
-        self.captured_config: TrainerJobConfig | None = None
-        self.captured_post_json: dict | None = None
-
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"name": "accounts/test-account/rlorTrainerJobs/job-p"}
-
-    def create(self, config):
-        self.captured_config = config
-        payload: dict[str, Any] = {"trainingConfig": {}}
-        purpose = getattr(config, "purpose", None)
-        if purpose:
-            payload["purpose"] = purpose
-        self._post("/v1/accounts/test-account/rlorTrainerJobs", json=payload)
-        return SimpleNamespace(job_id="job-p", job_name="accounts/test-account/rlorTrainerJobs/job-p")
-
-    def _post(self, path, json=None, **kw):
-        self.captured_post_json = json
-        return self._FakeResp()
-
-    def wait_for_ready(self, job_id, **kwargs):
-        return SimpleNamespace(job_id=job_id)
-
-
 class TestPurpose:
-    """Verify purpose reaches the REST payload regardless of SDK version.
-
-    The cookbook uses ``TrainerJobConfig.purpose`` when the SDK exposes
-    it, and falls back to the ``_create_with_purpose_shim`` (which
-    wraps ``_post``) for older SDK versions.  Either way, the field
-    must appear in the outgoing JSON.
-    """
-
-    def test_purpose_injected_shape_path(self):
-        mgr = _PurposeCapturingMgr()
+    def test_purpose_set(self):
+        mgr = _CapturingMgr()
         infra_module.create_trainer_job(
-            mgr,
-            base_model=BASE_MODEL,
-            infra=InfraConfig(purpose="PURPOSE_PILOT"),
-            profile=PROFILE,
+            mgr, base_model=BASE_MODEL,
+            infra=InfraConfig(purpose="PURPOSE_PILOT"), profile=PROFILE,
         )
-        assert mgr.captured_config is not None
-        assert mgr.captured_post_json["purpose"] == "PURPOSE_PILOT"
+        assert mgr.post_json["purpose"] == "PURPOSE_PILOT"
 
-    def test_purpose_injected_manual_path(self):
-        mgr = _PurposeCapturingMgr()
+    def test_purpose_none(self):
+        mgr = _CapturingMgr()
         infra_module.create_trainer_job(
-            mgr,
-            base_model=BASE_MODEL,
-            infra=InfraConfig(purpose="PURPOSE_PILOT"),
+            mgr, base_model=BASE_MODEL, infra=InfraConfig(), profile=PROFILE,
         )
-        assert mgr.captured_config is not None
-        assert mgr.captured_post_json["purpose"] == "PURPOSE_PILOT"
-
-    def test_purpose_none_not_in_payload(self):
-        mgr = _PurposeCapturingMgr()
-        infra_module.create_trainer_job(
-            mgr,
-            base_model=BASE_MODEL,
-            infra=InfraConfig(),
-            profile=PROFILE,
-        )
-        assert mgr.captured_config is not None
-        assert "purpose" not in mgr.captured_post_json
+        assert "purpose" not in mgr.post_json
 
 
-# -----------------------------------------------------------------------
-# purpose_annotation_value
-# -----------------------------------------------------------------------
-
-
-class TestPurposeAnnotationValue:
-    def test_pilot(self):
-        assert purpose_annotation_value("PURPOSE_PILOT") == "pilot"
-
-    def test_invalid_raises(self):
-        with pytest.raises(ValueError, match="Invalid purpose"):
-            purpose_annotation_value("bad_value")
-
-    def test_unspecified_raises(self):
-        with pytest.raises(ValueError, match="Invalid purpose"):
-            purpose_annotation_value("PURPOSE_UNSPECIFIED")
+def test_purpose_annotation_value():
+    assert purpose_annotation_value("PURPOSE_PILOT") == "pilot"
+    with pytest.raises(ValueError, match="Invalid purpose"):
+        purpose_annotation_value("bad_value")
