@@ -18,7 +18,7 @@ from fireworks.training.sdk.trainer import (
     TrainerServiceEndpoint,
 )
 from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
-from training.utils.config import InfraConfig, DeployConfig, purpose_annotation_value
+from training.utils.config import InfraConfig, DeployConfig
 
 logger = logging.getLogger(__name__)
 
@@ -230,10 +230,7 @@ def setup_deployment(
             dep_config.region = _infer_region_from_deployment_shape(
                 deploy_mgr, dep_config.deployment_shape
             )
-        annotations = None
-        if infra.purpose:
-            annotations = {"internal/purpose": purpose_annotation_value(infra.purpose)}
-        info = _create_deployment_via_cookbook(deploy_mgr, dep_config, annotations=annotations)
+        info = _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
@@ -302,9 +299,9 @@ def _get_deployment_shape_version(
 def _create_deployment_via_cookbook(
     deploy_mgr: DeploymentManager,
     config: DeploymentConfig,
-    annotations: dict[str, str] | None = None,
+    purpose: str | None = None,
 ) -> DeploymentInfo:
-    """Create a deployment, optionally with placement region and annotations."""
+    """Create a deployment, optionally with placement region and purpose."""
     path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
     if config.skip_shape_validation:
         path += "&skipShapeValidation=true"
@@ -332,8 +329,10 @@ def _create_deployment_via_cookbook(
         body["extraArgs"] = flat
     if config.extra_values:
         body["extraValues"] = config.extra_values
-    if annotations:
-        body["annotations"] = annotations
+    if purpose:
+        body["annotations"] = {
+            "internal/purpose": purpose.removeprefix("PURPOSE_").lower(),
+        }
 
     logger.info(
         "Creating deployment: %s (region=%s, extra_values=%s)",

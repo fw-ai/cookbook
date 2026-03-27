@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import training.utils.infra as infra_module
-from training.utils.config import InfraConfig, purpose_annotation_value
+from training.utils.config import InfraConfig
 from fireworks.training.sdk.trainer import (
     TrainerJobConfig,
     TrainingShapeProfile,
@@ -207,7 +207,3 @@ class TestPurpose:
         assert getattr(mgr.captured, "purpose", None) is None
 
 
-def test_purpose_annotation_value():
-    assert purpose_annotation_value("PURPOSE_PILOT") == "pilot"
-    with pytest.raises(ValueError, match="Invalid purpose"):
-        purpose_annotation_value("bad_value")
