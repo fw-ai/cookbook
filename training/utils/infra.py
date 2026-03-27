@@ -230,7 +230,10 @@ def setup_deployment(
             dep_config.region = _infer_region_from_deployment_shape(
                 deploy_mgr, dep_config.deployment_shape
             )
-        info = _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
+        if dep_config.region is None:
+            info = _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
+        else:
+            info = deploy_mgr.create_or_get(dep_config)
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
@@ -301,7 +304,7 @@ def _create_deployment_via_cookbook(
     config: DeploymentConfig,
     purpose: str | None = None,
 ) -> DeploymentInfo:
-    """Create a deployment, optionally with placement region and purpose."""
+    """Create a deployment while leaving placement selection to the control plane."""
     path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
     if config.skip_shape_validation:
         path += "&skipShapeValidation=true"
@@ -314,8 +317,6 @@ def _create_deployment_via_cookbook(
         "maxReplicaCount": config.max_replica_count,
         "enableHotLoad": True,
     }
-    if config.region:
-        body["placement"] = {"region": config.region}
     if config.hot_load_bucket_type:
         body["hotLoadBucketType"] = config.hot_load_bucket_type
     if config.deployment_shape:
@@ -335,9 +336,8 @@ def _create_deployment_via_cookbook(
         }
 
     logger.info(
-        "Creating deployment: %s (region=%s, extra_values=%s)",
+        "Creating deployment: %s (placement_region=auto, extra_values=%s)",
         config.deployment_id,
-        config.region or "auto",
         bool(config.extra_values),
     )
     resp = deploy_mgr._post(path, json=body, timeout=60)

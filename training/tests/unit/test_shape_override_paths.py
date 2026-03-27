@@ -185,7 +185,7 @@ class TestManualPath:
         assert c.custom_image_tag is None
 
 
-def test_purpose_passed_to_trainer_config():
+def test_infra_fields_forwarded_to_config():
     mgr = _CapturingMgr()
     infra_module.create_trainer_job(
         mgr, base_model=BASE_MODEL,
