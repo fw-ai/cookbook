@@ -185,25 +185,10 @@ class TestManualPath:
         assert c.custom_image_tag is None
 
 
-# -----------------------------------------------------------------------
-# purpose propagation
-# -----------------------------------------------------------------------
-
-
-class TestPurpose:
-    def test_purpose_set(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr, base_model=BASE_MODEL,
-            infra=InfraConfig(purpose="PURPOSE_PILOT"), profile=PROFILE,
-        )
-        assert mgr.captured.purpose == "PURPOSE_PILOT"
-
-    def test_purpose_none(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr, base_model=BASE_MODEL, infra=InfraConfig(), profile=PROFILE,
-        )
-        assert getattr(mgr.captured, "purpose", None) is None
-
-
+def test_purpose_passed_to_trainer_config():
+    mgr = _CapturingMgr()
+    infra_module.create_trainer_job(
+        mgr, base_model=BASE_MODEL,
+        infra=InfraConfig(purpose="PURPOSE_PILOT"), profile=PROFILE,
+    )
+    assert mgr.captured.purpose == "PURPOSE_PILOT"

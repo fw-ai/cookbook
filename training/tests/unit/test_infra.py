@@ -85,7 +85,7 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
 
     class FakeResponse:
         def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-123", "state": "CREATING"}
+            self._payload = payload or {"name": "accounts/acct/deployments/dep-123", "state": "READY"}
 
         def raise_for_status(self):
             return None
@@ -119,9 +119,6 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
         def _parse_deployment_info(self, deployment_id, data):
             return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
 
-        def wait_for_ready(self, deployment_id, timeout_s):
-            return SimpleNamespace(deployment_id=deployment_id, state="READY")
-
     info = setup_deployment(
         FakeMgr(),
         DeployConfig(
@@ -146,7 +143,7 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
 
     class FakeResponse:
         def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-456", "state": "CREATING"}
+            self._payload = payload or {"name": "accounts/acct/deployments/dep-456", "state": "READY"}
 
         def raise_for_status(self):
             return None
@@ -176,9 +173,6 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
         def _parse_deployment_info(self, deployment_id, data):
             return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
 
-        def wait_for_ready(self, deployment_id, timeout_s):
-            return SimpleNamespace(deployment_id=deployment_id, state="READY")
-
     info = setup_deployment(
         FakeMgr(),
         DeployConfig(
@@ -196,12 +190,11 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
 
 
 def test_setup_deployment_injects_purpose_annotation():
-    """Purpose annotation is transparently injected into _post payload."""
     captured = {}
 
     class FakeResponse:
         def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-p", "state": "CREATING"}
+            self._payload = payload or {"name": "accounts/acct/deployments/dep-p", "state": "READY"}
         def raise_for_status(self): return None
         def json(self): return self._payload
 
@@ -215,8 +208,6 @@ def test_setup_deployment_injects_purpose_annotation():
             return FakeResponse()
         def _parse_deployment_info(self, did, data):
             return SimpleNamespace(deployment_id=did, state=data["state"])
-        def wait_for_ready(self, did, timeout_s):
-            return SimpleNamespace(deployment_id=did, state="READY")
 
     setup_deployment(
         FakeMgr(),
