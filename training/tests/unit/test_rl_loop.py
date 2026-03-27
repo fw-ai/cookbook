@@ -255,6 +255,7 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
         base_model="accounts/test/models/m",
         dataset="/tmp/d.jsonl",
         policy_loss="grpo",
+        kl_beta=0.0,
         deployment=module.DeployConfig(deployment_id="dep", tokenizer_model="T"),
         infra=module.InfraConfig(training_shape_id="shape-pp4"),
     )
@@ -765,6 +766,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/prompts.jsonl",
         policy_loss="my_custom_loss",
+        kl_beta=0.0,
         ratio_log_cap=17.0,
         completions_per_prompt=2,
         prompt_groups_per_step=1,

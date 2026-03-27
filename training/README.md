@@ -67,7 +67,7 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | `dataset` | Path to your JSONL training data |
 | `base_model` | Fireworks model ID (e.g. `"accounts/fireworks/models/qwen3-8b"`) |
 | `max_seq_len` | Max token length for training examples |
-| `infra` | `InfraConfig()` to use the cookbook's documented model-to-shape defaults, or `InfraConfig(training_shape_id="your-shape")` to override them |
+| `infra` | `InfraConfig()` to auto-select validated shapes from Fireworks control-plane data, or `InfraConfig(training_shape_id="your-shape")` to override them |
 
 **SFT** (`recipes/sft_loop.py`) -- also requires:
 
@@ -82,11 +82,12 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
 | `weight_sync` | `WeightSyncConfig(weight_sync_interval=1)` to sync weights to the deployment |
 
-For supported public Fireworks models, the cookbook now fills in the
-documented trainer shapes automatically when `training_shape_id` is not
-set. RL and DPO also infer the documented forward-only reference shape
-when one exists. Explicit `training_shape_id` and
-`ref_training_shape_id` values still take precedence.
+When `training_shape_id` is not set, the cookbook auto-selects validated
+trainer shapes at runtime from Fireworks control-plane data. RL-family
+recipes also auto-select a validated deployment shape, and DPO / KL
+flows request a validated forward-only reference shape. Explicit
+`training_shape_id`, `ref_training_shape_id`, and deployment-shape
+overrides still take precedence.
 
 **DPO / ORPO** -- also requires:
 

@@ -1,0 +1,16 @@
+Fireworks Cookbook
+
+This repository contains cookbook recipes and examples for the Fireworks Training SDK.
+
+Canonical documentation:
+- Training SDK introduction: https://docs.fireworks.ai/fine-tuning/training-sdk/introduction
+- Cookbook overview: https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/overview
+- Configuration reference: https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/reference
+- Training shapes: https://docs.fireworks.ai/fine-tuning/training-sdk/training-shapes
+
+Shape-selection notes:
+- The cookbook does not own a static model-to-shape inventory.
+- Auto-selection uses validated training and deployment shape versions from Fireworks control-plane data.
+- Requests are filtered by base model, trainer role, sequence length, deployment requirement, and LoRA vs full-tune mode.
+- RL-family recipes may auto-select both trainer and deployment shapes.
+- SFT, DPO, and ORPO only need trainer auto-selection.

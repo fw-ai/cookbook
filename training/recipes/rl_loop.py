@@ -60,8 +60,9 @@ from training.utils import (
     create_trainer_job,
     load_jsonl_dataset,
     prepare_sampling_messages,
-    apply_recommended_training_shapes,
-    prepare_training_shape_launch,
+    ShapeSelectionRequest,
+    materialize_profile_infra,
+    select_validated_launch_shapes,
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
@@ -322,40 +323,41 @@ def main(
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
 
-    selected_shapes = apply_recommended_training_shapes(
-        cfg.infra,
-        base_model=cfg.base_model,
-        lora_rank=cfg.lora_rank,
-        prefer_reference=cfg.kl_beta > 0,
+    policy_selection = select_validated_launch_shapes(
+        rlor_mgr,
+        deploy_mgr=deploy_mgr,
+        request=ShapeSelectionRequest(
+            base_model=cfg.base_model,
+            max_seq_len=cfg.max_seq_len,
+            trainer_role="policy",
+            needs_deployment=True,
+            lora_rank=cfg.lora_rank,
+            explicit_training_shape_id=cfg.infra.training_shape_id,
+            explicit_deployment_shape=cfg.deployment.deployment_shape,
+        ),
     )
-    if selected_shapes.inferred_policy:
+    if policy_selection.training_shape_id:
+        cfg.infra.training_shape_id = policy_selection.training_shape_id
+    if policy_selection.deployment_shape:
+        cfg.deployment.deployment_shape = policy_selection.deployment_shape
+    if policy_selection.inferred_training_shape:
         logger.info(
-            "Using documented policy training shape for %s: %s",
+            "Using validated policy training shape for %s: %s",
             cfg.base_model,
-            selected_shapes.policy,
+            policy_selection.training_shape_id,
         )
-    if selected_shapes.inferred_reference:
+    if policy_selection.inferred_deployment_shape:
         logger.info(
-            "Using documented reference training shape for %s: %s",
+            "Using validated deployment shape for %s: %s",
             cfg.base_model,
-            selected_shapes.reference,
+            policy_selection.deployment_shape,
         )
 
     # -- Resolve training shapes -----------------------------------------------
 
-    profile = None
-    policy_infra = cfg.infra
-    policy_profile = None
-    if cfg.infra.training_shape_id:
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        dep_shape = getattr(profile, 'deployment_shape_version', None) or profile.deployment_shape
-        if dep_shape and not cfg.deployment.deployment_shape:
-            cfg.deployment.deployment_shape = dep_shape
-        policy_infra, policy_profile = prepare_training_shape_launch(
-            cfg.infra,
-            profile,
-            client_managed=selected_shapes.inferred_policy,
-        )
+    profile = policy_selection.training_profile
+    policy_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
+    policy_profile = profile
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -366,23 +368,38 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
+    reference_needed = cfg.kl_beta > 0 or cfg.infra.ref_training_shape_id is not None
     ref_profile = None
     reference_infra = cfg.infra
     reference_launch_profile = None
-    if cfg.infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-        reference_infra, reference_launch_profile = prepare_training_shape_launch(
-            cfg.infra,
-            ref_profile,
-            client_managed=selected_shapes.inferred_reference,
+    if reference_needed:
+        reference_selection = select_validated_launch_shapes(
+            rlor_mgr,
+            request=ShapeSelectionRequest(
+                base_model=cfg.base_model,
+                max_seq_len=cfg.max_seq_len,
+                trainer_role="reference",
+                needs_deployment=False,
+                lora_rank=cfg.lora_rank,
+                explicit_training_shape_id=cfg.infra.ref_training_shape_id,
+            ),
         )
+        if reference_selection.training_shape_id:
+            cfg.infra.ref_training_shape_id = reference_selection.training_shape_id
+        if reference_selection.inferred_training_shape:
+            logger.info(
+                "Using validated reference training shape for %s: %s",
+                cfg.base_model,
+                reference_selection.training_shape_id,
+            )
+        ref_profile = reference_selection.training_profile
+        reference_infra = (
+            materialize_profile_infra(cfg.infra, ref_profile) if ref_profile else cfg.infra
+        )
+        reference_launch_profile = ref_profile
 
     use_reference = ref_profile is not None
     if not use_reference:
-        if cfg.kl_beta > 0:
-            logger.warning(
-                "No ref_training_shape_id set for KL-enabled RL; running without a reference model"
-            )
         logger.info("No ref_training_shape_id set, skipping reference model")
 
     import time as _time

@@ -59,10 +59,11 @@ from training.utils import (
     create_trainer_job,
     load_preference_dataset,
     build_renderer,
-    apply_recommended_training_shapes,
-    prepare_training_shape_launch,
+    ShapeSelectionRequest,
+    materialize_profile_infra,
     render_preference_pair,
     resolve_renderer_name,
+    select_validated_launch_shapes,
 )
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
@@ -460,53 +461,54 @@ def main(
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
 
-    selected_shapes = apply_recommended_training_shapes(
-        cfg.infra,
-        base_model=cfg.base_model,
-        lora_rank=cfg.lora_rank,
-        prefer_reference=True,
+    policy_selection = select_validated_launch_shapes(
+        rlor_mgr,
+        request=ShapeSelectionRequest(
+            base_model=cfg.base_model,
+            max_seq_len=cfg.max_seq_len,
+            trainer_role="policy",
+            needs_deployment=False,
+            lora_rank=cfg.lora_rank,
+            explicit_training_shape_id=cfg.infra.training_shape_id,
+        ),
     )
-    if selected_shapes.inferred_policy:
+    reference_selection = select_validated_launch_shapes(
+        rlor_mgr,
+        request=ShapeSelectionRequest(
+            base_model=cfg.base_model,
+            max_seq_len=cfg.max_seq_len,
+            trainer_role="reference",
+            needs_deployment=False,
+            lora_rank=cfg.lora_rank,
+            explicit_training_shape_id=cfg.infra.ref_training_shape_id,
+        ),
+    )
+    if policy_selection.training_shape_id:
+        cfg.infra.training_shape_id = policy_selection.training_shape_id
+    if reference_selection.training_shape_id:
+        cfg.infra.ref_training_shape_id = reference_selection.training_shape_id
+    if policy_selection.inferred_training_shape:
         logger.info(
-            "Using documented policy training shape for %s: %s",
+            "Using validated policy training shape for %s: %s",
             cfg.base_model,
-            selected_shapes.policy,
+            policy_selection.training_shape_id,
         )
-    if selected_shapes.inferred_reference:
+    if reference_selection.inferred_training_shape:
         logger.info(
-            "Using documented reference training shape for %s: %s",
+            "Using validated reference training shape for %s: %s",
             cfg.base_model,
-            selected_shapes.reference,
+            reference_selection.training_shape_id,
         )
 
-    policy_infra = cfg.infra
-    policy_profile = None
+    profile = policy_selection.training_profile
+    policy_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
+    policy_profile = profile
 
-    profile = None
-    if cfg.infra.training_shape_id:
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        policy_infra, policy_profile = prepare_training_shape_launch(
-            cfg.infra,
-            profile,
-            client_managed=selected_shapes.inferred_policy,
-        )
-
-    ref_profile = None
-    reference_infra = cfg.infra
-    reference_launch_profile = None
-    if cfg.infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-        reference_infra, reference_launch_profile = prepare_training_shape_launch(
-            cfg.infra,
-            ref_profile,
-            client_managed=selected_shapes.inferred_reference,
-        )
-    elif profile is not None:
-        raise ValueError(
-            "ref_training_shape_id must be set when training_shape_id is set. "
-            "DPO always requires a reference model. Set it explicitly "
-            "(can be the same as training_shape_id)."
-        )
+    ref_profile = reference_selection.training_profile
+    reference_infra = (
+        materialize_profile_infra(cfg.infra, ref_profile) if ref_profile else cfg.infra
+    )
+    reference_launch_profile = ref_profile
 
     if cfg.deployment.deployment_id:
         setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, policy_infra)

@@ -1,84 +1,322 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
 
 from training.utils import (
     InfraConfig,
-    apply_recommended_training_shapes,
+    ShapeSelectionRequest,
     canonical_base_model,
-    get_recommended_training_shapes,
     materialize_profile_infra,
     prepare_training_shape_launch,
-    recommend_training_shape,
+    select_validated_launch_shapes,
 )
 
 
-def test_recommend_training_shape_returns_documented_public_paths():
-    assert recommend_training_shape(
-        "accounts/fireworks/models/qwen3-8b"
-    ) == "accounts/fireworks/trainingShapes/qwen3-8b-128k-h200"
-    assert recommend_training_shape(
-        "accounts/fireworks/models/qwen3-8b",
-        forward_only=True,
-    ) == "accounts/fireworks/trainingShapes/qwen3-8b-128k-h200-forward"
-    assert recommend_training_shape(
-        "accounts/fireworks/models/qwen3-vl-8b-instruct",
-        forward_only=True,
-    ) is None
+def _training_shape_version(
+    name: str,
+    *,
+    trainer_mode: str,
+    max_supported_context_length: int,
+    deployment_shape_version: str = "",
+    accelerator_type: str = "NVIDIA_H200_141GB",
+    accelerator_count: int = 8,
+) -> dict:
+    return {
+        "name": name,
+        "snapshot": {
+            "baseModel": "accounts/fireworks/models/qwen3-8b",
+            "modelType": "qwen3",
+            "parameterCount": 8_400_000_000,
+            "trainerMode": trainer_mode,
+            "trainerImageTag": "trainer:1",
+            "maxSupportedContextLength": max_supported_context_length,
+            "nodeCount": 2,
+            "deploymentShapeVersion": deployment_shape_version,
+            "deploymentImageTag": "deployment:1",
+            "acceleratorType": accelerator_type,
+            "acceleratorCount": accelerator_count,
+            "baseModelWeightPrecision": "WEIGHT_PRECISION_BFLOAT16",
+            "trainerShardingScheme": {
+                "pipelineParallelism": 1,
+            },
+        },
+    }
 
 
-def test_recommend_training_shape_supports_canonical_aliases():
-    assert canonical_base_model(
-        "accounts/fireworks/models/qwen3-30b-a3b"
-    ) == "accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
-    assert recommend_training_shape(
-        "accounts/fireworks/models/qwen3-30b-a3b"
-    ) == "accounts/fireworks/trainingShapes/qwen3-30b-a3b-instruct-2507-128k-b200"
+def _deployment_shape_version(name: str, *, accelerator_type: str = "NVIDIA_H200_141GB") -> dict:
+    return {
+        "name": name,
+        "snapshot": {
+            "baseModel": "accounts/fireworks/models/qwen3-8b",
+            "modelType": "qwen3",
+            "parameterCount": 8_400_000_000,
+            "acceleratorType": accelerator_type,
+            "acceleratorCount": 8,
+            "engine": "VLLM",
+        },
+    }
 
 
-def test_recommend_training_shape_uses_kimi_lora_shape_when_requested():
-    assert get_recommended_training_shapes("accounts/fireworks/models/kimi-k2p5").lora == (
-        "accounts/fireworks/trainingShapes/kimi-k2p5-80k-lora"
+class _FakeResponse:
+    def __init__(self, payload: dict, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+        self.is_success = 200 <= status_code < 300
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeSelectorMgr:
+    def __init__(self, handler, profile=None):
+        self._handler = handler
+        self._profile = profile
+        self.paths: list[str] = []
+        self.resolved_shapes: list[str] = []
+
+    def _get(self, path: str, timeout: int = 30):
+        self.paths.append(path)
+        return _FakeResponse(self._handler(path))
+
+    def resolve_training_profile(self, shape_id: str):
+        self.resolved_shapes.append(shape_id)
+        if self._profile is None:
+            raise AssertionError("resolve_training_profile should not have been called")
+        return self._profile
+
+
+def _filter_for(path: str) -> str:
+    return parse_qs(urlsplit(path).query).get("filter", [""])[0]
+
+
+def test_canonical_base_model_is_identity_for_runtime_selection():
+    model = "accounts/fireworks/models/qwen3-30b-a3b"
+    assert canonical_base_model(model) == model
+
+
+def test_select_validated_launch_shapes_prefers_smallest_exact_match():
+    def handler(path: str) -> dict:
+        filt = _filter_for(path)
+        if "/trainingShapes/-/versions" in path:
+            assert 'snapshot.base_model="accounts/fireworks/models/qwen3-8b"' in filt
+            assert 'snapshot.trainer_mode="POLICY_TRAINER"' in filt
+            return {
+                "trainingShapeVersions": [
+                    _training_shape_version(
+                        "accounts/fireworks/trainingShapes/qwen3-8b-128k/versions/v2",
+                        trainer_mode="POLICY_TRAINER",
+                        max_supported_context_length=131072,
+                        deployment_shape_version=(
+                            "accounts/fireworks/deploymentShapes/qwen3-8b-128k/versions/d2"
+                        ),
+                    ),
+                    _training_shape_version(
+                        "accounts/fireworks/trainingShapes/qwen3-8b-32k/versions/v1",
+                        trainer_mode="POLICY_TRAINER",
+                        max_supported_context_length=32768,
+                        deployment_shape_version=(
+                            "accounts/fireworks/deploymentShapes/qwen3-8b-32k/versions/d1"
+                        ),
+                    ),
+                ]
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    mgr = _FakeSelectorMgr(handler)
+    selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            max_seq_len=32000,
+            trainer_role="policy",
+            needs_deployment=True,
+        ),
     )
-    assert recommend_training_shape(
-        "accounts/fireworks/models/kimi-k2p5",
-        lora_rank=16,
-    ) == "accounts/fireworks/trainingShapes/kimi-k2p5-80k-lora"
+
+    assert selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-32k"
+    assert (
+        selection.training_profile.training_shape_version
+        == "accounts/fireworks/trainingShapes/qwen3-8b-32k/versions/v1"
+    )
+    assert (
+        selection.deployment_shape
+        == "accounts/fireworks/deploymentShapes/qwen3-8b-32k/versions/d1"
+    )
+    assert selection.inferred_training_shape is True
+    assert selection.inferred_deployment_shape is True
+    assert not any("/v1/accounts/fireworks/models/qwen3-8b" in path for path in mgr.paths)
 
 
-def test_apply_recommended_training_shapes_preserves_explicit_overrides():
-    infra = InfraConfig(
-        training_shape_id="custom-policy-shape",
-        ref_training_shape_id="custom-reference-shape",
+def test_select_validated_launch_shapes_falls_back_to_compat_buckets():
+    def handler(path: str) -> dict:
+        filt = _filter_for(path)
+        if path == "/v1/accounts/fireworks/models/qwen3-8b":
+            return {
+                "baseModelDetails": {
+                    "modelType": "qwen3",
+                    "parameterCount": 8_400_000_000,
+                    "supportsFireattention": False,
+                }
+            }
+        if "/trainingShapes/-/versions" in path:
+            if 'snapshot.base_model="accounts/fireworks/models/qwen3-8b"' in filt:
+                return {"trainingShapeVersions": []}
+            assert 'snapshot.model_type="qwen3"' in filt
+            assert "snapshot.parameter_count>=8000000000" in filt
+            assert "snapshot.parameter_count<=9000000000" in filt
+            return {
+                "trainingShapeVersions": [
+                    _training_shape_version(
+                        "accounts/fireworks/trainingShapes/qwen3-compat/versions/v3",
+                        trainer_mode="POLICY_TRAINER",
+                        max_supported_context_length=65536,
+                    )
+                ]
+            }
+        if "/deploymentShapes/-/versions" in path:
+            if 'snapshot.base_model="accounts/fireworks/models/qwen3-8b"' in filt:
+                return {"deploymentShapeVersions": []}
+            assert 'snapshot.model_type="qwen3"' in filt
+            assert 'snapshot.engine!="FIREATTENTION"' in filt
+            return {
+                "deploymentShapeVersions": [
+                    _deployment_shape_version(
+                        "accounts/fireworks/deploymentShapes/qwen3-compat/versions/d5"
+                    )
+                ]
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    mgr = _FakeSelectorMgr(handler)
+    selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            max_seq_len=4096,
+            trainer_role="policy",
+            needs_deployment=True,
+        ),
     )
 
-    selected = apply_recommended_training_shapes(
-        infra,
-        base_model="accounts/fireworks/models/qwen3-8b",
-        prefer_reference=True,
+    assert selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-compat"
+    assert (
+        selection.deployment_shape
+        == "accounts/fireworks/deploymentShapes/qwen3-compat/versions/d5"
     )
 
-    assert selected.policy == "custom-policy-shape"
-    assert selected.reference == "custom-reference-shape"
-    assert selected.inferred_policy is False
-    assert selected.inferred_reference is False
 
+def test_select_validated_launch_shapes_filters_lora_and_reference_modes():
+    def handler(path: str) -> dict:
+        filt = _filter_for(path)
+        if "/trainingShapes/-/versions" in path and 'snapshot.trainer_mode="LORA_TRAINER"' in filt:
+            return {
+                "trainingShapeVersions": [
+                    _training_shape_version(
+                        "accounts/fireworks/trainingShapes/qwen3-8b-lora/versions/v7",
+                        trainer_mode="LORA_TRAINER",
+                        max_supported_context_length=8192,
+                    )
+                ]
+            }
+        if "/trainingShapes/-/versions" in path and 'snapshot.trainer_mode="FORWARD_ONLY"' in filt:
+            return {
+                "trainingShapeVersions": [
+                    _training_shape_version(
+                        "accounts/fireworks/trainingShapes/qwen3-8b-ref/versions/v2",
+                        trainer_mode="FORWARD_ONLY",
+                        max_supported_context_length=8192,
+                    )
+                ]
+            }
+        raise AssertionError(f"unexpected path: {path}")
 
-def test_apply_recommended_training_shapes_fills_policy_and_reference():
-    infra = InfraConfig()
-
-    selected = apply_recommended_training_shapes(
-        infra,
-        base_model="accounts/fireworks/models/qwen3-4b",
-        prefer_reference=True,
+    mgr = _FakeSelectorMgr(handler)
+    lora_selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            max_seq_len=4096,
+            trainer_role="policy",
+            lora_rank=16,
+        ),
+    )
+    ref_selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            max_seq_len=4096,
+            trainer_role="reference",
+        ),
     )
 
-    assert selected.policy == "accounts/fireworks/trainingShapes/qwen3-4b-minimum-h200"
-    assert selected.reference == "accounts/fireworks/trainingShapes/qwen3-4b-minimum-h200-forward"
-    assert infra.training_shape_id == selected.policy
-    assert infra.ref_training_shape_id == selected.reference
-    assert selected.inferred_policy is True
-    assert selected.inferred_reference is True
+    assert lora_selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-lora"
+    assert ref_selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-ref"
+
+
+def test_select_validated_launch_shapes_preserves_explicit_overrides():
+    profile = SimpleNamespace(
+        training_shape_version="accounts/custom/trainingShapes/policy/versions/v1",
+        trainer_image_tag="trainer:1",
+        max_supported_context_length=16384,
+        node_count=2,
+        deployment_shape_version="accounts/custom/deploymentShapes/policy/versions/d1",
+        deployment_image_tag="deployment:1",
+        accelerator_type="NVIDIA_H200_141GB",
+        accelerator_count=8,
+        base_model_weight_precision="WEIGHT_PRECISION_BFLOAT16",
+        pipeline_parallelism=1,
+    )
+    mgr = _FakeSelectorMgr(lambda path: (_ for _ in ()).throw(AssertionError(path)), profile=profile)
+
+    selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            max_seq_len=4096,
+            trainer_role="policy",
+            needs_deployment=True,
+            explicit_training_shape_id="accounts/custom/trainingShapes/policy",
+            explicit_deployment_shape="accounts/custom/deploymentShapes/policy/versions/d9",
+        ),
+    )
+
+    assert mgr.resolved_shapes == ["accounts/custom/trainingShapes/policy"]
+    assert selection.training_shape_id == "accounts/custom/trainingShapes/policy"
+    assert selection.deployment_shape == "accounts/custom/deploymentShapes/policy/versions/d9"
+    assert selection.inferred_training_shape is False
+    assert selection.inferred_deployment_shape is False
+
+
+def test_select_validated_launch_shapes_raises_when_no_validated_shape_matches():
+    def handler(path: str) -> dict:
+        if path == "/v1/accounts/fireworks/models/qwen3-8b":
+            return {
+                "baseModelDetails": {
+                    "modelType": "qwen3",
+                    "parameterCount": 8_400_000_000,
+                    "supportsFireattention": True,
+                }
+            }
+        if "/versions" in path:
+            if "trainingShapes" in path:
+                return {"trainingShapeVersions": []}
+            return {"deploymentShapeVersions": []}
+        raise AssertionError(f"unexpected path: {path}")
+
+    mgr = _FakeSelectorMgr(handler)
+    with pytest.raises(ValueError, match="No validated training shape matched"):
+        select_validated_launch_shapes(
+            mgr,
+            request=ShapeSelectionRequest(
+                base_model="accounts/fireworks/models/qwen3-8b",
+                max_seq_len=16000,
+                trainer_role="policy",
+                needs_deployment=False,
+            ),
+        )
 
 
 def test_materialize_profile_infra_copies_shape_owned_fields():

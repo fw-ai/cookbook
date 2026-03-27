@@ -67,8 +67,9 @@ from training.utils import (
     compute_advantages,
     build_datum_from_token_mask,
     validate_config,
-    apply_recommended_training_shapes,
-    prepare_training_shape_launch,
+    ShapeSelectionRequest,
+    materialize_profile_infra,
+    select_validated_launch_shapes,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
@@ -384,42 +385,43 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         len(seed_contexts), os.path.abspath(cfg.seed_jsonl_path),
     )
 
-    selected_shapes = apply_recommended_training_shapes(
-        infra,
-        base_model=cfg.base_model,
-        lora_rank=cfg.lora_rank,
-        prefer_reference=cfg.kl_beta > 0,
+    policy_selection = select_validated_launch_shapes(
+        rlor_mgr,
+        deploy_mgr=deploy_mgr,
+        request=ShapeSelectionRequest(
+            base_model=cfg.base_model,
+            max_seq_len=cfg.max_seq_len,
+            trainer_role="policy",
+            needs_deployment=True,
+            lora_rank=cfg.lora_rank,
+            explicit_training_shape_id=infra.training_shape_id,
+            explicit_deployment_shape=deploy_cfg.deployment_shape,
+        ),
     )
-    if selected_shapes.inferred_policy:
+    if policy_selection.training_shape_id:
+        infra.training_shape_id = policy_selection.training_shape_id
+        cfg.training_shape = policy_selection.training_shape_id
+    if policy_selection.deployment_shape:
+        deploy_cfg.deployment_shape = policy_selection.deployment_shape
+        cfg.deployment_shape = policy_selection.deployment_shape
+    if policy_selection.inferred_training_shape:
         logger.info(
-            "Using documented policy training shape for %s: %s",
+            "Using validated policy training shape for %s: %s",
             cfg.base_model,
-            selected_shapes.policy,
+            policy_selection.training_shape_id,
         )
-    if selected_shapes.inferred_reference:
+    if policy_selection.inferred_deployment_shape:
         logger.info(
-            "Using documented reference training shape for %s: %s",
+            "Using validated deployment shape for %s: %s",
             cfg.base_model,
-            selected_shapes.reference,
+            policy_selection.deployment_shape,
         )
 
     # -- Resolve training shapes --------------------------------------------
 
-    profile = None
-    policy_infra = infra
-    policy_profile = None
-    if infra.training_shape_id:
-        profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
-        # profile.deployment_shape returns the versioned path pinned by
-        # the training shape — the server accepts versioned paths.
-        if profile.deployment_shape and not deploy_cfg.deployment_shape:
-            deploy_cfg.deployment_shape = profile.deployment_shape
-            logger.info("Deployment shape from training shape: %s", deploy_cfg.deployment_shape)
-        policy_infra, policy_profile = prepare_training_shape_launch(
-            infra,
-            profile,
-            client_managed=selected_shapes.inferred_policy,
-        )
+    profile = policy_selection.training_profile
+    policy_infra = materialize_profile_infra(infra, profile) if profile else infra
+    policy_profile = profile
 
     if profile and profile.pipeline_parallelism > 1:
         pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
@@ -431,26 +433,38 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
         logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
-    if cfg.max_seq_len is None:
-        cfg.max_seq_len = 4096
-        logger.info("max_seq_len defaulting to %d (no training shape)", cfg.max_seq_len)
 
     ref_profile = None
     reference_infra = infra
     reference_launch_profile = None
-    if infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
-        reference_infra, reference_launch_profile = prepare_training_shape_launch(
-            infra,
-            ref_profile,
-            client_managed=selected_shapes.inferred_reference,
+    reference_needed = cfg.kl_beta > 0 or infra.ref_training_shape_id is not None
+    if reference_needed:
+        reference_selection = select_validated_launch_shapes(
+            rlor_mgr,
+            request=ShapeSelectionRequest(
+                base_model=cfg.base_model,
+                max_seq_len=cfg.max_seq_len,
+                trainer_role="reference",
+                needs_deployment=False,
+                lora_rank=cfg.lora_rank,
+                explicit_training_shape_id=infra.ref_training_shape_id,
+            ),
         )
+        if reference_selection.training_shape_id:
+            infra.ref_training_shape_id = reference_selection.training_shape_id
+        if reference_selection.inferred_training_shape:
+            logger.info(
+                "Using validated reference training shape for %s: %s",
+                cfg.base_model,
+                reference_selection.training_shape_id,
+            )
+        ref_profile = reference_selection.training_profile
+        reference_infra = (
+            materialize_profile_infra(infra, ref_profile) if ref_profile else infra
+        )
+        reference_launch_profile = ref_profile
     use_reference = ref_profile is not None
     if not use_reference:
-        if cfg.kl_beta > 0:
-            logger.warning(
-                "No ref_training_shape_id set for KL-enabled FrozenLake training; running without a reference model"
-            )
         logger.info("No ref_training_shape_id set, skipping reference model")
 
     # -- Infrastructure setup -----------------------------------------------

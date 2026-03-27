@@ -48,10 +48,11 @@ from training.utils import (
     create_trainer_job,
     build_renderer,
     parse_train_on_what,
-    apply_recommended_training_shapes,
-    prepare_training_shape_launch,
+    ShapeSelectionRequest,
+    materialize_profile_infra,
     render_messages_to_datum,
     resolve_renderer_name,
+    select_validated_launch_shapes,
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
@@ -166,28 +167,29 @@ def main(
     if rlor_mgr is None:
         rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
 
-    selected_shapes = apply_recommended_training_shapes(
-        cfg.infra,
-        base_model=cfg.base_model,
-        lora_rank=cfg.lora_rank,
+    selection = select_validated_launch_shapes(
+        rlor_mgr,
+        request=ShapeSelectionRequest(
+            base_model=cfg.base_model,
+            max_seq_len=cfg.max_seq_len,
+            trainer_role="policy",
+            needs_deployment=False,
+            lora_rank=cfg.lora_rank,
+            explicit_training_shape_id=cfg.infra.training_shape_id,
+        ),
     )
-    if selected_shapes.inferred_policy:
+    if selection.training_shape_id:
+        cfg.infra.training_shape_id = selection.training_shape_id
+    if selection.inferred_training_shape:
         logger.info(
-            "Using documented training shape for %s: %s",
+            "Using validated training shape for %s: %s",
             cfg.base_model,
-            selected_shapes.policy,
+            selection.training_shape_id,
         )
 
-    profile = None
-    trainer_infra = cfg.infra
-    trainer_profile = None
-    if cfg.infra.training_shape_id:
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        trainer_infra, trainer_profile = prepare_training_shape_launch(
-            cfg.infra,
-            profile,
-            client_managed=selected_shapes.inferred_policy,
-        )
+    profile = selection.training_profile
+    trainer_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
+    trainer_profile = profile
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
