@@ -335,11 +335,7 @@ def _create_deployment_via_cookbook(
             "internal/purpose": purpose.removeprefix("PURPOSE_").lower(),
         }
 
-    logger.info(
-        "Creating deployment: %s (placement_region=auto, extra_values=%s)",
-        config.deployment_id,
-        bool(config.extra_values),
-    )
+    logger.info("Creating deployment: %s", config.deployment_id)
     resp = deploy_mgr._post(path, json=body, timeout=60)
     resp.raise_for_status()
     return deploy_mgr._parse_deployment_info(config.deployment_id, resp.json())

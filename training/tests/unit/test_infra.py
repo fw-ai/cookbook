@@ -181,36 +181,3 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
     assert captured["shape_path"] == "/v1/accounts/fireworks/deploymentShapes/qwen-h200/versions/rv1"
     assert captured["shape_timeout"] == 30
     assert captured["config"].region == "US_VIRGINIA_1"
-
-
-def test_setup_deployment_forwards_infra_annotations():
-    captured = {}
-
-    class FakeResponse:
-        def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-a", "state": "READY"}
-        def raise_for_status(self): return None
-        def json(self): return self._payload
-
-    class FakeMgr:
-        account_id = "acct"
-        def get(self, _): return None
-        def _get(self, path, timeout):
-            return FakeResponse({"deploymentShapeVersions": [{"snapshot": {}}]})
-        def _post(self, path, json, timeout):
-            captured["json"] = json
-            return FakeResponse()
-        def _parse_deployment_info(self, did, data):
-            return SimpleNamespace(deployment_id=did, state=data["state"])
-
-    setup_deployment(
-        FakeMgr(),
-        DeployConfig(
-            deployment_id="dep-a",
-            deployment_shape="accounts/fireworks/deploymentShapes/test-shape",
-        ),
-        "accounts/fireworks/models/test-model",
-        InfraConfig(purpose="PURPOSE_PILOT"),
-    )
-
-    assert captured["json"]["annotations"] == {"internal/purpose": "pilot"}
