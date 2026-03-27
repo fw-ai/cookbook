@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
+import threading
+import time
 
 from fireworks.training.sdk.client import (
     FiretitanServiceClient,
@@ -141,9 +144,62 @@ class ReconnectableClient:
         return self._client.load_state_with_optimizer(path).result(timeout=timeout)
 
     def save_weights_for_sampler_ext(
-        self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S
+        self, name: str, checkpoint_type: str | None = None, timeout: int | None = DCP_TIMEOUT_S
     ):
-        return self.inner.save_weights_for_sampler_ext(name, checkpoint_type=checkpoint_type)
+        logger.info(
+            "Starting sampler checkpoint export '%s' (checkpoint_type=%s, timeout=%s)",
+            name,
+            checkpoint_type or "default",
+            timeout if timeout is not None else "none",
+        )
+        start = time.monotonic()
+        results: queue.Queue[object] = queue.Queue(maxsize=1)
+        errors: queue.Queue[BaseException] = queue.Queue(maxsize=1)
+
+        def _save_sampler_checkpoint() -> None:
+            try:
+                results.put(
+                    self.inner.save_weights_for_sampler_ext(
+                        name,
+                        checkpoint_type=checkpoint_type,
+                    )
+                )
+            except BaseException as exc:
+                errors.put(exc)
+
+        worker = threading.Thread(
+            target=_save_sampler_checkpoint,
+            name=f"sampler-export-{self._job_id}",
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=timeout)
+
+        elapsed = time.monotonic() - start
+        if worker.is_alive():
+            logger.error(
+                "Sampler checkpoint export '%s' timed out after %.1fs",
+                name,
+                elapsed,
+            )
+            raise TimeoutError(
+                f"Sampler checkpoint export '{name}' did not complete within {timeout}s. "
+                "The trainer may still be exporting weights on the server."
+            )
+
+        if not errors.empty():
+            exc = errors.get()
+            logger.error(
+                "Sampler checkpoint export '%s' failed after %.1fs: %s",
+                name,
+                elapsed,
+                exc,
+            )
+            raise exc
+
+        result = results.get()
+        logger.info("Completed sampler checkpoint export '%s' in %.1fs", name, elapsed)
+        return result
 
     def resolve_checkpoint_path(self, name: str, source_job_id: str | None = None) -> str:
         return self.inner.resolve_checkpoint_path(name, source_job_id=source_job_id)

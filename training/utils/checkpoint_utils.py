@@ -123,13 +123,29 @@ def save_checkpoint(
     """
     paths: dict[str, str] = {}
     if kind in (CheckpointKind.STATE, CheckpointKind.BOTH):
+        dcp_start = time.monotonic()
+        logger.info("Saving DCP checkpoint '%s'...", name)
         client.save_state(name)
         paths["state_path"] = client.resolve_checkpoint_path(
             name, source_job_id=client.job_id,
         )
+        logger.info(
+            "Saved DCP checkpoint '%s' in %.1fs -> %s",
+            name,
+            time.monotonic() - dcp_start,
+            paths["state_path"],
+        )
     if kind in (CheckpointKind.SAMPLER, CheckpointKind.BOTH):
+        sampler_start = time.monotonic()
+        logger.info("Exporting sampler checkpoint '%s'...", name)
         save_result = client.save_weights_for_sampler_ext(name, checkpoint_type="base")
         paths["sampler_path"] = get_sampler_checkpoint_id(save_result)
+        logger.info(
+            "Exported sampler checkpoint '%s' in %.1fs -> %s",
+            name,
+            time.monotonic() - sampler_start,
+            paths["sampler_path"],
+        )
 
     full_dict = {"name": name, **loop_state, **paths}
     if base_model:

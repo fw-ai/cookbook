@@ -1,6 +1,7 @@
 """Unit tests for checkpoint_utils -- resume, save."""
 
 import json
+import logging
 import os
 import tempfile
 from unittest.mock import MagicMock
@@ -141,6 +142,17 @@ class TestSaveCheckpoint:
         assert "state_path" in paths
         assert "sampler_path" in paths
         assert paths["sampler_path"] == "step-5-sampler"
+
+    def test_save_both_logs_checkpoint_phases(self, log_dir, caplog):
+        client = _make_mock_client()
+        caplog.set_level(logging.INFO)
+
+        save_checkpoint(client, "step-5", log_dir, {"step": 5}, kind=CheckpointKind.BOTH)
+
+        assert "Saving DCP checkpoint 'step-5'..." in caplog.messages
+        assert "Saved DCP checkpoint 'step-5'" in " ".join(caplog.messages)
+        assert "Exporting sampler checkpoint 'step-5'..." in caplog.messages
+        assert "Exported sampler checkpoint 'step-5'" in " ".join(caplog.messages)
 
     def test_save_with_base_model_and_training_shape(self, log_dir):
         client = _make_mock_client(job_id="job-shape")
