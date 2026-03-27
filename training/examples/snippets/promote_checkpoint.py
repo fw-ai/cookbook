@@ -45,7 +45,7 @@ _COOKBOOK_ROOT = os.path.abspath(
 if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
-from fireworks.training.sdk import TrainerJobManager
+from fireworks.training.sdk import FireworksClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -188,7 +188,7 @@ def main() -> None:
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-    rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
+    client = FireworksClient(api_key=api_key, base_url=base_url)
 
     output_model_id = cfg.output_model_id or _default_output_model_id(
         base_model, resolved.checkpoint_name,
@@ -199,7 +199,7 @@ def main() -> None:
     logger.info("Base model:      %s", base_model)
     logger.info("Output model ID: %s", output_model_id)
 
-    model = rlor_mgr.promote_checkpoint(
+    model = client.promote_checkpoint(
         resolved.source_job_id,
         resolved.sampler_path,
         output_model_id,
@@ -208,7 +208,7 @@ def main() -> None:
 
     logger.info(
         "Promoted model: %s",
-        model.get("name", f"accounts/{rlor_mgr.account_id}/models/{output_model_id}"),
+        model.get("name", f"accounts/{client.account_id}/models/{output_model_id}"),
     )
     logger.info(
         "Model state=%s kind=%s",
