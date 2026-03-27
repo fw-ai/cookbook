@@ -392,7 +392,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def get(self, _job_id):
             return None
 
-        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
+        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id, **kwargs):
             events["promotions"].append((job_id, checkpoint_id, output_model_id))
 
     class FakeDeploymentManager:

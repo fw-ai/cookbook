@@ -68,7 +68,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         def delete(self, job_id):
             self.cancel(job_id)
 
-        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
+        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id, **kwargs):
             events["promotions"].append((job_id, checkpoint_id, output_model_id))
 
     class FakeInner:

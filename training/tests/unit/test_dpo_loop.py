@@ -482,7 +482,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         def delete(self, job_id):
             self.cancel(job_id)
 
-        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
+        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id, **kwargs):
             events["promotions"].append((job_id, checkpoint_id, output_model_id))
 
     class FakeDeployMgr:
