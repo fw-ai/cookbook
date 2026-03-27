@@ -613,7 +613,8 @@ def main(
                     model_id=cfg.output_model_id, checkpoint=f"final-step-{step}", job_id=policy_job_id,
                 )
 
-        runner.write_status(RunStatus.COMPLETED, step=step, message="done")
+        total_steps = len(tokenized_pairs) * cfg.epochs // cfg.batch_size
+        runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
         runner.write_metadata()
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()
