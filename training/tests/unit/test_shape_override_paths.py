@@ -46,9 +46,12 @@ class _CapturingMgr:
     def __init__(self):
         self.captured: TrainerJobConfig | None = None
 
-    def create_and_wait(self, config, **kwargs):
+    def create(self, config):
         self.captured = config
-        return SimpleNamespace(job_id="job-smoke")
+        return SimpleNamespace(job_id="job-smoke", job_name="jobs/job-smoke")
+
+    def wait_for_ready(self, job_id, **kwargs):
+        return SimpleNamespace(job_id=job_id)
 
 
 class _FailingMgr:
@@ -57,7 +60,7 @@ class _FailingMgr:
     def __init__(self, message: str):
         self.message = message
 
-    def create_and_wait(self, config, **kwargs):
+    def create(self, config):
         raise RuntimeError(self.message)
 
 
