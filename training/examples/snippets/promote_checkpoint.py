@@ -203,7 +203,6 @@ def main() -> None:
         resolved.source_job_id,
         resolved.sampler_path,
         output_model_id,
-        base_model=base_model,
     )
 
     logger.info(
