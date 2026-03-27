@@ -557,7 +557,7 @@ def main(
         if not tokenized_pairs:
             raise RuntimeError("No valid pairs after tokenization")
 
-        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
         runner.write_status(RunStatus.RUNNING, message="provisioning")
 
         def _on_ref_done():

@@ -176,7 +176,7 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:

@@ -152,9 +152,16 @@ class RunnerIO:
 
     def set_accelerator_info(
         self,
-        accelerator_type: str | None,
-        accelerator_count: int | None,
+        accelerator_type: str | None = None,
+        accelerator_count: int | None = None,
+        *,
+        profile: Any | None = None,
     ) -> None:
+        if profile is not None:
+            if accelerator_type is None:
+                accelerator_type = getattr(profile, "accelerator_type", None)
+            if accelerator_count is None:
+                accelerator_count = getattr(profile, "accelerator_count", None)
         self._accelerator_type = accelerator_type
         self._accelerator_count = accelerator_count
 

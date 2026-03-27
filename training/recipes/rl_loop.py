@@ -347,7 +347,7 @@ def main(
 
     import time as _time
 
-    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     _infra_start = _time.time()
