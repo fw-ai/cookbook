@@ -186,3 +186,12 @@ class TestManualPath:
         assert c.accelerator_type is None
         assert c.accelerator_count is None
         assert c.custom_image_tag is None
+
+
+def test_infra_fields_forwarded_to_config():
+    mgr = _CapturingMgr()
+    infra_module.create_trainer_job(
+        mgr, base_model=BASE_MODEL,
+        infra=InfraConfig(purpose="PURPOSE_PILOT"), profile=PROFILE,
+    )
+    assert mgr.captured.purpose == "PURPOSE_PILOT"

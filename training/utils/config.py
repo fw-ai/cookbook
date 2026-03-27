@@ -84,6 +84,8 @@ class InfraConfig:
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
+    purpose: str | None = None
+    """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
 
 
 @dataclass

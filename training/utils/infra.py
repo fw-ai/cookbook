@@ -240,6 +240,9 @@ def create_trainer_job(
             forward_only=forward_only,
         )
 
+    if infra.purpose:
+        config.purpose = infra.purpose
+
     logger.info(
         "Creating %s trainer job '%s' (forward_only=%s)...",
         trainer_role,
@@ -297,14 +300,12 @@ def setup_deployment(
     info = deploy_mgr.get(deploy_cfg.deployment_id)
     if not info:
         dep_config = deploy_cfg.to_deployment_config(base_model, infra)
-        logging.info(f"dep_config: {dep_config}")
         if dep_config.region is None and dep_config.deployment_shape:
             dep_config.region = _infer_region_from_deployment_shape(
                 deploy_mgr, dep_config.deployment_shape
             )
-        logging.info(f"dep_config 2: {dep_config}")
         if dep_config.region is None:
-            info = _create_deployment_via_cookbook(deploy_mgr, dep_config)
+            info = _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
         else:
             info = deploy_mgr.create_or_get(dep_config)
 
@@ -403,6 +404,7 @@ def get_deployment_gpu_count(
 def _create_deployment_via_cookbook(
     deploy_mgr: DeploymentManager,
     config: DeploymentConfig,
+    purpose: str | None = None,
 ) -> DeploymentInfo:
     """Create a deployment while leaving placement selection to the control plane."""
     path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
@@ -430,12 +432,12 @@ def _create_deployment_via_cookbook(
         body["extraArgs"] = flat
     if config.extra_values:
         body["extraValues"] = config.extra_values
+    if purpose:
+        body["annotations"] = {
+            "internal/purpose": purpose.removeprefix("PURPOSE_").lower(),
+        }
 
-    logger.info(
-        "Creating deployment: %s (placement_region=auto, extra_values=%s)",
-        config.deployment_id,
-        bool(config.extra_values),
-    )
+    logger.info("Creating deployment: %s", config.deployment_id)
     resp = deploy_mgr._post(path, json=body, timeout=60)
     resp.raise_for_status()
     return deploy_mgr._parse_deployment_info(config.deployment_id, resp.json())
