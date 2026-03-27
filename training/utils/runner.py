@@ -40,6 +40,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -220,22 +221,54 @@ class RunnerIO:
 
     def _write_json(self, path: str, data: dict[str, Any]) -> None:
         try:
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(data, f, separators=(",", ":"))
-                f.write("\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
+            payload = json.dumps(data, separators=(",", ":")) + "\n"
+            self._write_bytes(path, payload.encode())
         except Exception:
             logger.warning("Failed to write %s", path, exc_info=True)
 
     def _append_jsonl(self, path: str, record: dict[str, Any]) -> None:
         try:
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            with open(path, "a") as f:
-                f.write(json.dumps(record, separators=(",", ":")) + "\n")
-                f.flush()
+            line = json.dumps(record, separators=(",", ":")) + "\n"
+            parsed = urlparse(path)
+            if parsed.scheme == "gs":
+                existing = self._read_gcs_bytes(path)
+                self._write_bytes(path, existing + line.encode())
+            else:
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                with open(path, "a") as f:
+                    f.write(line)
+                    f.flush()
         except Exception:
             logger.warning("Failed to append to %s", path, exc_info=True)
+
+    def _write_bytes(self, path: str, data: bytes) -> None:
+        parsed = urlparse(path)
+        if parsed.scheme == "gs":
+            from google.cloud import storage as gcs_storage
+
+            client = gcs_storage.Client()
+            bucket = client.bucket(parsed.netloc)
+            blob = bucket.blob(parsed.path.lstrip("/"))
+            blob.upload_from_string(data)
+        else:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+
+    def _read_gcs_bytes(self, path: str) -> bytes:
+        try:
+            from google.cloud import storage as gcs_storage
+
+            parsed = urlparse(path)
+            client = gcs_storage.Client()
+            bucket = client.bucket(parsed.netloc)
+            blob = bucket.blob(parsed.path.lstrip("/"))
+            if blob.exists():
+                return blob.download_as_bytes()
+        except Exception:
+            pass
+        return b""
