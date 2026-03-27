@@ -84,8 +84,8 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
     captured = {}
 
     class FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
+        def __init__(self, payload=None):
+            self._payload = payload or {"name": "accounts/acct/deployments/dep-123", "state": "CREATING"}
 
         def raise_for_status(self):
             return None
@@ -112,9 +112,15 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
                 }
             )
 
-        def create_or_get(self, config):
-            captured["config"] = config
-            return SimpleNamespace(deployment_id=config.deployment_id, state="READY")
+        def _post(self, path, json, timeout):
+            captured["json"] = json
+            return FakeResponse()
+
+        def _parse_deployment_info(self, deployment_id, data):
+            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
+
+        def wait_for_ready(self, deployment_id, timeout_s):
+            return SimpleNamespace(deployment_id=deployment_id, state="READY")
 
     info = setup_deployment(
         FakeMgr(),
@@ -132,15 +138,15 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
         "/v1/accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2/versions?"
     )
     assert "pageSize=1" in captured["shape_path"]
-    assert captured["config"].region == "US_OHIO_1"
+    assert captured["json"]["placement"] == {"region": "US_OHIO_1"}
 
 
 def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
     captured = {}
 
     class FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
+        def __init__(self, payload=None):
+            self._payload = payload or {"name": "accounts/acct/deployments/dep-456", "state": "CREATING"}
 
         def raise_for_status(self):
             return None
@@ -163,9 +169,15 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
                 }
             )
 
-        def create_or_get(self, config):
-            captured["config"] = config
-            return SimpleNamespace(deployment_id=config.deployment_id, state="READY")
+        def _post(self, path, json, timeout):
+            captured["json"] = json
+            return FakeResponse()
+
+        def _parse_deployment_info(self, deployment_id, data):
+            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
+
+        def wait_for_ready(self, deployment_id, timeout_s):
+            return SimpleNamespace(deployment_id=deployment_id, state="READY")
 
     info = setup_deployment(
         FakeMgr(),
@@ -180,7 +192,7 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
     assert info.state == "READY"
     assert captured["shape_path"] == "/v1/accounts/fireworks/deploymentShapes/qwen-h200/versions/rv1"
     assert captured["shape_timeout"] == 30
-    assert captured["config"].region == "US_VIRGINIA_1"
+    assert captured["json"]["placement"] == {"region": "US_VIRGINIA_1"}
 
 
 def test_setup_deployment_injects_purpose_annotation():

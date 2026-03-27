@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import time
 import logging
 from typing import Any
@@ -20,8 +19,6 @@ from fireworks.training.sdk.trainer import (
 )
 from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
 from training.utils.config import InfraConfig, DeployConfig, purpose_annotation_value
-
-_SDK_HAS_PURPOSE = hasattr(TrainerJobConfig, "purpose")
 
 logger = logging.getLogger(__name__)
 
@@ -176,13 +173,8 @@ def create_trainer_job(
             forward_only=forward_only,
         )
 
-    if infra.purpose and _SDK_HAS_PURPOSE:
+    if infra.purpose:
         config.purpose = infra.purpose
-
-    if infra.purpose and not _SDK_HAS_PURPOSE:
-        ctx = _inject_into_post(rlor_mgr, lambda j: j.setdefault("purpose", infra.purpose))
-    else:
-        ctx = contextlib.nullcontext()
 
     logger.info(
         "Creating %s trainer job '%s' (forward_only=%s)...",
@@ -191,8 +183,7 @@ def create_trainer_job(
         forward_only,
     )
     try:
-        with ctx:
-            endpoint = rlor_mgr.create_and_wait(config, timeout_s=infra.trainer_timeout_s)
+        endpoint = rlor_mgr.create_and_wait(config, timeout_s=infra.trainer_timeout_s)
     except Exception as e:
         logger.error(
             "Failed to create %s trainer job '%s' (forward_only=%s): %s",
@@ -239,19 +230,10 @@ def setup_deployment(
             dep_config.region = _infer_region_from_deployment_shape(
                 deploy_mgr, dep_config.deployment_shape
             )
+        annotations = None
         if infra.purpose:
-            ann = purpose_annotation_value(infra.purpose)
-            ctx = _inject_into_post(
-                deploy_mgr,
-                lambda j: j.setdefault("annotations", {}).__setitem__("internal/purpose", ann),
-            )
-        else:
-            ctx = contextlib.nullcontext()
-        with ctx:
-            if dep_config.region is None:
-                info = _create_deployment_via_cookbook(deploy_mgr, dep_config)
-            else:
-                info = deploy_mgr.create_or_get(dep_config)
+            annotations = {"internal/purpose": purpose_annotation_value(infra.purpose)}
+        info = _create_deployment_via_cookbook(deploy_mgr, dep_config, annotations=annotations)
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
@@ -320,8 +302,9 @@ def _get_deployment_shape_version(
 def _create_deployment_via_cookbook(
     deploy_mgr: DeploymentManager,
     config: DeploymentConfig,
+    annotations: dict[str, str] | None = None,
 ) -> DeploymentInfo:
-    """Create a deployment while leaving placement selection to the control plane."""
+    """Create a deployment, optionally with placement region and annotations."""
     path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
     if config.skip_shape_validation:
         path += "&skipShapeValidation=true"
@@ -334,6 +317,8 @@ def _create_deployment_via_cookbook(
         "maxReplicaCount": config.max_replica_count,
         "enableHotLoad": True,
     }
+    if config.region:
+        body["placement"] = {"region": config.region}
     if config.hot_load_bucket_type:
         body["hotLoadBucketType"] = config.hot_load_bucket_type
     if config.deployment_shape:
@@ -347,10 +332,13 @@ def _create_deployment_via_cookbook(
         body["extraArgs"] = flat
     if config.extra_values:
         body["extraValues"] = config.extra_values
+    if annotations:
+        body["annotations"] = annotations
 
     logger.info(
-        "Creating deployment: %s (placement_region=auto, extra_values=%s)",
+        "Creating deployment: %s (region=%s, extra_values=%s)",
         config.deployment_id,
+        config.region or "auto",
         bool(config.extra_values),
     )
     resp = deploy_mgr._post(path, json=body, timeout=60)
@@ -368,23 +356,6 @@ def setup_training_client(
     svc = FiretitanServiceClient(base_url=endpoint.base_url, api_key=api_key)
     cli = svc.create_training_client(base_model=base_model, lora_rank=lora_rank)
     return svc, cli
-
-
-@contextlib.contextmanager
-def _inject_into_post(mgr, patch_fn):
-    """Temporarily wrap ``mgr._post`` with *patch_fn* applied to the JSON."""
-    original = mgr._post
-
-    def _wrapped(path, json=None, **kw):
-        if json is not None:
-            patch_fn(json)
-        return original(path, json=json, **kw)
-
-    mgr._post = _wrapped
-    try:
-        yield
-    finally:
-        mgr._post = original
 
 
 def _reuse_or_resume_job(

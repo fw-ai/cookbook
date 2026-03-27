@@ -45,19 +45,10 @@ class _CapturingMgr:
 
     def __init__(self):
         self.captured: TrainerJobConfig | None = None
-        self.post_json: dict | None = None
 
     def create_and_wait(self, config, **kwargs):
         self.captured = config
-        payload = {"trainingConfig": {}}
-        purpose = getattr(config, "purpose", None)
-        if purpose:
-            payload["purpose"] = purpose
-        self._post("", json=payload)
         return SimpleNamespace(job_id="job-smoke")
-
-    def _post(self, path, json=None, **kw):
-        self.post_json = json
 
 
 class _FailingMgr:
@@ -206,14 +197,14 @@ class TestPurpose:
             mgr, base_model=BASE_MODEL,
             infra=InfraConfig(purpose="PURPOSE_PILOT"), profile=PROFILE,
         )
-        assert mgr.post_json["purpose"] == "PURPOSE_PILOT"
+        assert mgr.captured.purpose == "PURPOSE_PILOT"
 
     def test_purpose_none(self):
         mgr = _CapturingMgr()
         infra_module.create_trainer_job(
             mgr, base_model=BASE_MODEL, infra=InfraConfig(), profile=PROFILE,
         )
-        assert "purpose" not in mgr.post_json
+        assert getattr(mgr.captured, "purpose", None) is None
 
 
 def test_purpose_annotation_value():
