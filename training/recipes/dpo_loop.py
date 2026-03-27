@@ -608,6 +608,7 @@ def main(
                     policy_job_id,
                     final_sampler_checkpoint_id,
                     cfg.output_model_id,
+                    base_model=cfg.base_model,
                 )
                 runner.write_output_model(
                     model_id=cfg.output_model_id, checkpoint=f"final-step-{step}", job_id=policy_job_id,
