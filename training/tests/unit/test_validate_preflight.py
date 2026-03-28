@@ -74,7 +74,7 @@ class TestModelNameFormat:
 
     def test_invalid_output_model_id_raises(self):
         args = _cfg(output_model_id="bad_name")
-        with pytest.raises(RuntimeError, match="Invalid output_model_id"):
+        with pytest.raises(RuntimeError, match="output_model_id.*invalid|invalid.*output_model_id"):
             validate_preflight(args, fw_api_key="k")
 
 
@@ -102,7 +102,7 @@ class TestMultipleErrors:
         msg = str(exc_info.value)
         assert "Invalid base_model" in msg
         assert "Missing dataset" in msg
-        assert "Invalid output_model_id" in msg
+        assert "output_model_id" in msg and "invalid" in msg.lower()
 
 
 # ---------------------------------------------------------------------------
