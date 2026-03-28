@@ -17,7 +17,7 @@ import pytest
 
 import training.utils.infra as infra_module
 from training.utils.config import InfraConfig
-from fireworks.training.sdk.trainer import (
+from fireworks.training.sdk import (
     TrainerJobConfig,
     TrainingShapeProfile,
 )
