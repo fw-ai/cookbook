@@ -52,7 +52,8 @@ def validate_config(
             )
         )
 
-    errors.extend(validate_output_model_id(output_model_id))
+    if output_model_id is not None:
+        errors.extend(validate_output_model_id(output_model_id))
 
     if errors:
         raise RuntimeError("\n\n".join(errors))

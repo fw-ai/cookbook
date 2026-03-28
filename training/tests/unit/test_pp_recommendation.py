@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fireworks.training.sdk.trainer import TrainingShapeProfile
+from fireworks.training.sdk import TrainingShapeProfile
 from training.utils.rl.pp import compute_pp_recommendation
 
 

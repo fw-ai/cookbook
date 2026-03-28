@@ -12,7 +12,7 @@ from fireworks.training.sdk.client import (
     FiretitanServiceClient,
     FiretitanTrainingClient,
 )
-from fireworks.training.sdk.trainer import (
+from fireworks.training.sdk import (
     TrainerJobConfig,
     TrainerJobManager,
     TrainingShapeProfile,

@@ -146,7 +146,7 @@ SDK_IMPORTS = [
     ("fireworks.training.sdk.client", "FiretitanTrainingClient"),
     ("fireworks.training.sdk.trainer", "TrainerJobManager"),
     ("fireworks.training.sdk.trainer", "TrainerServiceEndpoint"),
-    ("fireworks.training.sdk.trainer", "TrainingShapeProfile"),
+    ("fireworks.training.sdk.fireworks_client", "TrainingShapeProfile"),
     ("fireworks.training.sdk.errors", "format_sdk_error"),
     ("fireworks.training.sdk.errors", "DOCS_SDK"),
     ("fireworks.training.sdk.errors", "request_with_retries"),
