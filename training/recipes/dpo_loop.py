@@ -596,7 +596,7 @@ def main(
                     checkpoint_type="base",
                 )
                 if hl.weight_sync_interval > 0 and final_sampler_checkpoint_id:
-                    weight_syncer.hotload(final_sampler_checkpoint_id)
+                    weight_syncer.hotload(final_sampler_checkpoint_id, checkpoint_type="base")
             elif hl.weight_sync_interval > 0:
                 final_cp_name = f"final-step-{step}"
                 weight_syncer.save_and_hotload(final_cp_name)
