@@ -74,6 +74,7 @@ def parse_args():
     parser.add_argument("--ref-training-shape-id", type=str, default="")
     parser.add_argument("--region", type=str, default="US_VIRGINIA_1")
     parser.add_argument("--custom-image-tag", type=str, default="")
+    parser.add_argument("--purpose", type=str, default=None)
 
     # Wandb
     parser.add_argument("--wandb-project", type=str, default="dpo-tinker")
@@ -121,6 +122,7 @@ def main():
             ref_training_shape_id=args.ref_training_shape_id or None,
             region=args.region,
             custom_image_tag=args.custom_image_tag or None,
+            purpose=args.purpose or None,
         ),
         weight_sync=WeightSyncConfig(
             weight_sync_interval=args.weight_sync_interval,
