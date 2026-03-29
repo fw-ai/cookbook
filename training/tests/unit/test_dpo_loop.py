@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -336,12 +337,22 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def __init__(self, _rlor_mgr, job_id, *_args, **_kwargs):
             self.job_id = job_id
             self.inner = object()
+            self.saved_states: list[str] = []
+            self.saved_sampler: list[tuple[str, str]] = []
 
         def load_state_with_optimizer(self, path):
             pass
 
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"tinker://unit/state/{name}"
+
+        def save_state(self, name):
+            self.saved_states.append(name)
+            return SimpleNamespace(path=f"tinker://unit/state/{name}")
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            self.saved_sampler.append((name, checkpoint_type))
+            return SimpleNamespace(path=f"tinker://unit/sampler/{name}", snapshot_name=f"{name}-session")
 
         def close(self):
             events["lifecycle"].append(("close", self.job_id))
@@ -372,13 +383,16 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         )
 
     async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
-                              weight_syncer, cfg, step_offset, on_ref_done=None, runner=None):
+                              weight_syncer, cfg, step_offset, resume_data_consumed,
+                              policy_job_id, on_ref_done=None, runner=None):
         events["train_loop"] = {
             "tokenized_pairs": tokenized_pairs,
             "reference_job_id": reference.job_id,
             "policy_job_id": policy.job_id,
             "cfg": cfg,
             "step_offset": step_offset,
+            "resume_data_consumed": resume_data_consumed,
+            "policy_job_id_param": policy_job_id,
         }
         if on_ref_done is not None:
             on_ref_done()
@@ -398,7 +412,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
 
     cfg = module.Config(
-        log_path="/tmp/dpo_test_logs",
+        log_path=tempfile.mkdtemp(prefix="dpo_test_logs_"),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
@@ -553,10 +567,13 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         )
 
     async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
-                              weight_syncer, cfg, step_offset, on_ref_done=None, runner=None):
+                              weight_syncer, cfg, step_offset, resume_data_consumed,
+                              policy_job_id, on_ref_done=None, runner=None):
         events["train_loop"] = {
             "tokenized_pairs": tokenized_pairs,
             "policy_job_id": policy.job_id,
+            "resume_data_consumed": resume_data_consumed,
+            "policy_job_id_param": policy_job_id,
         }
         if on_ref_done is not None:
             on_ref_done()
@@ -575,7 +592,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     cfg = module.Config(
-        log_path="/tmp/dpo_test_logs",
+        log_path=tempfile.mkdtemp(prefix="dpo_test_logs_"),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
@@ -639,9 +656,17 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
     monkeypatch.setattr(module, "wandb_log", lambda payload, step: events["wandb_logs"].append((step, payload)))
 
     class FakePolicy:
+        job_id = "policy-job"
+
         def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
+
+        def save_state(self, name):
+            return SimpleNamespace(path=f"tinker://unit/state/{name}")
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"cross_job://{source_job_id or self.job_id}/{name}"
 
     class FakeReference:
         def forward(self, datums, loss_fn):
@@ -686,6 +711,8 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
             weight_syncer=FakeWeightSyncer(),
             cfg=cfg,
             step_offset=0,
+            resume_data_consumed=0,
+            policy_job_id="policy-job",
             on_ref_done=_on_ref_done,
         )
     )
@@ -771,6 +798,8 @@ def test_pipeline_overlap_ref_freed_before_training_done():
                 weight_syncer=FakeWS(),
                 cfg=cfg,
                 step_offset=0,
+                resume_data_consumed=0,
+                policy_job_id="policy-job",
                 on_ref_done=on_ref_done,
             )
         )

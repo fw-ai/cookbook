@@ -762,6 +762,19 @@ def main(
                         "source_job_id": policy_job_id,
                     },
                     kind=CheckpointKind.STATE,
+                    runner_kind="rft",
+                    checkpoint_loop_state={
+                        "epoch": 0,
+                        "batch_index": step - step_offset,
+                        "global_step": step,
+                        "algorithm_payload": {
+                            "algorithm": "rl",
+                            "policy_loss": cfg.policy_loss,
+                            "prompt_groups_per_step": prompt_groups_per_step,
+                            "completions_per_prompt": completions_per_prompt,
+                            "kl_beta": cfg.kl_beta,
+                        },
+                    },
                     base_model=cfg.base_model,
                     training_shape=cfg.infra.training_shape_id,
                 )
@@ -864,6 +877,19 @@ def main(
                         "source_job_id": policy_job_id,
                     },
                     kind=CheckpointKind.BOTH,
+                    runner_kind="rft",
+                    checkpoint_loop_state={
+                        "epoch": cfg.epochs,
+                        "batch_index": global_step,
+                        "global_step": global_step,
+                        "algorithm_payload": {
+                            "algorithm": "rl",
+                            "policy_loss": cfg.policy_loss,
+                            "prompt_groups_per_step": prompt_groups_per_step,
+                            "completions_per_prompt": completions_per_prompt,
+                            "kl_beta": cfg.kl_beta,
+                        },
+                    },
                     base_model=cfg.base_model,
                     training_shape=cfg.infra.training_shape_id,
                 )

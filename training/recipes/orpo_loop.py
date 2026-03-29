@@ -69,6 +69,11 @@ from training.utils import (
     validate_config,
 )
 from training.utils.checkpoint_utils import resolve_resume
+from training.utils.checkpoint_utils import (
+    resolve_resume,
+    save_checkpoint,
+    CheckpointKind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +104,7 @@ class Config:
     lora_rank: int = 0
     job_id: str | None = None
     output_model_id: str | None = None
+    dcp_save_interval: int = 0
 
     warmup_ratio: float = 0.0
     """Fraction of total steps used for linear LR warmup (0.0 = no warmup)."""
@@ -258,6 +264,7 @@ def main(
             stack.callback(client.close)
         resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
         step_offset = resume_info.step if resume_info else 0
+        data_consumed = resume_info.data_consumed if resume_info else 0
 
         # -- Data ----------------------------------------------------------------
 
@@ -334,8 +341,14 @@ def main(
                 cfg.learning_rate * cfg.min_lr_ratio,
             )
 
-        def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
+        def _run_train_step(
+            epoch: int,
+            batch_index: int,
+            step_pairs: list[dict],
+            step_started_at: float,
+        ) -> float:
             nonlocal step
+            nonlocal data_consumed
 
             datums: list[tinker.Datum] = []
             response_starts: list[int] = []
@@ -355,6 +368,35 @@ def main(
             result = client.forward_backward_custom(datums, loss_fn)
             client.optim_step(adam_params)
             step += 1
+            data_consumed += len(step_pairs)
+
+            if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
+                save_checkpoint(
+                    client,
+                    f"step-{step}",
+                    cfg.log_path,
+                    {
+                        "step": step,
+                        "data_consumed": data_consumed,
+                        "source_job_id": job_id,
+                    },
+                    kind=CheckpointKind.STATE,
+                    runner_kind="dpo",
+                    checkpoint_loop_state={
+                        "epoch": epoch,
+                        "batch_index": batch_index + 1,
+                        "global_step": step,
+                        "algorithm_payload": {
+                            "algorithm": "orpo",
+                            "orpo_lambda": cfg.orpo_lambda,
+                        },
+                    },
+                    optimizer_resume_supported=True,
+                    safe_to_resume=True,
+                    pause_boundary="optimizer_step",
+                    base_model=cfg.base_model,
+                    training_shape=cfg.infra.training_shape_id,
+                )
 
             step_elapsed = time.monotonic() - step_started_at
             tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
@@ -402,28 +444,56 @@ def main(
                 random.shuffle(pair_cache)
                 step_t0 = time.monotonic()
                 batch_buffer: list[dict] = []
+                batch_index = 0
                 for pair in pair_cache:
                     batch_buffer.append(pair)
                     if len(batch_buffer) >= cfg.batch_size:
-                        step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
+                        step_t0 = _run_train_step(
+                            epoch,
+                            batch_index,
+                            batch_buffer,
+                            step_t0,
+                        )
+                        batch_index += 1
                         batch_buffer = []
 
                 if batch_buffer:
-                    _run_train_step(epoch, batch_buffer, step_t0)
+                    _run_train_step(epoch, batch_index, batch_buffer, step_t0)
 
         # -- Final checkpoint ------------------------------------------------
 
         if step > step_offset:
-            logger.info("Saving final DCP checkpoint (step %d)...", step)
-            # client.save_state(f"step-{step}")
-
             logger.info("Saving final base checkpoint (step %d)...", step)
-            cp_name = f"final-step-{step}"
-            result = client.save_weights_for_sampler_ext(
-                cp_name, checkpoint_type="base"
+            cp_name = f"step-{step}"
+            final_sampler_name = f"final-step-{step}"
+            paths = save_checkpoint(
+                client,
+                cp_name,
+                cfg.log_path,
+                {
+                    "step": step,
+                    "data_consumed": data_consumed,
+                    "source_job_id": job_id,
+                },
+                kind=CheckpointKind.BOTH,
+                runner_kind="dpo",
+                checkpoint_loop_state={
+                    "epoch": cfg.epochs,
+                    "batch_index": 0,
+                    "global_step": step,
+                    "algorithm_payload": {
+                        "algorithm": "orpo",
+                        "orpo_lambda": cfg.orpo_lambda,
+                    },
+                },
+                optimizer_resume_supported=True,
+                safe_to_resume=True,
+                pause_boundary="optimizer_step",
+                sampler_name=final_sampler_name,
+                base_model=cfg.base_model,
+                training_shape=cfg.infra.training_shape_id,
             )
-            from training.utils.checkpoint_utils import get_sampler_checkpoint_id
-            sampler_checkpoint_id = get_sampler_checkpoint_id(result)
+            sampler_checkpoint_id = paths["sampler_path"]
             logger.info("Final base checkpoint saved: %s", sampler_checkpoint_id)
             
             if getattr(cfg, "output_model_id", None):

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import tempfile
 from types import SimpleNamespace
 
 import pytest
+import tempfile
 import transformers
 
 import training.recipes.orpo_loop as module
@@ -19,7 +21,7 @@ def test_main_rejects_invalid_base_model(monkeypatch):
 def test_main_rejects_invalid_output_model_id(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(
-        log_path="/tmp/orpo_test_logs",
+        log_path=tempfile.mkdtemp(prefix="orpo_test_logs_"),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
@@ -79,6 +81,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     class FakeClient:
         def __init__(self, *args, **kwargs):
             self.inner = FakeInner()
+            self.job_id = "job-orpo"
 
         def forward_backward_custom(self, batch, loss_fn):
             events["forward_batches"].append((list(batch), loss_fn))
@@ -152,7 +155,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
     mgr = FakeMgr()
     cfg = module.Config(
-        log_path="/tmp/orpo_test_logs",
+        log_path=tempfile.mkdtemp(prefix="orpo_test_logs_"),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
@@ -214,6 +217,8 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
     class FakeClient:
         def __init__(self, *args, **kwargs):
             self.inner = object()
+            self.job_id = "job-orpo"
+            self.job_id = "job-orpo"
 
         def forward_backward_custom(self, batch, loss_fn):
             events["forward_batches"].append(list(batch))
@@ -283,7 +288,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
 
     cfg = module.Config(
-        log_path="/tmp/orpo_test_logs",
+        log_path=tempfile.mkdtemp(prefix="orpo_test_logs_"),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",

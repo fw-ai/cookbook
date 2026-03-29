@@ -63,10 +63,20 @@ class TestResolveResume:
     def test_resume_from_checkpoints_file(self, log_dir):
         _write_checkpoint(log_dir, {
             "name": "step-5",
+            "runner_kind": "sft",
             "step": 5,
             "data_consumed": 40,
             "state_path": "cross_job://job-abc/step-5",
             "source_job_id": "job-abc",
+            "loop_state": {
+                "epoch": 1,
+                "batch_index": 2,
+                "global_step": 5,
+                "algorithm_payload": {"mode": "unit"},
+            },
+            "optimizer_resume_supported": True,
+            "safe_to_resume": True,
+            "pause_boundary": "optimizer_step",
         })
         client = _make_mock_client()
         result = resolve_resume(client, log_dir)
@@ -74,6 +84,12 @@ class TestResolveResume:
         assert result.step == 5
         assert result.data_consumed == 40
         assert result.source_job_id == "job-abc"
+        assert result.runner_kind == "sft"
+        assert result.loop_state["global_step"] == 5
+        assert result.loop_state["algorithm_payload"] == {"mode": "unit"}
+        assert result.optimizer_resume_supported is True
+        assert result.safe_to_resume is True
+        assert result.pause_boundary == "optimizer_step"
         client.load_state_with_optimizer.assert_called_once_with("cross_job://job-abc/step-5")
 
     def test_resume_reads_last_entry(self, log_dir):
@@ -89,6 +105,7 @@ class TestResolveResume:
         result = resolve_resume(client, log_dir)
         assert result.step == 4
         assert result.data_consumed == 32
+        assert result.loop_state["global_step"] == 4
         client.load_state_with_optimizer.assert_called_once_with("cross_job://job-1/step-4")
 
     def test_init_from_checkpoint_simple(self, log_dir):
@@ -120,7 +137,19 @@ class TestResolveResume:
 class TestSaveCheckpoint:
     def test_save_state_only(self, log_dir):
         client = _make_mock_client(job_id="job-x")
-        paths = save_checkpoint(client, "step-3", log_dir, {"step": 3, "data_consumed": 24})
+        paths = save_checkpoint(
+            client,
+            "step-3",
+            log_dir,
+            {"step": 3, "data_consumed": 24},
+            runner_kind="sft",
+            checkpoint_loop_state={
+                "epoch": 1,
+                "batch_index": 6,
+                "global_step": 3,
+                "algorithm_payload": {"mode": "sft"},
+            },
+        )
 
         assert "state_path" in paths
         assert paths["state_path"] == "cross_job://job-x/step-3"
@@ -131,16 +160,34 @@ class TestSaveCheckpoint:
         with open(ckpt_path) as f:
             entry = json.loads(f.readline())
         assert entry["name"] == "step-3"
+        assert entry["runner_kind"] == "sft"
         assert entry["step"] == 3
         assert entry["state_path"] == "cross_job://job-x/step-3"
+        assert entry["loop_state"]["global_step"] == 3
+        assert entry["loop_state"]["algorithm_payload"] == {"mode": "sft"}
+        assert entry["optimizer_resume_supported"] is True
+        assert entry["safe_to_resume"] is True
+        assert entry["pause_boundary"] == "optimizer_step"
 
     def test_save_both(self, log_dir):
         client = _make_mock_client()
-        paths = save_checkpoint(client, "step-5", log_dir, {"step": 5}, kind=CheckpointKind.BOTH)
+        paths = save_checkpoint(
+            client,
+            "step-5",
+            log_dir,
+            {"step": 5},
+            kind=CheckpointKind.BOTH,
+            runner_kind="rft",
+        )
 
         assert "state_path" in paths
         assert "sampler_path" in paths
         assert paths["sampler_path"] == "step-5-sampler"
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        with open(ckpt_path) as f:
+            entry = json.loads(f.readline())
+        assert entry["runner_kind"] == "rft"
+        assert entry["loop_state"]["global_step"] == 5
 
     def test_save_with_base_model_and_training_shape(self, log_dir):
         client = _make_mock_client(job_id="job-shape")
@@ -157,12 +204,13 @@ class TestSaveCheckpoint:
 
     def test_save_without_model_metadata_omits_fields(self, log_dir):
         client = _make_mock_client()
-        save_checkpoint(client, "step-1", log_dir, {"step": 1})
+        save_checkpoint(client, "step-1", log_dir, {"step": 1}, runner_kind="dpo")
         ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
         with open(ckpt_path) as f:
             entry = json.loads(f.readline())
         assert "base_model" not in entry
         assert "training_shape" not in entry
+        assert entry["runner_kind"] == "dpo"
 
     def test_appends_entries(self, log_dir):
         client = _make_mock_client()
@@ -258,11 +306,23 @@ class TestLogPathRequired:
     def test_save_then_resume_roundtrip(self, log_dir):
         """Full roundtrip: save a checkpoint, then resume from it."""
         client = _make_mock_client(job_id="job-roundtrip")
-        save_checkpoint(client, "step-3", log_dir, {
-            "step": 3,
-            "data_consumed": 24,
-            "source_job_id": "job-roundtrip",
-        })
+        save_checkpoint(
+            client,
+            "step-3",
+            log_dir,
+            {
+                "step": 3,
+                "data_consumed": 24,
+                "source_job_id": "job-roundtrip",
+            },
+            runner_kind="sft",
+            checkpoint_loop_state={
+                "epoch": 1,
+                "batch_index": 3,
+                "global_step": 3,
+                "algorithm_payload": {},
+            },
+        )
 
         ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
         assert os.path.exists(ckpt_path)
@@ -277,7 +337,33 @@ class TestLogPathRequired:
         assert result is not None
         assert result.step == 3
         assert result.data_consumed == 24
+        assert result.runner_kind == "sft"
+        assert result.loop_state["batch_index"] == 3
         client2.load_state_with_optimizer.assert_called_once()
+
+    def test_save_checkpoint_with_override_paths(self, log_dir):
+        client = _make_mock_client(job_id="job-overrides")
+        paths = save_checkpoint(
+            client,
+            "step-11",
+            log_dir,
+            {"step": 11, "data_consumed": 99},
+            kind=CheckpointKind.BOTH,
+            runner_kind="dpo",
+            state_path_override="cross_job://policy-job/step-11",
+            sampler_path_override="final-step-11",
+        )
+        assert paths["state_path"] == "cross_job://policy-job/step-11"
+        assert paths["sampler_path"] == "final-step-11"
+        client.save_state.assert_not_called()
+        client.save_weights_for_sampler_ext.assert_not_called()
+
+        ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
+        with open(ckpt_path) as f:
+            entry = json.loads(f.readline())
+        assert entry["state_path"] == "cross_job://policy-job/step-11"
+        assert entry["sampler_path"] == "final-step-11"
+        assert entry["runner_kind"] == "dpo"
 
 
 class TestCheckpointMetadataForPromote:

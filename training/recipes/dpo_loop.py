@@ -64,7 +64,7 @@ from training.utils import (
 )
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
-from training.utils.checkpoint_utils import resolve_resume
+from training.utils.checkpoint_utils import CheckpointKind, resolve_resume, save_checkpoint
 from training.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -263,6 +263,8 @@ async def _train_loop(
     weight_syncer: WeightSyncer,
     cfg: Config,
     step_offset: int,
+    resume_data_consumed: int,
+    policy_job_id: str,
     on_ref_done: Callable[[], None] | None = None,
     runner: RunnerIO | None = None,
 ) -> int:
@@ -285,8 +287,9 @@ async def _train_loop(
     ref_cache: dict[int, dict[str, Any]] = {}
     pipe: asyncio.Queue = asyncio.Queue()
     sem = asyncio.Semaphore(cfg.ref_cache_concurrency)
+    total_batches_per_epoch = (len(tokenized_pairs) + batch_size - 1) // batch_size
 
-    def _run_train_step(epoch: int, step_pairs: list[dict[str, Any]]) -> None:
+    def _run_train_step(epoch: int, batch_index: int, step_pairs: list[dict[str, Any]]) -> None:
         nonlocal step
         step_t0 = time.monotonic()
         step_tokens = sum(
@@ -310,7 +313,32 @@ async def _train_loop(
                 weight_syncer.save_and_hotload(f"step-{step}")
         if hl.dcp_save_interval > 0 and step % hl.dcp_save_interval == 0:
             with timer("dcp_save"):
-                weight_syncer.save_dcp(f"step-{step}")
+                checkpoint_name = f"step-{step}"
+                weight_syncer.save_dcp(checkpoint_name)
+                save_checkpoint(
+                    policy,
+                    checkpoint_name,
+                    cfg.log_path,
+                    {
+                        "step": step,
+                        "data_consumed": resume_data_consumed + (step * cfg.batch_size),
+                        "source_job_id": policy_job_id,
+                    },
+                    kind=CheckpointKind.STATE,
+                    runner_kind="dpo",
+                    checkpoint_loop_state={
+                        "epoch": epoch + 1,
+                        "batch_index": batch_index + 1,
+                        "global_step": step,
+                        "algorithm_payload": {
+                            "algorithm": "dpo",
+                            "beta": cfg.beta,
+                            "batch_size": cfg.batch_size,
+                        },
+                    },
+                    base_model=cfg.base_model,
+                    training_shape=cfg.infra.training_shape_id,
+                )
 
         step_elapsed = time.monotonic() - step_t0
         tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
@@ -362,12 +390,14 @@ async def _train_loop(
         await pipe.put(_DONE)
 
     async def _trainer() -> None:
+        batch_index = 0
         while True:
             item = await pipe.get()
             if item is _DONE:
                 break
-            await asyncio.to_thread(_run_train_step, 0, item)
+            await asyncio.to_thread(_run_train_step, 0, batch_index, item)
             pbar.update(1)
+            batch_index += 1
 
     producer = asyncio.create_task(_ref_producer())
     consumer = asyncio.create_task(_trainer())
@@ -382,7 +412,7 @@ async def _train_loop(
         ordered_pairs = [ref_cache[idx] for idx, _ in tokenized_pairs]
         for start in range(0, len(ordered_pairs), batch_size):
             chunk = ordered_pairs[start:start + batch_size]
-            _run_train_step(epoch, chunk)
+            _run_train_step(epoch, start // batch_size, chunk)
             pbar.update(1)
 
     pbar.close()
@@ -577,6 +607,8 @@ def main(
             step = asyncio.run(
                 _train_loop(
                     tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
+                    resume_data_consumed=resume_info.data_consumed if resume_info else 0,
+                    policy_job_id=policy_job_id,
                     on_ref_done=_on_ref_done,
                     runner=runner,
                 )
@@ -600,6 +632,34 @@ def main(
             elif hl.weight_sync_interval > 0:
                 final_cp_name = f"final-step-{step}"
                 weight_syncer.save_and_hotload(final_cp_name)
+
+            total_steps = len(tokenized_pairs) * cfg.epochs // cfg.batch_size
+            save_checkpoint(
+                policy,
+                dcp_name,
+                cfg.log_path,
+                {
+                    "step": step,
+                    "data_consumed": (resume_info.data_consumed if resume_info else 0) + (step * cfg.batch_size),
+                    "source_job_id": policy_job_id,
+                },
+                kind=CheckpointKind.BOTH,
+                runner_kind="dpo",
+                checkpoint_loop_state={
+                    "epoch": cfg.epochs,
+                    "batch_index": total_steps,
+                    "global_step": step,
+                    "algorithm_payload": {
+                        "algorithm": "dpo",
+                        "beta": cfg.beta,
+                        "batch_size": cfg.batch_size,
+                    },
+                },
+                state_path_override=policy.resolve_checkpoint_path(dcp_name, source_job_id=policy_job_id),
+                sampler_path_override=final_sampler_checkpoint_id,
+                base_model=cfg.base_model,
+                training_shape=cfg.infra.training_shape_id,
+            )
 
             if getattr(cfg, "output_model_id", None):
                 if not final_sampler_checkpoint_id:

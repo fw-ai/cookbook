@@ -61,6 +61,16 @@ from training.utils.timer import timer, flush_timing
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+
+def _build_sft_loop_state(*, epoch: int, batch_index: int, step: int) -> dict[str, Any]:
+    """Build the canonical loop_state payload for SFT checkpoints."""
+    return {
+        "epoch": epoch,
+        "batch_index": batch_index,
+        "global_step": step,
+        "algorithm_payload": {},
+    }
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -280,6 +290,8 @@ def main(
 
         def _run_train_step(
             batch: list[tinker.Datum],
+            epoch: int,
+            batch_index: int,
             step: int,
         ) -> int:
 
@@ -309,9 +321,17 @@ def main(
                         "step": step,
                         "data_consumed": data_consumed,
                         "source_job_id": job_id,
-                    }, kind=CheckpointKind.STATE,
+                    },
+                    kind=CheckpointKind.STATE,
+                    runner_kind="sft",
+                    checkpoint_loop_state=_build_sft_loop_state(
+                        epoch=epoch,
+                        batch_index=batch_index,
+                        step=step,
+                    ),
                     base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id)
+                    training_shape=cfg.infra.training_shape_id,
+                    )
 
             step_metrics: Dict[str, Any] = flush_timing()
 
@@ -360,7 +380,7 @@ def main(
                 for i_batch in range(epoch_start, total_batches_per_epoch):
                     batch = sft_dataset.get_batch(i_batch)
                     data_consumed += len(batch)
-                    step = _run_train_step(batch, step)
+                    step = _run_train_step(batch, epoch, i_batch + 1, step)
 
         # -- Final checkpoint --------------------------------------------------
 
@@ -372,9 +392,17 @@ def main(
                 "step": step,
                 "data_consumed": data_consumed,
                 "source_job_id": job_id,
-            }, kind=CheckpointKind.BOTH,
+            },
+            kind=CheckpointKind.BOTH,
+            runner_kind="sft",
+            checkpoint_loop_state=_build_sft_loop_state(
+                epoch=cfg.epochs,
+                batch_index=total_batches_per_epoch,
+                step=step,
+            ),
             base_model=cfg.base_model,
-            training_shape=cfg.infra.training_shape_id)
+            training_shape=cfg.infra.training_shape_id,
+            )
             if getattr(cfg, "output_model_id", None):
                 rlor_mgr.promote_checkpoint(
                     job_id,
