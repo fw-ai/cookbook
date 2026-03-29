@@ -16,11 +16,10 @@ python train_sft.py \
     --base-model accounts/fireworks/models/qwen3-8b \
     --tokenizer-model Qwen/Qwen3-8B \
     --dataset-path text2sql_dataset.jsonl \
-    --training-shape qwen3-8b-128k-h200 \
+    --training-shape accounts/fireworks/trainingShapes/qwen3-8b-128k-h200 \
     --region US_VIRGINIA_1 \
     --max-examples 100 \
     --epochs 3 \
     --batch-size 8 \
-    --grad-accum 4 \
     --learning-rate 1e-5 \
     --output-model-id sft-text-qwen3-8b-$(date +%Y%m%d%H%M)

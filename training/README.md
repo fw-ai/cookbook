@@ -97,7 +97,8 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 
 ## Useful examples
 
-- `examples/promote_checkpoint/train_promote_checkpoint.py` spins up a fresh trainer, loads a DCP checkpoint from the saved `state_path` in `checkpoints.jsonl`, optionally selects a specific training step, saves a promotable sampler checkpoint, and promotes it to a model.
+- `examples/snippets/promote_checkpoint.py` reads `checkpoints.jsonl` (produced by cookbook recipes), finds the sampler checkpoint ID and source trainer job, and calls the promotion API to promote it to a deployable Fireworks model. No temporary trainer needed.
+- `examples/snippets/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
 
 ## Documentation
 

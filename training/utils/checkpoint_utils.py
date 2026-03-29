@@ -120,7 +120,7 @@ def save_checkpoint(
     only for inference), or ``CheckpointKind.BOTH``.
 
     *base_model* and *training_shape* are persisted into the checkpoint
-    entry so that downstream tools (e.g. ``train_promote_checkpoint.py``)
+    entry so that downstream tools (e.g. ``examples/snippets/promote_checkpoint.py``)
     can auto-detect them without requiring the user to pass them manually.
 
     The ``state_path`` stored is resolved to a cross-job checkpoint
