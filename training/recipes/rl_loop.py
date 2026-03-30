@@ -499,7 +499,6 @@ def main(
             base_model=cfg.base_model,
             hotload_timeout=cfg.weight_sync.weight_sync_timeout,
             first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
-            dcp_timeout=cfg.weight_sync.dcp_timeout,
         )
 
         infra_boot_time = _time.time() - _infra_start
@@ -895,4 +894,5 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    main(Config(log_path="./rl_logs"))
     main(Config(log_path="./rl_logs"))
