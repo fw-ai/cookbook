@@ -536,6 +536,7 @@ def main(
         runner.write_status(RunStatus.RUNNING, message=msg)
 
     with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
+        # -- Create trainer jobs first (trainer owns the hot-load bucket) ------
         _on_trainer_status("provisioning policy and reference trainers")
         with ThreadPoolExecutor(max_workers=2) as pool:
             pol_fut = pool.submit(
@@ -548,7 +549,6 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
@@ -585,6 +585,11 @@ def main(
 
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id
+
+        # -- Create deployment referencing the trainer's hot-load bucket -------
+        if cfg.deployment.deployment_id:
+            cfg.deployment.hot_load_trainer_job = policy_ep.job_name
+            setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
         reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)

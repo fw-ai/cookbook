@@ -105,6 +105,10 @@ class DeployConfig:
     deployment_region: str | None = None
     deployment_accelerator_type: str | None = None
     hot_load_bucket_type: str = "FW_HOSTED"
+    hot_load_trainer_job: str | None = None
+    """Trainer job name whose hot-load bucket this deployment should use.
+    Format: accounts/{account}/rlorTrainerJobs/{job_id}.
+    When set, the deployment copies the trainer's bucket URL at creation."""
     deployment_timeout_s: float = 5400
     deployment_extra_args: list[str] | None = None
     tokenizer_model: str | None = None
@@ -137,6 +141,7 @@ class DeployConfig:
             deployment_shape=self.deployment_shape,
             region=self.deployment_region or None,
             hot_load_bucket_type=self.hot_load_bucket_type,
+            hot_load_trainer_job=self.hot_load_trainer_job,
             skip_shape_validation=skip_validation,
             extra_args=self.deployment_extra_args,
             min_replica_count=replica_count,
