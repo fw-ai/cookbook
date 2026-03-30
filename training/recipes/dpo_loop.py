@@ -610,7 +610,7 @@ def main(
             )
 
             if hl.weight_sync_interval > 0 and paths.get("sampler_path"):
-                weight_syncer.hotload(paths["sampler_path"])
+                weight_syncer.hotload(paths["sampler_path"], checkpoint_type="base")
 
             if getattr(cfg, "output_model_id", None):
                 if not paths.get("sampler_path"):

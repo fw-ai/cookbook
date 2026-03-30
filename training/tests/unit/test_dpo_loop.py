@@ -359,8 +359,8 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def save_and_hotload(self, name):
             events["weight_syncer_saves"].append(name)
 
-        def hotload(self, snapshot_name):
-            events.setdefault("hotload_calls", []).append(snapshot_name)
+        def hotload(self, snapshot_name, checkpoint_type="base"):
+            events.setdefault("hotload_calls", []).append((snapshot_name, checkpoint_type))
             return True
 
     def fake_tokenize_pairs(*args, **kwargs):
@@ -439,7 +439,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         assert events["train_loop"]["reference_job_id"] == "reference-job"
         assert events["train_loop"]["policy_job_id"] == "policy-job"
         # Final checkpoint now goes through save_checkpoint + hotload
-        assert events["hotload_calls"] == ["step-2-session"]
+        assert events["hotload_calls"] == [("step-2-session", "base")]
 
         ref_del_idx = events["deleted_jobs"].index("reference-job")
         pol_del_idx = events["deleted_jobs"].index("policy-job")
@@ -541,8 +541,8 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
             events["save_and_hotload_calls"].append((name, checkpoint_type))
             return f"{name}-session"
 
-        def hotload(self, snapshot_name):
-            events["hotload_calls"].append(snapshot_name)
+        def hotload(self, snapshot_name, checkpoint_type="base"):
+            events["hotload_calls"].append((snapshot_name, checkpoint_type))
             return True
 
     def fake_tokenize_pairs(*args, **kwargs):
@@ -607,7 +607,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
             "policy_job_id": "policy-job",
             "reference_job_id": None,
         }
-        assert events["hotload_calls"] == ["step-2-session"]
+        assert events["hotload_calls"] == [("step-2-session", "base")]
         assert events["save_and_hotload_calls"] == []
         assert events["promotions"] == [
             ("policy-job", "step-2-session", "promoted-dpo-model"),
