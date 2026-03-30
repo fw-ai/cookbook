@@ -404,52 +404,55 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
 
-    cfg = module.Config(
-        log_path="/tmp/dpo_test_logs",
-        base_model="accounts/test/models/qwen3-4b",
-        dataset="/tmp/pairs.jsonl",
-        tokenizer_model="Qwen/Qwen3-4B",
-        max_seq_len=None,
-        infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
-        deployment=module.DeployConfig(deployment_id="dep-123"),
-        weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
-    )
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_log_path:
+        cfg = module.Config(
+            log_path=tmp_log_path,
+            base_model="accounts/test/models/qwen3-4b",
+            dataset="/tmp/pairs.jsonl",
+            tokenizer_model="Qwen/Qwen3-4B",
+            max_seq_len=None,
+            infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
+            deployment=module.DeployConfig(deployment_id="dep-123"),
+            weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
+        )
 
-    result = module.main(
-        cfg,
-        rlor_mgr=FakeRlorMgr(),
-        deploy_mgr=FakeDeployMgr(),
-    )
+        result = module.main(
+            cfg,
+            rlor_mgr=FakeRlorMgr(),
+            deploy_mgr=FakeDeployMgr(),
+        )
 
-    assert result == {
-        "steps": 2,
-        "policy_job_id": "policy-job",
-        "reference_job_id": None,
-    }
-    assert cfg.max_seq_len == 96
-    assert len(events["setup_deployment"]) == 1
-    assert [cfg.display_name for cfg in events["created_configs"]] == [
-        "dpo-policy",
-        "dpo-reference",
-    ]
-    assert events["created_configs"][0].hot_load_deployment_id == "dep-123"
-    assert events["created_configs"][1].forward_only is True
-    assert events["train_loop"]["reference_job_id"] == "reference-job"
-    assert events["train_loop"]["policy_job_id"] == "policy-job"
-    assert events["weight_syncer_saves"] == ["final-step-2"]
+        assert result == {
+            "steps": 2,
+            "policy_job_id": "policy-job",
+            "reference_job_id": None,
+        }
+        assert cfg.max_seq_len == 96
+        assert len(events["setup_deployment"]) == 1
+        assert [cfg.display_name for cfg in events["created_configs"]] == [
+            "dpo-policy",
+            "dpo-reference",
+        ]
+        assert events["created_configs"][0].hot_load_deployment_id == "dep-123"
+        assert events["created_configs"][1].forward_only is True
+        assert events["train_loop"]["reference_job_id"] == "reference-job"
+        assert events["train_loop"]["policy_job_id"] == "policy-job"
+        # Final checkpoint now goes through save_checkpoint + hotload
+        assert events["hotload_calls"] == ["step-2-session"]
 
-    ref_del_idx = events["deleted_jobs"].index("reference-job")
-    pol_del_idx = events["deleted_jobs"].index("policy-job")
-    assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
-    assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
-    assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
-    ref_close_idx = events["lifecycle"].index(("close", "reference-job"))
-    ref_delete_idx = events["lifecycle"].index(("delete", "reference-job"))
-    pol_close_idx = events["lifecycle"].index(("close", "policy-job"))
-    pol_delete_idx = events["lifecycle"].index(("delete", "policy-job"))
-    assert ref_close_idx < ref_delete_idx
-    assert pol_close_idx < pol_delete_idx
-    assert events["wandb_finished"] == 1
+        ref_del_idx = events["deleted_jobs"].index("reference-job")
+        pol_del_idx = events["deleted_jobs"].index("policy-job")
+        assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
+        assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
+        assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
+        ref_close_idx = events["lifecycle"].index(("close", "reference-job"))
+        ref_delete_idx = events["lifecycle"].index(("delete", "reference-job"))
+        pol_close_idx = events["lifecycle"].index(("close", "policy-job"))
+        pol_delete_idx = events["lifecycle"].index(("delete", "policy-job"))
+        assert ref_close_idx < ref_delete_idx
+        assert pol_close_idx < pol_delete_idx
+        assert events["wandb_finished"] == 1
 
 
 def test_main_promotes_final_base_checkpoint(monkeypatch):
@@ -578,41 +581,44 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    cfg = module.Config(
-        log_path="/tmp/dpo_test_logs",
-        base_model="accounts/test/models/qwen3-4b",
-        dataset="/tmp/pairs.jsonl",
-        tokenizer_model="Qwen/Qwen3-4B",
-        max_seq_len=None,
-        infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1"),
-        deployment=module.DeployConfig(deployment_id="dep-123"),
-        weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
-        output_model_id="promoted-dpo-model",
-    )
 
-    result = module.main(
-        cfg,
-        rlor_mgr=FakeRlorMgr(),
-        deploy_mgr=FakeDeployMgr(),
-    )
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_log_path:
+        cfg = module.Config(
+            log_path=tmp_log_path,
+            base_model="accounts/test/models/qwen3-4b",
+            dataset="/tmp/pairs.jsonl",
+            tokenizer_model="Qwen/Qwen3-4B",
+            max_seq_len=None,
+            infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1"),
+            deployment=module.DeployConfig(deployment_id="dep-123"),
+            weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
+            output_model_id="promoted-dpo-model",
+        )
 
-    assert result == {
-        "steps": 2,
-        "policy_job_id": "policy-job",
-        "reference_job_id": None,
-    }
-    assert events["hotload_calls"] == ["step-2-session"]
-    assert events["save_and_hotload_calls"] == []
-    assert events["promotions"] == [
-        ("policy-job", "step-2-session", "promoted-dpo-model"),
-    ]
+        result = module.main(
+            cfg,
+            rlor_mgr=FakeRlorMgr(),
+            deploy_mgr=FakeDeployMgr(),
+        )
 
-    ref_del_idx = events["deleted_jobs"].index("reference-job")
-    pol_del_idx = events["deleted_jobs"].index("policy-job")
-    assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
-    assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
-    assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
-    assert events["wandb_finished"] == 1
+        assert result == {
+            "steps": 2,
+            "policy_job_id": "policy-job",
+            "reference_job_id": None,
+        }
+        assert events["hotload_calls"] == ["step-2-session"]
+        assert events["save_and_hotload_calls"] == []
+        assert events["promotions"] == [
+            ("policy-job", "step-2-session", "promoted-dpo-model"),
+        ]
+
+        ref_del_idx = events["deleted_jobs"].index("reference-job")
+        pol_del_idx = events["deleted_jobs"].index("policy-job")
+        assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
+        assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
+        assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
+        assert events["wandb_finished"] == 1
 
 
 def test_train_loop_pipeline_and_weight_sync(monkeypatch):
@@ -621,7 +627,6 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
         "flush_batches": [],
         "optim_steps": 0,
         "weight_syncs": [],
-        "dcp_saves": [],
         "metrics_logs": [],
         "wandb_logs": [],
         "ref_done_called": False,
