@@ -64,7 +64,7 @@ from training.utils import (
 )
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
 from fireworks.training.sdk.weight_syncer import WeightSyncer
-from training.utils.checkpoint_utils import resolve_resume
+from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
 from training.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -310,7 +310,17 @@ async def _train_loop(
                 weight_syncer.save_and_hotload(f"step-{step}")
         if hl.dcp_save_interval > 0 and step % hl.dcp_save_interval == 0:
             with timer("dcp_save"):
-                weight_syncer.save_dcp(f"step-{step}")
+                save_checkpoint(
+                    policy, f"step-{step}", cfg.log_path,
+                    {
+                        "step": step,
+                        "data_consumed": (step - step_offset) * cfg.batch_size,
+                        "source_job_id": policy.job_id,
+                    },
+                    kind=CheckpointKind.STATE,
+                    base_model=cfg.base_model,
+                    training_shape=cfg.infra.training_shape_id,
+                )
 
         step_elapsed = time.monotonic() - step_t0
         tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
@@ -586,31 +596,32 @@ def main(
 
         hl = cfg.weight_sync
         if step > step_offset:
-            dcp_name = f"step-{step}"
-            weight_syncer.save_dcp(dcp_name)
-            final_sampler_checkpoint_id: str | None = None
-            if getattr(cfg, "output_model_id", None):
-                final_cp_name = f"final-step-{step}"
-                final_sampler_checkpoint_id = weight_syncer.save_only(
-                    final_cp_name,
-                    checkpoint_type="base",
-                )
-                if hl.weight_sync_interval > 0 and final_sampler_checkpoint_id:
-                    weight_syncer.hotload(final_sampler_checkpoint_id)
-            elif hl.weight_sync_interval > 0:
-                final_cp_name = f"final-step-{step}"
-                weight_syncer.save_and_hotload(final_cp_name)
+            cp_name = f"step-{step}"
+            paths = save_checkpoint(
+                policy, cp_name, cfg.log_path,
+                {
+                    "step": step,
+                    "data_consumed": (step - step_offset) * cfg.batch_size,
+                    "source_job_id": policy_job_id,
+                },
+                kind=CheckpointKind.BOTH,
+                base_model=cfg.base_model,
+                training_shape=cfg.infra.training_shape_id,
+            )
+
+            if hl.weight_sync_interval > 0 and paths.get("sampler_path"):
+                weight_syncer.hotload(paths["sampler_path"])
 
             if getattr(cfg, "output_model_id", None):
-                if not final_sampler_checkpoint_id:
+                if not paths.get("sampler_path"):
                     raise RuntimeError("Failed to save final base checkpoint for promotion")
                 rlor_mgr.promote_checkpoint(
                     policy_job_id,
-                    final_sampler_checkpoint_id,
+                    paths["sampler_path"],
                     cfg.output_model_id,
                 )
                 runner.write_output_model(
-                    model_id=cfg.output_model_id, checkpoint=f"final-step-{step}", job_id=policy_job_id,
+                    model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                 )
 
         total_steps = len(tokenized_pairs) * cfg.epochs // cfg.batch_size
