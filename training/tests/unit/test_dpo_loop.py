@@ -340,6 +340,12 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def load_state_with_optimizer(self, path):
             pass
 
+        def save_state(self, name, timeout=None):
+            pass
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type=None, timeout=None):
+            return SimpleNamespace(snapshot_name=f"{name}-session")
+
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"tinker://unit/state/{name}"
 
@@ -353,8 +359,9 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def save_and_hotload(self, name):
             events["weight_syncer_saves"].append(name)
 
-        def save_dcp(self, name):
-            events.setdefault("dcp_saves", []).append(name)
+        def hotload(self, snapshot_name):
+            events.setdefault("hotload_calls", []).append(snapshot_name)
+            return True
 
     def fake_tokenize_pairs(*args, **kwargs):
         events["tokenize_args"] = args
@@ -452,10 +459,8 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     events: dict[str, object] = {
         "deleted_jobs": [],
         "setup_deployment": [],
-        "save_only_calls": [],
         "hotload_calls": [],
         "save_and_hotload_calls": [],
-        "dcp_saves": [],
         "promotions": [],
         "wandb_finished": 0,
     }
@@ -516,6 +521,12 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         def load_state_with_optimizer(self, path):
             pass
 
+        def save_state(self, name, timeout=None):
+            pass
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type=None, timeout=None):
+            return SimpleNamespace(snapshot_name=f"{name}-session")
+
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"tinker://unit/state/{name}"
 
@@ -527,16 +538,9 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
             events["save_and_hotload_calls"].append((name, checkpoint_type))
             return f"{name}-session"
 
-        def save_only(self, name, checkpoint_type=None):
-            events["save_only_calls"].append((name, checkpoint_type))
-            return f"{name}-session"
-
         def hotload(self, snapshot_name):
             events["hotload_calls"].append(snapshot_name)
             return True
-
-        def save_dcp(self, name):
-            events["dcp_saves"].append(name)
 
     def fake_tokenize_pairs(*args, **kwargs):
         return (
@@ -597,12 +601,10 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         "policy_job_id": "policy-job",
         "reference_job_id": None,
     }
-    assert events["save_only_calls"] == [("final-step-2", "base")]
-    assert events["hotload_calls"] == ["final-step-2-session"]
+    assert events["hotload_calls"] == ["step-2-session"]
     assert events["save_and_hotload_calls"] == []
-    assert events["dcp_saves"] == ["step-2"]
     assert events["promotions"] == [
-        ("policy-job", "final-step-2-session", "promoted-dpo-model"),
+        ("policy-job", "step-2-session", "promoted-dpo-model"),
     ]
 
     ref_del_idx = events["deleted_jobs"].index("reference-job")
@@ -639,9 +641,17 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
     monkeypatch.setattr(module, "wandb_log", lambda payload, step: events["wandb_logs"].append((step, payload)))
 
     class FakePolicy:
+        job_id = "fake-policy-job"
+
         def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
+
+        def save_state(self, name, timeout=None):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
 
     class FakeReference:
         def forward(self, datums, loss_fn):
@@ -657,53 +667,59 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
         def save_and_hotload(self, name):
             events["weight_syncs"].append(name)
 
-        def save_dcp(self, name):
-            events["dcp_saves"].append(name)
-
     tokenized_pairs = [
         (0, {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"},
              "chosen_tokens": [1, 2, 3], "rejected_tokens": [1, 2, 4], "response_start": 3}),
         (1, {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"},
              "chosen_tokens": [5, 6], "rejected_tokens": [5, 7], "response_start": 4}),
     ]
-    cfg = module.Config(
-        log_path="/tmp/dpo_test_logs",
-        beta=0.2,
-        epochs=1,
-        batch_size=2,
-        weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1),
-    )
-
-    def _on_ref_done():
-        events["ref_done_called"] = True
-
-    step = asyncio.run(
-        module._train_loop(
-            tokenized_pairs,
-            FakeReference(),
-            FakePolicy(),
-            adam_params={"lr": 1e-4},
-            weight_syncer=FakeWeightSyncer(),
-            cfg=cfg,
-            step_offset=0,
-            on_ref_done=_on_ref_done,
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_log_path:
+        cfg = module.Config(
+            log_path=tmp_log_path,
+            beta=0.2,
+            epochs=1,
+            batch_size=2,
+            weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1),
         )
-    )
 
-    assert step == 1
-    assert events["ref_done_called"]
-    assert len(events["flush_batches"]) == 1
-    assert events["flush_batches"][0][1] == 0.2
-    trained_pairs = events["flush_batches"][0][0]
-    assert len(trained_pairs) == 2
-    assert "ref_chosen" in trained_pairs[0]
-    assert "ref_rejected" in trained_pairs[0]
-    assert events["optim_steps"] == 1
-    assert events["weight_syncs"] == ["step-1"]
-    assert events["dcp_saves"] == ["step-1"]
-    assert events["metrics_logs"][0][0] == 1
-    assert events["metrics_logs"][0][1]["dpo_loss"] == 1.5
-    assert len(events["wandb_logs"]) == 1
+        def _on_ref_done():
+            events["ref_done_called"] = True
+
+        step = asyncio.run(
+            module._train_loop(
+                tokenized_pairs,
+                FakeReference(),
+                FakePolicy(),
+                adam_params={"lr": 1e-4},
+                weight_syncer=FakeWeightSyncer(),
+                cfg=cfg,
+                step_offset=0,
+                on_ref_done=_on_ref_done,
+            )
+        )
+
+        assert step == 1
+        assert events["ref_done_called"]
+        assert len(events["flush_batches"]) == 1
+        assert events["flush_batches"][0][1] == 0.2
+        trained_pairs = events["flush_batches"][0][0]
+        assert len(trained_pairs) == 2
+        assert "ref_chosen" in trained_pairs[0]
+        assert "ref_rejected" in trained_pairs[0]
+        assert events["optim_steps"] == 1
+        assert events["weight_syncs"] == ["step-1"]
+        # DCP save now goes through save_checkpoint -> checkpoints.jsonl
+        import json, os
+        cp_file = os.path.join(tmp_log_path, "checkpoints.jsonl")
+        assert os.path.exists(cp_file)
+        with open(cp_file) as f:
+            cp = json.loads(f.readline())
+        assert cp["name"] == "step-1"
+        assert cp["step"] == 1
+        assert events["metrics_logs"][0][0] == 1
+        assert events["metrics_logs"][0][1]["dpo_loss"] == 1.5
+        assert len(events["wandb_logs"]) == 1
 
 
 def test_pipeline_overlap_ref_freed_before_training_done():
@@ -761,7 +777,6 @@ def test_pipeline_overlap_ref_freed_before_training_done():
 
         class FakeWS:
             def save_and_hotload(self, name): pass
-            def save_dcp(self, name): pass
 
         t0 = time.monotonic()
         step = asyncio.run(
