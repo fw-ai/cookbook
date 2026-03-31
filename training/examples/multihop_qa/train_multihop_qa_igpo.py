@@ -126,7 +126,7 @@ class MultiHopQAIGPOConfig:
     max_concurrent: int = 16
 
     # IGPO-specific — start ig_weight small (0.01–0.2); 0 = pure GRPO
-    gamma: float = 1.0
+    gamma: float = 0.95
     ig_weight: float = 0.1
     scoring_workers: int = 8
     eps_clip: float = 0.2
@@ -189,7 +189,7 @@ def parse_args() -> MultiHopQAIGPOConfig:
     parser.add_argument("--max-concurrent", type=int, default=16)
     parser.add_argument("--lora-rank", type=int, default=0)
 
-    parser.add_argument("--gamma", type=float, default=1.0)
+    parser.add_argument("--gamma", type=float, default=0.95)
     parser.add_argument("--ig-weight", type=float, default=0.1,
                         help="Weight for information-gain intrinsic reward. "
                              "Start small (0.01–0.2); values >= 0.5 tend to "
@@ -704,21 +704,26 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                             row.input_metadata.row_id, prompt_tokens
                         )
 
-                all_turn_rewards: List[List[float]] = []
+                all_ig_rewards: List[List[float]] = []
+                all_outcome_rewards: List[List[float]] = []
                 for row in completed_rows:
                     extra = row.execution_metadata.extra or {}
                     step_rewards = extra.get("step_rewards") or []
                     row_id = row.input_metadata.row_id
                     if row_id in scorer._baselines:
-                        ig_rewards = await asyncio.to_thread(
+                        ig_r, outcome_r = await asyncio.to_thread(
                             scorer.collect_rewards, row_id, step_rewards
                         )
                     else:
-                        ig_rewards = list(step_rewards)
-                    all_turn_rewards.append(ig_rewards)
+                        ig_r = [0.0] * len(step_rewards)
+                        outcome_r = list(step_rewards)
+                    all_ig_rewards.append(ig_r)
+                    all_outcome_rewards.append(outcome_r)
 
                 turn_adv = compute_turn_advantages(
-                    all_turn_rewards, gamma=cfg.gamma
+                    ig_rewards=all_ig_rewards,
+                    outcome_rewards=all_outcome_rewards,
+                    gamma=cfg.gamma,
                 )
 
                 all_datums: List[tinker.Datum] = []
@@ -769,7 +774,8 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     inf_logprobs=all_inf_logprobs,
                     row_meta={
                         "per_token_advantages": all_per_token_adv,
-                        "turn_rewards": all_turn_rewards,
+                        "ig_rewards": all_ig_rewards,
+                        "outcome_rewards": all_outcome_rewards,
                     },
                 )
 

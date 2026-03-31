@@ -49,10 +49,16 @@ pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol dataset
 ### 2. Prepare dataset
 
 ```bash
-python prepare_data.py --max-rows 500
+# Hard-only HotpotQA (recommended — matches paper difficulty)
+python prepare_data.py --max-rows 2000 --difficulty hard
+
+# Or combine with harder datasets (MuSiQue + 2WikiMultiHopQA)
+python prepare_data.py --dataset all --max-rows 3000 --difficulty hard
 ```
 
-This downloads HotpotQA (distractor setting) and writes `dataset.jsonl`.
+This downloads multi-hop QA data and writes `dataset.jsonl`. The `--difficulty hard`
+filter keeps only hard-level HotpotQA questions where intermediate credit assignment
+matters most for IGPO.
 
 ### 3. Run training
 
@@ -85,7 +91,7 @@ TRAINING_SHAPE=... OUTPUT_MODEL_ID=... bash run.sh
 | Parameter | Default | Description |
 |---|---|---|
 | `--ig-weight` | `0.1` | Weight for IG intrinsic reward. **Start small (0.01–0.2)**. Values >= 0.5 tend to destabilize training because IG rewards (log-probability differences) can dominate environment rewards. Set to `0` for pure GRPO. |
-| `--gamma` | `1.0` | Discount factor for computing turn-level returns. |
+| `--gamma` | `0.95` | Discount factor for turn-level return accumulation (paper uses 0.95). |
 | `--completions-per-prompt` | `4` | Group size for GRPO-style advantage normalization. |
 | `--prompt-groups-per-step` | `4` | Number of prompts per optimization step (effective batch = this × completions_per_prompt). |
 | `--learning-rate` | `1e-5` | Adam learning rate. |
@@ -96,16 +102,25 @@ TRAINING_SHAPE=... OUTPUT_MODEL_ID=... bash run.sh
 | `--skip-ig-last-turn` | `True` | Skip IG reward on the final turn (use env reward only). Helps when the last turn is `submit_answer` and environment reward is already meaningful. |
 | `--epochs` | `3` | Number of passes over the dataset. |
 
+### Reward normalization
+
+Following the paper, IG rewards and outcome rewards are **z-normalized independently**
+within each prompt group before being combined. This prevents either signal from
+dominating regardless of their raw scales. The combined signal then undergoes
+backward discounted return accumulation (γ=0.95) to propagate future-turn
+information to earlier turns.
+
 ### Tuning `ig_weight`
 
-The IG reward is a difference in log-probabilities (typically in the range -2 to +2 per turn), while environment rewards are 0 or 1.
-A high `ig_weight` causes the model to optimize for information-seeking behavior at the expense of actually producing correct answers.
+With separate normalization, `ig_weight` controls the IG scoring computation
+but both streams contribute equally after normalization. Set to `0` to disable
+IG scoring entirely (pure GRPO).
 
 **Recommended starting points:**
-- `0.0` — pure GRPO baseline (no IG)
-- `0.05–0.1` — light IG signal; good default
-- `0.2` — stronger IG signal; monitor for reward hacking
-- `>= 0.5` — likely to destabilize; not recommended
+- `0.0` — pure GRPO baseline (no IG scoring overhead)
+- `0.1` — default; IG scoring active with separate normalization
+- Values >= 0.5 emit a warning (IG scoring is expensive; the normalization
+  already balances the signals)
 
 ## Files
 
