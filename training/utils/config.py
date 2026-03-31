@@ -96,6 +96,10 @@ class DeployConfig:
     """If set, use this existing deployment.  If ``None``, a new deployment
     is auto-created (ID derived from the base model name)."""
     deployment_shape: str | None = None
+    """Deployment shape resource name.  Should always be a **versioned** path
+    (e.g. ``accounts/fw/deploymentShapes/ds-x/versions/abc123``) to pin the
+    exact shape config.  Recipes populate this from
+    ``profile.deployment_shape`` which returns the versioned path."""
     deployment_region: str | None = None
     deployment_accelerator_type: str | None = None
     hot_load_bucket_type: str = "FW_HOSTED"

@@ -228,6 +228,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
         def resolve_training_profile(self, shape_id):
             events["resolved_shape"] = shape_id
             return SimpleNamespace(
+                deployment_shape="shape/versions/7",
                 deployment_shape_version="shape/versions/7",
                 pipeline_parallelism=1,
                 max_supported_context_length=256,
@@ -378,6 +379,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def resolve_training_profile(self, shape_id):
             events.setdefault("resolved_shapes", []).append(shape_id)
             return SimpleNamespace(
+                deployment_shape="shape/versions/7",
                 deployment_shape_version="shape/versions/7",
                 pipeline_parallelism=1,
                 max_supported_context_length=256,
@@ -600,7 +602,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     train_module.main()
 
     assert events["resolved_shapes"] == ["ts-qwen3-4b-smoke-v1", "ts-qwen3-4b-smoke-v1"]
-    assert events["deployment_shape"] == "shape"
+    assert events["deployment_shape"] == "shape/versions/7"
     assert [call["display_name"] for call in events["trainer_jobs"]] == [
         "frozen-lake-policy",
         "frozen-lake-reference",
