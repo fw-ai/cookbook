@@ -37,11 +37,11 @@ if _SRC not in sys.path:
 from eval_protocol.models import EvaluationRow, InputMetadata
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
-from training.examples.frozen_lake.frozen_lake_rollout import (
+from training.examples.rl.frozen_lake.frozen_lake_rollout import (
     DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
     FrozenLakeToolRolloutProcessor,
 )
-from training.examples.frozen_lake.masking import (
+from training.examples.rl.frozen_lake.masking import (
     compute_model_output_spans,
     build_ui_token_mask,
 )

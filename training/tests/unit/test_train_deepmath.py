@@ -10,7 +10,7 @@ def _load_module(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
-    import training.examples.deepmath_rl.train_deepmath as module
+    import training.examples.rl.deepmath.train_deepmath as module
 
     return importlib.reload(module)
 

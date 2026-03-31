@@ -111,10 +111,15 @@ For detailed guides, configuration reference, and examples, see the official doc
 ## Directory layout
 
 ```
-recipes/            Training loop scripts (fork these)
-utils/              Shared config, data loading, loss functions, metrics
-examples/deepmath/  Worked example: math reasoning with GRPO
-tests/              Unit and end-to-end tests
+recipes/                 Training loop scripts (fork these)
+utils/                   Shared config, data loading, loss functions, metrics
+examples/rl/deepmath/    Worked example: math reasoning with GRPO
+examples/rl/frozen_lake/ Worked example: Frozen Lake with tool-use RL
+examples/orpo/ifeval/    Worked example: IFEval with ORPO
+examples/sft/            Worked example: SFT getting started
+examples/dpo/            Worked example: DPO
+examples/snippets/       Standalone utility scripts
+tests/                   Unit and end-to-end tests
 ```
 
 ## Tests
@@ -128,7 +133,7 @@ Coverage for the training entrypoints:
 
 ```bash
 cd training
-pytest -q tests/unit tests/test_smoke_imports.py examples/frozen_lake/test_masking.py \
+pytest -q tests/unit tests/test_smoke_imports.py examples/rl/frozen_lake/test_masking.py \
   --cov=. \
   --cov-report=term-missing \
   --cov-report=json:coverage.json

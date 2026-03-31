@@ -33,12 +33,12 @@ from eval_protocol.models import EvaluateResult, EvaluationRow, InputMetadata, S
 from eval_protocol.pytest.types import RolloutProcessorConfig
 from eval_protocol.dataset_logger import default_logger
 
-from training.examples.frozen_lake.frozen_lake_rollout import (
+from training.examples.rl.frozen_lake.frozen_lake_rollout import (
     DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
     FrozenLakeToolRolloutProcessor,
 )
-from training.examples.frozen_lake.frozen_lake_env import build_frozen_lake_tool_env
-from training.examples.frozen_lake.masking import compute_model_output_spans, build_ui_token_mask
+from training.examples.rl.frozen_lake.frozen_lake_env import build_frozen_lake_tool_env
+from training.examples.rl.frozen_lake.masking import compute_model_output_spans, build_ui_token_mask
 
 DEFAULT_LOGS_DB_PATH = str(COOKBOOK_DIR / ".tmp" / "frozen_lake_verify_logs.db")
 DEFAULT_REPORT_PATH = str(COOKBOOK_DIR / ".tmp" / "frozen_lake_verify_report.html")

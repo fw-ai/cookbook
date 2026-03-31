@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from training.examples.frozen_lake.masking import (
+from training.examples.rl.frozen_lake.masking import (
     build_training_loss_mask,
     build_ui_token_mask,
     compute_model_output_spans,
