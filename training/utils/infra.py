@@ -14,9 +14,12 @@ from fireworks.training.sdk.client import (
 from fireworks.training.sdk.trainer import (
     TrainerJobConfig,
     TrainerJobManager,
-    TrainingShapeProfile,
     TrainerServiceEndpoint,
 )
+try:
+    from fireworks.training.sdk.trainer import TrainingShapeProfile
+except ImportError:
+    from fireworks.training.sdk import TrainingShapeProfile
 from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
 from training.utils.config import InfraConfig, DeployConfig
 

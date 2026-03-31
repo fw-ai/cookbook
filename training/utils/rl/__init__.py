@@ -23,6 +23,13 @@ __all__ = [
     "add_train_perf_metrics",
     "build_loop_metrics",
     "total_target_tokens",
+    # IGPO
+    "IGPOTurnScorer",
+    "compute_turn_advantages",
+    "expand_turn_advantages",
+    "expand_turn_advantages_from_spans",
+    "make_igpo_loss_fn",
+    "score_prefix",
 ]
 
 from training.utils.rl.pp import PPBatchRecommendation, compute_pp_recommendation
@@ -44,3 +51,11 @@ from training.utils.rl.metrics import (
 )
 from training.utils.rl.router_replay import build_r3_routing_matrices
 from training.utils.rl.tis import TISConfig
+from training.utils.rl.igpo import (
+    IGPOTurnScorer,
+    compute_turn_advantages,
+    expand_turn_advantages,
+    expand_turn_advantages_from_spans,
+    make_igpo_loss_fn,
+    score_prefix,
+)
