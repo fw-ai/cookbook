@@ -77,6 +77,17 @@ def _renderer_supervised_tokens(
     return list(model_input.to_ints()), weights.tolist()
 
 
+def _hf_supervised_tokens(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    messages: list[dict[str, Any]],
+) -> list[int]:
+    return tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=False,
+    )
+
+
 def _assert_tokens_match(
     tokenizer: transformers.PreTrainedTokenizerBase,
     expected: list[int],
@@ -155,7 +166,7 @@ def test_single_turn_with_thinking(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_explicit_system_message(
+def test_with_system_message(
     tokenizer: transformers.PreTrainedTokenizerBase,
     renderer: MiniMaxM2Renderer,
 ) -> None:
@@ -181,7 +192,7 @@ def test_default_system_message_is_injected(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_history_truncation_before_last_user(
+def test_multi_turn_history_truncation(
     tokenizer: transformers.PreTrainedTokenizerBase,
     renderer: MiniMaxM2Renderer,
 ) -> None:
@@ -223,42 +234,42 @@ def test_generation_prompt_suffix(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_tool_call_with_multiple_parameters(
+def test_tool_call_multiple_params(
     tokenizer: transformers.PreTrainedTokenizerBase,
     renderer: MiniMaxM2Renderer,
 ) -> None:
-    """Tool calls should render MiniMax XML with JSON for non-string values."""
+    """Tool calls with multiple scalar parameters should match HF exactly."""
     messages = [
-        {"role": "user", "content": "Create an event"},
+        {"role": "user", "content": "Book a flight"},
         {
             "role": "assistant",
-            "content": "<think>creating</think>Creating the event.",
+            "content": "<think>booking</think>Booking now.",
             "tool_calls": [
                 _make_tool_call(
-                    "create_event",
+                    "book_flight",
                     {
-                        "title": "Team Meeting",
-                        "attendees": ["alice", "bob"],
-                        "location": {"building": "HQ", "room": "101"},
+                        "origin": "SFO",
+                        "destination": "LAX",
+                        "date": "2026-04-01",
                     },
                 )
             ],
         },
     ]
     hf_messages = [
-        {"role": "user", "content": "Create an event"},
+        {"role": "user", "content": "Book a flight"},
         {
             "role": "assistant",
-            "content": "<think>creating</think>Creating the event.",
+            "content": "<think>booking</think>Booking now.",
             "tool_calls": [
                 {
                     "type": "function",
                     "function": {
-                        "name": "create_event",
+                        "name": "book_flight",
                         "arguments": {
-                            "title": "Team Meeting",
-                            "attendees": ["alice", "bob"],
-                            "location": {"building": "HQ", "room": "101"},
+                            "origin": "SFO",
+                            "destination": "LAX",
+                            "date": "2026-04-01",
                         },
                     },
                 }
@@ -270,7 +281,7 @@ def test_tool_call_with_multiple_parameters(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_multiple_tool_calls_in_one_assistant_message(
+def test_tool_call_multiple_calls(
     tokenizer: transformers.PreTrainedTokenizerBase,
     renderer: MiniMaxM2Renderer,
 ) -> None:
@@ -314,7 +325,7 @@ def test_multiple_tool_calls_in_one_assistant_message(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_grouped_tool_responses(
+def test_tool_response_multiple_grouped(
     tokenizer: transformers.PreTrainedTokenizerBase,
     renderer: MiniMaxM2Renderer,
 ) -> None:
@@ -395,7 +406,7 @@ def test_tool_call_history_truncation(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_supervised_example_matches_hf(
+def test_supervised_example_basic(
     tokenizer: transformers.PreTrainedTokenizerBase,
     renderer: MiniMaxM2Renderer,
 ) -> None:
@@ -405,7 +416,7 @@ def test_supervised_example_matches_hf(
         {"role": "user", "content": "What is 2+2?"},
         {"role": "assistant", "content": "<think>calculate</think>4"},
     ]
-    expected = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    expected = _hf_supervised_tokens(tokenizer, messages)
     actual, _weights = _renderer_supervised_tokens(
         renderer,
         messages,
@@ -437,15 +448,13 @@ def test_supervised_weights_last_assistant_message(
     assert all(weight == 1 for weight in weights[assistant_slices[1]])
 
 
-def test_supervised_weights_all_assistant_messages(
+def test_supervised_weights_mask_non_assistant(
     renderer: MiniMaxM2Renderer,
 ) -> None:
-    """All assistant outputs should be trainable in ALL_ASSISTANT_MESSAGES mode."""
+    """Only assistant outputs should be trainable in ALL_ASSISTANT_MESSAGES mode."""
     messages = [
-        {"role": "user", "content": "u1"},
-        {"role": "assistant", "content": "a1"},
-        {"role": "user", "content": "u2"},
-        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"},
     ]
     _tokens, weights = _renderer_supervised_tokens(
         renderer,
@@ -454,10 +463,450 @@ def test_supervised_weights_all_assistant_messages(
     )
     output_slices = _message_output_slices(renderer, messages)
     assistant_slices = [slice_ for role, slice_ in output_slices if role == "assistant"]
-    non_assistant_slices = [slice_ for role, slice_ in output_slices if role != "assistant"]
+    non_assistant_slices = [
+        slice_ for role, slice_ in output_slices if role != "assistant"
+    ]
 
-    assert len(assistant_slices) == 2
+    assert len(assistant_slices) == 1
     for assistant_slice in assistant_slices:
         assert all(weight == 1 for weight in weights[assistant_slice])
     for non_assistant_slice in non_assistant_slices:
         assert all(weight == 0 for weight in weights[non_assistant_slice])
+
+
+def test_empty_system_message(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """An explicit empty system message should still render the default system block."""
+    messages = [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": "Hello"},
+    ]
+    expected = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_multi_turn_no_thinking_history(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Historical assistant messages without think tags should still match HF."""
+    messages = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello!"},
+        {"role": "user", "content": "How are you?"},
+    ]
+    expected = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_tool_call_single(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """A single tool call should match the HF XML rendering."""
+    messages = [
+        {"role": "user", "content": "What's the weather in SF?"},
+        {
+            "role": "assistant",
+            "content": "<think>I should check the weather</think>Let me check.",
+            "tool_calls": [_make_tool_call("get_weather", {"city": "San Francisco"})],
+        },
+    ]
+    hf_messages = [
+        {"role": "user", "content": "What's the weather in SF?"},
+        {
+            "role": "assistant",
+            "content": "<think>I should check the weather</think>Let me check.",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "San Francisco"},
+                    },
+                }
+            ],
+        },
+    ]
+    expected = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_tool_call_no_thinking(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Tool calls without explicit reasoning should still match HF."""
+    messages = [
+        {"role": "user", "content": "Search for python docs"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_make_tool_call("search", {"query": "python"})],
+        },
+    ]
+    hf_messages = [
+        {"role": "user", "content": "Search for python docs"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "search", "arguments": {"query": "python"}},
+                }
+            ],
+        },
+    ]
+    expected = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_tool_response_single(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """A single tool response round-trip should match HF exactly."""
+    messages = [
+        {"role": "user", "content": "What's the weather?"},
+        {
+            "role": "assistant",
+            "content": "<think>check weather</think>Checking.",
+            "tool_calls": [_make_tool_call("get_weather", {"city": "SF"})],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+        {
+            "role": "assistant",
+            "content": "<think>got it</think>It is 72F and sunny in SF!",
+        },
+    ]
+    hf_messages = [
+        {"role": "user", "content": "What's the weather?"},
+        {
+            "role": "assistant",
+            "content": "<think>check weather</think>Checking.",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "SF"}},
+                }
+            ],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+        {
+            "role": "assistant",
+            "content": "<think>got it</think>It is 72F and sunny in SF!",
+        },
+    ]
+    expected = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_tool_response_three_consecutive(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Three grouped tool responses should share one tool block like HF."""
+    messages = [
+        {"role": "user", "content": "Get weather for three cities"},
+        {
+            "role": "assistant",
+            "content": "<think>checking all three</think>Let me check.",
+            "tool_calls": [
+                _make_tool_call("get_weather", {"city": "San Francisco"}),
+                _make_tool_call("get_weather", {"city": "New York"}),
+                _make_tool_call("get_weather", {"city": "Chicago"}),
+            ],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+        {"role": "tool", "content": "55F and cloudy"},
+        {"role": "tool", "content": "45F and windy"},
+        {"role": "assistant", "content": "<think>got all three</think>Done."},
+    ]
+    hf_messages = [
+        {"role": "user", "content": "Get weather for three cities"},
+        {
+            "role": "assistant",
+            "content": "<think>checking all three</think>Let me check.",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "San Francisco"},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "New York"},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "Chicago"},
+                    },
+                },
+            ],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+        {"role": "tool", "content": "55F and cloudy"},
+        {"role": "tool", "content": "45F and windy"},
+        {"role": "assistant", "content": "<think>got all three</think>Done."},
+    ]
+    expected = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_tool_call_nested_json_args(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Nested list/dict tool args should serialize exactly like HF."""
+    messages = [
+        {"role": "user", "content": "Create an event"},
+        {
+            "role": "assistant",
+            "content": "<think>creating</think>Creating the event.",
+            "tool_calls": [
+                _make_tool_call(
+                    "create_event",
+                    {
+                        "title": "Team Meeting",
+                        "attendees": ["alice", "bob"],
+                        "location": {"building": "HQ", "room": "101"},
+                    },
+                )
+            ],
+        },
+    ]
+    hf_messages = [
+        {"role": "user", "content": "Create an event"},
+        {
+            "role": "assistant",
+            "content": "<think>creating</think>Creating the event.",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "create_event",
+                        "arguments": {
+                            "title": "Team Meeting",
+                            "attendees": ["alice", "bob"],
+                            "location": {"building": "HQ", "room": "101"},
+                        },
+                    },
+                }
+            ],
+        },
+    ]
+    expected = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_generation_prompt_after_tool_response(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Generation after a tool response should match HF's assistant suffix."""
+    messages = [
+        {"role": "user", "content": "What's the weather?"},
+        {
+            "role": "assistant",
+            "content": "<think>checking</think>Let me check.",
+            "tool_calls": [_make_tool_call("get_weather", {"city": "SF"})],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+    ]
+    hf_messages = [
+        {"role": "user", "content": "What's the weather?"},
+        {
+            "role": "assistant",
+            "content": "<think>checking</think>Let me check.",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "SF"}},
+                }
+            ],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+    ]
+    expected = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_multi_turn_multiple_tool_roundtrips(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Two tool-use exchanges should preserve truncation behavior across turns."""
+    messages = [
+        {"role": "user", "content": "What's the weather in SF?"},
+        {
+            "role": "assistant",
+            "content": "<think>check SF weather</think>Checking SF.",
+            "tool_calls": [_make_tool_call("get_weather", {"city": "SF"})],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+        {
+            "role": "assistant",
+            "content": "<think>got SF</think>It is 72F and sunny in SF.",
+        },
+        {"role": "user", "content": "Now check NYC"},
+        {
+            "role": "assistant",
+            "content": "<think>check NYC</think>Checking NYC.",
+            "tool_calls": [_make_tool_call("get_weather", {"city": "NYC"})],
+        },
+        {"role": "tool", "content": "55F and rainy"},
+        {"role": "assistant", "content": "<think>got NYC</think>NYC is 55F and rainy."},
+    ]
+    hf_messages = [
+        {"role": "user", "content": "What's the weather in SF?"},
+        {
+            "role": "assistant",
+            "content": "<think>check SF weather</think>Checking SF.",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "SF"}},
+                }
+            ],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+        {
+            "role": "assistant",
+            "content": "<think>got SF</think>It is 72F and sunny in SF.",
+        },
+        {"role": "user", "content": "Now check NYC"},
+        {
+            "role": "assistant",
+            "content": "<think>check NYC</think>Checking NYC.",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "NYC"}},
+                }
+            ],
+        },
+        {"role": "tool", "content": "55F and rainy"},
+        {"role": "assistant", "content": "<think>got NYC</think>NYC is 55F and rainy."},
+    ]
+    expected = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_empty_assistant_content(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """An empty assistant message should still round-trip to HF tokens."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": ""},
+    ]
+    expected = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    actual = _renderer_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_supervised_with_tool_calls(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Supervised tokenization with a tool round-trip should match HF."""
+    messages = [
+        {"role": "user", "content": "What's the weather?"},
+        {
+            "role": "assistant",
+            "content": "<think>check weather</think>Checking.",
+            "tool_calls": [_make_tool_call("get_weather", {"city": "SF"})],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+        {
+            "role": "assistant",
+            "content": "<think>got it</think>It is 72F and sunny in SF!",
+        },
+    ]
+    hf_messages = [
+        {"role": "user", "content": "What's the weather?"},
+        {
+            "role": "assistant",
+            "content": "<think>check weather</think>Checking.",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "SF"}},
+                }
+            ],
+        },
+        {"role": "tool", "content": "72F and sunny"},
+        {
+            "role": "assistant",
+            "content": "<think>got it</think>It is 72F and sunny in SF!",
+        },
+    ]
+    expected = _hf_supervised_tokens(tokenizer, hf_messages)
+    actual, _weights = _renderer_supervised_tokens(
+        renderer,
+        messages,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_supervised_multi_turn_thinking_weights(
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """LAST_ASSISTANT_MESSAGE should only weight the final assistant turn."""
+    messages = [
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "What is 2+2?"},
+        {"role": "assistant", "content": "<think>calculating</think>4"},
+        {"role": "user", "content": "And 3+3?"},
+        {"role": "assistant", "content": "<think>adding</think>6"},
+    ]
+    _tokens, weights = _renderer_supervised_tokens(
+        renderer,
+        messages,
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    )
+    output_slices = _message_output_slices(renderer, messages)
+    assistant_slices = [slice_ for role, slice_ in output_slices if role == "assistant"]
+
+    assert len(assistant_slices) == 2
+    assert all(weight == 0 for weight in weights[assistant_slices[0]])
+    assert all(weight == 1 for weight in weights[assistant_slices[1]])
+
+
+def test_supervised_no_system_message(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Supervised rendering should auto-inject the default system prompt like HF."""
+    messages = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello!"},
+    ]
+    expected = _hf_supervised_tokens(tokenizer, messages)
+    actual, _weights = _renderer_supervised_tokens(
+        renderer,
+        messages,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    _assert_tokens_match(tokenizer, expected, actual)

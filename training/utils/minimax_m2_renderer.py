@@ -123,7 +123,9 @@ def _parse_parameter_value(value: str) -> Any:
 def _normalize_tool_arguments(raw_arguments: str) -> dict[str, Any]:
     parsed = json.loads(raw_arguments) if raw_arguments else {}
     if not isinstance(parsed, dict):
-        raise TypeError(f"MiniMax tool arguments must be a JSON object, got {type(parsed)!r}")
+        raise TypeError(
+            f"MiniMax tool arguments must be a JSON object, got {type(parsed)!r}"
+        )
     return parsed
 
 
@@ -149,7 +151,9 @@ def _parse_tool_call_block(
 ) -> tuple[list[ToolCall], list[UnparsedToolCall]]:
     invoke_matches = list(_TOOL_INVOKE_RE.finditer(raw_block))
     if not invoke_matches:
-        return [], [UnparsedToolCall(raw_text=raw_text, error="No <invoke> block found")]
+        return [], [
+            UnparsedToolCall(raw_text=raw_text, error="No <invoke> block found")
+        ]
 
     tool_calls: list[ToolCall] = []
     unparsed_tool_calls: list[UnparsedToolCall] = []
@@ -236,7 +240,9 @@ class MiniMaxM2Renderer(Renderer):
         if eos_token_id is not None:
             return int(eos_token_id)
         tokens = self.tokenizer.encode(_END_MESSAGE_TEXT, add_special_tokens=False)
-        assert len(tokens) == 1, f"Expected single token for {_END_MESSAGE_TEXT!r}, got {tokens}"
+        assert (
+            len(tokens) == 1
+        ), f"Expected single token for {_END_MESSAGE_TEXT!r}, got {tokens}"
         return int(tokens[0])
 
     def _detect_default_system_prompt(self) -> str:
@@ -311,7 +317,9 @@ class MiniMaxM2Renderer(Renderer):
         if should_truncate:
             rendered = _truncate_assistant_history(message["content"])
         else:
-            reasoning, visible = _extract_assistant_reasoning_and_text(message["content"])
+            reasoning, visible = _extract_assistant_reasoning_and_text(
+                message["content"]
+            )
             rendered = visible
             if reasoning:
                 rendered = f"<think>\n{reasoning}\n</think>\n\n{visible}"
@@ -319,6 +327,26 @@ class MiniMaxM2Renderer(Renderer):
         if "tool_calls" in message and message["tool_calls"]:
             rendered += "\n" + _format_tool_calls(message["tool_calls"])
         return rendered
+
+    def _assistant_uses_blank_line_before_tool_calls(
+        self,
+        message: Message,
+        ctx: RenderContext,
+    ) -> bool:
+        if message["role"] != "assistant" or not message.get("tool_calls"):
+            return False
+
+        should_truncate = (
+            self.strip_thinking_from_history
+            and ctx.last_user_index >= 0
+            and ctx.idx < ctx.last_user_index
+        )
+        if should_truncate:
+            visible = _truncate_assistant_history(message["content"])
+            return visible == ""
+
+        reasoning, visible = _extract_assistant_reasoning_and_text(message["content"])
+        return reasoning == "" and visible == ""
 
     def _render_tool_message(self, message: Message) -> RenderedMessage:
         header_str = f"{_ROLE_PREFIX}tool\n"
@@ -331,7 +359,11 @@ class MiniMaxM2Renderer(Renderer):
             for idx, item in enumerate(content):
                 if isinstance(item, Mapping) and isinstance(item.get("output"), str):
                     rendered_item = item["output"]
-                elif isinstance(item, Mapping) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                elif (
+                    isinstance(item, Mapping)
+                    and item.get("type") == "text"
+                    and isinstance(item.get("text"), str)
+                ):
                     rendered_item = item["text"]
                 else:
                     rendered_item = str(item)
@@ -366,6 +398,9 @@ class MiniMaxM2Renderer(Renderer):
 
         if message["role"] == "assistant":
             output_content = self._render_assistant_message(message, ctx)
+            if self._assistant_uses_blank_line_before_tool_calls(message, ctx):
+                header_str += "\n"
+                output_content = output_content.removeprefix("\n")
         elif message["role"] == "system":
             output_content = self._render_system_message(message)
         else:
@@ -422,11 +457,13 @@ class MiniMaxM2Renderer(Renderer):
             return assistant_message, False
 
         assert isinstance(assistant_message["content"], str)
-        rendered_content, tool_calls, unparsed_tool_calls = _extract_tool_calls_from_content(
-            assistant_message["content"]
+        rendered_content, tool_calls, unparsed_tool_calls = (
+            _extract_tool_calls_from_content(assistant_message["content"])
         )
         content_parts = parse_think_blocks(rendered_content)
-        assistant_message["content"] = content_parts if content_parts is not None else rendered_content
+        assistant_message["content"] = (
+            content_parts if content_parts is not None else rendered_content
+        )
         if tool_calls:
             assistant_message["tool_calls"] = tool_calls
         if unparsed_tool_calls:
@@ -461,7 +498,9 @@ class MiniMaxM2Renderer(Renderer):
                     "id": tool_call.id,
                     "function": {
                         "name": tool_call.function.name,
-                        "arguments": _normalize_tool_arguments(tool_call.function.arguments),
+                        "arguments": _normalize_tool_arguments(
+                            tool_call.function.arguments
+                        ),
                     },
                 }
                 for tool_call in message["tool_calls"]
