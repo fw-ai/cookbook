@@ -20,7 +20,7 @@ import tempfile
 
 import pytest
 
-from tinker_cookbook.checkpoint_utils import get_last_checkpoint
+from training.utils.checkpoint_utils import get_last_checkpoint
 from training.utils import InfraConfig
 from training.recipes.sft_loop import Config, main
 

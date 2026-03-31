@@ -22,7 +22,7 @@ import tempfile
 
 import pytest
 
-from tinker_cookbook.checkpoint_utils import get_last_checkpoint
+from training.utils.checkpoint_utils import get_last_checkpoint
 from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main

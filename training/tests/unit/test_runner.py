@@ -1,30 +1,14 @@
-"""Tests for the runner contract (training.utils.runner).
-
-Uses importlib to load runner.py directly so the test works without the
-full SDK dependency chain that ``training.utils.__init__`` pulls in.
-"""
+"""Tests for the runner contract (training.utils.runner)."""
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import sys
 import time
 
 import pytest
 
-_RUNNER_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "utils", "runner.py"
-)
-_spec = importlib.util.spec_from_file_location("training.utils.runner", _RUNNER_PATH)
-_mod = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = _mod
-_spec.loader.exec_module(_mod)
-
-RunnerConfig = _mod.RunnerConfig
-RunnerIO = _mod.RunnerIO
-RunStatus = _mod.RunStatus
+from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 
 
 # -- RunnerConfig -------------------------------------------------------------

@@ -1,25 +1,21 @@
-"""Checkpoint utilities using tinker_cookbook's checkpoints.jsonl format.
+"""Checkpoint utilities -- resume, save, and GCS-transparent I/O.
 
-Reading uses ``get_last_checkpoint`` from tinker_cookbook directly.
-Writing (``save_checkpoint``) and resume (``resolve_resume``) are
-implemented locally for Fireworks RLOR compatibility.
+All file access goes through ``training.utils.fileio`` so the same code
+works identically against local paths and ``gs://`` URIs.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import time
 from dataclasses import dataclass
-from training.utils import ReconnectableClient
 from enum import Enum
 from typing import Any
 
-from tinker_cookbook.checkpoint_utils import (
-    get_last_checkpoint,
-    CHECKPOINTS_BASE_NAME,
-)
+import training.utils.fileio as fileio
+from training.utils.client import ReconnectableClient
+
+CHECKPOINTS_BASE_NAME = "checkpoints.jsonl"
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +51,16 @@ def _parse_cross_job(spec: str) -> tuple[str | None, str]:
     return None, spec
 
 
+def get_last_checkpoint(log_path: str) -> dict[str, Any] | None:
+    """Return the last valid entry from ``checkpoints.jsonl``, or None.
+
+    Works transparently for both local directories and ``gs://`` URIs.
+    """
+    ckpt_file = fileio.join(log_path, CHECKPOINTS_BASE_NAME)
+    records = fileio.read_jsonl(ckpt_file)
+    return records[-1] if records else None
+
+
 def resolve_resume(
     client: Any,
     log_path: str,
@@ -76,7 +82,7 @@ def resolve_resume(
         return ResumeInfo(step=0, data_consumed=0, source_job_id=source_job_id)
 
     last = get_last_checkpoint(log_path)
-    if last is not None:
+    if last:
         logger.info("Resuming from checkpoints.jsonl: %s", last)
         t0 = time.time()
         client.load_state_with_optimizer(last["state_path"])
@@ -136,8 +142,7 @@ def save_checkpoint(
         full_dict["base_model"] = base_model
     if training_shape:
         full_dict["training_shape"] = training_shape
-    os.makedirs(log_path, exist_ok=True)
-    with open(os.path.join(log_path, CHECKPOINTS_BASE_NAME), "a") as f:
-        f.write(json.dumps(full_dict) + "\n")
+    fileio.makedirs(log_path)
+    fileio.append_jsonl(fileio.join(log_path, CHECKPOINTS_BASE_NAME), full_dict)
     logger.info("Saved checkpoint: %s", full_dict)
     return paths
