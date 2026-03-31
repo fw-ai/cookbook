@@ -26,6 +26,7 @@ from tinker_cookbook.renderers import Message, Renderer, ToolCall, TrainOnWhat, 
 from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.utils.nemotron_renderer as _nemotron_renderer  # noqa: F401 — triggers register_renderer
+import training.utils.minimax_m2_renderer as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,8 @@ def resolve_renderer_name(
         return "kimi_k25"
     if "nemotron" in normalized_model_name:
         return "nemotron"
+    if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
+        return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
     try:
