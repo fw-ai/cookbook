@@ -324,7 +324,7 @@ def main(
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        dep_shape = profile.deployment_shape_version
+        dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
         if dep_shape and not cfg.deployment.deployment_shape:
             cfg.deployment.deployment_shape = dep_shape
 
