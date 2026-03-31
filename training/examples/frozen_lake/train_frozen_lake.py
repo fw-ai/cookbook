@@ -387,11 +387,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     profile = None
     if infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
-        dsv = profile.deployment_shape_version or ""
-        if dsv and not deploy_cfg.deployment_shape:
-            # Strip /versions/... suffix to get the parent deployment shape
-            idx = dsv.find("/versions/")
-            deploy_cfg.deployment_shape = dsv[:idx] if idx >= 0 else dsv
+        # profile.deployment_shape returns the versioned path pinned by
+        # the training shape — the server accepts versioned paths.
+        if profile.deployment_shape and not deploy_cfg.deployment_shape:
+            deploy_cfg.deployment_shape = profile.deployment_shape
             logger.info("Deployment shape from training shape: %s", deploy_cfg.deployment_shape)
 
     if profile and profile.pipeline_parallelism > 1:

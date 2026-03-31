@@ -324,9 +324,11 @@ def main(
     profile = None
     if cfg.infra.training_shape_id:
         profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        dep_shape = getattr(profile, "deployment_shape", None) or getattr(profile, "deployment_shape_version", None)
-        if dep_shape and not cfg.deployment.deployment_shape:
-            cfg.deployment.deployment_shape = dep_shape
+        # profile.deployment_shape returns the versioned path (e.g.
+        # .../versions/abc123) pinned by the training shape.  The server
+        # accepts versioned paths and pins to the exact version.
+        if profile.deployment_shape and not cfg.deployment.deployment_shape:
+            cfg.deployment.deployment_shape = profile.deployment_shape
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
