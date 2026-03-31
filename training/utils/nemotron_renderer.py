@@ -25,6 +25,7 @@ from tinker_cookbook.renderers.base import (
     Role,
     TrainOnWhat,
 )
+from tinker_cookbook.renderers import register_renderer
 from tinker_cookbook.renderers.qwen3 import Qwen3Renderer
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
@@ -259,3 +260,10 @@ class NemotronRenderer(Qwen3Renderer):
         maybe_newline = "\n" if ctx.idx > 0 else ""
         suffix_str = f"{maybe_newline}<|im_start|>{role}\n<think>\n"
         return self.tokenizer.encode(suffix_str, add_special_tokens=False)
+
+
+def _nemotron_factory(tokenizer: Tokenizer, image_processor=None) -> NemotronRenderer:
+    return NemotronRenderer(tokenizer)
+
+
+register_renderer("nemotron", _nemotron_factory)
