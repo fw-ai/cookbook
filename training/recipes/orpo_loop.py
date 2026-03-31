@@ -393,7 +393,7 @@ def main(
             runner.write_metadata()
             return time.monotonic()
 
-        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
+        runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 
