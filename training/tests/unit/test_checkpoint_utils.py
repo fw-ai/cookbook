@@ -3,17 +3,19 @@
 import json
 import os
 import tempfile
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from training.utils.checkpoint_utils import (
     ResumeInfo,
+    get_last_checkpoint,
     resolve_resume,
     save_checkpoint,
     CheckpointKind,
     CHECKPOINTS_BASE_NAME,
 )
+from training.utils import fileio
 
 
 @pytest.fixture
@@ -344,3 +346,84 @@ class TestCheckpointMetadataForPromote:
         step2 = [e for e in entries if e.get("step") == 2]
         assert len(step2) == 1
         assert step2[0]["base_model"] == "model-v2"
+
+
+# ---------------------------------------------------------------------------
+# GCS-path tests -- verify checkpoint_utils works with gs:// URIs by mocking
+# the low-level GCS transport in fileio.
+# ---------------------------------------------------------------------------
+
+
+def _make_gcs_blob(initial: bytes = b""):
+    """Create a mock GCS blob that stores data in memory."""
+    blob = MagicMock()
+    blob._data = initial
+
+    def _exists():
+        return bool(blob._data)
+
+    def _download():
+        return blob._data
+
+    def _upload(payload):
+        blob._data = payload if isinstance(payload, bytes) else payload.encode()
+
+    blob.exists.side_effect = _exists
+    blob.download_as_bytes.side_effect = _download
+    blob.upload_from_string.side_effect = _upload
+    return blob
+
+
+class TestGcsCheckpoints:
+    """Verify save_checkpoint / get_last_checkpoint / resolve_resume work
+    end-to-end when log_path is a ``gs://`` URI."""
+
+    def test_save_and_get_last(self):
+        blob = _make_gcs_blob()
+        with patch("training.utils.fileio._gcs_bucket_blob", return_value=(None, blob)):
+            gcs_log = "gs://test-bucket/jobs/job-1/logs"
+            client = _make_mock_client(job_id="job-gcs")
+
+            save_checkpoint(client, "step-5", gcs_log, {
+                "step": 5, "data_consumed": 40,
+            })
+
+            last = get_last_checkpoint(gcs_log)
+            assert last is not None
+            assert last["name"] == "step-5"
+            assert last["step"] == 5
+            assert last["state_path"].startswith("cross_job://")
+
+    def test_get_last_returns_none_on_empty(self):
+        blob = _make_gcs_blob()
+        with patch("training.utils.fileio._gcs_bucket_blob", return_value=(None, blob)):
+            assert get_last_checkpoint("gs://bucket/empty") is None
+
+    def test_save_appends_multiple_entries(self):
+        blob = _make_gcs_blob()
+        with patch("training.utils.fileio._gcs_bucket_blob", return_value=(None, blob)):
+            gcs_log = "gs://test-bucket/multi"
+            client = _make_mock_client(job_id="job-m")
+            save_checkpoint(client, "step-1", gcs_log, {"step": 1})
+            save_checkpoint(client, "step-2", gcs_log, {"step": 2})
+
+            records = fileio.read_jsonl(fileio.join(gcs_log, CHECKPOINTS_BASE_NAME))
+            assert len(records) == 2
+            assert records[0]["step"] == 1
+            assert records[1]["step"] == 2
+
+    def test_resolve_resume_from_gcs(self):
+        blob = _make_gcs_blob()
+        with patch("training.utils.fileio._gcs_bucket_blob", return_value=(None, blob)):
+            gcs_log = "gs://test-bucket/resume-test"
+            client1 = _make_mock_client(job_id="job-save")
+            save_checkpoint(client1, "step-3", gcs_log, {
+                "step": 3, "data_consumed": 24,
+            })
+
+            client2 = _make_mock_client(job_id="job-resume")
+            result = resolve_resume(client2, gcs_log)
+            assert result is not None
+            assert result.step == 3
+            assert result.data_consumed == 24
+            client2.load_state_with_optimizer.assert_called_once()
