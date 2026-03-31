@@ -463,9 +463,23 @@ def main(
                     cleanup=cleanup if not cfg.reference_job_id else None,
                     on_status=_on_trainer_status,
                 )
-                policy_ep = pol_fut.result()
+                # Collect both results so that if both fail we report
+                # both errors instead of swallowing the second one.
+                errors: list[str] = []
+                policy_ep = reference_ep = None
+                try:
+                    policy_ep = pol_fut.result()
+                except Exception as e:
+                    errors.append(f"Policy trainer: {e}")
+                try:
+                    reference_ep = ref_fut.result()
+                except Exception as e:
+                    errors.append(f"Reference trainer: {e}")
+                if errors:
+                    raise RuntimeError(
+                        "Trainer creation failed:\n" + "\n".join(errors)
+                    )
                 policy_job_id = policy_ep.job_id
-                reference_ep = ref_fut.result()
                 reference_job_id = reference_ep.job_id
         else:
             policy_ep = create_trainer_job(
@@ -728,7 +742,15 @@ def main(
             if not use_reference:
                 return
             all_ref_data = [d for pg in groups for d in pg.ref_data]
-            ref_fwd = reference.forward(all_ref_data, "cross_entropy")
+            try:
+                ref_fwd = reference.forward(all_ref_data, "cross_entropy")
+            except Exception as e:
+                raise RuntimeError(
+                    f"Reference forward failed (batch of {len(all_ref_data)} datums): {e}\n"
+                    "Possible causes: reference trainer crashed, NCCL timeout, or "
+                    "request exceeded the default timeout. Check reference trainer "
+                    "logs and consider increasing the client timeout."
+                ) from e
             idx = 0
             for pg in groups:
                 n = len(pg.ref_data)
@@ -962,4 +984,14 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config(log_path="./rl_logs"))
+    cfg = Config(
+        log_path="./rl_logs",
+        base_model="accounts/fireworks/models/qwen3-8b",
+        infra=InfraConfig(
+            training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200",
+        ),
+        deployment=DeployConfig(
+            tokenizer_model="Qwen/Qwen3-8B",
+        ),
+    )
+    main(cfg)

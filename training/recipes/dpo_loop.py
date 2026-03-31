@@ -560,8 +560,22 @@ def main(
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
-            policy_ep = pol_fut.result()
-            reference_ep = ref_fut.result()
+            # Collect both results so that if both fail we report
+            # both errors instead of swallowing the second one.
+            errors: list[str] = []
+            policy_ep = reference_ep = None
+            try:
+                policy_ep = pol_fut.result()
+            except Exception as e:
+                errors.append(f"Policy trainer: {e}")
+            try:
+                reference_ep = ref_fut.result()
+            except Exception as e:
+                errors.append(f"Reference trainer: {e}")
+            if errors:
+                raise RuntimeError(
+                    "Trainer creation failed:\n" + "\n".join(errors)
+                )
 
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id

@@ -266,6 +266,18 @@ async def run_rl_loop(
     else:
         window_size = len(coros)
 
+    # Track cumulative stats for end-of-run summary (FIR2-1209).
+    _total_prompts = len(coros)
+    _cumulative_filter_drops = 0
+    _cumulative_sample_fails = 0
+
+    def _tracking_callback(stats: dict[str, Any]) -> None:
+        nonlocal _cumulative_filter_drops, _cumulative_sample_fails
+        _cumulative_filter_drops += stats.get("rollout/filter_drops", 0)
+        _cumulative_sample_fails += stats.get("rollout/sample_fails", 0)
+        if metrics_callback is not None:
+            metrics_callback(stats)
+
     coro_iter = iter(coros)
     while True:
         window = list(itertools.islice(coro_iter, window_size))
@@ -279,11 +291,35 @@ async def run_rl_loop(
             prompt_groups_per_step=prompt_groups_per_step,
             dynamic_filter_fn=dynamic_filter_fn,
             global_step=global_step,
-            metrics_callback=metrics_callback,
+            metrics_callback=_tracking_callback,
             max_concurrent=max_concurrent,
         )
 
         if weight_sync_fn is not None and weight_sync_interval > 0 and global_step > step_before:
             await asyncio.to_thread(weight_sync_fn, global_step)
+
+    # -- End-of-run summary (FIR2-1209) ----------------------------------------
+    start_step = global_step - (global_step - 0)  # placeholder, use initial step
+    total_steps = global_step
+    rejected = _cumulative_filter_drops + _cumulative_sample_fails
+    if _total_prompts > 0:
+        filter_pct = _cumulative_filter_drops / _total_prompts * 100
+        fail_pct = _cumulative_sample_fails / _total_prompts * 100
+        logger.info(
+            "RL loop complete: %d steps, %d/%d prompts sampled "
+            "(%d filtered [%.0f%%], %d failed [%.0f%%])",
+            total_steps, _total_prompts - rejected, _total_prompts,
+            _cumulative_filter_drops, filter_pct,
+            _cumulative_sample_fails, fail_pct,
+        )
+        if filter_pct > 30:
+            logger.warning(
+                "High filter rate (%.0f%% of prompts dropped). Consider:\n"
+                "  - Increasing dataset size (--max-rows)\n"
+                "  - Increasing completions per prompt (--completions-per-prompt)\n"
+                "  - Using a harder/more diverse dataset\n"
+                "  - Lowering the temperature for more deterministic outputs",
+                filter_pct,
+            )
 
     return global_step
