@@ -124,37 +124,83 @@ def score_prefix(
 # ---------------------------------------------------------------------------
 
 
+def _z_normalize_group(
+    values: List[float], eps: float = 1e-6
+) -> List[float]:
+    """Z-normalize a list of values: (x - mean) / std."""
+    n = len(values)
+    if n == 0:
+        return []
+    mu = sum(values) / n
+    if n <= 1:
+        return [0.0] * n
+    var = sum((v - mu) ** 2 for v in values) / n
+    sigma = var ** 0.5
+    if sigma < eps:
+        return [0.0] * n
+    return [(v - mu) / (sigma + eps) for v in values]
+
+
 def compute_turn_advantages(
-    rewards: List[List[float]], gamma: float = 0.99, eps: float = 1e-6
+    ig_rewards: List[List[float]],
+    outcome_rewards: List[List[float]],
+    gamma: float = 0.95,
+    eps: float = 1e-6,
 ) -> List[List[float]]:
-    """Per-turn group-normalized advantages from turn-level rewards."""
-    G = len(rewards)
+    """Per-turn advantages with separate z-normalization (matches IGPO paper).
+
+    Following Wang et al. (arXiv:2510.14967), IG rewards and outcome rewards
+    are z-normalized **independently** within the group, then combined.
+    A backward discounted return is computed per-rollout, which is broadcast
+    to all tokens in each turn.
+
+    Args:
+        ig_rewards: Per-rollout, per-turn IG rewards (0 for turns without IG).
+        outcome_rewards: Per-rollout, per-turn environment rewards (typically
+            non-zero only at the last turn).
+        gamma: Discount factor for backward return accumulation.
+        eps: Numerical stability constant.
+
+    Returns:
+        Per-rollout, per-turn discounted advantages.
+    """
+    G = len(ig_rewards)
     if G == 0:
         return []
 
-    returns: List[List[float]] = []
+    max_T = max(len(r) for r in ig_rewards)
+
+    all_ig_flat: List[float] = []
+    all_outcome_flat: List[float] = []
     for i in range(G):
-        T = len(rewards[i])
+        for t in range(len(ig_rewards[i])):
+            all_ig_flat.append(ig_rewards[i][t])
+            out_r = outcome_rewards[i][t] if i < len(outcome_rewards) and t < len(outcome_rewards[i]) else 0.0
+            all_outcome_flat.append(out_r)
+
+    norm_ig = _z_normalize_group(all_ig_flat, eps)
+    norm_outcome = _z_normalize_group(all_outcome_flat, eps)
+
+    idx = 0
+    combined: List[List[float]] = []
+    for i in range(G):
+        T = len(ig_rewards[i])
+        row: List[float] = []
+        for _t in range(T):
+            row.append(norm_ig[idx] + norm_outcome[idx])
+            idx += 1
+        combined.append(row)
+
+    advantages: List[List[float]] = []
+    for i in range(G):
+        T = len(combined[i])
         ret = [0.0] * T
         if T > 0:
-            ret[-1] = rewards[i][-1]
+            ret[-1] = combined[i][-1]
             for t in range(T - 2, -1, -1):
-                ret[t] = rewards[i][t] + gamma * ret[t + 1]
-        returns.append(ret)
+                ret[t] = combined[i][t] + gamma * ret[t + 1]
+        advantages.append(ret)
 
-    max_T = max(len(r) for r in returns)
-    advantages: List[List[float]] = [[] for _ in range(G)]
-    for t in range(max_T):
-        vals = [returns[i][t] for i in range(G) if t < len(returns[i])]
-        mu = sum(vals) / len(vals) if vals else 0.0
-        sigma = (
-            (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5
-            if len(vals) > 1
-            else 1.0
-        )
-        for i in range(G):
-            if t < len(returns[i]):
-                advantages[i].append((returns[i][t] - mu) / (sigma + eps))
     return advantages
 
 
@@ -432,30 +478,39 @@ class IGPOTurnScorer:
 
     def collect_rewards(
         self, row_id: str, step_rewards: List[float]
-    ) -> List[float]:
-        """Collect scoring futures and compute combined IG + env rewards."""
+    ) -> Tuple[List[float], List[float]]:
+        """Collect scoring futures and return separate (ig_rewards, outcome_rewards).
+
+        Returns a 2-tuple so that the caller can pass them independently to
+        :func:`compute_turn_advantages` for separate z-normalization, matching
+        the paper's reward combination strategy.
+        """
+        n_turns = len(step_rewards)
+        outcome = list(step_rewards)
+
         if self.ig_weight == 0.0:
             self._turn_futs.pop(row_id, None)
-            return list(step_rewards)
+            return [0.0] * n_turns, outcome
 
         baseline_logp = self._baselines[row_id].result()
         prev_logp = baseline_logp
-        n_turns = len(self._turn_futs[row_id])
-        combined: List[float] = []
+        ig_list: List[float] = []
         for k, fut in enumerate(self._turn_futs[row_id]):
             score_logp = fut.result()
             ig_k = score_logp - prev_logp
-            env_r = step_rewards[k] if k < len(step_rewards) else 0.0
-            is_last = k == n_turns - 1
-            if is_last and self.skip_ig_last_turn and env_r != 0.0:
-                combined.append(env_r)
+            is_last = k == len(self._turn_futs[row_id]) - 1
+            if is_last and self.skip_ig_last_turn:
+                ig_list.append(0.0)
             else:
-                combined.append(env_r + self.ig_weight * ig_k)
+                ig_list.append(ig_k)
             prev_logp = score_logp
+
+        while len(ig_list) < n_turns:
+            ig_list.append(0.0)
 
         del self._baselines[row_id]
         del self._turn_futs[row_id]
-        return combined
+        return ig_list, outcome
 
     @property
     def pending_rollouts(self) -> int:

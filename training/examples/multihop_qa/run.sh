@@ -7,8 +7,8 @@ set -euo pipefail
 #   pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol datasets
 #   export FIREWORKS_API_KEY=...
 #
-# Step 1: Prepare dataset (downloads HotpotQA from HuggingFace)
-python prepare_data.py --max-rows 500
+# Step 1: Prepare dataset (downloads HotpotQA hard questions from HuggingFace)
+python prepare_data.py --max-rows 2000 --difficulty hard
 #
 # Step 2: Train with IGPO
 #   Replace TRAINING_SHAPE with your training shape ID.
@@ -22,13 +22,13 @@ python "$SCRIPT_DIR/train_multihop_qa_igpo.py" \
     --dataset-path "$SCRIPT_DIR/dataset.jsonl" \
     --training-shape "${TRAINING_SHAPE:?Set TRAINING_SHAPE}" \
     --output-model-id "${OUTPUT_MODEL_ID:?Set OUTPUT_MODEL_ID}" \
-    --max-rows 200 \
+    --max-rows 2000 \
     --max-steps 8 \
     --epochs 3 \
     --completions-per-prompt 4 \
     --prompt-groups-per-step 4 \
     --learning-rate 1e-5 \
-    --gamma 1.0 \
+    --gamma 0.95 \
     --ig-weight 0.1 \
     --scoring-workers 8 \
     --search-top-k 2 \
