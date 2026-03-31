@@ -868,7 +868,10 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     and step % weight_sync_cfg.dcp_save_interval == 0
                 ):
                     with timer("dcp_save"):
-                        weight_syncer.save_dcp(f"step-{step}")
+                        if hasattr(weight_syncer, "save_dcp"):
+                            weight_syncer.save_dcp(f"step-{step}")
+                        else:
+                            logger.debug("save_dcp not available, skipping")
 
                 metrics = compute_step_metrics(
                     prompt_groups=prompt_groups,
