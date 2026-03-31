@@ -517,13 +517,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             deployment_id=deploy_cfg.deployment_id, base_model=cfg.base_model,
             hotload_timeout=weight_sync_cfg.weight_sync_timeout,
             first_checkpoint_type=weight_sync_cfg.first_checkpoint_type,
-            dcp_timeout=weight_sync_cfg.dcp_timeout,
         )
 
         infra_boot_time = time.time() - _infra_start
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
-        from training.utils.checkpoint_utils import resolve_resume
+        from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
         resume_info = resolve_resume(policy, cfg.log_path)
         step_offset = resume_info.step if resume_info else 0
         if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
@@ -759,7 +758,16 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     logger.info("[step %d] dcp_save...", step)
                     t0 = time.time()
                     with timer("dcp_save"):
-                        weight_syncer.save_dcp(f"step-{step}")
+                        save_checkpoint(
+                            policy, f"step-{step}", cfg.log_path,
+                            {
+                                "step": step,
+                                "data_consumed": step - step_offset,
+                                "source_job_id": policy.job_id,
+                            },
+                            kind=CheckpointKind.STATE,
+                            base_model=cfg.base_model,
+                        )
                     logger.info("[step %d] dcp_save: done (%.1fs)", step, time.time() - t0)
 
                 metrics = compute_step_metrics(

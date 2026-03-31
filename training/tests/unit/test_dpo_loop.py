@@ -340,6 +340,12 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def load_state_with_optimizer(self, path):
             pass
 
+        def save_state(self, name, timeout=None):
+            pass
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type=None, timeout=None):
+            return SimpleNamespace(snapshot_name=f"{name}-session")
+
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"tinker://unit/state/{name}"
 
@@ -353,8 +359,9 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def save_and_hotload(self, name):
             events["weight_syncer_saves"].append(name)
 
-        def save_dcp(self, name):
-            events.setdefault("dcp_saves", []).append(name)
+        def hotload(self, snapshot_name, checkpoint_type="base"):
+            events.setdefault("hotload_calls", []).append((snapshot_name, checkpoint_type))
+            return True
 
     def fake_tokenize_pairs(*args, **kwargs):
         events["tokenize_args"] = args
@@ -397,52 +404,55 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
 
-    cfg = module.Config(
-        log_path="/tmp/dpo_test_logs",
-        base_model="accounts/test/models/qwen3-4b",
-        dataset="/tmp/pairs.jsonl",
-        tokenizer_model="Qwen/Qwen3-4B",
-        max_seq_len=None,
-        infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
-        deployment=module.DeployConfig(deployment_id="dep-123"),
-        weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
-    )
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_log_path:
+        cfg = module.Config(
+            log_path=tmp_log_path,
+            base_model="accounts/test/models/qwen3-4b",
+            dataset="/tmp/pairs.jsonl",
+            tokenizer_model="Qwen/Qwen3-4B",
+            max_seq_len=None,
+            infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
+            deployment=module.DeployConfig(deployment_id="dep-123"),
+            weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
+        )
 
-    result = module.main(
-        cfg,
-        rlor_mgr=FakeRlorMgr(),
-        deploy_mgr=FakeDeployMgr(),
-    )
+        result = module.main(
+            cfg,
+            rlor_mgr=FakeRlorMgr(),
+            deploy_mgr=FakeDeployMgr(),
+        )
 
-    assert result == {
-        "steps": 2,
-        "policy_job_id": "policy-job",
-        "reference_job_id": None,
-    }
-    assert cfg.max_seq_len == 96
-    assert len(events["setup_deployment"]) == 1
-    assert [cfg.display_name for cfg in events["created_configs"]] == [
-        "dpo-policy",
-        "dpo-reference",
-    ]
-    assert events["created_configs"][0].hot_load_deployment_id == "dep-123"
-    assert events["created_configs"][1].forward_only is True
-    assert events["train_loop"]["reference_job_id"] == "reference-job"
-    assert events["train_loop"]["policy_job_id"] == "policy-job"
-    assert events["weight_syncer_saves"] == ["final-step-2"]
+        assert result == {
+            "steps": 2,
+            "policy_job_id": "policy-job",
+            "reference_job_id": None,
+        }
+        assert cfg.max_seq_len == 96
+        assert len(events["setup_deployment"]) == 1
+        assert [cfg.display_name for cfg in events["created_configs"]] == [
+            "dpo-policy",
+            "dpo-reference",
+        ]
+        assert events["created_configs"][0].hot_load_deployment_id == "dep-123"
+        assert events["created_configs"][1].forward_only is True
+        assert events["train_loop"]["reference_job_id"] == "reference-job"
+        assert events["train_loop"]["policy_job_id"] == "policy-job"
+        # Final checkpoint now goes through save_checkpoint + hotload
+        assert events["hotload_calls"] == [("step-2-session", "base")]
 
-    ref_del_idx = events["deleted_jobs"].index("reference-job")
-    pol_del_idx = events["deleted_jobs"].index("policy-job")
-    assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
-    assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
-    assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
-    ref_close_idx = events["lifecycle"].index(("close", "reference-job"))
-    ref_delete_idx = events["lifecycle"].index(("delete", "reference-job"))
-    pol_close_idx = events["lifecycle"].index(("close", "policy-job"))
-    pol_delete_idx = events["lifecycle"].index(("delete", "policy-job"))
-    assert ref_close_idx < ref_delete_idx
-    assert pol_close_idx < pol_delete_idx
-    assert events["wandb_finished"] == 1
+        ref_del_idx = events["deleted_jobs"].index("reference-job")
+        pol_del_idx = events["deleted_jobs"].index("policy-job")
+        assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
+        assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
+        assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
+        ref_close_idx = events["lifecycle"].index(("close", "reference-job"))
+        ref_delete_idx = events["lifecycle"].index(("delete", "reference-job"))
+        pol_close_idx = events["lifecycle"].index(("close", "policy-job"))
+        pol_delete_idx = events["lifecycle"].index(("delete", "policy-job"))
+        assert ref_close_idx < ref_delete_idx
+        assert pol_close_idx < pol_delete_idx
+        assert events["wandb_finished"] == 1
 
 
 def test_main_promotes_final_base_checkpoint(monkeypatch):
@@ -452,10 +462,8 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     events: dict[str, object] = {
         "deleted_jobs": [],
         "setup_deployment": [],
-        "save_only_calls": [],
         "hotload_calls": [],
         "save_and_hotload_calls": [],
-        "dcp_saves": [],
         "promotions": [],
         "wandb_finished": 0,
     }
@@ -516,6 +524,12 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         def load_state_with_optimizer(self, path):
             pass
 
+        def save_state(self, name, timeout=None):
+            pass
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type=None, timeout=None):
+            return SimpleNamespace(snapshot_name=f"{name}-session")
+
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"tinker://unit/state/{name}"
 
@@ -527,16 +541,9 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
             events["save_and_hotload_calls"].append((name, checkpoint_type))
             return f"{name}-session"
 
-        def save_only(self, name, checkpoint_type=None):
-            events["save_only_calls"].append((name, checkpoint_type))
-            return f"{name}-session"
-
-        def hotload(self, snapshot_name):
-            events["hotload_calls"].append(snapshot_name)
+        def hotload(self, snapshot_name, checkpoint_type="base"):
+            events["hotload_calls"].append((snapshot_name, checkpoint_type))
             return True
-
-        def save_dcp(self, name):
-            events["dcp_saves"].append(name)
 
     def fake_tokenize_pairs(*args, **kwargs):
         return (
@@ -574,43 +581,44 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    cfg = module.Config(
-        log_path="/tmp/dpo_test_logs",
-        base_model="accounts/test/models/qwen3-4b",
-        dataset="/tmp/pairs.jsonl",
-        tokenizer_model="Qwen/Qwen3-4B",
-        max_seq_len=None,
-        infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1"),
-        deployment=module.DeployConfig(deployment_id="dep-123"),
-        weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
-        output_model_id="promoted-dpo-model",
-    )
 
-    result = module.main(
-        cfg,
-        rlor_mgr=FakeRlorMgr(),
-        deploy_mgr=FakeDeployMgr(),
-    )
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_log_path:
+        cfg = module.Config(
+            log_path=tmp_log_path,
+            base_model="accounts/test/models/qwen3-4b",
+            dataset="/tmp/pairs.jsonl",
+            tokenizer_model="Qwen/Qwen3-4B",
+            max_seq_len=None,
+            infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1"),
+            deployment=module.DeployConfig(deployment_id="dep-123"),
+            weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
+            output_model_id="promoted-dpo-model",
+        )
 
-    assert result == {
-        "steps": 2,
-        "policy_job_id": "policy-job",
-        "reference_job_id": None,
-    }
-    assert events["save_only_calls"] == [("final-step-2", "base")]
-    assert events["hotload_calls"] == ["final-step-2-session"]
-    assert events["save_and_hotload_calls"] == []
-    assert events["dcp_saves"] == ["step-2"]
-    assert events["promotions"] == [
-        ("policy-job", "final-step-2-session", "promoted-dpo-model"),
-    ]
+        result = module.main(
+            cfg,
+            rlor_mgr=FakeRlorMgr(),
+            deploy_mgr=FakeDeployMgr(),
+        )
 
-    ref_del_idx = events["deleted_jobs"].index("reference-job")
-    pol_del_idx = events["deleted_jobs"].index("policy-job")
-    assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
-    assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
-    assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
-    assert events["wandb_finished"] == 1
+        assert result == {
+            "steps": 2,
+            "policy_job_id": "policy-job",
+            "reference_job_id": None,
+        }
+        assert events["hotload_calls"] == [("step-2-session", "base")]
+        assert events["save_and_hotload_calls"] == []
+        assert events["promotions"] == [
+            ("policy-job", "step-2-session", "promoted-dpo-model"),
+        ]
+
+        ref_del_idx = events["deleted_jobs"].index("reference-job")
+        pol_del_idx = events["deleted_jobs"].index("policy-job")
+        assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
+        assert events["deleted_jobs"].count("reference-job") == 1, "reference deleted exactly once"
+        assert events["deleted_jobs"].count("policy-job") == 1, "policy deleted exactly once"
+        assert events["wandb_finished"] == 1
 
 
 def test_train_loop_pipeline_and_weight_sync(monkeypatch):
@@ -619,7 +627,6 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
         "flush_batches": [],
         "optim_steps": 0,
         "weight_syncs": [],
-        "dcp_saves": [],
         "metrics_logs": [],
         "wandb_logs": [],
         "ref_done_called": False,
@@ -639,9 +646,17 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
     monkeypatch.setattr(module, "wandb_log", lambda payload, step: events["wandb_logs"].append((step, payload)))
 
     class FakePolicy:
+        job_id = "fake-policy-job"
+
         def optim_step(self, _params, **kwargs):
             events["optim_steps"] += 1
             return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
+
+        def save_state(self, name, timeout=None):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"tinker://unit/state/{name}"
 
     class FakeReference:
         def forward(self, datums, loss_fn):
@@ -657,53 +672,59 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
         def save_and_hotload(self, name):
             events["weight_syncs"].append(name)
 
-        def save_dcp(self, name):
-            events["dcp_saves"].append(name)
-
     tokenized_pairs = [
         (0, {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"},
              "chosen_tokens": [1, 2, 3], "rejected_tokens": [1, 2, 4], "response_start": 3}),
         (1, {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"},
              "chosen_tokens": [5, 6], "rejected_tokens": [5, 7], "response_start": 4}),
     ]
-    cfg = module.Config(
-        log_path="/tmp/dpo_test_logs",
-        beta=0.2,
-        epochs=1,
-        batch_size=2,
-        weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1),
-    )
-
-    def _on_ref_done():
-        events["ref_done_called"] = True
-
-    step = asyncio.run(
-        module._train_loop(
-            tokenized_pairs,
-            FakeReference(),
-            FakePolicy(),
-            adam_params={"lr": 1e-4},
-            weight_syncer=FakeWeightSyncer(),
-            cfg=cfg,
-            step_offset=0,
-            on_ref_done=_on_ref_done,
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_log_path:
+        cfg = module.Config(
+            log_path=tmp_log_path,
+            beta=0.2,
+            epochs=1,
+            batch_size=2,
+            weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1),
         )
-    )
 
-    assert step == 1
-    assert events["ref_done_called"]
-    assert len(events["flush_batches"]) == 1
-    assert events["flush_batches"][0][1] == 0.2
-    trained_pairs = events["flush_batches"][0][0]
-    assert len(trained_pairs) == 2
-    assert "ref_chosen" in trained_pairs[0]
-    assert "ref_rejected" in trained_pairs[0]
-    assert events["optim_steps"] == 1
-    assert events["weight_syncs"] == ["step-1"]
-    assert events["dcp_saves"] == ["step-1"]
-    assert events["metrics_logs"][0][0] == 1
-    assert events["metrics_logs"][0][1]["dpo_loss"] == 1.5
-    assert len(events["wandb_logs"]) == 1
+        def _on_ref_done():
+            events["ref_done_called"] = True
+
+        step = asyncio.run(
+            module._train_loop(
+                tokenized_pairs,
+                FakeReference(),
+                FakePolicy(),
+                adam_params={"lr": 1e-4},
+                weight_syncer=FakeWeightSyncer(),
+                cfg=cfg,
+                step_offset=0,
+                on_ref_done=_on_ref_done,
+            )
+        )
+
+        assert step == 1
+        assert events["ref_done_called"]
+        assert len(events["flush_batches"]) == 1
+        assert events["flush_batches"][0][1] == 0.2
+        trained_pairs = events["flush_batches"][0][0]
+        assert len(trained_pairs) == 2
+        assert "ref_chosen" in trained_pairs[0]
+        assert "ref_rejected" in trained_pairs[0]
+        assert events["optim_steps"] == 1
+        assert events["weight_syncs"] == ["step-1"]
+        # DCP save now goes through save_checkpoint -> checkpoints.jsonl
+        import json, os
+        cp_file = os.path.join(tmp_log_path, "checkpoints.jsonl")
+        assert os.path.exists(cp_file)
+        with open(cp_file) as f:
+            cp = json.loads(f.readline())
+        assert cp["name"] == "step-1"
+        assert cp["step"] == 1
+        assert events["metrics_logs"][0][0] == 1
+        assert events["metrics_logs"][0][1]["dpo_loss"] == 1.5
+        assert len(events["wandb_logs"]) == 1
 
 
 def test_pipeline_overlap_ref_freed_before_training_done():
@@ -761,7 +782,6 @@ def test_pipeline_overlap_ref_freed_before_training_done():
 
         class FakeWS:
             def save_and_hotload(self, name): pass
-            def save_dcp(self, name): pass
 
         t0 = time.monotonic()
         step = asyncio.run(
