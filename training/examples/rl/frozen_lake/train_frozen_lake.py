@@ -922,6 +922,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                             policy_job_id,
                             paths["sampler_path"],
                             cfg.output_model_id,
+                            cfg.base_model,
                         )
                 except Exception as e:
                     logger.warning("Failed to save final checkpoint: %s", e)

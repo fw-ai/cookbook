@@ -5,7 +5,8 @@
 Reads ``checkpoints.jsonl`` (produced by cookbook recipes), finds the
 sampler checkpoint ID and source trainer job, and calls the promotion
 API.  No temporary trainer is needed — promotion is a lightweight
-metadata + file-copy operation.
+metadata + file-copy operation that works even after the trainer job
+has been deleted.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -24,6 +25,11 @@ Usage:
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
         --model accounts/fireworks/models/qwen3-8b \
         --output-model-id my-fine-tuned-qwen3-8b
+
+    # Legacy: checkpoint stored under a deployment-keyed bucket:
+    python promote_checkpoint.py \
+        --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
+        --hot-load-deployment-id my-deployment
 """
 
 from __future__ import annotations
@@ -63,6 +69,7 @@ class PromoteConfig:
     step: int | None
     base_model: str | None
     output_model_id: str | None
+    hot_load_deployment_id: str | None
 
 
 @dataclass(frozen=True)
@@ -101,12 +108,21 @@ def parse_args() -> PromoteConfig:
         default=None,
         help="Promoted model ID. Defaults to an auto-generated value.",
     )
+    parser.add_argument(
+        "--hot-load-deployment-id",
+        default=None,
+        help=(
+            "Deployment ID for legacy checkpoints stored under a "
+            "deployment-keyed bucket. Omit for trainer-owned buckets."
+        ),
+    )
     args = parser.parse_args()
     return PromoteConfig(
         checkpoints_jsonl=args.checkpoints_jsonl,
         step=args.step,
         base_model=args.model,
         output_model_id=args.output_model_id,
+        hot_load_deployment_id=args.hot_load_deployment_id,
     )
 
 
@@ -198,11 +214,15 @@ def main() -> None:
     logger.info("Source job:      %s", resolved.source_job_id)
     logger.info("Base model:      %s", base_model)
     logger.info("Output model ID: %s", output_model_id)
+    if cfg.hot_load_deployment_id:
+        logger.info("Deployment ID:   %s (legacy bucket)", cfg.hot_load_deployment_id)
 
     model = client.promote_checkpoint(
         resolved.source_job_id,
         resolved.sampler_path,
         output_model_id,
+        base_model,
+        hot_load_deployment_id=cfg.hot_load_deployment_id,
     )
 
     logger.info(

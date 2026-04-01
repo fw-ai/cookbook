@@ -963,6 +963,7 @@ def main(
                         policy_job_id,
                         paths["sampler_path"],
                         cfg.output_model_id,
+                        cfg.base_model,
                     )
                     runner.write_output_model(
                         model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
