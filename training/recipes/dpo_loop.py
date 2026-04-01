@@ -107,6 +107,8 @@ class Config:
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=lambda: WeightSyncConfig(weight_sync_interval=0))
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
+    policy_job_id: str | None = None
+    reference_job_id: str | None = None
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
@@ -549,6 +551,7 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-policy",
+                job_id=cfg.policy_job_id,
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
@@ -563,6 +566,7 @@ def main(
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-reference",
                 forward_only=True,
+                job_id=cfg.reference_job_id,
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
