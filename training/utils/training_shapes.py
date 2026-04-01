@@ -9,7 +9,8 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlencode
 
 from fireworks.training.sdk.deployment import DeploymentManager
-from fireworks.training.sdk.trainer import TrainerJobManager, TrainingShapeProfile
+from fireworks.training.sdk.trainer import TrainerJobManager
+from fireworks.training.sdk.fireworks_client import TrainingShapeProfile
 
 from training.utils.config import InfraConfig
 

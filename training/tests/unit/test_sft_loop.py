@@ -130,6 +130,9 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
         def delete(self, job_id):
             events["deleted_jobs"].append(job_id)
 
+        def cancel(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
     class FakeClient:
         job_id = "job-sft"
 
@@ -191,10 +194,13 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
         lambda *args, **kwargs: SimpleNamespace(
             token_ids=[1, 2, 3],
             datum=SimpleNamespace(
+                model_input=SimpleNamespace(
+                    chunks=[SimpleNamespace(tokens=[1, 2, 3])],
+                ),
                 loss_fn_inputs={
                     "target_tokens": SimpleNamespace(data=[2, 3]),
                     "weights": SimpleNamespace(data=[1.0, 1.0]),
-                }
+                },
             ),
         ),
     )
