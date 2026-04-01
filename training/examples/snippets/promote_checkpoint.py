@@ -8,14 +8,29 @@ API.  No temporary trainer is needed — promotion is a lightweight
 metadata + file-copy operation that works even after the trainer job
 has been deleted.
 
+Checkpoint storage paths
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The server reconstructs the GCS path from the account's storage bucket
+and either the trainer job ID or the deployment ID:
+
+- **Trainer-first jobs** (default, post cookbook#273): checkpoints are
+  stored under ``gs://{bucket}/rl-checkpoints/{account}/trainer-{jobId}/``.
+  The ``source_job_id`` from ``checkpoints.jsonl`` is all that's needed.
+
+- **Deployment-first jobs** (legacy): checkpoints are stored under
+  ``gs://{bucket}/rl-checkpoints/{account}/{deploymentId}/``.
+  Pass ``--hot-load-deployment-id`` to tell the server which deployment
+  bucket to look in. Without it the server assumes the trainer-keyed path.
+
 Usage:
     export FIREWORKS_API_KEY=...
 
-    # Promote the latest checkpoint (auto-detects model from metadata):
+    # Trainer-first: promote the latest checkpoint:
     python promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl
 
-    # Promote a specific step:
+    # Trainer-first: promote a specific step:
     python promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
         --step 10
@@ -26,7 +41,7 @@ Usage:
         --model accounts/fireworks/models/qwen3-8b \
         --output-model-id my-fine-tuned-qwen3-8b
 
-    # Legacy: checkpoint stored under a deployment-keyed bucket:
+    # Deployment-first (legacy): specify which deployment bucket:
     python promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
         --hot-load-deployment-id my-deployment
