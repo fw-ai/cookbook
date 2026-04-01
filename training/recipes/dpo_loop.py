@@ -55,7 +55,6 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     make_batch_dpo_loss_fn,
-    setup_deployment,
     create_trainer_job,
     load_preference_dataset,
     build_renderer,
@@ -589,11 +588,6 @@ def main(
 
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id
-
-        # -- Create deployment referencing the trainer's hot-load bucket -------
-        if cfg.deployment.deployment_id:
-            cfg.deployment.hot_load_trainer_job = policy_ep.job_name
-            setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
         reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
