@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from fireworks.training.sdk.client import GradAccNormalization
 import pytest
 
@@ -20,10 +22,28 @@ class _FakeInnerClient:
         self.calls = []
         self.future = _FakeFuture()
         self.holder = None
+        self.sampler_calls = []
 
     def optim_step(self, params, **kwargs):
         self.calls.append((params, kwargs))
         return self.future
+
+    def save_weights_for_sampler_ext(self, name, checkpoint_type=None):
+        self.sampler_calls.append((name, checkpoint_type))
+        return {"name": name, "checkpoint_type": checkpoint_type}
+
+
+class _BlockingSamplerInner(_FakeInnerClient):
+    def __init__(self):
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def save_weights_for_sampler_ext(self, name, checkpoint_type=None):
+        self.sampler_calls.append((name, checkpoint_type))
+        self.started.set()
+        self.release.wait()
+        return {"name": name, "checkpoint_type": checkpoint_type}
 
 
 def _make_client(inner: _FakeInnerClient) -> ReconnectableClient:
@@ -120,6 +140,35 @@ def test_optim_step_rejects_unknown_normalization():
 
     with pytest.raises(ValueError, match="Unknown grad_accumulation_normalization"):
         client.optim_step("adam", grad_accumulation_normalization="not-a-real-mode")
+
+
+def test_save_weights_for_sampler_ext_returns_inner_result():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    result = client.save_weights_for_sampler_ext(
+        "step-2",
+        checkpoint_type="base",
+        timeout=5,
+    )
+
+    assert result == {"name": "step-2", "checkpoint_type": "base"}
+    assert inner.sampler_calls == [("step-2", "base")]
+
+
+def test_save_weights_for_sampler_ext_honors_timeout():
+    inner = _BlockingSamplerInner()
+    client = _make_client(inner)
+
+    with pytest.raises(TimeoutError, match="did not complete within 0.01s"):
+        client.save_weights_for_sampler_ext(
+            "step-3",
+            checkpoint_type="base",
+            timeout=0.01,
+        )
+
+    assert inner.started.wait(0.2)
+    inner.release.set()
 
 
 def test_close_drains_telemetry_and_stops_holder_cleanup():
