@@ -315,7 +315,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def delete(self, job_id):
             self.cancel(job_id)
 
-        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id):
+        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id, base_model=None, **kwargs):
             events["promotions"].append((job_id, checkpoint_id, output_model_id))
 
     class FakeDeployMgr:
