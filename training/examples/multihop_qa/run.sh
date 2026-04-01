@@ -29,7 +29,7 @@ python "$SCRIPT_DIR/train_multihop_qa_igpo.py" \
     --prompt-groups-per-step 4 \
     --learning-rate 1e-5 \
     --gamma 0.95 \
-    --ig-weight 0.1 \
+    --ig-weight 1.0 \
     --scoring-workers 8 \
     --search-top-k 2 \
     --temperature 1.0 \

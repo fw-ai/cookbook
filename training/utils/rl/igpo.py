@@ -408,7 +408,7 @@ class IGPOTurnScorer:
         self,
         answer_tokens: List[int],
         executor: ThreadPoolExecutor,
-        ig_weight: float = 0.1,
+        ig_weight: float = 1.0,
         skip_ig_last_turn: bool = False,
         inference_url: str = "",
         model_id: str = "",
@@ -416,13 +416,6 @@ class IGPOTurnScorer:
         tokenizer: Any = None,
         policy_client: Any = None,
     ):
-        if ig_weight >= 0.5 and ig_weight != 0.0:
-            logger.warning(
-                "ig_weight=%.2f is high — IG rewards are log-probability "
-                "differences that can easily dominate the environment reward "
-                "and destabilize training. Recommended range: 0.01–0.2.",
-                ig_weight,
-            )
         self.answer_tokens = answer_tokens
         self.executor = executor
         self.ig_weight = ig_weight
