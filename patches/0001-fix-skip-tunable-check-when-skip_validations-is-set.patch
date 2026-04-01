@@ -1,0 +1,161 @@
+From 4b3badf11d4b4833d0f0682805099324b5e0f6a1 Mon Sep 17 00:00:00 2001
+From: Cursor Bot <cursor-bot@fireworks.ai>
+Date: Wed, 1 Apr 2026 16:04:07 +0000
+Subject: [PATCH] fix: skip tunable check when skip_validations is set for RLOR
+ trainer jobs
+
+The tunable check in CreateRlorTrainerJob runs unconditionally,
+blocking shape validation for models not yet marked as tunable.
+This creates a chicken-and-egg problem: you need to validate the
+shape before marking a model tunable, but you can't create the
+validation job because the model isn't tunable yet.
+
+Wrap the tunable check inside the existing SkipValidations guard
+so superusers can bypass it during shape creation. The NodeCount
+auto-inference logic below remains unconditional.
+---
+ .../pkg/gateway_server/rlor_trainer_job.go    | 18 ++--
+ .../gateway_server/rlor_trainer_job_test.go   | 98 +++++++++++++++++++
+ 2 files changed, 109 insertions(+), 7 deletions(-)
+
+diff --git a/control_plane/pkg/gateway_server/rlor_trainer_job.go b/control_plane/pkg/gateway_server/rlor_trainer_job.go
+index cfd9452..220b8d8 100644
+--- a/control_plane/pkg/gateway_server/rlor_trainer_job.go
++++ b/control_plane/pkg/gateway_server/rlor_trainer_job.go
+@@ -306,13 +306,17 @@ func (s *Server) CreateRlorTrainerJob(ctx context.Context, r *gpb.CreateRlorTrai
+ 	}
+ 
+ 	if baseModelName != "" {
+-		tunable, errMsg, err := s.GetRlorTrainerTunable(ctx, r.RlorTrainerJob)
+-		if err != nil {
+-			logger.Error().Err(err).Msg("error getting tunable field")
+-		}
+-		if !tunable && errMsg != "" {
+-			logger.Warn().Str("error_message", errMsg).Msg("model is not tunable")
+-			return nil, fwerror.New(gpb.Code_INVALID_ARGUMENT, "model is not tunable: %s", errMsg)
++		if !r.SkipValidations {
++			tunable, errMsg, err := s.GetRlorTrainerTunable(ctx, r.RlorTrainerJob)
++			if err != nil {
++				logger.Error().Err(err).Msg("error getting tunable field")
++			}
++			if !tunable && errMsg != "" {
++				logger.Warn().Str("error_message", errMsg).Msg("model is not tunable")
++				return nil, fwerror.New(gpb.Code_INVALID_ARGUMENT, "model is not tunable: %s", errMsg)
++			}
++		} else {
++			logger.Info().Str("base_model", baseModelName).Msg("Skipping tunable check due to skip_validations")
+ 		}
+ 
+ 		// Auto-infer NodeCount based on model type and size if not specified by user.
+diff --git a/control_plane/pkg/gateway_server/rlor_trainer_job_test.go b/control_plane/pkg/gateway_server/rlor_trainer_job_test.go
+index 1ceddbe..b3f87e8 100644
+--- a/control_plane/pkg/gateway_server/rlor_trainer_job_test.go
++++ b/control_plane/pkg/gateway_server/rlor_trainer_job_test.go
+@@ -1919,6 +1919,104 @@ func TestCreateRlorTrainerJob_ServiceModeTupleGate_SkipValidationsBypassesGate(t
+ 	assert.Equal(t, gpb.JobState_JOB_STATE_PENDING, result.State)
+ }
+ 
++func TestCreateRlorTrainerJob_SkipValidationsBypassesTunableCheck(t *testing.T) {
++	s := newTestServer(t, WithCustomGCSMock())
++	superCtx := withSuperuser(context.Background())
++
++	require.NoError(t, s.DB(superCtx).Create(&database.FeatureFlag{
++		FeatureFlagName: *resourcename.NewFeatureFlagName("my-account", string(constants.AllowFullParameterFineTuning)),
++		Value:           "true",
++	}).Error)
++
++	baseModelID := fmt.Sprintf("non-tunable-bypass-%d", time.Now().UnixNano())
++	baseModelName := resourcename.NewModelName("my-account", baseModelID).String()
++	require.NoError(t, s.DB(superCtx).Create(&database.Model{
++		ModelName: resourcename.ModelName{AccountId: "my-account", ModelId: baseModelID},
++		Kind:      gpb.Model_HF_BASE_MODEL,
++		BaseModelDetails: &database.BaseModelDetails{
++			ParameterCount: 7000000000,
++			ModelType:      "llama",
++		},
++		State:   gpb.Model_READY,
++		Tunable: false,
++	}).Error)
++
++	gcsClient := s.gcsClient.(*gcp.MockGCSClient)
++	baseConfigData, _ := json.Marshal(map[string]interface{}{"model_type": "llama"})
++	gcsClient.On("ReadGcsFile", mock.Anything, mock.Anything).Return(baseConfigData, nil).Maybe()
++
++	dwClient := s.dwClient.(*dwclient.MockDeploymentWatcherClient)
++	dwClient.EXPECT().ReconcileRlorTrainerJob(gomock.Any(), gomock.Any()).Return(&emptypb.Empty{}, nil).Times(1)
++
++	req := &gpb.CreateRlorTrainerJobRequest{
++		Parent:           "accounts/my-account",
++		RlorTrainerJobId: fmt.Sprintf("non-tunable-bypass-job-%d", time.Now().UnixNano()),
++		SkipValidations:  true,
++		RlorTrainerJob: &gpb.RlorTrainerJob{
++			ServiceMode: true,
++			TrainingConfig: &gpb.BaseTrainingConfig{
++				BaseModel:        baseModelName,
++				LearningRate:     0.01,
++				LoraRank:         256,
++				Epochs:           1,
++				MaxContextLength: 32768,
++			},
++		},
++	}
++
++	result, err := s.CreateRlorTrainerJob(superCtx, req)
++	require.NoError(t, err, "SkipValidations should bypass the tunable check for non-tunable models")
++	require.NotNil(t, result)
++	assert.Equal(t, gpb.JobState_JOB_STATE_PENDING, result.State)
++}
++
++func TestCreateRlorTrainerJob_NonTunableModelBlockedWithoutSkipValidations(t *testing.T) {
++	s := newTestServer(t, WithCustomGCSMock())
++	superCtx := withSuperuser(context.Background())
++
++	require.NoError(t, s.DB(superCtx).Create(&database.FeatureFlag{
++		FeatureFlagName: *resourcename.NewFeatureFlagName("my-account", string(constants.AllowFullParameterFineTuning)),
++		Value:           "true",
++	}).Error)
++
++	baseModelID := fmt.Sprintf("non-tunable-blocked-%d", time.Now().UnixNano())
++	baseModelName := resourcename.NewModelName("my-account", baseModelID).String()
++	require.NoError(t, s.DB(superCtx).Create(&database.Model{
++		ModelName: resourcename.ModelName{AccountId: "my-account", ModelId: baseModelID},
++		Kind:      gpb.Model_HF_BASE_MODEL,
++		BaseModelDetails: &database.BaseModelDetails{
++			ParameterCount: 7000000000,
++			ModelType:      "llama",
++		},
++		State:   gpb.Model_READY,
++		Tunable: false,
++	}).Error)
++
++	gcsClient := s.gcsClient.(*gcp.MockGCSClient)
++	baseConfigData, _ := json.Marshal(map[string]interface{}{"model_type": "llama"})
++	gcsClient.On("ReadGcsFile", mock.Anything, mock.Anything).Return(baseConfigData, nil).Maybe()
++
++	req := &gpb.CreateRlorTrainerJobRequest{
++		Parent:           "accounts/my-account",
++		RlorTrainerJobId: fmt.Sprintf("non-tunable-blocked-job-%d", time.Now().UnixNano()),
++		SkipValidations:  false,
++		RlorTrainerJob: &gpb.RlorTrainerJob{
++			ServiceMode: true,
++			TrainingConfig: &gpb.BaseTrainingConfig{
++				BaseModel:        baseModelName,
++				LearningRate:     0.01,
++				LoraRank:         256,
++				Epochs:           1,
++				MaxContextLength: 32768,
++			},
++		},
++	}
++
++	_, err := s.CreateRlorTrainerJob(superCtx, req)
++	require.Error(t, err, "Non-tunable model should be rejected without SkipValidations")
++	assert.Contains(t, err.Error(), "model is not tunable")
++}
++
+ func TestCreateRlorTrainerJob_ServiceModeTupleGate_AutofillsTrainerTagFromValidatedTuple(t *testing.T) {
+ 	s := newTestServer(t)
+ 	superCtx := withSuperuser(context.Background())
+-- 
+2.43.0
+
