@@ -7,8 +7,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-from training.examples.frozen_lake.frozen_lake_schema import FROZEN_LAKE_ACTIONS
-from training.examples.frozen_lake.rendering import render_frozen_lake_png_data_url
+from training.examples.rl.frozen_lake.frozen_lake_schema import FROZEN_LAKE_ACTIONS
+from training.examples.rl.frozen_lake.rendering import render_frozen_lake_png_data_url
 
 ActionToDelta = {
     "LEFT": (0, -1),

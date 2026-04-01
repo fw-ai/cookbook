@@ -46,7 +46,7 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          pytest -q tests/unit tests/test_smoke_imports.py examples/frozen_lake/test_masking.py \
+          pytest -q tests/unit tests/test_smoke_imports.py examples/rl/frozen_lake/test_masking.py \
             --cov=. \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \

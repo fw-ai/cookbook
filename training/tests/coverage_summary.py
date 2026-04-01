@@ -11,10 +11,10 @@ SCRIPT_TARGETS = [
     "training/recipes/dpo_loop.py",
     "training/recipes/orpo_loop.py",
     "training/recipes/rl_loop.py",
-    "training/examples/frozen_lake/train_frozen_lake.py",
-    "training/examples/deepmath_rl/train_deepmath.py",
-    "training/examples/sft_getting_started/train_sft.py",
-    "training/examples/deepmath_rl/prepare_data.py",
+    "training/examples/rl/frozen_lake/train_frozen_lake.py",
+    "training/examples/rl/deepmath/train_deepmath.py",
+    "training/examples/sft/train_sft.py",
+    "training/examples/rl/deepmath/prepare_data.py",
 ]
 
 

@@ -29,7 +29,7 @@ import logging
 import httpx
 import pytest
 
-from training.examples.frozen_lake.train_frozen_lake import (
+from training.examples.rl.frozen_lake.train_frozen_lake import (
     FrozenLakeConfig,
     main as frozen_lake_main,
 )

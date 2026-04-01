@@ -8,13 +8,13 @@ from eval_protocol.models import EvaluationRow, InputMetadata, Message
 import httpx
 import pytest
 
-import training.examples.frozen_lake.train_frozen_lake as train_module
-from training.examples.frozen_lake.masking import (
+import training.examples.rl.frozen_lake.train_frozen_lake as train_module
+from training.examples.rl.frozen_lake.masking import (
     build_training_loss_mask,
     build_ui_token_mask,
     compute_model_output_spans,
 )
-from training.examples.frozen_lake.train_frozen_lake import (
+from training.examples.rl.frozen_lake.train_frozen_lake import (
     FrozenLakeConfig,
     evaluation_row_to_training_data,
     load_seed_contexts,

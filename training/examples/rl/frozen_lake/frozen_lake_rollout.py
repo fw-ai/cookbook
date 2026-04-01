@@ -28,11 +28,11 @@ from eval_protocol.models import EvaluationRow, Message
 from eval_protocol.pytest.rollout_processor import RolloutProcessor
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
-from training.examples.frozen_lake.frozen_lake_env import (
+from training.examples.rl.frozen_lake.frozen_lake_env import (
     build_frozen_lake_tool_env,
     build_frozen_lake_user_prompt,
 )
-from training.examples.frozen_lake.frozen_lake_schema import (
+from training.examples.rl.frozen_lake.frozen_lake_schema import (
     FROZEN_LAKE_ACTIONS,
     FROZEN_LAKE_TOOLS,
     TOOL_NAME_LAKE_MOVE,

@@ -4,8 +4,8 @@ import json
 
 from eval_protocol.models import EvaluationRow, InputMetadata, Message
 
-from training.examples.frozen_lake.frozen_lake_schema import FROZEN_LAKE_TOOLS
-from training.examples.frozen_lake.verify_rollout import build_debug_report_html, enrich_rows
+from training.examples.rl.frozen_lake.frozen_lake_schema import FROZEN_LAKE_TOOLS
+from training.examples.rl.frozen_lake.verify_rollout import build_debug_report_html, enrich_rows
 
 
 def _build_visual_row(*, row_id: str, image_counts: list[int]) -> EvaluationRow:

@@ -5,7 +5,7 @@ import json
 
 
 def test_prepare_data_writes_expected_jsonl(tmp_path, monkeypatch):
-    import training.examples.deepmath_rl.prepare_data as module
+    import training.examples.rl.deepmath.prepare_data as module
 
     module = importlib.reload(module)
     output_path = tmp_path / "dataset.jsonl"

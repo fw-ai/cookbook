@@ -97,7 +97,8 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 
 ## Useful examples
 
-- `examples/promote_checkpoint/train_promote_checkpoint.py` spins up a fresh trainer, loads a DCP checkpoint from the saved `state_path` in `checkpoints.jsonl`, optionally selects a specific training step, saves a promotable sampler checkpoint, and promotes it to a model.
+- `examples/snippets/promote_checkpoint.py` reads `checkpoints.jsonl` (produced by cookbook recipes), finds the sampler checkpoint ID and source trainer job, and calls the promotion API to promote it to a deployable Fireworks model. No temporary trainer needed.
+- `examples/snippets/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
 
 ## Documentation
 
@@ -110,10 +111,15 @@ For detailed guides, configuration reference, and examples, see the official doc
 ## Directory layout
 
 ```
-recipes/            Training loop scripts (fork these)
-utils/              Shared config, data loading, loss functions, metrics
-examples/deepmath/  Worked example: math reasoning with GRPO
-tests/              Unit and end-to-end tests
+recipes/                 Training loop scripts (fork these)
+utils/                   Shared config, data loading, loss functions, metrics
+examples/rl/deepmath/    Worked example: math reasoning with GRPO
+examples/rl/frozen_lake/ Worked example: Frozen Lake with tool-use RL
+examples/orpo/ifeval/    Worked example: IFEval with ORPO
+examples/sft/            Worked example: SFT getting started
+examples/dpo/            Worked example: DPO
+examples/snippets/       Standalone utility scripts
+tests/                   Unit and end-to-end tests
 ```
 
 ## Tests
@@ -127,7 +133,7 @@ Coverage for the training entrypoints:
 
 ```bash
 cd training
-pytest -q tests/unit tests/test_smoke_imports.py examples/frozen_lake/test_masking.py \
+pytest -q tests/unit tests/test_smoke_imports.py examples/rl/frozen_lake/test_masking.py \
   --cov=. \
   --cov-report=term-missing \
   --cov-report=json:coverage.json

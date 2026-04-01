@@ -70,19 +70,19 @@ def test_util_imports(module: str):
 
 EXAMPLE_MODULES_WITH_ENV = [
     (
-        "training.examples.deepmath_rl.train_deepmath",
+        "training.examples.rl.deepmath.train_deepmath",
         "math_verify",
         {"FIREWORKS_API_KEY": "test"},
     ),
     (
-        "training.examples.sft_getting_started.train_sft",
+        "training.examples.sft.train_sft",
         "fireworks",
         {"FIREWORKS_API_KEY": "test"},
     ),
 ]
 
 EXAMPLE_MODULES = [
-    "training.examples.deepmath_rl.prepare_data",
+    "training.examples.rl.deepmath.prepare_data",
     "training.examples.snippets.promote_checkpoint",
 ]
 

@@ -7,13 +7,13 @@ import pytest
 from eval_protocol.models import EvaluationRow, InputMetadata
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
-from training.examples.frozen_lake.frozen_lake_rollout import (
+from training.examples.rl.frozen_lake.frozen_lake_rollout import (
     FireworksV1ImageCompletionsClient,
     FrozenLakeToolRolloutProcessor,
     _build_visual_user_prompt,
     build_frozen_lake_tool_call_parser,
 )
-from training.examples.frozen_lake.frozen_lake_schema import FROZEN_LAKE_TOOLS
+from training.examples.rl.frozen_lake.frozen_lake_schema import FROZEN_LAKE_TOOLS
 
 
 class _FakeImageClient:
@@ -215,7 +215,7 @@ async def test_visual_rollout_preserves_prior_completion_tokens(monkeypatch):
     _FakeImageClient.requested_image_counts = []
     _FakeImageClient.requested_prompt_texts = []
     monkeypatch.setattr(
-        "training.examples.frozen_lake.frozen_lake_rollout.FireworksV1ImageCompletionsClient",
+        "training.examples.rl.frozen_lake.frozen_lake_rollout.FireworksV1ImageCompletionsClient",
         _FakeImageClient,
     )
 
@@ -283,7 +283,7 @@ async def test_visual_rollout_preserves_prior_completion_tokens(monkeypatch):
 async def test_kimi_visual_rollout_keeps_raw_prompt_only_generation(monkeypatch):
     _CapturingImageClient.init_kwargs = []
     monkeypatch.setattr(
-        "training.examples.frozen_lake.frozen_lake_rollout.FireworksV1ImageCompletionsClient",
+        "training.examples.rl.frozen_lake.frozen_lake_rollout.FireworksV1ImageCompletionsClient",
         _CapturingImageClient,
     )
 
