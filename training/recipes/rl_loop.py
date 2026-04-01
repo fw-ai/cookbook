@@ -174,6 +174,7 @@ class Config:
     format ``"job_id:checkpoint_name"``."""
 
     output_model_id: str | None = None
+    save_final_checkpoint: bool = True
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -849,7 +850,7 @@ def main(
 
         # -- Final checkpoint ----------------------------------------------------
 
-        if global_step > step_offset:
+        if cfg.save_final_checkpoint and global_step > step_offset:
             try:
                 _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
                     global_step - step_offset

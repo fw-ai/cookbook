@@ -86,6 +86,7 @@ class Config:
     max_examples: int | None = None
     lora_rank: int = 0
     output_model_id: str | None = None
+    save_final_checkpoint: bool = True
 
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
 
@@ -365,7 +366,7 @@ def main(
         # -- Final checkpoint --------------------------------------------------
 
         start_step = resume_info.step if resume_info else 0
-        if step > start_step:
+        if cfg.save_final_checkpoint and step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
             paths = save_checkpoint(client, cp_name, cfg.log_path, {

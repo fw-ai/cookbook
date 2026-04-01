@@ -106,6 +106,7 @@ class Config:
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
+    save_final_checkpoint: bool = True
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     """Optional orchestration outputs written during training.
 
@@ -595,7 +596,7 @@ def main(
         # -- Final checkpoint --------------------------------------------------
 
         hl = cfg.weight_sync
-        if step > step_offset:
+        if cfg.save_final_checkpoint and step > step_offset:
             cp_name = f"step-{step}"
             paths = save_checkpoint(
                 policy, cp_name, cfg.log_path,
