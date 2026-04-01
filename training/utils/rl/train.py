@@ -266,7 +266,7 @@ async def run_rl_loop(
     else:
         window_size = len(coros)
 
-    # Track cumulative stats for end-of-run summary (FIR2-1209).
+    # Track cumulative stats for end-of-run summary.
     _total_prompts = len(coros)
     _cumulative_filter_drops = 0
     _cumulative_sample_fails = 0
@@ -298,9 +298,7 @@ async def run_rl_loop(
         if weight_sync_fn is not None and weight_sync_interval > 0 and global_step > step_before:
             await asyncio.to_thread(weight_sync_fn, global_step)
 
-    # -- End-of-run summary (FIR2-1209) ----------------------------------------
-    start_step = global_step - (global_step - 0)  # placeholder, use initial step
-    total_steps = global_step
+    # -- End-of-run summary ----------------------------------------------------
     rejected = _cumulative_filter_drops + _cumulative_sample_fails
     if _total_prompts > 0:
         filter_pct = _cumulative_filter_drops / _total_prompts * 100
@@ -308,7 +306,7 @@ async def run_rl_loop(
         logger.info(
             "RL loop complete: %d steps, %d/%d prompts sampled "
             "(%d filtered [%.0f%%], %d failed [%.0f%%])",
-            total_steps, _total_prompts - rejected, _total_prompts,
+            global_step, _total_prompts - rejected, _total_prompts,
             _cumulative_filter_drops, filter_pct,
             _cumulative_sample_fails, fail_pct,
         )

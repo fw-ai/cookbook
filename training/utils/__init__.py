@@ -10,17 +10,17 @@ importance sampling, router replay) live in
 # ---------------------------------------------------------------------------
 import warnings as _warnings
 
-# FIR2-1187: Pydantic union discriminator warnings (~45 lines per datum per
-# step) from tinker's ModelInput serialization.  Harmless but produce
-# thousands of lines that bury actual training metrics.
+# Pydantic union discriminator warnings (~45 lines per datum per step) from
+# ModelInput serialization.  Harmless but produce thousands of lines that
+# bury actual training metrics.
 _warnings.filterwarnings(
     "ignore",
     message=r".*PydanticSerializationUnexpectedValue.*",
 )
 
-# FIR2-1190: tinker-cookbook renderer emits a ``train_on_what`` /
-# extension-property compatibility warning *per example* instead of once.
-# Downgrade to once-per-session so operators see it but aren't flooded.
+# Renderer emits a ``train_on_what`` / extension-property compatibility
+# warning *per example* instead of once.  Downgrade to once-per-session so
+# operators see it but aren't flooded.
 _warnings.filterwarnings(
     "once",
     message=r".*train_on_what.*",
