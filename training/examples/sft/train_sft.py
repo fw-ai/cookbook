@@ -67,7 +67,11 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
 
     args = parse_args()
-    logger.info("SFT text2sql training: model=%s shape=%s", args.base_model, args.training_shape)
+    logger.info(
+        "SFT text2sql training: model=%s shape=%s",
+        args.base_model,
+        args.training_shape or "auto",
+    )
 
     if not os.path.exists(args.dataset_path):
         raise FileNotFoundError(

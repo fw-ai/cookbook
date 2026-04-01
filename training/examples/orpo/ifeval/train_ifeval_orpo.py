@@ -65,7 +65,7 @@ def main():
     logger.info(
         "ORPO IFEval training: model=%s shape=%s",
         args.base_model,
-        args.training_shape,
+        args.training_shape or "auto",
     )
 
     if not os.path.exists(args.dataset_path):

@@ -48,8 +48,11 @@ from training.utils import (
     create_trainer_job,
     build_renderer,
     parse_train_on_what,
+    ShapeSelectionRequest,
+    materialize_profile_infra,
     render_messages_to_datum,
     resolve_renderer_name,
+    select_validated_launch_shapes,
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
@@ -164,9 +167,29 @@ def main(
     if rlor_mgr is None:
         rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
 
-    profile = None
-    if cfg.infra.training_shape_id:
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+    selection = select_validated_launch_shapes(
+        rlor_mgr,
+        request=ShapeSelectionRequest(
+            base_model=cfg.base_model,
+            max_seq_len=cfg.max_seq_len,
+            trainer_role="policy",
+            needs_deployment=False,
+            lora_rank=cfg.lora_rank,
+            explicit_training_shape_id=cfg.infra.training_shape_id,
+        ),
+    )
+    if selection.training_shape_id:
+        cfg.infra.training_shape_id = selection.training_shape_id
+    if selection.inferred_training_shape:
+        logger.info(
+            "Using validated training shape for %s: %s",
+            cfg.base_model,
+            selection.training_shape_id,
+        )
+
+    profile = selection.training_profile
+    trainer_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
+    trainer_profile = profile
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -177,15 +200,19 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
+    runner.set_accelerator_info(
+        trainer_infra.accelerator_type,
+        trainer_infra.accelerator_count,
+        profile=profile,
+    )
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         endpoint = create_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
-            infra=cfg.infra,
-            profile=profile,
+            infra=trainer_infra,
+            profile=trainer_profile,
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,

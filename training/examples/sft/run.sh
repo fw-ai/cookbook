@@ -16,7 +16,6 @@ python train_sft.py \
     --base-model accounts/fireworks/models/qwen3-8b \
     --tokenizer-model Qwen/Qwen3-8B \
     --dataset-path text2sql_dataset.jsonl \
-    --training-shape accounts/fireworks/trainingShapes/qwen3-8b-128k-h200 \
     --region US_VIRGINIA_1 \
     --max-examples 100 \
     --epochs 3 \

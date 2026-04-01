@@ -60,6 +60,9 @@ from training.utils import (
     create_trainer_job,
     load_jsonl_dataset,
     prepare_sampling_messages,
+    ShapeSelectionRequest,
+    materialize_profile_infra,
+    select_validated_launch_shapes,
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
@@ -320,16 +323,41 @@ def main(
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
 
+    policy_selection = select_validated_launch_shapes(
+        rlor_mgr,
+        deploy_mgr=deploy_mgr,
+        request=ShapeSelectionRequest(
+            base_model=cfg.base_model,
+            max_seq_len=cfg.max_seq_len,
+            trainer_role="policy",
+            needs_deployment=True,
+            lora_rank=cfg.lora_rank,
+            explicit_training_shape_id=cfg.infra.training_shape_id,
+            explicit_deployment_shape=cfg.deployment.deployment_shape,
+        ),
+    )
+    if policy_selection.training_shape_id:
+        cfg.infra.training_shape_id = policy_selection.training_shape_id
+    if policy_selection.deployment_shape:
+        cfg.deployment.deployment_shape = policy_selection.deployment_shape
+    if policy_selection.inferred_training_shape:
+        logger.info(
+            "Using validated policy training shape for %s: %s",
+            cfg.base_model,
+            policy_selection.training_shape_id,
+        )
+    if policy_selection.inferred_deployment_shape:
+        logger.info(
+            "Using validated deployment shape for %s: %s",
+            cfg.base_model,
+            policy_selection.deployment_shape,
+        )
+
     # -- Resolve training shapes -----------------------------------------------
 
-    profile = None
-    if cfg.infra.training_shape_id:
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        # profile.deployment_shape returns the versioned path (e.g.
-        # .../versions/abc123) pinned by the training shape.  The server
-        # accepts versioned paths and pins to the exact version.
-        if profile.deployment_shape and not cfg.deployment.deployment_shape:
-            cfg.deployment.deployment_shape = profile.deployment_shape
+    profile = policy_selection.training_profile
+    policy_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
+    policy_profile = profile
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -340,9 +368,35 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
+    reference_needed = cfg.kl_beta > 0 or cfg.infra.ref_training_shape_id is not None
     ref_profile = None
-    if cfg.infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+    reference_infra = cfg.infra
+    reference_launch_profile = None
+    if reference_needed:
+        reference_selection = select_validated_launch_shapes(
+            rlor_mgr,
+            request=ShapeSelectionRequest(
+                base_model=cfg.base_model,
+                max_seq_len=cfg.max_seq_len,
+                trainer_role="reference",
+                needs_deployment=False,
+                lora_rank=cfg.lora_rank,
+                explicit_training_shape_id=cfg.infra.ref_training_shape_id,
+            ),
+        )
+        if reference_selection.training_shape_id:
+            cfg.infra.ref_training_shape_id = reference_selection.training_shape_id
+        if reference_selection.inferred_training_shape:
+            logger.info(
+                "Using validated reference training shape for %s: %s",
+                cfg.base_model,
+                reference_selection.training_shape_id,
+            )
+        ref_profile = reference_selection.training_profile
+        reference_infra = (
+            materialize_profile_infra(cfg.infra, ref_profile) if ref_profile else cfg.infra
+        )
+        reference_launch_profile = ref_profile
 
     use_reference = ref_profile is not None
     if not use_reference:
@@ -350,13 +404,17 @@ def main(
 
     import time as _time
 
-    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count, profile=profile)
+    runner.set_accelerator_info(
+        policy_infra.accelerator_type,
+        policy_infra.accelerator_count,
+        profile=profile,
+    )
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     _infra_start = _time.time()
 
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, policy_infra)
         if cleanup_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
@@ -372,8 +430,8 @@ def main(
                     create_trainer_job,
                     rlor_mgr,
                     base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=profile,
+                    infra=policy_infra,
+                    profile=policy_profile,
                     lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
@@ -387,8 +445,8 @@ def main(
                     create_trainer_job,
                     rlor_mgr,
                     base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=ref_profile,
+                    infra=reference_infra,
+                    profile=reference_launch_profile,
                     lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
@@ -406,8 +464,8 @@ def main(
             policy_ep = create_trainer_job(
                 rlor_mgr,
                 base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
+                infra=policy_infra,
+                profile=policy_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
@@ -897,5 +955,4 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config(log_path="./rl_logs"))
     main(Config(log_path="./rl_logs"))

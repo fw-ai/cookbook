@@ -7,6 +7,7 @@ import pytest
 import torch
 
 import training.recipes.sft_loop as module
+from training.utils import ShapeSelectionResult
 
 
 class StubRenderer:
@@ -73,6 +74,18 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
+        "select_validated_launch_shapes",
+        lambda _mgr, *, request, deploy_mgr=None: ShapeSelectionResult(
+            request=request,
+            training_shape_id=None,
+            training_profile=None,
+            deployment_shape=None,
+            inferred_training_shape=False,
+            inferred_deployment_shape=False,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
         "render_messages_to_datum",
         lambda *args, **kwargs: SimpleNamespace(token_ids=[1], datum={"id": "too-short"}),
     )
@@ -80,6 +93,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
 
     cfg = module.Config(
         log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
         dataset=str(dataset_path),
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,
@@ -89,6 +103,131 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         module.main(cfg, rlor_mgr=FakeMgr())
 
     assert deleted_jobs == ["job-sft"]
+
+
+def test_main_infers_documented_training_shape_for_supported_model(tmp_path, monkeypatch):
+    dataset_path = _write_dataset(
+        tmp_path,
+        [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {"deleted_jobs": [], "selection_requests": []}
+
+    class FakeMgr:
+        def create(self, config):
+            events["created_config"] = config
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(
+                job_id=job_id,
+                job_name=f"jobs/{job_id}",
+                base_url="https://unit.test",
+            )
+
+        def delete(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+        def cancel(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+    class FakeClient:
+        job_id = "job-sft"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": 1}
+            )
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def save_state(self, name):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"{name}-sampler")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return name
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "select_validated_launch_shapes",
+        lambda _mgr, *, request, deploy_mgr=None: (
+            events["selection_requests"].append(request)
+            or ShapeSelectionResult(
+                request=request,
+                training_shape_id="accounts/test/trainingShapes/sft",
+                training_profile=SimpleNamespace(
+                    max_supported_context_length=48,
+                    training_shape_version="accounts/test/trainingShapes/sft/versions/1",
+                    trainer_image_tag="trainer:1",
+                    accelerator_type="NVIDIA_H200_141GB",
+                    accelerator_count=8,
+                    node_count=2,
+                ),
+                deployment_shape=None,
+                inferred_training_shape=True,
+                inferred_deployment_shape=False,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datum",
+        lambda *args, **kwargs: SimpleNamespace(
+            token_ids=[1, 2, 3],
+            datum=SimpleNamespace(
+                model_input=SimpleNamespace(
+                    chunks=[SimpleNamespace(tokens=[1, 2, 3])],
+                ),
+                loss_fn_inputs={
+                    "target_tokens": SimpleNamespace(data=[2, 3]),
+                    "weights": SimpleNamespace(data=[1.0, 1.0]),
+                },
+            ),
+        ),
+    )
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/fireworks/models/qwen3-8b",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-8B",
+        max_seq_len=None,
+        epochs=1,
+        batch_size=1,
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert result["steps"] == 1
+    assert cfg.max_seq_len == 48
+    assert cfg.infra.training_shape_id == "accounts/test/trainingShapes/sft"
+    assert len(events["selection_requests"]) == 1
+    assert events["created_config"].training_shape_ref == "accounts/test/trainingShapes/sft/versions/1"
+    assert events["created_config"].custom_image_tag is None
+    assert events["created_config"].accelerator_type is None
+    assert events["created_config"].accelerator_count is None
+    assert events["created_config"].node_count is None
+    assert events["deleted_jobs"] == ["job-sft"]
 
 
 def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
@@ -168,10 +307,23 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: renderer)
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "select_validated_launch_shapes",
+        lambda _mgr, *, request, deploy_mgr=None: ShapeSelectionResult(
+            request=request,
+            training_shape_id=None,
+            training_profile=None,
+            deployment_shape=None,
+            inferred_training_shape=False,
+            inferred_deployment_shape=False,
+        ),
+    )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
         dataset=str(dataset_path),
+        base_model="accounts/test/models/custom-sft",
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,
         epochs=1,
@@ -257,6 +409,18 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "select_validated_launch_shapes",
+        lambda _mgr, *, request, deploy_mgr=None: ShapeSelectionResult(
+            request=request,
+            training_shape_id=None,
+            training_profile=None,
+            deployment_shape=None,
+            inferred_training_shape=False,
+            inferred_deployment_shape=False,
+        ),
+    )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     def _fake_render(messages, **kwargs):
         content = messages[-1]["content"]
@@ -274,6 +438,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
 
     cfg = module.Config(
         dataset=str(dataset_path),
+        base_model="accounts/test/models/custom-sft",
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,
         epochs=1,
