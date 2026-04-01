@@ -125,9 +125,9 @@ class MultiHopQAIGPOConfig:
     prompt_groups_per_step: int = 4
     max_concurrent: int = 16
 
-    # IGPO-specific — start ig_weight small (0.01–0.2); 0 = pure GRPO
+    # IGPO-specific — ig_weight enables IG scoring (0 = pure GRPO)
     gamma: float = 0.95
-    ig_weight: float = 0.1
+    ig_weight: float = 1.0
     scoring_workers: int = 8
     eps_clip: float = 0.2
     skip_ig_last_turn: bool = True
@@ -190,10 +190,10 @@ def parse_args() -> MultiHopQAIGPOConfig:
     parser.add_argument("--lora-rank", type=int, default=0)
 
     parser.add_argument("--gamma", type=float, default=0.95)
-    parser.add_argument("--ig-weight", type=float, default=0.1,
-                        help="Weight for information-gain intrinsic reward. "
-                             "Start small (0.01–0.2); values >= 0.5 tend to "
-                             "destabilize training. Set to 0 for pure GRPO.")
+    parser.add_argument("--ig-weight", type=float, default=1.0,
+                        help="Enable IG intrinsic rewards (any non-zero value). "
+                             "Set to 0 for pure GRPO baseline. IG and outcome "
+                             "rewards are z-normalized separately per the paper.")
     parser.add_argument("--scoring-workers", type=int, default=8)
     parser.add_argument("--eps-clip", type=float, default=0.2)
     parser.add_argument("--skip-ig-last-turn", action="store_true", default=True)
@@ -215,11 +215,10 @@ def parse_args() -> MultiHopQAIGPOConfig:
         MultiHopQAIGPOConfig,
         parser.parse_args(namespace=MultiHopQAIGPOConfig()),
     )
-    if cfg.ig_weight >= 0.5:
-        logger.warning(
-            "ig_weight=%.2f is high — IG rewards are log-probability "
-            "differences that can dominate the environment reward. "
-            "Recommended range: 0.01–0.2. Set to 0 for pure GRPO.",
+    if cfg.ig_weight != 0.0 and cfg.ig_weight != 1.0:
+        logger.info(
+            "ig_weight=%.2f — note this is a flag (0=off, non-zero=on); "
+            "IG rewards are z-normalized independently, not scaled by this value.",
             cfg.ig_weight,
         )
     return cfg
@@ -323,7 +322,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
     )
     weight_sync_cfg = WeightSyncConfig(
         weight_sync_interval=1,
-        dcp_save_interval=20,
+        dcp_save_interval=0,  # skip DCP checkpoints; enable (e.g. 20) for production runs
         dcp_timeout=2700,
         first_checkpoint_type="base",
         weight_sync_before_training=bool(cfg.deployment_id),
@@ -868,10 +867,16 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     and step % weight_sync_cfg.dcp_save_interval == 0
                 ):
                     with timer("dcp_save"):
-                        if hasattr(weight_syncer, "save_dcp"):
-                            weight_syncer.save_dcp(f"step-{step}")
-                        else:
-                            logger.debug("save_dcp not available, skipping")
+                        from training.utils.checkpoint_utils import save_checkpoint as _save_cp, CheckpointKind
+                        _data_consumed = (
+                            (resume_info.data_consumed if resume_info else 0)
+                            + (step - step_offset) * prompt_groups_per_step
+                        )
+                        _save_cp(
+                            policy, f"step-{step}", cfg.log_path,
+                            {"step": step, "data_consumed": _data_consumed, "source_job_id": policy_job_id},
+                            kind=CheckpointKind.STATE,
+                        )
 
                 metrics = compute_step_metrics(
                     prompt_groups=prompt_groups,

@@ -71,7 +71,7 @@ export OUTPUT_MODEL_ID="your-output-model-id"
 python train_multihop_qa_igpo.py \
     --training-shape "$TRAINING_SHAPE" \
     --output-model-id "$OUTPUT_MODEL_ID" \
-    --ig-weight 0.1
+    --ig-weight 1.0
 
 # GRPO baseline (no IG, environment reward only)
 python train_multihop_qa_igpo.py \
@@ -90,7 +90,7 @@ TRAINING_SHAPE=... OUTPUT_MODEL_ID=... bash run.sh
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--ig-weight` | `0.1` | Weight for IG intrinsic reward. **Start small (0.01–0.2)**. Values >= 0.5 tend to destabilize training because IG rewards (log-probability differences) can dominate environment rewards. Set to `0` for pure GRPO. |
+| `--ig-weight` | `1.0` | Enable IG intrinsic rewards (any non-zero value). IG and outcome rewards are z-normalized separately per the paper, so the magnitude doesn't matter — it's effectively an on/off switch. Set to `0` for pure GRPO baseline. |
 | `--gamma` | `0.95` | Discount factor for turn-level return accumulation (paper uses 0.95). |
 | `--completions-per-prompt` | `4` | Group size for GRPO-style advantage normalization. |
 | `--prompt-groups-per-step` | `4` | Number of prompts per optimization step (effective batch = this × completions_per_prompt). |
