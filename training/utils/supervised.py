@@ -21,7 +21,13 @@ from typing import Any, Iterable, Mapping, Sequence
 import torch
 import tinker
 from tinker_cookbook.model_info import get_recommended_renderer_name
-from tinker_cookbook.renderers import Message, Renderer, ToolCall, TrainOnWhat, get_renderer
+from tinker_cookbook.renderers import (
+    Message,
+    Renderer,
+    ToolCall,
+    TrainOnWhat,
+    get_renderer,
+)
 
 from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights

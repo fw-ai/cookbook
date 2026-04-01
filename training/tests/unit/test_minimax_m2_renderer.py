@@ -49,11 +49,14 @@ def _hf_tokens(
     *,
     add_generation_prompt: bool,
 ) -> list[int]:
-    return tokenizer.apply_chat_template(
+    result = tokenizer.apply_chat_template(
         messages,
         tokenize=True,
         add_generation_prompt=add_generation_prompt,
     )
+    if hasattr(result, "input_ids"):
+        return list(result.input_ids)
+    return list(result)
 
 
 def _renderer_tokens(
@@ -81,11 +84,14 @@ def _hf_supervised_tokens(
     tokenizer: transformers.PreTrainedTokenizerBase,
     messages: list[dict[str, Any]],
 ) -> list[int]:
-    return tokenizer.apply_chat_template(
+    result = tokenizer.apply_chat_template(
         messages,
         tokenize=True,
         add_generation_prompt=False,
     )
+    if hasattr(result, "input_ids"):
+        return list(result.input_ids)
+    return list(result)
 
 
 def _assert_tokens_match(

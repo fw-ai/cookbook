@@ -515,7 +515,9 @@ class MiniMaxM2Renderer(Renderer):
         return result
 
 
-def _minimax_m2_factory(tokenizer: Tokenizer, image_processor=None) -> MiniMaxM2Renderer:
+def _minimax_m2_factory(
+    tokenizer: Tokenizer, image_processor=None
+) -> MiniMaxM2Renderer:
     return MiniMaxM2Renderer(tokenizer)
 
 

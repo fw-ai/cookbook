@@ -269,17 +269,9 @@ def test_resolve_renderer_name_prefers_minimax_m2() -> None:
     assert resolve_renderer_name("MiniMaxAI/MiniMax-M2") == "minimax_m2"
 
 
-def test_build_renderer_registers_minimax_m2(monkeypatch) -> None:
-    """build_renderer should register the custom MiniMax renderer on demand."""
+def test_build_renderer_resolves_minimax_m2(monkeypatch) -> None:
+    """build_renderer should resolve minimax_m2 and dispatch to get_renderer."""
     calls: list[tuple[str, object]] = []
-
-    def fake_is_renderer_registered(name: str) -> bool:
-        calls.append(("check", name))
-        return False
-
-    def fake_register_renderer(name: str, factory) -> None:
-        calls.append(("register", name))
-        calls.append(("factory_type", type(factory("tok"))))
 
     def fake_get_renderer(name: str, tokenizer, image_processor=None):
         calls.append(("get", name))
@@ -287,12 +279,6 @@ def test_build_renderer_registers_minimax_m2(monkeypatch) -> None:
         assert image_processor is None
         return "renderer"
 
-    monkeypatch.setattr(
-        "training.utils.supervised.is_renderer_registered", fake_is_renderer_registered
-    )
-    monkeypatch.setattr(
-        "training.utils.supervised.register_renderer", fake_register_renderer
-    )
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     renderer = build_renderer(
@@ -301,12 +287,6 @@ def test_build_renderer_registers_minimax_m2(monkeypatch) -> None:
     )
 
     assert renderer == "renderer"
-    assert ("check", "minimax_m2") in calls
-    assert ("register", "minimax_m2") in calls
-    assert any(
-        name == "factory_type" and value.__name__ == "MiniMaxM2Renderer"
-        for name, value in calls
-    )
     assert ("get", "minimax_m2") in calls
 
 
