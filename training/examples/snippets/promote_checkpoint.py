@@ -108,6 +108,8 @@ def parse_args() -> PromoteConfig:
         default=None,
         help="Promoted model ID. Defaults to an auto-generated value.",
     )
+    # TODO(chengxili): Remove once all checkpoints use trainer-owned buckets
+    # (i.e. all callers have migrated past fw-ai/cookbook#273).
     parser.add_argument(
         "--hot-load-deployment-id",
         default=None,
