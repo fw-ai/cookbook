@@ -439,7 +439,7 @@ def main(
                     display_name="grpo-policy",
                     job_id=cfg.policy_job_id,
                     base_url_override=cfg.policy_base_url,
-                    cleanup=cleanup if not cfg.policy_job_id else None,
+                    cleanup=cleanup,
                     on_status=_on_trainer_status,
                 )
                 ref_fut = pool.submit(
@@ -455,7 +455,7 @@ def main(
                     forward_only=True,
                     job_id=cfg.reference_job_id,
                     base_url_override=cfg.reference_base_url,
-                    cleanup=cleanup if not cfg.reference_job_id else None,
+                    cleanup=cleanup,
                     on_status=_on_trainer_status,
                 )
                 # Collect both results so that if both fail we report
@@ -488,7 +488,7 @@ def main(
                 display_name="grpo-policy",
                 job_id=cfg.policy_job_id,
                 base_url_override=cfg.policy_base_url,
-                cleanup=cleanup if not cfg.policy_job_id else None,
+                cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
             policy_job_id = policy_ep.job_id
