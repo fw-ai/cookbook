@@ -91,6 +91,7 @@ __all__ = [
     "validate_preflight",
     "wandb_finish",
     "wandb_log",
+    "WeightSyncer",
 ]
 
 from training.utils.data import (
@@ -123,6 +124,7 @@ from training.utils.config import (
     StepCallback,
     WeightSyncConfig,
 )
+from training.utils.weight_sync import WeightSyncer
 from training.utils.training_shapes import (
     TRAINING_SHAPES_DOCS_URL,
     canonical_base_model,

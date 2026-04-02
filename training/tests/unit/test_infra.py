@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from training.utils.config import DeployConfig, InfraConfig
@@ -183,6 +184,86 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
     assert captured["shape_path"] == "/v1/accounts/fireworks/deploymentShapes/qwen-h200/versions/rv1"
     assert captured["shape_timeout"] == 30
     assert captured["config"].region == "US_VIRGINIA_1"
+
+
+def test_setup_deployment_retries_fireworks_create_with_description_workaround():
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self, payload=None, status_code=200, text=""):
+            self._payload = payload or {"name": "accounts/fireworks/deployments/dep-789", "state": "CREATING"}
+            self.status_code = status_code
+            self.text = text
+            self.request = httpx.Request("POST", "https://unit.test")
+            self.headers = {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"Client error '{self.status_code}' for url '{self.request.url}'",
+                    request=self.request,
+                    response=self,
+                )
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeMgr:
+        account_id = "fireworks"
+
+        def get(self, _deployment_id):
+            return None
+
+        def _get(self, path, timeout):
+            captured["shape_path"] = path
+            return FakeResponse(
+                {
+                    "snapshot": {"acceleratorType": "NVIDIA_B200_180GB"},
+                }
+            )
+
+        def create_or_get(self, _config):
+            response = FakeResponse(
+                {"error": {"message": "description is required for deployments under fireworks account"}},
+                status_code=400,
+                text="description is required for deployments under fireworks account",
+            )
+            raise httpx.HTTPStatusError(
+                "Client error '400 Bad Request'",
+                request=response.request,
+                response=response,
+            )
+
+        def _post(self, path, json, timeout):
+            captured["path"] = path
+            captured["json"] = json
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        def _parse_deployment_info(self, deployment_id, data):
+            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
+
+        def wait_for_ready(self, deployment_id, timeout_s):
+            return SimpleNamespace(deployment_id=deployment_id, state="READY")
+
+    info = setup_deployment(
+        FakeMgr(),
+        DeployConfig(
+            deployment_id="dep-789",
+            deployment_shape="accounts/fireworks/deploymentShapes/rft-qwen3-4b/versions/shape-1",
+        ),
+        "accounts/fireworks/models/qwen3-4b",
+        InfraConfig(),
+    )
+
+    assert info.state == "READY"
+    assert captured["timeout"] == 60
+    assert captured["json"]["description"] == "Cookbook deployment for qwen3-4b"
+    assert captured["json"]["placement"] == {"region": "US_OHIO_1"}
+    assert captured["json"]["deploymentShape"] == (
+        "accounts/fireworks/deploymentShapes/rft-qwen3-4b/versions/shape-1"
+    )
 
 
 # ---------------------------------------------------------------------------

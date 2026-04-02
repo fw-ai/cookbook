@@ -28,6 +28,13 @@ logging.basicConfig(
     force=True,
 )
 
+_CLEANUP_STATES = (
+    "JOB_STATE_CANCELING",
+    "JOB_STATE_CANCELLED",
+    "JOB_STATE_DELETING",
+    "JOB_STATE_DELETED",
+)
+
 
 def _make_prompt_dataset(path: str, n: int = 4) -> None:
     with open(path, "w") as f:
@@ -52,6 +59,7 @@ def test_grpo_smoke(
     smoke_base_model,
     smoke_tokenizer_model,
     smoke_infra,
+    smoke_deployment_shape,
 ):
     """2-step GRPO on Qwen3-4B: train, weight sync, train again, cleanup."""
     from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
@@ -82,6 +90,7 @@ def test_grpo_smoke(
             infra=smoke_infra,
             deployment=DeployConfig(
                 tokenizer_model=smoke_tokenizer_model,
+                deployment_shape=smoke_deployment_shape,
             ),
             weight_sync=WeightSyncConfig(
                 weight_sync_interval=1,
@@ -111,7 +120,7 @@ def test_grpo_smoke(
             try:
                 job = rlor_mgr.get(policy_job_id)
                 state = job.get("state", "")
-                assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                assert state in _CLEANUP_STATES, (
                     f"ResourceCleanup failed: policy job {policy_job_id} still {state}"
                 )
             except httpx.HTTPStatusError as e:

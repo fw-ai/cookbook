@@ -318,7 +318,10 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     train_module.main()
 
     assert cfg.max_seq_len == 256
-    assert events["resolved_shape"] == "ts-qwen3-4b-smoke-v1"
+    assert (
+        events["resolved_shape"]
+        == "accounts/fireworks/trainingShapes/ts-qwen3-4b-smoke-v1"
+    )
     assert len(events["trainer_jobs"]) == 1
     assert events["trainer_jobs"][0]["display_name"] == "frozen-lake-policy"
     assert events["trainer_jobs"][0]["hot_load_deployment_id"] == "dep-123"
@@ -601,7 +604,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
 
     train_module.main()
 
-    assert events["resolved_shapes"] == ["ts-qwen3-4b-smoke-v1", "ts-qwen3-4b-smoke-v1"]
+    assert events["resolved_shapes"] == [
+        "accounts/fireworks/trainingShapes/ts-qwen3-4b-smoke-v1",
+        "accounts/fireworks/trainingShapes/ts-qwen3-4b-smoke-v1",
+    ]
     assert events["deployment_shape"] == "shape/versions/7"
     assert [call["display_name"] for call in events["trainer_jobs"]] == [
         "frozen-lake-policy",

@@ -54,7 +54,9 @@ skip_covered = true
 include = [
     "recipes/*.py",
     "examples/*/train_*.py",
+    "examples/**/train_*.py",
     "examples/*/prepare_data.py",
+    "examples/**/prepare_data.py",
 ]
 omit = [
     "*/__init__.py",

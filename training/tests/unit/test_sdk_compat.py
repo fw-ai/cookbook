@@ -49,3 +49,14 @@ def test_to_deployment_config_sets_fixed_replica_count():
     assert isinstance(deployment_config, DeploymentConfig)
     assert deployment_config.min_replica_count == 3
     assert deployment_config.max_replica_count == 3
+
+
+def test_to_deployment_config_sets_default_description():
+    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(),
+    )
+
+    assert deployment_config.description == "Cookbook deployment for qwen3-4b"

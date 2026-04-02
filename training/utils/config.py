@@ -95,6 +95,9 @@ class DeployConfig:
     deployment_id: str | None = None
     """If set, use this existing deployment.  If ``None``, a new deployment
     is auto-created (ID derived from the base model name)."""
+    description: str | None = None
+    """Optional deployment description. When omitted, the cookbook fills in a
+    default description for newly-created deployments."""
     deployment_shape: str | None = None
     """Deployment shape resource name.  Should always be a **versioned** path
     (e.g. ``accounts/fw/deploymentShapes/ds-x/versions/abc123``) to pin the
@@ -129,7 +132,7 @@ class DeployConfig:
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type
         replica_count = 1 if self.replica_count is None else self.replica_count
-        return DeploymentConfig(
+        config = DeploymentConfig(
             deployment_id=self.deployment_id,
             base_model=base_model,
             deployment_shape=self.deployment_shape,
@@ -143,6 +146,11 @@ class DeployConfig:
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
         )
+        config.description = (
+            self.description
+            or f"Cookbook deployment for {base_model.rsplit('/', 1)[-1]}"
+        )
+        return config
 
 
 @dataclass
@@ -165,4 +173,3 @@ class WandBConfig:
     entity: str | None = None
     project: str | None = None
     run_name: str | None = None
-

@@ -95,7 +95,8 @@ jobs:
       FIREWORKS_CUSTOM_IMAGE_TAG: ${{ vars.FIREWORKS_CUSTOM_IMAGE_TAG }}
       FIREWORKS_SMOKE_BASE_MODEL: ${{ vars.FIREWORKS_SMOKE_BASE_MODEL || 'accounts/fireworks/models/qwen3-4b' }}
       FIREWORKS_SMOKE_TOKENIZER_MODEL: ${{ vars.FIREWORKS_SMOKE_TOKENIZER_MODEL || 'Qwen/Qwen3-4B' }}
-      FIREWORKS_SMOKE_TRAINING_SHAPE: ${{ vars.FIREWORKS_SMOKE_TRAINING_SHAPE || 'ts-qwen3-4b-smoke-v1' }}
+      FIREWORKS_SMOKE_TRAINING_SHAPE: ${{ vars.FIREWORKS_SMOKE_TRAINING_SHAPE || 'accounts/fireworks/trainingShapes/qwen3-4b-minimum-h200-policy' }}
+      FIREWORKS_SMOKE_REF_TRAINING_SHAPE: ${{ vars.FIREWORKS_SMOKE_REF_TRAINING_SHAPE || 'accounts/fireworks/trainingShapes/qwen3-4b-minimum-h200-forward' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

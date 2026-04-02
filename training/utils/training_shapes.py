@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
@@ -24,6 +25,10 @@ _TRAINING_SHAPE_VERSION_PARENT = "accounts/-/trainingShapes/-"
 _DEPLOYMENT_SHAPE_VERSION_PARENT = "accounts/-/deploymentShapes/-"
 _ORDER_BY_CREATE_TIME_DESC = "create_time desc"
 _TRAINING_SHAPE_VERSION_RE = re.compile(r"/versions/[^/]+$")
+_TRAINING_SHAPE_RESOURCE_RE = re.compile(
+    r"^accounts/[^/]+/trainingShapes/[^/]+(?:/versions/[^/]+)?$"
+)
+_SHORT_TRAINING_SHAPE_ID_RE = re.compile(r"^ts-[^/]+$")
 
 _TRAINER_MODE_BY_CODE = {
     1: "POLICY_TRAINER",
@@ -118,6 +123,26 @@ def canonical_base_model(base_model: str) -> str:
     return base_model
 
 
+def _canonicalize_training_shape_id(
+    training_shape_id: str,
+    *,
+    default_account: str | None = None,
+) -> str:
+    """Accept cookbook-friendly shorthand and SDK-level resource names.
+
+    The cookbook historically documented bare ``ts-...`` IDs, while newer SDK
+    versions require full ``accounts/<account>/trainingShapes/<shape>``
+    resource names. Preserve the shorthand UX here so existing examples and
+    tests keep working after SDK upgrades.
+    """
+    if _TRAINING_SHAPE_RESOURCE_RE.match(training_shape_id):
+        return _TRAINING_SHAPE_VERSION_RE.sub("", training_shape_id)
+    if "/" in training_shape_id or not _SHORT_TRAINING_SHAPE_ID_RE.match(training_shape_id):
+        return training_shape_id
+    account = default_account or os.environ.get("FIREWORKS_ACCOUNT_ID") or "fireworks"
+    return f"accounts/{account}/trainingShapes/{training_shape_id}"
+
+
 def materialize_profile_infra(
     infra: InfraConfig,
     profile: TrainingShapeProfile,
@@ -165,7 +190,10 @@ def select_validated_launch_shapes(
         )
 
     if request.explicit_training_shape_id:
-        training_shape_id = request.explicit_training_shape_id
+        training_shape_id = _canonicalize_training_shape_id(
+            request.explicit_training_shape_id,
+            default_account=getattr(trainer_mgr, "_account_id", None),
+        )
         profile = trainer_mgr.resolve_training_profile(training_shape_id)
         inferred_training_shape = False
     else:

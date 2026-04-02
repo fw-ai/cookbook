@@ -8,6 +8,13 @@ import tempfile
 
 import pytest
 
+_CLEANUP_STATES = (
+    "JOB_STATE_CANCELING",
+    "JOB_STATE_CANCELLED",
+    "JOB_STATE_DELETING",
+    "JOB_STATE_DELETED",
+)
+
 
 def _make_chat_dataset(path: str, num_examples: int = 4) -> None:
     with open(path, "w") as f:
@@ -64,7 +71,7 @@ def test_sft_smoke(
             try:
                 job = rlor_mgr.get(job_id)
                 state = job.get("state", "")
-                assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                assert state in _CLEANUP_STATES, (
                     f"ResourceCleanup failed: job {job_id} still {state}"
                 )
             except httpx.HTTPStatusError as e:

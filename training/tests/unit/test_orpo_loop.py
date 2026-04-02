@@ -167,7 +167,9 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
 
     assert result == {"steps": 2, "job_id": "job-orpo"}
     assert cfg.max_seq_len == 48
-    assert mgr.resolved_shapes == ["ts-qwen3-4b-smoke-v1"]
+    assert mgr.resolved_shapes == [
+        "accounts/fireworks/trainingShapes/ts-qwen3-4b-smoke-v1"
+    ]
     assert [batch for batch, _loss_fn in events["forward_batches"]] == [
         [{"id": "chosen-0"}, {"id": "rejected-0"}],
         [{"id": "chosen-1"}, {"id": "rejected-1"}],
