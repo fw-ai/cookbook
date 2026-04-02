@@ -23,7 +23,9 @@ class StubRenderer:
         self.weights = torch.tensor(weights, dtype=torch.float32)
         self.calls: list[tuple[list[dict], TrainOnWhat]] = []
 
-    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
+    def build_supervised_example(
+        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    ):
         self.calls.append((messages, train_on_what))
         return self.tokens, self.weights
 
@@ -31,12 +33,17 @@ class StubRenderer:
 class SequenceRenderer:
     def __init__(self, outputs: list[tuple[list[int], list[float]]]):
         self.outputs = [
-            (torch.tensor(tokens, dtype=torch.int64), torch.tensor(weights, dtype=torch.float32))
+            (
+                torch.tensor(tokens, dtype=torch.int64),
+                torch.tensor(weights, dtype=torch.float32),
+            )
             for tokens, weights in outputs
         ]
         self.calls: list[tuple[list[dict], TrainOnWhat]] = []
 
-    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
+    def build_supervised_example(
+        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    ):
         self.calls.append((messages, train_on_what))
         return self.outputs[len(self.calls) - 1]
 
@@ -45,7 +52,9 @@ class ModelInputRenderer:
     def __init__(self):
         self.calls: list[tuple[list[dict], TrainOnWhat]] = []
 
-    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
+    def build_supervised_example(
+        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    ):
         self.calls.append((messages, train_on_what))
         model_input = tinker.ModelInput(
             chunks=[
@@ -80,13 +89,36 @@ def test_render_messages_to_datum_preserves_multi_turn_weights():
     )
 
     normalized_messages, train_on_what = renderer.calls[0]
-    assert [m["role"] for m in normalized_messages] == ["user", "assistant", "user", "assistant"]
+    assert [m["role"] for m in normalized_messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
     assert train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
 
     assert rendered.token_ids == [10, 11, 12, 13, 14, 15, 16, 17, 18]
     assert rendered.token_weights == [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [11, 12, 13, 14, 15, 16, 17, 18]
-    assert rendered.datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+    ]
+    assert rendered.datum.loss_fn_inputs["weights"].data == [
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+    ]
 
 
 def test_render_messages_to_datum_supports_multimodal_model_input():
@@ -98,7 +130,10 @@ def test_render_messages_to_datum_supports_multimodal_model_input():
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "look at this"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/cat.png"},
+                    },
                     {"type": "text", "text": " now"},
                 ],
             },
@@ -119,7 +154,14 @@ def test_render_messages_to_datum_supports_multimodal_model_input():
     assert len(rendered.token_weights) == 7
     assert rendered.token_weights == [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
     assert rendered.datum.loss_fn_inputs["target_tokens"].data == [11, 12, 13]
-    assert rendered.datum.loss_fn_inputs["weights"].data == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    assert rendered.datum.loss_fn_inputs["weights"].data == [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+    ]
     assert len(rendered.datum.model_input.chunks) == 3
 
 
@@ -131,7 +173,13 @@ def test_build_datum_from_token_mask_reuses_ui_mask_semantics():
     )
 
     assert rendered.token_weights == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
-    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [101, 102, 103, 104, 105]
+    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [
+        101,
+        102,
+        103,
+        104,
+        105,
+    ]
     assert rendered.datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 1.0]
     assert rendered.datum.loss_fn_inputs["loss_mask"].data == [0.0, 1.0, 1.0, 0.0, 1.0]
 
@@ -197,7 +245,9 @@ def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
         calls.append((name, image_processor))
         return "renderer"
 
-    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     renderer = build_renderer(
@@ -212,6 +262,32 @@ def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
 
 def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_5():
     assert resolve_renderer_name("moonshotai/Kimi-K2.5") == "kimi_k25"
+
+
+def test_resolve_renderer_name_prefers_minimax_m2() -> None:
+    """MiniMax M2 tokenizers should resolve to the custom renderer."""
+    assert resolve_renderer_name("MiniMaxAI/MiniMax-M2") == "minimax_m2"
+
+
+def test_build_renderer_resolves_minimax_m2(monkeypatch) -> None:
+    """build_renderer should resolve minimax_m2 and dispatch to get_renderer."""
+    calls: list[tuple[str, object]] = []
+
+    def fake_get_renderer(name: str, tokenizer, image_processor=None):
+        calls.append(("get", name))
+        assert tokenizer == "tok"
+        assert image_processor is None
+        return "renderer"
+
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    renderer = build_renderer(
+        tokenizer="tok",
+        tokenizer_model="MiniMaxAI/MiniMax-M2",
+    )
+
+    assert renderer == "renderer"
+    assert ("get", "minimax_m2") in calls
 
 
 def test_weighted_sft_loss_uses_sparse_weights():
@@ -248,8 +324,18 @@ def test_render_preference_pair_uses_shared_renderer_path():
     )
 
     pair = render_preference_pair(
-        {"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "good"}]},
-        {"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "bad"}]},
+        {
+            "messages": [
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "good"},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "bad"},
+            ]
+        },
         renderer=renderer,
         tokenizer=None,
     )
@@ -295,9 +381,19 @@ def test_render_preference_pair_preserves_multi_turn_history():
     assert pair.response_start == 4
     chosen_messages, _ = renderer.calls[0]
     rejected_messages, _ = renderer.calls[1]
-    assert [m["role"] for m in chosen_messages] == ["user", "assistant", "user", "assistant"]
+    assert [m["role"] for m in chosen_messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
     assert [m["content"] for m in chosen_messages] == ["u1", "a1", "u2", "chosen"]
-    assert [m["role"] for m in rejected_messages] == ["user", "assistant", "user", "assistant"]
+    assert [m["role"] for m in rejected_messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
     assert [m["content"] for m in rejected_messages] == ["u1", "a1", "u2", "rejected"]
 
 

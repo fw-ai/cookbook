@@ -21,11 +21,18 @@ from typing import Any, Iterable, Mapping, Sequence
 import torch
 import tinker
 from tinker_cookbook.model_info import get_recommended_renderer_name
-from tinker_cookbook.renderers import Message, Renderer, ToolCall, TrainOnWhat, get_renderer
+from tinker_cookbook.renderers import (
+    Message,
+    Renderer,
+    ToolCall,
+    TrainOnWhat,
+    get_renderer,
+)
 
 from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.utils.nemotron_renderer as _nemotron_renderer  # noqa: F401 — triggers register_renderer
+import training.utils.minimax_m2_renderer as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,8 @@ def resolve_renderer_name(
         return "kimi_k25"
     if "nemotron" in normalized_model_name:
         return "nemotron"
+    if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
+        return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
     try:
@@ -137,7 +146,9 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
         if not isinstance(tool_call, Mapping):
             raise TypeError(f"Unsupported tool call type: {type(tool_call)!r}")
 
-        if isinstance(tool_call.get("name"), str) and isinstance(tool_call.get("args"), Mapping):
+        if isinstance(tool_call.get("name"), str) and isinstance(
+            tool_call.get("args"), Mapping
+        ):
             normalized.append(
                 ToolCall(
                     function=ToolCall.FunctionBody(
@@ -157,7 +168,9 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
             elif isinstance(raw_args, Mapping):
                 parsed_args = dict(raw_args)
             else:
-                raise TypeError(f"Unsupported tool call arguments type: {type(raw_args)!r}")
+                raise TypeError(
+                    f"Unsupported tool call arguments type: {type(raw_args)!r}"
+                )
             normalized.append(
                 ToolCall(
                     function=ToolCall.FunctionBody(
@@ -217,10 +230,14 @@ def _normalize_content(content: Any) -> str | list[dict[str, Any]]:
                 normalized_parts.append(_normalize_image_part(part))
                 continue
             if part_type == "thinking" and isinstance(part.get("thinking"), str):
-                normalized_parts.append({"type": "thinking", "thinking": part["thinking"]})
+                normalized_parts.append(
+                    {"type": "thinking", "thinking": part["thinking"]}
+                )
                 continue
             raise TypeError(f"Unsupported message content part: {part!r}")
-        if normalized_parts and all(part["type"] == "text" for part in normalized_parts):
+        if normalized_parts and all(
+            part["type"] == "text" for part in normalized_parts
+        ):
             return "".join(str(part["text"]) for part in normalized_parts)
         return normalized_parts
     raise TypeError(f"Unsupported message content type: {type(content)!r}")
@@ -310,7 +327,9 @@ def _rendered_sequence_ids_from_datum(datum: tinker.Datum) -> list[int]:
     sequence_ids = _flatten_model_input_sequence_ids(datum.model_input)
     target_tokens = [int(x) for x in datum.loss_fn_inputs["target_tokens"].data]
     if not target_tokens:
-        raise ValueError("Need at least one target token to reconstruct the rendered sequence.")
+        raise ValueError(
+            "Need at least one target token to reconstruct the rendered sequence."
+        )
     return sequence_ids + [target_tokens[-1]]
 
 
@@ -325,7 +344,9 @@ def build_datum_from_tokens_and_weights(
     tokens = [int(x) for x in token_ids]
     weights = [float(x) for x in token_weights]
     if len(tokens) != len(weights):
-        raise ValueError(f"tokens/weights length mismatch: {len(tokens)} != {len(weights)}")
+        raise ValueError(
+            f"tokens/weights length mismatch: {len(tokens)} != {len(weights)}"
+        )
     if len(tokens) < 2:
         raise ValueError("Need at least 2 tokens to build a supervised datum.")
 
@@ -351,7 +372,8 @@ def build_datum_from_tokens_and_weights(
         )
 
     return RenderedSupervisedDatum(
-        token_ids=[int(x) for x in datum.model_input.to_ints()] + [int(datum.loss_fn_inputs["target_tokens"].data[-1])],
+        token_ids=[int(x) for x in datum.model_input.to_ints()]
+        + [int(datum.loss_fn_inputs["target_tokens"].data[-1])],
         token_weights=[0.0] + [float(x) for x in datum.loss_fn_inputs["weights"].data],
         datum=datum,
     )
@@ -458,7 +480,9 @@ def build_datum_from_model_input_and_weights(
             raise ValueError(
                 f"model_input/weights length mismatch: {model_input.length} != {weight_tensor.numel()}"
             )
-        datum = datum_from_model_input_weights(model_input, weight_tensor, max_length=max_seq_len)
+        datum = datum_from_model_input_weights(
+            model_input, weight_tensor, max_length=max_seq_len
+        )
     else:
         token_ids = _extract_token_ids(model_input)
         return build_datum_from_tokens_and_weights(
@@ -539,7 +563,11 @@ def render_messages_to_datum(
             max_seq_len=max_seq_len,
             include_loss_mask=include_loss_mask,
         )
-    token_values = rendered_input.tolist() if hasattr(rendered_input, "tolist") else list(rendered_input)
+    token_values = (
+        rendered_input.tolist()
+        if hasattr(rendered_input, "tolist")
+        else list(rendered_input)
+    )
     return build_datum_from_tokens_and_weights(
         token_values,
         weight_values,
@@ -583,8 +611,12 @@ def render_preference_pair(
     max_seq_len: int | None = None,
 ) -> RenderedPreferencePair | None:
     """Render a chosen/rejected pair through the shared tokenizer path."""
-    chosen_rendered = _render_preference_item_tokens(chosen, renderer=renderer, tokenizer=tokenizer)
-    rejected_rendered = _render_preference_item_tokens(rejected, renderer=renderer, tokenizer=tokenizer)
+    chosen_rendered = _render_preference_item_tokens(
+        chosen, renderer=renderer, tokenizer=tokenizer
+    )
+    rejected_rendered = _render_preference_item_tokens(
+        rejected, renderer=renderer, tokenizer=tokenizer
+    )
     if chosen_rendered is None or rejected_rendered is None:
         return None
     chosen_tokens, chosen_datum = chosen_rendered
