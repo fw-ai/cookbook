@@ -297,6 +297,9 @@ async def _train_loop(
             len(p["chosen_tokens"]) + len(p["rejected_tokens"])
             for p in step_pairs
         )
+        # Epoch 0: ref model processed these same sequences; epochs 1+ use cached ref logprobs.
+        ref_tokens = step_tokens if epoch == 0 else 0
+        total_tokens = step_tokens + ref_tokens
 
         with timer("fwd_bwd"):
             fwd_bwd_result = _forward_backward_pairs(step_pairs, policy, cfg.beta)
@@ -335,9 +338,10 @@ async def _train_loop(
         avg_margin = fwd_metrics["margin"]
         avg_acc = fwd_metrics["accuracy"]
         logger.info(
-            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | %.1f tok/s (%.1fs)",
+            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | "
+            "policy=%d ref=%d tok | %.1f tok/s (%.1fs)",
             step, total_steps, avg_loss, avg_margin, avg_acc * 100,
-            tokens_per_sec, step_elapsed,
+            step_tokens, ref_tokens, tokens_per_sec, step_elapsed,
         )
         log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc,
                          tokens_per_sec=tokens_per_sec)
@@ -350,9 +354,11 @@ async def _train_loop(
             "train/tokens_per_sec": tokens_per_sec,
             "train/step_time_sec": step_elapsed,
             "train/step_tokens": step_tokens,
+            "train/ref_tokens": ref_tokens,
+            "train/total_tokens": total_tokens,
         })
         wandb_log(step_metrics, step)
-        runner.append_metrics(step, step_metrics, tokens=step_tokens)
+        runner.append_metrics(step, step_metrics, tokens=total_tokens)
         runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
         runner.write_metadata()
 
