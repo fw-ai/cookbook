@@ -112,8 +112,9 @@ def parse_args() -> PromoteConfig:
         "--hot-load-deployment-id",
         default=None,
         help=(
-            "Deployment ID for legacy jobs whose checkpoints are "
-            "associated with a deployment. Omit for newer jobs."
+            "[Deprecated] Deployment ID for legacy jobs whose checkpoints "
+            "are associated with a deployment. Migrate to trainer-first "
+            "checkpoints instead. Omit for newer jobs."
         ),
     )
     args = parser.parse_args()
@@ -215,6 +216,11 @@ def main() -> None:
     logger.info("Base model:      %s", base_model)
     logger.info("Output model ID: %s", output_model_id)
     if cfg.hot_load_deployment_id:
+        logger.warning(
+            "--hot-load-deployment-id is deprecated. Please migrate to "
+            "trainer-first checkpoints (cookbook >= 0.3.0) which no longer "
+            "require a deployment ID."
+        )
         logger.info("Deployment ID:   %s (legacy)", cfg.hot_load_deployment_id)
 
     model = client.promote_checkpoint(
