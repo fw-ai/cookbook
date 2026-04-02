@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from training.utils.config import DeployConfig, InfraConfig
-from training.utils.infra import setup_deployment
+from training.utils.infra import create_trainer_job, setup_deployment, _fetch_job_failure_reason
 
 
 def test_deploy_config_omits_region_for_shape_backed_deployments():
@@ -181,3 +183,223 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
     assert captured["shape_path"] == "/v1/accounts/fireworks/deploymentShapes/qwen-h200/versions/rv1"
     assert captured["shape_timeout"] == 30
     assert captured["config"].region == "US_VIRGINIA_1"
+
+
+# ---------------------------------------------------------------------------
+# create_trainer_job: error messages expose failure reason
+# ---------------------------------------------------------------------------
+
+
+class _FakeRlorMgr:
+    """Minimal fake for TrainerJobManager used by create_trainer_job tests."""
+
+    account_id = "test-account"
+
+    def __init__(
+        self,
+        *,
+        create_result=None,
+        wait_for_ready_result=None,
+        wait_error=None,
+        create_error=None,
+        get_result=None,
+    ):
+        self._create_result = create_result
+        self._wait_for_ready_result = wait_for_ready_result
+        self._wait_error = wait_error
+        self._create_error = create_error
+        self._get_result = get_result or {}
+
+    def create(self, config):
+        if self._create_error:
+            raise self._create_error
+        return self._create_result or SimpleNamespace(
+            job_id="job-123", job_name="accounts/test-account/rlorTrainerJobs/job-123"
+        )
+
+    def wait_for_ready(self, job_id, job_name=None, timeout_s=3600):
+        if self._wait_error:
+            raise self._wait_error
+        return self._wait_for_ready_result or SimpleNamespace(
+            job_id=job_id, job_name=job_name, base_url="http://localhost:8080"
+        )
+
+    def get(self, job_id):
+        return self._get_result
+
+
+class TestCreateTrainerJobErrorMessages:
+    def test_runtime_error_includes_original_exception_message(self):
+        mgr = _FakeRlorMgr(wait_error=RuntimeError("NCCL timeout after 300s"))
+        with pytest.raises(RuntimeError, match="NCCL timeout after 300s"):
+            create_trainer_job(
+                mgr, base_model="model", infra=InfraConfig(), display_name="test"
+            )
+
+    def test_runtime_error_includes_server_reason_when_available(self):
+        mgr = _FakeRlorMgr(
+            wait_error=TimeoutError("timed out waiting for ready"),
+            get_result={
+                "state": "JOB_STATE_FAILED",
+                "error": {"message": "Insufficient H100 capacity in US_VIRGINIA_1"},
+            },
+        )
+        with pytest.raises(RuntimeError) as exc_info:
+            create_trainer_job(
+                mgr, base_model="model", infra=InfraConfig(), display_name="test"
+            )
+        msg = str(exc_info.value)
+        assert "timed out waiting for ready" in msg
+        assert "Insufficient H100 capacity" in msg
+        assert "JOB_STATE_FAILED" in msg
+
+    def test_runtime_error_includes_error_message_field(self):
+        mgr = _FakeRlorMgr(
+            wait_error=RuntimeError("wait failed"),
+            get_result={
+                "state": "JOB_STATE_FAILED",
+                "errorMessage": "Pod scheduling timeout",
+            },
+        )
+        with pytest.raises(RuntimeError, match="Pod scheduling timeout"):
+            create_trainer_job(
+                mgr, base_model="model", infra=InfraConfig(), display_name="test"
+            )
+
+    def test_runtime_error_includes_status_message_field(self):
+        mgr = _FakeRlorMgr(
+            wait_error=RuntimeError("wait failed"),
+            get_result={
+                "state": "JOB_STATE_FAILED",
+                "statusMessage": "OOM killed",
+            },
+        )
+        with pytest.raises(RuntimeError, match="OOM killed"):
+            create_trainer_job(
+                mgr, base_model="model", infra=InfraConfig(), display_name="test"
+            )
+
+    def test_create_error_surfaces_directly(self):
+        mgr = _FakeRlorMgr(create_error=ValueError("invalid accelerator type"))
+        with pytest.raises(RuntimeError, match="invalid accelerator type"):
+            create_trainer_job(
+                mgr, base_model="model", infra=InfraConfig(), display_name="test"
+            )
+
+    def test_error_still_raised_when_get_fails(self):
+        class BadGetMgr(_FakeRlorMgr):
+            def get(self, job_id):
+                raise ConnectionError("server unreachable")
+
+        mgr = BadGetMgr(wait_error=RuntimeError("connection lost"))
+        with pytest.raises(RuntimeError, match="connection lost"):
+            create_trainer_job(
+                mgr, base_model="model", infra=InfraConfig(), display_name="test"
+            )
+
+
+# ---------------------------------------------------------------------------
+# create_trainer_job: on_status callback
+# ---------------------------------------------------------------------------
+
+
+class TestCreateTrainerJobStatusCallback:
+    def test_on_status_called_on_success(self):
+        messages = []
+        mgr = _FakeRlorMgr()
+        create_trainer_job(
+            mgr,
+            base_model="model",
+            infra=InfraConfig(),
+            display_name="grpo-policy",
+            on_status=messages.append,
+        )
+        assert any("creating" in m for m in messages)
+        assert any("waiting" in m for m in messages)
+        assert any("ready" in m for m in messages)
+
+    def test_on_status_called_on_failure(self):
+        messages = []
+        mgr = _FakeRlorMgr(wait_error=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            create_trainer_job(
+                mgr,
+                base_model="model",
+                infra=InfraConfig(),
+                display_name="grpo-policy",
+                on_status=messages.append,
+            )
+        assert any("creating" in m for m in messages)
+        assert any("Failed" in m for m in messages)
+
+    def test_on_status_for_precreated_job(self):
+        messages = []
+        mgr = _FakeRlorMgr()
+        create_trainer_job(
+            mgr,
+            base_model="model",
+            infra=InfraConfig(),
+            display_name="test",
+            job_id="pre-created-123",
+            base_url_override="http://preexisting:8080",
+            on_status=messages.append,
+        )
+        assert any("pre-created" in m for m in messages)
+
+    def test_broken_callback_does_not_crash_creation(self):
+        def bad_callback(msg):
+            raise ValueError("callback broke")
+
+        mgr = _FakeRlorMgr()
+        endpoint = create_trainer_job(
+            mgr,
+            base_model="model",
+            infra=InfraConfig(),
+            display_name="test",
+            on_status=bad_callback,
+        )
+        assert endpoint.job_id == "job-123"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_job_failure_reason
+# ---------------------------------------------------------------------------
+
+
+class TestFetchJobFailureReason:
+    def test_returns_state_and_error_message(self):
+        mgr = _FakeRlorMgr(get_result={
+            "state": "JOB_STATE_FAILED",
+            "error": {"message": "GPU OOM"},
+        })
+        reason = _fetch_job_failure_reason(mgr, "job-1")
+        assert "JOB_STATE_FAILED" in reason
+        assert "GPU OOM" in reason
+
+    def test_returns_none_when_no_details(self):
+        mgr = _FakeRlorMgr(get_result={})
+        reason = _fetch_job_failure_reason(mgr, "job-1")
+        assert reason is None
+
+    def test_returns_none_when_get_raises(self):
+        class ErrorMgr:
+            def get(self, job_id):
+                raise ConnectionError("server down")
+
+        reason = _fetch_job_failure_reason(ErrorMgr(), "job-1")
+        assert reason is None
+
+    def test_returns_error_message_field(self):
+        mgr = _FakeRlorMgr(get_result={
+            "state": "JOB_STATE_FAILED",
+            "errorMessage": "NCCL init failed",
+        })
+        reason = _fetch_job_failure_reason(mgr, "job-1")
+        assert "NCCL init failed" in reason
+
+    def test_returns_status_message_field(self):
+        mgr = _FakeRlorMgr(get_result={
+            "statusMessage": "Pod evicted",
+        })
+        reason = _fetch_job_failure_reason(mgr, "job-1")
+        assert "Pod evicted" in reason

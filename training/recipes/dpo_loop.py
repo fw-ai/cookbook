@@ -415,7 +415,6 @@ def main(
     deploy_mgr: DeploymentManager | None = None,
 ):
     cfg = config
-    runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
@@ -523,7 +522,15 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
+    runner = RunnerIO(cfg.runner)
+    runner.set_accelerator_info(policy_infra.accelerator_type, policy_infra.accelerator_count, profile=profile)
+    runner.write_status(RunStatus.RUNNING, message="provisioning")
+
+    def _on_trainer_status(msg: str) -> None:
+        runner.write_status(RunStatus.RUNNING, message=msg)
+
+    with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
+        _on_trainer_status("provisioning policy and reference trainers")
         with ThreadPoolExecutor(max_workers=2) as pool:
             pol_fut = pool.submit(
                 create_trainer_job,
@@ -535,8 +542,9 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
+                hot_load_deployment_id=cfg.deployment.deployment_id,
                 cleanup=cleanup,
+                on_status=_on_trainer_status,
             )
             ref_fut = pool.submit(
                 create_trainer_job,
@@ -550,9 +558,24 @@ def main(
                 display_name="dpo-reference",
                 forward_only=True,
                 cleanup=cleanup,
+                on_status=_on_trainer_status,
             )
-            policy_ep = pol_fut.result()
-            reference_ep = ref_fut.result()
+            # Collect both results so that if both fail we report
+            # both errors instead of swallowing the second one.
+            errors: list[str] = []
+            policy_ep = reference_ep = None
+            try:
+                policy_ep = pol_fut.result()
+            except Exception as e:
+                errors.append(f"Policy trainer: {e}")
+            try:
+                reference_ep = ref_fut.result()
+            except Exception as e:
+                errors.append(f"Reference trainer: {e}")
+            if errors:
+                raise RuntimeError(
+                    "Trainer creation failed:\n" + "\n".join(errors)
+                )
 
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id
@@ -606,13 +629,6 @@ def main(
         if not tokenized_pairs:
             raise RuntimeError("No valid pairs after tokenization")
 
-        runner.set_accelerator_info(
-            policy_infra.accelerator_type,
-            policy_infra.accelerator_count,
-            profile=profile,
-        )
-        runner.write_status(RunStatus.RUNNING, message="provisioning")
-
         def _on_ref_done():
             nonlocal reference_job_id
             logger.info("Reference forward complete — closing reference client before trainer cleanup")
@@ -626,14 +642,13 @@ def main(
                 logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
 
         runner.start_training()
-        with runner:
-            step = asyncio.run(
-                _train_loop(
-                    tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
-                    on_ref_done=_on_ref_done,
-                    runner=runner,
-                )
+        step = asyncio.run(
+            _train_loop(
+                tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
+                on_ref_done=_on_ref_done,
+                runner=runner,
             )
+        )
 
         # -- Final checkpoint --------------------------------------------------
 

@@ -58,7 +58,7 @@ def parse_args():
                         help="Max gradient norm for clipping (0 = no clipping)")
     parser.add_argument("--wandb-project", default="sft-tinker")
     parser.add_argument("--wandb-run-name", default=None)
-    parser.add_argument("--wandb-entity", default="")
+    parser.add_argument("--wandb-entity", default=None)
     return parser.parse_args()
 
 

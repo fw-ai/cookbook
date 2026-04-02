@@ -207,7 +207,10 @@ def main(
     )
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
-    with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
+    def _on_trainer_status(msg: str) -> None:
+        runner.write_status(RunStatus.RUNNING, message=msg)
+
+    with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         endpoint = create_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
@@ -218,6 +221,7 @@ def main(
             learning_rate=cfg.learning_rate,
             display_name="sft-trainer",
             cleanup=cleanup,
+            on_status=_on_trainer_status,
         )
         job_id = endpoint.job_id
         client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
@@ -381,14 +385,13 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
-        with runner:
-            for epoch in range(cfg.epochs):
-                sft_dataset.set_epoch(epoch)
-                epoch_start = start_batch if epoch == 0 else 0
-                for i_batch in range(epoch_start, total_batches_per_epoch):
-                    batch = sft_dataset.get_batch(i_batch)
-                    data_consumed += len(batch)
-                    step = _run_train_step(batch, step)
+        for epoch in range(cfg.epochs):
+            sft_dataset.set_epoch(epoch)
+            epoch_start = start_batch if epoch == 0 else 0
+            for i_batch in range(epoch_start, total_batches_per_epoch):
+                batch = sft_dataset.get_batch(i_batch)
+                data_consumed += len(batch)
+                step = _run_train_step(batch, step)
 
         # -- Final checkpoint --------------------------------------------------
 

@@ -19,6 +19,6 @@ python train_sft.py \
     --region US_VIRGINIA_1 \
     --max-examples 100 \
     --epochs 3 \
-    --batch-size 8 \
+    --batch-size 32 \
     --learning-rate 1e-5 \
     --output-model-id sft-text-qwen3-8b-$(date +%Y%m%d%H%M)

@@ -128,14 +128,20 @@ def save_checkpoint(
     directly without additional resolution.
     """
     paths: dict[str, str] = {}
+    t0 = time.time()
     if kind in (CheckpointKind.STATE, CheckpointKind.BOTH):
+        logger.info("Saving DCP state checkpoint '%s'...", name)
         client.save_state(name)
+        logger.info("DCP state checkpoint '%s' saved (%.1fs)", name, time.time() - t0)
         paths["state_path"] = client.resolve_checkpoint_path(
             name, source_job_id=client.job_id,
         )
     if kind in (CheckpointKind.SAMPLER, CheckpointKind.BOTH):
+        t1 = time.time()
+        logger.info("Saving sampler checkpoint '%s'...", name)
         save_result = client.save_weights_for_sampler_ext(name, checkpoint_type="base")
         paths["sampler_path"] = get_sampler_checkpoint_id(save_result)
+        logger.info("Sampler checkpoint '%s' saved (%.1fs)", name, time.time() - t1)
 
     full_dict = {"name": name, **loop_state, **paths}
     if base_model:
@@ -144,5 +150,5 @@ def save_checkpoint(
         full_dict["training_shape"] = training_shape
     fileio.makedirs(log_path)
     fileio.append_jsonl(fileio.join(log_path, CHECKPOINTS_BASE_NAME), full_dict)
-    logger.info("Saved checkpoint: %s", full_dict)
+    logger.info("Checkpoint '%s' complete (%.1fs total): %s", name, time.time() - t0, full_dict)
     return paths

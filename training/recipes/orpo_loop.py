@@ -260,7 +260,13 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    with ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
+    runner.set_accelerator_info(trainer_infra.accelerator_type, trainer_infra.accelerator_count, profile=profile)
+    runner.write_status(RunStatus.RUNNING, message="provisioning")
+
+    def _on_trainer_status(msg: str) -> None:
+        runner.write_status(RunStatus.RUNNING, message=msg)
+
+    with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         endpoint = create_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
@@ -272,6 +278,7 @@ def main(
             display_name="orpo-trainer",
             job_id=cfg.job_id,
             cleanup=cleanup if not cfg.job_id else None,
+            on_status=_on_trainer_status,
         )
         job_id = endpoint.job_id
         client = ReconnectableClient(
@@ -416,27 +423,21 @@ def main(
             runner.write_metadata()
             return time.monotonic()
 
-        runner.set_accelerator_info(
-            trainer_infra.accelerator_type,
-            trainer_infra.accelerator_count,
-            profile=profile,
-        )
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 
-        with runner:
-            for epoch in range(cfg.epochs):
-                random.shuffle(pair_cache)
-                step_t0 = time.monotonic()
-                batch_buffer: list[dict] = []
-                for pair in pair_cache:
-                    batch_buffer.append(pair)
-                    if len(batch_buffer) >= cfg.batch_size:
-                        step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
-                        batch_buffer = []
+        for epoch in range(cfg.epochs):
+            random.shuffle(pair_cache)
+            step_t0 = time.monotonic()
+            batch_buffer: list[dict] = []
+            for pair in pair_cache:
+                batch_buffer.append(pair)
+                if len(batch_buffer) >= cfg.batch_size:
+                    step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
+                    batch_buffer = []
 
-                if batch_buffer:
-                    _run_train_step(epoch, batch_buffer, step_t0)
+            if batch_buffer:
+                _run_train_step(epoch, batch_buffer, step_t0)
 
         # -- Final checkpoint ------------------------------------------------
 

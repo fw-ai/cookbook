@@ -156,6 +156,39 @@ class ResourceCleanup:
                 logger.warning("Cleanup: failed to clean deployment %s: %s", did, e)
 
 
+StatusCallback = Any
+"""``Callable[[str], None]`` -- invoked with a human-readable provisioning
+status message at each lifecycle step (creating, waiting, ready, failed).
+Declared as ``Any`` to avoid import-time coupling with callers."""
+
+
+def _fetch_job_failure_reason(
+    rlor_mgr: TrainerJobManager,
+    job_id: str,
+) -> str | None:
+    """Try to retrieve a detailed failure reason from the server.
+
+    Returns a human-readable string when the job has error details,
+    ``None`` when the server doesn't expose them or the fetch fails.
+    """
+    try:
+        job = rlor_mgr.get(job_id)
+        state = job.get("state", "")
+        reason_parts: list[str] = []
+        if state:
+            reason_parts.append(f"state={state}")
+        error_msg = (
+            job.get("error", {}).get("message")
+            or job.get("errorMessage")
+            or job.get("statusMessage")
+        )
+        if error_msg:
+            reason_parts.append(error_msg)
+        return "; ".join(reason_parts) if reason_parts else None
+    except Exception:
+        return None
+
+
 def create_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,
@@ -173,6 +206,7 @@ def create_trainer_job(
     forward_only: bool = False,
     base_url_override: str | None = None,
     cleanup: ResourceCleanup | None = None,
+    on_status: StatusCallback | None = None,
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
@@ -189,8 +223,19 @@ def create_trainer_job(
     polling and return an endpoint pointing at that URL directly.
     Otherwise for pre-created jobs, the SDK routes through the gateway
     via /training/v1/rlorTrainerJobs/{accountId}/{jobId}/*.
+
+    *on_status* is an optional callback invoked with a human-readable
+    string at each provisioning milestone (e.g. ``"creating trainer job"``).
+    Recipes can use it to write fine-grained progress to ``RunnerIO``.
     """
     trainer_role = "reference" if forward_only else "policy"
+
+    def _emit(msg: str) -> None:
+        if on_status is not None:
+            try:
+                on_status(msg)
+            except Exception:
+                pass
 
     if job_id:
         if base_url_override:
@@ -201,11 +246,13 @@ def create_trainer_job(
                 job_id,
                 base_url_override,
             )
+            _emit(f"using pre-created {trainer_role} trainer {job_id}")
             return TrainerServiceEndpoint(
                 job_name=job_name,
                 job_id=job_id,
                 base_url=base_url_override,
             )
+        _emit(f"reusing existing {trainer_role} trainer {job_id}")
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
     if profile is not None:
@@ -249,27 +296,42 @@ def create_trainer_job(
         display_name,
         forward_only,
     )
+    _emit(f"creating {trainer_role} trainer '{display_name}'")
+
+    created_job_id: str | None = None
     try:
         created_job = rlor_mgr.create(config)
+        created_job_id = created_job.job_id
         if cleanup:
             cleanup.trainer(created_job.job_id)
+        _emit(
+            f"waiting for {trainer_role} trainer '{display_name}' "
+            f"to become ready (job {created_job.job_id})"
+        )
         endpoint = rlor_mgr.wait_for_ready(
             created_job.job_id,
             job_name=created_job.job_name,
             timeout_s=infra.trainer_timeout_s,
         )
     except Exception as e:
+        detail = str(e)
+        if created_job_id:
+            server_reason = _fetch_job_failure_reason(rlor_mgr, created_job_id)
+            if server_reason:
+                detail = f"{detail} — server: {server_reason}"
         logger.error(
             "Failed to create %s trainer job '%s' (forward_only=%s): %s",
             trainer_role,
             display_name,
             forward_only,
-            e,
+            detail,
         )
-        raise RuntimeError(
+        error_msg = (
             f"Failed to create {trainer_role} trainer job '{display_name}' "
-            f"(forward_only={forward_only})"
-        ) from e
+            f"(forward_only={forward_only}): {detail}"
+        )
+        _emit(error_msg)
+        raise RuntimeError(error_msg) from e
 
     logger.info(
         "Created %s trainer job '%s': %s",
@@ -277,6 +339,7 @@ def create_trainer_job(
         display_name,
         endpoint.job_id,
     )
+    _emit(f"{trainer_role} trainer '{display_name}' is ready (job {endpoint.job_id})")
     return endpoint
 
 

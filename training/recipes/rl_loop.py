@@ -411,9 +411,13 @@ def main(
     )
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
+    def _on_trainer_status(msg: str) -> None:
+        runner.write_status(RunStatus.RUNNING, message=msg)
+
     _infra_start = _time.time()
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
+    with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
+        _on_trainer_status("provisioning deployment")
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, policy_infra)
         if cleanup_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
@@ -425,6 +429,7 @@ def main(
         )
 
         if use_reference:
+            _on_trainer_status("provisioning policy and reference trainers")
             with ThreadPoolExecutor(max_workers=2) as pool:
                 pol_fut = pool.submit(
                     create_trainer_job,
@@ -436,10 +441,11 @@ def main(
                     max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-policy",
-                    hot_load_deployment_id=cfg.deployment.deployment_id,  # weight sync target deployment
+                    hot_load_deployment_id=cfg.deployment.deployment_id,
                     job_id=cfg.policy_job_id,
                     base_url_override=cfg.policy_base_url,
                     cleanup=cleanup if not cfg.policy_job_id else None,
+                    on_status=_on_trainer_status,
                 )
                 ref_fut = pool.submit(
                     create_trainer_job,
@@ -455,10 +461,25 @@ def main(
                     job_id=cfg.reference_job_id,
                     base_url_override=cfg.reference_base_url,
                     cleanup=cleanup if not cfg.reference_job_id else None,
+                    on_status=_on_trainer_status,
                 )
-                policy_ep = pol_fut.result()
+                # Collect both results so that if both fail we report
+                # both errors instead of swallowing the second one.
+                errors: list[str] = []
+                policy_ep = reference_ep = None
+                try:
+                    policy_ep = pol_fut.result()
+                except Exception as e:
+                    errors.append(f"Policy trainer: {e}")
+                try:
+                    reference_ep = ref_fut.result()
+                except Exception as e:
+                    errors.append(f"Reference trainer: {e}")
+                if errors:
+                    raise RuntimeError(
+                        "Trainer creation failed:\n" + "\n".join(errors)
+                    )
                 policy_job_id = policy_ep.job_id
-                reference_ep = ref_fut.result()
                 reference_job_id = reference_ep.job_id
         else:
             policy_ep = create_trainer_job(
@@ -474,6 +495,7 @@ def main(
                 job_id=cfg.policy_job_id,
                 base_url_override=cfg.policy_base_url,
                 cleanup=cleanup if not cfg.policy_job_id else None,
+                on_status=_on_trainer_status,
             )
             policy_job_id = policy_ep.job_id
             reference_ep = None
@@ -720,7 +742,15 @@ def main(
             if not use_reference:
                 return
             all_ref_data = [d for pg in groups for d in pg.ref_data]
-            ref_fwd = reference.forward(all_ref_data, "cross_entropy")
+            try:
+                ref_fwd = reference.forward(all_ref_data, "cross_entropy")
+            except Exception as e:
+                raise RuntimeError(
+                    f"Reference forward failed (batch of {len(all_ref_data)} datums): {e}\n"
+                    "Possible causes: reference trainer crashed, NCCL timeout, or "
+                    "request exceeded the default timeout. Check reference trainer "
+                    "logs and consider increasing the client timeout."
+                ) from e
             idx = 0
             for pg in groups:
                 n = len(pg.ref_data)
@@ -892,19 +922,18 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_rl_steps, message="training")
 
-        with runner:
-            global_step = asyncio.run(
-                run_rl_loop(
-                    sample_fns=(sample_one_prompt(row) for row in remaining_rows),
-                    train_fns=train_fns,
-                    prompt_groups_per_step=prompt_groups_per_step,
-                    dynamic_filter_fn=should_accept,
-                    global_step=step_offset,
-                    metrics_callback=_loop_metrics_callback,
-                    weight_sync_fn=_weight_sync if cfg.weight_sync.weight_sync_interval > 0 else None,
-                    weight_sync_interval=cfg.weight_sync.weight_sync_interval,
-                )
+        global_step = asyncio.run(
+            run_rl_loop(
+                sample_fns=(sample_one_prompt(row) for row in remaining_rows),
+                train_fns=train_fns,
+                prompt_groups_per_step=prompt_groups_per_step,
+                dynamic_filter_fn=should_accept,
+                global_step=step_offset,
+                metrics_callback=_loop_metrics_callback,
+                weight_sync_fn=_weight_sync if cfg.weight_sync.weight_sync_interval > 0 else None,
+                weight_sync_interval=cfg.weight_sync.weight_sync_interval,
             )
+        )
 
         # -- Final checkpoint ----------------------------------------------------
 
@@ -955,4 +984,14 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    main(Config(log_path="./rl_logs"))
+    cfg = Config(
+        log_path="./rl_logs",
+        base_model="accounts/fireworks/models/qwen3-8b",
+        infra=InfraConfig(
+            training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200",
+        ),
+        deployment=DeployConfig(
+            tokenizer_model="Qwen/Qwen3-8B",
+        ),
+    )
+    main(cfg)
