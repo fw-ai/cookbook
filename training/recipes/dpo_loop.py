@@ -330,7 +330,7 @@ async def _train_loop(
                 )
 
         step_elapsed = time.monotonic() - step_t0
-        tokens_per_sec = total_tokens / step_elapsed if step_elapsed > 0 else 0.0
+        tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
         step_metrics.update(flush_timing())
 
         fwd_metrics = fwd_bwd_result.metrics
