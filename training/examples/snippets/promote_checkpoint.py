@@ -8,29 +8,14 @@ API.  No temporary trainer is needed — promotion is a lightweight
 metadata + file-copy operation that works even after the trainer job
 has been deleted.
 
-Checkpoint storage paths
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-The server reconstructs the GCS path from the account's storage bucket
-and either the trainer job ID or the deployment ID:
-
-- **Trainer-first jobs** (default, post cookbook#273): checkpoints are
-  stored under ``gs://{bucket}/rl-checkpoints/{account}/trainer-{jobId}/``.
-  The ``source_job_id`` from ``checkpoints.jsonl`` is all that's needed.
-
-- **Deployment-first jobs** (legacy): checkpoints are stored under
-  ``gs://{bucket}/rl-checkpoints/{account}/{deploymentId}/``.
-  Pass ``--hot-load-deployment-id`` to tell the server which deployment
-  bucket to look in. Without it the server assumes the trainer-keyed path.
-
 Usage:
     export FIREWORKS_API_KEY=...
 
-    # Trainer-first: promote the latest checkpoint:
+    # Promote the latest checkpoint:
     python promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl
 
-    # Trainer-first: promote a specific step:
+    # Promote a specific step:
     python promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
         --step 10
@@ -41,7 +26,7 @@ Usage:
         --model accounts/fireworks/models/qwen3-8b \
         --output-model-id my-fine-tuned-qwen3-8b
 
-    # Deployment-first (legacy): specify which deployment bucket:
+    # Legacy jobs that used deployment-owned checkpoints:
     python promote_checkpoint.py \
         --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
         --hot-load-deployment-id my-deployment
@@ -127,8 +112,8 @@ def parse_args() -> PromoteConfig:
         "--hot-load-deployment-id",
         default=None,
         help=(
-            "Deployment ID for legacy checkpoints stored under a "
-            "deployment-keyed bucket. Omit for trainer-owned buckets."
+            "Deployment ID for legacy jobs whose checkpoints are "
+            "associated with a deployment. Omit for newer jobs."
         ),
     )
     args = parser.parse_args()
@@ -230,7 +215,7 @@ def main() -> None:
     logger.info("Base model:      %s", base_model)
     logger.info("Output model ID: %s", output_model_id)
     if cfg.hot_load_deployment_id:
-        logger.info("Deployment ID:   %s (legacy bucket)", cfg.hot_load_deployment_id)
+        logger.info("Deployment ID:   %s (legacy)", cfg.hot_load_deployment_id)
 
     model = client.promote_checkpoint(
         resolved.source_job_id,
