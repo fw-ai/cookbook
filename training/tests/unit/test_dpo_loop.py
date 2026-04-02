@@ -280,8 +280,6 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
     events: dict[str, object] = {
         "deleted_jobs": [],
         "lifecycle": [],
-        "setup_deployment": [],
-        "weight_syncer_saves": [],
         "wandb_finished": 0,
     }
 
@@ -352,17 +350,6 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         def close(self):
             events["lifecycle"].append(("close", self.job_id))
 
-    class FakeWeightSyncer:
-        def __init__(self, **kwargs):
-            events["weight_syncer_init"] = kwargs
-
-        def save_and_hotload(self, name):
-            events["weight_syncer_saves"].append(name)
-
-        def hotload(self, snapshot_name, checkpoint_type="base"):
-            events.setdefault("hotload_calls", []).append((snapshot_name, checkpoint_type))
-            return True
-
     def fake_tokenize_pairs(*args, **kwargs):
         events["tokenize_args"] = args
         return (
@@ -379,7 +366,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
         )
 
     async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
-                              weight_syncer, cfg, step_offset, on_ref_done=None, runner=None):
+                              cfg, step_offset, on_ref_done=None, runner=None):
         events["train_loop"] = {
             "tokenized_pairs": tokenized_pairs,
             "reference_job_id": reference.job_id,
@@ -393,10 +380,8 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
-    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: events["setup_deployment"].append((args, kwargs)))
     monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
-    monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(module, "_tokenize_pairs", fake_tokenize_pairs)
     monkeypatch.setattr(module, "_train_loop", fake_train_loop)
     monkeypatch.setattr(module, "load_preference_dataset", lambda *args, **kwargs: [{"chosen": {}, "rejected": {}}])
@@ -413,8 +398,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
             tokenizer_model="Qwen/Qwen3-4B",
             max_seq_len=None,
             infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1", extra_args=["--foo"]),
-            deployment=module.DeployConfig(deployment_id="dep-123"),
-            weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
+            deployment=module.DeployConfig(),
         )
 
         result = module.main(
@@ -429,18 +413,13 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
             "reference_job_id": None,
         }
         assert cfg.max_seq_len == 96
-        assert len(events["setup_deployment"]) == 1
         assert [cfg.display_name for cfg in events["created_configs"]] == [
             "dpo-policy",
             "dpo-reference",
         ]
-        assert events["created_configs"][0].hot_load_deployment_id == "dep-123"
         assert events["created_configs"][1].forward_only is True
         assert events["train_loop"]["reference_job_id"] == "reference-job"
         assert events["train_loop"]["policy_job_id"] == "policy-job"
-        # Final checkpoint now goes through save_checkpoint + hotload
-        assert events["hotload_calls"] == [("step-2-session", "base")]
-
         ref_del_idx = events["deleted_jobs"].index("reference-job")
         pol_del_idx = events["deleted_jobs"].index("policy-job")
         assert ref_del_idx < pol_del_idx, "reference must be deleted before policy"
@@ -461,9 +440,6 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
 
     events: dict[str, object] = {
         "deleted_jobs": [],
-        "setup_deployment": [],
-        "hotload_calls": [],
-        "save_and_hotload_calls": [],
         "promotions": [],
         "wandb_finished": 0,
     }
@@ -533,18 +509,6 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         def resolve_checkpoint_path(self, name, source_job_id=None):
             return f"tinker://unit/state/{name}"
 
-    class FakeWeightSyncer:
-        def __init__(self, **kwargs):
-            events["weight_syncer_init"] = kwargs
-
-        def save_and_hotload(self, name, checkpoint_type=None):
-            events["save_and_hotload_calls"].append((name, checkpoint_type))
-            return f"{name}-session"
-
-        def hotload(self, snapshot_name, checkpoint_type="base"):
-            events["hotload_calls"].append((snapshot_name, checkpoint_type))
-            return True
-
     def fake_tokenize_pairs(*args, **kwargs):
         return (
             [(0, {
@@ -560,7 +524,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         )
 
     async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
-                              weight_syncer, cfg, step_offset, on_ref_done=None, runner=None):
+                              cfg, step_offset, on_ref_done=None, runner=None):
         events["train_loop"] = {
             "tokenized_pairs": tokenized_pairs,
             "policy_job_id": policy.job_id,
@@ -571,10 +535,8 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
-    monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: events["setup_deployment"].append((args, kwargs)))
     monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
-    monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(module, "_tokenize_pairs", fake_tokenize_pairs)
     monkeypatch.setattr(module, "_train_loop", fake_train_loop)
     monkeypatch.setattr(module, "load_preference_dataset", lambda *args, **kwargs: [{"chosen": {}, "rejected": {}}])
@@ -591,8 +553,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
             tokenizer_model="Qwen/Qwen3-4B",
             max_seq_len=None,
             infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1", ref_training_shape_id="ts-qwen3-4b-smoke-v1"),
-            deployment=module.DeployConfig(deployment_id="dep-123"),
-            weight_sync=module.WeightSyncConfig(weight_sync_interval=1),
+            deployment=module.DeployConfig(),
             output_model_id="promoted-dpo-model",
         )
 
@@ -607,8 +568,6 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
             "policy_job_id": "policy-job",
             "reference_job_id": None,
         }
-        assert events["hotload_calls"] == [("step-2-session", "base")]
-        assert events["save_and_hotload_calls"] == []
         assert events["promotions"] == [
             ("policy-job", "step-2-session", "promoted-dpo-model"),
         ]
@@ -621,12 +580,11 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
         assert events["wandb_finished"] == 1
 
 
-def test_train_loop_pipeline_and_weight_sync(monkeypatch):
+def test_train_loop_pipeline_and_dcp_save(monkeypatch):
     """Test the pipelined _train_loop with real ref forward + training."""
     events: dict[str, object] = {
         "flush_batches": [],
         "optim_steps": 0,
-        "weight_syncs": [],
         "metrics_logs": [],
         "wandb_logs": [],
         "ref_done_called": False,
@@ -668,10 +626,6 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
                 ]
             )
 
-    class FakeWeightSyncer:
-        def save_and_hotload(self, name):
-            events["weight_syncs"].append(name)
-
     tokenized_pairs = [
         (0, {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"},
              "chosen_tokens": [1, 2, 3], "rejected_tokens": [1, 2, 4], "response_start": 3}),
@@ -685,7 +639,7 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
             beta=0.2,
             epochs=1,
             batch_size=2,
-            weight_sync=module.WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=1),
+            dcp_save_interval=1,
         )
 
         def _on_ref_done():
@@ -697,7 +651,6 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
                 FakeReference(),
                 FakePolicy(),
                 adam_params={"lr": 1e-4},
-                weight_syncer=FakeWeightSyncer(),
                 cfg=cfg,
                 step_offset=0,
                 on_ref_done=_on_ref_done,
@@ -713,8 +666,7 @@ def test_train_loop_pipeline_and_weight_sync(monkeypatch):
         assert "ref_chosen" in trained_pairs[0]
         assert "ref_rejected" in trained_pairs[0]
         assert events["optim_steps"] == 1
-        assert events["weight_syncs"] == ["step-1"]
-        # DCP save now goes through save_checkpoint -> checkpoints.jsonl
+        # DCP save goes through save_checkpoint -> checkpoints.jsonl
         import json, os
         cp_file = os.path.join(tmp_log_path, "checkpoints.jsonl")
         assert os.path.exists(cp_file)
@@ -780,15 +732,11 @@ def test_pipeline_overlap_ref_freed_before_training_done():
             for i in range(4)
         ]
 
-        class FakeWS:
-            def save_and_hotload(self, name): pass
-
         t0 = time.monotonic()
         step = asyncio.run(
             mod._train_loop(
                 tokenized, FastReference(), SlowPolicy(),
                 adam_params={"lr": 1e-4},
-                weight_syncer=FakeWS(),
                 cfg=cfg,
                 step_offset=0,
                 on_ref_done=on_ref_done,
