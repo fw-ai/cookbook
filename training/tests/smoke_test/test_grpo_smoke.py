@@ -1,4 +1,4 @@
-"""Minimal GRPO e2e smoke test on Qwen3-4B.
+"""Minimal GRPO e2e smoke test on Qwen3-8B.
 
 Runs 2 optimizer steps with weight syncing on a single GPU:
   Step 1: fwd/bkwd + optim_step -> weight sync to deployment
@@ -61,7 +61,7 @@ def test_grpo_smoke(
     smoke_infra,
     smoke_deployment_shape,
 ):
-    """2-step GRPO on Qwen3-4B: train, weight sync, train again, cleanup."""
+    """2-step GRPO on Qwen3-8B: train, weight sync, train again, cleanup."""
     from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
     from training.recipes.rl_loop import Config, main
     import training.recipes.rl_loop as rl_mod

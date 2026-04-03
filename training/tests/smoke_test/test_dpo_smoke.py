@@ -1,4 +1,4 @@
-"""Minimal DPO smoke test on Qwen3-4B."""
+"""Minimal DPO smoke test on Qwen3-8B."""
 
 from __future__ import annotations
 
