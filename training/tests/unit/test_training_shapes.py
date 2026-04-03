@@ -290,6 +290,38 @@ def test_select_validated_launch_shapes_preserves_explicit_overrides():
     assert selection.inferred_deployment_shape is False
 
 
+def test_select_validated_launch_shapes_accepts_short_training_shape_ids():
+    profile = SimpleNamespace(
+        training_shape_version="accounts/fireworks/trainingShapes/ts-qwen3-4b-smoke-v1/versions/v1",
+        trainer_image_tag="trainer:1",
+        max_supported_context_length=16384,
+        node_count=1,
+        deployment_shape_version="",
+        deployment_image_tag="deployment:1",
+        accelerator_type="NVIDIA_L40S",
+        accelerator_count=1,
+        base_model_weight_precision="WEIGHT_PRECISION_BFLOAT16",
+        pipeline_parallelism=1,
+    )
+    mgr = _FakeSelectorMgr(lambda path: (_ for _ in ()).throw(AssertionError(path)), profile=profile)
+
+    selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-4b",
+            max_seq_len=4096,
+            trainer_role="policy",
+            explicit_training_shape_id="ts-qwen3-4b-smoke-v1",
+        ),
+    )
+
+    assert mgr.resolved_shapes == ["accounts/fireworks/trainingShapes/ts-qwen3-4b-smoke-v1"]
+    assert (
+        selection.training_shape_id
+        == "accounts/fireworks/trainingShapes/ts-qwen3-4b-smoke-v1"
+    )
+
+
 def test_select_validated_launch_shapes_raises_when_no_validated_shape_matches():
     def handler(path: str) -> dict:
         if path == "/v1/accounts/fireworks/models/qwen3-8b":

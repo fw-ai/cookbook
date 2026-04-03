@@ -121,7 +121,7 @@ For detailed guides, configuration reference, and examples, see the official doc
 recipes/                 Training loop scripts (fork these)
 utils/                   Shared config, data loading, loss functions, metrics
 examples/rl/deepmath/    Worked example: math reasoning with GRPO
-examples/rl/frozen_lake/ Worked example: Frozen Lake with tool-use RL
+examples/rl/frozen_lake/ Worked example: Frozen Lake with tool-use RL, including `run_vl.sh` for Qwen3-VL image observations
 examples/orpo/ifeval/    Worked example: IFEval with ORPO
 examples/sft/            Worked example: SFT getting started
 examples/dpo/            Worked example: DPO

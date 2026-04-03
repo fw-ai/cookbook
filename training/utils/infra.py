@@ -371,7 +371,22 @@ def setup_deployment(
         if dep_config.region is None:
             info = _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
         else:
-            info = deploy_mgr.create_or_get(dep_config)
+            try:
+                info = deploy_mgr.create_or_get(dep_config)
+            except Exception as e:
+                if _requires_deployment_description_workaround(deploy_mgr, e):
+                    logger.info(
+                        "Retrying deployment creation for account %s via cookbook path "
+                        "with description workaround",
+                        deploy_mgr.account_id,
+                    )
+                    info = _create_deployment_via_cookbook(
+                        deploy_mgr,
+                        dep_config,
+                        purpose=infra.purpose,
+                    )
+                else:
+                    raise
 
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
@@ -379,6 +394,23 @@ def setup_deployment(
             timeout_s=deploy_cfg.deployment_timeout_s,
         )
     return info
+
+
+def _requires_deployment_description_workaround(
+    deploy_mgr: DeploymentManager,
+    exc: Exception,
+) -> bool:
+    """Detect the current Fireworks-account deployment-description requirement."""
+    if getattr(deploy_mgr, "account_id", None) != "fireworks":
+        return False
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) != 400:
+        return False
+    message_parts = [str(exc)]
+    text = getattr(response, "text", None)
+    if text:
+        message_parts.append(text)
+    return "description is required" in " ".join(message_parts).lower()
 
 
 def _infer_region_from_deployment_shape(
@@ -483,8 +515,15 @@ def _create_deployment_via_cookbook(
         "maxReplicaCount": config.max_replica_count,
         "enableHotLoad": True,
     }
+    description = getattr(config, "description", None)
+    if description:
+        body["description"] = description
+    if config.region:
+        body["placement"] = {"region": config.region}
     if config.hot_load_bucket_type:
         body["hotLoadBucketType"] = config.hot_load_bucket_type
+    if config.hot_load_trainer_job:
+        body["hotLoadTrainerJob"] = config.hot_load_trainer_job
     if config.deployment_shape:
         body["deploymentShape"] = config.deployment_shape
     if config.accelerator_type:

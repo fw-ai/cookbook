@@ -1,4 +1,4 @@
-"""Shared fixtures for remote smoke tests on small Qwen3-4B shapes."""
+"""Shared fixtures for remote smoke tests on validated Qwen3-8B shapes."""
 
 from __future__ import annotations
 
@@ -13,9 +13,15 @@ from training.utils.config import InfraConfig
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SMOKE_BASE_MODEL = "accounts/fireworks/models/qwen3-4b"
-DEFAULT_SMOKE_TOKENIZER_MODEL = "Qwen/Qwen3-4B"
-DEFAULT_SMOKE_TRAINING_SHAPE = "ts-qwen3-4b-smoke-v1"
+DEFAULT_SMOKE_BASE_MODEL = "accounts/fireworks/models/qwen3-8b"
+DEFAULT_SMOKE_TOKENIZER_MODEL = "Qwen/Qwen3-8B"
+DEFAULT_SMOKE_TRAINING_SHAPE = (
+    "accounts/fireworks/trainingShapes/qwen3-8b-128k"
+)
+DEFAULT_SMOKE_REF_TRAINING_SHAPE = (
+    "accounts/fireworks/trainingShapes/qwen3-8b-128k-forward-only"
+)
+DEFAULT_SMOKE_DEPLOYMENT_SHAPE = None
 DEFAULT_SMOKE_BASE_URL = "https://dev.api.fireworks.ai"
 
 
@@ -36,6 +42,22 @@ def smoke_tokenizer_model() -> str:
 @pytest.fixture(scope="session")
 def smoke_training_shape() -> str:
     return _get_env("FIREWORKS_SMOKE_TRAINING_SHAPE", DEFAULT_SMOKE_TRAINING_SHAPE)
+
+
+@pytest.fixture(scope="session")
+def smoke_ref_training_shape() -> str:
+    return _get_env(
+        "FIREWORKS_SMOKE_REF_TRAINING_SHAPE",
+        DEFAULT_SMOKE_REF_TRAINING_SHAPE,
+    )
+
+
+@pytest.fixture(scope="session")
+def smoke_deployment_shape() -> str | None:
+    return _get_env(
+        "FIREWORKS_SMOKE_DEPLOYMENT_SHAPE",
+        DEFAULT_SMOKE_DEPLOYMENT_SHAPE,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -60,18 +82,21 @@ def smoke_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig:
 
 
 @pytest.fixture(scope="session")
-def smoke_dpo_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig:
+def smoke_dpo_infra(
+    smoke_training_shape,
+    smoke_ref_training_shape,
+    smoke_custom_image_tag,
+) -> InfraConfig:
     """InfraConfig for DPO smoke tests (includes ref_training_shape_id).
 
-    DPO always needs a reference model. On the shape path, both policy
-    and reference use the same training shape -- the control plane's
-    ``applyForwardOnlyConfig`` handles the ``--forward-only`` difference.
+    DPO always needs a reference model. Use a dedicated forward-only shape
+    so the smoke path mirrors the validated production configuration.
     """
     if smoke_custom_image_tag:
         return InfraConfig(custom_image_tag=smoke_custom_image_tag)
     return InfraConfig(
         training_shape_id=smoke_training_shape,
-        ref_training_shape_id=smoke_training_shape,
+        ref_training_shape_id=smoke_ref_training_shape,
     )
 
 

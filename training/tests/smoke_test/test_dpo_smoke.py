@@ -1,4 +1,4 @@
-"""Minimal DPO smoke test on Qwen3-4B."""
+"""Minimal DPO smoke test on Qwen3-8B."""
 
 from __future__ import annotations
 
@@ -7,6 +7,13 @@ import os
 import tempfile
 
 import pytest
+
+_CLEANUP_STATES = (
+    "JOB_STATE_CANCELING",
+    "JOB_STATE_CANCELLED",
+    "JOB_STATE_DELETING",
+    "JOB_STATE_DELETED",
+)
 
 
 def _make_preference_dataset(path: str, num_pairs: int = 4) -> None:
@@ -76,7 +83,7 @@ def test_dpo_smoke(
                 try:
                     job = rlor_mgr.get(job_id)
                     state = job.get("state", "")
-                    assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                    assert state in _CLEANUP_STATES, (
                         f"ResourceCleanup failed: {key} {job_id} still {state}"
                     )
                 except httpx.HTTPStatusError as e:
