@@ -197,7 +197,8 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert cfg.deployment.deployment_shape == "accounts/test/deploymentShapes/dep-shape-v1/versions/1"
     assert len(events["created_configs"]) == 1
     assert events["created_configs"][0].display_name == "grpo-policy"
-    assert events["created_configs"][0].hot_load_deployment_id == "dep-123"
+    assert events["created_configs"][0].hot_load_deployment_id is None
+    assert cfg.deployment.hot_load_trainer_job is not None
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
@@ -219,6 +220,7 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
                 deployment_shape="accounts/test/deploymentShapes/dep-shape/versions/1",
                 pipeline_parallelism=4,
                 max_supported_context_length=128,
+                training_shape_version="accounts/test/trainingShapes/shape-pp4/versions/1",
                 accelerator_type="NVIDIA_B200",
                 accelerator_count=8,
             )
@@ -240,7 +242,7 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "setup_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="m"))
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="j"))
+    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="j", job_name="accounts/test/rlorTrainerJobs/j"))
     monkeypatch.setattr(module, "ReconnectableClient", lambda *a, **kw: SimpleNamespace(inner=object()))
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
     monkeypatch.setattr(module, "DeploymentSampler", lambda **kw: None)
