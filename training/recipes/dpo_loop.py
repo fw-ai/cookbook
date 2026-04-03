@@ -64,9 +64,9 @@ from training.utils import (
     render_preference_pair,
     resolve_renderer_name,
     select_validated_launch_shapes,
-    WeightSyncer,
 )
 from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
+from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
 from training.utils.timer import timer, flush_timing
 

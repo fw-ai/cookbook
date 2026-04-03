@@ -48,6 +48,7 @@ from training.examples.rl.frozen_lake.masking import (
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
+from fireworks.training.sdk.weight_syncer import WeightSyncer
 
 from training.utils import (
     DEFAULT_ADAM,
@@ -69,7 +70,6 @@ from training.utils import (
     ShapeSelectionRequest,
     materialize_profile_infra,
     select_validated_launch_shapes,
-    WeightSyncer,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop

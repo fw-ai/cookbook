@@ -75,7 +75,7 @@ from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, Fix
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
-from training.utils import WeightSyncer
+from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
