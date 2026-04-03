@@ -86,6 +86,8 @@ class InfraConfig:
     extra_args: list[str] | None = None
     purpose: str | None = None
     """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
+    skip_validations: bool = False
+    """Skip server-side shape validation. Requires superuser API key."""
 
 
 @dataclass

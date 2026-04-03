@@ -268,6 +268,7 @@ def create_trainer_job(
             extra_args=extra_args or infra.extra_args,
             forward_only=forward_only,
             training_shape_ref=profile.training_shape_version,
+            skip_validations=infra.skip_validations,
         )
     else:
         config = TrainerJobConfig(
