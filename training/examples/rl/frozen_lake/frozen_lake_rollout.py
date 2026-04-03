@@ -1090,10 +1090,15 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                     if isinstance(raw_output, dict):
                         latest_raw_output = raw_output
 
+                    parsed_tool_calls = message_payload.get("tool_calls")
+                    if parsed_tool_calls:
+                        assistant_content = str(message_payload.get("content", "") or "")
+                    else:
+                        assistant_content = completion_text or str(message_payload.get("content", "") or "")
                     assistant_message_payload = {
                         "role": "assistant",
-                        "content": completion_text or str(message_payload.get("content", "") or ""),
-                        "tool_calls": message_payload.get("tool_calls"),
+                        "content": assistant_content,
+                        "tool_calls": parsed_tool_calls,
                     }
                     assistant_message = Message.model_validate(assistant_message_payload)
                     messages.append(assistant_message)
