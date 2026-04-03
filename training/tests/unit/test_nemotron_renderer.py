@@ -40,7 +40,11 @@ def renderer(tokenizer):
 
 
 def _hf_tokens(tokenizer, messages, **kwargs) -> list[int]:
-    return tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, **kwargs)
+    result = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, **kwargs)
+    # Newer transformers returns a BatchEncoding (UserDict); extract input_ids.
+    if hasattr(result, "input_ids"):
+        return list(result.input_ids)
+    return result
 
 
 def _renderer_tokens(renderer, messages) -> list[int]:
@@ -217,9 +221,10 @@ def test_supervised_example_basic(tokenizer, renderer):
     our_tokens = list(model_input.to_ints())
 
     # HF reference: full conversation without generation prompt
-    hf_tokens = tokenizer.apply_chat_template(
+    hf_result = tokenizer.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=False, enable_thinking=True,
     )
+    hf_tokens = list(hf_result.input_ids) if hasattr(hf_result, "input_ids") else hf_result
 
     our_text = tokenizer.decode(our_tokens)
     hf_text = tokenizer.decode(hf_tokens)
@@ -781,9 +786,10 @@ def test_supervised_with_tool_calls(tokenizer, renderer):
     )
     our_tokens = list(model_input.to_ints())
 
-    hf_tokens = tokenizer.apply_chat_template(
+    hf_result = tokenizer.apply_chat_template(
         hf_messages, tokenize=True, add_generation_prompt=False, enable_thinking=True,
     )
+    hf_tokens = list(hf_result.input_ids) if hasattr(hf_result, "input_ids") else hf_result
 
     our_text = tokenizer.decode(our_tokens)
     hf_text = tokenizer.decode(hf_tokens)
@@ -850,9 +856,10 @@ def test_supervised_no_system_message(tokenizer, renderer):
     )
     our_tokens = list(model_input.to_ints())
 
-    hf_tokens = tokenizer.apply_chat_template(
+    hf_result = tokenizer.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=False, enable_thinking=True,
     )
+    hf_tokens = list(hf_result.input_ids) if hasattr(hf_result, "input_ids") else hf_result
 
     our_text = tokenizer.decode(our_tokens)
     hf_text = tokenizer.decode(hf_tokens)
