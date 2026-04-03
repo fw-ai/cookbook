@@ -582,6 +582,7 @@ def main(
             base_model=cfg.base_model,
             hotload_timeout=cfg.weight_sync.weight_sync_timeout,
             first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
+            lora_rank=cfg.lora_rank,
         )
 
         infra_boot_time = _time.time() - _infra_start
