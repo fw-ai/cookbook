@@ -14,6 +14,7 @@ __all__ = [
     "make_dapo_loss_fn",
     "make_grpo_loss_fn",
     "make_gspo_loss_fn",
+    "make_gspo_token_loss_fn",
     # Training loop
     "DynamicFilterFn",
     "TrainStepFns",
@@ -28,7 +29,11 @@ __all__ = [
 from training.utils.rl.pp import PPBatchRecommendation, compute_pp_recommendation
 from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
 from training.utils.rl.grpo import make_grpo_loss_fn
-from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
+from training.utils.rl.gspo import (
+    GSPOConfig,
+    make_gspo_loss_fn,
+    make_gspo_token_loss_fn,
+)
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
 from training.utils.rl.train import (
     DynamicFilterFn,

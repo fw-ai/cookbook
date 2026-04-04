@@ -10,7 +10,11 @@ import tinker
 from training.utils.rl.cispo import CISPOConfig, LOSS_SPEC as CISPO_LOSS_SPEC
 from training.utils.rl.dapo import DAPOConfig, LOSS_SPEC as DAPO_LOSS_SPEC
 from training.utils.rl.dro import DROConfig, LOSS_SPEC as DRO_LOSS_SPEC
-from training.utils.rl.gspo import GSPOConfig, LOSS_SPEC as GSPO_LOSS_SPEC
+from training.utils.rl.gspo import (
+    GSPOConfig,
+    GSPO_TOKEN_LOSS_SPEC,
+    LOSS_SPEC as GSPO_LOSS_SPEC,
+)
 from training.utils.rl.grpo import LOSS_SPEC as GRPO_LOSS_SPEC
 from training.utils.rl.is_loss import LOSS_SPEC as IS_LOSS_SPEC
 from training.utils.rl.reinforce import LOSS_SPEC as REINFORCE_LOSS_SPEC
@@ -26,6 +30,7 @@ LOSS_REGISTRY: dict[str, LossSpec] = {
         DAPO_LOSS_SPEC,
         DRO_LOSS_SPEC,
         GSPO_LOSS_SPEC,
+        GSPO_TOKEN_LOSS_SPEC,
         CISPO_LOSS_SPEC,
         REINFORCE_LOSS_SPEC,
     )
@@ -162,7 +167,9 @@ class PromptGroup:
 
 def combine_prompt_groups(
     groups: List[PromptGroup],
-) -> Tuple[List[tinker.Datum], List[float], List[List[float]], List[int], List[List[float]]]:
+) -> Tuple[
+    List[tinker.Datum], List[float], List[List[float]], List[int], List[List[float]]
+]:
     """Flatten a list of PromptGroups into combined arrays for a fwd_bwd call.
 
     Returns (data, advantages, ref_logprobs, prompt_lens, inf_logprobs).
@@ -292,7 +299,7 @@ def build_loss_fn(
     spec = LOSS_REGISTRY.get(policy_loss)
 
     def build(
-        advantages: List[float],
+        advantages: List[Any],
         ref_logprobs: List[List[float]],
         prompt_lens: List[int],
         inf_logprobs: List[List[float]],
