@@ -47,7 +47,6 @@ from training.utils import (
     RunStatus,
     WandBConfig,
     DeployConfig,
-    WeightSyncConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
@@ -55,7 +54,6 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     make_batch_dpo_loss_fn,
-    setup_deployment,
     create_trainer_job,
     load_preference_dataset,
     build_renderer,
@@ -65,8 +63,6 @@ from training.utils import (
     resolve_renderer_name,
     select_validated_launch_shapes,
 )
-from fireworks.training.sdk.deployment import DEFAULT_DELTA_COMPRESSION
-from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
 from training.utils.timer import timer, flush_timing
 
@@ -105,8 +101,11 @@ class Config:
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    weight_sync: WeightSyncConfig = field(default_factory=lambda: WeightSyncConfig(weight_sync_interval=0))
+    dcp_save_interval: int = 0
+    """Save DCP checkpoints every N steps. 0 disables."""
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
+    policy_job_id: str | None = None
+    reference_job_id: str | None = None
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
@@ -264,7 +263,6 @@ async def _train_loop(
     reference: ReconnectableClient,
     policy: ReconnectableClient,
     adam_params: tinker.AdamParams,
-    weight_syncer: WeightSyncer,
     cfg: Config,
     step_offset: int,
     on_ref_done: Callable[[], None] | None = None,
@@ -311,11 +309,7 @@ async def _train_loop(
             for k, v in optim_result.metrics.items():
                 step_metrics[f"train/{k}"] = v
 
-        hl = cfg.weight_sync
-        if hl.weight_sync_interval > 0 and step % hl.weight_sync_interval == 0:
-            with timer("weight_sync"):
-                weight_syncer.save_and_hotload(f"step-{step}")
-        if hl.dcp_save_interval > 0 and step % hl.dcp_save_interval == 0:
+        if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
             with timer("dcp_save"):
                 save_checkpoint(
                     policy, f"step-{step}", cfg.log_path,
@@ -433,8 +427,7 @@ def main(
     validate_config(
         cfg.base_model,
         cfg.dataset,
-        cfg.weight_sync,
-        cfg.deployment,
+        deploy=cfg.deployment,
         output_model_id=cfg.output_model_id,
     )
     if not cfg.tokenizer_model:
@@ -515,9 +508,6 @@ def main(
     )
     reference_launch_profile = ref_profile
 
-    if cfg.deployment.deployment_id:
-        setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, policy_infra)
-
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
         logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
@@ -536,6 +526,7 @@ def main(
         runner.write_status(RunStatus.RUNNING, message=msg)
 
     with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
+        # -- Create trainer jobs first (trainer owns the hot-load bucket) ------
         _on_trainer_status("provisioning policy and reference trainers")
         with ThreadPoolExecutor(max_workers=2) as pool:
             pol_fut = pool.submit(
@@ -548,7 +539,7 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,
+                job_id=cfg.policy_job_id,
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
@@ -563,6 +554,7 @@ def main(
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-reference",
                 forward_only=True,
+                job_id=cfg.reference_job_id,
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
@@ -592,16 +584,6 @@ def main(
             stack.callback(policy.close)
         if hasattr(reference, "close"):
             stack.callback(reference.close)
-
-        weight_syncer = WeightSyncer(
-            policy_client=policy.inner,
-            deploy_mgr=deploy_mgr,
-            deployment_id=cfg.deployment.deployment_id,
-            base_model=cfg.base_model,
-            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
-            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
-            compression_format=DEFAULT_DELTA_COMPRESSION,
-        )
 
         resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
         step_offset = resume_info.step if resume_info else 0
@@ -650,7 +632,7 @@ def main(
         runner.start_training()
         step = asyncio.run(
             _train_loop(
-                tokenized_pairs, reference, policy, adam_params, weight_syncer, cfg, step_offset,
+                tokenized_pairs, reference, policy, adam_params, cfg, step_offset,
                 on_ref_done=_on_ref_done,
                 runner=runner,
             )
@@ -658,7 +640,6 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
-        hl = cfg.weight_sync
         if cfg.save_final_checkpoint and step > step_offset:
             cp_name = f"step-{step}"
             paths = save_checkpoint(
@@ -673,9 +654,6 @@ def main(
                 training_shape=cfg.infra.training_shape_id,
             )
 
-            if hl.weight_sync_interval > 0 and paths.get("sampler_path"):
-                weight_syncer.hotload(paths["sampler_path"], checkpoint_type="base")
-
             if getattr(cfg, "output_model_id", None):
                 if not paths.get("sampler_path"):
                     raise RuntimeError("Failed to save final base checkpoint for promotion")
@@ -683,6 +661,7 @@ def main(
                     policy_job_id,
                     paths["sampler_path"],
                     cfg.output_model_id,
+                    cfg.base_model,
                 )
                 runner.write_output_model(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,

@@ -417,11 +417,7 @@ def main(
     _infra_start = _time.time()
 
     with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        _on_trainer_status("provisioning deployment")
-        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, policy_infra)
-        if cleanup_on_exit:
-            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-
+        # -- Create trainer jobs first (trainer owns the hot-load bucket) ------
         logger.info(
             "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
             prompt_groups_per_step,
@@ -441,10 +437,9 @@ def main(
                     max_seq_len=cfg.max_seq_len,
                     learning_rate=cfg.learning_rate,
                     display_name="grpo-policy",
-                    hot_load_deployment_id=cfg.deployment.deployment_id,
                     job_id=cfg.policy_job_id,
                     base_url_override=cfg.policy_base_url,
-                    cleanup=cleanup if not cfg.policy_job_id else None,
+                    cleanup=cleanup,
                     on_status=_on_trainer_status,
                 )
                 ref_fut = pool.submit(
@@ -460,7 +455,7 @@ def main(
                     forward_only=True,
                     job_id=cfg.reference_job_id,
                     base_url_override=cfg.reference_base_url,
-                    cleanup=cleanup if not cfg.reference_job_id else None,
+                    cleanup=cleanup,
                     on_status=_on_trainer_status,
                 )
                 # Collect both results so that if both fail we report
@@ -491,15 +486,20 @@ def main(
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="grpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,
                 job_id=cfg.policy_job_id,
                 base_url_override=cfg.policy_base_url,
-                cleanup=cleanup if not cfg.policy_job_id else None,
+                cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
             policy_job_id = policy_ep.job_id
             reference_ep = None
             reference_job_id = None
+
+        # -- Create deployment referencing the trainer's hot-load bucket -------
+        cfg.deployment.hot_load_trainer_job = policy_ep.job_name
+        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+        if cleanup_on_exit:
+            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         policy = ReconnectableClient(
             rlor_mgr,
@@ -963,6 +963,7 @@ def main(
                         policy_job_id,
                         paths["sampler_path"],
                         cfg.output_model_id,
+                        cfg.base_model,
                     )
                     runner.write_output_model(
                         model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
