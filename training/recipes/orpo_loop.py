@@ -261,10 +261,10 @@ def main(
         )
 
     runner.set_accelerator_info(trainer_infra.accelerator_type, trainer_infra.accelerator_count, profile=profile)
-    runner.write_status(RunStatus.RUNNING, message="provisioning")
+    runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
-        runner.write_status(RunStatus.RUNNING, message=msg)
+        runner.write_status(RunStatus.PENDING, message=msg)
 
     with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         endpoint = create_trainer_job(
