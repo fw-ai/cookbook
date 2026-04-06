@@ -49,6 +49,32 @@ def _install_tinker_future_retrieve_compat() -> None:
 _install_tinker_future_retrieve_compat()
 
 
+class BaseReferenceClient:
+    """Lightweight forward-only client for KL reference logprobs.
+
+    Wraps a ``FiretitanTrainingClient`` backed by a ``base-<hex>`` model
+    handle (frozen base weights, LoRA adapters disabled).  Only exposes
+    ``forward()`` — do not use for training operations.
+
+    Created via :meth:`ReconnectableClient.create_base_reference`, which
+    shares the underlying service session so no extra connection overhead
+    is incurred.
+    """
+
+    def __init__(
+        self,
+        client: FiretitanTrainingClient,
+        default_timeout: int = DEFAULT_TIMEOUT_S,
+    ):
+        self._client = client
+        self._default_timeout = default_timeout
+
+    def forward(self, data, loss_fn):
+        return self._client.forward(data, loss_fn).result(
+            timeout=self._default_timeout,
+        )
+
+
 class ReconnectableClient:
     """Training client wrapper: dispatch + wait with timeout.
 
@@ -74,6 +100,7 @@ class ReconnectableClient:
         self._fw_api_key = fw_api_key or os.environ.get("FIREWORKS_API_KEY")
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
+        self._svc: FiretitanServiceClient | None = None
         self._client: FiretitanTrainingClient | None = None
         self._closed = False
         if endpoint:
@@ -211,14 +238,37 @@ class ReconnectableClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def create_base_reference(self) -> BaseReferenceClient:
+        """Create a forward-only reference client on the same trainer session.
+
+        Returns a :class:`BaseReferenceClient` that shares this client's
+        service connection and runs ``forward()`` on the frozen base weights
+        (all LoRA adapters disabled).  This avoids creating a separate
+        FORWARD_ONLY trainer job for KL divergence reference logprobs.
+
+        Requires ``lora_rank > 0`` — base-only handles are only meaningful
+        when a LoRA adapter is active on the trainer.
+        """
+        if self._svc is None:
+            raise RuntimeError("Policy client not connected yet")
+        if self._lora_rank <= 0:
+            raise ValueError(
+                "create_base_reference() requires lora_rank > 0; "
+                "for full-param training use a separate FORWARD_ONLY trainer"
+            )
+        base_client = self._svc.create_base_training_client(
+            base_model=self._base_model,
+        )
+        return BaseReferenceClient(base_client, self._default_timeout)
+
     # -- Internal --------------------------------------------------------------
 
     def _use_endpoint(self, ep: TrainerServiceEndpoint) -> None:
-        svc = FiretitanServiceClient(
+        self._svc = FiretitanServiceClient(
             base_url=ep.base_url,
             api_key=self._fw_api_key,
         )
-        self._client = svc.create_training_client(
+        self._client = self._svc.create_training_client(
             base_model=self._base_model,
             lora_rank=self._lora_rank,
         )
