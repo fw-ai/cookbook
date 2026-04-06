@@ -48,6 +48,9 @@ class ShapeSelectionRequest:
     explicit_training_shape_id: str | None = None
     explicit_deployment_shape: str | None = None
     public_only: bool = False
+    shape_account: str | None = None
+    """When set, restrict shape listing to this account (e.g. 'fireworks').
+    Overrides public_only for parent-based scoping."""
 
 
 @dataclass(frozen=True)
@@ -185,6 +188,7 @@ def select_validated_launch_shapes(
                 deploy_mgr or trainer_mgr,
                 base_model=request.base_model,
                 public_only=request.public_only,
+                shape_account=request.shape_account,
             ).deployment_shape_version
         )
         inferred_deployment_shape = bool(deployment_shape)
@@ -217,6 +221,7 @@ def _select_training_shape_candidate(
                 deployment_shape=deployment_filter,
                 public_only=request.public_only,
             ),
+            request=request,
         ),
         request=request,
         expected_mode=expected_mode,
@@ -234,6 +239,7 @@ def _select_training_shape_candidate(
                 deployment_shape=deployment_filter,
                 public_only=request.public_only,
             ),
+            request=request,
         ),
         request=request,
         expected_mode=expected_mode,
@@ -249,6 +255,7 @@ def _select_deployment_shape_candidate(
     *,
     base_model: str,
     public_only: bool = False,
+    shape_account: str | None = None,
 ) -> _DeploymentShapeCandidate:
     base_model = canonical_base_model(base_model)
     model_ctx = _fetch_model_selection_context(client, base_model)
@@ -260,6 +267,7 @@ def _select_deployment_shape_candidate(
             supports_fireattention=model_ctx.supports_fireattention,
             public_only=public_only,
         ),
+        shape_account=shape_account,
     )
     if exact_candidates:
         return exact_candidates[0]
@@ -267,6 +275,7 @@ def _select_deployment_shape_candidate(
     compat_candidates = _list_deployment_shape_candidates(
         client,
         _build_compatible_deployment_shape_filter(model_ctx, public_only=public_only),
+        shape_account=shape_account,
     )
     if compat_candidates:
         return compat_candidates[0]
@@ -358,13 +367,28 @@ def _fetch_model_selection_context(
     )
 
 
+def _training_shape_parent(request: ShapeSelectionRequest) -> str:
+    if request.shape_account:
+        return f"accounts/{request.shape_account}/trainingShapes/-"
+    return _TRAINING_SHAPE_VERSION_PARENT
+
+
+def _deployment_shape_parent(*, shape_account: str | None = None) -> str:
+    if shape_account:
+        return f"accounts/{shape_account}/deploymentShapes/-"
+    return _DEPLOYMENT_SHAPE_VERSION_PARENT
+
+
 def _list_training_shape_candidates(
     client: _RestCapable,
     filter_expr: str,
+    *,
+    request: ShapeSelectionRequest | None = None,
 ) -> list[_TrainingShapeCandidate]:
+    parent = _training_shape_parent(request) if request else _TRAINING_SHAPE_VERSION_PARENT
     versions = _list_paginated_resources(
         client,
-        parent=_TRAINING_SHAPE_VERSION_PARENT,
+        parent=parent,
         collection_key="trainingShapeVersions",
         filter_expr=filter_expr,
     )
@@ -374,10 +398,13 @@ def _list_training_shape_candidates(
 def _list_deployment_shape_candidates(
     client: _RestCapable,
     filter_expr: str,
+    *,
+    shape_account: str | None = None,
 ) -> list[_DeploymentShapeCandidate]:
+    parent = _deployment_shape_parent(shape_account=shape_account)
     versions = _list_paginated_resources(
         client,
-        parent=_DEPLOYMENT_SHAPE_VERSION_PARENT,
+        parent=parent,
         collection_key="deploymentShapeVersions",
         filter_expr=filter_expr,
     )
