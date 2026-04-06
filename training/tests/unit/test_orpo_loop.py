@@ -79,6 +79,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     class FakeClient:
         def __init__(self, *args, **kwargs):
             self.inner = FakeInner()
+            self.job_id = "fake-job-id"
 
         def forward_backward_custom(self, batch, loss_fn):
             events["forward_batches"].append((list(batch), loss_fn))
@@ -105,6 +106,9 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
                 path=f"tinker://unit/sampler/{name}-session",
                 snapshot_name=f"{name}-session",
             )
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return f"cross_job://{source_job_id}/{name}"
 
         def load_state_with_optimizer(self, path):
             pass
@@ -214,6 +218,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
     class FakeClient:
         def __init__(self, *args, **kwargs):
             self.inner = object()
+            self.job_id = "fake-job-id"
 
         def forward_backward_custom(self, batch, loss_fn):
             events["forward_batches"].append(list(batch))
