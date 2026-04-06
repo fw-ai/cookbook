@@ -318,6 +318,9 @@ python scripts/run_unified_table.py --gpu 0 --context 32768
 - This is a **synthetic kernel benchmark**, not an end-to-end serving
   benchmark.
 - Absolute timings are hardware-dependent.
+- Quality numbers are seed-deterministic but not bitwise-identical
+  across GPU architectures. Expect small differences (4th–6th decimal
+  place) on different hardware.
 - Results are for **head_dim = 128**, **batch size = 1**,
   **single-token decode**, and a **B200**.
 - Real model activations may shift the relative ranking.
