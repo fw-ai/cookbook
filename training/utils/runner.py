@@ -44,6 +44,34 @@ from training.utils import fileio
 
 logger = logging.getLogger(__name__)
 
+_JOB_PROGRESS_TYPE_URL = "type.googleapis.com/gateway.JobProgress"
+
+
+def _build_job_progress_any(*, percent: int) -> "google.protobuf.any_pb2.Any":
+    """Build a google.protobuf.Any wrapping a gateway.JobProgress message.
+
+    Manually encodes the JobProgress wire bytes to avoid a build-time
+    dependency on the control-plane proto definitions.  JobProgress field 1
+    (``percent``) is an int32 (varint, wire type 0).
+    """
+    from google.protobuf import any_pb2
+
+    payload = b""
+    if percent:
+        # field 1, wire type 0 (varint) -> tag byte = (1 << 3) | 0 = 0x08
+        payload = b"\x08" + _encode_varint(percent)
+    return any_pb2.Any(type_url=_JOB_PROGRESS_TYPE_URL, value=payload)
+
+
+def _encode_varint(value: int) -> bytes:
+    """Encode an unsigned integer as a protobuf varint."""
+    parts: list[int] = []
+    while value > 0x7F:
+        parts.append((value & 0x7F) | 0x80)
+        value >>= 7
+    parts.append(value & 0x7F)
+    return bytes(parts)
+
 
 class RunStatus(str, Enum):
     PENDING = "pending"
@@ -135,6 +163,9 @@ class RunnerIO:
         self._last_total_steps = total_steps
         if not self._status_file:
             return
+        if self._status_file.endswith(".pb.bin"):
+            self._write_status_pb(status, step=step, total_steps=total_steps, message=message, error=error)
+            return
         progress = step / total_steps if total_steps > 0 else 0.0
         payload: dict[str, Any] = {
             "status": status.value,
@@ -225,6 +256,41 @@ class RunnerIO:
         self._write_json(self._output_model_path, payload)
 
     # -- helpers ---------------------------------------------------------------
+
+    def _write_status_pb(
+        self,
+        status: RunStatus,
+        *,
+        step: int = 0,
+        total_steps: int = 0,
+        message: str = "",
+        error: str | None = None,
+    ) -> None:
+        """Write status as binary protobuf (google.rpc.Status + JobProgress).
+
+        The Go control plane (PollK8sJob) expects this format when the
+        status file path ends with ``.pb.bin``.
+        """
+        try:
+            from google.rpc import status_pb2
+
+            code = 0
+            status_val = status.value if isinstance(status, RunStatus) else str(status)
+            if status_val in ("error", "failed"):
+                code = 9  # FAILED_PRECONDITION
+
+            progress_pct = int(step * 100 / total_steps) if total_steps > 0 else 0
+
+            jp_any = _build_job_progress_any(percent=progress_pct)
+
+            msg = message or ""
+            if error:
+                msg = f"{msg}: {error}" if msg else error
+            sp = status_pb2.Status(code=code, message=msg, details=[jp_any])
+
+            fileio.write_bytes(self._status_file, sp.SerializeToString())
+        except Exception:
+            logger.warning("Failed to write protobuf status to %s", self._status_file, exc_info=True)
 
     def _write_json(self, path: str, data: dict[str, Any]) -> None:
         try:
