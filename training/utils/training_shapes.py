@@ -47,6 +47,7 @@ class ShapeSelectionRequest:
     lora_rank: int = 0
     explicit_training_shape_id: str | None = None
     explicit_deployment_shape: str | None = None
+    public_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -183,6 +184,7 @@ def select_validated_launch_shapes(
             or _select_deployment_shape_candidate(
                 deploy_mgr or trainer_mgr,
                 base_model=request.base_model,
+                public_only=request.public_only,
             ).deployment_shape_version
         )
         inferred_deployment_shape = bool(deployment_shape)
@@ -213,6 +215,7 @@ def _select_training_shape_candidate(
                 base_model=base_model,
                 trainer_mode=expected_mode,
                 deployment_shape=deployment_filter,
+                public_only=request.public_only,
             ),
         ),
         request=request,
@@ -229,6 +232,7 @@ def _select_training_shape_candidate(
                 model_ctx=model_ctx,
                 trainer_mode=expected_mode,
                 deployment_shape=deployment_filter,
+                public_only=request.public_only,
             ),
         ),
         request=request,
@@ -244,6 +248,7 @@ def _select_deployment_shape_candidate(
     client: _RestCapable,
     *,
     base_model: str,
+    public_only: bool = False,
 ) -> _DeploymentShapeCandidate:
     base_model = canonical_base_model(base_model)
     model_ctx = _fetch_model_selection_context(client, base_model)
@@ -253,6 +258,7 @@ def _select_deployment_shape_candidate(
         _build_latest_validated_deployment_shape_filter(
             base_model=base_model,
             supports_fireattention=model_ctx.supports_fireattention,
+            public_only=public_only,
         ),
     )
     if exact_candidates:
@@ -260,7 +266,7 @@ def _select_deployment_shape_candidate(
 
     compat_candidates = _list_deployment_shape_candidates(
         client,
-        _build_compatible_deployment_shape_filter(model_ctx),
+        _build_compatible_deployment_shape_filter(model_ctx, public_only=public_only),
     )
     if compat_candidates:
         return compat_candidates[0]
@@ -488,6 +494,7 @@ def _build_latest_validated_training_shape_filter(
     base_model: str,
     trainer_mode: str,
     deployment_shape: str | None,
+    public_only: bool = False,
 ) -> str:
     extras = [f'snapshot.trainer_mode="{trainer_mode}"']
     if deployment_shape:
@@ -495,6 +502,7 @@ def _build_latest_validated_training_shape_filter(
     return _combine_filters(
         f'snapshot.base_model="{base_model}"',
         "latest_validated=true",
+        "public=true" if public_only else "",
         *extras,
     )
 
@@ -504,6 +512,7 @@ def _build_compatible_training_shape_filter(
     model_ctx: _ModelSelectionContext,
     trainer_mode: str,
     deployment_shape: str | None,
+    public_only: bool = False,
 ) -> str:
     lower_bound, upper_bound = _get_parameter_count_bucket_bounds(model_ctx.parameter_count)
     extras = [f'snapshot.trainer_mode="{trainer_mode}"']
@@ -514,6 +523,7 @@ def _build_compatible_training_shape_filter(
         f"snapshot.parameter_count>={lower_bound}",
         f"snapshot.parameter_count<={upper_bound}",
         "latest_validated=true",
+        "public=true" if public_only else "",
         *extras,
     )
 
@@ -522,16 +532,20 @@ def _build_latest_validated_deployment_shape_filter(
     *,
     base_model: str,
     supports_fireattention: bool,
+    public_only: bool = False,
 ) -> str:
     return _combine_filters(
         f'snapshot.base_model="{base_model}"',
         "latest_validated=true",
+        "public=true" if public_only else "",
         _deployment_engine_filter(supports_fireattention),
     )
 
 
 def _build_compatible_deployment_shape_filter(
     model_ctx: _ModelSelectionContext,
+    *,
+    public_only: bool = False,
 ) -> str:
     lower_bound, upper_bound = _get_parameter_count_bucket_bounds(model_ctx.parameter_count)
     return _combine_filters(
@@ -539,6 +553,7 @@ def _build_compatible_deployment_shape_filter(
         f"snapshot.parameter_count>={lower_bound}",
         f"snapshot.parameter_count<={upper_bound}",
         "latest_validated=true",
+        "public=true" if public_only else "",
         _deployment_engine_filter(model_ctx.supports_fireattention),
     )
 
