@@ -383,6 +383,42 @@ def setup_deployment(
     return info
 
 
+def setup_or_reattach_deployment(
+    deploy_mgr: DeploymentManager,
+    deploy_cfg: DeployConfig,
+    base_model: str,
+    infra: InfraConfig,
+    trainer_job_name: str,
+) -> DeploymentInfo:
+    """Set up a deployment, re-attaching to a new trainer if it already exists.
+
+    If ``deploy_cfg.deployment_id`` names a live deployment (not FAILED /
+    DELETED / DELETING), its hotload bucket is re-pointed to
+    *trainer_job_name* via a PATCH.  Otherwise a fresh deployment is created
+    with the trainer reference baked in at creation.
+    """
+    existing = (
+        deploy_mgr.get(deploy_cfg.deployment_id)
+        if deploy_cfg.deployment_id
+        else None
+    )
+    if existing and existing.state not in ("FAILED", "DELETED", "DELETING"):
+        deploy_mgr.update(
+            deploy_cfg.deployment_id,
+            body={"hotLoadTrainerJob": trainer_job_name},
+            update_mask="hot_load_trainer_job",
+        )
+        logger.info(
+            "Re-attached deployment %s to trainer %s",
+            deploy_cfg.deployment_id,
+            trainer_job_name,
+        )
+        return existing
+
+    deploy_cfg.hot_load_trainer_job = trainer_job_name
+    return setup_deployment(deploy_mgr, deploy_cfg, base_model, infra)
+
+
 def _infer_region_from_deployment_shape(
     deploy_mgr: DeploymentManager,
     deployment_shape: str,
