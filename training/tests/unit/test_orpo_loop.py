@@ -16,10 +16,10 @@ def test_main_rejects_invalid_base_model(monkeypatch):
         module.main(cfg)
 
 
-def test_main_rejects_invalid_output_model_id(monkeypatch):
+def test_main_rejects_invalid_output_model_id(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(
-        log_path="/tmp/orpo_test_logs",
+        log_path=str(tmp_path),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
@@ -30,7 +30,7 @@ def test_main_rejects_invalid_output_model_id(monkeypatch):
         module.main(cfg)
 
 
-def test_main_uses_profile_and_trains_pairs(monkeypatch):
+def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
@@ -156,7 +156,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
     mgr = FakeMgr()
     cfg = module.Config(
-        log_path="/tmp/orpo_test_logs",
+        log_path=str(tmp_path),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
@@ -177,16 +177,16 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch):
         [{"id": "chosen-1"}, {"id": "rejected-1"}],
     ]
     assert events["optim_steps"] == 2
-    assert events["save_weights"] == [("final-step-2", "base")]
+    assert events["save_weights"] == [("step-2", "base")]
     assert events["promotions"] == [
-        ("job-orpo", "final-step-2-session", "promoted-orpo-model"),
+        ("job-orpo", "step-2-session", "promoted-orpo-model"),
     ]
     assert events["deleted_jobs"] == ["job-orpo"]
     assert events["wandb_finished"] == 1
     assert [step for step, _ in events["metrics_logs"]] == [1, 2]
 
 
-def test_main_batches_pairs_per_optimizer_step(monkeypatch):
+def test_main_batches_pairs_per_optimizer_step(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
@@ -288,7 +288,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch):
     monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
 
     cfg = module.Config(
-        log_path="/tmp/orpo_test_logs",
+        log_path=str(tmp_path),
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
