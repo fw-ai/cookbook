@@ -71,7 +71,7 @@ from training.utils import (
     select_validated_launch_shapes,
     validate_config,
 )
-from training.utils.checkpoint_utils import resolve_resume
+from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,9 @@ class Config:
     All paths are optional; unset paths are silently skipped.
     See training/utils/runner.py for file format details.
     """
+    save_final_checkpoint: bool = True
+    dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+
     init_from_checkpoint: str | None = None
 
 
@@ -386,6 +389,16 @@ def main(
             client.optim_step(adam_params)
             step += 1
 
+            if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
+                logger.info("Saving DCP checkpoint at step %d", step)
+                save_checkpoint(client, f"step-{step}", cfg.log_path, {
+                    "step": step,
+                    "data_consumed": (step - step_offset) * cfg.batch_size,
+                    "source_job_id": job_id,
+                }, kind=CheckpointKind.STATE,
+                base_model=cfg.base_model,
+                training_shape=cfg.infra.training_shape_id)
+
             step_elapsed = time.monotonic() - step_started_at
             tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
             metrics = result.metrics
@@ -441,23 +454,20 @@ def main(
 
         # -- Final checkpoint ------------------------------------------------
 
-        if step > step_offset:
-            logger.info("Saving final DCP checkpoint (step %d)...", step)
-            # client.save_state(f"step-{step}")
-
-            logger.info("Saving final base checkpoint (step %d)...", step)
-            cp_name = f"final-step-{step}"
-            result = client.save_weights_for_sampler_ext(
-                cp_name, checkpoint_type="base"
-            )
-            from training.utils.checkpoint_utils import get_sampler_checkpoint_id
-            sampler_checkpoint_id = get_sampler_checkpoint_id(result)
-            logger.info("Final base checkpoint saved: %s", sampler_checkpoint_id)
-            
+        if cfg.save_final_checkpoint and step > step_offset:
+            logger.info("Saving final checkpoint (step %d)...", step)
+            cp_name = f"step-{step}"
+            paths = save_checkpoint(client, cp_name, cfg.log_path, {
+                "step": step,
+                "data_consumed": (step - step_offset) * cfg.batch_size,
+                "source_job_id": job_id,
+            }, kind=CheckpointKind.BOTH,
+            base_model=cfg.base_model,
+            training_shape=cfg.infra.training_shape_id)
             if getattr(cfg, "output_model_id", None):
                 rlor_mgr.promote_checkpoint(
                     job_id,
-                    sampler_checkpoint_id,
+                    paths["sampler_path"],
                     cfg.output_model_id,
                     cfg.base_model,
                 )
