@@ -1,0 +1,134 @@
+name: Validate Cookbook Release Candidate
+
+on:
+  push:
+    tags:
+      - "v*-alpha.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cookbook-release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate Candidate Tag
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.tag.outputs.artifact_name }}
+      stable_tag: ${{ steps.tag.outputs.stable_tag }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Parse Candidate Tag
+        id: tag
+        run: |
+          python .github/scripts/cookbook_release.py github-output \
+            --tag "${GITHUB_REF_NAME}" \
+            --kind candidate \
+            --output-file "${GITHUB_OUTPUT}"
+
+      - name: Confirm Candidate Commit Is Reachable From Main
+        run: |
+          git fetch origin main --depth=1
+          git merge-base --is-ancestor "${GITHUB_SHA}" "origin/main"
+
+      - name: Confirm training/pyproject.toml Matches Candidate Version
+        run: |
+          python .github/scripts/cookbook_release.py assert-pyproject-version \
+            --tag "${GITHUB_REF_NAME}" \
+            --kind candidate \
+            --pyproject training/pyproject.toml
+
+  training-ci:
+    name: Run Training CI
+    needs: prepare
+    uses: ./.github/workflows/training-ci.yml
+    secrets: inherit
+
+  build-package:
+    name: Build Candidate Package Artifact
+    needs:
+      - prepare
+      - training-ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: training/pyproject.toml
+
+      - name: Install Build Tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build Package
+        working-directory: training
+        run: |
+          python -m build --sdist --wheel --outdir ../dist
+
+      - name: Write Candidate Manifest
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = {
+              "tag": os.environ["GITHUB_REF_NAME"],
+              "stable_tag": "${{ needs.prepare.outputs.stable_tag }}",
+              "version": "${{ needs.prepare.outputs.version }}",
+              "sha": os.environ["GITHUB_SHA"],
+          }
+          Path("dist/release-manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload Candidate Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact_name }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/release-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summarize Candidate Evidence
+        run: |
+          {
+            echo "## Cookbook release candidate"
+            echo "- Candidate tag: \`${{ needs.prepare.outputs.tag }}\`"
+            echo "- Stable tag target: \`${{ needs.prepare.outputs.stable_tag }}\`"
+            echo "- Candidate SHA: \`${GITHUB_SHA}\`"
+            echo "- Candidate artifact: \`${{ needs.prepare.outputs.artifact_name }}\`"
+            echo
+            echo "Repository-owned checks are complete. The release record still needs:"
+            echo "- Fireworks internal test evidence"
+            echo "- Backend validation evidence when the release is backend-coupled"
+            echo "- Reviewer sign-off"
+            echo "- Rollback plan"
+          } >> "${GITHUB_STEP_SUMMARY}"

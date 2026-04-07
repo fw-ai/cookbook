@@ -1,6 +1,7 @@
 name: Training CI
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - "training/**"

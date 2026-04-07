@@ -24,4 +24,12 @@ Thank you for your interest in contributing to the Fireworks repository! We welc
 
 If you're planning a larger or more complex change, please open a new issue first to discuss your proposal. This will help us ensure your work aligns with the repo's goals and avoid redundant efforts.
 
+## Cookbook releases
+
+Public cookbook releases are maintainer-run and follow the workflow in
+[`RELEASING.md`](./RELEASING.md). If your change affects runnable cookbook
+behavior, packaging, or backend-coupled behavior, call that out clearly in your
+pull request so the release owner can decide whether a versioned release is
+required.
+
 We truly appreciate your contributions and collaboration in improving this community resource!
