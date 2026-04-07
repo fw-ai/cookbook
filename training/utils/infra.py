@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from fireworks.training.sdk.client import (
@@ -20,6 +20,9 @@ from fireworks.training.sdk import (
 )
 from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
 from training.utils.config import InfraConfig, DeployConfig
+
+if TYPE_CHECKING:
+    from fireworks.training.sdk.weight_syncer import WeightSyncer
 
 logger = logging.getLogger(__name__)
 
@@ -383,9 +386,6 @@ def setup_deployment(
     return info
 
 
-_HOTLOAD_BUSY_STAGES = ("preparing", "loading")
-
-
 def setup_or_reattach_deployment(
     deploy_mgr: DeploymentManager,
     deploy_cfg: DeployConfig,
@@ -398,63 +398,40 @@ def setup_or_reattach_deployment(
 
     If ``deploy_cfg.deployment_id`` names a live deployment (not FAILED /
     DELETED / DELETING), its hotload bucket is re-pointed to
-    *trainer_job_name* via a PATCH.  Otherwise a fresh deployment is created
+    *trainer_job_name* via a PATCH. Otherwise a fresh deployment is created
     with the trainer reference baked in at creation.
 
     When *weight_syncer* is provided and a re-attach happens, its delta-chain
     state is reset so the next checkpoint is treated as ``base`` (the new
     trainer's bucket has no prior snapshots).
 
-    Race protection: if the deployment is currently mid-hotload (loading_state
-    stage in {"preparing", "loading"}), the re-attach is rejected with a
-    RuntimeError. Switching the bucket URL during an in-flight load would
-    leave the serving container in an undefined state.
+    Caller responsibility: do not invoke this while a hotload is in progress
+    on the same deployment. Switching the bucket URL mid-load would leave
+    the serving container in an undefined state. Server-side enforcement is
+    tracked in fw-ai/fireworks#21732.
     """
     existing = (
         deploy_mgr.get(deploy_cfg.deployment_id)
         if deploy_cfg.deployment_id
         else None
     )
-    if existing and existing.state not in ("FAILED", "DELETED", "DELETING"):
-        # Reject re-attach during an active hotload to avoid switching the
-        # bucket URL out from under a partial snapshot load.
-        try:
-            status = deploy_mgr.hotload_check_status(
-                deployment_id=deploy_cfg.deployment_id,
-                base_model=base_model,
-            )
-        except Exception as e:
-            logger.warning(
-                "Could not check hotload status before re-attach (continuing): %s", e,
-            )
-            status = None
-        if status:
-            replicas = status.get("replicas") or []
-            if replicas:
-                stage = (replicas[0].get("loading_state") or {}).get("stage", "")
-                if stage in _HOTLOAD_BUSY_STAGES:
-                    raise RuntimeError(
-                        f"Cannot re-attach deployment {deploy_cfg.deployment_id}: "
-                        f"hotload is currently in progress (stage={stage}). "
-                        "Wait for the current load to finish, then retry."
-                    )
+    if not existing or existing.state in ("FAILED", "DELETED", "DELETING"):
+        deploy_cfg.hot_load_trainer_job = trainer_job_name
+        return setup_deployment(deploy_mgr, deploy_cfg, base_model, infra)
 
-        deploy_mgr.update(
-            deploy_cfg.deployment_id,
-            body={"hotLoadTrainerJob": trainer_job_name},
-            update_mask="hot_load_trainer_job",
-        )
-        if weight_syncer is not None:
-            weight_syncer.reset_delta_chain()
-        logger.info(
-            "Re-attached deployment %s to trainer %s",
-            deploy_cfg.deployment_id,
-            trainer_job_name,
-        )
-        return existing
-
-    deploy_cfg.hot_load_trainer_job = trainer_job_name
-    return setup_deployment(deploy_mgr, deploy_cfg, base_model, infra)
+    deploy_mgr.update(
+        deploy_cfg.deployment_id,
+        body={"hotLoadTrainerJob": trainer_job_name},
+        update_mask="hot_load_trainer_job",
+    )
+    if weight_syncer is not None:
+        weight_syncer.reset_delta_chain()
+    logger.info(
+        "Re-attached deployment %s to trainer %s",
+        deploy_cfg.deployment_id,
+        trainer_job_name,
+    )
+    return existing
 
 
 def _infer_region_from_deployment_shape(
