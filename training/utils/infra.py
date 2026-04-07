@@ -314,6 +314,9 @@ def create_trainer_job(
             api_key=internal_api_key,
             base_url=rlor_mgr.base_url,
         )
+        # Bypass auto-resolution: service accounts can't call GET /v1/accounts.
+        # Use the same account as the regular manager (already resolved).
+        create_mgr._account_id = rlor_mgr.account_id
 
     created_job_id: str | None = None
     try:
