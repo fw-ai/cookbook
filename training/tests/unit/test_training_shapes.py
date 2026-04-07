@@ -256,6 +256,37 @@ def test_select_validated_launch_shapes_filters_lora_and_reference_modes():
     assert ref_selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-ref"
 
 
+def test_lora_reference_uses_lora_trainer_mode():
+    """LoRA DPO reference trainer should resolve to LORA_TRAINER, not FORWARD_ONLY."""
+
+    def handler(path: str) -> dict:
+        filt = _filter_for(path)
+        if "/trainingShapes/-/versions" in path and 'snapshot.trainer_mode="LORA_TRAINER"' in filt:
+            return {
+                "trainingShapeVersions": [
+                    _training_shape_version(
+                        "accounts/fireworks/trainingShapes/qwen3-8b-lora/versions/v7",
+                        trainer_mode="LORA_TRAINER",
+                        max_supported_context_length=8192,
+                    )
+                ]
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    mgr = _FakeSelectorMgr(handler)
+    lora_ref_selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            max_seq_len=4096,
+            trainer_role="reference",
+            lora_rank=16,
+        ),
+    )
+
+    assert lora_ref_selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-lora"
+
+
 def test_select_validated_launch_shapes_preserves_explicit_overrides():
     profile = SimpleNamespace(
         training_shape_version="accounts/custom/trainingShapes/policy/versions/v1",
