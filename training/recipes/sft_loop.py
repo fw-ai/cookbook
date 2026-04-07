@@ -210,6 +210,8 @@ def main(
     def _on_trainer_status(msg: str) -> None:
         runner.write_status(RunStatus.PENDING, message=msg)
 
+    parent_job_id = os.environ.get("FIREWORKS_PARENT_JOB_ID")
+
     with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         endpoint = create_trainer_job(
             rlor_mgr,
@@ -222,6 +224,7 @@ def main(
             display_name="sft-trainer",
             cleanup=cleanup,
             on_status=_on_trainer_status,
+            managed_by=parent_job_id,
         )
         job_id = endpoint.job_id
         client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
