@@ -301,26 +301,12 @@ def create_trainer_job(
     )
     _emit(f"creating {trainer_role} trainer '{display_name}'")
 
-    create_mgr = rlor_mgr
     if managed_by:
         config.managed_by = managed_by
-        internal_api_key = os.environ.get("FIREWORKS_INTERNAL_API_KEY")
-        if not internal_api_key:
-            raise RuntimeError(
-                "managed_by requires FIREWORKS_INTERNAL_API_KEY to be set "
-                "(needed to set the SUPERUSER_ONLY managed_by field)"
-            )
-        create_mgr = TrainerJobManager(
-            api_key=internal_api_key,
-            base_url=rlor_mgr.base_url,
-        )
-        # Bypass auto-resolution: service accounts can't call GET /v1/accounts.
-        # Use the same account as the regular manager (already resolved).
-        create_mgr._account_id = rlor_mgr.account_id
 
     created_job_id: str | None = None
     try:
-        created_job = create_mgr.create(config)
+        created_job = rlor_mgr.create(config)
         created_job_id = created_job.job_id
         if cleanup:
             cleanup.trainer(created_job.job_id)
