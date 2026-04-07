@@ -9,6 +9,7 @@ on:
 permissions:
   actions: read
   contents: write
+  issues: read
 
 concurrency:
   group: cookbook-release-publish-${{ github.ref }}
@@ -21,6 +22,7 @@ jobs:
     outputs:
       artifact_name: ${{ steps.candidate.outputs.artifact_name }}
       candidate_tag: ${{ steps.candidate.outputs.tag }}
+      release_issue_number: ${{ steps.release_record.outputs.issue_number }}
       stable_tag: ${{ steps.tag.outputs.stable_tag }}
       version: ${{ steps.tag.outputs.version }}
     steps:
@@ -74,6 +76,78 @@ jobs:
           )"
           echo "tag=${candidate_tag}" >> "${GITHUB_OUTPUT}"
           echo "artifact_name=cookbook-release-${candidate_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate Matching Release Record
+        id: release_record
+        uses: actions/github-script@v7
+        env:
+          EXPECTED_STABLE_TAG: ${{ steps.tag.outputs.stable_tag }}
+        with:
+          script: |
+            const expectedStableTag = process.env.EXPECTED_STABLE_TAG;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "cookbook-release",
+              per_page: 100,
+            });
+
+            const marker = "<!-- cookbook-release-metadata";
+            const matches = [];
+
+            for (const issue of issues) {
+              const body = issue.body || "";
+              if (!body.includes(marker)) {
+                continue;
+              }
+
+              const title = issue.title || "";
+              if (!title.includes(expectedStableTag)) {
+                continue;
+              }
+
+              matches.push({
+                number: issue.number,
+                title,
+                body,
+              });
+            }
+
+            if (matches.length === 0) {
+              core.setFailed(
+                `No open cookbook-release issue with metadata found for ${expectedStableTag}.`,
+              );
+              return;
+            }
+
+            if (matches.length > 1) {
+              core.setFailed(
+                `Multiple cookbook-release issues match ${expectedStableTag}: ${matches.map((item) => `#${item.number}`).join(", ")}`,
+              );
+              return;
+            }
+
+            const issue = matches[0];
+            const fs = require("fs");
+            const os = require("os");
+            const path = require("path");
+            const metadataPath = path.join(os.tmpdir(), `cookbook-release-issue-${issue.number}.md`);
+            fs.writeFileSync(metadataPath, issue.body || "", "utf8");
+
+            core.setOutput("issue_number", String(issue.number));
+            core.setOutput("issue_body_path", metadataPath);
+
+      - name: Assert Release Record Metadata Matches Stable Publish
+        env:
+          RELEASE_RECORD_PATH: ${{ steps.release_record.outputs.issue_body_path }}
+        run: |
+          python .github/scripts/cookbook_release.py assert-release-record \
+            --issue-body-file "${RELEASE_RECORD_PATH}" \
+            --version "${{ steps.tag.outputs.version }}" \
+            --candidate-tag "${{ steps.candidate.outputs.tag }}" \
+            --candidate-sha "${GITHUB_SHA}" \
+            --github-output "${GITHUB_OUTPUT}"
 
   candidate-artifact:
     name: Locate Validated Candidate Artifact
@@ -179,7 +253,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: release-assets/draft-release-notes.md
           files: |
             release-assets/*.whl
             release-assets/*.tar.gz
@@ -192,6 +266,7 @@ jobs:
             echo "- Stable tag: \`${GITHUB_REF_NAME}\`"
             echo "- Candidate tag: \`${{ needs.prepare.outputs.candidate_tag }}\`"
             echo "- Release SHA: \`${GITHUB_SHA}\`"
+            echo "- Release record: #${{ needs.prepare.outputs.release_issue_number }}"
             echo
             echo "This release reused the exact candidate artifact that was validated on the matching SHA."
           } >> "${GITHUB_STEP_SUMMARY}"

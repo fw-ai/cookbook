@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import re
 import subprocess
@@ -13,6 +14,11 @@ import tomllib
 
 CANDIDATE_TAG_RE = re.compile(r"^v(?P<version>\d+\.\d+\.\d+)-alpha\.(?P<iteration>\d+)$")
 FINAL_TAG_RE = re.compile(r"^v(?P<version>\d+\.\d+\.\d+)$")
+RELEASE_METADATA_RE = re.compile(
+    r"<!--\s*cookbook-release-metadata\s*\n(?P<body>.*?)\n-->",
+    re.DOTALL,
+)
+METADATA_LINE_RE = re.compile(r"^\s*(?P<key>[a-z0-9_-]+)\s*:\s*(?P<value>.*?)\s*$")
 
 
 class ReleaseTagError(ValueError):
@@ -94,6 +100,138 @@ def list_candidate_tags(version: str, sha: str) -> list[str]:
     return sorted(tags, key=candidate_sort_key)
 
 
+def run_git(*args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def render_release_notes(version: str, candidate_tag: str) -> str:
+    previous = previous_stable_tag(candidate_tag)
+    revspec = f"{previous}..{candidate_tag}" if previous else candidate_tag
+    result = subprocess.run(
+        ["git", "log", "--pretty=format:%H%x09%s", revspec],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        log_output = run_git("log", "--pretty=format:%H%x09%s", "HEAD~20..HEAD")
+    else:
+        log_output = result.stdout.strip()
+    commits = [line.split("\t", 1) for line in log_output.splitlines() if line.strip()]
+
+    lines = [
+        f"# Draft release notes for v{version}",
+        "",
+        f"- Candidate tag: `{candidate_tag}`",
+        f"- Previous stable tag: `{previous or 'none'}`",
+        "",
+        "## Changes since last stable release",
+    ]
+    if commits:
+        for sha, subject in commits:
+            short_sha = sha[:7]
+            lines.append(f"- {subject} (`{short_sha}`)")
+    else:
+        lines.append("- No commits found between the previous stable tag and this candidate.")
+    lines.extend(
+        [
+            "",
+            "## Release checklist reminders",
+            "",
+            "- Link Fireworks internal test evidence",
+            "- Link backend validation evidence when required",
+            "- Confirm reviewer sign-off and rollback plan in the release record",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def previous_stable_tag(candidate_tag: str) -> str:
+    result = subprocess.run(
+        [
+            "git",
+            "describe",
+            "--tags",
+            "--abbrev=0",
+            "--match",
+            "v[0-9]*.[0-9]*.[0-9]*",
+            f"{candidate_tag}^",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def parse_release_metadata(issue_body: str) -> dict[str, str]:
+    match = RELEASE_METADATA_RE.search(issue_body)
+    if not match:
+        raise ReleaseTagError(
+            "Release record is missing the cookbook-release-metadata block."
+        )
+
+    metadata: dict[str, str] = {}
+    for raw_line in match.group("body").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parsed = METADATA_LINE_RE.fullmatch(line)
+        if not parsed:
+            raise ReleaseTagError(
+                f"Malformed release metadata line: {raw_line!r}."
+            )
+        metadata[parsed.group("key")] = parsed.group("value")
+    return metadata
+
+
+def normalize_boolean_text(value: str) -> str:
+    lowered = value.strip().lower()
+    if lowered in {"true", "yes", "y"}:
+        return "true"
+    if lowered in {"false", "no", "n"}:
+        return "false"
+    raise ReleaseTagError(f"Expected boolean-like value, got {value!r}.")
+
+
+def assert_release_record(
+    *,
+    issue_body_path: pathlib.Path,
+    version: str,
+    candidate_tag: str,
+    sha: str,
+) -> dict[str, str]:
+    metadata = parse_release_metadata(issue_body_path.read_text(encoding="utf-8"))
+    stable_tag = f"v{version}"
+    expected = {
+        "version": stable_tag,
+        "candidate-tag": candidate_tag,
+        "candidate-sha": sha,
+        "go-approved": "true",
+    }
+    for key, value in expected.items():
+        actual = metadata.get(key)
+        if actual != value:
+            raise ReleaseTagError(
+                f"Release record metadata has {key}={actual!r}, expected {value!r}."
+            )
+
+    backend_required = normalize_boolean_text(
+        metadata.get("backend-validation-required", "false")
+    )
+    return {
+        "backend_validation_required": backend_required,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -120,6 +258,25 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--version", required=True)
     candidates.add_argument("--sha", required=True)
 
+    notes = subparsers.add_parser(
+        "draft-release-notes",
+        help="Generate draft release notes for one candidate tag.",
+    )
+    notes.add_argument("--version", required=True)
+    notes.add_argument("--candidate-tag", required=True)
+    notes.add_argument("--notes-file", required=True, type=pathlib.Path)
+    notes.add_argument("--github-output", required=False, type=pathlib.Path)
+
+    record = subparsers.add_parser(
+        "assert-release-record",
+        help="Verify that a release record issue matches the stable release inputs.",
+    )
+    record.add_argument("--issue-body-file", required=True, type=pathlib.Path)
+    record.add_argument("--version", required=True)
+    record.add_argument("--candidate-tag", required=True)
+    record.add_argument("--candidate-sha", required=True)
+    record.add_argument("--github-output", required=False, type=pathlib.Path)
+
     return parser
 
 
@@ -140,6 +297,27 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "list-candidate-tags":
             for tag in list_candidate_tags(args.version, args.sha):
                 print(tag)
+            return 0
+
+        if args.command == "draft-release-notes":
+            rendered = render_release_notes(args.version, args.candidate_tag)
+            args.notes_file.write_text(rendered, encoding="utf-8")
+            if args.github_output:
+                write_github_output(
+                    args.github_output,
+                    {"previous_tag": previous_stable_tag(args.candidate_tag)},
+                )
+            return 0
+
+        if args.command == "assert-release-record":
+            metadata = assert_release_record(
+                issue_body_path=args.issue_body_file,
+                version=args.version,
+                candidate_tag=args.candidate_tag,
+                sha=args.candidate_sha,
+            )
+            if args.github_output:
+                write_github_output(args.github_output, metadata)
             return 0
     except ReleaseTagError as exc:
         print(f"error: {exc}", file=sys.stderr)

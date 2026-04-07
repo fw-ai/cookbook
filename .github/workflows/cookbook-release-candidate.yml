@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       artifact_name: ${{ steps.tag.outputs.artifact_name }}
+      candidate_previous_tag: ${{ steps.notes.outputs.previous_tag }}
       stable_tag: ${{ steps.tag.outputs.stable_tag }}
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.tag.outputs.version }}
@@ -51,6 +52,15 @@ jobs:
             --tag "${GITHUB_REF_NAME}" \
             --kind candidate \
             --pyproject training/pyproject.toml
+
+      - name: Draft Release Notes
+        id: notes
+        run: |
+          python .github/scripts/cookbook_release.py draft-release-notes \
+            --version "${{ steps.tag.outputs.version }}" \
+            --candidate-tag "${GITHUB_REF_NAME}" \
+            --notes-file /tmp/candidate-release-notes.md \
+            --github-output "${GITHUB_OUTPUT}"
 
   training-ci:
     name: Run Training CI
@@ -87,6 +97,13 @@ jobs:
         run: |
           python -m build --sdist --wheel --outdir ../dist
 
+      - name: Draft Release Notes
+        run: |
+          python .github/scripts/cookbook_release.py draft-release-notes \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --candidate-tag "${GITHUB_REF_NAME}" \
+            --notes-file candidate-release-notes.md
+
       - name: Write Candidate Manifest
         run: |
           python - <<'PY'
@@ -114,6 +131,7 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
             dist/release-manifest.json
+            candidate-release-notes.md
           if-no-files-found: error
           retention-days: 30
 
@@ -125,10 +143,17 @@ jobs:
             echo "- Stable tag target: \`${{ needs.prepare.outputs.stable_tag }}\`"
             echo "- Candidate SHA: \`${GITHUB_SHA}\`"
             echo "- Candidate artifact: \`${{ needs.prepare.outputs.artifact_name }}\`"
+            if [ -n "${{ needs.prepare.outputs.candidate_previous_tag }}" ]; then
+              echo "- Draft release notes compare base: \`${{ needs.prepare.outputs.candidate_previous_tag }}\`"
+            else
+              echo "- Draft release notes compare base: repository history start"
+            fi
             echo
             echo "Repository-owned checks are complete. The release record still needs:"
             echo "- Fireworks internal test evidence"
             echo "- Backend validation evidence when the release is backend-coupled"
             echo "- Reviewer sign-off"
             echo "- Rollback plan"
+            echo
+            echo "Draft release notes are attached to the candidate artifact as \`candidate-release-notes.md\`."
           } >> "${GITHUB_STEP_SUMMARY}"

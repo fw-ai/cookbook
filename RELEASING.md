@@ -42,6 +42,7 @@ candidate tags and:
 - confirms `training/pyproject.toml` matches `X.Y.Z`
 - runs the reusable `Training CI` workflow
 - builds a source distribution and wheel for the exact candidate commit
+- generates draft release notes from the git history since the previous stable tag
 - uploads the candidate artifact plus a small release manifest
 
 ### Stable publish workflow
@@ -54,8 +55,10 @@ tags and:
 - confirms `training/pyproject.toml` matches `X.Y.Z`
 - confirms there is a candidate tag for the same `X.Y.Z` on the exact same SHA
 - locates a successful candidate validation run for that SHA
+- requires a matching cookbook release-record issue with explicit release metadata
+- requires the release record to contain a recorded `go` decision
 - reuses the exact candidate artifact
-- publishes the GitHub release with the validated wheel and sdist attached
+- publishes the GitHub release with the validated wheel, sdist, and candidate-generated notes
 
 This workflow intentionally refuses to publish if the stable tag does not map
 back to a previously validated candidate artifact.
@@ -74,6 +77,10 @@ Use it as the single release record for:
 - reviewer sign-off
 - rollback plan
 - final go or no-go readout
+
+The issue template includes a machine-readable metadata block. Keep that block
+updated when the candidate SHA or candidate tag changes, because the stable
+publish workflow validates it directly.
 
 ## End-to-end release checklist
 
@@ -99,7 +106,7 @@ Before tagging:
 
 - merge the intended release commit to `main`
 - open the cookbook release record issue
-- draft release notes
+- let the candidate workflow generate the first draft of the release notes
 - record the exact candidate SHA in the issue
 
 ### 4. Create the candidate tag
@@ -121,6 +128,7 @@ artifact for that SHA.
 Record all required evidence in the release issue:
 
 - candidate workflow run
+- candidate draft release notes artifact
 - `Training CI` result
 - cookbook smoke-test result
 - Fireworks internal test result or written sign-off
@@ -136,7 +144,7 @@ attached to the release record manually.
 ### 6. Hold the go or no-go call
 
 Do not create the stable tag until the release owner records an explicit go
-decision in the release issue.
+decision in the release issue and updates the metadata block accordingly.
 
 ### 7. Create the stable tag
 
@@ -153,6 +161,7 @@ The stable publish workflow will fail if:
 - the tagged SHA is not on `main`
 - no candidate tag for `vX.Y.Z-alpha.N` points to that SHA
 - no successful candidate workflow run exists for the same artifact
+- no matching release-record issue contains the expected metadata and `go` state
 
 ### 8. Verify after publication
 

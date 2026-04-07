@@ -1,6 +1,8 @@
 name: Cookbook release record
 description: Track one public cookbook release from candidate tag through final go or no-go.
 title: "Cookbook release: vX.Y.Z"
+labels:
+  - cookbook-release
 body:
   - type: markdown
     attributes:
@@ -118,6 +120,22 @@ body:
         Go/no-go:
         Reviewer sign-off:
         Notes:
+    validations:
+      required: true
+
+  - type: textarea
+    id: automation_metadata
+    attributes:
+      label: Automation metadata
+      description: Keep the marker lines intact and update the values as the release progresses.
+      value: |
+        <!-- cookbook-release-metadata
+        version: vX.Y.Z
+        candidate-tag: vX.Y.Z-alpha.N
+        candidate-sha: 0123456789abcdef0123456789abcdef01234567
+        backend-validation-required: false
+        go-approved: false
+        -->
     validations:
       required: true
 
