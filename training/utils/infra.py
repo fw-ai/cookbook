@@ -383,12 +383,16 @@ def setup_deployment(
     return info
 
 
+_HOTLOAD_BUSY_STAGES = ("preparing", "loading")
+
+
 def setup_or_reattach_deployment(
     deploy_mgr: DeploymentManager,
     deploy_cfg: DeployConfig,
     base_model: str,
     infra: InfraConfig,
     trainer_job_name: str,
+    weight_syncer: "WeightSyncer | None" = None,
 ) -> DeploymentInfo:
     """Set up a deployment, re-attaching to a new trainer if it already exists.
 
@@ -396,6 +400,15 @@ def setup_or_reattach_deployment(
     DELETED / DELETING), its hotload bucket is re-pointed to
     *trainer_job_name* via a PATCH.  Otherwise a fresh deployment is created
     with the trainer reference baked in at creation.
+
+    When *weight_syncer* is provided and a re-attach happens, its delta-chain
+    state is reset so the next checkpoint is treated as ``base`` (the new
+    trainer's bucket has no prior snapshots).
+
+    Race protection: if the deployment is currently mid-hotload (loading_state
+    stage in {"preparing", "loading"}), the re-attach is rejected with a
+    RuntimeError. Switching the bucket URL during an in-flight load would
+    leave the serving container in an undefined state.
     """
     existing = (
         deploy_mgr.get(deploy_cfg.deployment_id)
@@ -403,11 +416,36 @@ def setup_or_reattach_deployment(
         else None
     )
     if existing and existing.state not in ("FAILED", "DELETED", "DELETING"):
+        # Reject re-attach during an active hotload to avoid switching the
+        # bucket URL out from under a partial snapshot load.
+        try:
+            status = deploy_mgr.hotload_check_status(
+                deployment_id=deploy_cfg.deployment_id,
+                base_model=base_model,
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not check hotload status before re-attach (continuing): %s", e,
+            )
+            status = None
+        if status:
+            replicas = status.get("replicas") or []
+            if replicas:
+                stage = (replicas[0].get("loading_state") or {}).get("stage", "")
+                if stage in _HOTLOAD_BUSY_STAGES:
+                    raise RuntimeError(
+                        f"Cannot re-attach deployment {deploy_cfg.deployment_id}: "
+                        f"hotload is currently in progress (stage={stage}). "
+                        "Wait for the current load to finish, then retry."
+                    )
+
         deploy_mgr.update(
             deploy_cfg.deployment_id,
             body={"hotLoadTrainerJob": trainer_job_name},
             update_mask="hot_load_trainer_job",
         )
+        if weight_syncer is not None:
+            weight_syncer.reset_delta_chain()
         logger.info(
             "Re-attached deployment %s to trainer %s",
             deploy_cfg.deployment_id,
