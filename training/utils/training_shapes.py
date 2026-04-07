@@ -48,6 +48,7 @@ class ShapeSelectionRequest:
     explicit_training_shape_id: str | None = None
     explicit_deployment_shape: str | None = None
     public_only: bool = False
+    accelerator_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +217,7 @@ def _select_training_shape_candidate(
                 trainer_mode=expected_mode,
                 deployment_shape=deployment_filter,
                 public_only=request.public_only,
+                accelerator_type=request.accelerator_type,
             ),
         ),
         request=request,
@@ -233,6 +235,7 @@ def _select_training_shape_candidate(
                 trainer_mode=expected_mode,
                 deployment_shape=deployment_filter,
                 public_only=request.public_only,
+                accelerator_type=request.accelerator_type,
             ),
         ),
         request=request,
@@ -241,7 +244,8 @@ def _select_training_shape_candidate(
     if compat_candidates:
         return _choose_training_shape_candidate(compat_candidates, request)
 
-    raise ValueError(_format_training_shape_selection_error(request, expected_mode))
+    logger.error("Training shape selection failed: %s", _format_internal_shape_error(request, expected_mode))
+    raise ValueError(_format_user_facing_shape_error(request))
 
 
 def _select_deployment_shape_candidate(
@@ -290,6 +294,9 @@ def _compatible_training_shape_candidates(
     for candidate in candidates:
         if candidate.trainer_mode != expected_mode:
             continue
+        if request.accelerator_type:
+            if candidate.accelerator_type != request.accelerator_type:
+                continue
         if request.max_seq_len is not None:
             if candidate.max_supported_context_length < request.max_seq_len:
                 continue
@@ -495,10 +502,13 @@ def _build_latest_validated_training_shape_filter(
     trainer_mode: str,
     deployment_shape: str | None,
     public_only: bool = False,
+    accelerator_type: str | None = None,
 ) -> str:
     extras = [f'snapshot.trainer_mode="{trainer_mode}"']
     if deployment_shape:
         extras.extend(_deployment_shape_filters(deployment_shape))
+    if accelerator_type:
+        extras.append(f'snapshot.accelerator_type="{accelerator_type}"')
     return _combine_filters(
         f'snapshot.base_model="{base_model}"',
         "latest_validated=true",
@@ -513,11 +523,14 @@ def _build_compatible_training_shape_filter(
     trainer_mode: str,
     deployment_shape: str | None,
     public_only: bool = False,
+    accelerator_type: str | None = None,
 ) -> str:
     lower_bound, upper_bound = _get_parameter_count_bucket_bounds(model_ctx.parameter_count)
     extras = [f'snapshot.trainer_mode="{trainer_mode}"']
     if deployment_shape:
         extras.extend(_deployment_shape_filters(deployment_shape))
+    if accelerator_type:
+        extras.append(f'snapshot.accelerator_type="{accelerator_type}"')
     return _combine_filters(
         f'snapshot.model_type="{model_ctx.model_type}"',
         f"snapshot.parameter_count>={lower_bound}",
@@ -597,26 +610,31 @@ def _normalize_trainer_mode(value: Any) -> str | None:
     return _TRAINER_MODE_BY_CODE.get(int(value))
 
 
-def _format_training_shape_selection_error(
+def _format_internal_shape_error(
     request: ShapeSelectionRequest,
     trainer_mode: str,
 ) -> str:
+    """Full diagnostic message for internal logs only."""
     mode_label = "LoRA" if trainer_mode == "LORA_TRAINER" else (
         "reference" if trainer_mode == "FORWARD_ONLY" else "full-tune"
-    )
-    suffix = (
-        " Provide explicit shape overrides or lower max_seq_len."
-        if request.max_seq_len is not None
-        else " Provide explicit shape overrides."
     )
     return (
         "No validated training shape matched "
         f"base_model={request.base_model!r}, "
         f"trainer_role={request.trainer_role!r}, "
         f"mode={mode_label!r}, "
+        f"accelerator_type={request.accelerator_type!r}, "
         f"max_seq_len={request.max_seq_len!r}, "
         f"needs_deployment={request.needs_deployment!r}."
-        + suffix
+    )
+
+
+def _format_user_facing_shape_error(request: ShapeSelectionRequest) -> str:
+    """Generic message safe to surface to customers."""
+    return (
+        f"No training configuration is available for "
+        f"base_model={request.base_model!r}. "
+        f"Please contact support or try a different model."
     )
 
 

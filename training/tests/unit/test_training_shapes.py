@@ -307,7 +307,7 @@ def test_select_validated_launch_shapes_raises_when_no_validated_shape_matches()
         raise AssertionError(f"unexpected path: {path}")
 
     mgr = _FakeSelectorMgr(handler)
-    with pytest.raises(ValueError, match="No validated training shape matched"):
+    with pytest.raises(ValueError, match="No training configuration is available"):
         select_validated_launch_shapes(
             mgr,
             request=ShapeSelectionRequest(
@@ -317,6 +317,134 @@ def test_select_validated_launch_shapes_raises_when_no_validated_shape_matches()
                 needs_deployment=False,
             ),
         )
+
+
+def test_select_validated_launch_shapes_filters_by_accelerator_type():
+    """When accelerator_type is set, only shapes with that accelerator are returned."""
+    h200_shape = _training_shape_version(
+        "accounts/fireworks/trainingShapes/qwen3-8b-h200/versions/v1",
+        trainer_mode="POLICY_TRAINER",
+        max_supported_context_length=131072,
+        accelerator_type="NVIDIA_H200_141GB",
+    )
+    b200_shape = _training_shape_version(
+        "accounts/fireworks/trainingShapes/qwen3-8b-b200/versions/v2",
+        trainer_mode="POLICY_TRAINER",
+        max_supported_context_length=131072,
+        accelerator_type="NVIDIA_B200_180GB",
+    )
+
+    def handler(path: str) -> dict:
+        filt = _filter_for(path)
+        if "/trainingShapes/-/versions" in path:
+            assert 'snapshot.accelerator_type="NVIDIA_B200_180GB"' in filt
+            return {"trainingShapeVersions": [b200_shape]}
+        raise AssertionError(f"unexpected path: {path}")
+
+    mgr = _FakeSelectorMgr(handler)
+    selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            trainer_role="policy",
+            accelerator_type="NVIDIA_B200_180GB",
+        ),
+    )
+
+    assert selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-b200"
+    assert selection.training_profile.accelerator_type == "NVIDIA_B200_180GB"
+
+
+def test_select_validated_launch_shapes_accelerator_mismatch_raises_generic_error():
+    """When no shapes match the required accelerator, the user sees a generic
+    error while the detailed constraint info is logged."""
+    def handler(path: str) -> dict:
+        if path == "/v1/accounts/fireworks/models/qwen3-8b":
+            return {
+                "baseModelDetails": {
+                    "modelType": "qwen3",
+                    "parameterCount": 8_400_000_000,
+                    "supportsFireattention": False,
+                }
+            }
+        if "/versions" in path:
+            if "trainingShapes" in path:
+                return {"trainingShapeVersions": []}
+            return {"deploymentShapeVersions": []}
+        raise AssertionError(f"unexpected path: {path}")
+
+    mgr = _FakeSelectorMgr(handler)
+    with pytest.raises(ValueError, match="No training configuration is available"):
+        select_validated_launch_shapes(
+            mgr,
+            request=ShapeSelectionRequest(
+                base_model="accounts/fireworks/models/qwen3-8b",
+                trainer_role="policy",
+                accelerator_type="NVIDIA_B200_180GB",
+            ),
+        )
+
+
+def test_select_validated_launch_shapes_client_side_accelerator_filter():
+    """Even if the server returns shapes with mixed accelerators, the client
+    filters to only the requested type."""
+    h200_shape = _training_shape_version(
+        "accounts/fireworks/trainingShapes/qwen3-8b-h200/versions/v1",
+        trainer_mode="POLICY_TRAINER",
+        max_supported_context_length=131072,
+        accelerator_type="NVIDIA_H200_141GB",
+    )
+    b200_shape = _training_shape_version(
+        "accounts/fireworks/trainingShapes/qwen3-8b-b200/versions/v2",
+        trainer_mode="POLICY_TRAINER",
+        max_supported_context_length=131072,
+        accelerator_type="NVIDIA_B200_180GB",
+    )
+
+    def handler(path: str) -> dict:
+        if "/trainingShapes/-/versions" in path:
+            return {"trainingShapeVersions": [h200_shape, b200_shape]}
+        raise AssertionError(f"unexpected path: {path}")
+
+    mgr = _FakeSelectorMgr(handler)
+    selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            trainer_role="policy",
+            accelerator_type="NVIDIA_B200_180GB",
+        ),
+    )
+
+    assert selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-b200"
+
+
+def test_select_validated_launch_shapes_no_accelerator_filter_returns_any():
+    """When accelerator_type is None, all shapes are eligible (backward compat)."""
+    h200_shape = _training_shape_version(
+        "accounts/fireworks/trainingShapes/qwen3-8b-h200/versions/v1",
+        trainer_mode="POLICY_TRAINER",
+        max_supported_context_length=131072,
+        accelerator_type="NVIDIA_H200_141GB",
+    )
+
+    def handler(path: str) -> dict:
+        filt = _filter_for(path)
+        if "/trainingShapes/-/versions" in path:
+            assert "snapshot.accelerator_type" not in filt
+            return {"trainingShapeVersions": [h200_shape]}
+        raise AssertionError(f"unexpected path: {path}")
+
+    mgr = _FakeSelectorMgr(handler)
+    selection = select_validated_launch_shapes(
+        mgr,
+        request=ShapeSelectionRequest(
+            base_model="accounts/fireworks/models/qwen3-8b",
+            trainer_role="policy",
+        ),
+    )
+
+    assert selection.training_shape_id == "accounts/fireworks/trainingShapes/qwen3-8b-h200"
 
 
 def test_materialize_profile_infra_copies_shape_owned_fields():
