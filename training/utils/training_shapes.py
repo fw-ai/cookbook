@@ -511,9 +511,11 @@ def _expected_trainer_mode(
     trainer_role: Literal["policy", "reference"],
     lora_rank: int,
 ) -> str:
+    if lora_rank > 0:
+        return "LORA_TRAINER"
     if trainer_role == "reference":
         return "FORWARD_ONLY"
-    return "LORA_TRAINER" if lora_rank > 0 else "POLICY_TRAINER"
+    return "POLICY_TRAINER"
 
 
 def _build_latest_validated_training_shape_filter(
