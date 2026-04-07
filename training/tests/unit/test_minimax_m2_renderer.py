@@ -7,18 +7,13 @@ Run from ``cookbook/training`` with:
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 import transformers
 
-_UTILS_DIR = str(Path(__file__).resolve().parents[2] / "utils")
-if _UTILS_DIR not in sys.path:
-    sys.path.insert(0, _UTILS_DIR)
-
-from minimax_m2_renderer import MiniMaxM2Renderer
+from training.renderer.minimax_m2 import MiniMaxM2Renderer
 from tinker_cookbook.renderers.base import RenderContext, ToolCall, TrainOnWhat
 
 _LOCAL_PATH = "/shared/MiniMax-M2"

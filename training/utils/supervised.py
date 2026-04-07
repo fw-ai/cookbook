@@ -31,8 +31,8 @@ from tinker_cookbook.renderers import (
 
 from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
-import training.utils.nemotron_renderer as _nemotron_renderer  # noqa: F401 — triggers register_renderer
-import training.utils.minimax_m2_renderer as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.nemotron as _nemotron_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 
 
 @dataclass(frozen=True)
