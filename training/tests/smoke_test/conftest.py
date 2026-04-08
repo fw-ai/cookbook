@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_SMOKE_BASE_MODEL = "accounts/fireworks/models/qwen3-4b"
 DEFAULT_SMOKE_TOKENIZER_MODEL = "Qwen/Qwen3-4B"
 DEFAULT_SMOKE_TRAINING_SHAPE = "ts-qwen3-4b-smoke-v1"
+DEFAULT_SMOKE_MINIMAL_TRAINING_SHAPE = "qwen3-4b-minimum"
+DEFAULT_SMOKE_MINIMAL_REF_TRAINING_SHAPE = "qwen3-4b-minimum-forward-only"
 DEFAULT_SMOKE_BASE_URL = "https://dev.api.fireworks.ai"
 
 
@@ -72,6 +74,37 @@ def smoke_dpo_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig
     return InfraConfig(
         training_shape_id=smoke_training_shape,
         ref_training_shape_id=smoke_training_shape,
+    )
+
+
+@pytest.fixture(scope="session")
+def smoke_minimal_training_shape() -> str:
+    return _get_env(
+        "FIREWORKS_SMOKE_MINIMAL_TRAINING_SHAPE",
+        DEFAULT_SMOKE_MINIMAL_TRAINING_SHAPE,
+    )
+
+
+@pytest.fixture(scope="session")
+def smoke_minimal_ref_training_shape() -> str:
+    return _get_env(
+        "FIREWORKS_SMOKE_MINIMAL_REF_TRAINING_SHAPE",
+        DEFAULT_SMOKE_MINIMAL_REF_TRAINING_SHAPE,
+    )
+
+
+@pytest.fixture(scope="session")
+def smoke_minimal_grpo_infra(
+    smoke_minimal_training_shape,
+    smoke_minimal_ref_training_shape,
+    smoke_custom_image_tag,
+) -> InfraConfig:
+    """Two minimal 1xGPU training shapes (policy + forward-only reference)."""
+    if smoke_custom_image_tag:
+        return InfraConfig(custom_image_tag=smoke_custom_image_tag)
+    return InfraConfig(
+        training_shape_id=smoke_minimal_training_shape,
+        ref_training_shape_id=smoke_minimal_ref_training_shape,
     )
 
 
