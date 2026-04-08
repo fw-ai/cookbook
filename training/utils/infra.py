@@ -207,7 +207,6 @@ def create_trainer_job(
     base_url_override: str | None = None,
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
-    managed_by: str | None = None,
 ) -> TrainerServiceEndpoint:
     """Create a new RLOR trainer job (or reuse *job_id*).
 
@@ -292,17 +291,17 @@ def create_trainer_job(
     if infra.purpose:
         config.purpose = infra.purpose
 
+    if infra.managed_by:
+        config.managed_by = infra.managed_by
+
     logger.info(
         "Creating %s trainer job '%s' (forward_only=%s, managed_by=%s)...",
         trainer_role,
         display_name,
         forward_only,
-        managed_by or "none",
+        infra.managed_by or "none",
     )
     _emit(f"creating {trainer_role} trainer '{display_name}'")
-
-    if managed_by:
-        config.managed_by = managed_by
 
     created_job_id: str | None = None
     try:

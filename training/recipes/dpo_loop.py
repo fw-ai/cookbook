@@ -525,8 +525,6 @@ def main(
     def _on_trainer_status(msg: str) -> None:
         runner.write_status(RunStatus.PENDING, message=msg)
 
-    parent_job_id = os.environ.get("FIREWORKS_PARENT_JOB_ID")
-
     with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
         # -- Create trainer jobs first (trainer owns the hot-load bucket) ------
         _on_trainer_status("provisioning policy and reference trainers")
@@ -544,7 +542,6 @@ def main(
                 job_id=cfg.policy_job_id,
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
-                managed_by=parent_job_id,
             )
             ref_fut = pool.submit(
                 create_trainer_job,
@@ -560,7 +557,6 @@ def main(
                 job_id=cfg.reference_job_id,
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
-                managed_by=parent_job_id,
             )
             # Collect both results so that if both fail we report
             # both errors instead of swallowing the second one.
