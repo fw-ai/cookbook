@@ -1,24 +1,18 @@
 """Verify NemotronRenderer matches HuggingFace apply_chat_template output.
 
 Run from cookbook/training with:
-    PYTHONPATH=../.. python -m pytest tests/unit/test_nemotron_renderer.py -v -s
+    PYTHONPATH=../.. python -m pytest training/tests/unit/test_nemotron_renderer.py -v -s
 """
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 import transformers
 
-# Import NemotronRenderer directly to avoid pulling the full training.utils
-# chain (which requires fireworks.training.sdk at import time).
-_UTILS_DIR = str(Path(__file__).resolve().parents[2] / "utils")
-if _UTILS_DIR not in sys.path:
-    sys.path.insert(0, _UTILS_DIR)
-from nemotron_renderer import NemotronRenderer
+from training.renderer.nemotron import NemotronRenderer
 from tinker_cookbook.renderers.base import ToolCall
 
 
