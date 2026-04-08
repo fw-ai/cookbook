@@ -165,9 +165,15 @@ def test_parity_with_hf_chat_template(tokenizer, renderer, messages):
 # ── Public API contract ──────────────────────────────────────────────────────
 
 
-def test_stop_sequence_is_turn_close(renderer, tokenizer):
-    expected = tokenizer.encode("<turn|>", add_special_tokens=False)
-    assert renderer.get_stop_sequences() == expected
+def test_stop_sequences_include_turn_close_and_tool_response(renderer, tokenizer):
+    """Both `<turn|>` (normal close) and `<|tool_response>` (tool-call
+    handoff) are valid completion signals — Gemma 4 emits the latter
+    immediately after `<tool_call|>` when it wants the runner to inject
+    a tool result, and both vLLM and SGLang treat it as the end of the
+    assistant turn for tool-calling outputs."""
+    turn_close = tokenizer.encode("<turn|>", add_special_tokens=False)[0]
+    tool_resp_open = tokenizer.encode("<|tool_response>", add_special_tokens=False)[0]
+    assert renderer.get_stop_sequences() == [turn_close, tool_resp_open]
 
 
 def test_parse_response_plain_text_roundtrip(tokenizer, renderer):
@@ -696,4 +702,104 @@ def test_e2e_model_parity_greedy(tokenizer, renderer, gpu_model, messages):
     # token-identical and decoding is greedy.
     assert hf_completion == our_completion, (
         f"Completion mismatch:\n  HF:   {hf_completion!r}\n  Ours: {our_completion!r}"
+    )
+
+
+# ── End-to-end tool-calling: real model → renderer → real parsers ──────────
+
+
+_E2E_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a location",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "City name"},
+                "unit": {
+                    "type": "string",
+                    "description": "Temperature unit (c or f)",
+                    "enum": ["c", "f"],
+                },
+            },
+            "required": ["location"],
+        },
+    },
+}
+
+
+def test_e2e_tool_call_renderer_to_model_to_renderer_parser(
+    tokenizer, renderer, gpu_model
+):
+    """End-to-end loop with tools:
+
+    1. Build a tool-aware prompt with the renderer.
+    2. Greedy-decode through the actual Gemma 4 model.
+    3. Assert the model emits a properly-formed ``<|tool_call>...
+       <tool_call|>`` block — proves our prompt is in-distribution for
+       tool calling.
+    4. Round-trip the raw token IDs through ``Gemma4Renderer.parse_response``
+       and assert it extracts ``tool_calls`` with ``name='get_weather'``
+       and a ``location`` argument.
+
+    This is the integration test that catches the failure mode where the
+    renderer output looks right token-for-token but doesn't actually
+    drive the trained model to emit a tool call.
+    """
+    import torch  # noqa: F401  (skip-guarded by gpu_model fixture)
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful assistant. When the user asks about "
+                "weather, call the get_weather function."
+            ),
+        },
+        {"role": "user", "content": "What is the weather in Paris in celsius?"},
+    ]
+    tools = [_E2E_TOOL]
+
+    prefix = renderer.create_conversation_prefix_with_tools(
+        tools, system_prompt=messages[0]["content"]
+    )
+    our_ids = list(
+        renderer.build_generation_prompt(prefix + messages[1:], role="assistant").to_ints()
+    )
+    # Sanity: matches HF's tools= prompt token-for-token (the unit-test
+    # tier already covers this, but pinning it here too makes failure
+    # diagnosis easier when the model output is wrong).
+    hf_ids = _hf_tokens(tokenizer, messages, tools=tools, add_generation_prompt=True)
+    assert hf_ids == our_ids
+
+    device = next(gpu_model.parameters()).device
+    input_t = torch.tensor([our_ids], device=device)
+    with torch.no_grad():
+        out = gpu_model.generate(
+            input_t,
+            max_new_tokens=80,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    gen_ids = out[0, len(our_ids):].tolist()
+
+    decoded_with_specials = tokenizer.decode(gen_ids, skip_special_tokens=False)
+    assert "<|tool_call>" in decoded_with_specials, (
+        "Model did NOT emit a tool call from our prompt — wire format wrong? "
+        f"Got: {decoded_with_specials!r}"
+    )
+
+    msg, ok = renderer.parse_response(gen_ids)
+    assert ok, (
+        f"parse_response did not find a stop token in real model output: "
+        f"{decoded_with_specials!r}"
+    )
+    assert msg.get("tool_calls"), (
+        f"parse_response did not extract tool_calls from: {decoded_with_specials!r}"
+    )
+    tc = msg["tool_calls"][0]  # type: ignore[index]
+    assert tc["name"] == "get_weather"
+    assert "location" in tc["arguments"], (
+        f"Missing location arg in parsed tool call: {tc!r}"
     )

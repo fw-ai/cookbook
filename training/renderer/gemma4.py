@@ -96,7 +96,6 @@ from tinker_cookbook.renderers.base import (
     TextPart,
     ThinkingPart,
     ToolSpec,
-    parse_response_for_stop_token,
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
@@ -429,6 +428,14 @@ class Gemma4Renderer(Renderer):
         self.enable_thinking = enable_thinking
         self._bos_token_id = self._encode_single_special(_BOS_TOKEN)
         self._turn_close_id = self._encode_single_special(_TURN_CLOSE)
+        # `<|tool_response>` (id 50) is the second valid end-of-message signal:
+        # the model emits it immediately after `<tool_call|>` to hand off to
+        # the tool runner. Both vLLM (`gemma4_utils.has_tool_response_tag`)
+        # and SGLang treat it as the natural completion marker for a tool-
+        # calling turn, and we have to as well — otherwise `parse_response`
+        # silently fails on tool-call outputs and the sampler doesn't know
+        # when to stop.
+        self._tool_response_open_id = self._encode_single_special(_TOOL_RESPONSE_OPEN)
         # Validated for fail-fast even though the IDs aren't read elsewhere:
         # an unexpected multi-token encoding signals the wrong tokenizer.
         self._encode_single_special(_TURN_OPEN)
@@ -593,7 +600,11 @@ class Gemma4Renderer(Renderer):
         return self.tokenizer.encode(suffix_str, add_special_tokens=False)
 
     def get_stop_sequences(self) -> list[int]:
-        return [self._turn_close_id]
+        # Both `<turn|>` (normal close) and `<|tool_response>` (tool-call
+        # handoff) are valid completion signals. Sampling without the second
+        # would let the model run past the tool call into garbage when the
+        # serving stack is supposed to inject the tool result there.
+        return [self._turn_close_id, self._tool_response_open_id]
 
     # ------------------------------------------------------------------
     # parse_response
@@ -602,7 +613,10 @@ class Gemma4Renderer(Renderer):
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
         """Parse sampled tokens into an assistant Message.
 
-        Decodes up to the ``<turn|>`` stop token, then:
+        Decodes up to the first end-of-message signal — either ``<turn|>``
+        (normal close) or ``<|tool_response>`` (tool-call handoff signal,
+        which the model emits immediately after ``<tool_call|>`` when it
+        wants the runner to inject a tool result). Then:
 
         * Pulls every ``<|tool_call>...<tool_call|>`` block out of the body
           into a structured ``tool_calls`` list on the message (raw arg
@@ -612,14 +626,23 @@ class Gemma4Renderer(Renderer):
           remaining body into ``ThinkingPart`` content parts so the
           render → sample → parse round-trip preserves structured content.
         """
-        assistant_message, parse_success = parse_response_for_stop_token(
-            response, self.tokenizer, self._turn_close_id
-        )
+        # Find the earliest occurrence of either terminator. We can't use
+        # parse_response_for_stop_token directly because it asserts there's
+        # exactly one stop token of a single ID, but a real model output
+        # may legitimately contain `<|tool_response>` after `<tool_call|>`.
+        end_idx = len(response)
+        for terminator in (self._turn_close_id, self._tool_response_open_id):
+            try:
+                idx = response.index(terminator)
+            except ValueError:
+                continue
+            if idx < end_idx:
+                end_idx = idx
+        parse_success = end_idx < len(response)
+        text = self.tokenizer.decode(response[:end_idx])
+        assistant_message: Message = Message(role="assistant", content=text)
         if not parse_success:
             return assistant_message, False
-
-        assert isinstance(assistant_message["content"], str)
-        text = assistant_message["content"]
 
         # Pull out tool calls first so they don't pollute the text path.
         tool_calls_raw: list[dict] = []
