@@ -291,8 +291,7 @@ def create_trainer_job(
     if infra.purpose:
         config.purpose = infra.purpose
 
-    if infra.managed_by:
-        config.managed_by = infra.managed_by
+    config.managed_by = infra.managed_by
 
     logger.info(
         "Creating %s trainer job '%s' (forward_only=%s)...",
