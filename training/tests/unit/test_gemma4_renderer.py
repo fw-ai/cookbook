@@ -59,10 +59,20 @@ def renderer(tokenizer):
     return Gemma4Renderer(tokenizer)
 
 
-def _hf_tokens(tokenizer, messages, *, add_generation_prompt: bool = True) -> list[int]:
-    result = tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=add_generation_prompt,
-    )
+def _hf_tokens(
+    tokenizer,
+    messages,
+    *,
+    add_generation_prompt: bool = True,
+    tools=None,
+    enable_thinking: bool = False,
+) -> list[int]:
+    kwargs: dict = {"add_generation_prompt": add_generation_prompt}
+    if tools is not None:
+        kwargs["tools"] = tools
+    if enable_thinking:
+        kwargs["enable_thinking"] = True
+    result = tokenizer.apply_chat_template(messages, tokenize=True, **kwargs)
     if hasattr(result, "input_ids"):
         return list(result.input_ids)
     return list(result)
@@ -245,6 +255,366 @@ def test_sequence_extension_property_holds_across_assistant_turns(renderer):
             f"observation; len(prev)={len(prev)} len(cur)={len(cur)}"
         )
         prev = cur
+
+
+# ── Tool-call / tool-response parity ────────────────────────────────────────
+
+
+_WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "City"},
+                "unit": {
+                    "type": "string",
+                    "description": "Unit",
+                    "enum": ["c", "f"],
+                },
+            },
+            "required": ["location"],
+        },
+    },
+}
+
+_NESTED_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search",
+        "description": "Search",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "q"},
+                "filters": {
+                    "type": "object",
+                    "description": "f",
+                    "properties": {
+                        "year": {"type": "string", "description": "y"},
+                    },
+                    "required": ["year"],
+                },
+                "tags": {
+                    "type": "array",
+                    "description": "t",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+_NO_PROPS_TOOLS = [
+    {"type": "function", "function": {"name": "a", "description": "d1",
+     "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {"name": "b", "description": "d2",
+     "parameters": {"type": "object", "properties": {}, "required": []}}},
+]
+
+
+def _renderer_tokens_with_tools(renderer, messages, tools, *, system_prompt: str = ""):
+    """Build a renderer prompt that mirrors HF's ``tools=...`` argument by
+    prepending the synthetic system message returned by
+    ``create_conversation_prefix_with_tools``.
+
+    If the conversation already starts with a system message we fold its
+    content into the synthetic system message via ``system_prompt`` and drop
+    the original — the official template only emits one system block.
+    """
+    if messages and messages[0]["role"] in ("system", "developer"):
+        sys_text = messages[0]["content"]
+        rest = messages[1:]
+    else:
+        sys_text = system_prompt
+        rest = list(messages)
+    prefix = renderer.create_conversation_prefix_with_tools(tools, system_prompt=sys_text)
+    return list(renderer.build_generation_prompt(prefix + rest, role="assistant").to_ints())
+
+
+@pytest.mark.parametrize(
+    ("messages", "tools"),
+    [
+        (
+            [{"role": "user", "content": "weather in paris?"}],
+            [_WEATHER_TOOL],
+        ),
+        (
+            [
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "weather?"},
+            ],
+            [_WEATHER_TOOL],
+        ),
+        (
+            [{"role": "user", "content": "go"}],
+            [_NESTED_TOOL],
+        ),
+        (
+            [{"role": "user", "content": "go"}],
+            _NO_PROPS_TOOLS,
+        ),
+    ],
+    ids=[
+        "single_tool_user_only",
+        "single_tool_with_system",
+        "nested_tool_def",
+        "two_tools_no_props",
+    ],
+)
+def test_tool_definitions_parity(tokenizer, renderer, messages, tools):
+    """Renderer must match HF's ``apply_chat_template(..., tools=...)`` token
+    sequence for the supported tool-definition shapes."""
+    hf = _hf_tokens(tokenizer, messages, tools=tools)
+    ours = _renderer_tokens_with_tools(renderer, messages, tools)
+    _assert_match(tokenizer, hf, ours)
+
+
+@pytest.mark.parametrize(
+    ("messages", "tools"),
+    [
+        # Assistant emits a tool call with two scalar args (string, string).
+        (
+            [
+                {"role": "user", "content": "weather in paris?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": {"location": "paris", "unit": "c"},
+                            },
+                        }
+                    ],
+                },
+            ],
+            [_WEATHER_TOOL],
+        ),
+        # Assistant tool call with mixed types (bool, int, string) — exercises
+        # the format_argument type branches.
+        (
+            [
+                {"role": "user", "content": "x"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "fn",
+                                "arguments": {"flag": True, "count": 3, "name": "z"},
+                            },
+                        }
+                    ],
+                },
+            ],
+            None,
+        ),
+        # Nested-object & array arguments — exercises recursive format_argument.
+        (
+            [
+                {"role": "user", "content": "x"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "fn",
+                                "arguments": {
+                                    "obj": {"a": 1, "b": "two"},
+                                    "arr": [1, 2, 3],
+                                },
+                            },
+                        }
+                    ],
+                },
+            ],
+            None,
+        ),
+    ],
+    ids=["string_args", "scalar_mixed_args", "nested_args"],
+)
+def test_tool_call_parity(tokenizer, renderer, messages, tools):
+    """Assistant ``tool_calls`` must serialise to the same tokens as the HF
+    template's ``<|tool_call>call:name{...}<tool_call|>`` block."""
+    if tools is not None:
+        hf = _hf_tokens(tokenizer, messages, tools=tools, add_generation_prompt=False)
+        ours = _renderer_tokens_with_tools(
+            renderer,
+            messages + [],  # explicit copy for clarity
+            tools,
+        )
+        # _renderer_tokens_with_tools always appends a generation suffix; for
+        # this no-genprompt parity check use the manual no-suffix call.
+        if messages[0]["role"] in ("system", "developer"):
+            sys_text, rest = messages[0]["content"], messages[1:]
+        else:
+            sys_text, rest = "", list(messages)
+        prefix = renderer.create_conversation_prefix_with_tools(tools, system_prompt=sys_text)
+        ours = list(
+            renderer.build_supervised_example(prefix + rest)[0].to_ints()
+        )
+    else:
+        hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+        ours = list(renderer.build_supervised_example(messages)[0].to_ints())
+    _assert_match(tokenizer, hf, ours)
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        # Tool response with mapping payload, then a generation prompt.
+        # Per the template, the prompt suffix `<|turn>model\n` is suppressed
+        # because the previous message was a pure tool response.
+        [
+            {"role": "user", "content": "weather in paris?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": {"location": "paris"},
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": "",
+                "tool_responses": [
+                    {"name": "get_weather", "response": {"temp": 18, "unit": "c"}}
+                ],
+            },
+        ],
+        # Tool response with a scalar payload.
+        [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"type": "function", "function": {"name": "fn", "arguments": {}}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": "",
+                "tool_responses": [{"name": "fn", "response": "hello"}],
+            },
+        ],
+        # Tool response followed by another user turn — the next turn DOES get
+        # a `<|turn>model\n` generation suffix because the *immediately
+        # preceding* message is no longer a tool response.
+        [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {"name": "fn", "arguments": {"x": 1}},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": "",
+                "tool_responses": [{"name": "fn", "response": {"v": 2}}],
+            },
+            {"role": "user", "content": "now what"},
+        ],
+    ],
+    ids=["mapping_response", "scalar_response", "response_then_user"],
+)
+def test_tool_response_parity(tokenizer, renderer, messages):
+    """``tool_responses`` must round-trip the template's
+    ``<|tool_response>response:name{...}<tool_response|>`` block, including
+    the trailing-``<turn|>`` suppression and the generation-suffix
+    suppression that the template applies after a pure tool-response turn."""
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    ours = _renderer_tokens(renderer, messages)
+    _assert_match(tokenizer, hf, ours)
+
+
+# ── enable_thinking parity ──────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def thinking_renderer(tokenizer):
+    return Gemma4Renderer(tokenizer, enable_thinking=True)
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [{"role": "user", "content": "hi"}],
+        [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": "hi"},
+        ],
+        [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "ans"},
+            {"role": "user", "content": "second"},
+        ],
+    ],
+    ids=["no_system", "with_system", "multi_turn"],
+)
+def test_enable_thinking_parity(tokenizer, thinking_renderer, messages):
+    """When ``enable_thinking=True``, the renderer must inject the same
+    ``<|think|>`` system marker the HF template emits."""
+    hf = _hf_tokens(tokenizer, messages, enable_thinking=True)
+    ours = list(
+        thinking_renderer.build_generation_prompt(messages, role="assistant").to_ints()
+    )
+    _assert_match(tokenizer, hf, ours)
+
+
+def test_enable_thinking_with_tools_parity(tokenizer, thinking_renderer):
+    """``enable_thinking`` and ``tools`` should compose: the system block
+    contains ``<|think|>`` followed by the tool declarations, with no
+    intervening whitespace, exactly like the template."""
+    messages = [{"role": "user", "content": "weather?"}]
+    tools = [_WEATHER_TOOL]
+    hf = _hf_tokens(tokenizer, messages, tools=tools, enable_thinking=True)
+
+    prefix = thinking_renderer.create_conversation_prefix_with_tools(tools, system_prompt="")
+    ours = list(
+        thinking_renderer.build_generation_prompt(prefix + messages, role="assistant").to_ints()
+    )
+    _assert_match(tokenizer, hf, ours)
+
+
+# ── Tool-call parse_response round trip ─────────────────────────────────────
+
+
+def test_parse_response_extracts_tool_calls(tokenizer, renderer):
+    """A model turn containing one or more tool-call blocks parses out into
+    the ``tool_calls`` field, leaving any surrounding text on ``content``."""
+    body = (
+        '<|tool_call>call:get_weather{location:<|"|>paris<|"|>}<tool_call|>'
+        "<turn|>"
+    )
+    encoded = tokenizer.encode(body, add_special_tokens=False)
+    msg, ok = renderer.parse_response(encoded)
+    assert ok
+    assert msg.get("tool_calls"), "expected tool_calls to be populated"
+    assert msg["tool_calls"][0]["name"] == "get_weather"  # type: ignore[index]
+    # Surrounding content (none in this case) should be empty string.
+    assert msg["content"] == ""
 
 
 # ── End-to-end model parity on GPU ──────────────────────────────────────────
