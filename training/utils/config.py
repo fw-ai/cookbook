@@ -86,6 +86,8 @@ class InfraConfig:
     extra_args: list[str] | None = None
     purpose: str | None = None
     """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
+    managed_by: str | None = None
+    """Internal. Populated automatically by the Fireworks platform when needed."""
     skip_validations: bool = False
     """Skip server-side shape validation. Requires superuser API key."""
 
