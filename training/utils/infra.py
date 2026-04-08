@@ -295,11 +295,10 @@ def create_trainer_job(
         config.managed_by = infra.managed_by
 
     logger.info(
-        "Creating %s trainer job '%s' (forward_only=%s, managed_by=%s)...",
+        "Creating %s trainer job '%s' (forward_only=%s)...",
         trainer_role,
         display_name,
         forward_only,
-        infra.managed_by or "none",
     )
     _emit(f"creating {trainer_role} trainer '{display_name}'")
 
