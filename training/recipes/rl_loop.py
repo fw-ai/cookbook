@@ -56,6 +56,7 @@ from training.utils import (
     log_metrics_json,
     get_deployment_gpu_count,
     setup_deployment,
+    setup_or_reattach_deployment,
     compute_advantages,
     create_trainer_job,
     load_jsonl_dataset,
@@ -495,9 +496,10 @@ def main(
             reference_ep = None
             reference_job_id = None
 
-        # -- Create deployment referencing the trainer's hot-load bucket -------
-        cfg.deployment.hot_load_trainer_job = policy_ep.job_name
-        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+        # -- Connect deployment to the trainer's hot-load bucket ----------------
+        dep_info = setup_or_reattach_deployment(
+            deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra, policy_ep.job_name,
+        )
         if cleanup_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 

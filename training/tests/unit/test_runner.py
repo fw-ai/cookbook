@@ -67,7 +67,6 @@ class TestRunnerIOStatus:
         assert data["message"] == "training"
         assert data["details"][0]["@type"] == "type.googleapis.com/gateway.JobProgress"
         assert data["details"][0]["percent"] == 30
-
     def test_status_protojson_strict_structure(self, tmp_path):
         """Enforce exact protojson shape: google.rpc.Status with JobProgress detail."""
         path = str(tmp_path / "status.json")
