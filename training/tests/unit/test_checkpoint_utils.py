@@ -143,8 +143,8 @@ class TestValidateCheckpointEntry:
             "name": "step-8",
             "step": 8,
             "data_consumed": 8,
-            "source_job_id": "kqvuxq5m2onqq4dl",
-            "state_path": "cross_job://kqvuxq5m2onqq4dl/step-8-cb9ad9b5",
+            "source_job_id": "job-prev-run",
+            "state_path": "cross_job://job-prev-run/step-8-abc12345",
         }
         result = validate_checkpoint_entry(entry)
         assert result is entry
