@@ -17,7 +17,10 @@ from training.utils.client import ReconnectableClient
 
 CHECKPOINTS_BASE_NAME = "checkpoints.jsonl"
 
+_VALID_STATE_PATH_PREFIXES = ("cross_job://", "gs://", "/")
+
 logger = logging.getLogger(__name__)
+
 
 def get_sampler_checkpoint_id(save_result: Any) -> str:
     """Extract the promotable sampler checkpoint id from a save result."""
@@ -30,6 +33,72 @@ def get_sampler_checkpoint_id(save_result: Any) -> str:
         raise ValueError("save_weights_for_sampler_ext() returned no checkpoint identifier")
 
     return str(path).rstrip("/").rsplit("/", 1)[-1]
+
+
+# -- Checkpoint validation -----------------------------------------------------
+
+
+class InvalidCheckpointError(Exception):
+    """Raised when a checkpoint entry in ``checkpoints.jsonl`` is malformed.
+
+    The message always includes which field failed and why so the operator
+    can fix the entry without guessing.
+    """
+
+
+def validate_checkpoint_entry(entry: Any) -> dict[str, Any]:
+    """Validate a single checkpoint JSONL record and return it.
+
+    Raises ``InvalidCheckpointError`` with a descriptive message when the
+    entry is missing required fields or contains values of the wrong type.
+    """
+    if not isinstance(entry, dict):
+        raise InvalidCheckpointError(f"Checkpoint entry must be a JSON object, got {type(entry).__name__}: {entry!r}")
+
+    # -- name (required, non-empty string) --
+    name = entry.get("name")
+    if name is None:
+        raise InvalidCheckpointError(f"Checkpoint entry missing required field 'name': {entry!r}")
+    if not isinstance(name, str) or not name.strip():
+        raise InvalidCheckpointError(f"Checkpoint 'name' must be a non-empty string, got {name!r}")
+
+    # -- state_path (required, non-empty string with a recognised prefix) --
+    state_path = entry.get("state_path")
+    if state_path is None:
+        raise InvalidCheckpointError(f"Checkpoint '{name}' missing required field 'state_path'")
+    if not isinstance(state_path, str) or not state_path.strip():
+        raise InvalidCheckpointError(f"Checkpoint '{name}' has empty or non-string 'state_path': {state_path!r}")
+    if not state_path.startswith(_VALID_STATE_PATH_PREFIXES):
+        raise InvalidCheckpointError(
+            f"Checkpoint '{name}' has unrecognised state_path format "
+            f"(expected prefix cross_job://, gs://, or /): {state_path!r}"
+        )
+
+    # -- step (optional but must be a non-negative int when present) --
+    step = entry.get("step")
+    if step is not None:
+        if not isinstance(step, int) or isinstance(step, bool):
+            raise InvalidCheckpointError(
+                f"Checkpoint '{name}' field 'step' must be an integer, got {type(step).__name__}: {step!r}"
+            )
+        if step < 0:
+            raise InvalidCheckpointError(f"Checkpoint '{name}' field 'step' must be non-negative, got {step}")
+
+    # -- data_consumed (optional but must be a non-negative int when present) --
+    data_consumed = entry.get("data_consumed")
+    if data_consumed is not None:
+        if not isinstance(data_consumed, int) or isinstance(data_consumed, bool):
+            raise InvalidCheckpointError(
+                f"Checkpoint '{name}' field 'data_consumed' must be an integer, "
+                f"got {type(data_consumed).__name__}: {data_consumed!r}"
+            )
+        if data_consumed < 0:
+            raise InvalidCheckpointError(
+                f"Checkpoint '{name}' field 'data_consumed' must be non-negative, got {data_consumed}"
+            )
+
+    return entry
+
 
 # -- Resume info ---------------------------------------------------------------
 
@@ -55,10 +124,13 @@ def get_last_checkpoint(log_path: str) -> dict[str, Any] | None:
     """Return the last valid entry from ``checkpoints.jsonl``, or None.
 
     Works transparently for both local directories and ``gs://`` URIs.
+    Raises ``InvalidCheckpointError`` if the last entry is malformed.
     """
     ckpt_file = fileio.join(log_path, CHECKPOINTS_BASE_NAME)
     records = fileio.read_jsonl(ckpt_file)
-    return records[-1] if records else None
+    if not records:
+        return None
+    return validate_checkpoint_entry(records[-1])
 
 
 def resolve_resume(
@@ -71,6 +143,9 @@ def resolve_resume(
     Returns ``None`` for a completely fresh start (no checkpoint to load).
     When a checkpoint is found or *init_from_checkpoint* is set, the
     weights + optimizer state are loaded into *client* before returning.
+
+    Raises ``InvalidCheckpointError`` if the checkpoint entry read from
+    ``checkpoints.jsonl`` is malformed (missing fields, wrong types, etc.).
     """
     if init_from_checkpoint:
         source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
@@ -99,10 +174,12 @@ def resolve_resume(
 
 # -- Checkpoint save -----------------------------------------------------------
 
+
 class CheckpointKind(str, Enum):
     STATE = "state"
     SAMPLER = "sampler"
     BOTH = "both"
+
 
 def save_checkpoint(
     client: ReconnectableClient,
@@ -134,7 +211,8 @@ def save_checkpoint(
         client.save_state(name)
         logger.info("DCP state checkpoint '%s' saved (%.1fs)", name, time.time() - t0)
         paths["state_path"] = client.resolve_checkpoint_path(
-            name, source_job_id=client.job_id,
+            name,
+            source_job_id=client.job_id,
         )
     if kind in (CheckpointKind.SAMPLER, CheckpointKind.BOTH):
         t1 = time.time()
