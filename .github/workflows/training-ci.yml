@@ -69,52 +69,5 @@ jobs:
             training/coverage.json
             training/coverage-summary.txt
 
-  qwen3-4b-smoke:
-    name: Qwen3-4B Smoke (${{ matrix.test_target }})
-    needs: unit
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        test_target:
-          - tests/smoke_test/test_sft_smoke.py
-          - tests/smoke_test/test_dpo_smoke.py
-          - tests/smoke_test/test_grpo_smoke.py
-          - tests/smoke_test/test_grpo_deepmath_smoke.py
-    defaults:
-      run:
-        working-directory: training
-    env:
-      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-      FIREWORKS_ACCOUNT_ID: ${{ secrets.FIREWORKS_ACCOUNT_ID }}
-      FIREWORKS_BASE_URL: ${{ vars.FIREWORKS_BASE_URL || 'https://dev.api.fireworks.ai' }}
-      FIREWORKS_INFERENCE_URL: ${{ vars.FIREWORKS_INFERENCE_URL || vars.FIREWORKS_BASE_URL || 'https://dev.api.fireworks.ai' }}
-      FIREWORKS_HOTLOAD_API_URL: ${{ vars.FIREWORKS_HOTLOAD_API_URL || vars.FIREWORKS_BASE_URL || 'https://dev.api.fireworks.ai' }}
-      FIREWORKS_GATEWAY_SECRET: ${{ secrets.FIREWORKS_GATEWAY_SECRET }}
-      FIREWORKS_CUSTOM_IMAGE_TAG: ${{ vars.FIREWORKS_CUSTOM_IMAGE_TAG }}
-      FIREWORKS_SMOKE_BASE_MODEL: ${{ vars.FIREWORKS_SMOKE_BASE_MODEL || 'accounts/fireworks/models/qwen3-4b' }}
-      FIREWORKS_SMOKE_TOKENIZER_MODEL: ${{ vars.FIREWORKS_SMOKE_TOKENIZER_MODEL || 'Qwen/Qwen3-4B' }}
-      FIREWORKS_SMOKE_TRAINING_SHAPE: ${{ vars.FIREWORKS_SMOKE_TRAINING_SHAPE || 'ts-qwen3-4b-smoke-v1' }}
-      FIREWORKS_SMOKE_MINIMAL_TRAINING_SHAPE: ${{ vars.FIREWORKS_SMOKE_MINIMAL_TRAINING_SHAPE || 'qwen3-4b-minimum' }}
-      FIREWORKS_SMOKE_MINIMAL_REF_TRAINING_SHAPE: ${{ vars.FIREWORKS_SMOKE_MINIMAL_REF_TRAINING_SHAPE || 'qwen3-4b-minimum-forward-only' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set Up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: training/pyproject.toml
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]'
-
-      - name: Run Smoke Test
-        run: |
-          pytest -q -s ${{ matrix.test_target }}
+# Smoke matrix moved to .github/workflows/training-smoke.yml
+# (nightly schedule + workflow_dispatch). PRs only run unit tests.

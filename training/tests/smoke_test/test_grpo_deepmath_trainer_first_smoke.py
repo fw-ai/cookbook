@@ -34,7 +34,7 @@ _DEEPMATH_DATASET = os.path.abspath(
 
 @pytest.mark.e2e
 @pytest.mark.timeout(3600)
-def test_grpo_deepmath_trainer_first_smoke(
+def test_grpo_deepmath_trainer_first(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,

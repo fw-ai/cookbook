@@ -112,6 +112,16 @@ def smoke_minimal_grpo_infra(
 def smoke_sdk_managers():
     api_key = _get_env("FIREWORKS_API_KEY")
     if not api_key:
+        # Inside GitHub Actions a missing FIREWORKS_API_KEY almost always
+        # means the repo secret was never configured -- previously the
+        # smoke matrix silently skipped and was reported green, hiding
+        # the fact that no e2e was actually running. Fail loudly there.
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(
+                "FIREWORKS_API_KEY is empty in GitHub Actions. The repo "
+                "secret is not configured -- add it under Settings -> "
+                "Secrets and variables -> Actions."
+            )
         pytest.skip("FIREWORKS_API_KEY not set")
 
     base_url = _get_env("FIREWORKS_BASE_URL", DEFAULT_SMOKE_BASE_URL)
