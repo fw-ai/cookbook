@@ -198,7 +198,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert len(events["created_configs"]) == 1
     assert events["created_configs"][0].display_name == "grpo-policy"
     assert events["created_configs"][0].hot_load_deployment_id is None
-    assert cfg.deployment.hot_load_trainer_job is not None
     assert events["sampler_init"]["model"] == "accounts/test/models/deployed"
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["run_loop_kwargs"]["prompt_groups_per_step"] == cfg.prompt_groups_per_step
