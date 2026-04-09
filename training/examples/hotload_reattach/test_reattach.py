@@ -226,7 +226,9 @@ def main() -> None:
         hotload_timeout=1200,
         first_checkpoint_type="base",
     )
-    _hotload(syncer, "reattach-test-initial", "Initial (T1)")
+    _hotload(syncer, "t1-base", "T1 base")
+    _hotload(syncer, "t1-delta-1", "T1 delta-1")
+    _hotload(syncer, "t1-delta-2", "T1 delta-2")
 
     # 5. Tear down T1. The deployment is now pointing at a deleted trainer's
     #    bucket -- exactly the broken state PR 21731 fixes.
@@ -259,7 +261,8 @@ def main() -> None:
         weight_syncer=syncer,
     )
 
-    # 8. Re-wire the syncer to T2 and verify the next hotload succeeds.
+    # 8. Re-wire the syncer to T2 and verify multiple hotloads succeed
+    #    (base + deltas prove the delta chain resets correctly).
     new_policy = ReconnectableClient(
         rlor_mgr,
         new_ep.job_id,
@@ -268,7 +271,9 @@ def main() -> None:
         fw_api_key=api_key,
     )
     syncer.policy_client = new_policy.inner
-    _hotload(syncer, "reattach-test-post", "Post-reattach (T2)")
+    _hotload(syncer, "t2-base", "T2 base (post-reattach)")
+    _hotload(syncer, "t2-delta-1", "T2 delta-1")
+    _hotload(syncer, "t2-delta-2", "T2 delta-2")
 
     # 9. Skip cleanup. Print everything needed to re-run quickly.
     logger.info(
