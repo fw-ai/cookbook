@@ -12,10 +12,10 @@ Optional inputs (via ``RunnerConfig`` fields or environment variables):
 
 File formats:
 
-``status_file`` (JSON, overwritten each update)::
+``status_file`` (protojson-compatible ``google.rpc.Status``, overwritten each update)::
 
-    {"status": "running", "step": 5, "total_steps": 100,
-     "progress": 0.05, "message": "training"}
+    {"code": 0, "message": "training",
+     "details": [{"@type": "type.googleapis.com/gateway.JobProgress", "percent": 5}]}
 
 ``metadata_file`` (JSON, overwritten each update)::
 
@@ -50,6 +50,18 @@ class RunStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+_GRPC_OK = 0
+_GRPC_FAILED_PRECONDITION = 9
+_JOB_PROGRESS_TYPE_URL = "type.googleapis.com/gateway.JobProgress"
+
+_STATUS_TO_GRPC_CODE: dict[RunStatus, int] = {
+    RunStatus.PENDING: _GRPC_OK,
+    RunStatus.RUNNING: _GRPC_OK,
+    RunStatus.COMPLETED: _GRPC_OK,
+    RunStatus.FAILED: _GRPC_FAILED_PRECONDITION,
+}
 
 
 @dataclass
@@ -135,17 +147,15 @@ class RunnerIO:
         self._last_total_steps = total_steps
         if not self._status_file:
             return
-        progress = step / total_steps if total_steps > 0 else 0.0
+        grpc_code = _STATUS_TO_GRPC_CODE.get(status, _GRPC_OK)
+        status_message = error or message or status.value
         payload: dict[str, Any] = {
-            "status": status.value,
-            "step": step,
-            "total_steps": total_steps,
-            "progress": round(progress, 6),
+            "code": grpc_code,
+            "message": status_message,
         }
-        if message:
-            payload["message"] = message
-        if error:
-            payload["error"] = error
+        if total_steps > 0:
+            percent = int(step / total_steps * 100)
+            payload["details"] = [{"@type": _JOB_PROGRESS_TYPE_URL, "percent": percent}]
         self._write_json(self._status_file, payload)
 
     # -- metadata --------------------------------------------------------------

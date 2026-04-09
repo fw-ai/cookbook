@@ -63,12 +63,10 @@ class TestRunnerIOStatus:
         runner.write_status(RunStatus.RUNNING, step=3, total_steps=10, message="training")
 
         data = json.loads(open(path).read())
-        assert data["status"] == "running"
-        assert data["step"] == 3
-        assert data["total_steps"] == 10
-        assert data["progress"] == 0.3
+        assert data["code"] == 0
         assert data["message"] == "training"
-        assert "error" not in data
+        assert data["details"][0]["@type"] == "type.googleapis.com/gateway.JobProgress"
+        assert data["details"][0]["percent"] == 30
 
     def test_write_status_with_error(self, tmp_path):
         path = str(tmp_path / "status.json")
@@ -77,8 +75,9 @@ class TestRunnerIOStatus:
         runner.write_status(RunStatus.FAILED, error="OOM")
 
         data = json.loads(open(path).read())
-        assert data["status"] == "failed"
-        assert data["error"] == "OOM"
+        assert data["code"] == 9
+        assert data["message"] == "OOM"
+        assert "details" not in data
 
     def test_write_status_overwrites(self, tmp_path):
         path = str(tmp_path / "status.json")
@@ -88,8 +87,9 @@ class TestRunnerIOStatus:
         runner.write_status(RunStatus.COMPLETED, step=10, total_steps=10, message="done")
 
         data = json.loads(open(path).read())
-        assert data["status"] == "completed"
-        assert data["step"] == 10
+        assert data["code"] == 0
+        assert data["message"] == "done"
+        assert data["details"][0]["percent"] == 100
 
     def test_write_status_noop_when_no_file(self):
         runner = RunnerIO(RunnerConfig())
@@ -101,7 +101,8 @@ class TestRunnerIOStatus:
         runner.write_status(RunStatus.PENDING, step=0, total_steps=0)
 
         data = json.loads(open(path).read())
-        assert data["progress"] == 0.0
+        assert data["code"] == 0
+        assert "details" not in data
 
     def test_all_status_values(self, tmp_path):
         path = str(tmp_path / "status.json")
@@ -110,7 +111,11 @@ class TestRunnerIOStatus:
         for status in RunStatus:
             runner.write_status(status)
             data = json.loads(open(path).read())
-            assert data["status"] == status.value
+            assert data["message"] == status.value
+            if status == RunStatus.FAILED:
+                assert data["code"] == 9
+            else:
+                assert data["code"] == 0
 
 
 # -- RunnerIO: metadata --------------------------------------------------------
@@ -305,10 +310,9 @@ class TestRunnerIOContextManager:
                 raise RuntimeError("boom")
 
         data = json.loads(open(path).read())
-        assert data["status"] == "failed"
-        assert data["error"] == "boom"
-        assert data["step"] == 5
-        assert data["total_steps"] == 10
+        assert data["code"] == 9
+        assert data["message"] == "boom"
+        assert data["details"][0]["percent"] == 50
 
     def test_exception_flushes_metadata(self, tmp_path):
         meta = str(tmp_path / "meta.json")
@@ -338,7 +342,8 @@ class TestRunnerIOContextManager:
             pass  # no exception
 
         data = json.loads(open(path).read())
-        assert data["status"] == "running"  # unchanged by __exit__
+        assert data["code"] == 0
+        assert data["message"] == "running"
 
     def test_noop_runner_context_manager_does_not_raise(self):
         runner = RunnerIO()
