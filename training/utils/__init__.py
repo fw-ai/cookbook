@@ -75,6 +75,7 @@ __all__ = [
     "resolve_renderer_name",
     "prepare_sampling_messages",
     "setup_deployment",
+    "setup_or_reattach_deployment",
     "setup_training_client",
     "setup_wandb",
     "flush_timing",
@@ -107,6 +108,7 @@ from training.utils.infra import (
     ResourceCleanup,
     get_deployment_gpu_count,
     setup_deployment,
+    setup_or_reattach_deployment,
     create_trainer_job,
     setup_training_client,
 )
