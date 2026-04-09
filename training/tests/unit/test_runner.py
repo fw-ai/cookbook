@@ -68,6 +68,29 @@ class TestRunnerIOStatus:
         assert data["details"][0]["@type"] == "type.googleapis.com/gateway.JobProgress"
         assert data["details"][0]["percent"] == 30
 
+    def test_status_protojson_strict_structure(self, tmp_path):
+        """Enforce exact protojson shape: google.rpc.Status with JobProgress detail."""
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        # 7/20 -> 35%
+        runner.write_status(RunStatus.RUNNING, step=7, total_steps=20, message="training")
+
+        data = json.loads(open(path).read())
+        # Top-level keys: exactly code, message, details
+        assert set(data.keys()) == {"code", "message", "details"}
+        assert isinstance(data["code"], int)
+        assert isinstance(data["message"], str)
+        # Details: list of exactly one element with @type and percent
+        assert isinstance(data["details"], list)
+        assert len(data["details"]) == 1
+        detail = data["details"][0]
+        assert set(detail.keys()) == {"@type", "percent"}
+        assert detail["@type"] == "type.googleapis.com/gateway.JobProgress"
+        assert isinstance(detail["percent"], int)
+        assert 0 <= detail["percent"] <= 100
+        assert detail["percent"] == 35
+
     def test_write_status_with_error(self, tmp_path):
         path = str(tmp_path / "status.json")
         runner = RunnerIO(RunnerConfig(status_file=path))
@@ -101,6 +124,8 @@ class TestRunnerIOStatus:
         runner.write_status(RunStatus.PENDING, step=0, total_steps=0)
 
         data = json.loads(open(path).read())
+        # Exact minimal shape: only code and message, no details
+        assert set(data.keys()) == {"code", "message"}
         assert data["code"] == 0
         assert "details" not in data
 
