@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 
+import httpx
 import pytest
 
 logging.basicConfig(
@@ -39,6 +41,7 @@ def test_grpo_deepmath_trainer_first(
     smoke_base_model,
     smoke_tokenizer_model,
     smoke_minimal_grpo_infra,
+    monkeypatch,
 ):
     # Late imports: module collection must not require FIREWORKS_API_KEY.
     from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
@@ -51,9 +54,12 @@ def test_grpo_deepmath_trainer_first(
 
     rlor_mgr, deploy_mgr = smoke_sdk_managers
 
-    rl_mod.reward_fn = deepmath_reward
+    # monkeypatch (not direct rl_mod.x = ...) so the override is auto-undone
+    # at test exit; otherwise running multiple smoke tests in one pytest
+    # process leaks the patched globals into later tests.
+    monkeypatch.setattr(rl_mod, "reward_fn", deepmath_reward)
     # Disable zero-variance filter so a 40-row run still produces steps.
-    rl_mod.should_accept = lambda _pg: True
+    monkeypatch.setattr(rl_mod, "should_accept", lambda _: True)
 
     config = Config(
         log_path=tempfile.mkdtemp(prefix="grpo_deepmath_smoke_"),
@@ -87,15 +93,14 @@ def test_grpo_deepmath_trainer_first(
         cleanup_on_exit=True,
     )
 
+    # No seed pinning: this is an API contract smoke (steps complete, cleanup
+    # runs, trainer-first invariant holds), not a numerical fidelity check.
     assert isinstance(metrics, dict)
     assert metrics.get("steps", 0) >= 1, f"no training steps: {metrics}"
     assert metrics.get("reference_job_id"), f"reference trainer not created: {metrics}"
     assert config.deployment.hot_load_trainer_job, (
         "trainer-first regression: deployment was not attached via hot_load_trainer_job"
     )
-
-    import httpx
-    import time
 
     time.sleep(3)
     for key in ("policy_job_id", "reference_job_id"):

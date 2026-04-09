@@ -1,4 +1,4 @@
-"""DEPRECATED deployment-first creation smoke test on minimal qwen3-4b shapes.
+"""Smoke test for the DEPRECATED deployment-first creation path on minimal qwen3-4b shapes.
 
 Validates the legacy server contract: create the deployment first, then
 create the trainer with hot_load_deployment_id pointing at it. The
@@ -8,8 +8,8 @@ this test exists only to keep the deprecated path from silently breaking.
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import os
 import time
 import uuid
 
@@ -21,6 +21,35 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     force=True,
 )
+
+# qwen3-4b-minimum cold-start on a fresh dev pod (image pull + checkpoint
+# download + replica become-ready) is ~10-15 min in observed dev runs;
+# 25 min budget gives ~2x slack to absorb pull cache misses without making
+# the smoke timeout a hair trigger.
+_PROVISION_TIMEOUT_S = 1500
+
+# Network errors that are legitimate during best-effort cleanup against
+# a remote dev gateway. We catch these narrowly so genuine programming
+# errors (AttributeError, TypeError, ...) still surface.
+_CLEANUP_NETWORK_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.HTTPError,
+    ConnectionError,
+    TimeoutError,
+)
+
+
+def _delete_deployment_safe(deploy_mgr, deployment_id: str) -> None:
+    try:
+        deploy_mgr.delete(deployment_id)
+    except _CLEANUP_NETWORK_ERRORS as e:
+        logging.warning("deployment %s cleanup failed: %s", deployment_id, e)
+
+
+def _delete_trainer_safe(rlor_mgr, job_id: str) -> None:
+    try:
+        rlor_mgr.delete(job_id)
+    except _CLEANUP_NETWORK_ERRORS as e:
+        logging.warning("trainer %s cleanup failed: %s", job_id, e)
 
 
 @pytest.mark.e2e
@@ -49,10 +78,11 @@ def test_grpo_deepmath_deployment_first_smoke(
             "deployment_shape; deployment-first smoke needs one"
         )
 
-    deployment_created = False
     trainer_job_id: str | None = None
-    try:
-        # Step 1: deployment first (the deprecated order).
+    with contextlib.ExitStack() as stack:
+        # Step 1: deployment first (the deprecated order). Register cleanup
+        # immediately after create_or_get returns so a failure in
+        # wait_for_ready does not leak the deployment.
         deploy_cfg = DeploymentConfig(
             deployment_id=deployment_id,
             base_model=smoke_base_model,
@@ -61,38 +91,42 @@ def test_grpo_deepmath_deployment_first_smoke(
             max_replica_count=1,
         )
         deploy_mgr.create_or_get(deploy_cfg)
-        deployment_created = True
-        deploy_mgr.wait_for_ready(deployment_id, timeout_s=1500)
+        stack.callback(_delete_deployment_safe, deploy_mgr, deployment_id)
+        deploy_mgr.wait_for_ready(deployment_id, timeout_s=_PROVISION_TIMEOUT_S)
 
         # Step 2: trainer with hot_load_deployment_id pointing at the
         # already-existing deployment. This is the contract under test:
         # the gateway must accept it and the trainer must reach RUNNING.
+        # Split create() and wait_for_ready() so cleanup is registered as
+        # soon as the trainer ID exists, not after wait_for_ready returns.
         trainer_cfg = TrainerJobConfig(
             base_model=smoke_base_model,
             display_name=f"smoke-depfirst-{suffix}",
             hot_load_deployment_id=deployment_id,
             training_shape_ref=profile.training_shape_version,
         )
-        endpoint = rlor_mgr.create_and_wait(trainer_cfg, timeout_s=1500)
-        trainer_job_id = endpoint.job_id
-        assert endpoint.job_id, "trainer create returned empty job_id"
-    finally:
-        if trainer_job_id:
-            try:
-                rlor_mgr.delete(trainer_job_id)
-            except Exception as e:
-                logging.warning("trainer cleanup failed: %s", e)
-        if deployment_created:
-            try:
-                deploy_mgr.delete(deployment_id)
-            except Exception as e:
-                logging.warning("deployment cleanup failed: %s", e)
+        created = rlor_mgr.create(trainer_cfg)
+        trainer_job_id = created.job_id
+        assert trainer_job_id, "trainer create returned empty job_id"
+        stack.callback(_delete_trainer_safe, rlor_mgr, trainer_job_id)
+        rlor_mgr.wait_for_ready(
+            trainer_job_id,
+            job_name=created.job_name,
+            timeout_s=_PROVISION_TIMEOUT_S,
+        )
+    # ExitStack fired here in LIFO order: trainer deleted first, then deployment.
 
+    # Verify cleanup actually landed (best-effort: control plane may take a
+    # few seconds to flip state, and the resource may already be 404).
     time.sleep(3)
     if trainer_job_id:
         try:
             job = rlor_mgr.get(trainer_job_id)
             state = job.get("state", "")
-            assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED")
+            assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                f"trainer {trainer_job_id} cleanup failed: state={state}"
+            )
         except httpx.HTTPStatusError as e:
-            assert e.response.status_code == 404
+            assert e.response.status_code == 404, (
+                f"unexpected error fetching trainer {trainer_job_id}: {e}"
+            )

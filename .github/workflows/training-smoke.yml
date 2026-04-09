@@ -8,11 +8,6 @@ on:
   schedule:
     - cron: "13 8 * * *"  # 08:13 UTC daily (~1:13am PT, off-peak)
   workflow_dispatch:
-    inputs:
-      test_target:
-        description: "Single test file to run (default: full matrix)"
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -69,9 +64,4 @@ jobs:
           python -m pip install -e '.[dev]'
 
       - name: Run Smoke Test
-        env:
-          # workflow_dispatch may target a single file; otherwise use matrix entry.
-          TARGET: ${{ github.event.inputs.test_target || matrix.test_target }}
-        run: |
-          if [ -z "$TARGET" ]; then TARGET="${{ matrix.test_target }}"; fi
-          pytest -q -s "$TARGET"
+        run: pytest -q -s "${{ matrix.test_target }}"
