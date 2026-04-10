@@ -500,8 +500,27 @@ def _wait_for_reattach_settled(
     """
     deadline = time.time() + max(timeout_s, 1)
     saw_pod_gone = prev_identity is None
+    saw_updating = False
     while time.time() < deadline:
         current = _read_replica_identity(deploy_mgr, deployment_id, base_model)
+
+        # Also check the deployment state via the API. If the deployment
+        # transitions through UPDATING and back to READY, the rollout is
+        # complete even if the pod identity didn't change (same ReplicaSet).
+        try:
+            dep_info = deploy_mgr.get(deployment_id)
+            dep_state = dep_info.state if dep_info else None
+        except Exception:  # noqa: BLE001
+            dep_state = None
+        if dep_state == "UPDATING":
+            saw_updating = True
+        if saw_updating and dep_state == "READY" and current is not None:
+            logger.info(
+                "Re-attach settled: deployment READY after UPDATING, pod %s",
+                current,
+            )
+            return
+
         if prev_identity is None:
             if current is not None:
                 logger.info(
