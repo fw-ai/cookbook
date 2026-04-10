@@ -100,6 +100,14 @@ class Config:
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 = no clipping."""
 
+    trainer_job_id: str | None = None
+    """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
+
+    trainer_base_url: str | None = None
+    """Direct base URL for the trainer (e.g. ``http://localhost:8080``).
+    When set together with ``trainer_job_id``, bypasses the gateway and
+    connects to the trainer directly."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
@@ -161,49 +169,62 @@ def main(
 
     # -- Setup infrastructure ----------------------------------------------
 
-    api_key = os.environ["FIREWORKS_API_KEY"]
+    _precreated_trainer = cfg.trainer_job_id and cfg.trainer_base_url
+
+    api_key = os.environ.get("FIREWORKS_API_KEY", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
     if rlor_mgr is None:
         rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
 
-    selection = select_validated_launch_shapes(
-        rlor_mgr,
-        request=ShapeSelectionRequest(
-            base_model=cfg.base_model,
-            max_seq_len=cfg.max_seq_len,
-            trainer_role="policy",
-            needs_deployment=False,
-            lora_rank=cfg.lora_rank,
-            explicit_training_shape_id=cfg.infra.training_shape_id,
-        ),
-    )
-    if selection.training_shape_id:
-        cfg.infra.training_shape_id = selection.training_shape_id
-    if selection.inferred_training_shape:
+    if _precreated_trainer:
+        trainer_infra = cfg.infra
+        trainer_profile = None
+        if cfg.max_seq_len is None:
+            raise ValueError("max_seq_len is required when using a pre-created trainer.")
         logger.info(
-            "Using validated training shape for %s: %s",
-            cfg.base_model,
-            selection.training_shape_id,
+            "Using pre-created trainer %s at %s",
+            cfg.trainer_job_id,
+            cfg.trainer_base_url,
         )
-
-    profile = selection.training_profile
-    trainer_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
-    trainer_profile = profile
-
-    if profile and cfg.max_seq_len is None:
-        cfg.max_seq_len = profile.max_supported_context_length
-        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
-    if cfg.max_seq_len is None:
-        raise ValueError(
-            "max_seq_len is required. Set it in Config, or use a training shape "
-            "(InfraConfig.training_shape_id) to auto-populate it."
+    else:
+        selection = select_validated_launch_shapes(
+            rlor_mgr,
+            request=ShapeSelectionRequest(
+                base_model=cfg.base_model,
+                max_seq_len=cfg.max_seq_len,
+                trainer_role="policy",
+                needs_deployment=False,
+                lora_rank=cfg.lora_rank,
+                explicit_training_shape_id=cfg.infra.training_shape_id,
+            ),
         )
+        if selection.training_shape_id:
+            cfg.infra.training_shape_id = selection.training_shape_id
+        if selection.inferred_training_shape:
+            logger.info(
+                "Using validated training shape for %s: %s",
+                cfg.base_model,
+                selection.training_shape_id,
+            )
+
+        profile = selection.training_profile
+        trainer_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
+        trainer_profile = profile
+
+        if profile and cfg.max_seq_len is None:
+            cfg.max_seq_len = profile.max_supported_context_length
+            logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
+        if cfg.max_seq_len is None:
+            raise ValueError(
+                "max_seq_len is required. Set it in Config, or use a training shape "
+                "(InfraConfig.training_shape_id) to auto-populate it."
+            )
 
     runner.set_accelerator_info(
         trainer_infra.accelerator_type,
         trainer_infra.accelerator_count,
-        profile=profile,
+        profile=trainer_profile if not _precreated_trainer else None,
     )
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
@@ -220,11 +241,16 @@ def main(
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             display_name="sft-trainer",
+            job_id=cfg.trainer_job_id,
+            base_url_override=cfg.trainer_base_url,
             cleanup=cleanup,
             on_status=_on_trainer_status,
         )
         job_id = endpoint.job_id
-        client = ReconnectableClient(rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key)
+        client = ReconnectableClient(
+            rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key,
+            endpoint=endpoint if cfg.trainer_base_url else None,
+        )
         if hasattr(client, "close"):
             stack.callback(client.close)
 
