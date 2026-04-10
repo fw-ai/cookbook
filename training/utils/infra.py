@@ -474,6 +474,7 @@ def setup_or_reattach_deployment(
 
     if same_trainer:
         # Helm values are unchanged — no rolling restart will happen.
+        # The PATCH returned 200, confirming the update in the DB.
         # The existing pod is already configured for this trainer.
         logger.info(
             "Same trainer re-attach; skipping pod-identity wait "
