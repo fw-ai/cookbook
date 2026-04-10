@@ -408,22 +408,6 @@ def _is_same_trainer(existing_bucket_url: str | None, trainer_job_name: str) -> 
     return f"trainer-{trainer_id}" in existing_bucket_url
 
 
-def _patch_deployment(
-    deploy_mgr: DeploymentManager,
-    deployment_id: str,
-    body: dict,
-    update_mask: str,
-) -> None:
-    """PATCH a deployment via the REST API."""
-    path = (
-        f"/v1/accounts/{deploy_mgr.account_id}"
-        f"/deployments/{deployment_id}"
-        f"?updateMask={update_mask}"
-    )
-    resp = deploy_mgr._patch(path, json=body)  # noqa: SLF001
-    resp.raise_for_status()
-
-
 def setup_or_reattach_deployment(
     deploy_mgr: DeploymentManager,
     deploy_cfg: DeployConfig,
@@ -475,8 +459,7 @@ def setup_or_reattach_deployment(
         deploy_mgr, deploy_cfg.deployment_id, base_model
     )
 
-    _patch_deployment(
-        deploy_mgr,
+    deploy_mgr.update(
         deploy_cfg.deployment_id,
         body={"hotLoadTrainerJob": trainer_job_name},
         update_mask="hot_load_trainer_job",
