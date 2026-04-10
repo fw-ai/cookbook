@@ -406,11 +406,11 @@ def setup_or_reattach_deployment(
     state is reset so the next checkpoint is treated as ``base`` (the new
     trainer's bucket has no prior snapshots).
 
-    PATCHing ``hot_load_trainer_job`` causes the serving container to be
-    rolled (the watch dir is in container args, so the new value only takes
-    effect on a fresh pod). This function blocks until the new pod's
-    hotload manager exposes itself, so callers can immediately follow up
-    with a hotload without racing against the rolling restart.
+    The PATCH response tells us whether the bucket URL actually changed.
+    If it did, Helm will detect a diff and perform a rolling restart —
+    we wait for the new pod's hotload manager to come up. If the bucket
+    is unchanged (same trainer), Helm skips the upgrade and no restart
+    happens — we return immediately.
 
     Caller responsibility: do not invoke this while a hotload is in progress
     on the same deployment. Switching the bucket URL mid-load would leave
@@ -432,31 +432,48 @@ def setup_or_reattach_deployment(
         deploy_mgr, deploy_cfg.deployment_id, base_model
     )
 
-    deploy_mgr.update(
+    old_bucket = existing.hot_load_bucket_url
+    updated = deploy_mgr.update(
         deploy_cfg.deployment_id,
         body={"hotLoadTrainerJob": trainer_job_name},
         update_mask="hot_load_trainer_job",
     )
+    new_bucket = updated.hot_load_bucket_url
+    bucket_changed = old_bucket != new_bucket
+
     logger.info(
-        "Re-attached deployment %s to trainer %s (prev_pod=%s)",
+        "Re-attached deployment %s to trainer %s "
+        "(prev_pod=%s, bucket_changed=%s)",
         deploy_cfg.deployment_id,
         trainer_job_name,
         prev_identity,
+        bucket_changed,
     )
-    _wait_for_reattach_settled(
-        deploy_mgr,
-        deploy_cfg.deployment_id,
-        base_model,
-        prev_identity=prev_identity,
-        timeout_s=reattach_settle_timeout_s,
-    )
+
+    if bucket_changed:
+        # Bucket URL changed → Helm will detect a diff → rolling restart.
+        # Wait for the new pod to come up with the hotload manager ready.
+        _wait_for_reattach_settled(
+            deploy_mgr,
+            deploy_cfg.deployment_id,
+            base_model,
+            prev_identity=prev_identity,
+            timeout_s=reattach_settle_timeout_s,
+        )
+    else:
+        # Bucket URL unchanged → Helm sees no diff → no restart.
+        # The existing pod is already configured for this trainer.
+        logger.info(
+            "Bucket URL unchanged; no rolling restart expected.",
+        )
+
     if weight_syncer is not None:
         weight_syncer.reset_delta_chain()
         # Force the syncer to re-run its one-time deployment-state check on
         # the next hotload. This re-validates that the *new* pod's hotload
         # manager is up and clears any stale base_identity bookkeeping.
         weight_syncer._deployment_checked = False  # noqa: SLF001
-    return existing
+    return updated
 
 
 def _read_replica_identity(
