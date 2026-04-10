@@ -386,6 +386,44 @@ def setup_deployment(
     return info
 
 
+def _extract_trainer_id(trainer_job_name: str) -> str:
+    """Extract the trainer job ID from a fully-qualified resource name.
+
+    ``accounts/{account}/rlorTrainerJobs/{id}`` → ``{id}``
+    """
+    return trainer_job_name.rsplit("/", 1)[-1]
+
+
+def _is_same_trainer(existing_bucket_url: str | None, trainer_job_name: str) -> bool:
+    """Check whether the deployment already points at *trainer_job_name*.
+
+    The bucket URL embeds the trainer ID as ``…/trainer-{id}``.  If it
+    matches the new trainer there is no Helm diff and the server will
+    skip the rolling restart — waiting for a new pod identity would
+    time out.
+    """
+    if not existing_bucket_url:
+        return False
+    trainer_id = _extract_trainer_id(trainer_job_name)
+    return f"trainer-{trainer_id}" in existing_bucket_url
+
+
+def _patch_deployment(
+    deploy_mgr: DeploymentManager,
+    deployment_id: str,
+    body: dict,
+    update_mask: str,
+) -> None:
+    """PATCH a deployment via the REST API."""
+    path = (
+        f"/v1/accounts/{deploy_mgr.account_id}"
+        f"/deployments/{deployment_id}"
+        f"?updateMask={update_mask}"
+    )
+    resp = deploy_mgr._patch(path, json=body)  # noqa: SLF001
+    resp.raise_for_status()
+
+
 def setup_or_reattach_deployment(
     deploy_mgr: DeploymentManager,
     deploy_cfg: DeployConfig,
@@ -407,10 +445,11 @@ def setup_or_reattach_deployment(
     trainer's bucket has no prior snapshots).
 
     PATCHing ``hot_load_trainer_job`` causes the serving container to be
-    rolled (the watch dir is in container args, so the new value only takes
-    effect on a fresh pod). This function blocks until the new pod's
-    hotload manager exposes itself, so callers can immediately follow up
-    with a hotload without racing against the rolling restart.
+    rolled **only when the trainer actually changes** (the bucket URL is
+    baked into the pod spec, so Helm detects a diff and performs a rolling
+    restart). When re-attaching to the *same* trainer the Helm values are
+    identical, Helm skips the upgrade, and the pod is left in place. In
+    that case we skip the pod-identity wait entirely.
 
     Caller responsibility: do not invoke this while a hotload is in progress
     on the same deployment. Switching the bucket URL mid-load would leave
@@ -426,30 +465,46 @@ def setup_or_reattach_deployment(
         deploy_cfg.hot_load_trainer_job = trainer_job_name
         return setup_deployment(deploy_mgr, deploy_cfg, base_model, infra)
 
+    same_trainer = _is_same_trainer(
+        existing.hot_load_bucket_url, trainer_job_name,
+    )
+
     # Capture the previous replica's pod identity before PATCH so we can
     # detect when the rolling restart has produced a fresh pod.
     prev_identity = _read_replica_identity(
         deploy_mgr, deploy_cfg.deployment_id, base_model
     )
 
-    deploy_mgr.update(
+    _patch_deployment(
+        deploy_mgr,
         deploy_cfg.deployment_id,
         body={"hotLoadTrainerJob": trainer_job_name},
         update_mask="hot_load_trainer_job",
     )
     logger.info(
-        "Re-attached deployment %s to trainer %s (prev_pod=%s)",
+        "Re-attached deployment %s to trainer %s (prev_pod=%s, same_trainer=%s)",
         deploy_cfg.deployment_id,
         trainer_job_name,
         prev_identity,
+        same_trainer,
     )
-    _wait_for_reattach_settled(
-        deploy_mgr,
-        deploy_cfg.deployment_id,
-        base_model,
-        prev_identity=prev_identity,
-        timeout_s=reattach_settle_timeout_s,
-    )
+
+    if same_trainer:
+        # Helm values are unchanged — no rolling restart will happen.
+        # The existing pod is already configured for this trainer.
+        logger.info(
+            "Same trainer re-attach; skipping pod-identity wait "
+            "(no rolling restart expected).",
+        )
+    else:
+        _wait_for_reattach_settled(
+            deploy_mgr,
+            deploy_cfg.deployment_id,
+            base_model,
+            prev_identity=prev_identity,
+            timeout_s=reattach_settle_timeout_s,
+        )
+
     if weight_syncer is not None:
         weight_syncer.reset_delta_chain()
         # Force the syncer to re-run its one-time deployment-state check on
