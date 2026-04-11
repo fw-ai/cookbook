@@ -51,6 +51,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate smoke CI configuration
+        run: |
+          if [ -z "${FIREWORKS_API_KEY}" ]; then
+            echo "::error title=Missing FIREWORKS_API_KEY secret::Set the FIREWORKS_API_KEY GitHub Actions secret for fw-ai/cookbook before running Training Smoke. A pyroworks or pyroworks-dev API key is sufficient."
+            exit 1
+          fi
+
       - name: Set Up Python
         uses: actions/setup-python@v5
         with:
