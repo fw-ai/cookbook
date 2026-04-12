@@ -1,0 +1,4 @@
+torch>=2.2
+triton>=3.0
+scipy>=1.10
+transformers

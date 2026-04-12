@@ -1,0 +1,37 @@
+{
+  "description": "Kernel table for conventional, TurboQuant, and RotorQuant comparisons.",
+  "workload": {
+    "dtype": "bfloat16",
+    "batch_size": 1,
+    "n_query_heads": 8,
+    "n_kv_heads": 4,
+    "q_len": 1,
+    "head_dim": 128,
+    "seed": 42
+  },
+  "matrix": {
+    "contexts": [2048, 4096, 32768],
+    "bits": [16, 8, 4, 3, 2]
+  },
+  "timing": {
+    "warmup": 10,
+    "iterations": 50
+  },
+  "methods": [
+    {
+      "name": "conventional",
+      "bits": [16, 8, 4, 3, 2],
+      "variant": "bf16 reference at 16-bit, symmetric uniform scalar quantize-dequantize baseline below 16-bit"
+    },
+    {
+      "name": "turboquant",
+      "bits": [8, 4, 3, 2],
+      "variant": "PyTorch two-term unbiased inner-product path"
+    },
+    {
+      "name": "rotorquant",
+      "bits": [8, 4, 3, 2],
+      "variant": "Current Triton two-term attention path with explicit effective-bit accounting"
+    }
+  ]
+}
