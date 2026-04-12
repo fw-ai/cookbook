@@ -396,6 +396,7 @@ def main(
                 step_metrics.update({
                     "train/step": step,
                     "train/ce_loss": avg_loss,
+                    "train/loss": avg_loss,  # alias for frontend compatibility
                     "train/ppl": ppl,
                 })
                 wandb_log(step_metrics, step)
