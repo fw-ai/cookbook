@@ -33,6 +33,7 @@ from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.renderer.nemotron as _nemotron_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,10 @@ def resolve_renderer_name(
         return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
+    if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name:
+        return "qwen3_5"
+    if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
+        return "gemma4"
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only

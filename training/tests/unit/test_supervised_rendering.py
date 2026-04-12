@@ -269,6 +269,21 @@ def test_resolve_renderer_name_prefers_minimax_m2() -> None:
     assert resolve_renderer_name("MiniMaxAI/MiniMax-M2") == "minimax_m2"
 
 
+def test_resolve_renderer_name_prefers_qwen3_5() -> None:
+    """Qwen3.5 models should resolve to the qwen3_5 renderer."""
+    assert resolve_renderer_name("Qwen/Qwen3.5-9B") == "qwen3_5"
+    assert resolve_renderer_name("Qwen/Qwen3.5-4B") == "qwen3_5"
+    assert resolve_renderer_name("Qwen/Qwen3.5-27B") == "qwen3_5"
+    assert resolve_renderer_name("Qwen/Qwen3.5-35B-A3B") == "qwen3_5"
+    assert resolve_renderer_name("Qwen/Qwen3.5-397B-A17B") == "qwen3_5"
+
+
+def test_resolve_renderer_name_prefers_gemma4() -> None:
+    """Gemma 4 models should resolve to the gemma4 renderer."""
+    assert resolve_renderer_name("google/gemma-4-12b-it") == "gemma4"
+    assert resolve_renderer_name("google/gemma-4-27b-it") == "gemma4"
+
+
 def test_build_renderer_resolves_minimax_m2(monkeypatch) -> None:
     """build_renderer should resolve minimax_m2 and dispatch to get_renderer."""
     calls: list[tuple[str, object]] = []
