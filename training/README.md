@@ -136,6 +136,32 @@ uv pip install -e ".[dev]"
 pytest tests/
 ```
 
+### GitHub Actions smoke CI setup
+
+The repo has two separate training workflows:
+
+- `.github/workflows/training-ci.yml` runs unit/import coverage on PRs and
+  pushes with no Fireworks credentials.
+- `.github/workflows/training-smoke.yml` runs remote end-to-end smoke tests
+  against `https://dev.api.fireworks.ai` on nightly/manual dispatch.
+
+For `training-smoke.yml`, configure the following in GitHub under
+**Settings -> Secrets and variables -> Actions**:
+
+- **Required secret:** `FIREWORKS_API_KEY`
+  - Use a key that can create training/deployment resources in dev.
+  - A `pyroworks` key works; a `pyroworks-dev` key is safer if available.
+- **Optional secret:** `FIREWORKS_GATEWAY_SECRET`
+  - Only needed when the dev endpoint requires the gateway header.
+- **Optional variables:** `FIREWORKS_BASE_URL`,
+  `FIREWORKS_INFERENCE_URL`, `FIREWORKS_HOTLOAD_API_URL`,
+  `FIREWORKS_CUSTOM_IMAGE_TAG`, `FIREWORKS_SMOKE_BASE_MODEL`,
+  `FIREWORKS_SMOKE_TOKENIZER_MODEL`, `FIREWORKS_SMOKE_TRAINING_SHAPE`,
+  `FIREWORKS_SMOKE_MINIMAL_TRAINING_SHAPE`,
+  `FIREWORKS_SMOKE_MINIMAL_REF_TRAINING_SHAPE`
+  - If unset, the workflow defaults to the current dev URLs and small
+    Qwen3-4B smoke shapes shown in `.github/workflows/training-smoke.yml`.
+
 Coverage for the training entrypoints:
 
 ```bash
