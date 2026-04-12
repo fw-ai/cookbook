@@ -8,10 +8,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from training.utils.checkpoint_utils import (
+    InvalidCheckpointError,
     ResumeInfo,
     get_last_checkpoint,
     resolve_resume,
     save_checkpoint,
+    validate_checkpoint_entry,
     CheckpointKind,
     CHECKPOINTS_BASE_NAME,
 )
@@ -63,13 +65,16 @@ class TestResolveResume:
         client.load_state_with_optimizer.assert_not_called()
 
     def test_resume_from_checkpoints_file(self, log_dir):
-        _write_checkpoint(log_dir, {
-            "name": "step-5",
-            "step": 5,
-            "data_consumed": 40,
-            "state_path": "cross_job://job-abc/step-5",
-            "source_job_id": "job-abc",
-        })
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-5",
+                "step": 5,
+                "data_consumed": 40,
+                "state_path": "cross_job://job-abc/step-5",
+                "source_job_id": "job-abc",
+            },
+        )
         client = _make_mock_client()
         result = resolve_resume(client, log_dir)
         assert result is not None
@@ -79,14 +84,24 @@ class TestResolveResume:
         client.load_state_with_optimizer.assert_called_once_with("cross_job://job-abc/step-5")
 
     def test_resume_reads_last_entry(self, log_dir):
-        _write_checkpoint(log_dir, {
-            "name": "step-2", "step": 2, "data_consumed": 16,
-            "state_path": "cross_job://job-1/step-2",
-        })
-        _write_checkpoint(log_dir, {
-            "name": "step-4", "step": 4, "data_consumed": 32,
-            "state_path": "cross_job://job-1/step-4",
-        })
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-2",
+                "step": 2,
+                "data_consumed": 16,
+                "state_path": "cross_job://job-1/step-2",
+            },
+        )
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-4",
+                "step": 4,
+                "data_consumed": 32,
+                "state_path": "cross_job://job-1/step-4",
+            },
+        )
         client = _make_mock_client()
         result = resolve_resume(client, log_dir)
         assert result.step == 4
@@ -115,8 +130,343 @@ class TestResolveResume:
         assert result.step == 0
         assert result.source_job_id is None
         client.resolve_checkpoint_path.assert_called_once_with(
-            "gs://bucket/path/step-5", source_job_id=None,
+            "gs://bucket/path/step-5",
+            source_job_id=None,
         )
+
+
+class TestValidateCheckpointEntry:
+    """validate_checkpoint_entry rejects malformed entries with clear messages."""
+
+    def test_valid_cross_job_entry(self):
+        entry = {
+            "name": "step-8",
+            "step": 8,
+            "data_consumed": 8,
+            "source_job_id": "job-prev-run",
+            "state_path": "cross_job://job-prev-run/step-8-abc12345",
+        }
+        result = validate_checkpoint_entry(entry)
+        assert result is entry
+
+    def test_valid_gcs_state_path(self):
+        entry = {
+            "name": "step-3",
+            "step": 3,
+            "state_path": "gs://bucket/checkpoints/step-3",
+        }
+        assert validate_checkpoint_entry(entry) is entry
+
+    def test_valid_absolute_state_path(self):
+        entry = {
+            "name": "step-1",
+            "state_path": "/local/checkpoints/step-1",
+        }
+        assert validate_checkpoint_entry(entry) is entry
+
+    def test_valid_minimal_entry(self):
+        entry = {
+            "name": "step-0",
+            "state_path": "cross_job://job-1/step-0",
+        }
+        assert validate_checkpoint_entry(entry) is entry
+
+    def test_rejects_non_dict(self):
+        with pytest.raises(InvalidCheckpointError, match="must be a JSON object"):
+            validate_checkpoint_entry("not-a-dict")
+
+    def test_rejects_list(self):
+        with pytest.raises(InvalidCheckpointError, match="must be a JSON object"):
+            validate_checkpoint_entry([{"name": "step-1"}])
+
+    def test_rejects_none(self):
+        with pytest.raises(InvalidCheckpointError, match="must be a JSON object"):
+            validate_checkpoint_entry(None)
+
+    def test_rejects_missing_name(self):
+        with pytest.raises(InvalidCheckpointError, match="missing required field 'name'"):
+            validate_checkpoint_entry(
+                {
+                    "step": 1,
+                    "state_path": "cross_job://j/s",
+                }
+            )
+
+    def test_rejects_empty_name(self):
+        with pytest.raises(InvalidCheckpointError, match="non-empty string"):
+            validate_checkpoint_entry(
+                {
+                    "name": "",
+                    "state_path": "cross_job://j/s",
+                }
+            )
+
+    def test_rejects_whitespace_only_name(self):
+        with pytest.raises(InvalidCheckpointError, match="non-empty string"):
+            validate_checkpoint_entry(
+                {
+                    "name": "   ",
+                    "state_path": "cross_job://j/s",
+                }
+            )
+
+    def test_rejects_non_string_name(self):
+        with pytest.raises(InvalidCheckpointError, match="non-empty string"):
+            validate_checkpoint_entry(
+                {
+                    "name": 123,
+                    "state_path": "cross_job://j/s",
+                }
+            )
+
+    def test_rejects_missing_state_path(self):
+        with pytest.raises(InvalidCheckpointError, match="missing required field 'state_path'"):
+            validate_checkpoint_entry({"name": "step-1"})
+
+    def test_rejects_empty_state_path(self):
+        with pytest.raises(InvalidCheckpointError, match="empty or non-string"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "",
+                }
+            )
+
+    def test_rejects_non_string_state_path(self):
+        with pytest.raises(InvalidCheckpointError, match="empty or non-string"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": 42,
+                }
+            )
+
+    def test_rejects_unrecognised_state_path_prefix(self):
+        with pytest.raises(InvalidCheckpointError, match="unrecognised state_path format"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "relative/path/step-1",
+                }
+            )
+
+    def test_rejects_state_path_bare_name(self):
+        with pytest.raises(InvalidCheckpointError, match="unrecognised state_path format"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "step-1",
+                }
+            )
+
+    def test_rejects_negative_step(self):
+        with pytest.raises(InvalidCheckpointError, match="non-negative"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "cross_job://j/s",
+                    "step": -1,
+                }
+            )
+
+    def test_rejects_non_int_step(self):
+        with pytest.raises(InvalidCheckpointError, match="must be an integer"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "cross_job://j/s",
+                    "step": "5",
+                }
+            )
+
+    def test_rejects_float_step(self):
+        with pytest.raises(InvalidCheckpointError, match="must be an integer"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "cross_job://j/s",
+                    "step": 3.5,
+                }
+            )
+
+    def test_rejects_bool_step(self):
+        with pytest.raises(InvalidCheckpointError, match="must be an integer"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "cross_job://j/s",
+                    "step": True,
+                }
+            )
+
+    def test_rejects_negative_data_consumed(self):
+        with pytest.raises(InvalidCheckpointError, match="non-negative"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "cross_job://j/s",
+                    "data_consumed": -10,
+                }
+            )
+
+    def test_rejects_non_int_data_consumed(self):
+        with pytest.raises(InvalidCheckpointError, match="must be an integer"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "cross_job://j/s",
+                    "data_consumed": "8",
+                }
+            )
+
+    def test_rejects_bool_data_consumed(self):
+        with pytest.raises(InvalidCheckpointError, match="must be an integer"):
+            validate_checkpoint_entry(
+                {
+                    "name": "step-1",
+                    "state_path": "cross_job://j/s",
+                    "data_consumed": False,
+                }
+            )
+
+    def test_step_zero_is_valid(self):
+        entry = {
+            "name": "step-0",
+            "state_path": "cross_job://j/s",
+            "step": 0,
+        }
+        assert validate_checkpoint_entry(entry)["step"] == 0
+
+    def test_data_consumed_zero_is_valid(self):
+        entry = {
+            "name": "step-0",
+            "state_path": "cross_job://j/s",
+            "data_consumed": 0,
+        }
+        assert validate_checkpoint_entry(entry)["data_consumed"] == 0
+
+    def test_extra_fields_are_preserved(self):
+        entry = {
+            "name": "step-5",
+            "state_path": "cross_job://j/s",
+            "base_model": "accounts/fw/models/qwen3-8b",
+            "training_shape": "shape-a",
+            "custom_field": "whatever",
+        }
+        result = validate_checkpoint_entry(entry)
+        assert result["base_model"] == "accounts/fw/models/qwen3-8b"
+        assert result["custom_field"] == "whatever"
+
+
+class TestGetLastCheckpointValidation:
+    """get_last_checkpoint raises InvalidCheckpointError for bad entries."""
+
+    def test_rejects_entry_missing_state_path(self, log_dir):
+        _write_checkpoint(log_dir, {"name": "step-1", "step": 1})
+        with pytest.raises(InvalidCheckpointError, match="missing required field 'state_path'"):
+            get_last_checkpoint(log_dir)
+
+    def test_rejects_entry_missing_name(self, log_dir):
+        _write_checkpoint(
+            log_dir,
+            {
+                "step": 1,
+                "state_path": "cross_job://j/s",
+            },
+        )
+        with pytest.raises(InvalidCheckpointError, match="missing required field 'name'"):
+            get_last_checkpoint(log_dir)
+
+    def test_rejects_entry_with_bad_state_path(self, log_dir):
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-1",
+                "state_path": "just-a-name",
+            },
+        )
+        with pytest.raises(InvalidCheckpointError, match="unrecognised state_path format"):
+            get_last_checkpoint(log_dir)
+
+    def test_validates_only_last_entry(self, log_dir):
+        """Valid first entry + invalid last entry -> error on the last one."""
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-1",
+                "step": 1,
+                "state_path": "cross_job://j/step-1",
+            },
+        )
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-2",
+                "step": -1,
+                "state_path": "cross_job://j/step-2",
+            },
+        )
+        with pytest.raises(InvalidCheckpointError, match="non-negative"):
+            get_last_checkpoint(log_dir)
+
+
+class TestResolveResumeValidation:
+    """resolve_resume surfaces InvalidCheckpointError for malformed entries."""
+
+    def test_rejects_missing_state_path(self, log_dir):
+        _write_checkpoint(log_dir, {"name": "step-1", "step": 1})
+        client = _make_mock_client()
+        with pytest.raises(InvalidCheckpointError, match="state_path"):
+            resolve_resume(client, log_dir)
+        client.load_state_with_optimizer.assert_not_called()
+
+    def test_rejects_bad_state_path_format(self, log_dir):
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-1",
+                "state_path": "not-a-path",
+            },
+        )
+        client = _make_mock_client()
+        with pytest.raises(InvalidCheckpointError, match="unrecognised state_path"):
+            resolve_resume(client, log_dir)
+        client.load_state_with_optimizer.assert_not_called()
+
+    def test_rejects_negative_step(self, log_dir):
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-1",
+                "step": -5,
+                "state_path": "cross_job://j/step-1",
+            },
+        )
+        client = _make_mock_client()
+        with pytest.raises(InvalidCheckpointError, match="non-negative"):
+            resolve_resume(client, log_dir)
+        client.load_state_with_optimizer.assert_not_called()
+
+    def test_rejects_string_step(self, log_dir):
+        _write_checkpoint(
+            log_dir,
+            {
+                "name": "step-1",
+                "step": "five",
+                "state_path": "cross_job://j/step-1",
+            },
+        )
+        client = _make_mock_client()
+        with pytest.raises(InvalidCheckpointError, match="must be an integer"):
+            resolve_resume(client, log_dir)
+
+    def test_init_from_checkpoint_bypasses_jsonl_validation(self, log_dir):
+        """--init-from-checkpoint doesn't read checkpoints.jsonl at all."""
+        _write_checkpoint(log_dir, {"garbage": True})
+        client = _make_mock_client()
+        result = resolve_resume(client, log_dir, init_from_checkpoint="step-10")
+        assert result is not None
+        assert result.step == 0
 
 
 class TestSaveCheckpoint:
@@ -147,7 +497,10 @@ class TestSaveCheckpoint:
     def test_save_with_base_model_and_training_shape(self, log_dir):
         client = _make_mock_client(job_id="job-shape")
         save_checkpoint(
-            client, "step-2", log_dir, {"step": 2},
+            client,
+            "step-2",
+            log_dir,
+            {"step": 2},
             base_model="accounts/fireworks/models/qwen3-8b",
             training_shape="accounts/fireworks/trainingShapes/ts-qwen3-8b-policy",
         )
@@ -189,6 +542,7 @@ class TestSaveCheckpoint:
 class TestRLPromptDataset:
     def test_get_batch_basic(self):
         from training.utils.data import RLPromptDataset
+
         rows = [{"id": i} for i in range(10)]
         ds = RLPromptDataset(rows, prompts_per_step=3)
         assert len(ds) == 4  # ceil(10/3)
@@ -198,11 +552,13 @@ class TestRLPromptDataset:
 
     def test_empty_dataset(self):
         from training.utils.data import RLPromptDataset
+
         ds = RLPromptDataset([], prompts_per_step=4)
         assert len(ds) == 0
 
     def test_exact_division(self):
         from training.utils.data import RLPromptDataset
+
         rows = [{"id": i} for i in range(12)]
         ds = RLPromptDataset(rows, prompts_per_step=4)
         assert len(ds) == 3
@@ -214,31 +570,37 @@ class TestLogPathRequired:
 
     def test_sft_config_requires_log_path(self):
         from training.recipes.sft_loop import Config
+
         with pytest.raises(TypeError, match="log_path"):
             Config()
 
     def test_rl_config_requires_log_path(self):
         from training.recipes.rl_loop import Config
+
         with pytest.raises(TypeError, match="log_path"):
             Config()
 
     def test_dpo_config_requires_log_path(self):
         from training.recipes.dpo_loop import Config
+
         with pytest.raises(TypeError, match="log_path"):
             Config()
 
     def test_orpo_config_requires_log_path(self):
         from training.recipes.orpo_loop import Config
+
         with pytest.raises(TypeError, match="log_path"):
             Config()
 
     def test_sft_config_accepts_log_path(self):
         from training.recipes.sft_loop import Config
+
         cfg = Config(log_path="/tmp/test_sft")
         assert cfg.log_path == "/tmp/test_sft"
 
     def test_rl_config_accepts_log_path(self):
         from training.recipes.rl_loop import Config
+
         cfg = Config(log_path="/tmp/test_rl")
         assert cfg.log_path == "/tmp/test_rl"
 
@@ -260,11 +622,16 @@ class TestLogPathRequired:
     def test_save_then_resume_roundtrip(self, log_dir):
         """Full roundtrip: save a checkpoint, then resume from it."""
         client = _make_mock_client(job_id="job-roundtrip")
-        save_checkpoint(client, "step-3", log_dir, {
-            "step": 3,
-            "data_consumed": 24,
-            "source_job_id": "job-roundtrip",
-        })
+        save_checkpoint(
+            client,
+            "step-3",
+            log_dir,
+            {
+                "step": 3,
+                "data_consumed": 24,
+                "source_job_id": "job-roundtrip",
+            },
+        )
 
         ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
         assert os.path.exists(ckpt_path)
@@ -289,15 +656,31 @@ class TestCheckpointMetadataForPromote:
     def test_metadata_roundtrip_latest(self, log_dir):
         """Save checkpoints with metadata, read back the latest entry."""
         client = _make_mock_client(job_id="job-meta")
-        save_checkpoint(client, "step-1", log_dir, {
-            "step": 1, "data_consumed": 8, "source_job_id": "job-meta",
-        }, base_model="accounts/fw/models/qwen3-8b",
-           training_shape="accounts/fw/trainingShapes/ts-qwen3-8b-policy")
+        save_checkpoint(
+            client,
+            "step-1",
+            log_dir,
+            {
+                "step": 1,
+                "data_consumed": 8,
+                "source_job_id": "job-meta",
+            },
+            base_model="accounts/fw/models/qwen3-8b",
+            training_shape="accounts/fw/trainingShapes/ts-qwen3-8b-policy",
+        )
 
-        save_checkpoint(client, "step-2", log_dir, {
-            "step": 2, "data_consumed": 16, "source_job_id": "job-meta",
-        }, base_model="accounts/fw/models/qwen3-8b",
-           training_shape="accounts/fw/trainingShapes/ts-qwen3-8b-policy")
+        save_checkpoint(
+            client,
+            "step-2",
+            log_dir,
+            {
+                "step": 2,
+                "data_consumed": 16,
+                "source_job_id": "job-meta",
+            },
+            base_model="accounts/fw/models/qwen3-8b",
+            training_shape="accounts/fw/trainingShapes/ts-qwen3-8b-policy",
+        )
 
         ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
         entries = []
@@ -317,9 +700,15 @@ class TestCheckpointMetadataForPromote:
     def test_metadata_absent_for_old_checkpoints(self, log_dir):
         """Checkpoints saved without metadata lack base_model/training_shape."""
         client = _make_mock_client(job_id="job-old")
-        save_checkpoint(client, "step-1", log_dir, {
-            "step": 1, "source_job_id": "job-old",
-        })
+        save_checkpoint(
+            client,
+            "step-1",
+            log_dir,
+            {
+                "step": 1,
+                "source_job_id": "job-old",
+            },
+        )
 
         ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
         with open(ckpt_path) as f:
@@ -331,10 +720,17 @@ class TestCheckpointMetadataForPromote:
         """Verify the right entry is selected when filtering by step."""
         client = _make_mock_client(job_id="job-step")
         for step in (1, 2, 3):
-            save_checkpoint(client, f"step-{step}", log_dir, {
-                "step": step, "source_job_id": "job-step",
-            }, base_model=f"model-v{step}",
-               training_shape="shape-a")
+            save_checkpoint(
+                client,
+                f"step-{step}",
+                log_dir,
+                {
+                    "step": step,
+                    "source_job_id": "job-step",
+                },
+                base_model=f"model-v{step}",
+                training_shape="shape-a",
+            )
 
         ckpt_path = os.path.join(log_dir, CHECKPOINTS_BASE_NAME)
         entries = []
@@ -384,9 +780,15 @@ class TestGcsCheckpoints:
             gcs_log = "gs://test-bucket/jobs/job-1/logs"
             client = _make_mock_client(job_id="job-gcs")
 
-            save_checkpoint(client, "step-5", gcs_log, {
-                "step": 5, "data_consumed": 40,
-            })
+            save_checkpoint(
+                client,
+                "step-5",
+                gcs_log,
+                {
+                    "step": 5,
+                    "data_consumed": 40,
+                },
+            )
 
             last = get_last_checkpoint(gcs_log)
             assert last is not None
@@ -417,9 +819,15 @@ class TestGcsCheckpoints:
         with patch("training.utils.fileio._gcs_bucket_blob", return_value=(None, blob)):
             gcs_log = "gs://test-bucket/resume-test"
             client1 = _make_mock_client(job_id="job-save")
-            save_checkpoint(client1, "step-3", gcs_log, {
-                "step": 3, "data_consumed": 24,
-            })
+            save_checkpoint(
+                client1,
+                "step-3",
+                gcs_log,
+                {
+                    "step": 3,
+                    "data_consumed": 24,
+                },
+            )
 
             client2 = _make_mock_client(job_id="job-resume")
             result = resolve_resume(client2, gcs_log)
