@@ -1,0 +1,157 @@
+name: Cookbook release record
+description: Track one public cookbook release from candidate tag through final go or no-go.
+title: "Cookbook release: vX.Y.Z"
+labels:
+  - cookbook-release
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this issue as the single release record for one cookbook release.
+
+        Final publication is blocked until the required evidence is attached here and the release owner records an explicit go decision.
+
+  - type: input
+    id: version
+    attributes:
+      label: Target version
+      description: Stable release version in vX.Y.Z format.
+      placeholder: v0.3.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Release scope
+      description: Summarize the user-visible cookbook changes and note whether packaging is in scope.
+      placeholder: |
+        - Runnable cookbook behavior:
+        - Package or install flow:
+        - Renderer, shape, image, service, or backend assumptions:
+    validations:
+      required: true
+
+  - type: input
+    id: release_owner
+    attributes:
+      label: Release owner
+      placeholder: "@owner"
+    validations:
+      required: true
+
+  - type: input
+    id: reviewer
+    attributes:
+      label: Reviewer
+      placeholder: "@reviewer"
+    validations:
+      required: true
+
+  - type: input
+    id: internal_test_owner
+    attributes:
+      label: Internal test owner
+      placeholder: "@internal-tester"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend_coupled
+    attributes:
+      label: Backend-coupled release?
+      description: Start with the safer choice when the scope is unclear.
+      options:
+        - "No"
+        - "Yes"
+        - "Unclear - default to yes until waived"
+    validations:
+      required: true
+
+  - type: input
+    id: candidate_sha
+    attributes:
+      label: Candidate commit SHA
+      placeholder: 0123456789abcdef0123456789abcdef01234567
+    validations:
+      required: true
+
+  - type: input
+    id: candidate_tag
+    attributes:
+      label: Candidate tag
+      description: Candidate tag in vX.Y.Z-alpha.N format.
+      placeholder: v0.3.0-alpha.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence links
+      description: Add the repository-owned CI run plus the external validation evidence required for this release.
+      value: |
+        - Training CI:
+        - Candidate workflow run:
+        - Cookbook smoke tests:
+        - Fireworks internal tests:
+        - Control-plane smoke test (if required):
+        - Managed-service validation (if required):
+        - Draft release notes:
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback plan
+      description: Describe the rollback path before cutting the stable tag.
+      placeholder: |
+        - If the release regresses:
+        - Which tag or artifact to roll back to:
+        - Who owns rollback execution:
+    validations:
+      required: true
+
+  - type: textarea
+    id: go_no_go
+    attributes:
+      label: Final go or no-go readout
+      description: Record the explicit decision once all blockers are green.
+      placeholder: |
+        Go/no-go:
+        Reviewer sign-off:
+        Notes:
+    validations:
+      required: true
+
+  - type: textarea
+    id: automation_metadata
+    attributes:
+      label: Automation metadata
+      description: Keep the marker lines intact and update the values as the release progresses.
+      value: |
+        <!-- cookbook-release-metadata
+        version: vX.Y.Z
+        candidate-tag: vX.Y.Z-alpha.N
+        candidate-sha: 0123456789abcdef0123456789abcdef01234567
+        backend-validation-required: false
+        go-approved: false
+        -->
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Final release checklist
+      options:
+        - label: Release owner is named.
+        - label: Scope and version are defined.
+        - label: Candidate commit is merged to main.
+        - label: Candidate tag exists.
+        - label: Training CI is green on the exact candidate commit.
+        - label: Cookbook smoke tests passed.
+        - label: Fireworks internal tests passed.
+        - label: Control-plane smoke test passed when required.
+        - label: Managed-service validation passed when required.
+        - label: Reviewer sign-off is recorded.
+        - label: Rollback plan is recorded.
