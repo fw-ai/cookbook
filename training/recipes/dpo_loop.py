@@ -342,6 +342,7 @@ async def _train_loop(
         step_metrics.update({
             "train/step": step,
             "train/dpo_loss": avg_loss,
+            "train/loss": avg_loss,  # alias for frontend compatibility
             "train/margin": avg_margin,
             "train/accuracy": avg_acc,
             "train/epoch": epoch + 1,
