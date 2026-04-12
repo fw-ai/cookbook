@@ -38,6 +38,7 @@ __all__ = [
     "EvalFn",
     "WeightSyncConfig",
     "InfraConfig",
+    "BaseReferenceClient",
     "ReconnectableClient",
     "ResourceCleanup",
     "RewardFn",
@@ -113,7 +114,7 @@ from training.utils.infra import (
     setup_training_client,
 )
 from training.utils.timer import timed, timer, flush_timing
-from training.utils.client import ReconnectableClient
+from training.utils.client import BaseReferenceClient, ReconnectableClient
 from training.utils.config import (
     DEFAULT_ADAM,
     EvalFn,
