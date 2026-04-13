@@ -402,23 +402,15 @@ def setup_or_reattach_deployment(
 
     If ``deploy_cfg.deployment_id`` names a live deployment (not FAILED /
     DELETED / DELETING), its hotload bucket is re-pointed to
-    *trainer_job_name* via a PATCH. Otherwise a fresh deployment is created
-    with the trainer reference baked in at creation.
+    *trainer_job_name* and the function blocks until the rolling restart
+    settles. Otherwise a fresh deployment is created with the trainer
+    reference baked in at creation.
 
-    When *weight_syncer* is provided and a re-attach happens, its delta-chain
-    state is reset so the next checkpoint is treated as ``base`` (the new
-    trainer's bucket has no prior snapshots).
-
-    PATCHing ``hot_load_trainer_job`` causes the serving container to be
-    rolled (the watch dir is in container args, so the new value only takes
-    effect on a fresh pod). This function blocks until the new pod's
-    hotload manager exposes itself, so callers can immediately follow up
-    with a hotload without racing against the rolling restart.
+    The replica-identity tracking and rolling-restart wait are handled by
+    ``DeploymentManager.reattach_trainer()`` in the SDK.
 
     Caller responsibility: do not invoke this while a hotload is in progress
-    on the same deployment. Switching the bucket URL mid-load would leave
-    the serving container in an undefined state. Server-side enforcement is
-    tracked in fw-ai/fireworks#21732.
+    on the same deployment.
     """
     existing = (
         deploy_mgr.get(deploy_cfg.deployment_id)
@@ -429,109 +421,15 @@ def setup_or_reattach_deployment(
         deploy_cfg.hot_load_trainer_job = trainer_job_name
         return setup_deployment(deploy_mgr, deploy_cfg, base_model, infra)
 
-    # Capture the previous replica's pod identity before PATCH so we can
-    # detect when the rolling restart has produced a fresh pod.
-    prev_identity = _read_replica_identity(
-        deploy_mgr, deploy_cfg.deployment_id, base_model
-    )
-
-    deploy_mgr.update(
-        deploy_cfg.deployment_id,
-        body={"hotLoadTrainerJob": trainer_job_name},
-        update_mask="hot_load_trainer_job",
-    )
-    logger.info(
-        "Re-attached deployment %s to trainer %s (prev_pod=%s)",
-        deploy_cfg.deployment_id,
-        trainer_job_name,
-        prev_identity,
-    )
-    _wait_for_reattach_settled(
-        deploy_mgr,
-        deploy_cfg.deployment_id,
-        base_model,
-        prev_identity=prev_identity,
+    deploy_mgr.reattach_trainer(
+        deployment_id=deploy_cfg.deployment_id,
+        trainer_job_name=trainer_job_name,
+        base_model=base_model,
         timeout_s=reattach_settle_timeout_s,
     )
     if weight_syncer is not None:
         weight_syncer.reset_delta_chain()
-        # Force the syncer to re-run its one-time deployment-state check on
-        # the next hotload. This re-validates that the *new* pod's hotload
-        # manager is up and clears any stale base_identity bookkeeping.
-        weight_syncer._deployment_checked = False  # noqa: SLF001
     return existing
-
-
-def _read_replica_identity(
-    deploy_mgr: DeploymentManager,
-    deployment_id: str,
-    base_model: str,
-) -> str | None:
-    """Return the first replica's pod identity from the hotload status, or None."""
-    try:
-        status = deploy_mgr.hotload_check_status(deployment_id, base_model)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("hotload_check_status failed for identity probe: %s", e)
-        return None
-    replicas = status.get("replicas") or []
-    if not replicas:
-        return None
-    return replicas[0].get("identity")
-
-
-def _wait_for_reattach_settled(
-    deploy_mgr: DeploymentManager,
-    deployment_id: str,
-    base_model: str,
-    *,
-    prev_identity: str | None,
-    timeout_s: int,
-    poll_interval_s: float = 5.0,
-) -> None:
-    """Block until a fresh pod is exposing the hotload manager.
-
-    PATCHing ``hot_load_trainer_job`` triggers a rolling restart of the
-    serving container. We need to wait for two things:
-
-    1. The old pod has gone (its replica identity is no longer reported).
-    2. A new pod has come up *and* its hotload manager is initialized
-       (the replicas list is non-empty with a different identity).
-
-    Without this wait the SDK's first post-reattach hotload polls the
-    *old* pod (still ready, but about to die) or polls during the gap
-    where no replica is reporting, and bails out with stage=error.
-    """
-    deadline = time.time() + max(timeout_s, 1)
-    saw_pod_gone = prev_identity is None
-    while time.time() < deadline:
-        current = _read_replica_identity(deploy_mgr, deployment_id, base_model)
-        if prev_identity is None:
-            if current is not None:
-                logger.info(
-                    "Re-attach settled: hotload manager up on pod %s",
-                    current,
-                )
-                return
-        else:
-            if current is None:
-                if not saw_pod_gone:
-                    logger.info(
-                        "Old pod %s has gone; waiting for new pod...",
-                        prev_identity,
-                    )
-                saw_pod_gone = True
-            elif current != prev_identity:
-                logger.info(
-                    "Re-attach settled: new pod %s replaced %s",
-                    current,
-                    prev_identity,
-                )
-                return
-        time.sleep(poll_interval_s)
-    raise TimeoutError(
-        f"Re-attach for deployment {deployment_id!r} did not produce a "
-        f"fresh pod within {timeout_s}s (prev_identity={prev_identity!r})."
-    )
 
 
 def _infer_region_from_deployment_shape(
