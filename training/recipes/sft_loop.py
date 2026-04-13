@@ -59,10 +59,47 @@ from training.utils.checkpoint_utils import (
     save_checkpoint,
     CheckpointKind,
 )
+from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.timer import timer, flush_timing
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Eval auto carve-out defaults
+# ---------------------------------------------------------------------------
+
+DEFAULT_EVAL_CARVE_RATIO = 0.1
+DEFAULT_MAX_EVAL_SEQS = 100
+
+
+def compute_eval_carveout(
+    total_samples: int,
+    max_ratio: float = DEFAULT_EVAL_CARVE_RATIO,
+    max_seqs: int = DEFAULT_MAX_EVAL_SEQS,
+) -> int:
+    """Compute number of samples to carve out from training data for eval.
+
+    Mirrors the SFT v1 carve-out logic: take min(total * ratio, max_seqs),
+    but return 0 if the dataset is too small to split.
+
+    Args:
+        total_samples: Total number of tokenized training examples.
+        max_ratio: Max fraction of data to use for eval (default 10%).
+        max_seqs: Absolute cap on eval sequences (default 100).
+
+    Returns:
+        Number of samples to reserve for eval (first N of the dataset).
+    """
+    if total_samples <= 1:
+        return 0
+    carveout = int(total_samples * max_ratio)
+    carveout = min(carveout, max_seqs)
+    # Need at least 1 sample left for training
+    if carveout >= total_samples:
+        return 0
+    return carveout
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -108,6 +145,20 @@ class Config:
     When set together with ``trainer_job_id``, bypasses the gateway and
     connects to the trainer directly."""
 
+    evaluation_dataset: str = ""
+    """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
+    is skipped and this dataset is used for evaluation instead."""
+
+    eval_auto_carveout: bool = False
+    """When True and no eval_dataset is provided, automatically carve out
+    the first N training examples as an eval set."""
+
+    eval_carve_ratio: float = DEFAULT_EVAL_CARVE_RATIO
+    """Max fraction of training data to use for eval carve-out."""
+
+    max_eval_seqs: int = DEFAULT_MAX_EVAL_SEQS
+    """Max number of eval sequences for carve-out."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
@@ -122,6 +173,81 @@ class Config:
     All paths are optional; unset paths are silently skipped.
     See training/utils/runner.py for file format details.
     """
+
+
+# ---------------------------------------------------------------------------
+# Eval
+# ---------------------------------------------------------------------------
+
+
+def run_eval(
+    eval_data: List[tinker.Datum],
+    client: ReconnectableClient,
+    batch_size: int,
+    step: int,
+    epoch: int,
+) -> float | None:
+    """Run evaluation without affecting model weights or optimizer state.
+
+    Uses forward_backward_custom with a zero-gradient loss function: the
+    training loss computes correct metrics, but the returned loss is
+    multiplied by zero so backward produces zero gradients.  This avoids
+    corrupting Adam's momentum/variance estimates.
+    """
+    if not eval_data:
+        return None
+
+    logger.info("[Eval] Running evaluation (%d examples)...", len(eval_data))
+
+    eval_loss_sum = 0.0
+    eval_resp_tokens = 0
+
+    def _make_eval_loss_fn():
+        train_loss_fn = make_batch_weighted_sft_loss_fn()
+
+        def eval_loss_fn(
+            data: List[tinker.Datum],
+            logprobs_list: List[torch.Tensor],
+        ) -> tuple[torch.Tensor, Dict[str, float]]:
+            real_loss, metrics = train_loss_fn(data, logprobs_list)
+            return real_loss * 0.0, metrics
+
+        return eval_loss_fn
+
+    batch: List[tinker.Datum] = []
+    for item in eval_data:
+        batch.append(item)
+        if len(batch) >= batch_size:
+            result = client.forward_backward_custom(batch, _make_eval_loss_fn())
+            m = result.metrics
+            eval_loss_sum += m.get("ce_loss_sum", 0.0)
+            eval_resp_tokens += int(m.get("response_tokens", 0))
+            batch = []
+
+    if batch:
+        result = client.forward_backward_custom(batch, _make_eval_loss_fn())
+        m = result.metrics
+        eval_loss_sum += m.get("ce_loss_sum", 0.0)
+        eval_resp_tokens += int(m.get("response_tokens", 0))
+
+    if eval_resp_tokens == 0:
+        logger.warning("[Eval] No valid eval tokens, skipping metrics")
+        return None
+
+    eval_loss = eval_loss_sum / eval_resp_tokens
+    eval_ppl = torch.exp(torch.tensor(eval_loss)).item()
+
+    logger.info(
+        "[Eval] Epoch %d | Loss: %.4f | PPL: %.2f | Tokens: %d",
+        epoch + 1, eval_loss, eval_ppl, eval_resp_tokens,
+    )
+    log_metrics_json(step, eval_loss=eval_loss, eval_ppl=eval_ppl)
+    wandb_log(
+        {"eval/loss": eval_loss, "eval/ppl": eval_ppl, "eval/tokens": eval_resp_tokens},
+        step,
+    )
+
+    return eval_loss
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +432,34 @@ def main(
         if not training_data:
             raise RuntimeError("No valid training examples after tokenization")
 
+        # -- Eval dataset (explicit or auto carve-out) -------------------------
+        eval_data: List[tinker.Datum] = []
+        if cfg.evaluation_dataset:
+            # Explicit eval dataset
+            raw_eval: List[Dict[str, Any]] = []
+            with open(cfg.evaluation_dataset) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    raw_eval.append(json.loads(line))
+            eval_data = [d for row in raw_eval if (d := _map_fn(row)) is not None]
+            logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
+        elif cfg.eval_auto_carveout:
+            # Auto carve-out: split first N examples as eval
+            carveout_count = compute_eval_carveout(
+                len(training_data), cfg.eval_carve_ratio, cfg.max_eval_seqs,
+            )
+            if carveout_count > 0:
+                eval_data = training_data[:carveout_count]
+                training_data = training_data[carveout_count:]
+                logger.info(
+                    "Auto carve-out: %d eval examples, %d training examples",
+                    len(eval_data), len(training_data),
+                )
+            else:
+                logger.warning("Dataset too small for auto carve-out, skipping eval")
+
         sft_dataset = SupervisedDatasetFromHFDataset(
             hf_datasets.Dataset.from_dict({"datum_idx": list(range(len(training_data)))}),
             batch_size=cfg.batch_size,
@@ -318,6 +472,8 @@ def main(
             total_batches_per_epoch,
             cfg.epochs,
         )
+        if eval_data:
+            logger.info("Eval dataset: %d examples (eval after each epoch)", len(eval_data))
 
         # -- Resume ---------------------------------------------------------------
 
@@ -419,6 +575,24 @@ def main(
                 batch = sft_dataset.get_batch(i_batch)
                 data_consumed += len(batch)
                 step = _run_train_step(batch, step)
+
+            # Run eval after each epoch
+            if eval_data:
+                try:
+                    eval_loss = run_eval(
+                        eval_data=eval_data,
+                        client=client,
+                        batch_size=cfg.batch_size,
+                        step=step,
+                        epoch=epoch,
+                    )
+                    if eval_loss is not None:
+                        runner.append_metrics(
+                            step,
+                            {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
+                        )
+                except Exception as e:
+                    logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
 
         # -- Final checkpoint --------------------------------------------------
 
