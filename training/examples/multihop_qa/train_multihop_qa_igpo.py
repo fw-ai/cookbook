@@ -408,17 +408,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
     )
 
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
-        if cfg.policy_job_id and cfg.deployment_id:
-            dep_info = None
-        else:
-            dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
-            if (
-                not cfg.deployment_id
-                and deploy_cfg.deployment_id
-                and os.environ.get("KEEP_DEPLOYMENT", "0") != "1"
-            ):
-                cleanup.deployment(deploy_cfg.deployment_id)
-
+        # Create trainer jobs first (trainer owns the hot-load bucket)
         def _make_job(label, precreated_id, job_profile=None, **extra_kw):
             if precreated_id:
                 ep = create_trainer_job(
@@ -435,9 +425,6 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name=f"multihop-qa-igpo-{label}",
-                hot_load_deployment_id=(
-                    deploy_cfg.deployment_id if label == "policy" else None
-                ),
                 **extra_kw,
             )
             return ep, ep.job_id, False
@@ -464,6 +451,19 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                 cleanup.trainer(policy_job_id)
             if reference_job_id:
                 cleanup.trainer(reference_job_id)
+
+        # Create deployment referencing the trainer's hot-load bucket
+        if cfg.policy_job_id and cfg.deployment_id:
+            dep_info = None
+        else:
+            deploy_cfg.hot_load_trainer_job = policy_ep.job_name
+            dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, infra)
+            if (
+                not cfg.deployment_id
+                and deploy_cfg.deployment_id
+                and os.environ.get("KEEP_DEPLOYMENT", "0") != "1"
+            ):
+                cleanup.deployment(deploy_cfg.deployment_id)
 
         policy = ReconnectableClient(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,

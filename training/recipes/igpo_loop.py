@@ -301,11 +301,7 @@ def main(
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
-        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
-        if cleanup_on_exit:
-            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-
-        # Create trainer jobs (policy + optional reference)
+        # Create trainer jobs first (trainer owns the hot-load bucket)
         if use_reference:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 pol_fut = pool.submit(
@@ -313,7 +309,6 @@ def main(
                     infra=cfg.infra, profile=profile, lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                     display_name="igpo-policy",
-                    hot_load_deployment_id=cfg.deployment.deployment_id,
                     job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
                     cleanup=cleanup if not cfg.policy_job_id else None,
                 )
@@ -333,11 +328,16 @@ def main(
                 profile=profile, lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                 display_name="igpo-policy",
-                hot_load_deployment_id=cfg.deployment.deployment_id,
                 job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
                 cleanup=cleanup if not cfg.policy_job_id else None,
             )
             reference_ep = None
+
+        # Create deployment referencing the trainer's hot-load bucket
+        cfg.deployment.hot_load_trainer_job = policy_ep.job_name
+        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+        if cleanup_on_exit:
+            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id if reference_ep else None
