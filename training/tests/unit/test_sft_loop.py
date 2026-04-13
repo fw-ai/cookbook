@@ -454,3 +454,174 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     assert [d._test_id for d in events["batches"][0]] == ["a1"]
     assert [d._test_id for d in events["batches"][1]] == ["a2"]
     assert events["deleted_jobs"] == ["job-sft"]
+
+
+# ---------------------------------------------------------------------------
+# Eval auto carve-out tests
+# ---------------------------------------------------------------------------
+
+
+class TestComputeEvalCarveout:
+    def test_basic_carveout(self):
+        # 1000 samples, 10% ratio, max 100 → carve out 100
+        assert module.compute_eval_carveout(1000) == 100
+
+    def test_ratio_smaller_than_max(self):
+        # 50 samples, 10% → 5 (ratio wins over max_seqs=100)
+        assert module.compute_eval_carveout(50) == 5
+
+    def test_max_seqs_cap(self):
+        # 5000 samples, 10% = 500, but max_seqs=100 caps it
+        assert module.compute_eval_carveout(5000) == 100
+
+    def test_custom_ratio_and_max(self):
+        assert module.compute_eval_carveout(200, max_ratio=0.2, max_seqs=50) == 40
+        assert module.compute_eval_carveout(200, max_ratio=0.5, max_seqs=30) == 30
+
+    def test_empty_dataset(self):
+        assert module.compute_eval_carveout(0) == 0
+
+    def test_single_sample(self):
+        assert module.compute_eval_carveout(1) == 0
+
+    def test_too_small_for_split(self):
+        # 2 samples, 100% ratio, max_seqs=100 → carveout=2 >= total → 0
+        assert module.compute_eval_carveout(2, max_ratio=1.0, max_seqs=100) == 0
+
+    def test_minimal_split(self):
+        # 10 samples, 10% → 1 eval, 9 training
+        assert module.compute_eval_carveout(10) == 1
+
+    def test_carveout_never_consumes_all(self):
+        for n in range(0, 20):
+            carveout = module.compute_eval_carveout(n)
+            assert carveout < n or carveout == 0
+
+
+def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
+    """Verify auto carve-out removes eval samples from training and runs eval after each epoch."""
+    # Create 10 examples so carveout = min(10 * 0.1, 100) = 1
+    rows = [
+        {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+        for i in range(10)
+    ]
+    dataset_path = _write_dataset(tmp_path, rows)
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {
+        "train_batches": [],
+        "eval_batches": [],
+        "deleted_jobs": [],
+    }
+
+    class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
+
+    class FakeClient:
+        job_id = "job-sft"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            events["train_batches"].append(list(batch))
+            return SimpleNamespace(metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": 2})
+
+        def forward_backward_custom(self, batch, loss_fn):
+            events["eval_batches"].append(list(batch))
+            return SimpleNamespace(metrics={"ce_loss_sum": 0.5, "response_tokens": 2})
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def save_state(self, name):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"{name}-sampler")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return name
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "select_validated_launch_shapes",
+        lambda _mgr, *, request, deploy_mgr=None: ShapeSelectionResult(
+            request=request,
+            training_shape_id=None,
+            training_profile=None,
+            deployment_shape=None,
+            inferred_training_shape=False,
+            inferred_deployment_shape=False,
+        ),
+    )
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    # Each example gets a unique _test_id so we can verify disjointness
+    call_count = {"n": 0}
+
+    def _fake_render(messages, **kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        datum = SimpleNamespace(
+            model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
+            loss_fn_inputs={
+                "target_tokens": SimpleNamespace(data=[0, 0]),
+                "weights": SimpleNamespace(data=[1.0, 1.0]),
+            },
+            _test_id=f"example-{idx}",
+        )
+        return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
+
+    monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
+
+    cfg = module.Config(
+        dataset=str(dataset_path),
+        base_model="accounts/test/models/custom-sft",
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        epochs=1,
+        batch_size=9,  # All 9 training examples in one batch
+        log_path=str(tmp_path / "sft_logs"),
+        eval_auto_carveout=True,
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeMgr())
+
+    # 10 examples, 10% carveout → 1 eval, 9 training
+    assert result["steps"] == 1
+
+    # Training should get 9 examples (not 10)
+    train_ids = {d._test_id for batch in events["train_batches"] for d in batch}
+    assert len(train_ids) == 9
+
+    # Eval should get 1 example
+    eval_ids = {d._test_id for batch in events["eval_batches"] for d in batch}
+    assert len(eval_ids) == 1
+
+    # They should be disjoint
+    assert train_ids.isdisjoint(eval_ids)
+
+    # The eval example should be the first one (example-0)
+    assert "example-0" in eval_ids
