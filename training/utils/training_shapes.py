@@ -1,27 +1,33 @@
-"""Validated training/deployment shape selection for cookbook recipes."""
+"""Training shape selection for cookbook recipes.
+
+Two paths:
+
+* **Explicit** — caller provides ``training_shape_id``, calls
+  ``resolve_training_profile()`` on the SDK to get the full profile
+  (including ``deployment_shape_version``).  No selection logic needed.
+
+* **Auto-select** — ``auto_select_training_shape()`` picks a validated
+  training shape from the control plane based on base model, trainer
+  mode, and context length.  Returns a shape ID; caller resolves the
+  profile the same way.
+
+The deployment shape always comes from the training shape profile's
+``deployment_shape_version``.  There is no separate deployment shape
+selection — if a training shape lacks a deployment shape link, it is
+broken and should be fixed.
+"""
 
 from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, replace
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 from urllib.parse import urlencode
 
-from fireworks.training.sdk.deployment import DeploymentManager
 from fireworks.training.sdk.trainer import TrainerJobManager
-from fireworks.training.sdk.fireworks_client import TrainingShapeProfile
-
-from training.utils.config import InfraConfig
-
 logger = logging.getLogger(__name__)
 
-TRAINING_SHAPES_DOCS_URL = (
-    "https://docs.fireworks.ai/fine-tuning/training-sdk/training-shapes"
-)
-
 _TRAINING_SHAPE_VERSION_PARENT = "accounts/-/trainingShapes/-"
-_DEPLOYMENT_SHAPE_VERSION_PARENT = "accounts/-/deploymentShapes/-"
 _ORDER_BY_CREATE_TIME_DESC = "create_time desc"
 _TRAINING_SHAPE_VERSION_RE = re.compile(r"/versions/[^/]+$")
 
@@ -32,479 +38,85 @@ _TRAINER_MODE_BY_CODE = {
 }
 
 
-class _RestCapable(Protocol):
-    def _get(self, path: str, **kwargs): ...
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class ShapeSelectionRequest:
-    """Inputs for the unified validated-shape selector."""
-
-    base_model: str
-    max_seq_len: int | None = None
-    trainer_role: Literal["policy", "reference"] = "policy"
-    needs_deployment: bool = False
-    lora_rank: int = 0
-    explicit_training_shape_id: str | None = None
-    explicit_deployment_shape: str | None = None
-    public_only: bool = False
-    shape_account: str | None = None
-    """When set, restrict shape listing to this account (e.g. 'fireworks').
-    Overrides public_only for parent-based scoping."""
-
-
-@dataclass(frozen=True)
-class ShapeSelectionResult:
-    """Resolved shape resources and training profile for one trainer role."""
-
-    request: ShapeSelectionRequest
-    training_shape_id: str | None
-    training_profile: TrainingShapeProfile | None
-    deployment_shape: str | None
-    inferred_training_shape: bool
-    inferred_deployment_shape: bool
-
-
-@dataclass(frozen=True)
-class _ModelSelectionContext:
-    model_type: str
-    parameter_count: int
-    supports_fireattention: bool
-
-
-@dataclass(frozen=True)
-class _TrainingShapeCandidate:
-    training_shape_version: str
-    training_shape: str
-    base_model: str | None
-    model_type: str | None
-    parameter_count: int | None
-    trainer_mode: str | None
-    trainer_image_tag: str
-    max_supported_context_length: int
-    node_count: int
-    deployment_shape_version: str
-    deployment_image_tag: str
-    accelerator_type: str
-    accelerator_count: int
-    base_model_weight_precision: str
-    pipeline_parallelism: int
-
-    def to_profile(self) -> TrainingShapeProfile:
-        return TrainingShapeProfile(
-            training_shape_version=self.training_shape_version,
-            trainer_image_tag=self.trainer_image_tag,
-            max_supported_context_length=self.max_supported_context_length,
-            node_count=self.node_count,
-            deployment_shape_version=self.deployment_shape_version,
-            deployment_image_tag=self.deployment_image_tag,
-            accelerator_type=self.accelerator_type,
-            accelerator_count=self.accelerator_count,
-            base_model_weight_precision=self.base_model_weight_precision,
-            pipeline_parallelism=self.pipeline_parallelism,
-        )
-
-
-@dataclass(frozen=True)
-class _DeploymentShapeCandidate:
-    deployment_shape_version: str
-    deployment_shape: str
-    base_model: str | None
-    model_type: str | None
-    parameter_count: int | None
-    accelerator_type: str
-    accelerator_count: int
-    engine: str | None
-
-
-def canonical_base_model(base_model: str) -> str:
-    """Return the model identifier used for exact shape lookups."""
-    return base_model
-
-
-def materialize_profile_infra(
-    infra: InfraConfig,
-    profile: TrainingShapeProfile,
-) -> InfraConfig:
-    """Return an InfraConfig copy populated from a resolved training shape."""
-    return replace(
-        infra,
-        custom_image_tag=getattr(profile, "trainer_image_tag", None) or infra.custom_image_tag,
-        accelerator_type=getattr(profile, "accelerator_type", None) or infra.accelerator_type,
-        accelerator_count=getattr(profile, "accelerator_count", None) or infra.accelerator_count,
-        node_count=getattr(profile, "node_count", None) or infra.node_count,
-    )
-
-
-def prepare_training_shape_launch(
-    infra: InfraConfig,
-    profile: TrainingShapeProfile | None,
-    *,
-    client_managed: bool,
-) -> tuple[InfraConfig, TrainingShapeProfile | None]:
-    """Choose manual-vs-shape launch config for a resolved profile."""
-    if not client_managed or profile is None:
-        return infra, profile
-    return materialize_profile_infra(infra, profile), None
-
-
-def select_validated_launch_shapes(
+def auto_select_training_shape(
     trainer_mgr: TrainerJobManager,
     *,
-    request: ShapeSelectionRequest,
-    deploy_mgr: DeploymentManager | None = None,
-) -> ShapeSelectionResult:
-    """Resolve validated trainer/deployment shapes for one trainer role."""
-    if request.trainer_role not in {"policy", "reference"}:
-        raise ValueError(
-            f"Unsupported trainer_role={request.trainer_role!r}; expected 'policy' or 'reference'"
-        )
-    if (
-        request.needs_deployment
-        and request.explicit_training_shape_id is None
-        and request.max_seq_len is None
-    ):
-        raise ValueError(
-            "max_seq_len is required for auto-selecting deployment-backed training shapes"
-        )
-
-    if request.explicit_training_shape_id:
-        training_shape_id = request.explicit_training_shape_id
-        profile = trainer_mgr.resolve_training_profile(training_shape_id)
-        inferred_training_shape = False
-    else:
-        candidate = _select_training_shape_candidate(trainer_mgr, request=request)
-        training_shape_id = candidate.training_shape
-        profile = candidate.to_profile()
-        inferred_training_shape = True
-
-    deployment_shape = request.explicit_deployment_shape
-    inferred_deployment_shape = False
-    if request.needs_deployment and not deployment_shape:
-        deployment_shape = (
-            getattr(profile, "deployment_shape_version", None)
-            or getattr(profile, "deployment_shape", None)
-            or _select_deployment_shape_candidate(
-                deploy_mgr or trainer_mgr,
-                base_model=request.base_model,
-                public_only=request.public_only,
-                shape_account=request.shape_account,
-            ).deployment_shape_version
-        )
-        inferred_deployment_shape = bool(deployment_shape)
-
-    return ShapeSelectionResult(
-        request=request,
-        training_shape_id=training_shape_id,
-        training_profile=profile,
-        deployment_shape=deployment_shape,
-        inferred_training_shape=inferred_training_shape,
-        inferred_deployment_shape=inferred_deployment_shape,
-    )
-
-
-def _select_training_shape_candidate(
-    client: TrainerJobManager,
-    *,
-    request: ShapeSelectionRequest,
-) -> _TrainingShapeCandidate:
-    base_model = canonical_base_model(request.base_model)
-    expected_mode = _expected_trainer_mode(request.trainer_role, request.lora_rank)
-    deployment_filter = request.explicit_deployment_shape
-
-    exact_candidates = _compatible_training_shape_candidates(
-        _list_training_shape_candidates(
-            client,
-            _build_latest_validated_training_shape_filter(
-                base_model=base_model,
-                trainer_mode=expected_mode,
-                deployment_shape=deployment_filter,
-                public_only=request.public_only,
-            ),
-            request=request,
-        ),
-        request=request,
-        expected_mode=expected_mode,
-    )
-    if exact_candidates:
-        return _choose_training_shape_candidate(exact_candidates, request)
-
-    model_ctx = _fetch_model_selection_context(client, base_model)
-    compat_candidates = _compatible_training_shape_candidates(
-        _list_training_shape_candidates(
-            client,
-            _build_compatible_training_shape_filter(
-                model_ctx=model_ctx,
-                trainer_mode=expected_mode,
-                deployment_shape=deployment_filter,
-                public_only=request.public_only,
-            ),
-            request=request,
-        ),
-        request=request,
-        expected_mode=expected_mode,
-    )
-    if compat_candidates:
-        return _choose_training_shape_candidate(compat_candidates, request)
-
-    raise ValueError(_format_training_shape_selection_error(request, expected_mode))
-
-
-def _select_deployment_shape_candidate(
-    client: _RestCapable,
-    *,
     base_model: str,
+    trainer_role: Literal["policy", "reference"] = "policy",
+    lora_rank: int = 0,
+    max_seq_len: int | None = None,
     public_only: bool = False,
     shape_account: str | None = None,
-) -> _DeploymentShapeCandidate:
-    base_model = canonical_base_model(base_model)
-    model_ctx = _fetch_model_selection_context(client, base_model)
+) -> str:
+    """Auto-select a validated training shape ID.
 
-    exact_candidates = _list_deployment_shape_candidates(
-        client,
-        _build_latest_validated_deployment_shape_filter(
-            base_model=base_model,
-            supports_fireattention=model_ctx.supports_fireattention,
-            public_only=public_only,
+    Returns the training shape resource name (without ``/versions/...``).
+    Caller should then call ``trainer_mgr.resolve_training_profile(shape_id)``
+    to get the full profile including ``deployment_shape_version``.
+
+    Raises ``ValueError`` if no matching shape is found.
+    """
+    expected_mode = _expected_trainer_mode(trainer_role, lora_rank)
+    parent = (
+        f"accounts/{shape_account}/trainingShapes/-"
+        if shape_account
+        else _TRAINING_SHAPE_VERSION_PARENT
+    )
+
+    # Try exact base_model match first.
+    candidates = _list_and_filter(
+        trainer_mgr,
+        parent=parent,
+        filter_expr=_combine_filters(
+            f'snapshot.base_model="{base_model}"',
+            f'snapshot.trainer_mode="{expected_mode}"',
+            "latest_validated=true",
+            "public=true" if public_only else "",
         ),
-        shape_account=shape_account,
+        expected_mode=expected_mode,
+        max_seq_len=max_seq_len,
     )
-    if exact_candidates:
-        return exact_candidates[0]
+    if candidates:
+        return _pick_best(candidates, max_seq_len)
 
-    compat_candidates = _list_deployment_shape_candidates(
-        client,
-        _build_compatible_deployment_shape_filter(model_ctx, public_only=public_only),
-        shape_account=shape_account,
+    # Fallback: compatible model_type + parameter_count bucket.
+    model_ctx = _fetch_model_context(trainer_mgr, base_model)
+    lo, hi = _param_count_bounds(model_ctx["parameter_count"])
+    candidates = _list_and_filter(
+        trainer_mgr,
+        parent=parent,
+        filter_expr=_combine_filters(
+            f'snapshot.model_type="{model_ctx["model_type"]}"',
+            f"snapshot.parameter_count>={lo}",
+            f"snapshot.parameter_count<={hi}",
+            f'snapshot.trainer_mode="{expected_mode}"',
+            "latest_validated=true",
+            "public=true" if public_only else "",
+        ),
+        expected_mode=expected_mode,
+        max_seq_len=max_seq_len,
     )
-    if compat_candidates:
-        return compat_candidates[0]
+    if candidates:
+        return _pick_best(candidates, max_seq_len)
 
+    mode_label = {"LORA_TRAINER": "LoRA", "FORWARD_ONLY": "reference"}.get(
+        expected_mode, "full-tune"
+    )
     raise ValueError(
-        "No validated deployment shape is available for "
-        f"base_model={base_model!r}. Check deployment-shape docs or provide "
-        "DeployConfig.deployment_shape explicitly."
+        f"No validated training shape matched base_model={base_model!r}, "
+        f"mode={mode_label!r}, max_seq_len={max_seq_len!r}. "
+        f"Provide an explicit training_shape_id."
     )
 
 
-def _compatible_training_shape_candidates(
-    candidates: list[_TrainingShapeCandidate],
-    *,
-    request: ShapeSelectionRequest,
-    expected_mode: str,
-) -> list[_TrainingShapeCandidate]:
-    compatible: list[_TrainingShapeCandidate] = []
-    requested_deployment = request.explicit_deployment_shape
-    normalized_requested_deployment = _strip_version_suffix(requested_deployment)
-    for candidate in candidates:
-        if candidate.trainer_mode != expected_mode:
-            continue
-        if request.max_seq_len is not None:
-            if candidate.max_supported_context_length < request.max_seq_len:
-                continue
-        if requested_deployment:
-            candidate_deployment = candidate.deployment_shape_version
-            if not candidate_deployment:
-                continue
-            if candidate_deployment != requested_deployment and (
-                _strip_version_suffix(candidate_deployment) != normalized_requested_deployment
-            ):
-                continue
-        compatible.append(candidate)
-    return compatible
-
-
-def _choose_training_shape_candidate(
-    candidates: list[_TrainingShapeCandidate],
-    request: ShapeSelectionRequest,
-) -> _TrainingShapeCandidate:
-    if request.max_seq_len is None:
-        return candidates[0]
-    indexed = list(enumerate(candidates))
-    index, candidate = min(
-        indexed,
-        key=lambda item: (
-            item[1].max_supported_context_length,
-            item[0],
-        ),
-    )
-    _ = index
-    return candidate
-
-
-def _fetch_model_selection_context(
-    client: _RestCapable,
-    base_model: str,
-) -> _ModelSelectionContext:
-    resp = client._get(f"/v1/{base_model}", timeout=30)
-    if not resp.is_success:
-        raise RuntimeError(
-            f"Failed to fetch base model details for {base_model!r} "
-            f"(HTTP {resp.status_code})"
-        )
-    data = resp.json() or {}
-    details = _get_mapping(data, "baseModelDetails", "base_model_details") or {}
-
-    model_type = _get_str(details, "modelType", "model_type") or _get_str(
-        data, "modelType", "model_type"
-    )
-    parameter_count = _get_int(details, "parameterCount", "parameter_count")
-    if parameter_count == 0:
-        parameter_count = _get_int(data, "parameterCount", "parameter_count")
-    supports_fireattention = _get_bool(
-        details,
-        "supportsFireattention",
-        "supports_fireattention",
-    )
-    if model_type is None or parameter_count <= 0:
-        raise ValueError(
-            f"Base model {base_model!r} is missing model_type or parameter_count"
-        )
-    return _ModelSelectionContext(
-        model_type=model_type,
-        parameter_count=parameter_count,
-        supports_fireattention=supports_fireattention,
-    )
-
-
-def _training_shape_parent(request: ShapeSelectionRequest) -> str:
-    if request.shape_account:
-        return f"accounts/{request.shape_account}/trainingShapes/-"
-    return _TRAINING_SHAPE_VERSION_PARENT
-
-
-def _deployment_shape_parent(*, shape_account: str | None = None) -> str:
-    if shape_account:
-        return f"accounts/{shape_account}/deploymentShapes/-"
-    return _DEPLOYMENT_SHAPE_VERSION_PARENT
-
-
-def _list_training_shape_candidates(
-    client: _RestCapable,
-    filter_expr: str,
-    *,
-    request: ShapeSelectionRequest | None = None,
-) -> list[_TrainingShapeCandidate]:
-    parent = _training_shape_parent(request) if request else _TRAINING_SHAPE_VERSION_PARENT
-    versions = _list_paginated_resources(
-        client,
-        parent=parent,
-        collection_key="trainingShapeVersions",
-        filter_expr=filter_expr,
-    )
-    return [_parse_training_shape_candidate(version) for version in versions]
-
-
-def _list_deployment_shape_candidates(
-    client: _RestCapable,
-    filter_expr: str,
-    *,
-    shape_account: str | None = None,
-) -> list[_DeploymentShapeCandidate]:
-    parent = _deployment_shape_parent(shape_account=shape_account)
-    versions = _list_paginated_resources(
-        client,
-        parent=parent,
-        collection_key="deploymentShapeVersions",
-        filter_expr=filter_expr,
-    )
-    return [_parse_deployment_shape_candidate(version) for version in versions]
-
-
-def _list_paginated_resources(
-    client: _RestCapable,
-    *,
-    parent: str,
-    collection_key: str,
-    filter_expr: str,
-) -> list[dict[str, Any]]:
-    resources: list[dict[str, Any]] = []
-    page_token: str | None = None
-    while True:
-        params: dict[str, Any] = {
-            "filter": filter_expr,
-            "orderBy": _ORDER_BY_CREATE_TIME_DESC,
-            "pageSize": 200,
-        }
-        if page_token:
-            params["pageToken"] = page_token
-        path = f"/v1/{parent}/versions?{urlencode(params)}"
-        resp = client._get(path, timeout=30)
-        if not resp.is_success:
-            raise RuntimeError(
-                f"Failed to list shape versions for parent={parent!r} "
-                f"(HTTP {resp.status_code})"
-            )
-        data = resp.json() or {}
-        page_items = data.get(collection_key, []) or data.get(
-            _snake_case(collection_key), []
-        ) or []
-        resources.extend(page_items)
-        page_token = _get_str(data, "nextPageToken", "next_page_token")
-        if not page_token:
-            break
-    return resources
-
-
-def _parse_training_shape_candidate(version: dict[str, Any]) -> _TrainingShapeCandidate:
-    snapshot = _get_mapping(version, "snapshot") or {}
-    sharding = _get_mapping(
-        snapshot,
-        "trainerShardingScheme",
-        "trainer_sharding_scheme",
-    ) or {}
-    training_shape_version = _get_str(version, "name") or ""
-    return _TrainingShapeCandidate(
-        training_shape_version=training_shape_version,
-        training_shape=_strip_version_suffix(training_shape_version) or training_shape_version,
-        base_model=_get_str(snapshot, "baseModel", "base_model"),
-        model_type=_get_str(snapshot, "modelType", "model_type"),
-        parameter_count=_get_optional_int(snapshot, "parameterCount", "parameter_count"),
-        trainer_mode=_normalize_trainer_mode(_get_value(snapshot, "trainerMode", "trainer_mode")),
-        trainer_image_tag=_get_str(snapshot, "trainerImageTag", "trainer_image_tag") or "",
-        max_supported_context_length=_get_int(
-            snapshot,
-            "maxSupportedContextLength",
-            "max_supported_context_length",
-        ),
-        node_count=max(_get_int(snapshot, "nodeCount", "node_count"), 1),
-        deployment_shape_version=_get_str(
-            snapshot,
-            "deploymentShapeVersion",
-            "deployment_shape_version",
-        ) or "",
-        deployment_image_tag=_get_str(
-            snapshot,
-            "deploymentImageTag",
-            "deployment_image_tag",
-        ) or "",
-        accelerator_type=_get_str(snapshot, "acceleratorType", "accelerator_type") or "",
-        accelerator_count=_get_int(snapshot, "acceleratorCount", "accelerator_count"),
-        base_model_weight_precision=_get_str(
-            snapshot,
-            "baseModelWeightPrecision",
-            "base_model_weight_precision",
-        ) or "",
-        pipeline_parallelism=max(
-            _get_int(sharding, "pipelineParallelism", "pipeline_parallelism"),
-            1,
-        ),
-    )
-
-
-def _parse_deployment_shape_candidate(version: dict[str, Any]) -> _DeploymentShapeCandidate:
-    snapshot = _get_mapping(version, "snapshot") or {}
-    deployment_shape_version = _get_str(version, "name") or ""
-    return _DeploymentShapeCandidate(
-        deployment_shape_version=deployment_shape_version,
-        deployment_shape=_strip_version_suffix(deployment_shape_version) or deployment_shape_version,
-        base_model=_get_str(snapshot, "baseModel", "base_model"),
-        model_type=_get_str(snapshot, "modelType", "model_type"),
-        parameter_count=_get_optional_int(snapshot, "parameterCount", "parameter_count"),
-        accelerator_type=_get_str(snapshot, "acceleratorType", "accelerator_type") or "",
-        accelerator_count=_get_int(snapshot, "acceleratorCount", "accelerator_count"),
-        engine=_get_str(snapshot, "engine"),
-    )
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
 
 
 def _expected_trainer_mode(
@@ -518,104 +130,101 @@ def _expected_trainer_mode(
     return "POLICY_TRAINER"
 
 
-def _build_latest_validated_training_shape_filter(
+def _list_and_filter(
+    client: TrainerJobManager,
     *,
-    base_model: str,
-    trainer_mode: str,
-    deployment_shape: str | None,
-    public_only: bool = False,
-) -> str:
-    extras = [f'snapshot.trainer_mode="{trainer_mode}"']
-    if deployment_shape:
-        extras.extend(_deployment_shape_filters(deployment_shape))
-    return _combine_filters(
-        f'snapshot.base_model="{base_model}"',
-        "latest_validated=true",
-        "public=true" if public_only else "",
-        *extras,
+    parent: str,
+    filter_expr: str,
+    expected_mode: str,
+    max_seq_len: int | None,
+) -> list[dict]:
+    """List training shape versions and filter by mode + context length."""
+    versions = _list_paginated(client, parent=parent, filter_expr=filter_expr)
+    result = []
+    for v in versions:
+        snap = (v.get("snapshot") or {})
+        mode = _normalize_trainer_mode(
+            snap.get("trainerMode") or snap.get("trainer_mode")
+        )
+        if mode != expected_mode:
+            continue
+        ctx_len = _int_val(snap, "maxSupportedContextLength", "max_supported_context_length")
+        if max_seq_len is not None and ctx_len < max_seq_len:
+            continue
+        name = v.get("name", "")
+        shape_id = _TRAINING_SHAPE_VERSION_RE.sub("", name) or name
+        result.append({"shape_id": shape_id, "ctx_len": ctx_len})
+    return result
+
+
+def _pick_best(candidates: list[dict], max_seq_len: int | None) -> str:
+    """Pick the candidate with smallest sufficient context length."""
+    if max_seq_len is None:
+        return candidates[0]["shape_id"]
+    return min(candidates, key=lambda c: c["ctx_len"])["shape_id"]
+
+
+def _fetch_model_context(client: TrainerJobManager, base_model: str) -> dict:
+    resp = client._get(f"/v1/{base_model}", timeout=30)
+    if not resp.is_success:
+        raise RuntimeError(
+            f"Failed to fetch model details for {base_model!r} (HTTP {resp.status_code})"
+        )
+    data = resp.json() or {}
+    details = data.get("baseModelDetails") or data.get("base_model_details") or {}
+    model_type = (
+        details.get("modelType") or details.get("model_type")
+        or data.get("modelType") or data.get("model_type")
     )
+    param_count = (
+        _try_int(details.get("parameterCount") or details.get("parameter_count"))
+        or _try_int(data.get("parameterCount") or data.get("parameter_count"))
+        or 0
+    )
+    if not model_type or param_count <= 0:
+        raise ValueError(f"Base model {base_model!r} missing model_type or parameter_count")
+    return {"model_type": model_type, "parameter_count": param_count}
 
 
-def _build_compatible_training_shape_filter(
+def _list_paginated(
+    client: TrainerJobManager,
     *,
-    model_ctx: _ModelSelectionContext,
-    trainer_mode: str,
-    deployment_shape: str | None,
-    public_only: bool = False,
-) -> str:
-    lower_bound, upper_bound = _get_parameter_count_bucket_bounds(model_ctx.parameter_count)
-    extras = [f'snapshot.trainer_mode="{trainer_mode}"']
-    if deployment_shape:
-        extras.extend(_deployment_shape_filters(deployment_shape))
-    return _combine_filters(
-        f'snapshot.model_type="{model_ctx.model_type}"',
-        f"snapshot.parameter_count>={lower_bound}",
-        f"snapshot.parameter_count<={upper_bound}",
-        "latest_validated=true",
-        "public=true" if public_only else "",
-        *extras,
-    )
+    parent: str,
+    filter_expr: str,
+) -> list[dict]:
+    resources: list[dict] = []
+    page_token: str | None = None
+    while True:
+        params: dict[str, Any] = {
+            "filter": filter_expr,
+            "orderBy": _ORDER_BY_CREATE_TIME_DESC,
+            "pageSize": 200,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        resp = client._get(f"/v1/{parent}/versions?{urlencode(params)}", timeout=30)
+        if not resp.is_success:
+            raise RuntimeError(
+                f"Failed to list training shape versions (HTTP {resp.status_code})"
+            )
+        data = resp.json() or {}
+        items = (
+            data.get("trainingShapeVersions")
+            or data.get("training_shape_versions")
+            or []
+        )
+        resources.extend(items)
+        page_token = data.get("nextPageToken") or data.get("next_page_token")
+        if not page_token:
+            break
+    return resources
 
 
-def _build_latest_validated_deployment_shape_filter(
-    *,
-    base_model: str,
-    supports_fireattention: bool,
-    public_only: bool = False,
-) -> str:
-    return _combine_filters(
-        f'snapshot.base_model="{base_model}"',
-        "latest_validated=true",
-        "public=true" if public_only else "",
-        _deployment_engine_filter(supports_fireattention),
-    )
-
-
-def _build_compatible_deployment_shape_filter(
-    model_ctx: _ModelSelectionContext,
-    *,
-    public_only: bool = False,
-) -> str:
-    lower_bound, upper_bound = _get_parameter_count_bucket_bounds(model_ctx.parameter_count)
-    return _combine_filters(
-        f'snapshot.model_type="{model_ctx.model_type}"',
-        f"snapshot.parameter_count>={lower_bound}",
-        f"snapshot.parameter_count<={upper_bound}",
-        "latest_validated=true",
-        "public=true" if public_only else "",
-        _deployment_engine_filter(model_ctx.supports_fireattention),
-    )
-
-
-def _deployment_shape_filters(deployment_shape: str) -> tuple[str, ...]:
-    if "/versions/" in deployment_shape:
-        return (f'snapshot.deployment_shape_version="{deployment_shape}"',)
-    return ()
-
-
-def _deployment_engine_filter(supports_fireattention: bool) -> str:
-    if supports_fireattention:
-        return 'snapshot.engine="FIREATTENTION"'
-    return 'snapshot.engine!="FIREATTENTION"'
-
-
-def _combine_filters(*parts: str) -> str:
-    return " AND ".join(part for part in parts if part)
-
-
-def _get_parameter_count_bucket_bounds(parameter_count: int) -> tuple[int, int]:
+def _param_count_bounds(param_count: int) -> tuple[int, int]:
     one_b = 1_000_000_000
-    ten_b = 10 * one_b
-    bucket_size = one_b if parameter_count < ten_b else ten_b
-    lower = (parameter_count // bucket_size) * bucket_size
-    upper = lower + bucket_size
-    return lower, upper
-
-
-def _strip_version_suffix(resource_name: str | None) -> str | None:
-    if not resource_name:
-        return resource_name
-    return _TRAINING_SHAPE_VERSION_RE.sub("", resource_name)
+    bucket = one_b if param_count < 10 * one_b else 10 * one_b
+    lo = (param_count // bucket) * bucket
+    return lo, lo + bucket
 
 
 def _normalize_trainer_mode(value: Any) -> str | None:
@@ -626,79 +235,19 @@ def _normalize_trainer_mode(value: Any) -> str | None:
     return _TRAINER_MODE_BY_CODE.get(int(value))
 
 
-def _format_training_shape_selection_error(
-    request: ShapeSelectionRequest,
-    trainer_mode: str,
-) -> str:
-    mode_label = "LoRA" if trainer_mode == "LORA_TRAINER" else (
-        "reference" if trainer_mode == "FORWARD_ONLY" else "full-tune"
-    )
-    suffix = (
-        " Provide explicit shape overrides or lower max_seq_len."
-        if request.max_seq_len is not None
-        else " Provide explicit shape overrides."
-    )
-    return (
-        "No validated training shape matched "
-        f"base_model={request.base_model!r}, "
-        f"trainer_role={request.trainer_role!r}, "
-        f"mode={mode_label!r}, "
-        f"max_seq_len={request.max_seq_len!r}, "
-        f"needs_deployment={request.needs_deployment!r}."
-        + suffix
-    )
+def _combine_filters(*parts: str) -> str:
+    return " AND ".join(p for p in parts if p)
 
 
-def _get_mapping(data: dict[str, Any], *keys: str) -> dict[str, Any] | None:
-    value = _get_value(data, *keys)
-    return value if isinstance(value, dict) else None
+def _int_val(d: dict, *keys: str) -> int:
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, ""):
+            return int(v)
+    return 0
 
 
-def _get_str(data: dict[str, Any], *keys: str) -> str | None:
-    value = _get_value(data, *keys)
-    if value is None:
-        return None
-    return str(value)
-
-
-def _get_int(data: dict[str, Any], *keys: str) -> int:
-    value = _get_value(data, *keys)
-    if value in (None, ""):
+def _try_int(v: Any) -> int:
+    if v in (None, ""):
         return 0
-    return int(value)
-
-
-def _get_optional_int(data: dict[str, Any], *keys: str) -> int | None:
-    value = _get_value(data, *keys)
-    if value in (None, ""):
-        return None
-    return int(value)
-
-
-def _get_bool(data: dict[str, Any], *keys: str) -> bool:
-    value = _get_value(data, *keys)
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.lower() == "true"
-    return bool(value)
-
-
-def _get_value(data: dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        if key in data and data[key] is not None:
-            return data[key]
-    return None
-
-
-def _snake_case(name: str) -> str:
-    chars: list[str] = []
-    for char in name:
-        if char.isupper():
-            chars.append("_")
-            chars.append(char.lower())
-        else:
-            chars.append(char)
-    return "".join(chars)
+    return int(v)

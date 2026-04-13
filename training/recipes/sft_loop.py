@@ -48,11 +48,9 @@ from training.utils import (
     create_trainer_job,
     build_renderer,
     parse_train_on_what,
-    ShapeSelectionRequest,
-    materialize_profile_infra,
+    auto_select_training_shape,
     render_messages_to_datum,
     resolve_renderer_name,
-    select_validated_launch_shapes,
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
@@ -188,44 +186,23 @@ def main(
             cfg.trainer_base_url,
         )
     else:
-        selection = select_validated_launch_shapes(
-            rlor_mgr,
-            request=ShapeSelectionRequest(
+        if not cfg.infra.training_shape_id:
+            cfg.infra.training_shape_id = auto_select_training_shape(
+                rlor_mgr,
                 base_model=cfg.base_model,
-                max_seq_len=cfg.max_seq_len,
                 trainer_role="policy",
-                needs_deployment=False,
                 lora_rank=cfg.lora_rank,
-                explicit_training_shape_id=cfg.infra.training_shape_id,
-            ),
-        )
-        if selection.training_shape_id:
-            cfg.infra.training_shape_id = selection.training_shape_id
-        if selection.inferred_training_shape:
-            logger.info(
-                "Using validated training shape for %s: %s",
-                cfg.base_model,
-                selection.training_shape_id,
+                max_seq_len=cfg.max_seq_len,
             )
+            logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
 
-        profile = selection.training_profile
-        trainer_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
+        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
         trainer_profile = profile
 
-        if profile and cfg.max_seq_len is None:
-            cfg.max_seq_len = profile.max_supported_context_length
-            logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
         if cfg.max_seq_len is None:
-            raise ValueError(
-                "max_seq_len is required. Set it in Config, or use a training shape "
-                "(InfraConfig.training_shape_id) to auto-populate it."
-            )
+            cfg.max_seq_len = profile.max_supported_context_length
 
-    runner.set_accelerator_info(
-        trainer_infra.accelerator_type,
-        trainer_infra.accelerator_count,
-        profile=trainer_profile if not _precreated_trainer else None,
-    )
+    runner.set_accelerator_info(profile=trainer_profile if not _precreated_trainer else None)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
@@ -235,7 +212,7 @@ def main(
         endpoint = create_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
-            infra=trainer_infra,
+            infra=cfg.infra,
             profile=trainer_profile,
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,

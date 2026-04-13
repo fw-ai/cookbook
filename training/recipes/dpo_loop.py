@@ -57,11 +57,9 @@ from training.utils import (
     create_trainer_job,
     load_preference_dataset,
     build_renderer,
-    ShapeSelectionRequest,
-    materialize_profile_infra,
+    auto_select_training_shape,
     render_preference_pair,
     resolve_renderer_name,
-    select_validated_launch_shapes,
 )
 from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
 from training.utils.timer import timer, flush_timing
@@ -460,67 +458,27 @@ def main(
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
 
-    policy_selection = select_validated_launch_shapes(
-        rlor_mgr,
-        request=ShapeSelectionRequest(
-            base_model=cfg.base_model,
-            max_seq_len=cfg.max_seq_len,
-            trainer_role="policy",
-            needs_deployment=False,
-            lora_rank=cfg.lora_rank,
-            explicit_training_shape_id=cfg.infra.training_shape_id,
-        ),
-    )
-    reference_selection = select_validated_launch_shapes(
-        rlor_mgr,
-        request=ShapeSelectionRequest(
-            base_model=cfg.base_model,
-            max_seq_len=cfg.max_seq_len,
-            trainer_role="reference",
-            needs_deployment=False,
-            lora_rank=cfg.lora_rank,
-            explicit_training_shape_id=cfg.infra.ref_training_shape_id,
-        ),
-    )
-    if policy_selection.training_shape_id:
-        cfg.infra.training_shape_id = policy_selection.training_shape_id
-    if reference_selection.training_shape_id:
-        cfg.infra.ref_training_shape_id = reference_selection.training_shape_id
-    if policy_selection.inferred_training_shape:
-        logger.info(
-            "Using validated policy training shape for %s: %s",
-            cfg.base_model,
-            policy_selection.training_shape_id,
+    if not cfg.infra.training_shape_id:
+        cfg.infra.training_shape_id = auto_select_training_shape(
+            rlor_mgr, base_model=cfg.base_model, trainer_role="policy",
+            lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
         )
-    if reference_selection.inferred_training_shape:
-        logger.info(
-            "Using validated reference training shape for %s: %s",
-            cfg.base_model,
-            reference_selection.training_shape_id,
+        logger.info("Auto-selected policy training shape: %s", cfg.infra.training_shape_id)
+    if not cfg.infra.ref_training_shape_id:
+        cfg.infra.ref_training_shape_id = auto_select_training_shape(
+            rlor_mgr, base_model=cfg.base_model, trainer_role="reference",
+            lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
         )
+        logger.info("Auto-selected reference training shape: %s", cfg.infra.ref_training_shape_id)
 
-    profile = policy_selection.training_profile
-    policy_infra = materialize_profile_infra(cfg.infra, profile) if profile else cfg.infra
-    policy_profile = profile
-
-    ref_profile = reference_selection.training_profile
-    reference_infra = (
-        materialize_profile_infra(cfg.infra, ref_profile) if ref_profile else cfg.infra
-    )
-    reference_launch_profile = ref_profile
-
-    if profile and cfg.max_seq_len is None:
-        cfg.max_seq_len = profile.max_supported_context_length
-        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
+    policy_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+    ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
 
     if cfg.max_seq_len is None:
-        raise ValueError(
-            "max_seq_len is required. Set it in Config, or use a training shape "
-            "(InfraConfig.training_shape_id) to auto-populate it."
-        )
+        cfg.max_seq_len = policy_profile.max_supported_context_length
 
     runner = RunnerIO(cfg.runner)
-    runner.set_accelerator_info(policy_infra.accelerator_type, policy_infra.accelerator_count, profile=profile)
+    runner.set_accelerator_info(profile=policy_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
@@ -534,7 +492,7 @@ def main(
                 create_trainer_job,
                 rlor_mgr,
                 base_model=cfg.base_model,
-                infra=policy_infra,
+                infra=cfg.infra,
                 profile=policy_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
@@ -548,8 +506,8 @@ def main(
                 create_trainer_job,
                 rlor_mgr,
                 base_model=cfg.base_model,
-                infra=reference_infra,
-                profile=reference_launch_profile,
+                infra=cfg.infra,
+                profile=ref_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
