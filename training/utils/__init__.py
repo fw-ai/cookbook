@@ -81,12 +81,7 @@ __all__ = [
     "flush_timing",
     "timed",
     "timer",
-    "canonical_base_model",
-    "materialize_profile_infra",
-    "prepare_training_shape_launch",
-    "ShapeSelectionRequest",
-    "ShapeSelectionResult",
-    "select_validated_launch_shapes",
+    "auto_select_training_shape",
     "TRAINING_SHAPES_DOCS_URL",
     "validate_config",
     "validate_preflight",
@@ -127,12 +122,7 @@ from training.utils.config import (
 )
 from training.utils.training_shapes import (
     TRAINING_SHAPES_DOCS_URL,
-    canonical_base_model,
-    materialize_profile_infra,
-    prepare_training_shape_launch,
-    ShapeSelectionRequest,
-    ShapeSelectionResult,
-    select_validated_launch_shapes,
+    auto_select_training_shape,
 )
 from training.utils.losses import (
     make_sft_loss_fn,
