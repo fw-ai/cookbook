@@ -26,8 +26,8 @@ from tinker.types.future_retrieve_request import FutureRetrieveRequest as _Futur
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_S: int = 600
-"""Default timeout for forward / forward_backward / optim_step (10 min)."""
+DEFAULT_TIMEOUT_S: int = 3600
+"""Default timeout for forward / forward_backward / optim_step (60 min)."""
 
 DCP_TIMEOUT_S: int = 2700
 """Default timeout for save_state / load_state_with_optimizer (45 min)."""

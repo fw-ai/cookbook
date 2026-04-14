@@ -52,6 +52,7 @@ from training.utils import (
     render_messages_to_datum,
     resolve_renderer_name,
 )
+from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
@@ -134,6 +135,10 @@ class Config:
 
     grad_clip_norm: float = 1.0
     """Max gradient norm for clipping. 0 = no clipping."""
+
+    step_timeout: int = 0
+    """Timeout in seconds for forward_backward / optim_step calls.
+    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
     trainer_job_id: str | None = None
     """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
@@ -352,6 +357,7 @@ def main(
         job_id = endpoint.job_id
         client = ReconnectableClient(
             rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key,
+            default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
             endpoint=endpoint if cfg.trainer_base_url else None,
         )
         if hasattr(client, "close"):
