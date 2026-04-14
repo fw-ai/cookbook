@@ -69,6 +69,7 @@ from training.utils import (
     resolve_renderer_name,
     validate_config,
 )
+from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,10 @@ class Config:
     """
     save_final_checkpoint: bool = True
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+
+    step_timeout: int = 0
+    """Timeout in seconds for forward_backward / optim_step calls.
+    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
     init_from_checkpoint: str | None = None
 
@@ -265,7 +270,8 @@ def main(
         )
         job_id = endpoint.job_id
         client = ReconnectableClient(
-            rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank
+            rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank,
+            default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
         )
         if hasattr(client, "close"):
             stack.callback(client.close)

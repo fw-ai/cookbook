@@ -62,6 +62,7 @@ from training.utils import (
     render_preference_pair,
     resolve_renderer_name,
 )
+from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
 from training.utils.timer import timer, flush_timing
 
@@ -97,6 +98,10 @@ class Config:
     """Max concurrent reference forward passes during cache warm-up."""
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
+
+    step_timeout: int = 0
+    """Timeout in seconds for forward_backward / optim_step calls.
+    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -546,9 +551,16 @@ def main(
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id
 
-        policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
+        _timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
+        policy = ReconnectableClient(
+            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
+            default_timeout=_timeout,
+        )
         # Match the ref trainer's lora_rank=0 (set above).
-        reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, 0)
+        reference = ReconnectableClient(
+            rlor_mgr, reference_ep.job_id, cfg.base_model, 0,
+            default_timeout=_timeout,
+        )
         if hasattr(policy, "close"):
             stack.callback(policy.close)
         if hasattr(reference, "close"):

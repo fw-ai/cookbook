@@ -58,6 +58,7 @@ from training.utils import (
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
+from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
@@ -129,6 +130,10 @@ class Config:
     reference_base_url: str | None = None
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
+
+    step_timeout: int = 0
+    """Timeout in seconds for forward_backward / optim_step calls.
+    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -342,15 +347,18 @@ def main(
         policy_job_id = policy_ep.job_id
         reference_job_id = reference_ep.job_id if reference_ep else None
 
+        _timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
         policy = ReconnectableClient(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
             fw_api_key=api_key,
+            default_timeout=_timeout,
             endpoint=policy_ep if cfg.policy_base_url else None,
         )
         reference = (
             ReconnectableClient(
                 rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
                 fw_api_key=api_key,
+                default_timeout=_timeout,
                 endpoint=reference_ep if cfg.reference_base_url else None,
             )
             if reference_ep else None
