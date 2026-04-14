@@ -403,3 +403,86 @@ class TestFetchJobFailureReason:
         })
         reason = _fetch_job_failure_reason(mgr, "job-1")
         assert "Pod evicted" in reason
+
+
+# ---------------------------------------------------------------------------
+# create_trainer_job: retry on 429
+# ---------------------------------------------------------------------------
+
+
+class _CountingRlorMgr(_FakeRlorMgr):
+    """Fake that raises on the first *fail_count* create() calls, then succeeds."""
+
+    def __init__(self, *, fail_count: int, error: Exception, **kwargs):
+        super().__init__(**kwargs)
+        self._fail_count = fail_count
+        self._error = error
+        self.create_calls = 0
+
+    def create(self, config):
+        self.create_calls += 1
+        if self.create_calls <= self._fail_count:
+            raise self._error
+        return super().create(config)
+
+
+class TestCreateTrainerJobRetry:
+    def test_429_retried_then_succeeds(self, monkeypatch):
+        monkeypatch.setattr("training.utils.infra._TRAINER_CREATE_MAX_RETRIES", 3)
+        monkeypatch.setattr("training.utils.infra.time.sleep", lambda _: None)
+
+        mgr = _CountingRlorMgr(
+            fail_count=2,
+            error=RuntimeError("Client error '429 Too Many Requests' for url '...'"),
+        )
+        endpoint = create_trainer_job(
+            mgr, base_model="model", infra=InfraConfig(), display_name="test"
+        )
+        assert endpoint.job_id == "job-123"
+        assert mgr.create_calls == 3
+
+    def test_429_exhausts_retries_then_fails(self, monkeypatch):
+        monkeypatch.setattr("training.utils.infra._TRAINER_CREATE_MAX_RETRIES", 2)
+        monkeypatch.setattr("training.utils.infra.time.sleep", lambda _: None)
+
+        mgr = _CountingRlorMgr(
+            fail_count=99,
+            error=RuntimeError("Client error '429 Too Many Requests' for url '...'"),
+        )
+        with pytest.raises(RuntimeError, match="429 Too Many Requests"):
+            create_trainer_job(
+                mgr, base_model="model", infra=InfraConfig(), display_name="test"
+            )
+        assert mgr.create_calls == 3  # initial + 2 retries
+
+    def test_non_retryable_error_not_retried(self, monkeypatch):
+        monkeypatch.setattr("training.utils.infra._TRAINER_CREATE_MAX_RETRIES", 3)
+        monkeypatch.setattr("training.utils.infra.time.sleep", lambda _: None)
+
+        mgr = _CountingRlorMgr(
+            fail_count=99,
+            error=ValueError("invalid accelerator type"),
+        )
+        with pytest.raises(RuntimeError, match="invalid accelerator type"):
+            create_trainer_job(
+                mgr, base_model="model", infra=InfraConfig(), display_name="test"
+            )
+        assert mgr.create_calls == 1
+
+    def test_429_retry_emits_status(self, monkeypatch):
+        monkeypatch.setattr("training.utils.infra._TRAINER_CREATE_MAX_RETRIES", 3)
+        monkeypatch.setattr("training.utils.infra.time.sleep", lambda _: None)
+
+        messages: list[str] = []
+        mgr = _CountingRlorMgr(
+            fail_count=1,
+            error=RuntimeError("Client error '429 Too Many Requests'"),
+        )
+        create_trainer_job(
+            mgr,
+            base_model="model",
+            infra=InfraConfig(),
+            display_name="test",
+            on_status=messages.append,
+        )
+        assert any("rate-limited" in m for m in messages)

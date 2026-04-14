@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import random
 import time
 import logging
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,16 @@ if TYPE_CHECKING:
     from fireworks.training.sdk.weight_syncer import WeightSyncer
 
 logger = logging.getLogger(__name__)
+
+_TRAINER_CREATE_MAX_RETRIES = int(os.environ.get("FW_TRAINER_CREATE_MAX_RETRIES", "5"))
+_TRAINER_CREATE_BACKOFF_BASE_S = 10
+_TRAINER_CREATE_BACKOFF_CAP_S = 120
+
+
+def _is_retryable_create_error(exc: Exception) -> bool:
+    """Return True for transient HTTP errors that are safe to retry on job create."""
+    return "429" in str(exc)
+
 
 _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_H200", "US_VIRGINIA_1"),
@@ -309,7 +320,31 @@ def create_trainer_job(
 
     created_job_id: str | None = None
     try:
-        created_job = rlor_mgr.create(config)
+        for _attempt in range(_TRAINER_CREATE_MAX_RETRIES + 1):
+            try:
+                created_job = rlor_mgr.create(config)
+                break
+            except Exception as create_exc:
+                if not _is_retryable_create_error(create_exc) or _attempt >= _TRAINER_CREATE_MAX_RETRIES:
+                    raise
+                delay = min(
+                    _TRAINER_CREATE_BACKOFF_BASE_S * (2 ** _attempt),
+                    _TRAINER_CREATE_BACKOFF_CAP_S,
+                ) * (0.5 + random.random() * 0.5)
+                logger.warning(
+                    "Trainer create returned retryable error (attempt %d/%d), "
+                    "retrying in %.0fs: %s",
+                    _attempt + 1,
+                    _TRAINER_CREATE_MAX_RETRIES,
+                    delay,
+                    create_exc,
+                )
+                _emit(
+                    f"trainer create rate-limited, retrying in {int(delay)}s "
+                    f"(attempt {_attempt + 1}/{_TRAINER_CREATE_MAX_RETRIES})"
+                )
+                time.sleep(delay)
+
         created_job_id = created_job.job_id
         if cleanup:
             cleanup.trainer(created_job.job_id)
