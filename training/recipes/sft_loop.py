@@ -132,7 +132,7 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
-    grad_clip_norm: float = 0.0
+    grad_clip_norm: float = 1.0
     """Max gradient norm for clipping. 0 = no clipping."""
 
     trainer_job_id: str | None = None
@@ -460,8 +460,7 @@ def main(
         wandb_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
-        if cfg.grad_clip_norm > 0:
-            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Training loop (batch-indexed) -------------------------------------
