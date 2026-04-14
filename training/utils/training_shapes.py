@@ -21,13 +21,10 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, replace
 from typing import Any, Literal
 from urllib.parse import urlencode
 
 from fireworks.training.sdk.trainer import TrainerJobManager
-from fireworks.training.sdk.deployment import DeploymentManager
-
 logger = logging.getLogger(__name__)
 
 _TRAINING_SHAPE_VERSION_PARENT = "accounts/-/trainingShapes/-"
@@ -254,116 +251,3 @@ def _try_int(v: Any) -> int:
     if v in (None, ""):
         return 0
     return int(v)
-
-
-# ---------------------------------------------------------------------------
-# Deprecated compatibility shims (#324 refactor)
-# ---------------------------------------------------------------------------
-#
-# The pre-#324 API exposed ShapeSelectionRequest / ShapeSelectionResult
-# dataclasses plus select_validated_launch_shapes / materialize_profile_infra
-# helpers. Several callers (cookbook tests/examples, fireworks e2e harness,
-# firetitan managed training, scripts/rollr_cispo) still use them. These
-# shims wrap the new auto_select_training_shape API so callers keep working
-# while migration happens. New code should call auto_select_training_shape
-# + trainer_mgr.resolve_training_profile() directly.
-
-
-@dataclass(frozen=True)
-class ShapeSelectionRequest:
-    """DEPRECATED: use ``auto_select_training_shape()`` directly."""
-
-    base_model: str
-    max_seq_len: int | None = None
-    trainer_role: Literal["policy", "reference"] = "policy"
-    needs_deployment: bool = False
-    lora_rank: int = 0
-    explicit_training_shape_id: str | None = None
-    explicit_deployment_shape: str | None = None
-
-
-@dataclass(frozen=True)
-class ShapeSelectionResult:
-    """DEPRECATED: use ``auto_select_training_shape()`` + ``resolve_training_profile()``."""
-
-    request: ShapeSelectionRequest
-    training_shape_id: str | None
-    training_profile: Any | None
-    deployment_shape: str | None
-    inferred_training_shape: bool
-    inferred_deployment_shape: bool
-
-
-def select_validated_launch_shapes(
-    trainer_mgr: TrainerJobManager,
-    *,
-    request: ShapeSelectionRequest,
-    deploy_mgr: DeploymentManager | None = None,
-) -> ShapeSelectionResult:
-    """DEPRECATED shim around ``auto_select_training_shape`` + ``resolve_training_profile``."""
-    if request.trainer_role not in {"policy", "reference"}:
-        raise ValueError(
-            f"Unsupported trainer_role={request.trainer_role!r}; expected 'policy' or 'reference'"
-        )
-
-    if request.explicit_training_shape_id:
-        training_shape_id = request.explicit_training_shape_id
-        profile = trainer_mgr.resolve_training_profile(training_shape_id)
-        inferred_training_shape = False
-    else:
-        training_shape_id = auto_select_training_shape(
-            trainer_mgr,
-            base_model=request.base_model,
-            trainer_role=request.trainer_role,
-            lora_rank=request.lora_rank,
-            max_seq_len=request.max_seq_len,
-        )
-        profile = trainer_mgr.resolve_training_profile(training_shape_id)
-        inferred_training_shape = True
-
-    deployment_shape = request.explicit_deployment_shape
-    inferred_deployment_shape = False
-    if request.needs_deployment and not deployment_shape:
-        deployment_shape = (
-            getattr(profile, "deployment_shape_version", None)
-            or getattr(profile, "deployment_shape", None)
-        )
-        inferred_deployment_shape = bool(deployment_shape)
-
-    return ShapeSelectionResult(
-        request=request,
-        training_shape_id=training_shape_id,
-        training_profile=profile,
-        deployment_shape=deployment_shape,
-        inferred_training_shape=inferred_training_shape,
-        inferred_deployment_shape=inferred_deployment_shape,
-    )
-
-
-def materialize_profile_infra(infra: Any, profile: Any) -> Any:
-    """DEPRECATED: shape config is now applied server-side; this returns infra
-    with profile fields layered on top, matching the pre-#324 behavior."""
-    return replace(
-        infra,
-        custom_image_tag=getattr(profile, "trainer_image_tag", None) or infra.custom_image_tag,
-        accelerator_type=getattr(profile, "accelerator_type", None) or infra.accelerator_type,
-        accelerator_count=getattr(profile, "accelerator_count", None) or infra.accelerator_count,
-        node_count=getattr(profile, "node_count", None) or infra.node_count,
-    )
-
-
-def canonical_base_model(base_model: str) -> str:
-    """DEPRECATED identity shim — the pre-#324 hook for model-id normalization."""
-    return base_model
-
-
-def prepare_training_shape_launch(
-    infra: Any,
-    profile: Any | None,
-    *,
-    client_managed: bool,
-) -> tuple[Any, Any | None]:
-    """DEPRECATED: chooses manual-vs-shape launch config for a resolved profile."""
-    if not client_managed or profile is None:
-        return infra, profile
-    return materialize_profile_infra(infra, profile), None
