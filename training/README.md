@@ -102,10 +102,11 @@ cd cookbook/training
 python -m recipes.sft_loop      # or whichever recipe you configured
 ```
 
-## Useful examples
+## Useful tools
 
-- `examples/snippets/promote_checkpoint.py` reads `checkpoints.jsonl` (produced by cookbook recipes), finds the sampler checkpoint ID and source trainer job, and calls the promotion API to promote it to a deployable Fireworks model. No temporary trainer needed.
-- `examples/snippets/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
+- `tools/promote_checkpoint.py` reads `checkpoints.jsonl` (produced by cookbook recipes), finds the sampler checkpoint ID and source trainer job, and calls the promotion API to promote it to a deployable Fireworks model. No temporary trainer needed.
+- `tools/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
+- `tools/verify_logprobs.py` verifies per-token logprob alignment between training and inference for train-inference numerical parity.
 
 ## Documentation
 
@@ -120,12 +121,12 @@ For detailed guides, configuration reference, and examples, see the official doc
 ```
 recipes/                 Training loop scripts (fork these)
 utils/                   Shared config, data loading, loss functions, metrics
+tools/                   Standalone operational tools (promote checkpoint, verify logprobs, reconnect)
 examples/rl/deepmath/    Worked example: math reasoning with GRPO
 examples/rl/frozen_lake/ Worked example: Frozen Lake with tool-use RL
 examples/orpo/ifeval/    Worked example: IFEval with ORPO
 examples/sft/            Worked example: SFT getting started
 examples/dpo/            Worked example: DPO
-examples/snippets/       Standalone utility scripts
 tests/                   Unit and end-to-end tests
 ```
 
@@ -147,7 +148,3 @@ pytest -q tests/unit tests/test_smoke_imports.py examples/rl/frozen_lake/test_ma
 python tests/coverage_summary.py coverage.json
 ```
 
-See [issues/training-script-coverage-baseline.md](./issues/training-script-coverage-baseline.md)
-for the current baseline and
-[issues/training-script-coverage-roadmap.md](./issues/training-script-coverage-roadmap.md)
-for the expansion plan.
