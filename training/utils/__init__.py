@@ -82,7 +82,6 @@ __all__ = [
     "timed",
     "timer",
     "auto_select_training_shape",
-    "TRAINING_SHAPES_DOCS_URL",
     "validate_config",
     "validate_preflight",
     "wandb_finish",
@@ -121,7 +120,6 @@ from training.utils.config import (
     WeightSyncConfig,
 )
 from training.utils.training_shapes import (
-    TRAINING_SHAPES_DOCS_URL,
     auto_select_training_shape,
 )
 from training.utils.losses import (
