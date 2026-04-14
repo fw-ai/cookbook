@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument("--renderer-name", default="")
     parser.add_argument("--no-checkpoint", action="store_true",
                         help="Skip final checkpoint save")
-    parser.add_argument("--grad-clip-norm", type=float, default=0.0,
+    parser.add_argument("--grad-clip-norm", type=float, default=1.0,
                         help="Max gradient norm for clipping (0 = no clipping)")
     parser.add_argument("--wandb-project", default="sft-tinker")
     parser.add_argument("--wandb-run-name", default=None)
