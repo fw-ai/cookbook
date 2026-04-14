@@ -82,6 +82,12 @@ __all__ = [
     "timed",
     "timer",
     "auto_select_training_shape",
+    "ShapeSelectionRequest",
+    "ShapeSelectionResult",
+    "select_validated_launch_shapes",
+    "materialize_profile_infra",
+    "canonical_base_model",
+    "prepare_training_shape_launch",
     "validate_config",
     "validate_preflight",
     "wandb_finish",
@@ -120,7 +126,13 @@ from training.utils.config import (
     WeightSyncConfig,
 )
 from training.utils.training_shapes import (
+    ShapeSelectionRequest,
+    ShapeSelectionResult,
     auto_select_training_shape,
+    canonical_base_model,
+    materialize_profile_infra,
+    prepare_training_shape_launch,
+    select_validated_launch_shapes,
 )
 from training.utils.losses import (
     make_sft_loss_fn,
