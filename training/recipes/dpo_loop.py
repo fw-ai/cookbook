@@ -547,7 +547,8 @@ def main(
         reference_job_id = reference_ep.job_id
 
         policy = ReconnectableClient(rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank)
-        reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank)
+        # Match the ref trainer's lora_rank=0 (set above).
+        reference = ReconnectableClient(rlor_mgr, reference_ep.job_id, cfg.base_model, 0)
         if hasattr(policy, "close"):
             stack.callback(policy.close)
         if hasattr(reference, "close"):
