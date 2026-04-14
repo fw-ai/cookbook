@@ -31,6 +31,7 @@ import asyncio
 import logging
 from contextlib import ExitStack
 from typing import Any, Callable
+import dataclasses
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -502,13 +503,21 @@ def main(
                 cleanup=cleanup,
                 on_status=_on_trainer_status,
             )
+            # Reference trainer only runs forward — strip --full-oom-check
+            # (which runs a backward warmup that OOMs on smaller ref shapes)
+            # and don't request LoRA adapters.
+            ref_infra_extra = [
+                a for a in (cfg.infra.extra_args or [])
+                if a != "--full-oom-check"
+            ] or None
+            ref_infra = dataclasses.replace(cfg.infra, extra_args=ref_infra_extra)
             ref_fut = pool.submit(
                 create_trainer_job,
                 rlor_mgr,
                 base_model=cfg.base_model,
-                infra=cfg.infra,
+                infra=ref_infra,
                 profile=ref_profile,
-                lora_rank=cfg.lora_rank,
+                lora_rank=0,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name="dpo-reference",
