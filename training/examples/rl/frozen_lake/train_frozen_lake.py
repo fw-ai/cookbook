@@ -67,9 +67,7 @@ from training.utils import (
     compute_advantages,
     build_datum_from_token_mask,
     validate_config,
-    ShapeSelectionRequest,
-    materialize_profile_infra,
-    select_validated_launch_shapes,
+    auto_select_training_shape,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
@@ -385,42 +383,31 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         len(seed_contexts), os.path.abspath(cfg.seed_jsonl_path),
     )
 
-    policy_selection = select_validated_launch_shapes(
-        rlor_mgr,
-        deploy_mgr=deploy_mgr,
-        request=ShapeSelectionRequest(
+    if not infra.training_shape_id:
+        infra.training_shape_id = auto_select_training_shape(
+            rlor_mgr,
             base_model=cfg.base_model,
-            max_seq_len=cfg.max_seq_len,
             trainer_role="policy",
-            needs_deployment=True,
             lora_rank=cfg.lora_rank,
-            explicit_training_shape_id=infra.training_shape_id,
-            explicit_deployment_shape=deploy_cfg.deployment_shape,
-        ),
-    )
-    if policy_selection.training_shape_id:
-        infra.training_shape_id = policy_selection.training_shape_id
-        cfg.training_shape = policy_selection.training_shape_id
-    if policy_selection.deployment_shape:
-        deploy_cfg.deployment_shape = policy_selection.deployment_shape
-        cfg.deployment_shape = policy_selection.deployment_shape
-    if policy_selection.inferred_training_shape:
-        logger.info(
-            "Using validated policy training shape for %s: %s",
-            cfg.base_model,
-            policy_selection.training_shape_id,
+            max_seq_len=cfg.max_seq_len,
         )
-    if policy_selection.inferred_deployment_shape:
+        cfg.training_shape = infra.training_shape_id
         logger.info(
-            "Using validated deployment shape for %s: %s",
-            cfg.base_model,
-            policy_selection.deployment_shape,
+            "Auto-selected policy training shape for %s: %s",
+            cfg.base_model, infra.training_shape_id,
         )
 
     # -- Resolve training shapes --------------------------------------------
 
-    profile = policy_selection.training_profile
-    policy_infra = materialize_profile_infra(infra, profile) if profile else infra
+    profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
+    if not deploy_cfg.deployment_shape and getattr(profile, "deployment_shape_version", None):
+        deploy_cfg.deployment_shape = profile.deployment_shape_version
+        cfg.deployment_shape = profile.deployment_shape_version
+        logger.info(
+            "Using deployment shape from training profile for %s: %s",
+            cfg.base_model, deploy_cfg.deployment_shape,
+        )
+    policy_infra = infra
     policy_profile = profile
 
     if profile and profile.pipeline_parallelism > 1:
@@ -439,29 +426,20 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     reference_launch_profile = None
     reference_needed = cfg.kl_beta > 0 or infra.ref_training_shape_id is not None
     if reference_needed:
-        reference_selection = select_validated_launch_shapes(
-            rlor_mgr,
-            request=ShapeSelectionRequest(
+        if not infra.ref_training_shape_id:
+            infra.ref_training_shape_id = auto_select_training_shape(
+                rlor_mgr,
                 base_model=cfg.base_model,
-                max_seq_len=cfg.max_seq_len,
                 trainer_role="reference",
-                needs_deployment=False,
                 lora_rank=cfg.lora_rank,
-                explicit_training_shape_id=infra.ref_training_shape_id,
-            ),
-        )
-        if reference_selection.training_shape_id:
-            infra.ref_training_shape_id = reference_selection.training_shape_id
-        if reference_selection.inferred_training_shape:
-            logger.info(
-                "Using validated reference training shape for %s: %s",
-                cfg.base_model,
-                reference_selection.training_shape_id,
+                max_seq_len=cfg.max_seq_len,
             )
-        ref_profile = reference_selection.training_profile
-        reference_infra = (
-            materialize_profile_infra(infra, ref_profile) if ref_profile else infra
-        )
+            logger.info(
+                "Auto-selected reference training shape for %s: %s",
+                cfg.base_model, infra.ref_training_shape_id,
+            )
+        ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
+        reference_infra = infra
         reference_launch_profile = ref_profile
     use_reference = ref_profile is not None
     if not use_reference:

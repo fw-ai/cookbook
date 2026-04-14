@@ -445,7 +445,7 @@ def main(
             policy_ep = create_trainer_job(
                 rlor_mgr,
                 base_model=cfg.base_model,
-                infra=policy_infra,
+                infra=cfg.infra,
                 profile=policy_profile,
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,

@@ -104,7 +104,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     class FakeRlorMgr:
         def resolve_training_profile(self, shape_id):
             return SimpleNamespace(
-                deployment_shape="accounts/test/deploymentShapes/dep-shape-v1/versions/1",
+                deployment_shape_version="accounts/test/deploymentShapes/dep-shape-v1/versions/1",
                 pipeline_parallelism=1,
                 max_supported_context_length=128,
                 training_shape_version="accounts/test/trainingShapes/ts-v1/versions/1",
@@ -216,7 +216,7 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
     class FakeRlorMgr:
         def resolve_training_profile(self, shape_id):
             return SimpleNamespace(
-                deployment_shape="accounts/test/deploymentShapes/dep-shape/versions/1",
+                deployment_shape_version="accounts/test/deploymentShapes/dep-shape/versions/1",
                 pipeline_parallelism=4,
                 max_supported_context_length=128,
                 training_shape_version="accounts/test/trainingShapes/shape-pp4/versions/1",
@@ -295,7 +295,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                     accelerator_count=8,
                 )
             return SimpleNamespace(
-                deployment_shape="accounts/test/deploymentShapes/dep-shape-v2/versions/1",
+                deployment_shape_version="accounts/test/deploymentShapes/dep-shape-v2/versions/1",
                 pipeline_parallelism=1,
                 max_supported_context_length=96,
                 training_shape_version="accounts/test/trainingShapes/pol/versions/1",
@@ -603,7 +603,7 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
     class FakeRlorMgr:
         def resolve_training_profile(self, shape_id):
             return SimpleNamespace(
-                deployment_shape="accounts/test/deploymentShapes/dep-shape-v2/versions/1",
+                deployment_shape_version="accounts/test/deploymentShapes/dep-shape-v2/versions/1",
                 pipeline_parallelism=1,
                 max_supported_context_length=96,
                 training_shape_version="accounts/test/trainingShapes/pol/versions/1",
