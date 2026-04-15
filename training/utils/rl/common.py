@@ -9,6 +9,7 @@ import torch
 import tinker
 
 if TYPE_CHECKING:
+    from training.utils.rl.rlsd import RLSDConfig
     from training.utils.rl.tis import TISConfig
 
 
@@ -95,6 +96,8 @@ class SampleContext:
     """Scalar advantage value (as a 0-d tensor)."""
     tis_weight: torch.Tensor
     """TIS importance weight per token."""
+    rlsd_weight: torch.Tensor
+    """RLSD per-token credit weight (1.0 when RLSD is disabled)."""
 
 
 @dataclass
@@ -130,12 +133,19 @@ def run_loss_loop(
     logprobs_list: List[torch.Tensor],
     policy_loss: str,
     policy_fn: PolicyFn,
+    *,
+    teacher_logprobs: List[List[float]] | None = None,
+    rlsd_config: RLSDConfig | None = None,
 ) -> LossLoopResult:
     """Shared loss loop: tensor setup, TIS weight, inference metrics, KL.
 
     Iterates over ``logprobs_list``, builds a :class:`SampleContext` for each
     sample, and delegates per-token loss computation to ``policy_fn``.
+
+    When ``teacher_logprobs`` and ``rlsd_config`` are provided, RLSD credit
+    weights are computed and made available via ``SampleContext.rlsd_weight``.
     """
+    from training.utils.rl.rlsd import RLSDConfig, compute_rlsd_weights
     from training.utils.rl.tis import compute_tis_weight
 
     total_loss = torch.tensor(0.0, requires_grad=True)
@@ -207,6 +217,27 @@ def run_loss_loop(
 
         adv_t = torch.as_tensor(advantages[i], dtype=resp_pi.dtype, device=resp_pi.device)
 
+        # RLSD credit weight (1.0 when disabled)
+        if teacher_logprobs is not None and rlsd_config is not None and rlsd_config.lam > 0:
+            t_lp = teacher_logprobs[i] if i < len(teacher_logprobs) else []
+            if t_lp:
+                resp_teacher = torch.tensor(
+                    t_lp[:resp_len], dtype=resp_pi.dtype, device=resp_pi.device,
+                )
+                if len(resp_teacher) < resp_len:
+                    resp_teacher = torch.cat([
+                        resp_teacher,
+                        torch.zeros(resp_len - len(resp_teacher), dtype=resp_pi.dtype, device=resp_pi.device),
+                    ])
+                adv_sign = 1.0 if advantages[i] >= 0 else -1.0
+                rlsd_w, rlsd_m = compute_rlsd_weights(pi_detached, resp_teacher, adv_sign, rlsd_config)
+                for k, v in rlsd_m.items():
+                    tis_metrics_agg[k] = tis_metrics_agg.get(k, 0.0) + v
+            else:
+                rlsd_w = torch.ones_like(resp_pi)
+        else:
+            rlsd_w = torch.ones_like(resp_pi)
+
         ctx = SampleContext(
             resp_pi=resp_pi,
             pi_detached=pi_detached,
@@ -216,6 +247,7 @@ def run_loss_loop(
             resp_mask=resp_mask,
             adv=adv_t,
             tis_weight=tis_weight,
+            rlsd_weight=rlsd_w,
         )
         per_token_loss, extra = policy_fn(ctx)
 

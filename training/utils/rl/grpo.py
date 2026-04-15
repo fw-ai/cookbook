@@ -52,7 +52,7 @@ def make_grpo_loss_fn(
         surr1 = -ratio * ctx.adv
         surr2 = -clipped_ratio * ctx.adv
         kl_penalty = kl_beta * (ctx.pi_detached - ctx.resp_ref)
-        per_token_loss = (torch.maximum(surr1, surr2) * ctx.tis_weight + kl_penalty) * ctx.resp_mask
+        per_token_loss = (torch.maximum(surr1, surr2) * ctx.tis_weight * ctx.rlsd_weight + kl_penalty) * ctx.resp_mask
 
         return per_token_loss, {
             "clip_frac": clip_frac,
