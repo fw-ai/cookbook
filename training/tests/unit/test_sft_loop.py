@@ -114,6 +114,78 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
     assert deleted_jobs == ["job-sft"]
 
 
+def test_main_raises_when_examples_dont_fill_a_batch(tmp_path, monkeypatch):
+    """Fail fast when filtered examples exist but don't fill a single batch."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    deleted_jobs: list[str] = []
+
+    class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            deleted_jobs.append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "auto_select_training_shape",
+        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
+    )
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datum",
+        lambda *args, **kwargs: SimpleNamespace(
+            token_ids=[1, 2, 3],
+            datum=SimpleNamespace(
+                model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
+                loss_fn_inputs={
+                    "target_tokens": SimpleNamespace(data=[2, 3]),
+                    "weights": SimpleNamespace(data=[1.0, 1.0]),
+                },
+            ),
+        ),
+    )
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=999999,
+    )
+
+    with pytest.raises(RuntimeError, match="No training batches"):
+        module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert deleted_jobs == ["job-sft"]
+
+
 def test_main_infers_documented_training_shape_for_supported_model(tmp_path, monkeypatch):
     dataset_path = _write_dataset(
         tmp_path,

@@ -455,6 +455,12 @@ def main(
             total_batches_per_epoch,
             cfg.epochs,
         )
+        if total_batches_per_epoch == 0:
+            raise RuntimeError(
+                f"No training batches: {len(training_data)} examples remaining after "
+                f"filtering do not fill a single batch (batch_size={cfg.batch_size}). "
+                f"Provide more data, reduce batch_size, or increase max_seq_len."
+            )
         if eval_data:
             logger.info("Eval dataset: %d examples (eval after each epoch)", len(eval_data))
 
