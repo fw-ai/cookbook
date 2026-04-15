@@ -443,9 +443,20 @@ def main(
             else:
                 logger.warning("Dataset too small for auto carve-out, skipping eval")
 
+        effective_batch_size = cfg.batch_size
+        if len(training_data) < effective_batch_size:
+            logger.warning(
+                "Training examples (%d) < batch_size (%d); reducing effective "
+                "batch_size to %d so all examples are trained on.",
+                len(training_data),
+                effective_batch_size,
+                len(training_data),
+            )
+            effective_batch_size = len(training_data)
+
         sft_dataset = SupervisedDatasetFromHFDataset(
             hf_datasets.Dataset.from_dict({"datum_idx": list(range(len(training_data)))}),
-            batch_size=cfg.batch_size,
+            batch_size=effective_batch_size,
             map_fn=lambda row: training_data[row["datum_idx"]],
         )
         total_batches_per_epoch = len(sft_dataset)
@@ -471,7 +482,7 @@ def main(
 
         # -- Training loop (batch-indexed) -------------------------------------
 
-        start_batch = data_consumed // cfg.batch_size
+        start_batch = data_consumed // effective_batch_size
         total_steps_estimate = total_batches_per_epoch * cfg.epochs
 
         def _run_train_step(
