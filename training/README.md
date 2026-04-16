@@ -22,25 +22,17 @@ Each recipe is a single Python file you can fork and customize.
 git clone https://github.com/fw-ai/cookbook.git
 cd cookbook/training
 
-# Install uv (skip if already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Option A: conda
+conda create -n cookbook python=3.12 -y && conda activate cookbook
+pip install --pre -e .
 
-# Create and activate a virtual environment
-uv venv --python 3.12
-source .venv/bin/activate
-
-# Install the Fireworks training SDK prerelease that provides
-# `fireworks.training.sdk`.
-uv pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook
-
-# Install this package in editable mode
-uv pip install -e .
-
-# If you skip `--pre`, pip may resolve to the stable `0.x` line,
-# which does not include `fireworks.training.sdk` and will cause
-# imports like `from fireworks.training.sdk import DeploymentManager`
-# to fail.
+# Option B: uv
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install --pre -e .
 ```
+
+> **Note**: `--pre` is required to resolve the `fireworks-ai` prerelease SDK.
+> All dependencies (including `tinker-cookbook`) are pulled in automatically via `pyproject.toml`.
 
 ### 2. Set your credentials
 
