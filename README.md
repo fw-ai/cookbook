@@ -27,6 +27,11 @@ All previous cookbook material — learning tutorials, integration examples, sho
 
 We welcome contributions! See the [Contribution Guide](./Contribution.md) for how to get started.
 
+## Release process
+
+Maintainers should follow the [release process](./RELEASE.md) before cutting a
+cookbook release. Fireworks internal tests are a required release blocker.
+
 ## Feedback & Support
 
 - [Fireworks Documentation](https://fireworks.ai/docs)
