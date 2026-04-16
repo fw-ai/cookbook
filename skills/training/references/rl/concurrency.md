@@ -31,3 +31,4 @@ Unbounded fan-out is not supported by the recipe path. If you truly want no SDK-
 
 - Weight sync cadence (when the sampler sees new weights) → [`hotload.md`](hotload.md)
 - `prefill_queue_target` is the same signal the deployment exposes to telemetry; if you're tuning it, watch the deployment's server metrics for prefill queue time in the same range.
+- `DeploymentSampler` API + the full controller reference: [DeploymentSampler — Concurrency Control](https://docs.fireworks.ai/fine-tuning/training-api/reference/deployment-sampler#concurrency-control).

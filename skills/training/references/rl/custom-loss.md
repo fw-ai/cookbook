@@ -39,3 +39,8 @@ All live on `rl_loop.Config`:
 | `grad_accumulation_normalization` | `NUM_LOSS_TOKENS` | Per-token mean (matches GRPO paper). See [`gradient-accumulation.md`](gradient-accumulation.md). |
 
 Shape-owned fields (`accelerator_type` / `node_count` / `custom_image_tag`) are always populated from the training profile — never hand-set.
+
+## See also
+
+- Concept / built-in loss catalogue: [Loss Functions](https://docs.fireworks.ai/fine-tuning/training-api/loss-functions).
+- `forward_backward_custom` API surface: [FiretitanServiceClient & TrainingClient reference](https://docs.fireworks.ai/fine-tuning/training-api/reference/service-client).

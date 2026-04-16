@@ -72,3 +72,8 @@ If the deployment ID is unknown, or the promote still fails, reach out to Firewo
 ## New run inherits the legacy assumption
 
 Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_id` into a new run. Do not. New runs are trainer-first; `hot_load_deployment_id` only exists for recovering existing legacy checkpoints.
+
+## See also
+
+- Concept / API reference for the two managers: [`TrainerJobManager`](https://docs.fireworks.ai/fine-tuning/training-api/reference/trainer-job-manager) and [`DeploymentManager`](https://docs.fireworks.ai/fine-tuning/training-api/reference/deployment-manager).
+- End-to-end walkthrough (how the trainer-first flow looks in real code): [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling).

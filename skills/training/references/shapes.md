@@ -52,11 +52,13 @@ Or programmatically via `FireworksClient` — see the SDK docs linked from the r
 
 ## Do not pin a `/versions/<id>`
 
-Pass the bare shape path `accounts/fireworks/trainingShapes/<shape>`. The backend auto-selects the latest validated version for you. Hand-picking a version is almost always wrong:
+Pass the bare shape path `accounts/fireworks/trainingShapes/<shape>`. The platform auto-selects the latest validated version for you. Hand-picking a version is almost always wrong:
 
-- Non-superusers cannot force an **unvalidated** version — the backend filters for `Validated = true` regardless of whether the ref is bare or versioned.
+- The platform only serves validated versions — a versioned ref cannot force an unvalidated one.
 - Pinning locks the run to a stale version and prevents the platform from rolling the shape forward when a better-validated image lands.
+
+For the full list of available shapes (with accelerator counts and context lengths), see the [Training Shapes doc](https://docs.fireworks.ai/fine-tuning/training-api/training-shapes).
 
 ## When `resolve_training_profile` raises `Failed to resolve latest validated training shape`
 
-This means the shape currently has **no validated version at all** — usually a transient state right after a shape update, before the new version is validated. Pinning to an older `/versions/<id>` won't help (the filter still requires validated). Retry after a short wait; if it persists, reach out to Fireworks support.
+This means the shape currently has no validated version at all — usually a transient state right after a shape update. Pinning to an older `/versions/<id>` won't help. Retry after a short wait; if it persists, reach out to Fireworks support.

@@ -42,3 +42,8 @@ Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot 
 ## Two deployments, one trainer
 
 On-policy sampler + held-out eval deployment is a common pattern. Both copy the trainer's `hotLoadBucketUrl` at creation, and both can be hotloaded from the same `WeightSyncer`. See [`../trainer-first-vs-deployment-first.md#two-deployments-per-trainer-sampler--eval`](../trainer-first-vs-deployment-first.md#two-deployments-per-trainer-sampler--eval).
+
+## See also
+
+- Concept / API reference for the manager + its lifecycle: [`WeightSyncer`](https://docs.fireworks.ai/fine-tuning/training-api/reference/weight-syncer).
+- `save_weights_for_sampler_ext`, `save_state`, and the raw checkpoint surface: [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading).
