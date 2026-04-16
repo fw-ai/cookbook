@@ -102,6 +102,7 @@ class Config:
     """Directory for checkpoints and logs. Required, no default."""
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
+    rollout_base_model: str | None = None
     dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
     learning_rate: float = 1e-5
@@ -553,7 +554,7 @@ def main(
             policy_client=policy.inner,
             deploy_mgr=deploy_mgr,
             deployment_id=cfg.deployment.deployment_id,
-            base_model=cfg.base_model,
+            base_model=cfg.rollout_base_model or cfg.base_model,
             hotload_timeout=cfg.weight_sync.weight_sync_timeout,
             first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
             lora_rank=cfg.lora_rank,
