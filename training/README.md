@@ -27,6 +27,15 @@ pip install --pre -e .
 
 Each recipe has a `Config` dataclass — edit it and run `python -m recipes.<name>`.
 
+**Quick start** — run the SFT example end-to-end:
+
+```bash
+export FIREWORKS_API_KEY="your-api-key"
+cd examples/sft && bash run.sh
+```
+
+See [`skills/dev/references/examples.md`](../skills/dev/references/examples.md) for all worked examples.
+
 ## Directory Layout
 
 ```
