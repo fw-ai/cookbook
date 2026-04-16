@@ -63,7 +63,7 @@ rows = client.list_checkpoints(job_id)              # auto-paginates
 promotable = [r for r in rows if r.get("promotable")]
 ```
 
-Each row is the raw JSON from the server: `name`, `createTime`, `updateTime`, `checkpointType` (`INFERENCE_BASE` / `INFERENCE_LORA` / `INFERENCE_ARC_V2`), `promotable`. Pick the **latest `createTime` with `promotable: true`** — step numbers mislead when a trainer inherits from a predecessor.
+Each row is the raw JSON from the server: `name`, `createTime`, `updateTime`, `checkpointType` (an opaque server enum — there are several variants including `CHECKPOINT_TYPE_INFERENCE_BASE`, `CHECKPOINT_TYPE_INFERENCE_LORA`, `CHECKPOINT_TYPE_TRAINING_LORA`, `CHECKPOINT_TYPE_INFERENCE_ARC_V2`), and `promotable` (bool — authoritative; filter on this). Pick the **latest `createTime` with `promotable: true`** — step numbers mislead when a trainer inherits from a predecessor.
 
 A thin CLI wrapper is available at `training/examples/tools/list_checkpoints.py` for quick terminal use:
 
