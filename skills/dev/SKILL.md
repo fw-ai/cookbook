@@ -13,6 +13,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 
 | Task or signal | Reference |
 |----------------|-----------|
+| "How do I set up / install the cookbook?" | [`references/setup.md`](references/setup.md) |
 | "I want to run something out of the box" | [`references/examples.md`](references/examples.md) |
 | "I want to fork a recipe and edit the Config" | [`references/recipes.md`](references/recipes.md) |
 | "How do I set the training / deployment shape?" | [`references/shapes.md`](references/shapes.md) |
