@@ -96,7 +96,7 @@ Symptom: `checkpoint "<name>" not found in GCS`. Cause: the promote API was look
 Users on a legacy run can try:
 
 ```bash
-python training/examples/snippets/promote_checkpoint.py \
+python training/examples/tools/promote_checkpoint.py \
     --checkpoints-jsonl <path> \
     --hot-load-deployment-id <deployment-id>
 ```
