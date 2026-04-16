@@ -62,7 +62,7 @@ output_model_id = f"{short_policy}-step-{step}"[:63].rstrip("-")
 
 If `promote_checkpoint` returns `checkpoint "<name>" not found in GCS`:
 
-1. Run [`list_checkpoints.py`](../../../training/examples/snippets/list_checkpoints.py) (see [`tools.md`](tools.md#list_checkpointspy)) with `--promotable-only` to see which rows the server will actually accept, newest first.
+1. Call `FireworksClient.list_checkpoints(job_id)` (or run the `list_checkpoints.py` CLI wrapper) to see which rows the server will actually accept. See [`tools.md`](tools.md#listing-checkpoints-fireworksclientlist_checkpoints).
 2. Make sure your `output_model_id` passes `validate_output_model_id` and retry `promote_checkpoint.py` against one of those rows.
 3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a legacy deployment-first bucket) require server-side access.
 

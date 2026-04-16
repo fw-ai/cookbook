@@ -25,7 +25,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "RL hotload / weight sync cadence, on-policy vs off-policy, `weight_sync_timeout`" | [`references/rl/hotload.md`](references/rl/hotload.md) |
 | "Concurrency control for RL rollouts — adaptive vs fixed?" | [`references/rl/concurrency.md`](references/rl/concurrency.md) |
 | "How do I promote a checkpoint?" | [`references/tools.md`](references/tools.md#promote_checkpointpy) |
-| "Which checkpoints does the server know about / are promotable?" | [`references/tools.md`](references/tools.md#list_checkpointspy) |
+| "Which checkpoints does the server know about / are promotable?" | [`references/tools.md`](references/tools.md#listing-checkpoints-fireworksclientlist_checkpoints) — `FireworksClient.list_checkpoints(job_id)` |
 | "How do I reconnect a training **client** to a running trainer?" | [`references/tools.md`](references/tools.md#reconnect_and_adjust_lrpy) |
 | "Hotload keeps failing — is this a trainer-first / deployment-first mix-up?" | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) — self-check and reach out to Fireworks support |
 | "How do I verify train vs inference logprobs?" | [`references/tools.md`](references/tools.md#verify_logprobspy) |

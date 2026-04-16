@@ -49,22 +49,31 @@ python training/examples/snippets/reconnect_and_adjust_lr.py \
 
 Re-attaching a deployment to a new trainer (to fix a flow-mix bucket-URL drift) is a different operation and is not exposed as a user script. Users who suspect a flow-mix should self-check per [`rl/hotload.md`](rl/hotload.md#self-check-when-hotload-fails) and reach out to Fireworks support.
 
-## `list_checkpoints.py`
+## Listing checkpoints (`FireworksClient.list_checkpoints`)
 
-List all checkpoints on a trainer job (authoritative server view, including any inherited from a predecessor via hotload). Use when `checkpoints.jsonl` is missing, stale, or you want to confirm which rows are actually promotable.
+Use this when `checkpoints.jsonl` is missing / stale, or you want to confirm which rows the server will actually accept for `promote_checkpoint`. Works for dead trainers (completed / failed / cancelled / deleted) — only the DB record and GCS blobs need to exist.
 
-```bash
-# All checkpoints
-python training/examples/snippets/list_checkpoints.py --job-id <job-id>
+From Python:
 
-# Only rows the server will accept for promote, newest first
-python training/examples/snippets/list_checkpoints.py --job-id <job-id> --promotable-only
+```python
+from fireworks.training.sdk import FireworksClient
 
-# Machine-readable
-python training/examples/snippets/list_checkpoints.py --job-id <job-id> --json
+client = FireworksClient(api_key=api_key)          # account auto-resolved
+rows = client.list_checkpoints(job_id)              # auto-paginates
+promotable = [r for r in rows if r.get("promotable")]
 ```
 
-Pick the **latest `createTime` with `promotable: true`** — step numbers mislead when a trainer inherits from a predecessor.
+Each row is the raw JSON from the server: `name`, `createTime`, `updateTime`, `checkpointType` (`INFERENCE_BASE` / `INFERENCE_LORA` / `INFERENCE_ARC_V2`), `promotable`. Pick the **latest `createTime` with `promotable: true`** — step numbers mislead when a trainer inherits from a predecessor.
+
+A thin CLI wrapper is available at `training/examples/snippets/list_checkpoints.py` for quick terminal use:
+
+```bash
+python training/examples/snippets/list_checkpoints.py --job-id <job-id>                     # table
+python training/examples/snippets/list_checkpoints.py --job-id <job-id> --promotable-only   # filter
+python training/examples/snippets/list_checkpoints.py --job-id <job-id> --json              # machine-readable
+```
+
+Requires `fireworks-ai[training] >= 1.0.0a62`. On older SDKs the method doesn't exist and the script will fail on import.
 
 ## `verify_logprobs.py`
 

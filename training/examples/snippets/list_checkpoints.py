@@ -1,28 +1,23 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402
-"""List checkpoints on an RLOR trainer job.
+"""List checkpoints the server knows about for an RLOR trainer job.
 
-Calls the Fireworks control-plane list endpoint for a trainer's checkpoints.
-Unlike ``checkpoints.jsonl`` (which only covers rows the cookbook recipe
-wrote), this returns the authoritative list the server knows about —
-including checkpoints inherited from a predecessor trainer via hotload.
-No active trainer client is required; the job can be in any state.
-
-Each row shows ``name``, ``createTime``, ``checkpointType``, and whether
-the checkpoint is promotable. Pick the **latest ``createTime`` with
-``promotable: true``** — step numbers mislead when a trainer inherits from
-a predecessor.
+Thin wrapper over ``FireworksClient.list_checkpoints(job_id)``. Lists the
+authoritative set of checkpoints for a trainer — sampler + DCP — including
+ones inherited from a predecessor trainer via hotload. Works for dead
+trainers (completed, failed, cancelled) — only the DB record and GCS
+blobs need to exist.
 
 Usage:
     export FIREWORKS_API_KEY=...
 
-    # List all checkpoints on a trainer:
+    # All checkpoints on a trainer:
     python list_checkpoints.py --job-id <job-id>
 
-    # Only show promotable ones, newest first:
+    # Only rows the server will accept for promote, newest first:
     python list_checkpoints.py --job-id <job-id> --promotable-only
 
-    # JSON output for piping into other tools:
+    # Machine-readable:
     python list_checkpoints.py --job-id <job-id> --json
 """
 
@@ -33,7 +28,6 @@ import json
 import logging
 import os
 import sys
-from urllib.parse import urlencode
 
 from dotenv import load_dotenv
 
@@ -68,7 +62,7 @@ def parse_args() -> argparse.Namespace:
         "--page-size",
         type=int,
         default=200,
-        help="Max rows to fetch (default: 200).",
+        help="Max rows per request (the SDK auto-paginates). Default: 200.",
     )
     parser.add_argument(
         "--promotable-only",
@@ -82,24 +76,6 @@ def parse_args() -> argparse.Namespace:
         help="Emit raw JSON to stdout instead of a human table.",
     )
     return parser.parse_args()
-
-
-def _fetch_checkpoints(
-    client: FireworksClient,
-    job_id: str,
-    page_size: int,
-) -> list[dict]:
-    path = (
-        f"/v1/accounts/{client.account_id}/rlorTrainerJobs/{job_id}"
-        f"/checkpoints?{urlencode({'pageSize': page_size})}"
-    )
-    resp = client._get(path, timeout=30)  # noqa: SLF001
-    if not resp.is_success:
-        raise SystemExit(
-            f"ERROR: list checkpoints failed (HTTP {resp.status_code}): {resp.text}"
-        )
-    body = resp.json()
-    return body.get("checkpoints", []) or body.get("rlorTrainerJobCheckpoints", []) or []
 
 
 def _sort_newest_first(rows: list[dict]) -> list[dict]:
@@ -128,7 +104,7 @@ def main() -> None:
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     client = FireworksClient(api_key=api_key, base_url=base_url)
 
-    rows = _fetch_checkpoints(client, args.job_id, args.page_size)
+    rows = client.list_checkpoints(args.job_id, page_size=args.page_size)
     if args.promotable_only:
         rows = [r for r in rows if r.get("promotable")]
     rows = _sort_newest_first(rows)
