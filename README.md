@@ -27,6 +27,9 @@ All previous cookbook material — learning tutorials, integration examples, sho
 
 We welcome contributions! See the [Contribution Guide](./Contribution.md) for how to get started.
 
+Maintainers should use the [cookbook release guide](./RELEASING.md) for
+candidate tags, release records, and stable publication.
+
 ## Feedback & Support
 
 - [Fireworks Documentation](https://fireworks.ai/docs)

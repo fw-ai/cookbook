@@ -115,6 +115,10 @@ For detailed guides, configuration reference, and examples, see the official doc
 - [Cookbook recipes (SFT, RL, DPO, ORPO)](https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/overview)
 - [Configuration reference](https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/reference)
 
+For maintainers cutting a public cookbook release, follow
+[`../RELEASING.md`](../RELEASING.md) and keep `training/pyproject.toml`
+aligned with the stable tag version.
+
 ## Directory layout
 
 ```
