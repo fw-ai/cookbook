@@ -13,16 +13,15 @@ conda create -n cookbook python=3.12 -y && conda activate cookbook
 pip install --pre -e .
 ```
 
-Set your API key and run a recipe:
+See [`training/README.md`](./training/README.md) for configuration, recipes, and examples.
 
-```bash
-export FIREWORKS_API_KEY="your-api-key"
-python -m recipes.sft_loop
-```
+## For AI Agents
 
-See [`training/README.md`](./training/README.md) for recipe configuration and examples.
+The primary reference for agents working in this repo is **[`skills/dev/SKILL.md`](skills/dev/SKILL.md)** — it maps tasks and error signals to specific reference files. Start there, not the READMEs.
 
 ## Repository Structure
+
+Only `training/` is actively developed. Other top-level directories (`integrations/`, `multimedia/`, `archived/`) are kept for backward compatibility.
 
 ```
 training/           Training SDK recipes, utilities, and examples
@@ -30,10 +29,8 @@ training/           Training SDK recipes, utilities, and examples
   utils/            Shared config, data loading, losses, metrics
   examples/         Worked examples (RL, SFT, DPO, ORPO)
   tests/            Unit and end-to-end tests
-archived/           Legacy cookbook content
+skills/             Agent skills and reference docs
 ```
-
-The `integrations/`, `multimedia/`, and `archived/` directories contain older content kept for backward compatibility.
 
 ## Contributing
 
