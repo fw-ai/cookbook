@@ -296,6 +296,8 @@ cython_debug/
 wandb/
 *_dev.sh
 sft_logs/
+deepmath_logs/
+verify_logs/
 
 # dev scripts
 *_dev.sh

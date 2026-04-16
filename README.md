@@ -1,34 +1,43 @@
 # Fireworks AI Cookbook
 
-The Fireworks AI Cookbook provides ready-to-run recipes and utilities for training models on [Fireworks](https://fireworks.ai). It covers supervised fine-tuning (SFT), reinforcement learning (GRPO, DAPO, GSPO, CISPO), and preference optimization (DPO, ORPO) — all driven by the Fireworks Training SDK.
+Ready-to-run training recipes for reinforcement learning (GRPO, DAPO, GSPO, CISPO), preference optimization (DPO, ORPO), and supervised fine-tuning (SFT) on [Fireworks](https://fireworks.ai).
 
-For full SDK documentation, see the [Fireworks Training SDK Reference](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction).
+> **Full documentation**: [Fireworks Training SDK Reference](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction)
 
-## Getting Started
+## Quick Start
 
-Head to the [`training/`](./training) directory for installation instructions, recipe configuration, and runnable examples.
+```bash
+git clone https://github.com/fw-ai/cookbook.git
+cd cookbook/training
+conda create -n cookbook python=3.12 -y && conda activate cookbook
+pip install --pre -e .
+```
+
+See [`training/README.md`](./training/README.md) for configuration, recipes, and examples.
+
+## For AI Agents
+
+The primary reference for agents working in this repo is **[`skills/dev/SKILL.md`](skills/dev/SKILL.md)** — it maps tasks and error signals to specific reference files. Start there, not the READMEs.
 
 ## Repository Structure
+
+Only `training/` is actively developed. Other top-level directories (`integrations/`, `multimedia/`, `archived/`) are kept for backward compatibility.
 
 ```
 training/           Training SDK recipes, utilities, and examples
   recipes/          Fork-and-customize training loop scripts
   utils/            Shared config, data loading, losses, metrics
-  examples/         Worked examples (e.g. deepmath GRPO)
+  examples/         Worked examples (RL, SFT, DPO, ORPO)
   tests/            Unit and end-to-end tests
-archived/           Legacy cookbook content (see below)
+skills/             Agent skills and reference docs
 ```
-
-## Archived Content
-
-All previous cookbook material — learning tutorials, integration examples, showcase projects, evaluation recipes, and more — has been moved to [`archived/`](./archived). See the [archived README](./archived/README.md) for details on what's there.
 
 ## Contributing
 
-We welcome contributions! See the [Contribution Guide](./Contribution.md) for how to get started.
+See the [Contribution Guide](./Contribution.md).
 
-## Feedback & Support
+## Support
 
-- [Fireworks Documentation](https://fireworks.ai/docs)
+- [Documentation](https://fireworks.ai/docs)
 - [Discord](https://discord.gg/9nKGzdCk)
 - [Open an issue](https://github.com/fw-ai/cookbook/issues/new)
