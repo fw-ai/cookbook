@@ -77,6 +77,28 @@ eval_dep = deploy_mgr.create_or_get(DeploymentConfig(
 
 This pattern is only possible on the trainer-first flow — deployment-first couples each run to one deployment.
 
+## Bucket mismatch: trainer wrote to a different bucket than the deployment watches
+
+The trainer proactively logs this before hotload is even attempted:
+
+```
+[save_weights_for_sampler] Bucket mismatch — the deployment will not find this
+snapshot and hotload will fail. Trainer wrote to gs://<trainer-bucket>/..., but
+the deployment's hot_load_bucket_url is gs://<deployment-bucket>/...
+```
+
+Root cause: the trainer-first and deployment-first flows got crossed — the deployment was created pointing at one bucket, and this trainer is writing to another.
+
+Two recovery options. Pick whichever fits the situation:
+
+1. **Re-attach the existing deployment to this trainer.** Useful when the deployment is already warmed up / serving traffic and you don't want to re-provision. The helper is `setup_or_reattach_deployment` in `training/utils/infra.py` — it PATCHes `hot_load_trainer_job` on the deployment, waits for the serving pod's rolling restart, and calls `WeightSyncer.reset_delta_chain()` for you. `training/recipes/rl_loop.py` uses it inline; look there for the call shape.
+
+2. **Create a fresh deployment with `hot_load_trainer_job=<this trainer>`.** Simpler and safer when you don't need to preserve the existing deployment. The new deployment inherits the trainer's bucket at creation, so no mismatch.
+
+For legacy deployment-first runs whose promote then fails with `checkpoint "<name>" not found in GCS`, see [Promoting a legacy deployment-first run](#promoting-a-legacy-deployment-first-run) below.
+
+If neither option applies or you can't determine which flow the run used, reach out to Fireworks support — server-side state is sometimes needed to untangle.
+
 ## Self-check when hotload fails
 
 Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>` or `checkpoint "<name>" not found in GCS`.
