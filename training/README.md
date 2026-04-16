@@ -31,7 +31,10 @@ Each recipe has a `Config` dataclass — edit it and run `python -m recipes.<nam
 
 ```bash
 export FIREWORKS_API_KEY="your-api-key"
-cd examples/sft && bash run.sh
+python examples/sft/train_sft.py \
+    --base-model accounts/fireworks/models/qwen3-8b \
+    --tokenizer-model Qwen/Qwen3-8B \
+    --output-model-id my-sft-test
 ```
 
 See [`skills/dev/references/examples.md`](../skills/dev/references/examples.md) for all worked examples.
