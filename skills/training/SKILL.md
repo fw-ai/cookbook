@@ -17,7 +17,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "I want to fork a recipe and edit the Config" | [`references/recipes.md`](references/recipes.md) |
 | "How do I set the training / deployment shape?" | [`references/shapes.md`](references/shapes.md) |
 | `RuntimeError: Failed to resolve latest validated training shape` | [`references/shapes.md`](references/shapes.md#when-resolve_training_profile-raises-failed-to-resolve-latest-validated-training-shape) — don't pin a version; retry or reach out |
-| "Can I run two deployments off one trainer (sampler + eval)?" | [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md#two-deployments-per-trainer-sampler--eval) |
+| "Can I run two deployments off one trainer (sampler + eval)?" | [`references/rl/hotload.md`](references/rl/hotload.md#two-deployments-one-trainer) |
 | "How does RL dispatch server-side vs client-side loss? What's the cost?" | [`references/rl/loss-paths.md`](references/rl/loss-paths.md) |
 | "How does gradient accumulation work at `optim_step`? What normalization does RL use?" | [`references/rl/gradient-accumulation.md`](references/rl/gradient-accumulation.md) |
 | "Why are some RL samples being filtered?" | [`references/rl/dynamic-filter.md`](references/rl/dynamic-filter.md) |
@@ -27,13 +27,13 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "How do I promote a checkpoint?" | [`references/tools.md`](references/tools.md#promote_checkpointpy) |
 | "Which checkpoints does the server know about / are promotable?" | [`references/tools.md`](references/tools.md#list_checkpointspy) |
 | "How do I reconnect a training **client** to a running trainer?" | [`references/tools.md`](references/tools.md#reconnect_and_adjust_lrpy) |
-| "Hotload keeps failing — is this a trainer-first / deployment-first mix-up?" | [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md#self-check-when-something-looks-wrong) — self-check and reach out to Fireworks support |
+| "Hotload keeps failing — is this a trainer-first / deployment-first mix-up?" | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) — self-check and reach out to Fireworks support |
 | "How do I verify train vs inference logprobs?" | [`references/tools.md`](references/tools.md#verify_logprobspy) |
 | "Where does checkpoint state live?" / CheckpointKind / `checkpoints.jsonl` | [`references/checkpoints.md`](references/checkpoints.md) |
 | Error: `checkpoint "<name>" not found in GCS` | [`references/checkpoints.md`](references/checkpoints.md#when-promote-fails) — validate `output_model_id` first; reach out to Fireworks support if still failing |
-| Error: `Hotload failed for snapshot ...` | [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md) |
+| Error: `Hotload failed for snapshot ...` | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) |
 | HTTP 400 on `output_model_id` | [`references/tools.md`](references/tools.md#promote_checkpointpy) — validate before calling |
-| "Is this trainer-first or deployment-first?" | [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md) |
+| "Is this trainer-first or deployment-first?" | [`references/rl/hotload.md`](references/rl/hotload.md#trainer-first-vs-deployment-first-two-creation-orders) |
 | Manual `accelerator_type` / `node_count` set on `Config` | [`references/shapes.md`](references/shapes.md) — drop them, the profile owns infra |
 
 ---
@@ -56,7 +56,7 @@ If the installed version doesn't satisfy the pin, upgrade first and retry. Only 
 ## Non-negotiables
 
 1. **Shape first.** `cfg.infra.training_shape_id` is required. The deployment shape comes from the profile. Manual infra fields are a mistake; the backend will reject or ignore them. See [`references/shapes.md`](references/shapes.md).
-2. **Trainer-first for new work.** Create the trainer, then create the deployment with `hot_load_trainer_job=<trainer>`. Do not mix in a legacy `hot_load_deployment_id`. See [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md).
+2. **Trainer-first for new work.** Create the trainer, then create the deployment with `hot_load_trainer_job=<trainer>`. Do not mix in a legacy `hot_load_deployment_id`. See [`references/rl/hotload.md`](references/rl/hotload.md#trainer-first-vs-deployment-first-two-creation-orders).
 3. **Fork, don't reinvent.** Training loop plumbing lives in `training/recipes/`. Fork the file that matches the task; do not rewire `FiretitanTrainingClient` / `DeploymentManager` / `WeightSyncer` from scratch.
 4. **Validate `output_model_id` before promote.** Server cap is 63 chars, charset `[a-z0-9-]`. A rejected promote orphans the sampler blob; the same `checkpoint_id` returns "not found in GCS" after GC. See [`references/checkpoints.md`](references/checkpoints.md#output_model_id-validation).
 

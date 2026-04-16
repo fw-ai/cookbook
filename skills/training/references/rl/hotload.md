@@ -4,6 +4,32 @@ RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-tra
 
 All hotload behaviour in `rl_loop.py` is controlled by `cfg.weight_sync: WeightSyncConfig`.
 
+## Trainer-first vs deployment-first (two creation orders)
+
+Mixing these is the most common cause of `Hotload failed` and `checkpoint not found in GCS`.
+
+### Trainer-first (modern, required for new work)
+
+1. Create the trainer via `TrainerJobManager.create_and_wait(...)`.
+2. Create the deployment via `DeploymentManager.create_or_get(DeploymentConfig(hot_load_trainer_job=<trainer_job>, ...))`. The deployment copies the trainer's bucket URL at creation.
+3. The **trainer owns** the checkpoints. Promote reads them from the trainer's bucket without any deployment ID.
+
+Contract test: `training/tests/smoke_test/test_grpo_deepmath_trainer_first_smoke.py`.
+
+### Deployment-first (legacy, deprecated — recognise only)
+
+1. The deployment was created with its own `hotLoadBucketUrl`.
+2. The trainer was launched with `hot_load_deployment_id=<deployment-id>` pointing at that deployment's bucket.
+3. The **deployment owns** the bucket. Every `promote_checkpoint` call must pass the deployment ID as well.
+
+New runs should not use this flow. It exists only so that existing deployment-first runs can still be promoted.
+
+### How to tell which flow a run used
+
+- Recipe `cfg.deployment.hot_load_trainer_job` set ⇒ trainer-first.
+- Trainer launch args include `hot_load_deployment_id=<...>` ⇒ deployment-first.
+- `checkpoints.jsonl` has a `source_job_id` matching the trainer and no deployment-owned bucket in the trainer's launch args ⇒ trainer-first.
+
 ## The knobs
 
 | Field | Default | Meaning |
@@ -25,25 +51,64 @@ All hotload behaviour in `rl_loop.py` is controlled by `cfg.weight_sync: WeightS
 For full-parameter training, the first sampler save is `base` (full weights, ~16 GB for 8B). Subsequent saves are `delta` (XOR diff, ~10× smaller). `WeightSyncer` manages this automatically — users don't pick per-step.
 
 - LoRA always saves the full adapter regardless of `checkpoint_type` — every LoRA sampler checkpoint is promotable.
-- Full-param `delta` saves are **not** promotable. Only `base` saves are. See the concept doc at <https://docs.fireworks.ai/fine-tuning/training-api/cookbook/checkpoints#checkpoint-kinds>.
+- Full-param `delta` saves are **not** promotable. Only `base` saves are. `CheckpointKind` enum + save helpers: `training/utils/checkpoint_utils.py`.
 
 ## `dcp_save_interval` for resume
 
 Separate from hotload: DCP saves persist the full train state (weights + optimizer) so you can resume training if the job dies. `0` (default) = off — if your run crashes mid-training, there is no intermediate resume point. Set this if your run is long enough that a crash is painful.
 
-## When hotload fails
-
-Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>`.
-
-1. **First, check the SDK version matches the cookbook's pin** (see `../../SKILL.md#first-debug-step--always`).
-2. If the SDK is current, the most common cause is a trainer-first vs deployment-first flow-mix. Run through the self-check at [`../trainer-first-vs-deployment-first.md#self-check-when-something-looks-wrong`](../trainer-first-vs-deployment-first.md#self-check-when-something-looks-wrong).
-3. If neither applies, reach out to Fireworks support. The recovery path (re-pointing a deployment's bucket, settling a stuck rolling restart) requires server-side access.
-
 ## Two deployments, one trainer
 
-On-policy sampler + held-out eval deployment is a common pattern. Both copy the trainer's `hotLoadBucketUrl` at creation, and both can be hotloaded from the same `WeightSyncer`. See [`../trainer-first-vs-deployment-first.md#two-deployments-per-trainer-sampler--eval`](../trainer-first-vs-deployment-first.md#two-deployments-per-trainer-sampler--eval).
+On-policy sampler + held-out eval deployment is a common pattern. Both copy the trainer's `hotLoadBucketUrl` at creation, and both can be hotloaded from the same `WeightSyncer`.
+
+```python
+sampler = deploy_mgr.create_or_get(DeploymentConfig(
+    deployment_id="my-sampler",
+    base_model=...,
+    hot_load_trainer_job=trainer_endpoint.job_name,
+))
+eval_dep = deploy_mgr.create_or_get(DeploymentConfig(
+    deployment_id="my-eval",
+    base_model=...,
+    hot_load_trainer_job=trainer_endpoint.job_name,   # same trainer
+    min_replica_count=0,                              # scale down when idle
+))
+```
+
+This pattern is only possible on the trainer-first flow — deployment-first couples each run to one deployment.
+
+## Self-check when hotload fails
+
+Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>` or `checkpoint "<name>" not found in GCS`.
+
+1. **First, check the SDK version matches the cookbook's pin** (see [`../../SKILL.md#first-debug-step--always`](../../SKILL.md#first-debug-step--always)).
+2. The most common cause is a trainer-first vs deployment-first mix-up. Ask:
+   - Did you create this deployment before the trainer, and then later point a new trainer-first trainer at it?
+   - Was the trainer originally launched with `hot_load_deployment_id`, and is something now also setting `hot_load_trainer_job` on the deployment?
+
+   Either answer means the trainer's bucket and the deployment's bucket disagree, and the hotload cannot find the snapshot on the side that is asked to load it.
+3. If neither applies, or you're unsure how to untangle it, reach out to Fireworks support. Server-side recovery (re-pointing a deployment's bucket, recovering an orphaned sampler blob, looking up a legacy deployment ID) is handled by the Fireworks team.
+
+## Promoting a legacy deployment-first run
+
+Symptom: `checkpoint "<name>" not found in GCS`. Cause: the promote API was looking at the trainer's own bucket; on deployment-first the blobs live in the deployment's bucket.
+
+Users on a legacy run can try:
+
+```bash
+python training/examples/snippets/promote_checkpoint.py \
+    --checkpoints-jsonl <path> \
+    --hot-load-deployment-id <deployment-id>
+```
+
+If the deployment ID is unknown, or the promote still fails, reach out to Fireworks support.
+
+## New runs don't use the legacy assumption
+
+Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_id` into a new run. Do not. New runs are trainer-first; `hot_load_deployment_id` only exists for recovering existing legacy checkpoints.
 
 ## See also
 
-- Concept / API reference for the manager + its lifecycle: [`WeightSyncer`](https://docs.fireworks.ai/fine-tuning/training-api/reference/weight-syncer).
-- `save_weights_for_sampler_ext`, `save_state`, and the raw checkpoint surface: [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading).
+- `WeightSyncer` lifecycle: `fireworks.training.sdk.weight_syncer.WeightSyncer` (installed under `src/fireworks/training/sdk/weight_syncer.py`).
+- `save_weights_for_sampler_ext`, `save_state`, `list_checkpoints`: `fireworks.training.sdk.client.FiretitanTrainingClient`.
+- Trainer + deployment managers this flow depends on: `fireworks.training.sdk.trainer.TrainerJobManager` and `fireworks.training.sdk.deployment.DeploymentManager`.

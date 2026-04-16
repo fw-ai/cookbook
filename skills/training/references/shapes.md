@@ -57,7 +57,7 @@ Pass the bare shape path `accounts/fireworks/trainingShapes/<shape>`. The platfo
 - The platform only serves validated versions — a versioned ref cannot force an unvalidated one.
 - Pinning locks the run to a stale version and prevents the platform from rolling the shape forward when a better-validated image lands.
 
-For the full list of available shapes (with accelerator counts and context lengths), see the [Training Shapes doc](https://docs.fireworks.ai/fine-tuning/training-api/training-shapes).
+For the full list of shapes in your account, run `firectl training-shape list` (above).
 
 ## When `resolve_training_profile` raises `Failed to resolve latest validated training shape`
 

@@ -1,6 +1,6 @@
 # Checkpoints — where state lives
 
-Concept SOT: <https://docs.fireworks.ai/fine-tuning/training-api/cookbook/checkpoints#checkpoint-kinds> covers the `CheckpointKind` matrix (`STATE` / `SAMPLER` / `BOTH`) and the three-layer "type" story. This file is the practical user-level guide: what ends up in `checkpoints.jsonl`, how to validate an `output_model_id` before promoting, and what to do when a promote fails.
+The `CheckpointKind` enum (`STATE` / `SAMPLER` / `BOTH`) and its helpers live in `training/utils/checkpoint_utils.py`. This file is the practical user-level guide: what ends up in `checkpoints.jsonl`, how to validate an `output_model_id` before promoting, and what to do when a promote fails.
 
 ## Two layers in one line
 
@@ -66,4 +66,4 @@ If `promote_checkpoint` returns `checkpoint "<name>" not found in GCS`:
 2. Make sure your `output_model_id` passes `validate_output_model_id` and retry `promote_checkpoint.py` against one of those rows.
 3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a legacy deployment-first bucket) require server-side access.
 
-For the separate legacy-deployment-first recovery path (`--hot-load-deployment-id`), see [`trainer-first-vs-deployment-first.md`](trainer-first-vs-deployment-first.md).
+For the separate legacy-deployment-first recovery path (`--hot-load-deployment-id`), see [`rl/hotload.md`](rl/hotload.md#promoting-a-legacy-deployment-first-run).

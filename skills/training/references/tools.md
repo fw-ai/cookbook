@@ -27,7 +27,7 @@ python training/examples/snippets/promote_checkpoint.py \
     --hot-load-deployment-id <deployment-id>
 ```
 
-Source: `training/examples/snippets/promote_checkpoint.py`. Reads `sampler_path` / `source_job_id` / `base_model` from the jsonl row. For the legacy deployment-first case, see [`trainer-first-vs-deployment-first.md`](trainer-first-vs-deployment-first.md).
+Source: `training/examples/snippets/promote_checkpoint.py`. Reads `sampler_path` / `source_job_id` / `base_model` from the jsonl row. For the legacy deployment-first case, see [`rl/hotload.md`](rl/hotload.md#promoting-a-legacy-deployment-first-run).
 
 `output_model_id` is validated server-side at 63 chars — validate client-side too:
 
@@ -47,7 +47,7 @@ python training/examples/snippets/reconnect_and_adjust_lr.py \
     --new-lr 5e-6
 ```
 
-Re-attaching a deployment to a new trainer (to fix a flow-mix bucket-URL drift) is a different operation and is not exposed as a user script. Users who suspect a flow-mix should self-check per [`trainer-first-vs-deployment-first.md`](trainer-first-vs-deployment-first.md) and reach out to Fireworks support.
+Re-attaching a deployment to a new trainer (to fix a flow-mix bucket-URL drift) is a different operation and is not exposed as a user script. Users who suspect a flow-mix should self-check per [`rl/hotload.md`](rl/hotload.md#self-check-when-hotload-fails) and reach out to Fireworks support.
 
 ## `list_checkpoints.py`
 

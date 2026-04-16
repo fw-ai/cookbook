@@ -22,4 +22,4 @@ Switching to a custom loss roughly doubles the forward cost per step. If you can
 
 - How to write a custom loss → [`custom-loss.md`](custom-loss.md)
 - Why `optim_step` normalization matters → [`gradient-accumulation.md`](gradient-accumulation.md)
-- Concept reference for the built-in vs custom-loss split: [Loss Functions](https://docs.fireworks.ai/fine-tuning/training-api/loss-functions).
+- Kernel registry + dispatch logic: `training/utils/rl/losses.py` (`resolve_builtin_loss`, `LOSS_REGISTRY`). Per-algorithm kernels: `training/utils/rl/{grpo,dapo,dro,gspo,cispo}.py`.

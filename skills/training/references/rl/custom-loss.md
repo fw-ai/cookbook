@@ -42,5 +42,5 @@ Shape-owned fields (`accelerator_type` / `node_count` / `custom_image_tag`) are 
 
 ## See also
 
-- Concept / built-in loss catalogue: [Loss Functions](https://docs.fireworks.ai/fine-tuning/training-api/loss-functions).
-- `forward_backward_custom` API surface: [FiretitanServiceClient & TrainingClient reference](https://docs.fireworks.ai/fine-tuning/training-api/reference/service-client).
+- Built-in loss registry + per-algorithm kernels: `training/utils/rl/losses.py`, `training/utils/rl/{grpo,dapo,dro,gspo,cispo}.py`.
+- `forward_backward_custom` signature + behaviour: `fireworks.training.sdk.client.FiretitanTrainingClient.forward_backward_custom` (`pip show fireworks-ai` → find `src/fireworks/training/sdk/client.py` in the installed package).
