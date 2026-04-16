@@ -1,11 +1,11 @@
 ---
 name: fireworks-training
-description: Train models on Fireworks via the cookbook. Covers both greenfield work (pick a recipe, fork it, resolve training + deployment shape from a profile) and recovery (promote a checkpoint, re-attach a deployment, diagnose "checkpoint not found in GCS", triage trainer-first vs legacy deployment-first flows). The cookbook is the reference implementation of `fireworks.training.sdk`; fork a recipe or run an example instead of reimplementing. Trigger when the user wants to start, resume, promote, re-attach, or debug a training run on Fireworks.
+description: Train models on Fireworks via the cookbook. Covers greenfield work (pick a recipe, fork it, resolve training + deployment shape from a profile) and user-level recovery (promote a checkpoint, list promotable checkpoints on a trainer, self-check a trainer-first vs legacy deployment-first mix-up). The cookbook is the reference implementation of `fireworks.training.sdk`; fork a recipe or run an example instead of reimplementing. Trigger when the user wants to start, resume, promote, or do a first-line diagnosis on a training run; for deeper recovery the skill routes users to Fireworks support.
 ---
 
 # Fireworks training
 
-The cookbook is the reference implementation of the Fireworks Training SDK. Fork a recipe, run an example, use the three standalone tools. Use **shapes** for both trainer and deployment — never hand-set `accelerator_type` / `node_count` / `custom_image_tag`.
+The cookbook is the reference implementation of the Fireworks Training SDK. Fork a recipe, run an example, use the standalone tools in [`references/tools.md`](references/tools.md). Use **shapes** for both trainer and deployment — never hand-set `accelerator_type` / `node_count` / `custom_image_tag`.
 
 ---
 
@@ -16,17 +16,42 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "I want to run something out of the box" | [`references/examples.md`](references/examples.md) |
 | "I want to fork a recipe and edit the Config" | [`references/recipes.md`](references/recipes.md) |
 | "How do I set the training / deployment shape?" | [`references/shapes.md`](references/shapes.md) |
+| `RuntimeError: Failed to resolve latest validated training shape` | [`references/shapes.md`](references/shapes.md#when-resolve_training_profile-raises-failed-to-resolve-latest-validated-training-shape) — don't pin a version; retry or reach out |
+| "Can I run two deployments off one trainer (sampler + eval)?" | [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md#two-deployments-per-trainer-sampler--eval) |
+| "How does RL dispatch server-side vs client-side loss? What's the cost?" | [`references/rl/loss-paths.md`](references/rl/loss-paths.md) |
+| "How does gradient accumulation work at `optim_step`? What normalization does RL use?" | [`references/rl/gradient-accumulation.md`](references/rl/gradient-accumulation.md) |
+| "Why are some RL samples being filtered?" | [`references/rl/dynamic-filter.md`](references/rl/dynamic-filter.md) |
+| "Custom loss for RL" | [`references/rl/custom-loss.md`](references/rl/custom-loss.md) |
+| "RL hotload / weight sync cadence, on-policy vs off-policy, `weight_sync_timeout`" | [`references/rl/hotload.md`](references/rl/hotload.md) |
+| "Concurrency control for RL rollouts — adaptive vs fixed?" | [`references/rl/concurrency.md`](references/rl/concurrency.md) |
 | "How do I promote a checkpoint?" | [`references/tools.md`](references/tools.md#promote_checkpointpy) |
-| "How do I re-attach a deployment to a new trainer?" | [`references/tools.md`](references/tools.md#reconnect_and_adjust_lrpy) |
+| "Which checkpoints does the server know about / are promotable?" | [`references/tools.md`](references/tools.md#list_checkpointspy) |
+| "How do I reconnect a training **client** to a running trainer?" | [`references/tools.md`](references/tools.md#reconnect_and_adjust_lrpy) |
+| "Hotload keeps failing — is this a trainer-first / deployment-first mix-up?" | [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md#self-check-when-something-looks-wrong) — self-check and reach out to Fireworks support |
 | "How do I verify train vs inference logprobs?" | [`references/tools.md`](references/tools.md#verify_logprobspy) |
 | "Where does checkpoint state live?" / CheckpointKind / `checkpoints.jsonl` | [`references/checkpoints.md`](references/checkpoints.md) |
-| Error: `checkpoint "<name>" not found in GCS` | [`references/checkpoints.md`](references/checkpoints.md#recovery-sampler-orphan) |
+| Error: `checkpoint "<name>" not found in GCS` | [`references/checkpoints.md`](references/checkpoints.md#when-promote-fails) — validate `output_model_id` first; reach out to Fireworks support if still failing |
 | Error: `Hotload failed for snapshot ...` | [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md) |
 | HTTP 400 on `output_model_id` | [`references/tools.md`](references/tools.md#promote_checkpointpy) — validate before calling |
 | "Is this trainer-first or deployment-first?" | [`references/trainer-first-vs-deployment-first.md`](references/trainer-first-vs-deployment-first.md) |
 | Manual `accelerator_type` / `node_count` set on `Config` | [`references/shapes.md`](references/shapes.md) — drop them, the profile owns infra |
 
 ---
+
+## First debug step — always
+
+Before assuming the platform is broken, confirm the user's installed `fireworks-ai` satisfies the cookbook's SDK requirement. A stale SDK produces errors that masquerade as server bugs: missing keyword arguments, "unknown field", silent no-ops on new config fields, or `promote_checkpoint` behaviour that doesn't match the code.
+
+The requirement lives in the cookbook's `training/pyproject.toml` — look for the `fireworks-ai[training]` pin:
+
+```bash
+grep 'fireworks-ai\[training\]' cookbook/training/pyproject.toml
+# e.g. "fireworks-ai[training]>=1.0.0a61,<2"
+
+pip show fireworks-ai | grep -i version
+```
+
+If the installed version doesn't satisfy the pin, upgrade first and retry. Only after the SDK meets the requirement should you start triaging the actual symptom. Users do **not** need to sync the cookbook to upstream `main` — whatever cookbook commit they're on declares its own SDK requirement, and matching that is what matters.
 
 ## Non-negotiables
 

@@ -41,3 +41,16 @@ config = Config(
 ```
 
 Loads weights from the other job; resets step to 0.
+
+## RL specifics
+
+RL has its own skill folder. Open [`rl/`](rl/) when working with `rl_loop.py`:
+
+- [`rl/loss-paths.md`](rl/loss-paths.md) — server-side built-in vs client-side custom (and why one costs an extra forward)
+- [`rl/gradient-accumulation.md`](rl/gradient-accumulation.md) — `optim_step` normalization; the trap custom losses fall into
+- [`rl/dynamic-filter.md`](rl/dynamic-filter.md) — `should_accept`, why zero-variance groups get dropped
+- [`rl/custom-loss.md`](rl/custom-loss.md) — interface + reference implementation + RL `Config` fields
+- [`rl/hotload.md`](rl/hotload.md) — weight-sync cadence, `weight_sync_timeout`, on-policy vs off-policy, base/delta chain
+- [`rl/concurrency.md`](rl/concurrency.md) — rollout concurrency control; adaptive is the default and the recommendation
+
+SFT / DPO / ORPO users do not need these.

@@ -20,7 +20,7 @@ profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
 # profile.accelerator_type, profile.node_count, ...  (read, do not copy to cfg)
 ```
 
-Done in `training/recipes/sft_loop.py` around line 325 and `training/recipes/rl_loop.py` around line 336.
+See `training/recipes/sft_loop.py` (search `resolve_training_profile`) and `training/recipes/rl_loop.py` (same — called once per policy, once per reference).
 
 ## Deployment shape
 
@@ -44,8 +44,19 @@ For RL with a frozen reference, set `cfg.infra.ref_training_shape_id` explicitly
 ## Listing available shapes
 
 ```bash
-firectl list training-shapes
-firectl list deployment-shapes
+firectl training-shape list      # alias: firectl ts list
+firectl deployment-shape list    # alias: firectl ds list
 ```
 
 Or programmatically via `FireworksClient` — see the SDK docs linked from the repo README.
+
+## Do not pin a `/versions/<id>`
+
+Pass the bare shape path `accounts/fireworks/trainingShapes/<shape>`. The backend auto-selects the latest validated version for you. Hand-picking a version is almost always wrong:
+
+- Non-superusers cannot force an **unvalidated** version — the backend filters for `Validated = true` regardless of whether the ref is bare or versioned.
+- Pinning locks the run to a stale version and prevents the platform from rolling the shape forward when a better-validated image lands.
+
+## When `resolve_training_profile` raises `Failed to resolve latest validated training shape`
+
+This means the shape currently has **no validated version at all** — usually a transient state right after a shape update, before the new version is validated. Pinning to an older `/versions/<id>` won't help (the filter still requires validated). Retry after a short wait; if it persists, reach out to Fireworks support.
