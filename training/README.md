@@ -34,7 +34,13 @@ export FIREWORKS_API_KEY="your-api-key"
 python examples/sft/train_sft.py \
     --base-model accounts/fireworks/models/qwen3-8b \
     --tokenizer-model Qwen/Qwen3-8B \
-    --output-model-id my-sft-test
+    --dataset-path examples/sft/text2sql_dataset.jsonl \
+    --region US_VIRGINIA_1 \
+    --max-examples 100 \
+    --epochs 3 \
+    --batch-size 32 \
+    --learning-rate 1e-5 \
+    --output-model-id sft-text-qwen3-8b-$(date +%Y%m%d%H%M)
 ```
 
 See [`skills/dev/references/examples.md`](../skills/dev/references/examples.md) for all worked examples.
