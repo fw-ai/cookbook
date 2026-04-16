@@ -86,7 +86,8 @@ def _print_table(rows: list[dict]) -> None:
     if not rows:
         print("(no checkpoints)")
         return
-    header = f"{'name':<40}  {'createTime':<25}  {'type':<22}  promotable"
+    # Widest enum value is CHECKPOINT_TYPE_INFERENCE_ARC_V2 (32 chars).
+    header = f"{'name':<40}  {'createTime':<26}  {'type':<35}  promotable"
     print(header)
     print("-" * len(header))
     for r in rows:
@@ -94,7 +95,7 @@ def _print_table(rows: list[dict]) -> None:
         created = r.get("createTime", "")
         ckpt_type = r.get("checkpointType", "")
         promo = r.get("promotable", False)
-        print(f"{name:<40}  {created:<25}  {ckpt_type:<22}  {promo}")
+        print(f"{name:<40}  {created:<26}  {ckpt_type:<35}  {promo}")
 
 
 def main() -> None:
