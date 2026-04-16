@@ -162,6 +162,11 @@ class Config:
     max_eval_seqs: int = DEFAULT_MAX_EVAL_SEQS
     """Max number of eval sequences for carve-out."""
 
+    eval_steps: int = 0
+    """Run eval every N training steps (0 = off, eval only at end of each epoch).
+    When > 0, eval also runs at the end of each epoch so the final step is
+    always covered."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
@@ -561,6 +566,25 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
+        def _maybe_run_eval(step: int, epoch: int, where: str) -> None:
+            if not eval_data:
+                return
+            try:
+                eval_loss = run_eval(
+                    eval_data=eval_data,
+                    client=client,
+                    batch_size=cfg.batch_size,
+                    step=step,
+                    epoch=epoch,
+                )
+                if eval_loss is not None:
+                    runner.append_metrics(
+                        step,
+                        {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
+                    )
+            except Exception as e:
+                logger.warning("Eval failed %s, continuing: %s", where, e)
+
         for epoch in range(cfg.epochs):
             sft_dataset.set_epoch(epoch)
             epoch_start = start_batch if epoch == 0 else 0
@@ -569,23 +593,13 @@ def main(
                 data_consumed += len(batch)
                 step = _run_train_step(batch, step)
 
-            # Run eval after each epoch
-            if eval_data:
-                try:
-                    eval_loss = run_eval(
-                        eval_data=eval_data,
-                        client=client,
-                        batch_size=cfg.batch_size,
-                        step=step,
-                        epoch=epoch,
-                    )
-                    if eval_loss is not None:
-                        runner.append_metrics(
-                            step,
-                            {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
-                        )
-                except Exception as e:
-                    logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
+                # Optional mid-epoch eval every N steps. The end-of-epoch eval
+                # below still runs unconditionally so the final step is always
+                # covered regardless of whether step % eval_steps lines up.
+                if cfg.eval_steps > 0 and step > 0 and step % cfg.eval_steps == 0:
+                    _maybe_run_eval(step, epoch, f"at step {step}")
+
+            _maybe_run_eval(step, epoch, f"at end of epoch {epoch + 1}")
 
         # -- Final checkpoint --------------------------------------------------
 
