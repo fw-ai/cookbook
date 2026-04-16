@@ -30,10 +30,10 @@ training/           Training SDK recipes, utilities, and examples
   utils/            Shared config, data loading, losses, metrics
   examples/         Worked examples (RL, SFT, DPO, ORPO)
   tests/            Unit and end-to-end tests
-integrations/       Third-party integrations (AgentCore, SageMaker)
-multimedia/         Video and VLM notebooks
 archived/           Legacy cookbook content
 ```
+
+The `integrations/`, `multimedia/`, and `archived/` directories contain older content kept for backward compatibility.
 
 ## Contributing
 
