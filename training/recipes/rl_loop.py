@@ -91,6 +91,7 @@ from training.utils.rl.router_replay import build_r3_routing_matrices
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -358,24 +359,23 @@ def main(
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
 
-    # -- Resolve reference training shape --------------------------------------
-    reference_needed = cfg.kl_beta > 0 or cfg.infra.ref_training_shape_id is not None
+    # -- Resolve reference training shape ------------------------------------------
+    # ref_profile is non-None only when a *separate* reference trainer is needed.
+    # LoRA + kl_beta > 0 without an explicit ref shape: the policy trainer
+    # serves reference logprobs via a base-only handle (no extra GPU job).
     ref_profile = None
-    if reference_needed:
-        if not cfg.infra.ref_training_shape_id:
-            cfg.infra.ref_training_shape_id = auto_select_training_shape(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                trainer_role="reference",
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-            )
-            logger.info("Auto-selected reference training shape: %s", cfg.infra.ref_training_shape_id)
+    if cfg.infra.ref_training_shape_id:
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-
-    use_reference = ref_profile is not None
-    if not use_reference:
-        logger.info("No ref_training_shape_id set, skipping reference model")
+    elif cfg.kl_beta > 0 and cfg.lora_rank == 0:
+        cfg.infra.ref_training_shape_id = auto_select_training_shape(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            trainer_role="reference",
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+        )
+        logger.info("Auto-selected reference training shape: %s", cfg.infra.ref_training_shape_id)
+        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
 
     import time as _time
 
@@ -388,49 +388,40 @@ def main(
     _infra_start = _time.time()
 
     with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        # -- Create trainer jobs first (trainer owns the hot-load bucket) ------
+        # -- Provision trainer jobs ------------------------------------------------
         logger.info(
             "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
             prompt_groups_per_step,
             completions_per_prompt,
         )
 
-        if use_reference:
+        _cleanup = cleanup if cleanup_on_exit else None
+
+        def _make_trainer(role: str, profile, *, forward_only: bool = False):
+            is_ref = role == "reference"
+            return create_trainer_job(
+                rlor_mgr,
+                base_model=cfg.base_model,
+                infra=cfg.infra,
+                profile=profile,
+                lora_rank=cfg.lora_rank,
+                max_seq_len=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate,
+                display_name=f"grpo-{role}",
+                forward_only=forward_only,
+                job_id=cfg.reference_job_id if is_ref else cfg.policy_job_id,
+                base_url_override=cfg.reference_base_url if is_ref else cfg.policy_base_url,
+                cleanup=_cleanup,
+                on_status=_on_trainer_status,
+            )
+
+        if ref_profile is not None:
             _on_trainer_status("provisioning policy and reference trainers")
             with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(
-                    create_trainer_job,
-                    rlor_mgr,
-                    base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=policy_profile,
-                    lora_rank=cfg.lora_rank,
-                    max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate,
-                    display_name="grpo-policy",
-                    job_id=cfg.policy_job_id,
-                    base_url_override=cfg.policy_base_url,
-                    cleanup=cleanup if cleanup_on_exit else None,
-                    on_status=_on_trainer_status,
-                )
+                pol_fut = pool.submit(_make_trainer, "policy", policy_profile)
                 ref_fut = pool.submit(
-                    create_trainer_job,
-                    rlor_mgr,
-                    base_model=cfg.base_model,
-                    infra=cfg.infra,
-                    profile=ref_profile,
-                    lora_rank=cfg.lora_rank,
-                    max_seq_len=cfg.max_seq_len,
-                    learning_rate=cfg.learning_rate,
-                    display_name="grpo-reference",
-                    forward_only=True,
-                    job_id=cfg.reference_job_id,
-                    base_url_override=cfg.reference_base_url,
-                    cleanup=cleanup if cleanup_on_exit else None,
-                    on_status=_on_trainer_status,
+                    _make_trainer, "reference", ref_profile, forward_only=True,
                 )
-                # Collect both results so that if both fail we report
-                # both errors instead of swallowing the second one.
                 errors: list[str] = []
                 policy_ep = reference_ep = None
                 try:
@@ -445,26 +436,13 @@ def main(
                     raise RuntimeError(
                         "Trainer creation failed:\n" + "\n".join(errors)
                     )
-                policy_job_id = policy_ep.job_id
-                reference_job_id = reference_ep.job_id
         else:
-            policy_ep = create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=policy_profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name="grpo-policy",
-                job_id=cfg.policy_job_id,
-                base_url_override=cfg.policy_base_url,
-                cleanup=cleanup if cleanup_on_exit else None,
-                on_status=_on_trainer_status,
-            )
-            policy_job_id = policy_ep.job_id
+            _on_trainer_status("provisioning policy trainer")
+            policy_ep = _make_trainer("policy", policy_profile)
             reference_ep = None
-            reference_job_id = None
+
+        policy_job_id = policy_ep.job_id
+        reference_job_id = reference_ep.job_id if reference_ep else policy_ep.job_id
 
         # -- Connect deployment to the trainer's hot-load bucket ----------------
         dep_info = setup_or_reattach_deployment(
@@ -474,32 +452,28 @@ def main(
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         _timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-        policy = ReconnectableClient(
-            rlor_mgr,
-            policy_ep.job_id,
-            cfg.base_model,
-            cfg.lora_rank,
-            fw_api_key=api_key,
-            default_timeout=_timeout,
-            endpoint=policy_ep if cfg.policy_base_url else None,
-        )
-        if hasattr(policy, "close"):
-            stack.callback(policy.close)
-        reference = (
-            ReconnectableClient(
-                rlor_mgr,
-                reference_ep.job_id,
-                cfg.base_model,
-                cfg.lora_rank,
+
+        def _make_client(ep, *, base_only=False):
+            c = ReconnectableClient(
+                rlor_mgr, ep.job_id, cfg.base_model,
+                lora_rank=0 if base_only else cfg.lora_rank,
                 fw_api_key=api_key,
                 default_timeout=_timeout,
-                endpoint=reference_ep if cfg.reference_base_url else None,
+                endpoint=ep if (cfg.policy_base_url or cfg.reference_base_url) else None,
+                base_only=base_only,
             )
-            if reference_ep
-            else None
-        )
-        if reference is not None and hasattr(reference, "close"):
-            stack.callback(reference.close)
+            if hasattr(c, "close"):
+                stack.callback(c.close)
+            return c
+
+        policy = _make_client(policy_ep)
+
+        if reference_ep is not None:
+            reference = _make_client(reference_ep)
+        elif cfg.lora_rank > 0 and cfg.kl_beta > 0:
+            reference = policy.create_base_reference()
+        else:
+            reference = None
 
         import transformers
 
@@ -667,7 +641,7 @@ def main(
                 )
                 policy_data.append(policy_datum)
 
-                if use_reference:
+                if reference is not None:
                     reference_datum = tinker.Datum(
                         model_input=tinker.ModelInput.from_ints(tokens[:-1]),
                         loss_fn_inputs={
@@ -715,7 +689,7 @@ def main(
 
         def ref_forward(groups: list[PromptGroup]) -> None:
             """Compute reference logprobs for all prompt groups (one call)."""
-            if not use_reference:
+            if reference is None:
                 return
             all_ref_data = [d for pg in groups for d in pg.ref_data]
             try:
