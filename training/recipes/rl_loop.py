@@ -395,7 +395,7 @@ def main(
                 base_model=cfg.base_model,
                 infra=cfg.infra,
                 profile=profile,
-                lora_rank=0 if forward_only else cfg.lora_rank,
+                lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name=f"{cfg.policy_loss}-{role}",
