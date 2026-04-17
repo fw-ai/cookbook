@@ -4,17 +4,22 @@ Provides a clean API surface over the tinker training client.  Each method
 dispatches one request and blocks until the result is ready, with a
 configurable timeout to prevent indefinite hangs.
 
-No explicit retry or reconnect logic -- tinker's internal polling already
-retries transient HTTP errors (408, 5xx).  If the call fails (410, timeout,
-connection error), the exception propagates so the training loop can crash
-cleanly and resume from the last DCP checkpoint.
+Tinker's internal polling already retries transient HTTP errors (408, 5xx).
+However, 404 ("Trainer job not found or not running") can occur transiently
+when the gateway routing hasn't stabilized for a freshly-RUNNING trainer.
+This module adds retry logic for NotFoundError (404) around the dispatch +
+wait cycle so the orchestrator doesn't crash on these transient routing
+hiccups.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import time
+from typing import Callable, TypeVar
 
+import tinker
 from fireworks.training.sdk.client import (
     FiretitanServiceClient,
     FiretitanTrainingClient,
@@ -26,11 +31,61 @@ from tinker.types.future_retrieve_request import FutureRetrieveRequest as _Futur
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 DEFAULT_TIMEOUT_S: int = 3600
 """Default timeout for forward / forward_backward / optim_step (60 min)."""
 
 DCP_TIMEOUT_S: int = 2700
 """Default timeout for save_state / load_state_with_optimizer (45 min)."""
+
+_NOT_FOUND_MAX_RETRIES: int = 6
+"""Max number of retries when a NotFoundError (404) is raised during result
+retrieval.  Covers transient Tinker API gateway routing gaps that appear
+right after a trainer transitions to JOB_STATE_RUNNING."""
+
+_NOT_FOUND_BASE_DELAY_S: float = 2.0
+"""Base delay (seconds) for exponential back-off on NotFoundError retries."""
+
+_NOT_FOUND_MAX_DELAY_S: float = 30.0
+"""Cap on the back-off delay between NotFoundError retries."""
+
+
+def _retry_on_not_found(fn: Callable[[], _T], *, timeout: int) -> _T:
+    """Execute *fn* and retry on ``tinker.NotFoundError`` with back-off.
+
+    The 404 "Trainer job not found or not running" error can surface
+    transiently when the Tinker gateway hasn't fully registered a
+    freshly-RUNNING trainer.  Rather than crashing immediately (which
+    kills the orchestrator pod and wastes an expensive training step
+    already in flight), this helper retries the full dispatch-then-wait
+    cycle up to ``_NOT_FOUND_MAX_RETRIES`` times with capped exponential
+    back-off.
+
+    Non-404 errors propagate immediately.
+    """
+    last_exc: tinker.NotFoundError | None = None
+    for attempt in range(_NOT_FOUND_MAX_RETRIES + 1):
+        try:
+            return fn()
+        except tinker.NotFoundError as exc:
+            last_exc = exc
+            if attempt >= _NOT_FOUND_MAX_RETRIES:
+                break
+            delay = min(
+                _NOT_FOUND_BASE_DELAY_S * (2 ** attempt),
+                _NOT_FOUND_MAX_DELAY_S,
+            )
+            logger.warning(
+                "Transient 404 on result retrieval (attempt %d/%d), "
+                "retrying in %.1fs: %s",
+                attempt + 1,
+                _NOT_FOUND_MAX_RETRIES,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    raise last_exc  # type: ignore[misc]
 
 
 def _install_tinker_future_retrieve_compat() -> None:
@@ -53,8 +108,9 @@ class ReconnectableClient:
     """Training client wrapper: dispatch + wait with timeout.
 
     Each API call dispatches a single request to the trainer and blocks
-    until the result is ready (or the timeout expires).  No retry, no
-    reconnect -- failures propagate to the caller.
+    until the result is ready (or the timeout expires).  Transient 404
+    errors from the Tinker gateway are retried with exponential back-off;
+    all other failures propagate to the caller.
 
     For LoRA GRPO with KL regularisation, a single LoRA trainer can serve
     both policy and reference logprobs.  Use :meth:`create_base_reference`
@@ -126,17 +182,26 @@ class ReconnectableClient:
         return self._job_id
 
     def forward(self, data, loss_fn):
-        return self._client.forward(data, loss_fn).result(
+        return _retry_on_not_found(
+            lambda: self._client.forward(data, loss_fn).result(
+                timeout=self._default_timeout,
+            ),
             timeout=self._default_timeout,
         )
 
     def forward_backward(self, data, loss_fn: str = "cross_entropy", loss_fn_config=None):
-        return self._client.forward_backward(data, loss_fn, loss_fn_config=loss_fn_config).result(
+        return _retry_on_not_found(
+            lambda: self._client.forward_backward(
+                data, loss_fn, loss_fn_config=loss_fn_config,
+            ).result(timeout=self._default_timeout),
             timeout=self._default_timeout,
         )
 
     def forward_backward_custom(self, data, loss_fn):
-        return self._client.forward_backward_custom(data, loss_fn).result(
+        return _retry_on_not_found(
+            lambda: self._client.forward_backward_custom(data, loss_fn).result(
+                timeout=self._default_timeout,
+            ),
             timeout=self._default_timeout,
         )
 
@@ -150,7 +215,10 @@ class ReconnectableClient:
             kwargs["grad_accumulation_normalization"] = _normalize_grad_accumulation_normalization(
                 grad_accumulation_normalization
             )
-        return self._client.optim_step(params, **kwargs).result(
+        return _retry_on_not_found(
+            lambda: self._client.optim_step(params, **kwargs).result(
+                timeout=self._default_timeout,
+            ),
             timeout=self._default_timeout,
         )
 
