@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 import signal
 import logging
-import time
 from contextlib import ExitStack
 from typing import Any, Dict, List
 from dataclasses import field, dataclass
@@ -58,6 +57,7 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    validate_warm_start_config,
     CheckpointKind,
 )
 from training.utils.losses import make_batch_weighted_sft_loss_fn
@@ -136,11 +136,9 @@ class Config:
     format ``"job_id:checkpoint_name"``."""
 
     warm_start_from_adapter: str | None = None
-    """GCS URI of an HF PEFT adapter directory (containing
-    ``adapter_model.safetensors``). When set, initializes LoRA weights from
-    the adapter at training start — weights only, fresh optimizer / LR
-    schedule / data cursor. Mutually exclusive with ``init_from_checkpoint``.
-    Requires ``lora_rank > 0``. Matches V1 ``WithInputPeftAddon`` semantics."""
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
 
     grad_clip_norm: float = 1.0
     """Max gradient norm for clipping. 0 = no clipping."""
@@ -287,17 +285,11 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
-
-    if cfg.warm_start_from_adapter and cfg.init_from_checkpoint:
-        raise ValueError(
-            "warm_start_from_adapter (HF PEFT adapter, weights-only) and "
-            "init_from_checkpoint (DCP resume) are mutually exclusive."
-        )
-    if cfg.warm_start_from_adapter and cfg.lora_rank == 0:
-        raise ValueError(
-            "warm_start_from_adapter requires lora_rank > 0 (LoRA training). "
-            "For full-param continue-training, use base_model instead."
-        )
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
 
     if cfg.grad_accum > 1:
         logger.warning(
@@ -506,19 +498,12 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
-
-        # Warm-start from HF PEFT adapter. V1 priority order: job-own auto-resume
-        # (via log_path/checkpoints.jsonl inside resolve_resume) wins; the adapter
-        # load only runs on a fresh start.
-        if resume_info is None and cfg.warm_start_from_adapter:
-            logger.info(
-                "Warm-start: loading HF adapter from %s",
-                cfg.warm_start_from_adapter,
-            )
-            t0 = time.time()
-            client.load_adapter(cfg.warm_start_from_adapter)
-            logger.info("Adapter loaded (%.1fs)", time.time() - t0)
+        resume_info = resolve_resume(
+            client,
+            cfg.log_path,
+            cfg.init_from_checkpoint,
+            cfg.warm_start_from_adapter,
+        )
 
         step = resume_info.step if resume_info else 0
         data_consumed = resume_info.data_consumed if resume_info else 0

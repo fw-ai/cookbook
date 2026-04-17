@@ -188,19 +188,7 @@ class ReconnectableClient:
     def load_adapter(self, adapter_path: str, timeout: int = DCP_TIMEOUT_S):
         """Load HF PEFT adapter weights into the current LoRA session.
 
-        Weights-only load (no optimizer, no LR schedule, no data cursor).
-        Intended for cross-job warm-start from a promoted Model resource
-        or an uploaded HF adapter.
-
-        Args:
-            adapter_path: ``gs://`` URI or absolute local path to an HF
-                PEFT adapter directory (must contain
-                ``adapter_model.safetensors``).
-
-        Raises:
-            AttributeError: underlying SDK does not expose ``load_adapter``
-                (requires fireworks-ai-python with the load_adapter client
-                method; see PR #122 in stainless-sdks/fireworks-ai-python).
+        Weights-only (no optimizer, no LR schedule, no data cursor).
         """
         return self._client.load_adapter(adapter_path).result(timeout=timeout)
 

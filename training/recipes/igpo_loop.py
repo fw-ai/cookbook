@@ -63,6 +63,7 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    validate_warm_start_config,
     CheckpointKind,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
@@ -132,6 +133,10 @@ class Config:
     reference_base_url: str | None = None
     """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
     init_from_checkpoint: str | None = None
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
     output_model_id: str | None = None
 
     step_timeout: int = 0
@@ -275,6 +280,11 @@ def main(
         cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment,
         output_model_id=cfg.output_model_id,
     )
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -412,7 +422,12 @@ def main(
         )
 
         # Resume
-        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = resolve_resume(
+            policy,
+            cfg.log_path,
+            cfg.init_from_checkpoint,
+            cfg.warm_start_from_adapter,
+        )
         step_offset = resume_info.step if resume_info else 0
 
         if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:

@@ -61,16 +61,40 @@ def get_last_checkpoint(log_path: str) -> dict[str, Any] | None:
     return records[-1] if records else None
 
 
+def validate_warm_start_config(
+    *,
+    warm_start_from_adapter: str | None,
+    init_from_checkpoint: str | None,
+    lora_rank: int,
+) -> None:
+    """Validate cross-field constraints on warm-start inputs.
+
+    Raises ``ValueError`` if combinations are invalid.
+    """
+    if warm_start_from_adapter and init_from_checkpoint:
+        raise ValueError(
+            "warm_start_from_adapter and init_from_checkpoint are mutually exclusive"
+        )
+    if warm_start_from_adapter and lora_rank == 0:
+        raise ValueError("warm_start_from_adapter requires lora_rank > 0")
+
+
 def resolve_resume(
     client: Any,
     log_path: str,
     init_from_checkpoint: str | None = None,
+    warm_start_from_adapter: str | None = None,
 ) -> ResumeInfo | None:
-    """Determine resume state from ``checkpoints.jsonl``.
+    """Determine resume state.
 
-    Returns ``None`` for a completely fresh start (no checkpoint to load).
-    When a checkpoint is found or *init_from_checkpoint* is set, the
-    weights + optimizer state are loaded into *client* before returning.
+    Priority:
+      1. ``init_from_checkpoint`` — explicit DCP load (weights + optimizer).
+      2. Last entry in ``log_path/checkpoints.jsonl`` — auto-resume.
+      3. ``warm_start_from_adapter`` — HF PEFT adapter (weights-only).
+      4. Fresh start.
+
+    Returns ``None`` only for case 4. Higher-priority paths load into
+    *client* before returning.
     """
     if init_from_checkpoint:
         source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
@@ -95,6 +119,13 @@ def resolve_resume(
             data_consumed=last.get("data_consumed", 0),
             source_job_id=last.get("source_job_id"),
         )
+
+    if warm_start_from_adapter:
+        logger.info("Fresh start with HF adapter: %s", warm_start_from_adapter)
+        t0 = time.time()
+        client.load_adapter(warm_start_from_adapter)
+        logger.info("Adapter loaded (%.1fs)", time.time() - t0)
+        return ResumeInfo(step=0, data_consumed=0, source_job_id=None)
 
     logger.info("Starting at step 0 from base model (no checkpoint)")
     return None
