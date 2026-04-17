@@ -26,7 +26,6 @@ import re
 import json
 import asyncio
 import logging
-from functools import partial
 from contextlib import ExitStack
 from typing import List, Optional
 from dataclasses import field, dataclass
@@ -391,33 +390,27 @@ def main(
 
         _cleanup = cleanup if cleanup_on_exit else None
 
-        _make_trainer = partial(
-            create_trainer_job,
-            rlor_mgr,
-            base_model=cfg.base_model,
-            infra=cfg.infra,
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            cleanup=_cleanup,
-            on_status=_on_trainer_status,
-        )
-
-        policy_args = dict(
-            profile=policy_profile, display_name=f"{cfg.policy_loss}-policy",
-            job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
-        )
-        reference_args = dict(
-            profile=ref_profile, display_name=f"{cfg.policy_loss}-reference",
-            job_id=cfg.reference_job_id, base_url_override=cfg.reference_base_url,
-            forward_only=True,
-        )
-
         if ref_profile is not None:
             _on_trainer_status("provisioning policy and reference trainers")
             with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(_make_trainer, **policy_args)
-                ref_fut = pool.submit(_make_trainer, **reference_args)
+                pol_fut = pool.submit(
+                    create_trainer_job, rlor_mgr,
+                    base_model=cfg.base_model, infra=cfg.infra, profile=policy_profile,
+                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                    learning_rate=cfg.learning_rate,
+                    display_name=f"{cfg.policy_loss}-policy",
+                    job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+                    cleanup=_cleanup, on_status=_on_trainer_status,
+                )
+                ref_fut = pool.submit(
+                    create_trainer_job, rlor_mgr,
+                    base_model=cfg.base_model, infra=cfg.infra, profile=ref_profile,
+                    lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                    learning_rate=cfg.learning_rate,
+                    display_name=f"{cfg.policy_loss}-reference", forward_only=True,
+                    job_id=cfg.reference_job_id, base_url_override=cfg.reference_base_url,
+                    cleanup=_cleanup, on_status=_on_trainer_status,
+                )
                 errors: list[str] = []
                 policy_ep = reference_ep = None
                 try:
@@ -434,7 +427,15 @@ def main(
                     )
         else:
             _on_trainer_status("provisioning policy trainer")
-            policy_ep = _make_trainer(**policy_args)
+            policy_ep = create_trainer_job(
+                rlor_mgr,
+                base_model=cfg.base_model, infra=cfg.infra, profile=policy_profile,
+                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate,
+                display_name=f"{cfg.policy_loss}-policy",
+                job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+                cleanup=_cleanup, on_status=_on_trainer_status,
+            )
             reference_ep = None
 
         policy_job_id = policy_ep.job_id
