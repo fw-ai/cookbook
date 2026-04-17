@@ -409,11 +409,11 @@ def main(
             )
 
         policy_args = dict(
-            profile=policy_profile, display_name="grpo-policy",
+            profile=policy_profile, display_name=f"{cfg.policy_loss}-policy",
             job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
         )
         reference_args = dict(
-            profile=ref_profile, display_name="grpo-reference",
+            profile=ref_profile, display_name=f"{cfg.policy_loss}-reference",
             job_id=cfg.reference_job_id, base_url_override=cfg.reference_base_url,
             forward_only=True,
         )
