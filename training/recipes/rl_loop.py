@@ -604,6 +604,7 @@ def main(
             temperature=cfg.temperature,
             max_seq_len=cfg.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
+            prompt_cache_max_len=0,
         )
         if cfg.router_replay:
             sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
