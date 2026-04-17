@@ -33,6 +33,8 @@ def _make_client(inner: _FakeInnerClient) -> ReconnectableClient:
     client._closed = False
     client._endpoint = None
     client._job_id = "job-test"
+    client._service = None
+    client._owns_service = True
     return client
 
 
