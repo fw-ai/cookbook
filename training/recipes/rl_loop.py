@@ -26,6 +26,7 @@ import re
 import json
 import asyncio
 import logging
+from functools import partial
 from contextlib import ExitStack
 from typing import List, Optional
 from dataclasses import field, dataclass
@@ -390,23 +391,17 @@ def main(
 
         _cleanup = cleanup if cleanup_on_exit else None
 
-        def _make_trainer(*, profile, display_name, job_id, base_url_override,
-                          forward_only: bool = False):
-            return create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name=display_name,
-                forward_only=forward_only,
-                job_id=job_id,
-                base_url_override=base_url_override,
-                cleanup=_cleanup,
-                on_status=_on_trainer_status,
-            )
+        _make_trainer = partial(
+            create_trainer_job,
+            rlor_mgr,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            cleanup=_cleanup,
+            on_status=_on_trainer_status,
+        )
 
         policy_args = dict(
             profile=policy_profile, display_name=f"{cfg.policy_loss}-policy",
