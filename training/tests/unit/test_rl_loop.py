@@ -208,6 +208,115 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["wandb_finished"] == 0
 
 
+def test_lora_shared_reference_creates_single_trainer(monkeypatch):
+    """LoRA + kl_beta > 0 + no ref shape → one trainer, base-only reference handle."""
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {
+        "trainer_calls": [],
+        "deleted_jobs": [],
+        "scaled_deployments": [],
+        "base_ref_created": False,
+    }
+
+    class FakeRlorMgr:
+        def resolve_training_profile(self, shape_id):
+            return SimpleNamespace(
+                deployment_shape_version="accounts/test/deploymentShapes/dep/versions/1",
+                pipeline_parallelism=1,
+                max_supported_context_length=128,
+                training_shape_version="accounts/test/trainingShapes/ts/versions/1",
+                accelerator_type="NVIDIA_B200",
+                accelerator_count=8,
+            )
+
+        def cancel(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
+
+    class FakeDeployMgr:
+        inference_url = "https://inference.unit.test"
+        boot_time_s = 1.0
+
+        def scale_to_zero(self, deployment_id):
+            events["scaled_deployments"].append(deployment_id)
+
+    class FakeBaseRef:
+        job_id = "policy-job"
+        inner = object()
+
+        def forward(self, data, loss_fn):
+            return SimpleNamespace(loss_fn_outputs=[])
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.job_id = "policy-job"
+            self.inner = object()
+
+        def create_base_reference(self):
+            events["base_ref_created"] = True
+            return FakeBaseRef()
+
+        def save_state(self, name, timeout=None):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=name, snapshot_name=name)
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return name
+
+    def fake_create_trainer_job(*args, **kwargs):
+        events["trainer_calls"].append(kwargs.get("display_name"))
+        return SimpleNamespace(
+            job_id="policy-job", job_name="jobs/policy-job", base_url="https://unit.test",
+        )
+
+    async def fake_run_rl_loop(**kwargs):
+        events["run_loop_kwargs"] = kwargs
+        return 0
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *a, **kw: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *a, **kw: None)
+    monkeypatch.setattr(module, "setup_or_reattach_deployment", lambda *a, **kw: SimpleNamespace(inference_model="m"))
+    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
+    monkeypatch.setattr(module, "DeploymentSampler", lambda **kw: None)
+    monkeypatch.setattr(module, "WeightSyncer", lambda **kw: None)
+    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [])
+    monkeypatch.setattr(module, "build_loss_fn", lambda **kw: ("builder", kw))
+    monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
+
+    cfg = module.Config(
+        log_path="/tmp/lora_shared_ref_test",
+        base_model="accounts/test/models/qwen3-4b",
+        dataset="/tmp/prompts.jsonl",
+        kl_beta=0.1,
+        lora_rank=64,
+        deployment=module.DeployConfig(deployment_id="dep-1", tokenizer_model="Qwen/Qwen3-4B"),
+        infra=module.InfraConfig(training_shape_id="ts-lora"),
+    )
+
+    result = module.main(
+        cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr(), cleanup_on_exit=True,
+    )
+
+    assert events["trainer_calls"] == ["grpo-policy"], (
+        "LoRA shared ref should provision exactly one trainer (policy only)"
+    )
+    assert events["base_ref_created"] is True, (
+        "create_base_reference() must be called for shared LoRA reference"
+    )
+
+
 def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
     """Builtin policy_loss + PP>1 should raise immediately."""
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")

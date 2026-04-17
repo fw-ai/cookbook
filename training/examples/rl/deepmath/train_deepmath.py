@@ -73,6 +73,10 @@ class TrainArgs:
     temperature: float = 1.0
     max_completion_tokens: int = 30 * 1024
     prompt_groups_per_step: int = 32
+    lora_rank: int = 0
+    """LoRA rank (0 = full-param).  When > 0, auto_select_training_shape
+    picks a LoRA training shape and the reference model reuses the policy
+    trainer (no extra GPUs)."""
     router_replay: bool = False
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files."""
@@ -118,6 +122,8 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--max-completion-tokens", type=int)
 
     parser.add_argument("--prompt-groups-per-step", type=int)
+    parser.add_argument("--lora-rank", type=int,
+                        help="LoRA rank (0 = full-param, e.g. 64 or 128 for LoRA)")
 
     parser.add_argument("--trajectory-dir",
                         help="Directory to save per-step trajectory JSONL files")
@@ -291,6 +297,7 @@ def main():
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=args.max_rows,
+        lora_rank=args.lora_rank,
         prompt_groups_per_step=args.prompt_groups_per_step,
         trajectory_dir=args.trajectory_dir,
         tis=TISConfig(cap=2.0),
