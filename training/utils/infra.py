@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_H200", "US_VIRGINIA_1"),
     ("NVIDIA_B200", "US_OHIO_1"),
+    ("NVIDIA_B300", "NA_BRITISHCOLUMBIA_1"),
 )
 
 _TRAINER_CANCEL_GRACE_ENV = "FW_TRAINER_CANCEL_GRACE_PERIOD_S"
