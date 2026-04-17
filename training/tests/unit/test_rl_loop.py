@@ -208,17 +208,18 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     assert events["wandb_finished"] == 0
 
 
-def test_lora_shared_reference_creates_single_trainer(monkeypatch):
-    """LoRA + kl_beta > 0 + no ref shape → one trainer, base-only reference handle."""
+def test_lora_with_kl_provisions_separate_reference_trainer(monkeypatch):
+    """LoRA + kl_beta > 0 must provision a *separate* forward-only reference
+    trainer with lora_rank=0, not piggyback on the policy trainer.
+
+    Sharing the policy trainer for reference would require trainer multi-session
+    mode (--max-lora-modules-gpu>=2), which is currently SUPERUSER_ONLY in the
+    control plane API.
+    """
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
 
-    events: dict[str, object] = {
-        "trainer_calls": [],
-        "deleted_jobs": [],
-        "scaled_deployments": [],
-        "base_ref_created": False,
-    }
+    events: dict[str, object] = {"trainer_calls": []}
 
     class FakeRlorMgr:
         def resolve_training_profile(self, shape_id):
@@ -232,33 +233,22 @@ def test_lora_shared_reference_creates_single_trainer(monkeypatch):
             )
 
         def cancel(self, job_id):
-            events["deleted_jobs"].append(job_id)
+            pass
 
         def delete(self, job_id):
-            self.cancel(job_id)
+            pass
 
     class FakeDeployMgr:
         inference_url = "https://inference.unit.test"
         boot_time_s = 1.0
 
         def scale_to_zero(self, deployment_id):
-            events["scaled_deployments"].append(deployment_id)
-
-    class FakeBaseRef:
-        job_id = "policy-job"
-        inner = object()
-
-        def forward(self, data, loss_fn):
-            return SimpleNamespace(loss_fn_outputs=[])
+            pass
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
-            self.job_id = "policy-job"
+            self.job_id = kwargs.get("job_id", "job-x")
             self.inner = object()
-
-        def create_base_reference(self):
-            events["base_ref_created"] = True
-            return FakeBaseRef()
 
         def save_state(self, name, timeout=None):
             return SimpleNamespace(path=name)
@@ -273,13 +263,17 @@ def test_lora_shared_reference_creates_single_trainer(monkeypatch):
             return name
 
     def fake_create_trainer_job(*args, **kwargs):
-        events["trainer_calls"].append(kwargs.get("display_name"))
+        name = kwargs.get("display_name")
+        events["trainer_calls"].append({
+            "name": name,
+            "lora_rank": kwargs.get("lora_rank"),
+            "forward_only": kwargs.get("forward_only", False),
+        })
         return SimpleNamespace(
-            job_id="policy-job", job_name="jobs/policy-job", base_url="https://unit.test",
+            job_id=f"{name}-job", job_name=f"jobs/{name}-job", base_url="https://unit.test",
         )
 
     async def fake_run_rl_loop(**kwargs):
-        events["run_loop_kwargs"] = kwargs
         return 0
 
     monkeypatch.setattr(module, "setup_wandb", lambda *a, **kw: None)
@@ -296,25 +290,33 @@ def test_lora_shared_reference_creates_single_trainer(monkeypatch):
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
 
     cfg = module.Config(
-        log_path="/tmp/lora_shared_ref_test",
+        log_path="/tmp/lora_kl_ref_test",
         base_model="accounts/test/models/qwen3-4b",
         dataset="/tmp/prompts.jsonl",
         kl_beta=0.1,
         lora_rank=64,
         deployment=module.DeployConfig(deployment_id="dep-1", tokenizer_model="Qwen/Qwen3-4B"),
-        infra=module.InfraConfig(training_shape_id="ts-lora"),
+        infra=module.InfraConfig(
+            training_shape_id="ts-lora",
+            ref_training_shape_id="ts-ref",
+        ),
     )
 
-    result = module.main(
-        cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr(), cleanup_on_exit=True,
+    module.main(cfg, rlor_mgr=FakeRlorMgr(), deploy_mgr=FakeDeployMgr(), cleanup_on_exit=True)
+
+    names = sorted(c["name"] for c in events["trainer_calls"])
+    assert names == ["grpo-policy", "grpo-reference"], (
+        f"LoRA + KL must provision both policy and reference trainers, got: {names}"
     )
 
-    assert events["trainer_calls"] == ["grpo-policy"], (
-        "LoRA shared ref should provision exactly one trainer (policy only)"
+    by_name = {c["name"]: c for c in events["trainer_calls"]}
+    assert by_name["grpo-policy"]["lora_rank"] == 64
+    assert by_name["grpo-policy"]["forward_only"] is False
+    assert by_name["grpo-reference"]["lora_rank"] == 0, (
+        "Reference trainer must use lora_rank=0 (full-param forward-only), "
+        "even when policy is LoRA"
     )
-    assert events["base_ref_created"] is True, (
-        "create_base_reference() must be called for shared LoRA reference"
-    )
+    assert by_name["grpo-reference"]["forward_only"] is True
 
 
 def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
