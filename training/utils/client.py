@@ -55,13 +55,6 @@ class ReconnectableClient:
     Each API call dispatches a single request to the trainer and blocks
     until the result is ready (or the timeout expires).  No retry, no
     reconnect -- failures propagate to the caller.
-
-    For LoRA GRPO with KL regularisation, a single LoRA trainer can serve
-    both policy and reference logprobs.  Use :meth:`create_base_reference`
-    to obtain a second ``ReconnectableClient`` that shares the same trainer
-    job but creates a ``base-<hex>`` model handle (adapters disabled).
-    This avoids provisioning a second trainer purely for reference forward
-    passes.
     """
 
     def __init__(
@@ -73,14 +66,11 @@ class ReconnectableClient:
         fw_api_key: str | None = None,
         default_timeout: int = DEFAULT_TIMEOUT_S,
         endpoint: TrainerServiceEndpoint | None = None,
-        *,
-        base_only: bool = False,
     ):
         self._rlor_mgr = rlor_mgr
         self._job_id = job_id
         self._base_model = base_model
         self._lora_rank = lora_rank
-        self._base_only = base_only
         self._fw_api_key = fw_api_key or os.environ.get("FIREWORKS_API_KEY")
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
@@ -90,26 +80,6 @@ class ReconnectableClient:
             self._use_endpoint(endpoint)
         else:
             self._connect()
-
-    def create_base_reference(self) -> ReconnectableClient:
-        """Create a reference client sharing this trainer's job.
-
-        Returns a new ``ReconnectableClient`` backed by a ``base-<hex>``
-        model handle on the same trainer.  Forward passes through the
-        returned client run with all LoRA adapters disabled, giving
-        base-model logprobs without a second GPU allocation.
-        """
-        assert self._endpoint is not None, "policy client must be connected first"
-        return ReconnectableClient(
-            rlor_mgr=self._rlor_mgr,
-            job_id=self._job_id,
-            base_model=self._base_model,
-            lora_rank=0,
-            fw_api_key=self._fw_api_key,
-            default_timeout=self._default_timeout,
-            endpoint=self._endpoint,
-            base_only=True,
-        )
 
     @property
     def inner(self) -> FiretitanTrainingClient:
@@ -248,15 +218,10 @@ class ReconnectableClient:
             base_url=ep.base_url,
             api_key=self._fw_api_key,
         )
-        if self._base_only:
-            self._client = svc.create_base_training_client(
-                base_model=self._base_model,
-            )
-        else:
-            self._client = svc.create_training_client(
-                base_model=self._base_model,
-                lora_rank=self._lora_rank,
-            )
+        self._client = svc.create_training_client(
+            base_model=self._base_model,
+            lora_rank=self._lora_rank,
+        )
         self._endpoint = ep
 
     def _connect(self) -> None:

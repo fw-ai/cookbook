@@ -95,11 +95,11 @@ overrides still take precedence.
 | --- | --- |
 | `lora_rank` | Rank of the LoRA adapter (e.g. `64`, `128`) |
 
-When `lora_rank > 0` and no explicit `ref_training_shape_id` is given,
-the RL loop automatically reuses the policy trainer for reference
-logprobs by creating a base-only model handle (adapters disabled).
-This halves GPU cost compared to provisioning a separate reference
-trainer.
+When `kl_beta > 0` the RL loop provisions a separate forward-only
+reference trainer (with `lora_rank=0`, full-param frozen base) in
+addition to the LoRA policy trainer. Auto-selection picks an
+appropriate validated reference shape unless `ref_training_shape_id`
+is set explicitly.
 
 **DPO / ORPO** -- also requires:
 

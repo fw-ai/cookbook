@@ -7,7 +7,7 @@ name = "fireworks-training-cookbook"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fireworks-ai[training]>=1.0.0a62,<2",  # >=a60 for create_base_training_client
+    "fireworks-ai[training]>=1.0.0a62,<2",
     "tqdm",
     "torch",
     "datasets",
