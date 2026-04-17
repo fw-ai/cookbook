@@ -24,7 +24,6 @@ from __future__ import annotations
 import os
 import re
 import json
-import signal
 import asyncio
 import logging
 from contextlib import ExitStack
@@ -40,6 +39,7 @@ from training.utils import (
     DEFAULT_ADAM,
     ConcurrencyConfig,
     InfraConfig,
+    install_signal_handlers,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
@@ -286,14 +286,7 @@ def main(
     cfg = config
     runner = RunnerIO(cfg.runner)
 
-    # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
-    def _signal_handler(signum, frame):
-        name = signal.Signals(signum).name
-        logger.warning("Received %s — raising SystemExit for cleanup", name)
-        raise SystemExit(f"Terminated by {name}")
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
+    install_signal_handlers()
 
     validate_config(
         cfg.base_model,
@@ -397,8 +390,8 @@ def main(
 
         _cleanup = cleanup if cleanup_on_exit else None
 
-        def _make_trainer(role: str, profile, *, forward_only: bool = False):
-            is_ref = role == "reference"
+        def _make_trainer(*, profile, display_name, job_id, base_url_override,
+                          forward_only: bool = False):
             return create_trainer_job(
                 rlor_mgr,
                 base_model=cfg.base_model,
@@ -407,21 +400,29 @@ def main(
                 lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
-                display_name=f"grpo-{role}",
+                display_name=display_name,
                 forward_only=forward_only,
-                job_id=cfg.reference_job_id if is_ref else cfg.policy_job_id,
-                base_url_override=cfg.reference_base_url if is_ref else cfg.policy_base_url,
+                job_id=job_id,
+                base_url_override=base_url_override,
                 cleanup=_cleanup,
                 on_status=_on_trainer_status,
             )
 
+        policy_args = dict(
+            profile=policy_profile, display_name="grpo-policy",
+            job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+        )
+        reference_args = dict(
+            profile=ref_profile, display_name="grpo-reference",
+            job_id=cfg.reference_job_id, base_url_override=cfg.reference_base_url,
+            forward_only=True,
+        )
+
         if ref_profile is not None:
             _on_trainer_status("provisioning policy and reference trainers")
             with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(_make_trainer, "policy", policy_profile)
-                ref_fut = pool.submit(
-                    _make_trainer, "reference", ref_profile, forward_only=True,
-                )
+                pol_fut = pool.submit(_make_trainer, **policy_args)
+                ref_fut = pool.submit(_make_trainer, **reference_args)
                 errors: list[str] = []
                 policy_ep = reference_ep = None
                 try:
@@ -438,7 +439,7 @@ def main(
                     )
         else:
             _on_trainer_status("provisioning policy trainer")
-            policy_ep = _make_trainer("policy", policy_profile)
+            policy_ep = _make_trainer(**policy_args)
             reference_ep = None
 
         policy_job_id = policy_ep.job_id
@@ -462,8 +463,7 @@ def main(
                 endpoint=ep if (cfg.policy_base_url or cfg.reference_base_url) else None,
                 base_only=base_only,
             )
-            if hasattr(c, "close"):
-                stack.callback(c.close)
+            stack.callback(c.close)
             return c
 
         policy = _make_client(policy_ep)

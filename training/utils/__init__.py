@@ -38,6 +38,7 @@ __all__ = [
     "EvalFn",
     "WeightSyncConfig",
     "InfraConfig",
+    "install_signal_handlers",
     "ReconnectableClient",
     "ResourceCleanup",
     "RewardFn",
@@ -150,5 +151,5 @@ from training.utils.logging import (
     log_metrics_json,
     compute_pass_at_k,
 )
-from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
+from training.utils.runner import RunnerConfig, RunnerIO, RunStatus, install_signal_handlers
 from training.utils.validation import validate_config, validate_preflight
