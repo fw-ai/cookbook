@@ -360,21 +360,20 @@ def main(
         )
 
     # -- Resolve reference training shape ------------------------------------------
-    # When kl_beta > 0 we need reference logprobs from a frozen base model.
-    # Always provision a *separate* forward-only reference trainer with
-    # lora_rank=0 (full-param frozen base) — including for LoRA policy.
-    # Sharing the policy trainer for reference would require trainer
-    # multi-session mode (--max-lora-modules-gpu>=2), which is currently
-    # SUPERUSER_ONLY in the control plane API.
+    # ref_profile is non-None only when a *separate* reference trainer is needed.
+    # LoRA + kl_beta > 0 without an explicit ref shape: the policy trainer
+    # serves reference logprobs via a base-only model handle (no extra GPU job).
+    # See create_base_reference() in utils/client.py — both clients share one
+    # FiretitanServiceClient (one session) so they don't reset each other.
     ref_profile = None
     if cfg.infra.ref_training_shape_id:
         ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-    elif cfg.kl_beta > 0:
+    elif cfg.kl_beta > 0 and cfg.lora_rank == 0:
         cfg.infra.ref_training_shape_id = auto_select_training_shape(
             rlor_mgr,
             base_model=cfg.base_model,
             trainer_role="reference",
-            lora_rank=0,
+            lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
         )
         logger.info("Auto-selected reference training shape: %s", cfg.infra.ref_training_shape_id)
@@ -407,7 +406,7 @@ def main(
                 base_model=cfg.base_model,
                 infra=cfg.infra,
                 profile=profile,
-                lora_rank=0 if is_ref else cfg.lora_rank,
+                lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 display_name=f"grpo-{role}",
@@ -456,10 +455,10 @@ def main(
 
         _timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
 
-        def _make_client(ep, *, lora_rank):
+        def _make_client(ep):
             c = ReconnectableClient(
                 rlor_mgr, ep.job_id, cfg.base_model,
-                lora_rank=lora_rank,
+                lora_rank=cfg.lora_rank,
                 fw_api_key=api_key,
                 default_timeout=_timeout,
                 endpoint=ep if (cfg.policy_base_url or cfg.reference_base_url) else None,
@@ -468,8 +467,18 @@ def main(
                 stack.callback(c.close)
             return c
 
-        policy = _make_client(policy_ep, lora_rank=cfg.lora_rank)
-        reference = _make_client(reference_ep, lora_rank=0) if reference_ep is not None else None
+        policy = _make_client(policy_ep)
+
+        if reference_ep is not None:
+            reference = _make_client(reference_ep)
+        elif cfg.lora_rank > 0 and cfg.kl_beta > 0:
+            # Share the policy trainer's session: base-only model handle, no
+            # second trainer, no second create_session (which would unload the
+            # policy LoRA).
+            reference = policy.create_base_reference()
+            stack.callback(reference.close)
+        else:
+            reference = None
 
         import transformers
 
