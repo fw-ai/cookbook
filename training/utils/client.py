@@ -55,6 +55,18 @@ class ReconnectableClient:
     Each API call dispatches a single request to the trainer and blocks
     until the result is ready (or the timeout expires).  No retry, no
     reconnect -- failures propagate to the caller.
+
+    For LoRA GRPO with KL regularisation, a single LoRA trainer can serve
+    both policy and reference logprobs.  Use :meth:`create_base_reference`
+    to obtain a second ``ReconnectableClient`` that shares the same trainer
+    job *and the same session* but operates on a ``base-<hex>`` model handle
+    (no LoRA adapter).  Sharing the service client is essential — creating
+    a second :class:`FiretitanServiceClient` would create a second session
+    and reset the trainer, unloading the policy LoRA.
+
+    The two clients must not dispatch concurrent requests; the trainer
+    serialises ops per session.  The cookbook RL loop already alternates
+    policy and reference forward passes synchronously.
     """
 
     def __init__(
@@ -66,20 +78,53 @@ class ReconnectableClient:
         fw_api_key: str | None = None,
         default_timeout: int = DEFAULT_TIMEOUT_S,
         endpoint: TrainerServiceEndpoint | None = None,
+        *,
+        service: FiretitanServiceClient | None = None,
+        base_only: bool = False,
     ):
         self._rlor_mgr = rlor_mgr
         self._job_id = job_id
         self._base_model = base_model
         self._lora_rank = lora_rank
+        self._base_only = base_only
         self._fw_api_key = fw_api_key or os.environ.get("FIREWORKS_API_KEY")
         self._default_timeout = default_timeout
         self._endpoint: TrainerServiceEndpoint | None = None
+        self._service: FiretitanServiceClient | None = service
         self._client: FiretitanTrainingClient | None = None
+        self._owns_service = service is None
         self._closed = False
         if endpoint:
             self._use_endpoint(endpoint)
         else:
             self._connect()
+
+    def create_base_reference(self) -> ReconnectableClient:
+        """Create a base-only reference client sharing this trainer's session.
+
+        Returns a new :class:`ReconnectableClient` that reuses the same
+        :class:`FiretitanServiceClient` (and therefore the same session) as
+        this client, but issues forward passes against a ``base-<hex>``
+        model handle (LoRA adapter disabled).
+
+        The returned client must NOT be used concurrently with the policy
+        client; calls are serialised through the shared session.  Do not
+        call ``forward_backward`` or ``optim_step`` on it.
+        """
+        assert self._endpoint is not None and self._service is not None, (
+            "policy client must be connected before creating a base reference"
+        )
+        return ReconnectableClient(
+            rlor_mgr=self._rlor_mgr,
+            job_id=self._job_id,
+            base_model=self._base_model,
+            lora_rank=0,
+            fw_api_key=self._fw_api_key,
+            default_timeout=self._default_timeout,
+            endpoint=self._endpoint,
+            service=self._service,
+            base_only=True,
+        )
 
     @property
     def inner(self) -> FiretitanTrainingClient:
@@ -158,6 +203,12 @@ class ReconnectableClient:
         Best-effort flush queued telemetry, then stop those tasks before remote
         trainer cleanup so local tasks do not continue talking to a trainer
         that has already been deleted.
+
+        When this client shares its :class:`FiretitanServiceClient` with
+        another :class:`ReconnectableClient` (e.g. created via
+        :meth:`create_base_reference`), this client does not own the holder
+        and skips the holder/telemetry teardown — the owning client will
+        clean it up.
         """
         if self._closed:
             return
@@ -166,7 +217,7 @@ class ReconnectableClient:
         client = self._client
         self._client = None
         self._endpoint = None
-        if client is None:
+        if client is None or not self._owns_service:
             return
 
         holder = client.holder
@@ -214,14 +265,20 @@ class ReconnectableClient:
     # -- Internal --------------------------------------------------------------
 
     def _use_endpoint(self, ep: TrainerServiceEndpoint) -> None:
-        svc = FiretitanServiceClient(
-            base_url=ep.base_url,
-            api_key=self._fw_api_key,
-        )
-        self._client = svc.create_training_client(
-            base_model=self._base_model,
-            lora_rank=self._lora_rank,
-        )
+        if self._service is None:
+            self._service = FiretitanServiceClient(
+                base_url=ep.base_url,
+                api_key=self._fw_api_key,
+            )
+        if self._base_only:
+            self._client = self._service.create_base_training_client(
+                base_model=self._base_model,
+            )
+        else:
+            self._client = self._service.create_training_client(
+                base_model=self._base_model,
+                lora_rank=self._lora_rank,
+            )
         self._endpoint = ep
 
     def _connect(self) -> None:
