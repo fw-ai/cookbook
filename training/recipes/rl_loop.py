@@ -402,9 +402,6 @@ def main(
                     job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
                     cleanup=_cleanup, on_status=_on_trainer_status,
                 )
-                # Reference is forward-only on base weights: no learning_rate
-                # (never optimised) and no LoRA adapters (would init to zero
-                # and never update -- logprobs equal base anyway).
                 ref_fut = pool.submit(
                     create_trainer_job, rlor_mgr,
                     base_model=cfg.base_model, infra=cfg.infra, profile=ref_profile,
