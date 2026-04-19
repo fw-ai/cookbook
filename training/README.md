@@ -138,7 +138,46 @@ deploy_mgr.delete(deployment.deployment_id)              # see note on async del
 
 **Async cleanup**: `DeploymentManager.delete(deployment_id)` returns before the backing deployed model is fully undeployed; a subsequent `DELETE /models/<id>` can fail with "cannot delete model, found 1 active deployed models" until propagation completes (~30s). Retry the model delete or poll the deployment GET for 404 before deleting the model.
 
-LoRA adapters promoted from a LoRA-rank run (`kind=HF_PEFT_ADDON`) are served differently — they hot-load onto an existing base deployment rather than requiring a dedicated one. See the skills references for that flow.
+## Serving a promoted LoRA adapter
+
+LoRA adapters promoted from a LoRA-rank run (`kind=HF_PEFT_ADDON`) are served differently from full-tune models — they hot-load onto an existing base deployment rather than requiring a dedicated one. The two-step pattern:
+
+```python
+from fireworks import Fireworks
+
+c = Fireworks(api_key=api_key)
+
+# 1. Stand up (or reuse) a base deployment with addon-serving enabled.
+c.deployments.create(
+    deployment_id="my-lora-host",
+    base_model="accounts/fireworks/models/qwen3-8b",
+    enable_addons=True,               # required for c.lora.load to work
+    accelerator_type="NVIDIA_H200_141GB",
+    min_replica_count=1,
+)
+# 2. Hot-load the promoted adapter onto that deployment.
+c.lora.load(
+    model="accounts/<account>/models/<promoted-lora-id>",
+    deployment="accounts/<account>/deployments/my-lora-host",
+    replace_merged_addon=True,
+)
+# ... issue chat-completions against <base-model>#<deployment-id> ...
+```
+
+**Flag mutual exclusivity**: `enable_addons=True` and `enable_hot_reload_latest_addon=True` are two different hot-load regimes and cannot both be set — the API returns `400 EnableAddons and EnableHotReloadLatestAddon cannot both be enabled`. Use `enable_addons=True` with `c.lora.load(..., replace_merged_addon=True)` for explicit-load-by-promoted-model-id (the pattern above); use `enable_hot_reload_latest_addon=True` for the auto-pull-latest-adapter regime.
+
+**Adapter-lifecycle hazard**: a promoted adapter can be garbage-collected within minutes after its training job is cancelled. If you follow the "train + promote + hot-load" pattern, make sure `c.lora.load(...)` completes **before** the trainer is cancelled. For RL recipes, passing `--skip-cleanup` to the driver keeps the trainer alive past the recipe's normal exit so you can complete the hot-load (and any post-training A/B) before cleaning up manually.
+
+## Addressing a trained policy for inference
+
+RL recipes promote the final checkpoint **and** hot-load its weights onto the rollout deployment. To query the trained policy, route requests at the deployment, not at the promoted-model id:
+
+```
+model = "<baseModel>#<deployment_id>"
+# e.g. accounts/fireworks/models/qwen3-4b#accounts/<account>/deployments/<deployment-id>
+```
+
+The promoted model id alone returns 404 unless you create a separate dedicated deployment whose `base_model` points at it. For A/B comparisons against the untrained base, stand up a second deployment of the base model with the same shape — base-family models that are not on serverless for your account require an on-demand deployment.
 
 ## Documentation
 
