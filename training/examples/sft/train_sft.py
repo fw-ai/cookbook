@@ -7,6 +7,7 @@ import argparse
 import os
 import logging
 import signal
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -45,6 +46,10 @@ def parse_args():
     parser.add_argument("--training-shape", default="")
     parser.add_argument("--region", default="",
                         help="Region for training/deployment. Default empty = let control plane auto-place.")
+    parser.add_argument("--log-path", default=None,
+                        help="Directory for checkpoints/logs. Default is a per-invocation timestamped path "
+                             "(e.g. ./text2sql_logs_YYYYmmddHHMMSS) so back-to-back runs don't silently resume "
+                             "from a prior session's checkpoint. Pass an existing directory to intentionally resume.")
     parser.add_argument("--max-examples", type=int, default=500)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -88,8 +93,11 @@ def main():
         base_url=FIREWORKS_BASE_URL,
     )
 
+    log_path = args.log_path or f"./text2sql_logs_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    logger.info("log_path=%s (pass --log-path to resume from an existing directory)", log_path)
+
     config = sft_loop.Config(
-        log_path="./text2sql_logs",
+        log_path=log_path,
         base_model=args.base_model,
         dataset=args.dataset_path,
         tokenizer_model=args.tokenizer_model,

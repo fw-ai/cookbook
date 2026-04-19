@@ -12,6 +12,7 @@ import re
 import sys
 import logging
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -88,6 +89,10 @@ class TrainArgs:
     """Pre-created reference trainer job ID to reuse."""
     output_model_id: str | None = None
     """Promote final checkpoint to this model ID."""
+    log_path: str | None = None
+    """Directory for checkpoints/logs. Default is a per-invocation timestamped path so back-to-back
+    smoke runs do not silently resume from a prior session's checkpoint. Pass an existing directory
+    to intentionally resume."""
 
 
 def parse_args() -> TrainArgs:
@@ -140,6 +145,10 @@ def parse_args() -> TrainArgs:
                         help="Pre-created reference trainer job ID to reuse")
     parser.add_argument("--output-model-id", type=str, required=True,
                         help="Promote final checkpoint to this model ID")
+    parser.add_argument("--log-path",
+                        help="Directory for checkpoints/logs. Default is a per-invocation timestamped path "
+                             "(e.g. ./deepmath_logs_YYYYmmddHHMMSS) so back-to-back smoke runs do not silently "
+                             "resume from a prior session's checkpoint. Pass an existing directory to resume.")
 
     parsed = parser.parse_args(namespace=defaults)
     # Convert --deployment-extra-values key=value pairs to a dict.
@@ -281,8 +290,13 @@ def main():
         hotload_api_url=FIREWORKS_BASE_URL,
     )
 
+    log_path = args.log_path or args.trajectory_dir or (
+        f"./deepmath_logs_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    )
+    logger.info("log_path=%s (pass --log-path to resume from an existing directory)", log_path)
+
     config = rl_loop.Config(
-        log_path=args.trajectory_dir or "./deepmath_logs",
+        log_path=log_path,
         base_model=args.base_model,
         dataset=args.dataset_path,
         learning_rate=args.learning_rate,
