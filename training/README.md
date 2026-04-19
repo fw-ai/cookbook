@@ -123,9 +123,11 @@ deployment = deploy_mgr.create_or_get(DeploymentConfig(
     min_replica_count=0,
     max_replica_count=1,
 ))
-deploy_mgr.wait_ready(deployment["name"])
-# ... issue chat-completion against deployment["name"] ...
-deploy_mgr.delete(deployment["name"])                    # see note on async delete below
+# DeploymentManager methods take the short deployment_id; DeploymentInfo is a
+# dataclass with attribute access (deployment.deployment_id, .name, .state).
+deploy_mgr.wait_for_ready(deployment.deployment_id, timeout_s=1800)
+# ... issue chat-completion against deployment.name ...
+deploy_mgr.delete(deployment.deployment_id)              # see note on async delete below
 ```
 
 **Cold-start latency hazard**: provisioning a fresh dedicated deployment for a full-tune promoted model can take **tens of minutes**, and occasionally much longer under capacity pressure. For a quick "does my fine-tune emit sensible text?" check on a smoke-scale budget, prefer one of:
