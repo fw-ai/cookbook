@@ -16,7 +16,7 @@ python3.12 train_sft.py \
     --base-model accounts/fireworks/models/qwen3-vl-8b-instruct \
     --tokenizer-model Qwen/Qwen3-VL-8B-Instruct \
     --dataset-path food_reasoning.jsonl \
-    --region US_VIRGINIA_1 \
+    --region "" \
     --max-examples 50 \
     --epochs 3 \
     --batch-size 4 \

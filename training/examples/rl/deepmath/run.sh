@@ -10,7 +10,7 @@ python "$HERE/train_deepmath.py" \
     --tokenizer-model Qwen/Qwen3-4B \
     --dataset-path "$HERE/dataset.jsonl" \
     --deployment-id deepmath-qwen3-4b-$(date +%s) \
-    --region US_VIRGINIA_1 \
+    --region "" \
     --max-rows 500 \
     --epochs 3 \
     --completions-per-prompt 8 \
