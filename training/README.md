@@ -148,11 +148,15 @@ from fireworks import Fireworks
 c = Fireworks(api_key=api_key)
 
 # 1. Stand up (or reuse) a base deployment with addon-serving enabled.
+#
+# Hardware: do not hand-set `accelerator_type`. Either omit it (the control
+# plane picks a shape compatible with `base_model`) or pass a versioned
+# `deployment_shape="accounts/fireworks/deploymentShapes/<shape>"` — see
+# `skills/dev/references/shapes.md` for why shape-first beats raw accelerator.
 c.deployments.create(
     deployment_id="my-lora-host",
     base_model="accounts/fireworks/models/qwen3-8b",
     enable_addons=True,               # required for c.lora.load to work
-    accelerator_type="NVIDIA_H200_141GB",
     min_replica_count=1,
 )
 # 2. Hot-load the promoted adapter onto that deployment.
