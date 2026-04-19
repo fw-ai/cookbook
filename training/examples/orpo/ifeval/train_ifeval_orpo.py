@@ -44,8 +44,9 @@ def parse_args():
                         help="Region for training/deployment. Default empty = let control plane auto-place.")
     parser.add_argument("--log-path", default=None,
                         help="Directory for checkpoints/logs. Default is a per-invocation timestamped path "
-                             "(e.g. ./ifeval_orpo_logs_YYYYmmddHHMMSS) so back-to-back smoke runs do not silently "
-                             "resume from a prior session's checkpoint. Pass an existing directory to resume.")
+                             "(e.g. ./ifeval_orpo_logs_YYYYmmddHHMMSS_<pid>) so back-to-back or parallel smoke runs "
+                             "do not silently resume from a prior session's checkpoint. Pass an existing directory "
+                             "to resume.")
     parser.add_argument("--max-pairs", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=4)
@@ -86,7 +87,9 @@ def main():
         base_url=FIREWORKS_BASE_URL,
     )
 
-    log_path = args.log_path or f"./ifeval_orpo_logs_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    log_path = args.log_path or (
+        f"./ifeval_orpo_logs_{datetime.now().strftime('%Y%m%d%H%M%S')}_{os.getpid()}"
+    )
     logger.info("log_path=%s (pass --log-path to resume from an existing directory)", log_path)
 
     config = orpo_loop.Config(

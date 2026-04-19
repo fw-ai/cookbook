@@ -147,8 +147,9 @@ def parse_args() -> TrainArgs:
                         help="Promote final checkpoint to this model ID")
     parser.add_argument("--log-path",
                         help="Directory for checkpoints/logs. Default is a per-invocation timestamped path "
-                             "(e.g. ./deepmath_logs_YYYYmmddHHMMSS) so back-to-back smoke runs do not silently "
-                             "resume from a prior session's checkpoint. Pass an existing directory to resume.")
+                             "(e.g. ./deepmath_logs_YYYYmmddHHMMSS_<pid>) so back-to-back or parallel smoke runs "
+                             "do not silently resume from a prior session's checkpoint. Pass an existing directory "
+                             "to resume.")
 
     parsed = parser.parse_args(namespace=defaults)
     # Convert --deployment-extra-values key=value pairs to a dict.
@@ -291,7 +292,7 @@ def main():
     )
 
     log_path = args.log_path or args.trajectory_dir or (
-        f"./deepmath_logs_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        f"./deepmath_logs_{datetime.now().strftime('%Y%m%d%H%M%S')}_{os.getpid()}"
     )
     logger.info("log_path=%s (pass --log-path to resume from an existing directory)", log_path)
 

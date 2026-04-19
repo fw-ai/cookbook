@@ -48,8 +48,9 @@ def parse_args():
                         help="Region for training/deployment. Default empty = let control plane auto-place.")
     parser.add_argument("--log-path", default=None,
                         help="Directory for checkpoints/logs. Default is a per-invocation timestamped path "
-                             "(e.g. ./text2sql_logs_YYYYmmddHHMMSS) so back-to-back runs don't silently resume "
-                             "from a prior session's checkpoint. Pass an existing directory to intentionally resume.")
+                             "(e.g. ./text2sql_logs_YYYYmmddHHMMSS_<pid>) so back-to-back or parallel runs don't "
+                             "silently resume from a prior session's checkpoint. Pass an existing directory to "
+                             "intentionally resume.")
     parser.add_argument("--max-examples", type=int, default=500)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -93,7 +94,9 @@ def main():
         base_url=FIREWORKS_BASE_URL,
     )
 
-    log_path = args.log_path or f"./text2sql_logs_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    log_path = args.log_path or (
+        f"./text2sql_logs_{datetime.now().strftime('%Y%m%d%H%M%S')}_{os.getpid()}"
+    )
     logger.info("log_path=%s (pass --log-path to resume from an existing directory)", log_path)
 
     config = sft_loop.Config(
