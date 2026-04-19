@@ -43,7 +43,8 @@ def parse_args():
         default=os.path.join(os.path.dirname(__file__), "text2sql_dataset.jsonl"),
     )
     parser.add_argument("--training-shape", default="")
-    parser.add_argument("--region", default="US_VIRGINIA_1")
+    parser.add_argument("--region", default="",
+                        help="Region for training/deployment. Default empty = let control plane auto-place.")
     parser.add_argument("--max-examples", type=int, default=500)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)

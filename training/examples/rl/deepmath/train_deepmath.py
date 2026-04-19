@@ -62,7 +62,8 @@ class TrainArgs:
     """Separate training shape for the forward-only reference model."""
     deployment_id: str | None = None
     """Omit to auto-create a new deployment; set to reuse an existing one."""
-    region: str = "US_OHIO_1"
+    region: str = ""
+    """Region for trainer/deployment. Empty = let control plane auto-place."""
     deployment_region: str | None = None
     deployment_replica_count: int | None = None
     max_rows: int = 1500

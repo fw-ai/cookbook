@@ -40,7 +40,8 @@ def parse_args():
         default=os.path.join(os.path.dirname(__file__), "dataset.jsonl"),
     )
     parser.add_argument("--training-shape", default="")
-    parser.add_argument("--region", default="US_VIRGINIA_1")
+    parser.add_argument("--region", default="",
+                        help="Region for training/deployment. Default empty = let control plane auto-place.")
     parser.add_argument("--max-pairs", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=4)
