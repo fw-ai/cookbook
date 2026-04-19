@@ -108,6 +108,36 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 - `examples/tools/list_checkpoints.py` lists the server's authoritative view of checkpoints for a trainer job (sampler + DCP, promotable or not). Thin wrapper over `FireworksClient.list_checkpoints()`.
 - `examples/tools/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
 
+## Serving a promoted full-tune model
+
+SFT and ORPO runs promote their final checkpoint with `kind=HF_BASE_MODEL` (full-parameter). These promoted models are **not** on serverless — to issue an inference call you must create a dedicated deployment whose `base_model` points at the promoted model. Sketch:
+
+```python
+from fireworks.training.sdk import DeploymentManager, DeploymentConfig
+
+deploy_mgr = DeploymentManager(api_key=api_key)
+deployment = deploy_mgr.create_or_get(DeploymentConfig(
+    deployment_id="my-sft-eval",                        # short, [a-z0-9-]
+    base_model="accounts/<account>/models/<promoted-id>",
+    region=None,                                         # let control plane auto-place
+    min_replica_count=0,
+    max_replica_count=1,
+))
+deploy_mgr.wait_ready(deployment["name"])
+# ... issue chat-completion against deployment["name"] ...
+deploy_mgr.delete(deployment["name"])                    # see note on async delete below
+```
+
+**Cold-start latency hazard**: provisioning a fresh dedicated deployment for a full-tune promoted model can take **tens of minutes**, and occasionally much longer under capacity pressure. For a quick "does my fine-tune emit sensible text?" check on a smoke-scale budget, prefer one of:
+
+- Train with `--lora-rank > 0` and hot-load the promoted LoRA adapter onto an existing base-model deployment (see `skills/dev/references/rl/hotload.md`).
+- Reuse an already-warm deployment of the same base family if one exists in the account.
+- Budget ≥90 minutes if a fresh dedicated full-tune deployment is unavoidable.
+
+**Async cleanup**: `DeploymentManager.delete(deployment_id)` returns before the backing deployed model is fully undeployed; a subsequent `DELETE /models/<id>` can fail with "cannot delete model, found 1 active deployed models" until propagation completes (~30s). Retry the model delete or poll the deployment GET for 404 before deleting the model.
+
+LoRA adapters promoted from a LoRA-rank run (`kind=HF_PEFT_ADDON`) are served differently — they hot-load onto an existing base deployment rather than requiring a dedicated one. See the skills references for that flow.
+
 ## Documentation
 
 For detailed guides, configuration reference, and examples, see the official documentation:
