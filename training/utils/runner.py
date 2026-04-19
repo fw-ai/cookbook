@@ -158,6 +158,12 @@ class RunnerIO:
             payload["details"] = [{"@type": _JOB_PROGRESS_TYPE_URL, "percent": percent}]
         self._write_json(self._status_file, payload)
 
+    def report_rendering_progress(self, current: int, total: int, *, label: str = "rendering data") -> None:
+        """Log and write status for data rendering progress."""
+        pct = int(100.0 * current / total) if total else 0
+        logger.info("%s: %d/%d (%d%%)", label, current, total, pct)
+        self.write_status(RunStatus.PENDING, message=f"{label} ({pct}%)")
+
     # -- metadata --------------------------------------------------------------
 
     def set_accelerator_info(

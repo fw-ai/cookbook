@@ -295,11 +295,13 @@ def main(
         if not raw_data:
             raise RuntimeError(f"No data loaded from {cfg.dataset}")
 
-        logger.info("Tokenizing %d preference pairs...", len(raw_data))
+        total_raw = len(raw_data)
+        log_interval = max(1, total_raw // 20)  # ~5% increments
+        logger.info("Tokenizing %d preference pairs...", total_raw)
         pair_cache: list[dict] = []
         filtered_count = 0
 
-        for example in raw_data:
+        for i, example in enumerate(raw_data):
             pair = render_preference_pair(
                 example["chosen"],
                 example["rejected"],
@@ -324,6 +326,8 @@ def main(
                     "rejected_datum": pair.rejected_datum,
                 }
             )
+            if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
+                runner.report_rendering_progress(i + 1, total_raw)
 
         if filtered_count > 0:
             logger.info(

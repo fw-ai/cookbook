@@ -411,10 +411,7 @@ def main(
             if d is not None:
                 training_data.append(d)
             if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                logger.info(
-                    "Rendering examples: %d/%d (%.0f%%)",
-                    i + 1, total_raw, 100.0 * (i + 1) / total_raw,
-                )
+                runner.report_rendering_progress(i + 1, total_raw)
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
@@ -445,10 +442,7 @@ def main(
                 if d is not None:
                     eval_data.append(d)
                 if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
-                    logger.info(
-                        "Rendering eval examples: %d/%d (%.0f%%)",
-                        i + 1, total_eval, 100.0 * (i + 1) / total_eval,
-                    )
+                    runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
             logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
         elif cfg.eval_auto_carveout:
             # Auto carve-out: split first N examples as eval

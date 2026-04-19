@@ -164,12 +164,15 @@ def _tokenize_pairs(
     tokenizer: Any,
     renderer: Any,
     max_seq_len: int,
+    runner: RunnerIO | None = None,
 ) -> tuple[list[tuple[int, dict[str, Any]]], int]:
     """Tokenize all preference pairs (CPU only).
 
     Returns ``(tokenized, filtered_count)`` where each entry is
     ``(original_index, pair_data_dict)``.
     """
+    total_raw = len(raw_data)
+    log_interval = max(1, total_raw // 20)  # ~5% increments
     tokenized: list[tuple[int, dict[str, Any]]] = []
     filtered_count = 0
     for i, example in enumerate(raw_data):
@@ -178,6 +181,14 @@ def _tokenize_pairs(
             filtered_count += 1
         elif result is not None:
             tokenized.append((i, result))
+        if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
+            if runner is not None:
+                runner.report_rendering_progress(i + 1, total_raw)
+            else:
+                logger.info(
+                    "Rendering preference pairs: %d/%d (%d%%)",
+                    i + 1, total_raw, int(100.0 * (i + 1) / total_raw),
+                )
     return tokenized, filtered_count
 
 
@@ -588,6 +599,7 @@ def main(
 
         tokenized_pairs, filtered_count = _tokenize_pairs(
             raw_data, tokenizer, renderer, cfg.max_seq_len,
+            runner=runner,
         )
         if filtered_count > 0:
             logger.info(
