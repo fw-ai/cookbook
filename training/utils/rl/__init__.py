@@ -18,6 +18,11 @@ __all__ = [
     "DynamicFilterFn",
     "TrainStepFns",
     "run_rl_loop",
+    # Streaming-pipeline primitives
+    "TrainContext",
+    "dump_trajectory_jsonl",
+    "finish_step",
+    "ref_fwd_bwd",
     # Datum construction (low-level plumbing)
     "align_inference_logprobs",
     "make_policy_datum",
@@ -49,7 +54,11 @@ from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
 from training.utils.rl.train import (
     DynamicFilterFn,
+    TrainContext,
     TrainStepFns,
+    dump_trajectory_jsonl,
+    finish_step,
+    ref_fwd_bwd,
     run_rl_loop,
 )
 from training.utils.rl.losses import PromptGroup
