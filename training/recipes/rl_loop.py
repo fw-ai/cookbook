@@ -70,28 +70,24 @@ from training.utils.checkpoint_utils import (
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.rl import (
     PromptGroup,
+    TrainContext,
     align_inference_logprobs,
-    dump_trajectory_jsonl,
+    finish_step,
     make_concurrency_controller,
     make_policy_datum,
     make_reference_datum,
     provision_trainer_pair,
+    ref_fwd_bwd,
     resolve_policy_profile,
     resolve_reference_profile,
 )
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.losses import (
-    build_builtin_loss_datums,
-    build_loss_fn,
-    combine_prompt_groups,
-    resolve_builtin_loss,
-)
-from training.utils.rl.metrics import compute_step_metrics
+from training.utils.rl.losses import build_loss_fn, resolve_builtin_loss
 from training.utils.rl.router_replay import build_r3_routing_matrices
 from training.utils.rl.tis import TISConfig
-from training.utils.timer import flush_timing, timer
+from training.utils.timer import timer
 
 logger = logging.getLogger(__name__)
 
@@ -501,124 +497,70 @@ def main(
                 row_meta={"ground_truth": row.get("ground_truth", "")} if cfg.trajectory_dir else None,
             )
 
-        # -- Training step body (VISIBLE -- direct SDK calls) --------------
+        # -- TrainContext: bundle handed to ref_fwd_bwd / finish_step ------
+
+        ctx = TrainContext(
+            policy=policy,
+            reference=reference,
+            weight_syncer=weight_syncer,
+            adam_params=adam_params,
+            grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+            builtin_server_loss=builtin_server_loss,
+            client_loss_builder=client_loss_builder,
+            tis_config=cfg.tis,
+            policy_loss=cfg.policy_loss,
+            log_path=cfg.log_path,
+            policy_job_id=policy_job_id,
+            completions_per_prompt=completions_per_prompt,
+            trajectory_dir=cfg.trajectory_dir,
+            # Hotload from finish_step at the configured interval (1:1 by default).
+            weight_sync_interval=cfg.weight_sync.weight_sync_interval,
+            dcp_save_interval=cfg.weight_sync.dcp_save_interval,
+            wandb_log=wandb_log,
+            log_metrics_json=log_metrics_json,
+        )
+
+        # -- Training step body (VISIBLE — direct primitive calls) ----------
 
         def _train_one_step(
             step: int,
             groups: list[PromptGroup],
             stats: dict,
         ) -> int:
-            """ref_forward + policy_forward + forward_backward + optim_step + metrics."""
+            """One optimizer step.
 
-            # 1. Reference forward (one batched call across all groups).
-            t0 = time.time()
-            if reference is not None:
-                all_ref_data = [d for pg in groups for d in pg.ref_data]
-                if all_ref_data:
-                    try:
-                        ref_fwd = reference.forward(all_ref_data, "cross_entropy")
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"Reference forward failed (batch of {len(all_ref_data)}): {e}"
-                        ) from e
-                    idx = 0
-                    for pg in groups:
-                        n = len(pg.ref_data)
-                        pg.ref_logprobs = [
-                            ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
-                        ]
-                        idx += n
-            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
+            For each group: ``ref_fwd_bwd(ctx, group)`` runs ref_forward +
+            policy_forward + forward_backward (server accumulates gradients).
+            Then ``finish_step`` fires optim_step + (optional) hotload +
+            metrics + (optional) DCP save.
+            """
+            fwd_results = [ref_fwd_bwd(ctx, g) for g in groups]
 
-            # 2. Combine groups, run policy forward, then forward_backward.
-            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(groups)
-
-            t0 = time.time()
-            with timer("policy_forward"):
-                prox_fwd = policy.forward(data, "cross_entropy")
-                prox_lp = [
-                    prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))
-                ]
-            logger.info("[step %d] policy_forward: done (%.1fs)", step + 1, time.time() - t0)
-
-            t0 = time.time()
-            with timer("fwd_bwd"):
-                if builtin_server_loss is not None:
-                    kernel_loss, kernel_config = builtin_server_loss
-                    rl_datums = build_builtin_loss_datums(
-                        data, adv, prox_lp, inf_lp, prompt_lens,
-                        cfg.tis, policy_loss=cfg.policy_loss,
-                    )
-                    fwd_bwd_result = policy.forward_backward(
-                        rl_datums, kernel_loss, loss_fn_config=kernel_config,
-                    )
-                else:
-                    fwd_bwd_result = policy.forward_backward_custom(
-                        data,
-                        client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
-                    )
-            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0)
-
-            # 3. Optimizer step.
-            t0 = time.time()
-            with timer("optim_step"):
-                optim_result = policy.optim_step(
-                    adam_params,
-                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-                )
-            step += 1
-            logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
-
-            # 4. Optional DCP checkpoint.
-            if (
-                cfg.weight_sync.dcp_save_interval > 0
-                and step % cfg.weight_sync.dcp_save_interval == 0
-            ):
-                data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    step - step_offset
-                ) * prompt_groups_per_step
-                save_checkpoint(
-                    policy, f"step-{step}", cfg.log_path,
-                    {
-                        "step": step,
-                        "data_consumed": data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
+            def _save(name: str, extra: dict) -> object:
+                return save_checkpoint(
+                    policy, name, cfg.log_path, extra,
                     kind=CheckpointKind.STATE,
                     base_model=cfg.base_model,
                     training_shape=cfg.infra.training_shape_id,
                 )
 
-            # 5. Metrics + logging.
-            metrics = compute_step_metrics(
-                prompt_groups=groups,
-                fwd_bwd_results=[fwd_bwd_result],
-                optim_result=optim_result,
-                n_accum=1,
-                timing_metrics=flush_timing(),
-                loop_stats=stats,
-                completions_per_prompt=completions_per_prompt,
+            step, metrics = finish_step(
+                ctx, step, groups, fwd_results, loop_stats=stats,
+                save_checkpoint_fn=_save,
+                step_target=prompt_groups_per_step,
+                resume_data_consumed=resume_info.data_consumed if resume_info else 0,
+                step_offset=step_offset,
             )
-            metrics["train/step"] = step
+
+            # Recipe-specific telemetry that finish_step doesn't know about.
             if concurrency_controller is not None:
                 cc_summary = concurrency_controller.step_completed()
                 for k, v in cc_summary.items():
                     metrics[f"concurrency/{k}"] = v
-
             step_tokens = sum(
                 len(d.loss_fn_inputs["target_tokens"].data)
                 for pg in groups for d in pg.data
             )
-            avg_reward = metrics.get("rollout/reward", 0.0)
-            avg_acc = metrics.get("rollout/accuracy", 0.0)
-            avg_kl = metrics.get("train/mean_kl", 0.0)
-            logger.info(
-                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
-                step, avg_reward, avg_acc * 100, avg_kl,
-            )
-            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
-            wandb_log(metrics, step)
-
             total_steps_target = len(rl_dataset) - step_offset
             runner.append_metrics(step, metrics, tokens=step_tokens)
             runner.write_status(
@@ -626,10 +568,6 @@ def main(
                 message="training",
             )
             runner.write_metadata()
-
-            if cfg.trajectory_dir:
-                dump_trajectory_jsonl(cfg.trajectory_dir, step, groups)
-
             return step
 
         # -- Outer loop: window-bounded sampling/training, hotload between -
@@ -720,21 +658,9 @@ def main(
                     cumulative_fails += fails
                     cumulative_drops += drops
 
-                # Hotload between windows when at least one optimizer step ran.
-                if (
-                    sync_interval > 0
-                    and step > step_before
-                    and cfg.deployment.deployment_id
-                ):
-                    logger.info("[step %d] weight_sync: saving + loading...", step)
-                    t0 = time.time()
-                    with timer("weight_sync"):
-                        await asyncio.to_thread(
-                            weight_syncer.save_and_hotload, f"step-{step}",
-                        )
-                    logger.info(
-                        "[step %d] weight_sync: done (%.1fs)", step, time.time() - t0,
-                    )
+                # No window-end hotload — finish_step already fires
+                # save_and_hotload at ctx.weight_sync_interval cadence.
+                _ = step_before  # retained for future window-level diagnostics
 
             # End-of-run summary.
             total_prompts = len(remaining_rows)

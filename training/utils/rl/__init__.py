@@ -33,8 +33,11 @@ __all__ = [
     "provision_trainer_pair",
     "resolve_policy_profile",
     "resolve_reference_profile",
-    # Trajectory logging (pure)
+    # Per-step training primitives
+    "TrainContext",
     "dump_trajectory_jsonl",
+    "finish_step",
+    "ref_fwd_bwd",
     # Router replay (R3) helper (pure)
     "build_r3_routing_matrices",
     # Metrics helpers (pure)
@@ -56,7 +59,12 @@ from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
 from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
-from training.utils.rl.train import dump_trajectory_jsonl
+from training.utils.rl.train import (
+    TrainContext,
+    dump_trajectory_jsonl,
+    finish_step,
+    ref_fwd_bwd,
+)
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.datum import (
     align_inference_logprobs,
