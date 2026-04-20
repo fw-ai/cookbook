@@ -50,6 +50,7 @@ __all__ = [
     "compute_advantages",
     "compute_pass_at_k",
     "create_trainer_job",
+    "read_api_extra_headers_env",
     "encode_text",
     "extract_text",
     "find_common_prefix_length",
@@ -104,6 +105,7 @@ from training.utils.infra import (
     setup_deployment,
     setup_or_reattach_deployment,
     create_trainer_job,
+    read_api_extra_headers_env,
     setup_training_client,
 )
 from training.utils.timer import timed, timer, flush_timing
