@@ -59,6 +59,7 @@ from training.utils import (
     setup_or_reattach_deployment,
     compute_advantages,
     create_trainer_job,
+    read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
     auto_select_training_shape,
@@ -323,11 +324,20 @@ def main(
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
+    additional_headers = read_api_extra_headers_env()
 
     if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
+        rlor_mgr = TrainerJobManager(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=additional_headers,
+        )
     if deploy_mgr is None:
-        deploy_mgr = DeploymentManager(api_key=api_key, base_url=base_url)
+        deploy_mgr = DeploymentManager(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=additional_headers,
+        )
 
     # -- Resolve policy training shape -------------------------------------------
     if not cfg.infra.training_shape_id:

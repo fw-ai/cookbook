@@ -46,6 +46,7 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     create_trainer_job,
+    read_api_extra_headers_env,
     build_renderer,
     parse_train_on_what,
     auto_select_training_shape,
@@ -302,9 +303,14 @@ def main(
 
     api_key = os.environ.get("FIREWORKS_API_KEY", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
+    additional_headers = read_api_extra_headers_env()
 
     if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
+        rlor_mgr = TrainerJobManager(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=additional_headers,
+        )
 
     if _precreated_trainer:
         trainer_infra = cfg.infra
