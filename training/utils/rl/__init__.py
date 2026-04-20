@@ -1,39 +1,43 @@
-"""RL utilities: losses, training loop, PP recommendation, TIS, router replay."""
+"""RL utilities: pure functions, dataclasses, and one-shot SDK wrappers.
+
+Library-style. Everything here is a function the user calls or a data
+type the user passes around. No runners, no callback registries, no
+context managers, no protocols.
+
+If you want a complete training loop, copy the body of
+``recipes/rl_loop.py`` (sync) or ``recipes/async_rl_loop.py`` (async
+streaming).
+"""
 
 __all__ = [
-    # Losses & algorithms
+    # Loss configs & builders
     "CISPOConfig",
     "DAPOConfig",
     "TISConfig",
     "GSPOConfig",
-    "PPBatchRecommendation",
-    "PromptGroup",
-    "build_r3_routing_matrices",
-    "compute_pp_recommendation",
     "make_cispo_loss_fn",
     "make_dapo_loss_fn",
     "make_grpo_loss_fn",
     "make_gspo_loss_fn",
-    # Training loop
-    "DynamicFilterFn",
-    "TrainStepFns",
-    "run_rl_loop",
-    # Streaming-pipeline primitives
-    "TrainContext",
-    "dump_trajectory_jsonl",
-    "finish_step",
-    "ref_fwd_bwd",
-    # Datum construction (low-level plumbing)
+    # Data shapes
+    "PromptGroup",
+    # PP recommendation
+    "PPBatchRecommendation",
+    "compute_pp_recommendation",
+    # Datum construction (low-level plumbing, pure)
     "align_inference_logprobs",
     "make_policy_datum",
     "make_reference_datum",
-    # Async rollout scheduler (opt-in)
-    "AsyncRolloutScheduler",
-    "RolloutStats",
-    # Infra setup (heavy lifting)
-    "Infra",
-    "setup_infra",
-    # Metrics helpers
+    # Composable infra builders (one-shot, no lifecycle hidden)
+    "make_concurrency_controller",
+    "provision_trainer_pair",
+    "resolve_policy_profile",
+    "resolve_reference_profile",
+    # Trajectory logging (pure)
+    "dump_trajectory_jsonl",
+    # Router replay (R3) helper (pure)
+    "build_r3_routing_matrices",
+    # Metrics helpers (pure)
     "add_response_length_stats",
     "add_train_perf_metrics",
     "build_loop_metrics",
@@ -52,23 +56,19 @@ from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
 from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
-from training.utils.rl.train import (
-    DynamicFilterFn,
-    TrainContext,
-    TrainStepFns,
-    dump_trajectory_jsonl,
-    finish_step,
-    ref_fwd_bwd,
-    run_rl_loop,
-)
+from training.utils.rl.train import dump_trajectory_jsonl
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.datum import (
     align_inference_logprobs,
     make_policy_datum,
     make_reference_datum,
 )
-from training.utils.rl.scheduler import AsyncRolloutScheduler, RolloutStats
-from training.utils.rl.infra_setup import Infra, setup_infra
+from training.utils.rl.infra_setup import (
+    make_concurrency_controller,
+    provision_trainer_pair,
+    resolve_policy_profile,
+    resolve_reference_profile,
+)
 from training.utils.rl.metrics import (
     build_loop_metrics,
     total_target_tokens,

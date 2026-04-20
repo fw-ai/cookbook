@@ -70,7 +70,7 @@ from training.utils import (
     auto_select_training_shape,
 )
 from training.utils.rl import PromptGroup
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+import itertools as _itertools  # for the inlined window runner below
 from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, resolve_builtin_loss
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
@@ -852,8 +852,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     weight_syncer.save_and_hotload(f"step-{step}")
                 logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
 
-            train_fns = TrainStepFns(train_step=train_step)
-
             def should_accept(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
 
@@ -867,20 +865,81 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             _wandb_step = [step_offset]
 
-            def _filtered_step_callback(loop_metrics: dict) -> None:
-                _wandb_step[0] += 1
-                wandb_log(loop_metrics, step=_wandb_step[0])
+            # ---- Inlined windowed runner (was utils.rl.train.run_rl_loop) ----
+            # Sample window_size prompts in parallel, train each batch of
+            # prompt_groups_per_step accepted groups as soon as it fills, hotload
+            # at window boundaries. Recipe owns the loop; cookbook ships only
+            # pure helpers.
+            async def _run() -> int:
+                step = step_offset
+                sync_interval = weight_sync_cfg.weight_sync_interval
+                window_size = (
+                    sync_interval * prompt_groups_per_step
+                    if sync_interval > 0
+                    else len(all_prompts)
+                )
+                ctx_iter = iter(all_prompts)
+                while True:
+                    window = list(_itertools.islice(ctx_iter, window_size))
+                    if not window:
+                        break
+                    tasks = [asyncio.create_task(sample_one_prompt(c)) for c in window]
+                    pending: list[PromptGroup] = []
+                    fails = 0
+                    drops = 0
+                    rewards_seen: list[float] = []
+                    step_before = step
+                    window_t0 = time.time()
+                    for fut in asyncio.as_completed(tasks):
+                        pg = await fut
+                        if pg is None:
+                            fails += 1
+                            continue
+                        rewards_seen.extend(pg.rewards)
+                        if not should_accept(pg):
+                            drops += 1
+                            continue
+                        pending.append(pg)
+                        if len(pending) >= prompt_groups_per_step:
+                            batch = pending[:prompt_groups_per_step]
+                            pending = pending[prompt_groups_per_step:]
+                            stats = {
+                                "valid_prompt_groups": len(batch),
+                                "total_sampled": fails + drops + len(batch),
+                                "filter_drops": drops,
+                                "sample_fails": fails,
+                                "sample_wait_time": 0.0,
+                                "step_wall_time": time.time() - window_t0,
+                                "all_raw_rewards": list(rewards_seen),
+                            }
+                            step, _ = await asyncio.to_thread(
+                                train_step, step, batch, stats,
+                            )
+                            _wandb_step[0] += 1
+                            wandb_log({"train/step": step}, step=_wandb_step[0])
+                            fails = drops = 0
+                            rewards_seen = []
+                            window_t0 = time.time()
+                    if pending:
+                        stats = {
+                            "valid_prompt_groups": len(pending),
+                            "total_sampled": fails + drops + len(pending),
+                            "filter_drops": drops,
+                            "sample_fails": fails,
+                            "sample_wait_time": 0.0,
+                            "step_wall_time": time.time() - window_t0,
+                            "all_raw_rewards": list(rewards_seen),
+                        }
+                        step, _ = await asyncio.to_thread(
+                            train_step, step, pending, stats,
+                        )
+                        _wandb_step[0] += 1
+                        wandb_log({"train/step": step}, step=_wandb_step[0])
+                    if sync_interval > 0 and step > step_before:
+                        await asyncio.to_thread(_weight_sync, step)
+                return step
 
-            global_step = asyncio.run(run_rl_loop(
-                sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
-                train_fns=train_fns,
-                prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=should_accept,
-                global_step=step_offset,
-                metrics_callback=_filtered_step_callback,
-                weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
-                weight_sync_interval=weight_sync_cfg.weight_sync_interval,
-            ))
+            global_step = asyncio.run(_run())
 
             # -- Final checkpoint -----------------------------------------------
 

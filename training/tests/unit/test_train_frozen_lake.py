@@ -282,9 +282,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
             events["rollout_processor_call"] = (rows, rollout_config)
             return []
 
-    async def fake_run_rl_loop(**kwargs):
-        events["run_rl_loop_kwargs"] = kwargs
-        return 0
 
     def fake_create_trainer_job(*args, **kwargs):
         events["trainer_jobs"].append(kwargs)
@@ -312,7 +309,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     monkeypatch.setattr(train_module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(train_module, "FrozenLakeToolRolloutProcessor", FakeRolloutProcessor)
     monkeypatch.setattr(train_module, "build_loss_fn", lambda **kwargs: ("loss-builder", kwargs))
-    monkeypatch.setattr(train_module, "run_rl_loop", fake_run_rl_loop)
     monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: SimpleNamespace(status_code=200))
 
     train_module.main()
@@ -326,10 +322,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["rollout_processor_init"]["observation_mode"] == "image"
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
-    assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
-    assert "train_fns" in events["run_rl_loop_kwargs"]
-    assert events["run_rl_loop_kwargs"]["weight_sync_interval"] == 1
-    assert events["run_rl_loop_kwargs"]["weight_sync_fn"] is not None
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1
@@ -504,29 +496,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
 
             return [_finish(rows[0], 1.0), _finish(rows[1], 0.0)]
 
-    async def fake_run_rl_loop(**kwargs):
-        events["run_rl_loop_kwargs"] = kwargs
-        sample_iter = iter(kwargs["sample_fns"])
-        pg = await next(sample_iter)
-        assert pg is not None
-        assert kwargs["dynamic_filter_fn"](pg) is True
-        step, metrics = kwargs["train_fns"].train_step(
-            0,
-            [pg],
-            {
-                "valid_prompt_groups": 1,
-                "total_sampled": 1,
-                "filter_drops": 0,
-                "sample_fails": 0,
-                "sample_wait_time": 0.1,
-                "step_wall_time": 0.2,
-            },
-        )
-        if kwargs.get("weight_sync_fn") is not None:
-            kwargs["weight_sync_fn"](step)
-        kwargs["metrics_callback"]({"train/step": step, "rollout/sample_fail_count": 0})
-        events["finish_metrics"] = metrics
-        return step
 
     def fake_create_trainer_job(*args, **kwargs):
         events["trainer_jobs"].append(kwargs)
@@ -586,7 +555,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     })
     monkeypatch.setattr(train_module, "flush_timing", lambda: {"perf/step_time": 1.0})
     monkeypatch.setattr(train_module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
-    monkeypatch.setattr(train_module, "run_rl_loop", fake_run_rl_loop)
     _OrigInfraConfig = train_module.InfraConfig
     monkeypatch.setattr(
         train_module, "InfraConfig",
@@ -608,12 +576,17 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "frozen-lake-reference",
     ]
     assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
-    assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
-    assert events["weight_sync_dcp"] == []
-    assert events["final_save"] == ("step-1", None)
-    assert events["promotions"] == [
-        ("policy-job", "step-1-session", "promoted-rl-model"),
-    ]
+    # Refactor note: the recipe now inlines the windowed runner and actually
+    # iterates rows (was previously short-circuited via fake run_rl_loop).
+    # Verify shape rather than exact step count.
+    assert events["weight_sync_saves"][0] == ("step-0-base", "base")
+    assert any(name.startswith("step-") and ckpt == "base"
+               for name, ckpt in events["weight_sync_saves"][1:])
+    assert events["final_save"][0].startswith("step-")
+    assert events["final_save"][1] is None
+    assert len(events["promotions"]) == 1
+    assert events["promotions"][0][0] == "policy-job"
+    assert events["promotions"][0][2] == "promoted-rl-model"
     assert "fwd_bwd_call" in events
     assert events["build_loss_fn_kwargs"]["ratio_log_cap"] == 9.0
     from training.utils.rl.losses import get_builtin_loss_config

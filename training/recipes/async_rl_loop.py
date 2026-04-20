@@ -1,56 +1,56 @@
 #!/usr/bin/env python3
-"""Async GRPO training loop with streaming rollout-training overlap.
+"""Async GRPO with streaming rollout-training overlap — library-style recipe.
 
-A sibling to ``rl_loop.py`` that streams prompt groups to the trainer
-as they arrive from sampling rather than collecting a full batch first.
-The trainer accumulates gradients across ``ref_fwd_bwd`` calls;
-``finish_step`` fires ``optim_step`` + weight sync after all groups in a
-step have been processed.
+A self-contained training script. Direct calls only: this recipe owns
+the scheduler (a small recipe-local class for staleness + concurrency
+gating), the per-group ``ref_forward + policy_forward + forward_backward``
+sequence, and the end-of-step ``optim_step + weight_sync + metrics``.
+The cookbook contributes only pure functions and data shapes.
 
-Key differences from ``rl_loop.py``:
+Compared to ``rl_loop.py``:
 
-* **Streaming pipeline.** ``AsyncRolloutScheduler.stream_groups()`` yields
-  groups one at a time; each is immediately sent to the trainer for
-  ``ref_forward + fwd_bwd``. Sampling for the next group continues in
-  the background.
-* **Two-level capacity gating.** ``max_head_offpolicy_versions`` controls
-  staleness; ``sample_max_concurrency`` controls in-flight HTTP requests
-  to the deployment.
-* **Forced 1:1 weight sync.** The streaming pipeline requires
-  ``weight_sync_interval=1`` (any other value is overridden).
+* Streams groups one at a time. Each accepted group is sent to the
+  trainer immediately; the server accumulates gradients across calls.
+* Two-level capacity gating: ``max_head_offpolicy_versions`` (staleness)
+  + ``sample_max_concurrency`` (in-flight HTTP requests).
+* Forces ``weight_sync_interval=1`` (the streaming pipeline requires
+  hotload after every optimizer step).
 
-Acknowledgements: ``AsyncRolloutScheduler`` and the two-level capacity
-gating are inspired by AReaL's ``BatchTaskDispatcher`` and
-``StalenessManager`` (https://github.com/inclusionAI/AReaL).
+Acknowledgements: scheduler design (staleness budget + concurrency cap)
+is inspired by AReaL's ``BatchTaskDispatcher`` + ``StalenessManager``
+(https://github.com/inclusionAI/AReaL).
 
-Usage::
-
+Usage:
     export FIREWORKS_API_KEY=...
     python -m recipes.async_rl_loop
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 import signal
-import asyncio
-import logging
+import time
 import warnings
-import time as _time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, List, Optional
 
 import tinker
+import transformers
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
+from fireworks.training.sdk.deployment import DeploymentSampler
+from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
     ConcurrencyConfig,
     DeployConfig,
     InfraConfig,
+    ReconnectableClient,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
@@ -58,10 +58,11 @@ from training.utils import (
     WandBConfig,
     WeightSyncConfig,
     compute_advantages,
-    log_metrics_json,
     load_jsonl_dataset,
+    log_metrics_json,
     prepare_sampling_messages,
     read_api_extra_headers_env,
+    setup_or_reattach_deployment,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -72,23 +73,31 @@ from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
 )
+from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.rl import (
-    AsyncRolloutScheduler,
     PromptGroup,
-    TrainContext,
     align_inference_logprobs,
-    finish_step,
+    dump_trajectory_jsonl,
+    make_concurrency_controller,
     make_policy_datum,
     make_reference_datum,
-    ref_fwd_bwd,
-    setup_infra,
+    provision_trainer_pair,
+    resolve_policy_profile,
+    resolve_reference_profile,
 )
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.losses import build_loss_fn, resolve_builtin_loss
+from training.utils.rl.losses import (
+    build_builtin_loss_datums,
+    build_loss_fn,
+    combine_prompt_groups,
+    resolve_builtin_loss,
+)
+from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 from training.utils.rl.tis import TISConfig
+from training.utils.timer import flush_timing, timer
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +116,6 @@ warnings.warn(
 
 @dataclass
 class Config:
-    """Async GRPO config. Knobs particular to the async path are flagged."""
-
     log_path: str
     """Directory for checkpoints and logs. Required."""
 
@@ -126,36 +133,36 @@ class Config:
     max_seq_len: int | None = None
     lora_rank: int = 0
 
-    # -- Sync sizing (shared with rl_loop) ----------------------------------
+    # -- Step sizing --------------------------------------------------------
 
     prompt_groups_per_step: int = 1
     """Default number of accepted groups per optimizer step."""
 
-    # -- Async-specific knobs -----------------------------------------------
-
     valid_prompt_groups_per_step: int | None = None
     """Target accepted groups per step (defaults to ``prompt_groups_per_step``)."""
 
+    # -- Async-specific knobs -----------------------------------------------
+
     max_head_offpolicy_versions: int = 2
-    """Maximum staleness: how many optimizer steps a rollout may lag the
+    """Max staleness in optimizer steps an accepted rollout may lag the
     current weight version. 0 = strict on-policy."""
 
     sample_max_concurrency: int | None = None
     """Max in-flight HTTP requests to the deployment. ``None`` = capped
-    only by the staleness window. Independent of the policy window."""
+    by the staleness window only."""
 
     # -- Router replay (R3) -------------------------------------------------
 
     router_replay: bool = False
     router_replay_completion_only: bool = True
 
-    # -- Training -----------------------------------------------------------
+    # -- Training ----------------------------------------------------------
 
     grad_accumulation_normalization: GradAccNormalization | str | None = (
         GradAccNormalization.NUM_LOSS_TOKENS
     )
 
-    # -- Loss ---------------------------------------------------------------
+    # -- Loss --------------------------------------------------------------
 
     policy_loss: str = "grpo"
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
@@ -166,7 +173,7 @@ class Config:
     ratio_log_cap: float = 20.0
     tis: TISConfig = field(default_factory=TISConfig)
 
-    # -- Trajectory / resume ------------------------------------------------
+    # -- Trajectory / resume / output --------------------------------------
 
     trajectory_dir: str | None = None
     policy_job_id: str | None = None
@@ -178,7 +185,7 @@ class Config:
     save_final_checkpoint: bool = True
     step_timeout: int = 0
 
-    # -- Sub-configs --------------------------------------------------------
+    # -- Sub-configs -------------------------------------------------------
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -189,7 +196,7 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# Reward function -- customise this for your task
+# Reward + filter (customise per task)
 # ---------------------------------------------------------------------------
 
 
@@ -202,7 +209,6 @@ def extract_answer(text: str) -> Optional[str]:
 
 
 def reward_fn(completion: str, row: dict) -> float:
-    """Return 1.0 if the model's numeric answer matches the ground truth."""
     predicted = extract_answer(completion)
     truth = extract_answer(str(row.get("ground_truth", "")))
     if predicted is None or truth is None:
@@ -210,14 +216,140 @@ def reward_fn(completion: str, row: dict) -> float:
     return 1.0 if predicted == truth else 0.0
 
 
-# ---------------------------------------------------------------------------
-# Rollout filter -- customise this for your task
-# ---------------------------------------------------------------------------
-
-
 def should_accept(pg: PromptGroup) -> bool:
-    """Reject groups where all rewards are identical (zero-variance)."""
     return len(set(pg.rewards)) > 1
+
+
+# ---------------------------------------------------------------------------
+# Recipe-local scheduler — staleness + concurrency gating.
+# Lives in the recipe (not the library) because the cookbook should not
+# call user code; this class invokes ``sample_fn`` and ``filter_fn``.
+# ---------------------------------------------------------------------------
+
+
+SampleFn = Callable[[dict], Awaitable[PromptGroup | None]]
+FilterFn = Callable[[PromptGroup], bool]
+
+
+class _StreamingScheduler:
+    """Two-level capacity gating: staleness + concurrency.
+
+    Internal to this recipe. If you want streaming async with different
+    behavior, fork this class and edit it — it is intentionally not
+    exposed as cookbook API.
+    """
+
+    def __init__(
+        self,
+        *,
+        step_target: int,
+        max_head_offpolicy_versions: int,
+        global_step: int = 0,
+        total_accepted: int = 0,
+        total_rejected: int = 0,
+        rows_submitted: int = 0,
+        max_concurrent: int | None = None,
+    ):
+        self._step_target = step_target
+        self._max_offpolicy = max_head_offpolicy_versions
+        self._current_version = global_step
+        self._total_accepted = total_accepted
+        self._total_rejected = total_rejected
+        self._rows_submitted = rows_submitted
+        policy_window = (max_head_offpolicy_versions + 1) * step_target
+        self._max_concurrent = (
+            min(max_concurrent, policy_window) if max_concurrent is not None
+            else policy_window
+        )
+        self._in_flight: set[asyncio.Task] = set()
+        self._results: asyncio.Queue[tuple[PromptGroup | None, int]] = asyncio.Queue()
+        self._rows_exhausted = False
+
+    @property
+    def current_version(self) -> int:
+        return self._current_version
+
+    @property
+    def data_exhausted(self) -> bool:
+        return self._rows_exhausted and not self._in_flight
+
+    def bump_version(self) -> None:
+        self._current_version += 1
+
+    def get_state(self) -> dict:
+        return {
+            "rows_submitted": self._rows_submitted,
+            "total_accepted": self._total_accepted,
+            "total_rejected": self._total_rejected,
+        }
+
+    def _capacity(self) -> int:
+        staleness = (
+            (self._max_offpolicy + self._current_version + 1) * self._step_target
+            - (self._total_accepted + len(self._in_flight))
+        )
+        concurrency = self._max_concurrent - len(self._in_flight)
+        return max(0, min(staleness, concurrency))
+
+    def _submit(self, sample_fn: SampleFn, row: dict) -> None:
+        version = self._current_version
+
+        async def _worker() -> None:
+            try:
+                result = await sample_fn(row)
+            except Exception as exc:
+                logger.warning(
+                    "Rollout failed (%s): %s", type(exc).__name__, exc or repr(exc),
+                )
+                result = None
+            self._results.put_nowait((result, version))
+
+        task = asyncio.create_task(_worker())
+        self._in_flight.add(task)
+        task.add_done_callback(self._in_flight.discard)
+        self._rows_submitted += 1
+
+    def _refill(self, sample_fn: SampleFn, rows: Iterator[dict]) -> None:
+        if self._rows_exhausted:
+            return
+        for _ in range(self._capacity()):
+            try:
+                row = next(rows)
+            except StopIteration:
+                self._rows_exhausted = True
+                return
+            self._submit(sample_fn, row)
+
+    async def stream(
+        self,
+        sample_fn: SampleFn,
+        filter_fn: FilterFn | None,
+        rows: Iterator[dict],
+    ) -> AsyncIterator[tuple[PromptGroup, int]]:
+        """Yield ``(group, version)`` until ``step_target`` accepted or rows exhausted."""
+        accepted = 0
+        self._refill(sample_fn, rows)
+        while accepted < self._step_target:
+            if not self._in_flight and self._results.empty():
+                return
+            try:
+                item, version = await asyncio.wait_for(
+                    self._results.get(), timeout=0.1,
+                )
+            except asyncio.TimeoutError:
+                self._refill(sample_fn, rows)
+                continue
+            if item is None:
+                self._refill(sample_fn, rows)
+                continue
+            if filter_fn is not None and not filter_fn(item):
+                self._total_rejected += 1
+                self._refill(sample_fn, rows)
+                continue
+            self._total_accepted += 1
+            accepted += 1
+            yield item, version
+            self._refill(sample_fn, rows)
 
 
 # ---------------------------------------------------------------------------
@@ -243,30 +375,24 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(
-        cfg.base_model,
-        cfg.dataset,
-        cfg.weight_sync,
-        cfg.deployment,
+        cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment,
         output_model_id=cfg.output_model_id,
     )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     step_target = cfg.valid_prompt_groups_per_step or prompt_groups_per_step
-
     if step_target < 1:
         raise ValueError("valid_prompt_groups_per_step must be >= 1")
     if cfg.max_head_offpolicy_versions < 0:
         raise ValueError("max_head_offpolicy_versions must be >= 0")
     if not cfg.deployment.tokenizer_model:
-        raise ValueError(
-            "deployment.tokenizer_model is required for client-side tokenization."
-        )
+        raise ValueError("deployment.tokenizer_model is required.")
 
-    # Streaming pipeline requires 1:1 weight sync.
+    # Streaming pipeline requires hotload after every optimizer step.
     if cfg.weight_sync.weight_sync_interval != 1:
         logger.warning(
-            "Async streaming pipeline forces weight_sync_interval=1 "
-            "(was %d)", cfg.weight_sync.weight_sync_interval,
+            "Async streaming pipeline forces weight_sync_interval=1 (was %d)",
+            cfg.weight_sync.weight_sync_interval,
         )
         cfg.weight_sync.weight_sync_interval = 1
 
@@ -274,7 +400,6 @@ def main(
         cfg.wandb,
         {
             "completions_per_prompt": completions_per_prompt,
-            "prompt_groups_per_step": prompt_groups_per_step,
             "step_target": step_target,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
             "kl_beta": cfg.kl_beta,
@@ -282,7 +407,7 @@ def main(
         },
     )
 
-    # -- Setup infrastructure -----------------------------------------------
+    # -- Setup infrastructure (direct one-shot builder calls) --------------
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -297,33 +422,121 @@ def main(
             api_key=api_key, base_url=base_url, additional_headers=additional_headers,
         )
 
+    cfg.infra.training_shape_id, policy_profile = resolve_policy_profile(
+        rlor_mgr,
+        shape_id=cfg.infra.training_shape_id,
+        base_model=cfg.base_model,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+    )
+    if not cfg.deployment.deployment_shape and policy_profile.deployment_shape_version:
+        cfg.deployment.deployment_shape = policy_profile.deployment_shape_version
+    if cfg.max_seq_len is None:
+        cfg.max_seq_len = policy_profile.max_supported_context_length
+    if cfg.max_seq_len is None:
+        raise ValueError("max_seq_len is required.")
+    cfg.infra.ref_training_shape_id, ref_profile = resolve_reference_profile(
+        rlor_mgr,
+        shape_id=cfg.infra.ref_training_shape_id,
+        base_model=cfg.base_model,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        kl_beta=cfg.kl_beta,
+    )
+
+    runner.set_accelerator_info(profile=policy_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
         runner.write_status(RunStatus.PENDING, message=msg)
 
+    boot_start = time.time()
+
     with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        infra = setup_infra(
-            cfg,
-            rlor_mgr=rlor_mgr,
-            deploy_mgr=deploy_mgr,
-            api_key=api_key,
-            cleanup=cleanup,
-            cleanup_on_exit=cleanup_on_exit,
+        _cleanup = cleanup if cleanup_on_exit else None
+
+        policy_ep, reference_ep = provision_trainer_pair(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            infra_config=cfg.infra,
+            policy_profile=policy_profile,
+            ref_profile=ref_profile,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            policy_base_url=cfg.policy_base_url,
+            reference_base_url=cfg.reference_base_url,
+            cleanup=_cleanup,
             on_status=_on_trainer_status,
         )
-        for closeable in infra.closeables:
-            stack.callback(closeable.close)
+        policy_job_id = policy_ep.job_id
+        reference_job_id = reference_ep.job_id if reference_ep else policy_ep.job_id
 
-        runner.set_accelerator_info(profile=infra.policy_profile)
-        wandb_log(infra.boot_metrics, step=0)
+        dep_info = setup_or_reattach_deployment(
+            deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra, policy_ep.job_name,
+        )
+        if cleanup_on_exit:
+            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
-        policy = infra.policy
-        reference = infra.reference
-        sampler = infra.sampler
-        weight_syncer = infra.weight_syncer
+        timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
 
-        # -- Resume ---------------------------------------------------------
+        def _make_client(ep):
+            c = ReconnectableClient(
+                rlor_mgr, ep.job_id, cfg.base_model,
+                lora_rank=cfg.lora_rank,
+                fw_api_key=api_key,
+                default_timeout=timeout,
+                endpoint=ep if (cfg.policy_base_url or cfg.reference_base_url) else None,
+            )
+            if hasattr(c, "close"):
+                stack.callback(c.close)
+            return c
+
+        policy = _make_client(policy_ep)
+        if reference_ep is not None:
+            reference = _make_client(reference_ep)
+        elif cfg.lora_rank > 0 and cfg.kl_beta > 0:
+            reference = policy.create_base_reference()
+            stack.callback(reference.close)
+        else:
+            reference = None
+
+        inference_model = dep_info.inference_model if dep_info else cfg.base_model
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            cfg.deployment.tokenizer_model, trust_remote_code=True,
+        )
+
+        concurrency_controller = make_concurrency_controller(
+            cfg.concurrency, deploy_mgr, cfg.deployment,
+        )
+        sampler = DeploymentSampler(
+            inference_url=deploy_mgr.inference_url,
+            model=inference_model,
+            api_key=api_key,
+            tokenizer=tokenizer,
+            concurrency_controller=concurrency_controller,
+        )
+        weight_syncer = WeightSyncer(
+            policy_client=policy.inner,
+            deploy_mgr=deploy_mgr,
+            deployment_id=cfg.deployment.deployment_id,
+            base_model=cfg.rollout_base_model or cfg.base_model,
+            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
+            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
+            lora_rank=cfg.lora_rank,
+        )
+
+        boot_metrics: dict = {
+            "train/step": 0,
+            "infra/total_boot_time": time.time() - boot_start,
+        }
+        if deploy_mgr.boot_time_s is not None:
+            boot_metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
+        wandb_log(boot_metrics, step=0)
+
+        # -- Resume --------------------------------------------------------
 
         resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
         step_offset = resume_info.step if resume_info else 0
@@ -333,7 +546,7 @@ def main(
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
-        # -- Loss + adam -----------------------------------------------------
+        # -- Loss + adam ---------------------------------------------------
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         client_loss_builder = build_loss_fn(
@@ -348,37 +561,13 @@ def main(
             eps_clip_high=cfg.eps_clip_high,
         )
         builtin_server_loss = resolve_builtin_loss(
-            cfg.policy_loss,
-            infra.policy_profile,
-            dapo_config=cfg.dapo,
-            gspo_config=cfg.gspo,
-            cispo_config=cfg.cispo,
+            cfg.policy_loss, policy_profile,
+            dapo_config=cfg.dapo, gspo_config=cfg.gspo, cispo_config=cfg.cispo,
             ratio_log_cap=cfg.ratio_log_cap,
-            eps_clip=cfg.eps_clip,
-            eps_clip_high=cfg.eps_clip_high,
+            eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high,
         )
 
-        ctx = TrainContext(
-            policy=policy,
-            reference=reference,
-            weight_syncer=weight_syncer,
-            adam_params=adam_params,
-            grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-            builtin_server_loss=builtin_server_loss,
-            client_loss_builder=client_loss_builder,
-            tis_config=cfg.tis,
-            policy_loss=cfg.policy_loss,
-            log_path=cfg.log_path,
-            policy_job_id=infra.policy_job_id,
-            completions_per_prompt=completions_per_prompt,
-            trajectory_dir=cfg.trajectory_dir,
-            weight_sync_interval=1,
-            dcp_save_interval=cfg.weight_sync.dcp_save_interval,
-            wandb_log=wandb_log,
-            log_metrics_json=log_metrics_json,
-        )
-
-        # -- Sampling closure (VISIBLE — customise this) --------------------
+        # -- Sampling closure (VISIBLE — customise this) -------------------
 
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
@@ -395,7 +584,6 @@ def main(
             input_messages = prepare_sampling_messages(messages)
             if not input_messages:
                 return None
-
             try:
                 sampled = await sampler.sample_with_tokens(
                     messages=input_messages,
@@ -405,13 +593,11 @@ def main(
             except Exception as e:
                 logger.warning("Sampling failed (%s): %s", type(e).__name__, e or repr(e))
                 return None
-
             if not sampled or len(sampled) < completions_per_prompt:
                 return None
 
             rewards = [reward_fn(s.text, row) for s in sampled]
             advantages = compute_advantages(rewards)
-
             prompt_len = sampled[0].prompt_len
             policy_data: List[tinker.Datum] = []
             reference_data: List[tinker.Datum] = []
@@ -423,20 +609,15 @@ def main(
                 if len(tokens) < 2:
                     continue
                 model_input_len = len(tokens) - 1
-
                 rm = None
                 if cfg.router_replay:
                     rm = build_r3_routing_matrices(
-                        s.routing_matrices,
-                        s.prompt_len,
-                        model_input_len,
+                        s.routing_matrices, s.prompt_len, model_input_len,
                         completion_only=cfg.router_replay_completion_only,
                     )
-
                 policy_data.append(make_policy_datum(tokens, routing_matrices=rm))
                 if reference is not None:
                     reference_data.append(make_reference_datum(tokens))
-
                 adv_filtered.append(advantages[idx])
                 inf_logprobs_aligned.append(
                     align_inference_logprobs(
@@ -449,10 +630,8 @@ def main(
 
             if not policy_data:
                 return None
-
             comp_lens = [len(s.full_tokens) - s.prompt_len for s in sampled]
             trunc = [s.finish_reason == "length" for s in sampled]
-
             return PromptGroup(
                 data=policy_data,
                 ref_data=reference_data,
@@ -468,17 +647,140 @@ def main(
                 row_meta={"ground_truth": row.get("ground_truth", "")} if cfg.trajectory_dir else None,
             )
 
-        # -- Streaming loop body (VISIBLE — recipe owns this) ---------------
+        # -- Per-group ref+forward+forward_backward (VISIBLE) --------------
+
+        def _ref_and_fwd_bwd(group: PromptGroup) -> Any:
+            """Per-group: reference forward + policy forward + forward_backward.
+
+            The trainer accumulates gradients across calls. ``optim_step``
+            fires from the outer loop after all groups in the step.
+            """
+            t0 = time.time()
+            if reference is not None and group.ref_data:
+                ref_fwd = reference.forward(group.ref_data, "cross_entropy")
+                group.ref_logprobs = [
+                    ref_fwd.loss_fn_outputs[i]["logprobs"].data
+                    for i in range(len(group.ref_data))
+                ]
+            logger.info("ref_forward: done (%.1fs)", time.time() - t0)
+
+            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups([group])
+
+            t0 = time.time()
+            with timer("policy_forward"):
+                prox_fwd = policy.forward(data, "cross_entropy")
+                prox_lp = [
+                    prox_fwd.loss_fn_outputs[i]["logprobs"].data
+                    for i in range(len(data))
+                ]
+            logger.info("policy_forward: done (%.1fs)", time.time() - t0)
+
+            t0 = time.time()
+            with timer("fwd_bwd"):
+                if builtin_server_loss is not None:
+                    kernel_loss, kernel_config = builtin_server_loss
+                    rl_datums = build_builtin_loss_datums(
+                        data, adv, prox_lp, inf_lp, prompt_lens,
+                        cfg.tis, policy_loss=cfg.policy_loss,
+                    )
+                    result = policy.forward_backward(
+                        rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                    )
+                else:
+                    result = policy.forward_backward_custom(
+                        data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+                    )
+            logger.info("fwd_bwd: done (%.1fs)", time.time() - t0)
+            return result
+
+        # -- Step finalize: optim + hotload + metrics + checkpoint (VISIBLE)
+
+        def _finalize_step(
+            step: int,
+            groups: list[PromptGroup],
+            fwd_results: list,
+            stats: dict,
+            scheduler_state: dict,
+        ) -> int:
+            t0 = time.time()
+            with timer("optim_step"):
+                optim_result = policy.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                )
+            step += 1
+            logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
+
+            # 1:1 hotload (forced for streaming pipeline).
+            if cfg.deployment.deployment_id:
+                logger.info("[step %d] weight_sync: saving + loading...", step)
+                t0 = time.time()
+                with timer("weight_sync"):
+                    weight_syncer.save_and_hotload(f"step-{step}")
+                logger.info(
+                    "[step %d] weight_sync: done (%.1fs)", step, time.time() - t0,
+                )
+
+            if (
+                cfg.weight_sync.dcp_save_interval > 0
+                and step % cfg.weight_sync.dcp_save_interval == 0
+            ):
+                data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+                    step - step_offset
+                ) * step_target
+                save_checkpoint(
+                    policy, f"step-{step}", cfg.log_path,
+                    {
+                        "step": step,
+                        "data_consumed": data_consumed,
+                        "source_job_id": policy_job_id,
+                        "async_state": scheduler_state,
+                    },
+                    kind=CheckpointKind.STATE,
+                    base_model=cfg.base_model,
+                    training_shape=cfg.infra.training_shape_id,
+                )
+
+            metrics = compute_step_metrics(
+                prompt_groups=groups,
+                fwd_bwd_results=fwd_results,
+                optim_result=optim_result,
+                n_accum=len(fwd_results),
+                timing_metrics=flush_timing(),
+                loop_stats=stats,
+                completions_per_prompt=completions_per_prompt,
+            )
+            metrics["train/step"] = step
+            avg_reward = metrics.get("rollout/reward", 0.0)
+            avg_acc = metrics.get("rollout/accuracy", 0.0)
+            avg_kl = metrics.get("train/mean_kl", 0.0)
+            logger.info(
+                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
+                step, avg_reward, avg_acc * 100, avg_kl,
+            )
+            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
+            wandb_log(metrics, step)
+
+            runner.append_metrics(step, metrics)
+            runner.write_status(
+                RunStatus.RUNNING, step=step, message="training",
+            )
+            runner.write_metadata()
+
+            if cfg.trajectory_dir:
+                dump_trajectory_jsonl(cfg.trajectory_dir, step, groups)
+            return step
+
+        # -- Outer streaming loop (VISIBLE — recipe owns this) -------------
 
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
         async_state = (resume_info.async_state if resume_info else None) or {}
 
-        async def _async_loop() -> int:
-            scheduler = AsyncRolloutScheduler(
+        async def _run() -> int:
+            scheduler = _StreamingScheduler(
                 step_target=step_target,
                 max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
-                filter_fn=should_accept,
                 global_step=step_offset,
                 total_accepted=async_state.get("total_accepted", 0),
                 total_rejected=async_state.get("total_rejected", 0),
@@ -486,9 +788,7 @@ def main(
                 max_concurrent=cfg.sample_max_concurrency,
             )
             row_iter = iter(all_rows)
-            # Skip rows that resumed checkpoints already submitted.
-            skip = async_state.get("rows_submitted", 0)
-            for _ in range(min(skip, len(all_rows))):
+            for _ in range(min(async_state.get("rows_submitted", 0), len(all_rows))):
                 next(row_iter, None)
 
             step = step_offset
@@ -503,15 +803,18 @@ def main(
                 fwd_results: list = []
                 version_offsets: list[int] = []
                 raw_rewards: list[float] = []
-                t0 = _time.time()
+                t0 = time.time()
 
-                async for group, version in scheduler.stream_groups(sample_one_prompt, row_iter):
+                async for group, version in scheduler.stream(
+                    sample_one_prompt, should_accept, row_iter,
+                ):
                     groups.append(group)
                     version_offsets.append(scheduler.current_version - version)
                     raw_rewards.extend(group.rewards)
-
                     # Train this group now — server accumulates gradients.
-                    fwd_results.append(ref_fwd_bwd(ctx, group))
+                    fwd_results.append(
+                        await asyncio.to_thread(_ref_and_fwd_bwd, group),
+                    )
                     logger.info(
                         "[async step %d] trained group %d/%d",
                         step + 1, len(groups), step_target,
@@ -520,8 +823,8 @@ def main(
                 if not groups:
                     break
 
-                wall_time = _time.time() - t0
-                loop_stats = {
+                wall_time = time.time() - t0
+                stats = {
                     "valid_prompt_groups": len(groups),
                     "total_sampled": len(groups),
                     "filter_drops": 0,
@@ -532,37 +835,15 @@ def main(
                     "version_offsets": version_offsets,
                 }
 
-                step, metrics = finish_step(
-                    ctx,
-                    step,
-                    groups,
-                    fwd_results,
-                    loop_stats=loop_stats,
-                    save_checkpoint_fn=lambda name, extra: save_checkpoint(
-                        ctx.policy,
-                        name,
-                        cfg.log_path,
-                        {**extra, "async_state": scheduler.get_state()},
-                        kind=CheckpointKind.STATE,
-                    ),
-                    step_target=step_target,
-                    resume_data_consumed=resume_info.data_consumed if resume_info else 0,
-                    step_offset=step_offset,
-                )
-                metrics["async/version"] = scheduler.current_version
-                metrics["async/staleness_max"] = max(version_offsets, default=0)
-                runner.append_metrics(step, metrics)
-                runner.write_status(
-                    RunStatus.RUNNING,
-                    step=step,
-                    total_steps=total_steps,
-                    message="training",
+                step = await asyncio.to_thread(
+                    _finalize_step, step, groups, fwd_results, stats,
+                    scheduler.get_state(),
                 )
                 scheduler.bump_version()
 
             return step
 
-        global_step = asyncio.run(_async_loop())
+        global_step = asyncio.run(_run())
 
         # -- Final checkpoint ----------------------------------------------
 
@@ -573,13 +854,11 @@ def main(
                 ) * step_target
                 cp_name = f"step-{global_step}"
                 paths = save_checkpoint(
-                    policy,
-                    cp_name,
-                    cfg.log_path,
+                    policy, cp_name, cfg.log_path,
                     {
                         "step": global_step,
                         "data_consumed": data_consumed,
-                        "source_job_id": ctx.policy_job_id,
+                        "source_job_id": policy_job_id,
                     },
                     kind=CheckpointKind.BOTH,
                     base_model=cfg.base_model,
@@ -587,15 +866,14 @@ def main(
                 )
                 if cfg.output_model_id:
                     rlor_mgr.promote_checkpoint(
-                        ctx.policy_job_id,
+                        policy_job_id,
                         paths["sampler_path"],
                         cfg.output_model_id,
                         cfg.base_model,
                     )
                     runner.write_output_model(
                         model_id=cfg.output_model_id,
-                        checkpoint=cp_name,
-                        job_id=ctx.policy_job_id,
+                        checkpoint=cp_name, job_id=policy_job_id,
                     )
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
@@ -608,8 +886,8 @@ def main(
         wandb_finish()
         return {
             "steps": global_step,
-            "policy_job_id": ctx.policy_job_id,
-            "reference_job_id": infra.reference_job_id,
+            "policy_job_id": policy_job_id,
+            "reference_job_id": reference_job_id,
         }
 
 
