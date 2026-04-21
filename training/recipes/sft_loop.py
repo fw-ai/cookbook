@@ -76,9 +76,6 @@ _worker_max_seq_len = None
 
 def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_seq_len):
     """Create a renderer per worker process to avoid pickling the tokenizer."""
-    import gc
-    gc.disable()
-
     global _worker_renderer, _worker_train_on_what, _worker_max_seq_len
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         tokenizer_model, trust_remote_code=True,
@@ -452,7 +449,8 @@ def main(
                 "Rendering %d examples with %d parallel workers",
                 total_raw, num_workers,
             )
-            with multiprocessing.Pool(
+            spawn_ctx = multiprocessing.get_context("spawn")
+            with spawn_ctx.Pool(
                 processes=num_workers,
                 initializer=_init_render_worker,
                 initargs=(
@@ -507,7 +505,8 @@ def main(
             eval_log_interval = max(1, total_eval // 10)
             eval_data = []
             if use_parallel:
-                with multiprocessing.Pool(
+                spawn_ctx = multiprocessing.get_context("spawn")
+                with spawn_ctx.Pool(
                     processes=num_workers,
                     initializer=_init_render_worker,
                     initargs=(
