@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -106,12 +107,34 @@ def build_renderer(
     """Construct the Tinker renderer used for supervised formatting."""
     resolved_name = resolve_renderer_name(tokenizer_model, renderer_name)
     if get_image_processor is not None and _renderer_uses_images(resolved_name):
+        _ensure_trust_remote_code_for_image_processor(tokenizer_model)
         return get_renderer(
             resolved_name,
             tokenizer,
             image_processor=get_image_processor(tokenizer_model),
         )
     return get_renderer(resolved_name, tokenizer)
+
+
+# tinker_cookbook.image_processing_utils.get_image_processor has a hard-coded
+# trust_remote_code=True branch only for moonshotai/Kimi-K2.5. Other Kimi-family
+# checkpoints that ship a custom image processor (e.g. moonshotai/Kimi-K2.6)
+# also require trust_remote_code, otherwise AutoImageProcessor.from_pretrained
+# raises ValueError in non-interactive environments (CI, service mode). The
+# same module honors HF_TRUST_REMOTE_CODE as an opt-in hook, so set it for
+# those checkpoints before the first (cached) call.
+_MODELS_REQUIRING_TRUST_REMOTE_CODE_FOR_IMAGE_PROCESSOR: tuple[str, ...] = (
+    "moonshotai/kimi-k2.6",
+)
+
+
+def _ensure_trust_remote_code_for_image_processor(tokenizer_model: str) -> None:
+    normalized = tokenizer_model.lower()
+    if any(
+        marker in normalized
+        for marker in _MODELS_REQUIRING_TRUST_REMOTE_CODE_FOR_IMAGE_PROCESSOR
+    ):
+        os.environ.setdefault("HF_TRUST_REMOTE_CODE", "1")
 
 
 def _renderer_uses_images(renderer_name: str) -> bool:

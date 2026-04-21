@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 import torch
 import tinker
@@ -258,6 +260,89 @@ def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
 
     assert renderer == "renderer"
     assert calls == [("qwen3_vl_instruct", "image-processor")]
+
+
+def test_build_renderer_opts_in_trust_remote_code_for_kimi_k2_6(monkeypatch):
+    """Kimi-K2.6 ships a custom image processor not covered by tinker_cookbook's
+    hardcoded trust_remote_code=True list; build_renderer must set the
+    HF_TRUST_REMOTE_CODE env var before calling get_image_processor so the
+    cached AutoImageProcessor load succeeds non-interactively in CI."""
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+
+    env_at_call: list[str | None] = []
+
+    def fake_get_image_processor(model_name):
+        env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
+        return "image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        return ("renderer", name, image_processor)
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    result = build_renderer(
+        tokenizer="tok",
+        tokenizer_model="moonshotai/Kimi-K2.6",
+    )
+
+    assert env_at_call == ["1"]
+    assert result == ("renderer", "kimi_k25", "image-processor")
+
+
+def test_build_renderer_does_not_touch_trust_remote_code_for_kimi_k2_5(monkeypatch):
+    """K2.5 is already covered by tinker_cookbook's hardcoded trust_remote_code
+    branch, so our opt-in helper must leave HF_TRUST_REMOTE_CODE unset for it."""
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+
+    env_at_call: list[str | None] = []
+
+    def fake_get_image_processor(model_name):
+        env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
+        return "image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    build_renderer(
+        tokenizer="tok",
+        tokenizer_model="moonshotai/Kimi-K2.5",
+    )
+
+    assert env_at_call == [None]
+
+
+def test_build_renderer_preserves_existing_trust_remote_code_value(monkeypatch):
+    """Don't stomp a user-set HF_TRUST_REMOTE_CODE — setdefault semantics."""
+    monkeypatch.setenv("HF_TRUST_REMOTE_CODE", "0")
+
+    env_at_call: list[str | None] = []
+
+    def fake_get_image_processor(model_name):
+        env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
+        return "image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    build_renderer(
+        tokenizer="tok",
+        tokenizer_model="moonshotai/Kimi-K2.6",
+    )
+
+    assert env_at_call == ["0"]
 
 
 def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_5():
