@@ -244,7 +244,16 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
     cleanup_on_exit: bool = False,
+    cancel_on_exit: bool | None = None,
 ):
+    if cancel_on_exit is not None:
+        import warnings
+        warnings.warn(
+            "igpo_loop.main(cancel_on_exit=...) is deprecated; use cleanup_on_exit=...",
+            DeprecationWarning, stacklevel=2,
+        )
+        cleanup_on_exit = cancel_on_exit
+
     cfg = config
     if cfg.policy_base_url or cfg.reference_base_url:
         logger.warning(
