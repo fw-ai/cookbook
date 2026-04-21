@@ -1075,6 +1075,14 @@ def _resolve_reference_shape(
 ) -> tuple[Any | None, str | None]:
     """Return (ref_profile, resolved_ref_shape_id)."""
     if ref_training_shape_id:
+        if lora_rank > 0:
+            logger.warning(
+                "ref_training_shape_id=%r is set alongside lora_rank=%d. This provisions a "
+                "separate full-param forward-only reference trainer, which defeats LoRA's "
+                "GPU savings. For LoRA, leave ref_training_shape_id unset — setup_infra "
+                "will use the shared-session reference (policy.create_base_reference()).",
+                ref_training_shape_id, lora_rank,
+            )
         return rlor_mgr.resolve_training_profile(ref_training_shape_id), ref_training_shape_id
     if not (needs_reference and lora_rank == 0):
         return None, None

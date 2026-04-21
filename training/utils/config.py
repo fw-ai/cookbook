@@ -72,11 +72,13 @@ class InfraConfig:
     When set, infra config is auto-derived from the shape."""
 
     ref_training_shape_id: str | None = None
-    """Training shape ID for the reference (forward-only) trainer.
-    When set, a reference model is created.  When not set, no reference
-    model is created.  No implicit fallback.  Can be the same value as
-    ``training_shape_id`` -- the control plane auto-appends
-    ``--forward-only`` via ``applyForwardOnlyConfig``."""
+    """Training shape ID for a **separate** forward-only reference trainer.
+    Only relevant for **full-parameter** training — LoRA runs use the
+    shared-session reference (``policy.create_base_reference()``) on the
+    policy trainer, so leave this ``None`` when ``lora_rank > 0``. For
+    full-param, when set, a second trainer is provisioned; when not set,
+    no reference is created. Can be the same value as ``training_shape_id``
+    — the control plane auto-appends ``--forward-only``."""
 
     region: str | None = None
     custom_image_tag: str | None = None

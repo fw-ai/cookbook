@@ -33,9 +33,11 @@ if not cfg.deployment.deployment_shape and profile.deployment_shape_version:
 
 That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123`). The `to_deployment_config` helper in `training/utils/config.py` auto-clears manual accelerator fields whenever a shape is present.
 
-## Reference-model shape (RL only)
+## Reference-model shape (RL / DPO)
 
-For RL with a frozen reference, set `cfg.infra.ref_training_shape_id` explicitly — there is no implicit fallback. It can share the same shape as the policy; the control plane appends `--forward-only` automatically.
+For **full-parameter** training with a frozen reference, set `cfg.infra.ref_training_shape_id` explicitly — there is no implicit fallback. It can share the same shape as the policy; the control plane appends `--forward-only` automatically.
+
+For **LoRA** (`lora_rank > 0`), leave `ref_training_shape_id` unset. `setup_infra` uses `policy.create_base_reference()` on the policy trainer for reference logprobs — no separate forward-only trainer, no extra GPUs. Setting `ref_training_shape_id` alongside `lora_rank > 0` logs a warning and still provisions the separate trainer, which defeats LoRA's GPU savings (and can OOM on very large LoRA base models). The CI pattern is `ref_shape = "" if lora_rank > 0 else <explicit shape>`.
 
 ## When to skip validation
 
