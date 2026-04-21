@@ -112,6 +112,9 @@ class DeployConfig:
     Format: accounts/{account}/rlorTrainerJobs/{job_id}.
     When set, the deployment copies the trainer's bucket URL at creation."""
     deployment_timeout_s: float = 5400
+    reattach_settle_timeout_s: int = 600
+    """How long to wait for the serving pod to cycle after a re-attach PATCH
+    (separate from the full deployment creation timeout)."""
     deployment_extra_args: list[str] | None = None
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).

@@ -2,10 +2,14 @@
 
 One high-level entry point: :func:`setup_infra`. Recipes pass a config + a
 couple of flags (``needs_reference``, ``needs_inference``) and get back an
-:class:`Infra` bundle of fully-wired clients. All control flow — shape
+:class:`Infra` bundle of trainer clients. All control flow — shape
 auto-selection, parallel trainer provisioning, LoRA shared-reference
-branching, deployment setup, sampler, weight syncer, concurrency controller
-— lives inside :func:`setup_infra`.
+branching, deployment setup — lives inside :func:`setup_infra`.
+
+Inference-side objects (sampler, weight syncer, concurrency controller) are
+intentionally *not* created here — each recipe builds them after calling
+:func:`setup_infra` so the construction is visible and customisable in the
+loop. Use :func:`build_concurrency_controller` for the controller.
 
 Generic across loop types:
 
@@ -16,18 +20,16 @@ Generic across loop types:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import threading
 import time
 import logging
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlencode
-
-import transformers
 
 from fireworks.training.sdk.client import (
     FiretitanServiceClient,
@@ -47,12 +49,9 @@ except ImportError:
         from fireworks.training.sdk import TrainingShapeProfile
         CreatedTrainerJob = None  # type: ignore[assignment,misc]
 from fireworks.training.sdk.deployment import (
-    AdaptiveConcurrencyController,
     DeploymentConfig,
     DeploymentInfo,
     DeploymentManager,
-    DeploymentSampler,
-    FixedConcurrencyController,
 )
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.config import InfraConfig, DeployConfig
@@ -863,8 +862,6 @@ def _reuse_or_resume_job(
 # Bundled infrastructure setup (setup_infra) — generic across RL, DPO, SFT
 # ---------------------------------------------------------------------------
 
-_SLOTS_PER_GPU = 8
-
 
 @dataclass
 class _ReattachHandle:
@@ -887,16 +884,16 @@ class _ReattachHandle:
 class Infra:
     """Wired-up infrastructure handed back to the recipe.
 
+    Inference-side objects (sampler, weight syncer, concurrency controller)
+    are *not* included — each recipe constructs them after calling
+    :func:`setup_infra` so they remain visible and customisable in the loop.
+
     Attributes:
         policy: Policy trainer client. Always set.
         reference: Reference trainer client when ``needs_reference``;
             either a separate :class:`ReconnectableClient` (full-param)
             or a base-only handle on the policy session (LoRA shared).
             ``None`` when no reference is needed.
-        sampler: Inference sampler. ``None`` when ``needs_inference=False``.
-        weight_syncer: Save-and-hotload helper. ``None`` when no inference.
-        concurrency_controller: Optional concurrency controller bound to
-            the sampler. Recipe pulls it for ``step_completed()`` metrics.
         policy_profile: Resolved policy training-shape profile.
         policy_job_id: Policy trainer job ID.
         reference_job_id: Reference trainer job ID, or ``None`` when no
@@ -904,6 +901,7 @@ class Infra:
             ``needs_reference=False``).
         inference_model: Base model name for inference (may differ from
             ``cfg.base_model`` when a deployment adapter is mounted).
+            ``None`` when ``needs_inference=False``.
         boot_metrics: One-shot boot metrics suitable for ``wandb_log``.
         closeables: Objects with ``.close()`` the caller should register
             onto an ``ExitStack``.
@@ -911,9 +909,6 @@ class Infra:
 
     policy: Any
     reference: Any | None
-    sampler: Any | None
-    weight_syncer: Any | None
-    concurrency_controller: Any | None
     policy_profile: Any
     policy_job_id: str
     reference_job_id: str | None
@@ -929,6 +924,7 @@ def setup_infra(
     deploy_mgr: DeploymentManager | None = None,
     needs_reference: bool,
     needs_inference: bool = True,
+    role_prefix: str,
     api_key: str,
     cleanup: ResourceCleanup | None = None,
     cleanup_on_exit: bool = False,
@@ -943,10 +939,12 @@ def setup_infra(
         ``learning_rate``, ``step_timeout``, ``infra`` (InfraConfig),
         ``policy_job_id`` / ``reference_job_id`` (set to reuse existing
         trainers).
+        ``role_prefix``: label prefix for display names (e.g. ``"grpo"``,
+        ``"dpo"``, ``"sft"``).
 
     When ``needs_inference``:
         ``deployment`` (DeployConfig), ``weight_sync`` (WeightSyncConfig),
-        ``concurrency`` (ConcurrencyConfig), ``rollout_base_model`` (optional).
+        ``rollout_base_model`` (optional).
         Plus ``deploy_mgr`` must be provided.
 
     Mutates ``cfg``:
@@ -962,7 +960,7 @@ def setup_infra(
     if needs_inference and deploy_mgr is None:
         raise ValueError("deploy_mgr is required when needs_inference=True")
 
-    on_status_cb = on_status or _noop_status
+    emit: Callable[[str], None] = on_status or (lambda _: None)
     boot_start = time.time()
 
     policy_profile = _resolve_policy_shape(cfg, rlor_mgr, needs_inference)
@@ -975,12 +973,6 @@ def setup_infra(
     )
 
     trainer_cleanup = cleanup if cleanup_on_exit else None
-    if needs_inference:
-        role_prefix = "grpo"
-    elif needs_reference:
-        role_prefix = "dpo"
-    else:
-        role_prefix = "sft"
 
     # Phase 2a: POST both trainer creation requests (fast, seconds).
     policy_handle, ref_handle = _request_trainers(
@@ -990,7 +982,7 @@ def setup_infra(
         ref_profile=ref_profile,
         role_prefix=role_prefix,
         cleanup=trainer_cleanup,
-        on_status=on_status_cb,
+        on_status=emit,
     )
 
     # Phase 2b: POST a fresh deployment or PATCH a re-attach — both using
@@ -1015,7 +1007,7 @@ def setup_infra(
         deploy_mgr=deploy_mgr if needs_inference else None,
         cfg=cfg,
         role_prefix=role_prefix,
-        on_status=on_status_cb,
+        on_status=emit,
     )
 
     inference_model = None
@@ -1034,26 +1026,11 @@ def setup_infra(
         closeables=closeables,
     )
 
-    sampler = None
-    weight_syncer = None
-    concurrency_controller = None
-    if needs_inference:
-        sampler, weight_syncer, concurrency_controller = _make_inference_components(
-            cfg=cfg,
-            deploy_mgr=deploy_mgr,
-            policy=policy,
-            inference_model=inference_model,
-            api_key=api_key,
-        )
-
     boot_metrics = _make_boot_metrics(boot_start, deploy_mgr if needs_inference else None)
 
     return Infra(
         policy=policy,
         reference=reference,
-        sampler=sampler,
-        weight_syncer=weight_syncer,
-        concurrency_controller=concurrency_controller,
         policy_profile=policy_profile,
         policy_job_id=policy_ep.job_id,
         reference_job_id=reference_ep.job_id if reference_ep is not None else None,
@@ -1061,10 +1038,6 @@ def setup_infra(
         boot_metrics=boot_metrics,
         closeables=closeables,
     )
-
-
-def _noop_status(_message: str) -> None:
-    pass
 
 
 def _register_closeable(obj: Any, closeables: list[Any]) -> None:
@@ -1127,8 +1100,7 @@ def _strip_args(infra: InfraConfig, flags: set[str]) -> InfraConfig:
     stripped = [a for a in infra.extra_args if a not in flags]
     if stripped == infra.extra_args:
         return infra
-    import dataclasses as _dc
-    return _dc.replace(infra, extra_args=stripped or None)
+    return dataclasses.replace(infra, extra_args=stripped or None)
 
 
 def _request_trainers(
@@ -1195,7 +1167,7 @@ def _request_deployment_or_none(
     ``CreatedTrainerJob`` before the trainer is READY.
     """
     dep_id = cfg.deployment.deployment_id
-    timeout_s = getattr(cfg.deployment, "deployment_timeout_s", None) or 600
+    timeout_s = getattr(cfg.deployment, "reattach_settle_timeout_s", None) or 600
     job_name = getattr(policy_handle, "job_name", None)
 
     if dep_id:
@@ -1356,43 +1328,6 @@ def _make_reference_client(
     return None
 
 
-def _make_inference_components(
-    *,
-    cfg: Any,
-    deploy_mgr: DeploymentManager,
-    policy: Any,
-    inference_model: str | None,
-    api_key: str,
-) -> tuple[Any, Any, Any | None]:
-    if not cfg.deployment.tokenizer_model:
-        raise ValueError(
-            "deployment.tokenizer_model is required for client-side tokenization."
-        )
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        cfg.deployment.tokenizer_model, trust_remote_code=True,
-    )
-    concurrency_controller = _build_concurrency_controller(
-        cfg.concurrency, deploy_mgr, cfg.deployment,
-    )
-    sampler = DeploymentSampler(
-        inference_url=deploy_mgr.inference_url,
-        model=inference_model,
-        api_key=api_key,
-        tokenizer=tokenizer,
-        concurrency_controller=concurrency_controller,
-    )
-    weight_syncer = WeightSyncer(
-        policy_client=policy.inner,
-        deploy_mgr=deploy_mgr,
-        deployment_id=cfg.deployment.deployment_id,
-        base_model=getattr(cfg, "rollout_base_model", None) or cfg.base_model,
-        hotload_timeout=cfg.weight_sync.weight_sync_timeout,
-        first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
-        lora_rank=cfg.lora_rank,
-    )
-    return sampler, weight_syncer, concurrency_controller
-
-
 def _make_boot_metrics(boot_start: float, deploy_mgr: DeploymentManager | None) -> dict:
     metrics: dict = {
         "train/step": 0,
@@ -1403,48 +1338,3 @@ def _make_boot_metrics(boot_start: float, deploy_mgr: DeploymentManager | None) 
     return metrics
 
 
-def _build_concurrency_controller(
-    concurrency_config: Any,
-    deploy_mgr: DeploymentManager,
-    deployment_config: Any,
-) -> Any | None:
-    mode = concurrency_config.mode
-    if mode == "adaptive":
-        gpu_count = get_deployment_gpu_count(deploy_mgr, deployment_config)
-        initial_window = (
-            concurrency_config.initial_window or (_SLOTS_PER_GPU * gpu_count)
-        )
-        controller = AdaptiveConcurrencyController(
-            initial_window=initial_window,
-            min_window=concurrency_config.min_window,
-            max_window=concurrency_config.max_window,
-            prefill_queue_target=concurrency_config.prefill_queue_target,
-        )
-        logger.info(
-            "Using adaptive concurrency (initial=%d, range=%d-%d, target_pq=%.2fs)",
-            initial_window,
-            concurrency_config.min_window,
-            concurrency_config.max_window,
-            concurrency_config.prefill_queue_target,
-        )
-        return controller
-    if mode == "fixed":
-        logger.info("Using fixed concurrency: unlimited")
-        return None
-    if mode is None and concurrency_config.max_concurrency is not None:
-        warnings.warn(
-            "ConcurrencyConfig.max_concurrency is deprecated. "
-            "Use mode='adaptive' (default) or mode='fixed' with "
-            "FixedConcurrencyController instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        controller = FixedConcurrencyController(concurrency_config.max_concurrency)
-        logger.info(
-            "Using fixed concurrency (deprecated max_concurrency=%d)",
-            concurrency_config.max_concurrency,
-        )
-        return controller
-    raise ValueError(
-        f"Unknown concurrency mode: {mode!r}. Must be 'adaptive' or 'fixed'."
-    )

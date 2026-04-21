@@ -1,11 +1,8 @@
 """Unit tests for the bundled setup_infra entry point.
 
-setup_infra owns all the control flow (shape resolution, parallel
-trainer provisioning, LoRA shared-reference, deployment, sampler,
-weight syncer). These tests exercise each branch in isolation by
-patching the SDK boundary and verifying setup_infra wires things
-together correctly — particularly the LoRA shared-reference path
-that keeps a single trainer alive for both policy and reference.
+setup_infra owns shape resolution, parallel trainer provisioning,
+LoRA shared-reference branching, and deployment setup. These tests
+exercise each branch in isolation by patching the SDK boundary.
 
 Parallel-provisioning tests verify:
   * request phase fires before wait phase
@@ -143,22 +140,6 @@ def patch_sdk(monkeypatch):
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
     )
-    monkeypatch.setattr(
-        infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1,
-    )
-    monkeypatch.setattr(
-        infra_setup_mod.transformers.AutoTokenizer,
-        "from_pretrained", lambda *a, **kw: object(),
-    )
-
-    fake_weight_syncer = MagicMock()
-    monkeypatch.setattr(
-        infra_setup_mod, "WeightSyncer", lambda **kw: fake_weight_syncer,
-    )
-    fake_sampler = MagicMock()
-    monkeypatch.setattr(
-        infra_setup_mod, "DeploymentSampler", lambda **kw: fake_sampler,
-    )
 
     return SimpleNamespace(trainer_calls=trainer_calls)
 
@@ -184,19 +165,7 @@ def test_setup_infra_requires_deploy_mgr_when_inference_needed(patch_sdk):
         setup_infra(
             cfg, rlor_mgr=rlor, deploy_mgr=None,
             needs_reference=False, needs_inference=True,
-            api_key="key",
-        )
-
-
-def test_setup_infra_requires_tokenizer_model_for_inference(patch_sdk):
-    rlor, deploy = _make_mgrs()
-    cfg = _make_cfg()
-    cfg.deployment.tokenizer_model = ""
-    with pytest.raises(ValueError, match="tokenizer_model"):
-        setup_infra(
-            cfg, rlor_mgr=rlor, deploy_mgr=deploy,
-            needs_reference=False, needs_inference=True,
-            api_key="key",
+            role_prefix="grpo", api_key="key",
         )
 
 
@@ -212,7 +181,7 @@ def test_setup_infra_rl_full_param_with_kl_provisions_separate_reference(patch_s
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=True, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     display_names = [c["display_name"] for c in patch_sdk.trainer_calls]
@@ -243,7 +212,7 @@ def test_setup_infra_rl_full_param_no_kl_skips_reference(patch_sdk):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=False, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     display_names = [c["display_name"] for c in patch_sdk.trainer_calls]
@@ -266,7 +235,7 @@ def test_setup_infra_lora_with_reference_uses_shared_session_rl(patch_sdk):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=True, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     # Only the policy trainer — no parallel reference trainer.
@@ -289,16 +258,14 @@ def test_setup_infra_lora_with_reference_uses_shared_session_dpo(patch_sdk):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=None,
         needs_reference=True, needs_inference=False,
-        api_key="key",
+        role_prefix="dpo", api_key="key",
     )
 
     display_names = [c["display_name"] for c in patch_sdk.trainer_calls]
     assert display_names == ["dpo-policy"]
     assert infra.reference_job_id is None
     assert infra.reference is not None and getattr(infra.reference, "kind", None) == "base_shared"
-    # No sampler / weight_syncer when needs_inference=False.
-    assert infra.sampler is None
-    assert infra.weight_syncer is None
+    assert infra.inference_model is None
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +280,7 @@ def test_setup_infra_dpo_full_param_provisions_separate_reference(patch_sdk):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=None,
         needs_reference=True, needs_inference=False,
-        api_key="key",
+        role_prefix="dpo", api_key="key",
     )
 
     display_names = sorted(c["display_name"] for c in patch_sdk.trainer_calls)
@@ -337,7 +304,7 @@ def test_setup_infra_auto_selects_policy_shape_when_unset(patch_sdk):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=False, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     assert cfg.infra.training_shape_id == "auto-policy"
@@ -351,7 +318,7 @@ def test_setup_infra_auto_selects_reference_shape_for_full_param_with_kl(patch_s
     setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=True, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     assert cfg.infra.ref_training_shape_id == "auto-reference"
@@ -365,7 +332,7 @@ def test_setup_infra_does_not_auto_select_ref_for_lora(patch_sdk):
     setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=True, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     assert cfg.infra.ref_training_shape_id is None
@@ -382,7 +349,7 @@ def test_setup_infra_returns_closeables_for_caller_to_register(patch_sdk):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=True, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
     # Policy + base-shared reference both close-able and registered.
     assert len(infra.closeables) == 2
@@ -394,7 +361,7 @@ def test_setup_infra_records_boot_metrics(patch_sdk):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=False, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
     assert "infra/total_boot_time" in infra.boot_metrics
     assert infra.boot_metrics["infra/deploy_boot_time"] == 1.5
@@ -428,19 +395,13 @@ def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
     )
-    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
-    monkeypatch.setattr(
-        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
-    )
-    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
-    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
 
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
     setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=True, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     request_indices = [i for i, e in enumerate(events) if e.startswith("request:")]
@@ -473,12 +434,6 @@ def test_parallel_wait_timing(monkeypatch):
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
     )
-    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
-    monkeypatch.setattr(
-        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
-    )
-    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
-    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
 
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
@@ -487,7 +442,7 @@ def test_parallel_wait_timing(monkeypatch):
     setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=True, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
     elapsed = time.monotonic() - t0
 
@@ -523,10 +478,6 @@ def test_failure_cleanup_registers_both_resources(monkeypatch):
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
     )
-    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
-    monkeypatch.setattr(
-        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
-    )
 
     rlor = MagicMock()
     rlor.resolve_training_profile.return_value = _profile()
@@ -541,7 +492,7 @@ def test_failure_cleanup_registers_both_resources(monkeypatch):
         setup_infra(
             cfg, rlor_mgr=rlor, deploy_mgr=deploy,
             needs_reference=True, needs_inference=False,
-            api_key="key",
+            role_prefix="dpo", api_key="key",
             cleanup=cleanup,
             cleanup_on_exit=True,
         )
@@ -573,12 +524,6 @@ def test_lora_shared_ref_no_ref_trainer_created(monkeypatch):
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
     )
-    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
-    monkeypatch.setattr(
-        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
-    )
-    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
-    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
 
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=64)
@@ -586,7 +531,7 @@ def test_lora_shared_ref_no_ref_trainer_created(monkeypatch):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=True, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     # Only policy trainer was requested — no separate reference trainer.
@@ -623,12 +568,6 @@ def test_reuse_path_policy_job_id_set(monkeypatch):
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
     )
-    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
-    monkeypatch.setattr(
-        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
-    )
-    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
-    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
 
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=0, policy_job_id="pre-created-policy")
@@ -636,11 +575,11 @@ def test_reuse_path_policy_job_id_set(monkeypatch):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=False, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     assert infra.policy_job_id == "pre-created-policy"
-    assert infra.sampler is not None  # deployment still provisioned
+    assert infra.inference_model is not None  # deployment still provisioned
 
 
 def test_dpo_full_param_no_deployment(monkeypatch):
@@ -670,12 +609,11 @@ def test_dpo_full_param_no_deployment(monkeypatch):
     infra = setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=None,
         needs_reference=True, needs_inference=False,
-        api_key="key",
+        role_prefix="dpo", api_key="key",
     )
 
     assert sorted(trainer_calls) == ["dpo-policy", "dpo-reference"]
-    assert infra.sampler is None
-    assert infra.weight_syncer is None
+    assert infra.inference_model is None
     assert infra.reference_job_id == "ref-job"
 
 
@@ -706,12 +644,6 @@ def test_reattach_patch_issued_before_trainer_ready(monkeypatch):
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
     )
-    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
-    monkeypatch.setattr(
-        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
-    )
-    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
-    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
 
     rlor, deploy = _make_mgrs(profile=_profile())
     # Existing live deployment → triggers re-attach path.
@@ -723,7 +655,7 @@ def test_reattach_patch_issued_before_trainer_ready(monkeypatch):
     setup_infra(
         cfg, rlor_mgr=rlor, deploy_mgr=deploy,
         needs_reference=False, needs_inference=True,
-        api_key="key",
+        role_prefix="grpo", api_key="key",
     )
 
     # PATCH must have been issued with policy_handle.job_name (available before READY).

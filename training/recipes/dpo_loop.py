@@ -501,6 +501,7 @@ def main(
             deploy_mgr=None,
             needs_reference=True,
             needs_inference=False,
+            role_prefix="dpo",
             api_key=api_key,
             cleanup=cleanup,
             cleanup_on_exit=True,  # DPO always cleans up trainers at exit

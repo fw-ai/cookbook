@@ -33,9 +33,12 @@ from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
 import tinker
+import transformers
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
+from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
     ConcurrencyConfig,
@@ -48,6 +51,7 @@ from training.utils import (
     DeployConfig,
     WeightSyncConfig,
     RLPromptDataset,
+    get_deployment_gpu_count,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -329,15 +333,15 @@ def main(
         runner.write_status(RunStatus.PENDING, message=msg)
 
     with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        # One call: shapes + trainers + deployment + clients + sampler +
-        # weight syncer + concurrency controller. LoRA shared-reference
-        # branching is handled inside.
+        # Shapes + trainers + deployment + trainer clients.
+        # LoRA shared-reference branching is handled inside setup_infra.
         infra = setup_infra(
             cfg,
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
             needs_reference=(cfg.kl_beta > 0),
             needs_inference=True,
+            role_prefix="grpo",
             api_key=api_key,
             cleanup=cleanup,
             cleanup_on_exit=cleanup_on_exit,
@@ -351,12 +355,45 @@ def main(
 
         policy = infra.policy
         reference = infra.reference
-        sampler = infra.sampler
-        weight_syncer = infra.weight_syncer
         policy_profile = infra.policy_profile
         policy_job_id = infra.policy_job_id
         reference_job_id = infra.reference_job_id or infra.policy_job_id
-        concurrency_controller = infra.concurrency_controller
+
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            cfg.deployment.tokenizer_model, trust_remote_code=True,
+        )
+        # Adaptive concurrency — window adjusts based on server-side prefill queue.
+        # For fixed (no rate limiting), use FixedConcurrencyController instead.
+        gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
+        concurrency_controller = AdaptiveConcurrencyController(
+            initial_window=cfg.concurrency.initial_window or (8 * gpu_count),
+            min_window=cfg.concurrency.min_window,
+            max_window=cfg.concurrency.max_window,
+            prefill_queue_target=cfg.concurrency.prefill_queue_target,
+        )
+        logger.info(
+            "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
+            cfg.concurrency.initial_window or (8 * gpu_count),
+            cfg.concurrency.min_window,
+            cfg.concurrency.max_window,
+            cfg.concurrency.prefill_queue_target,
+        )
+        sampler = DeploymentSampler(
+            inference_url=deploy_mgr.inference_url,
+            model=infra.inference_model,
+            api_key=api_key,
+            tokenizer=tokenizer,
+            concurrency_controller=concurrency_controller,
+        )
+        weight_syncer = WeightSyncer(
+            policy_client=policy.inner,
+            deploy_mgr=deploy_mgr,
+            deployment_id=cfg.deployment.deployment_id,
+            base_model=cfg.rollout_base_model or cfg.base_model,
+            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
+            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
+            lora_rank=cfg.lora_rank,
+        )
 
         logger.info(
             "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
