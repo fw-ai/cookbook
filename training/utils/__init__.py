@@ -37,7 +37,7 @@ __all__ = [
     "DeployConfig",
     "EvalFn",
     "WeightSyncConfig",
-    "WeightSyncFlow",
+    "WeightSyncScope",
     "InfraConfig",
     "ReconnectableClient",
     "ResourceCleanup",
@@ -131,7 +131,7 @@ from training.utils.config import (
     DeployConfig,
     StepCallback,
     WeightSyncConfig,
-    WeightSyncFlow,
+    WeightSyncScope,
 )
 from training.utils.training_shapes import (
     auto_select_training_shape,

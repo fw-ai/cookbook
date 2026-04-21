@@ -47,7 +47,7 @@ from fireworks.training.sdk.deployment import (
     DeploymentManager,
 )
 from fireworks.training.sdk.weight_syncer import WeightSyncer
-from training.utils.config import InfraConfig, DeployConfig, WeightSyncFlow
+from training.utils.config import InfraConfig, DeployConfig, WeightSyncScope
 from training.utils.training_shapes import auto_select_training_shape
 from training.utils.client import ReconnectableClient, DEFAULT_TIMEOUT_S
 
@@ -1013,30 +1013,30 @@ def setup_infra(
             else deploy_cfg
         )
 
-    weight_sync_flow = (
-        local_deploy_cfg.weight_sync_flow if local_deploy_cfg else WeightSyncFlow.TRAINER_FIRST
+    weight_sync_scope = (
+        local_deploy_cfg.weight_sync_scope if local_deploy_cfg else WeightSyncScope.PER_TRAINER
     )
 
-    # Phase 2a (DEPLOYMENT_FIRST only): create/verify deployment before trainers so
+    # Phase 2a (PER_DEPLOYMENT only): create/verify deployment before trainers so
     # we have the deployment ID available for hot_load_deployment_id on trainer creation.
-    # For TRAINER_FIRST this is deferred to phase 2b so both POST in parallel.
+    # For PER_TRAINER this is deferred to phase 2b so both POST in parallel.
     dep_info = None
     resolved_deployment_id = local_deploy_cfg.deployment_id if local_deploy_cfg else None
-    if needs_inference and weight_sync_flow == WeightSyncFlow.DEPLOYMENT_FIRST:
+    if needs_inference and weight_sync_scope == WeightSyncScope.PER_DEPLOYMENT:
         dep_info, resolved_deployment_id = _request_deployment_or_none(
             deploy_mgr=deploy_mgr,
             deploy_cfg=local_deploy_cfg,
             base_model=base_model,
             infra=resolved_infra,
             policy_handle=None,
-            weight_sync_flow=weight_sync_flow,
+            weight_sync_scope=weight_sync_scope,
             cleanup=cleanup,
         )
 
     # Phase 2b: POST both trainer creation requests (fast, seconds).
-    # DEPLOYMENT_FIRST passes resolved_deployment_id so each trainer registers
+    # PER_DEPLOYMENT passes resolved_deployment_id so each trainer registers
     # hot_load_deployment_id, making the deployment bucket stable across resumes.
-    hot_load_dep_id = resolved_deployment_id if weight_sync_flow == WeightSyncFlow.DEPLOYMENT_FIRST else None
+    hot_load_dep_id = resolved_deployment_id if weight_sync_scope == WeightSyncScope.PER_DEPLOYMENT else None
     policy_handle, ref_handle = _request_trainers(
         rlor_mgr=rlor_mgr,
         base_model=base_model,
@@ -1054,16 +1054,16 @@ def setup_infra(
         on_status=emit,
     )
 
-    # Phase 2c: POST a fresh deployment or PATCH a re-attach for TRAINER_FIRST.
-    # Skipped when needs_inference=False or DEPLOYMENT_FIRST already handled it.
-    if needs_inference and weight_sync_flow == WeightSyncFlow.TRAINER_FIRST:
+    # Phase 2c: POST a fresh deployment or PATCH a re-attach for PER_TRAINER.
+    # Skipped when needs_inference=False or PER_DEPLOYMENT already handled it.
+    if needs_inference and weight_sync_scope == WeightSyncScope.PER_TRAINER:
         dep_info, resolved_deployment_id = _request_deployment_or_none(
             deploy_mgr=deploy_mgr,
             deploy_cfg=local_deploy_cfg,
             base_model=base_model,
             infra=resolved_infra,
             policy_handle=policy_handle,
-            weight_sync_flow=weight_sync_flow,
+            weight_sync_scope=weight_sync_scope,
             cleanup=cleanup,
         )
 
@@ -1266,15 +1266,15 @@ def _request_deployment_or_none(
     base_model: str,
     infra: InfraConfig,
     policy_handle: Any,
-    weight_sync_flow: WeightSyncFlow,
+    weight_sync_scope: WeightSyncScope,
     cleanup: ResourceCleanup | None,
 ) -> "tuple[DeploymentInfo | _ReattachHandle, str | None]":
     """POST a fresh deployment or handle re-attach; return immediately.
 
-    ``TRAINER_FIRST``: sets ``hot_load_trainer_job`` on a fresh deployment, or
+    ``PER_TRAINER``: sets ``hot_load_trainer_job`` on a fresh deployment, or
     PATCHes it on an existing one (triggering a pod rolling restart).
 
-    ``DEPLOYMENT_FIRST``: deployment is wired at trainer creation time via
+    ``PER_DEPLOYMENT``: deployment is wired at trainer creation time via
     ``hot_load_deployment_id``; this function only creates a fresh deployment
     when none exists yet, or returns the existing one unchanged.
 
@@ -1287,7 +1287,7 @@ def _request_deployment_or_none(
     if dep_id:
         existing = deploy_mgr.get(dep_id)
         if existing and existing.state not in ("FAILED", "DELETED", "DELETING"):
-            if weight_sync_flow == WeightSyncFlow.DEPLOYMENT_FIRST:
+            if weight_sync_scope == WeightSyncScope.PER_DEPLOYMENT:
                 # Trainer was created with hot_load_deployment_id pointing here;
                 # the deployment keeps its existing bucket — nothing to patch.
                 logger.info(
@@ -1299,7 +1299,7 @@ def _request_deployment_or_none(
                 return existing, dep_id
 
             if job_name:
-                # TRAINER_FIRST re-attach: PATCH deployment to point at new trainer.
+                # PER_TRAINER re-attach: PATCH deployment to point at new trainer.
                 prev_identity = _read_replica_identity(deploy_mgr, dep_id, base_model)
                 deploy_mgr.update(
                     dep_id,
@@ -1322,7 +1322,7 @@ def _request_deployment_or_none(
 
     # Fresh deployment path — work on a local copy so we never mutate caller's object.
     local = dataclasses.replace(deploy_cfg)
-    if weight_sync_flow == WeightSyncFlow.TRAINER_FIRST and job_name:
+    if weight_sync_scope == WeightSyncScope.PER_TRAINER and job_name:
         local = dataclasses.replace(local, hot_load_trainer_job=job_name)
 
     info = request_deployment(deploy_mgr, local, base_model, infra)
