@@ -566,8 +566,8 @@ def main(
             try:
                 if reference is not None and hasattr(reference, "close"):
                     reference.close()
-                logger.info("Reference forward complete — canceling reference trainer to free GPU")
-                cleanup.cancel_trainer(reference_job_id)
+                logger.info("Reference forward complete — deleting reference trainer to free GPU")
+                cleanup.delete_trainer(reference_job_id)
                 reference_job_id = None
             except Exception as e:
                 logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)

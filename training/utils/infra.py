@@ -69,7 +69,6 @@ _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_B300", "NA_BRITISHCOLUMBIA_1"),
 )
 
-_TRAINER_CANCEL_GRACE_ENV = "FW_TRAINER_CANCEL_GRACE_PERIOD_S"
 _TRAINER_DELETE_GRACE_ENV = "FW_TRAINER_DELETE_GRACE_PERIOD_S"
 
 _FIREWORKS_API_EXTRA_HEADERS_ENV = "FIREWORKS_API_EXTRA_HEADERS"
@@ -106,18 +105,14 @@ def read_api_extra_headers_env() -> dict[str, str] | None:
     return parsed or None
 
 
-def _default_trainer_cancel_grace_period_s() -> float:
-    raw = os.environ.get(_TRAINER_CANCEL_GRACE_ENV)
-    source_env = _TRAINER_CANCEL_GRACE_ENV
-    if raw is None:
-        raw = os.environ.get(_TRAINER_DELETE_GRACE_ENV, "30")
-        source_env = _TRAINER_DELETE_GRACE_ENV
+def _default_trainer_delete_grace_period_s() -> float:
+    raw = os.environ.get(_TRAINER_DELETE_GRACE_ENV, "30")
     try:
         return max(0.0, float(raw))
     except ValueError:
         logger.warning(
-            "Invalid %s=%r; falling back to 30s trainer cancel grace period",
-            source_env,
+            "Invalid %s=%r; falling back to 30s trainer delete grace period",
+            _TRAINER_DELETE_GRACE_ENV,
             raw,
         )
         return 30.0
@@ -139,37 +134,29 @@ class ResourceCleanup:
         self,
         rlor_mgr: TrainerJobManager,
         deploy_mgr: DeploymentManager | None = None,
-        trainer_cancel_grace_period_s: float | None = None,
         trainer_delete_grace_period_s: float | None = None,
     ):
-        # Back-compat: accept trainer_delete_grace_period_s as an alias.
-        if trainer_cancel_grace_period_s is None and trainer_delete_grace_period_s is not None:
-            trainer_cancel_grace_period_s = trainer_delete_grace_period_s
         self._rlor_mgr = rlor_mgr
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
         self._deployments: list[tuple[str, str]] = []
-        self._trainer_cancel_grace_period_s = (
-            _default_trainer_cancel_grace_period_s()
-            if trainer_cancel_grace_period_s is None
-            else max(0.0, float(trainer_cancel_grace_period_s))
+        self._trainer_delete_grace_period_s = (
+            _default_trainer_delete_grace_period_s()
+            if trainer_delete_grace_period_s is None
+            else max(0.0, float(trainer_delete_grace_period_s))
         )
 
     def trainer(self, job_id: str) -> None:
-        """Register a trainer job for cancellation on exit."""
+        """Register a trainer job for cleanup on exit."""
         self._jobs.append(job_id)
 
-    def cancel_trainer(self, job_id: str) -> None:
-        """Cancel a trainer job now and unregister it from cleanup."""
-        self._cancel_trainer_with_grace(job_id)
+    def delete_trainer(self, job_id: str) -> None:
+        """Delete (cancel) a trainer job now and unregister it from cleanup."""
+        self._delete_trainer_with_grace(job_id)
         try:
             self._jobs.remove(job_id)
         except ValueError:
             pass
-
-    def delete_trainer(self, job_id: str) -> None:
-        """Alias for :meth:`cancel_trainer`."""
-        self.cancel_trainer(job_id)
 
     def deployment(self, dep_id: str, action: str = "delete") -> None:
         """Register a deployment for cleanup on exit.
@@ -181,7 +168,7 @@ class ResourceCleanup:
     def __enter__(self) -> ResourceCleanup:
         return self
 
-    def _cancel_trainer(self, job_id: str) -> None:
+    def _delete_trainer(self, job_id: str) -> None:
         cancel = getattr(self._rlor_mgr, "cancel", None)
         if callable(cancel):
             cancel(job_id)
@@ -196,26 +183,26 @@ class ResourceCleanup:
             return
 
         raise AttributeError(
-            "TrainerJobManager does not expose trainer cancellation support"
+            "TrainerJobManager does not expose trainer deletion support"
         )
 
-    def _cancel_trainer_with_grace(self, job_id: str) -> None:
-        if self._trainer_cancel_grace_period_s > 0:
+    def _delete_trainer_with_grace(self, job_id: str) -> None:
+        if self._trainer_delete_grace_period_s > 0:
             logger.info(
-                "Cleanup: waiting %.1fs before canceling trainer job %s",
-                self._trainer_cancel_grace_period_s,
+                "Cleanup: waiting %.1fs before deleting trainer job %s",
+                self._trainer_delete_grace_period_s,
                 job_id,
             )
-            time.sleep(self._trainer_cancel_grace_period_s)
-        logger.info("Cleanup: canceling trainer job %s", job_id)
-        self._cancel_trainer(job_id)
+            time.sleep(self._trainer_delete_grace_period_s)
+        logger.info("Cleanup: deleting trainer job %s", job_id)
+        self._delete_trainer(job_id)
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         for jid in reversed(self._jobs):
             try:
-                self._cancel_trainer_with_grace(jid)
+                self._delete_trainer_with_grace(jid)
             except Exception as e:
-                logger.warning("Cleanup: failed to cancel trainer %s: %s", jid, e)
+                logger.warning("Cleanup: failed to delete trainer %s: %s", jid, e)
         for did, action in reversed(self._deployments):
             try:
                 if action == "scale_to_zero":
