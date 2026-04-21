@@ -26,8 +26,7 @@ jobs:
       max-parallel: 1
       matrix:
         test_target:
-          - tests/smoke_test/test_sft_smoke.py::test_sft_smoke
-          - tests/smoke_test/test_sft_smoke.py::test_sft_lora_smoke
+          - tests/smoke_test/test_sft_smoke.py
           - tests/smoke_test/test_dpo_smoke.py
           - tests/smoke_test/test_grpo_smoke.py
           - tests/smoke_test/test_grpo_deepmath_trainer_first_smoke.py
