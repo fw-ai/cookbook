@@ -16,6 +16,7 @@ Generic across loop types:
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -23,9 +24,10 @@ import logging
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-import transformers
-from typing import TYPE_CHECKING, Any, Callable, Union
+from typing import Any, Callable
 from urllib.parse import urlencode
+
+import transformers
 
 from fireworks.training.sdk.client import (
     FiretitanServiceClient,
@@ -86,11 +88,9 @@ def read_api_extra_headers_env() -> dict[str, str] | None:
     raw = os.environ.get(_FIREWORKS_API_EXTRA_HEADERS_ENV, "").strip()
     if not raw:
         return None
-    import json as _json
-
     try:
-        parsed = _json.loads(raw)
-    except _json.JSONDecodeError as exc:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
         logger.warning(
             "Invalid %s (not valid JSON); ignoring: %s",
             _FIREWORKS_API_EXTRA_HEADERS_ENV,
@@ -217,7 +217,7 @@ class ResourceCleanup:
         logger.info("Cleanup: canceling trainer job %s", job_id)
         self._cancel_trainer(job_id)
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         for jid in reversed(self._jobs):
             try:
                 self._cancel_trainer_with_grace(jid)
@@ -975,7 +975,12 @@ def setup_infra(
     )
 
     trainer_cleanup = cleanup if cleanup_on_exit else None
-    role_prefix = "grpo" if needs_inference else "dpo"
+    if needs_inference:
+        role_prefix = "grpo"
+    elif needs_reference:
+        role_prefix = "dpo"
+    else:
+        role_prefix = "sft"
 
     # Phase 2a: POST both trainer creation requests (fast, seconds).
     policy_handle, ref_handle = _request_trainers(
@@ -1290,6 +1295,7 @@ def _await_in_parallel(
 
     if errors:
         raise RuntimeError("Infrastructure provisioning failed:\n" + "\n".join(errors))
+    assert policy_ep is not None
     return policy_ep, ref_ep, final_dep_info
 
 
