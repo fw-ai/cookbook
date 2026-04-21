@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Dict, Callable
 from dataclasses import dataclass
 
@@ -92,10 +93,32 @@ class InfraConfig:
     """Skip server-side shape validation. Requires superuser API key."""
 
 
+class WeightSyncFlow(Enum):
+    """How trainer weights are synced to the inference deployment.
+
+    ``TRAINER_FIRST`` (default)
+        Trainer is provisioned first; the deployment is created (or re-wired on
+        resume) to pull weights from that trainer's bucket.  Each trainer gets
+        its own bucket.  On resume, the deployment is re-pointed to the new
+        trainer, which briefly restarts the serving pod.
+
+    ``DEPLOYMENT_FIRST``
+        Deployment is provisioned first with a stable, deployment-scoped bucket.
+        Trainers are created referencing that deployment so they all write to the
+        same bucket URL.  On resume, a new trainer is created pointing at the
+        same deployment — no serving pod restart required.
+    """
+
+    TRAINER_FIRST = "trainer_first"
+    DEPLOYMENT_FIRST = "deployment_first"
+
+
 @dataclass
 class DeployConfig:
     """Inference deployment settings."""
 
+    weight_sync_flow: WeightSyncFlow = WeightSyncFlow.TRAINER_FIRST
+    """Controls how trainer weights reach the inference deployment; see :class:`WeightSyncFlow`."""
     deployment_id: str | None = None
     """If set, use this existing deployment.  If ``None``, a new deployment
     is auto-created (ID derived from the base model name)."""
