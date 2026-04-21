@@ -437,6 +437,7 @@ def create_trainer_job(
     extra_args: list[str] | None = None,
     job_id: str | None = None,
     forward_only: bool = False,
+    base_url_override: str | None = None,
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
 ) -> TrainerServiceEndpoint:
@@ -447,6 +448,12 @@ def create_trainer_job(
     RL recipes go through :func:`setup_infra` instead, which fans out
     policy + reference trainers in parallel.
     """
+    if base_url_override is not None:
+        logger.warning(
+            "create_trainer_job(base_url_override=...) is ignored; the gateway "
+            "now routes all trainer traffic. This kwarg is kept for back-compat "
+            "and will be removed in a future release.",
+        )
     created = request_trainer_job(
         rlor_mgr,
         base_model=base_model,

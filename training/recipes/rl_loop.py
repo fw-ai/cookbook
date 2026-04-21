@@ -162,6 +162,12 @@ class Config:
     reference_job_id: str | None = None
     """Pre-created RLOR reference trainer job ID (skip creation if set)."""
 
+    policy_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
+
+    reference_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
+
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
@@ -272,6 +278,12 @@ def main(
     cleanup_on_exit: bool = False,
 ):
     cfg = config
+    if cfg.policy_base_url or cfg.reference_base_url:
+        logger.warning(
+            "Config.policy_base_url / Config.reference_base_url are ignored; "
+            "the gateway routes all trainer traffic. These fields are kept for "
+            "back-compat and will be removed in a future release.",
+        )
     runner = RunnerIO(cfg.runner)
 
     # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.

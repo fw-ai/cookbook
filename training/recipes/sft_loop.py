@@ -144,6 +144,9 @@ class Config:
     trainer_job_id: str | None = None
     """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
 
+    trainer_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
+
     evaluation_dataset: str = ""
     """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
     is skipped and this dataset is used for evaluation instead."""
@@ -259,6 +262,12 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
+    if cfg.trainer_base_url:
+        logger.warning(
+            "Config.trainer_base_url is ignored; the gateway routes all trainer "
+            "traffic. This field is kept for back-compat and will be removed "
+            "in a future release.",
+        )
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
