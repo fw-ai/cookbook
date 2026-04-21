@@ -4,31 +4,43 @@ RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-tra
 
 All hotload behaviour in `rl_loop.py` is controlled by `cfg.weight_sync: WeightSyncConfig`.
 
-## Trainer-first vs deployment-first (two creation orders)
+## Weight sync scope: PER_TRAINER vs PER_DEPLOYMENT
+
+`DeployConfig.weight_sync_scope` (a `WeightSyncScope` enum) controls who owns the GCS bucket and what happens on resume.
 
 Mixing these is the most common cause of `Hotload failed` and `checkpoint not found in GCS`.
 
-### Trainer-first (modern, required for new work)
+### PER_TRAINER (default — required for new work)
+
+```python
+DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
+```
 
 1. Create the trainer via `TrainerJobManager.create_and_wait(...)`.
 2. Create the deployment via `DeploymentManager.create_or_get(DeploymentConfig(hot_load_trainer_job=<trainer_job>, ...))`. The deployment copies the trainer's bucket URL at creation.
 3. The **trainer owns** the checkpoints. Promote reads them from the trainer's bucket without any deployment ID.
+4. On resume, the deployment is re-attached to the new trainer (PATCH `hotLoadTrainerJob`), which briefly restarts the serving pod.
 
 Contract test: `training/tests/smoke_test/test_grpo_deepmath_trainer_first_smoke.py`.
 
-### Deployment-first (legacy, deprecated — recognise only)
+### PER_DEPLOYMENT (legacy, deprecated — recognise only)
+
+```python
+DeployConfig(weight_sync_scope=WeightSyncScope.PER_DEPLOYMENT, ...)
+```
 
 1. The deployment was created with its own `hotLoadBucketUrl`.
 2. The trainer was launched with `hot_load_deployment_id=<deployment-id>` pointing at that deployment's bucket.
 3. The **deployment owns** the bucket. Every `promote_checkpoint` call must pass the deployment ID as well.
+4. On resume, a new trainer is created with the same `hot_load_deployment_id` — no pod restart required.
 
-New runs should not use this flow. It exists only so that existing deployment-first runs can still be promoted.
+New runs should not use this scope. It exists only so that existing `PER_DEPLOYMENT` runs can still be promoted.
 
-### How to tell which flow a run used
+### How to tell which scope a run used
 
-- Recipe `cfg.deployment.hot_load_trainer_job` set ⇒ trainer-first.
-- Trainer launch args include `hot_load_deployment_id=<...>` ⇒ deployment-first.
-- `checkpoints.jsonl` has a `source_job_id` matching the trainer and no deployment-owned bucket in the trainer's launch args ⇒ trainer-first.
+- `cfg.deployment.hot_load_trainer_job` set ⇒ `PER_TRAINER`.
+- Trainer launch args include `hot_load_deployment_id=<...>` ⇒ `PER_DEPLOYMENT`.
+- `checkpoints.jsonl` has a `source_job_id` matching the trainer and no deployment-owned bucket in the trainer's launch args ⇒ `PER_TRAINER`.
 
 ## The knobs
 
@@ -75,7 +87,7 @@ eval_dep = deploy_mgr.create_or_get(DeploymentConfig(
 ))
 ```
 
-This pattern is only possible on the trainer-first flow — deployment-first couples each run to one deployment.
+This pattern is only possible with `WeightSyncScope.PER_TRAINER` — `PER_DEPLOYMENT` couples each run to one deployment.
 
 ## Bucket mismatch: trainer wrote to a different bucket than the deployment watches
 
@@ -87,7 +99,7 @@ snapshot and hotload will fail. Trainer wrote to gs://<trainer-bucket>/..., but
 the deployment's hot_load_bucket_url is gs://<deployment-bucket>/...
 ```
 
-Root cause: the trainer-first and deployment-first flows got crossed — the deployment was created pointing at one bucket, and this trainer is writing to another.
+Root cause: a `PER_TRAINER` and `PER_DEPLOYMENT` run got crossed — the deployment was created pointing at one bucket, and this trainer is writing to another.
 
 Two recovery options. Pick whichever fits the situation:
 
@@ -95,25 +107,25 @@ Two recovery options. Pick whichever fits the situation:
 
 2. **Create a fresh deployment with `hot_load_trainer_job=<this trainer>`.** Simpler and safer when you don't need to preserve the existing deployment. The new deployment inherits the trainer's bucket at creation, so no mismatch.
 
-For legacy deployment-first runs whose promote then fails with `checkpoint "<name>" not found in GCS`, see [Promoting a legacy deployment-first run](#promoting-a-legacy-deployment-first-run) below.
+For legacy `PER_DEPLOYMENT` runs whose promote then fails with `checkpoint "<name>" not found in GCS`, see [Promoting a legacy PER_DEPLOYMENT run](#promoting-a-legacy-per_deployment-run) below.
 
-If neither option applies or you can't determine which flow the run used, reach out to Fireworks support — server-side state is sometimes needed to untangle.
+If neither option applies or you can't determine which scope the run used, reach out to Fireworks support — server-side state is sometimes needed to untangle.
 
 ## Self-check when hotload fails
 
 Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>` or `checkpoint "<name>" not found in GCS`.
 
 1. **First, check the SDK version matches the cookbook's pin** (see [`../../SKILL.md#first-debug-step--always`](../../SKILL.md#first-debug-step--always)).
-2. The most common cause is a trainer-first vs deployment-first mix-up. Ask:
-   - Did you create this deployment before the trainer, and then later point a new trainer-first trainer at it?
+2. The most common cause is a `PER_TRAINER` vs `PER_DEPLOYMENT` scope mix-up. Ask:
+   - Did you create this deployment before the trainer, and then later point a new `PER_TRAINER` trainer at it?
    - Was the trainer originally launched with `hot_load_deployment_id`, and is something now also setting `hot_load_trainer_job` on the deployment?
 
    Either answer means the trainer's bucket and the deployment's bucket disagree, and the hotload cannot find the snapshot on the side that is asked to load it.
 3. If neither applies, or you're unsure how to untangle it, reach out to Fireworks support. Server-side recovery (re-pointing a deployment's bucket, recovering an orphaned sampler blob, looking up a legacy deployment ID) is handled by the Fireworks team.
 
-## Promoting a legacy deployment-first run
+## Promoting a legacy PER_DEPLOYMENT run
 
-Symptom: `checkpoint "<name>" not found in GCS`. Cause: the promote API was looking at the trainer's own bucket; on deployment-first the blobs live in the deployment's bucket.
+Symptom: `checkpoint "<name>" not found in GCS`. Cause: the promote API was looking at the trainer's own bucket; on `PER_DEPLOYMENT` runs the blobs live in the deployment's bucket.
 
 Users on a legacy run can try:
 
@@ -125,9 +137,9 @@ python training/examples/tools/promote_checkpoint.py \
 
 If the deployment ID is unknown, or the promote still fails, reach out to Fireworks support.
 
-## New runs don't use the legacy assumption
+## New runs use PER_TRAINER
 
-Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_id` into a new run. Do not. New runs are trainer-first; `hot_load_deployment_id` only exists for recovering existing legacy checkpoints.
+Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_id` into a new run. Do not. New runs use `WeightSyncScope.PER_TRAINER`; `hot_load_deployment_id` only exists for recovering existing legacy checkpoints.
 
 ## See also
 
