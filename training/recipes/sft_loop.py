@@ -305,6 +305,13 @@ def main(
             additional_headers=additional_headers,
         )
 
+    if cfg.trainer_job_id and cfg.max_seq_len is None:
+        raise ValueError(
+            "max_seq_len is required when reusing a pre-created trainer "
+            "(trainer_job_id is set). The auto-selected training shape may not "
+            "match the trainer's actual context length."
+        )
+
     if not cfg.infra.training_shape_id:
         cfg.infra.training_shape_id = auto_select_training_shape(
             rlor_mgr,

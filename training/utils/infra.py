@@ -1120,6 +1120,17 @@ def _resolve_reference_shape(
     return rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
 
 
+def _strip_args(infra: InfraConfig, flags: set[str]) -> InfraConfig:
+    """Return a copy of *infra* with the named flags removed from extra_args."""
+    if not infra.extra_args:
+        return infra
+    stripped = [a for a in infra.extra_args if a not in flags]
+    if stripped == infra.extra_args:
+        return infra
+    import dataclasses as _dc
+    return _dc.replace(infra, extra_args=stripped or None)
+
+
 def _request_trainers(
     *,
     cfg: Any,
@@ -1149,10 +1160,13 @@ def _request_trainers(
     ref_handle = None
     if ref_profile is not None:
         on_status("provisioning reference trainer")
+        # Reference trainer runs forward-only: strip --full-oom-check, which
+        # triggers a backward warmup that OOMs on smaller reference shapes.
+        ref_infra = _strip_args(cfg.infra, {"--full-oom-check"})
         ref_handle = request_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
-            infra=cfg.infra,
+            infra=ref_infra,
             profile=ref_profile,
             lora_rank=0,
             max_seq_len=cfg.max_seq_len,
