@@ -121,7 +121,7 @@ def setup_infra(
         ``base_model``, ``lora_rank``, ``max_seq_len`` (or auto from shape),
         ``learning_rate``, ``step_timeout``, ``infra`` (InfraConfig),
         ``policy_job_id`` / ``reference_job_id`` (set to reuse existing
-        trainers), ``policy_base_url`` / ``reference_base_url``.
+        trainers).
 
     When ``needs_inference``:
         ``deployment`` (DeployConfig), ``weight_sync`` (WeightSyncConfig),
@@ -307,11 +307,6 @@ def _provision_trainers(
 ) -> tuple[Any, Any | None]:
     """Provision policy + (optional) reference trainers, parallel when both needed."""
 
-    # base_url_override is an optional per-recipe knob (RL has it; DPO/SFT
-    # don't). Read defensively — duck-typed cfg may omit these fields.
-    policy_base_url = getattr(cfg, "policy_base_url", None)
-    reference_base_url = getattr(cfg, "reference_base_url", None)
-
     def _make_one(role: str, profile: Any, *, forward_only: bool, lora: int) -> Any:
         is_ref = role == "reference"
         return create_trainer_job(
@@ -325,7 +320,6 @@ def _provision_trainers(
             display_name=f"{role_prefix}-{role}",
             forward_only=forward_only,
             job_id=cfg.reference_job_id if is_ref else cfg.policy_job_id,
-            base_url_override=reference_base_url if is_ref else policy_base_url,
             cleanup=cleanup,
             on_status=on_status,
         )
@@ -389,17 +383,11 @@ def _make_policy_client(
     closeables: list[Any],
 ) -> Any:
     """Build the policy ReconnectableClient and register its close."""
-    timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-    use_endpoint_override = bool(
-        getattr(cfg, "policy_base_url", None)
-        or getattr(cfg, "reference_base_url", None)
-    )
     policy = ReconnectableClient(
         rlor_mgr, policy_ep.job_id, cfg.base_model,
         lora_rank=cfg.lora_rank,
         fw_api_key=api_key,
-        default_timeout=timeout,
-        endpoint=policy_ep if use_endpoint_override else None,
+        default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
     )
     _register_closeable(policy, closeables)
     return policy
@@ -417,17 +405,11 @@ def _make_reference_client(
 ) -> Any | None:
     """Build the reference client (separate trainer, shared session, or None)."""
     if reference_ep is not None:
-        timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-        use_endpoint_override = bool(
-            getattr(cfg, "policy_base_url", None)
-            or getattr(cfg, "reference_base_url", None)
-        )
         reference = ReconnectableClient(
             rlor_mgr, reference_ep.job_id, cfg.base_model,
             lora_rank=0,                               # ref trainers never carry LoRA
             fw_api_key=api_key,
-            default_timeout=timeout,
-            endpoint=reference_ep if use_endpoint_override else None,
+            default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
         )
         _register_closeable(reference, closeables)
         return reference

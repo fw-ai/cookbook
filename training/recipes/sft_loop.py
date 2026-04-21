@@ -144,11 +144,6 @@ class Config:
     trainer_job_id: str | None = None
     """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
 
-    trainer_base_url: str | None = None
-    """Direct base URL for the trainer (e.g. ``http://localhost:8080``).
-    When set together with ``trainer_job_id``, bypasses the gateway and
-    connects to the trainer directly."""
-
     evaluation_dataset: str = ""
     """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
     is skipped and this dataset is used for evaluation instead."""
@@ -299,8 +294,6 @@ def main(
 
     # -- Setup infrastructure ----------------------------------------------
 
-    _precreated_trainer = cfg.trainer_job_id and cfg.trainer_base_url
-
     api_key = os.environ.get("FIREWORKS_API_KEY", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
@@ -312,34 +305,21 @@ def main(
             additional_headers=additional_headers,
         )
 
-    if _precreated_trainer:
-        trainer_infra = cfg.infra
-        trainer_profile = None
-        if cfg.max_seq_len is None:
-            raise ValueError("max_seq_len is required when using a pre-created trainer.")
-        logger.info(
-            "Using pre-created trainer %s at %s",
-            cfg.trainer_job_id,
-            cfg.trainer_base_url,
+    if not cfg.infra.training_shape_id:
+        cfg.infra.training_shape_id = auto_select_training_shape(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            trainer_role="policy",
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
         )
-    else:
-        if not cfg.infra.training_shape_id:
-            cfg.infra.training_shape_id = auto_select_training_shape(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                trainer_role="policy",
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-            )
-            logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
+        logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
 
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        trainer_profile = profile
+    trainer_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+    if cfg.max_seq_len is None:
+        cfg.max_seq_len = trainer_profile.max_supported_context_length
 
-        if cfg.max_seq_len is None:
-            cfg.max_seq_len = profile.max_supported_context_length
-
-    runner.set_accelerator_info(profile=trainer_profile if not _precreated_trainer else None)
+    runner.set_accelerator_info(profile=trainer_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
@@ -356,7 +336,6 @@ def main(
             learning_rate=cfg.learning_rate,
             display_name="sft-trainer",
             job_id=cfg.trainer_job_id,
-            base_url_override=cfg.trainer_base_url,
             cleanup=cleanup,
             on_status=_on_trainer_status,
         )
@@ -364,7 +343,6 @@ def main(
         client = ReconnectableClient(
             rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key,
             default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
-            endpoint=endpoint if cfg.trainer_base_url else None,
         )
         if hasattr(client, "close"):
             stack.callback(client.close)

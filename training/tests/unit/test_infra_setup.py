@@ -91,8 +91,6 @@ def _make_cfg(
         concurrency=ConcurrencyConfig(mode="fixed"),
         policy_job_id=None,
         reference_job_id=None,
-        policy_base_url=None,
-        reference_base_url=None,
     )
 
 

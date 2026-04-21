@@ -246,7 +246,6 @@ def create_trainer_job(
     extra_args: list[str] | None = None,
     job_id: str | None = None,
     forward_only: bool = False,
-    base_url_override: str | None = None,
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
 ) -> TrainerServiceEndpoint:
@@ -261,10 +260,11 @@ def create_trainer_job(
     * **Manual path** (no profile): sends all ``InfraConfig`` fields
       as-is; the server skips shape validation.
 
-    When *base_url_override* is provided alongside *job_id*, skip health
-    polling and return an endpoint pointing at that URL directly.
-    Otherwise for pre-created jobs, the SDK routes through the gateway
-    via /training/v1/rlorTrainerJobs/{accountId}/{jobId}/*.
+    For pre-created jobs (``job_id`` set), the SDK routes through the
+    Fireworks API gateway via
+    ``/training/v1/rlorTrainerJobs/{accountId}/{jobId}/*``. All GPU
+    regions support the gateway, so direct trainer-pod URL overrides
+    are no longer needed.
 
     *on_status* is an optional callback invoked with a human-readable
     string at each provisioning milestone (e.g. ``"creating trainer job"``).
@@ -280,20 +280,6 @@ def create_trainer_job(
                 pass
 
     if job_id:
-        if base_url_override:
-            job_name = f"accounts/{rlor_mgr.account_id}/rlorTrainerJobs/{job_id}"
-            logger.info(
-                "Using pre-created %s trainer job %s at %s",
-                trainer_role,
-                job_id,
-                base_url_override,
-            )
-            _emit(f"using pre-created {trainer_role} trainer {job_id}")
-            return TrainerServiceEndpoint(
-                job_name=job_name,
-                job_id=job_id,
-                base_url=base_url_override,
-            )
         _emit(f"reusing existing {trainer_role} trainer {job_id}")
         return _reuse_or_resume_job(rlor_mgr, job_id)
 

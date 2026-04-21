@@ -156,14 +156,8 @@ class Config:
     policy_job_id: str | None = None
     """Pre-created RLOR policy trainer job ID (skip creation if set)."""
 
-    policy_base_url: str | None = None
-    """Base URL for the policy trainer (bypass direct route)."""
-
     reference_job_id: str | None = None
     """Pre-created RLOR reference trainer job ID (skip creation if set)."""
-
-    reference_base_url: str | None = None
-    """Base URL for the reference trainer (bypass direct route)."""
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job

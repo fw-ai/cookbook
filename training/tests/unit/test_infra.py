@@ -227,6 +227,13 @@ class _FakeRlorMgr:
     def get(self, job_id):
         return self._get_result
 
+    def wait_for_existing(self, job_id):
+        return SimpleNamespace(
+            job_id=job_id,
+            job_name=f"accounts/{self.account_id}/rlorTrainerJobs/{job_id}",
+            base_url="http://localhost:8080",
+        )
+
 
 class TestCreateTrainerJobErrorMessages:
     def test_runtime_error_includes_original_exception_message(self):
@@ -341,10 +348,10 @@ class TestCreateTrainerJobStatusCallback:
             infra=InfraConfig(),
             display_name="test",
             job_id="pre-created-123",
-            base_url_override="http://preexisting:8080",
             on_status=messages.append,
         )
-        assert any("pre-created" in m for m in messages)
+        # Pre-created jobs route through the gateway via wait_for_existing.
+        assert any("reusing existing" in m for m in messages)
 
     def test_broken_callback_does_not_crash_creation(self):
         def bad_callback(msg):
