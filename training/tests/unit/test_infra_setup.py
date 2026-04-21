@@ -6,10 +6,17 @@ weight syncer). These tests exercise each branch in isolation by
 patching the SDK boundary and verifying setup_infra wires things
 together correctly — particularly the LoRA shared-reference path
 that keeps a single trainer alive for both policy and reference.
+
+Parallel-provisioning tests (added with the parallel-trainer-deploy PR) verify:
+  * request phase fires before wait phase
+  * trainer and deployment waits overlap in wall time
+  * cleanup is registered at request time so failures during wait still clean up
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -22,6 +29,7 @@ from training.utils.config import (
     InfraConfig,
     WeightSyncConfig,
 )
+from training.utils.infra import ResourceCleanup
 from training.utils.rl.infra_setup import Infra, setup_infra
 
 
@@ -68,12 +76,19 @@ def _trainer_ep(job_id: str = "job-x") -> SimpleNamespace:
     )
 
 
+def _trainer_handle(job_id: str = "job-x") -> SimpleNamespace:
+    """Fake CreatedTrainerJob returned by request_trainer_job."""
+    return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}")
+
+
 def _make_cfg(
     *,
     lora_rank: int = 0,
     training_shape_id: str | None = "shape-policy",
     ref_training_shape_id: str | None = None,
     deployment_id: str | None = "dep-1",
+    policy_job_id: str | None = None,
+    reference_job_id: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         base_model="accounts/test/models/m",
@@ -89,19 +104,23 @@ def _make_cfg(
         deployment=DeployConfig(deployment_id=deployment_id, tokenizer_model="Q/M"),
         weight_sync=WeightSyncConfig(),
         concurrency=ConcurrencyConfig(mode="fixed"),
-        policy_job_id=None,
-        reference_job_id=None,
+        policy_job_id=policy_job_id,
+        reference_job_id=reference_job_id,
     )
 
 
 @pytest.fixture
 def patch_sdk(monkeypatch):
-    """Patch all SDK boundary calls inside infra_setup with fakes."""
+    """Patch all SDK boundary calls inside infra_setup with fakes.
+
+    Uses request_trainer_job + wait_trainer_job (the new split API) instead of
+    the old monolithic create_trainer_job so tests exercise the actual call graph.
+    """
     _FakeClient.instances = []
 
     trainer_calls: list[dict] = []
 
-    def fake_create_trainer(_rlor, *, display_name, forward_only=False, **kwargs):
+    def fake_request_trainer(_rlor, *, display_name, forward_only=False, **kwargs):
         job_id = "ref-job" if "reference" in display_name else "policy-job"
         trainer_calls.append({
             "display_name": display_name,
@@ -109,9 +128,13 @@ def patch_sdk(monkeypatch):
             "lora_rank": kwargs.get("lora_rank"),
             "job_id_arg": kwargs.get("job_id"),
         })
-        return _trainer_ep(job_id)
+        return _trainer_handle(job_id)
 
-    monkeypatch.setattr(infra_setup_mod, "create_trainer_job", fake_create_trainer)
+    def fake_wait_trainer(_rlor, created, *, display_name="", forward_only=False, **kwargs):
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
     monkeypatch.setattr(
         infra_setup_mod, "setup_or_reattach_deployment",
@@ -376,3 +399,292 @@ def test_setup_infra_records_boot_metrics(patch_sdk):
     )
     assert "infra/total_boot_time" in infra.boot_metrics
     assert infra.boot_metrics["infra/deploy_boot_time"] == 1.5
+
+
+# ---------------------------------------------------------------------------
+# Parallel provisioning tests
+# ---------------------------------------------------------------------------
+
+
+def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
+    """request_trainer_job fires for both trainers before wait_trainer_job is called for either."""
+    _FakeClient.instances = []
+    events: list[str] = []
+
+    def fake_request_trainer(_rlor, *, display_name, forward_only=False, **kwargs):
+        events.append(f"request:{display_name}")
+        job_id = "ref-job" if "reference" in display_name else "policy-job"
+        return _trainer_handle(job_id)
+
+    def fake_wait_trainer(_rlor, created, *, display_name="", forward_only=False, **kwargs):
+        events.append(f"wait:{display_name}")
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "setup_or_reattach_deployment",
+        lambda *a, **kw: SimpleNamespace(inference_model=None),
+    )
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
+    monkeypatch.setattr(
+        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
+    )
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
+
+    rlor, deploy = _make_mgrs(profile=_profile())
+    cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
+    setup_infra(
+        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        needs_reference=True, needs_inference=True,
+        api_key="key",
+    )
+
+    request_indices = [i for i, e in enumerate(events) if e.startswith("request:")]
+    wait_indices = [i for i, e in enumerate(events) if e.startswith("wait:")]
+    # All request events must precede the first wait event.
+    assert max(request_indices) < min(wait_indices), (
+        f"Expected all requests before any waits, got: {events}"
+    )
+
+
+def test_parallel_wait_timing(monkeypatch):
+    """Both trainer waits run in parallel; total wall time ≈ max(N), not sum(N)."""
+    _FakeClient.instances = []
+    SLEEP_S = 0.15  # each wait sleeps this long; sum would be 0.30
+
+    def fake_request_trainer(_rlor, *, display_name, forward_only=False, **kwargs):
+        job_id = "ref-job" if "reference" in display_name else "policy-job"
+        return _trainer_handle(job_id)
+
+    def fake_wait_trainer(_rlor, created, *, display_name="", forward_only=False, **kwargs):
+        time.sleep(SLEEP_S)
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "setup_or_reattach_deployment",
+        lambda *a, **kw: SimpleNamespace(inference_model=None),
+    )
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
+    monkeypatch.setattr(
+        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
+    )
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
+
+    rlor, deploy = _make_mgrs(profile=_profile())
+    cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
+
+    t0 = time.monotonic()
+    setup_infra(
+        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        needs_reference=True, needs_inference=True,
+        api_key="key",
+    )
+    elapsed = time.monotonic() - t0
+
+    # Parallel: elapsed ≈ SLEEP_S (max of two). Serial would be 2*SLEEP_S.
+    # Allow up to 1.5x to avoid flakes on slow CI.
+    assert elapsed < SLEEP_S * 1.5, (
+        f"Waits appear serial: {elapsed:.3f}s ≥ {SLEEP_S * 1.5:.3f}s (sum would be {SLEEP_S * 2:.3f}s)"
+    )
+
+
+def test_failure_cleanup_registers_both_resources(monkeypatch):
+    """If a wait fails, cleanup still has all IDs registered at request time."""
+    _FakeClient.instances = []
+
+    def fake_request_trainer(_rlor, *, display_name, cleanup=None, **kwargs):
+        job_id = "ref-job" if "reference" in display_name else "policy-job"
+        handle = _trainer_handle(job_id)
+        if cleanup:
+            cleanup.trainer(job_id)
+        return handle
+
+    def fake_wait_trainer(_rlor, created, *, display_name="", forward_only=False, **kwargs):
+        if forward_only:
+            raise RuntimeError("reference trainer failed")
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "setup_or_reattach_deployment",
+        lambda *a, **kw: SimpleNamespace(inference_model=None),
+    )
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
+    monkeypatch.setattr(
+        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
+    )
+
+    rlor = MagicMock()
+    rlor.resolve_training_profile.return_value = _profile()
+    deploy = MagicMock()
+    deploy.inference_url = "https://inf.unit"
+    deploy.boot_time_s = 1.5
+
+    cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
+
+    cleanup = ResourceCleanup(rlor, deploy)
+    with pytest.raises(RuntimeError, match="reference trainer failed"):
+        setup_infra(
+            cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+            needs_reference=True, needs_inference=False,
+            api_key="key",
+            cleanup=cleanup,
+            cleanup_on_exit=True,
+        )
+
+    # Both job IDs must be registered so scope-exit can cancel them.
+    assert "policy-job" in cleanup._jobs
+    assert "ref-job" in cleanup._jobs
+
+
+def test_lora_shared_ref_no_ref_trainer_created(monkeypatch):
+    """LoRA + needs_reference=True: policy trainer only; reference via shared session."""
+    _FakeClient.instances = []
+    trainer_calls: list[str] = []
+
+    def fake_request_trainer(_rlor, *, display_name, **kwargs):
+        trainer_calls.append(display_name)
+        job_id = "policy-job"
+        return _trainer_handle(job_id)
+
+    def fake_wait_trainer(_rlor, created, **kwargs):
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "setup_or_reattach_deployment",
+        lambda *a, **kw: SimpleNamespace(inference_model="accounts/test/models/deployed"),
+    )
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
+    monkeypatch.setattr(
+        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
+    )
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
+
+    rlor, deploy = _make_mgrs(profile=_profile())
+    cfg = _make_cfg(lora_rank=64)
+
+    infra = setup_infra(
+        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        needs_reference=True, needs_inference=True,
+        api_key="key",
+    )
+
+    # Only policy trainer was requested — no separate reference trainer.
+    assert trainer_calls == ["grpo-policy"]
+    assert infra.reference_job_id is None
+    assert infra.reference is not None
+    assert getattr(infra.reference, "kind", None) == "base_shared"
+    policy_inst = next(c for c in _FakeClient.instances if c.job_id == "policy-job")
+    assert policy_inst.base_ref_calls == 1
+
+
+def test_reuse_path_policy_job_id_set(monkeypatch):
+    """cfg.policy_job_id set: request returns endpoint (already ready); deploy still works."""
+    _FakeClient.instances = []
+
+    def fake_request_trainer(_rlor, *, display_name, job_id=None, **kwargs):
+        if job_id:
+            # Reuse path: return endpoint directly (no wait needed)
+            return _trainer_ep(job_id)
+        return _trainer_handle("policy-job")
+
+    def fake_wait_trainer(_rlor, created, **kwargs):
+        # TrainerServiceEndpoint → pass-through
+        if hasattr(created, "base_url"):
+            return created
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "setup_or_reattach_deployment",
+        lambda *a, **kw: SimpleNamespace(inference_model="accounts/test/models/deployed"),
+    )
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
+    monkeypatch.setattr(
+        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
+    )
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
+
+    rlor, deploy = _make_mgrs(profile=_profile())
+    cfg = _make_cfg(lora_rank=0, policy_job_id="pre-created-policy")
+
+    infra = setup_infra(
+        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        needs_reference=False, needs_inference=True,
+        api_key="key",
+    )
+
+    assert infra.policy_job_id == "pre-created-policy"
+    assert infra.sampler is not None  # deployment still provisioned
+
+
+def test_dpo_full_param_no_deployment(monkeypatch):
+    """DPO + full-param: two trainers, no deployment requested."""
+    _FakeClient.instances = []
+    trainer_calls: list[str] = []
+
+    def fake_request_trainer(_rlor, *, display_name, **kwargs):
+        trainer_calls.append(display_name)
+        job_id = "ref-job" if "reference" in display_name else "policy-job"
+        return _trainer_handle(job_id)
+
+    def fake_wait_trainer(_rlor, created, **kwargs):
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+
+    rlor, _ = _make_mgrs(profile=_profile())
+    cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
+
+    infra = setup_infra(
+        cfg, rlor_mgr=rlor, deploy_mgr=None,
+        needs_reference=True, needs_inference=False,
+        api_key="key",
+    )
+
+    assert sorted(trainer_calls) == ["dpo-policy", "dpo-reference"]
+    assert infra.sampler is None
+    assert infra.weight_syncer is None
+    assert infra.reference_job_id == "ref-job"

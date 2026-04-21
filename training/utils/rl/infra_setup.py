@@ -37,6 +37,7 @@ import transformers
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.deployment import (
     AdaptiveConcurrencyController,
+    DeploymentInfo,
     DeploymentSampler,
     FixedConcurrencyController,
 )
@@ -46,9 +47,12 @@ from training.utils import (
     ReconnectableClient,
     ResourceCleanup,
     auto_select_training_shape,
-    create_trainer_job,
     get_deployment_gpu_count,
+    request_deployment,
+    request_trainer_job,
     setup_or_reattach_deployment,
+    wait_deployment,
+    wait_trainer_job,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
 
@@ -155,7 +159,9 @@ def setup_infra(
 
     trainer_cleanup = cleanup if cleanup_on_exit else None
     role_prefix = "grpo" if needs_inference else "dpo"
-    policy_ep, reference_ep = _provision_trainers(
+
+    # Phase 2a: POST both trainer creation requests (fast, seconds).
+    policy_handle, ref_handle = _request_trainers(
         cfg=cfg,
         rlor_mgr=rlor_mgr,
         policy_profile=policy_profile,
@@ -165,15 +171,44 @@ def setup_infra(
         on_status=on_status_cb,
     )
 
-    inference_model = None
+    # Phase 2b: POST deployment creation in parallel with trainer POSTs.
+    # Returns None for the re-attach path (existing live deployment) or when
+    # needs_inference=False — both are handled serially below.
+    dep_info = None
     if needs_inference:
-        inference_model = _setup_deployment(
+        dep_info = _request_deployment_or_none(
             cfg=cfg,
             deploy_mgr=deploy_mgr,
-            policy_ep=policy_ep,
+            policy_handle=policy_handle,
             cleanup=cleanup,
             cleanup_on_exit=cleanup_on_exit,
         )
+
+    # Phase 2c: Wait for all pending resources in parallel.
+    policy_ep, reference_ep, ready_dep_info = _await_in_parallel(
+        rlor_mgr=rlor_mgr,
+        policy_handle=policy_handle,
+        ref_handle=ref_handle,
+        dep_info=dep_info,
+        deploy_mgr=deploy_mgr if needs_inference else None,
+        cfg=cfg,
+        role_prefix=role_prefix,
+        on_status=on_status_cb,
+    )
+
+    # Serial re-attach path: existing live deployment needs the ready trainer endpoint.
+    inference_model = None
+    if needs_inference:
+        if ready_dep_info is not None:
+            inference_model = ready_dep_info.inference_model or cfg.base_model
+        else:
+            dep_info_reattach = setup_or_reattach_deployment(
+                deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra,
+                policy_ep.job_name,
+            )
+            if cleanup_on_exit and cleanup is not None:
+                cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
+            inference_model = dep_info_reattach.inference_model if dep_info_reattach else cfg.base_model
 
     closeables: list[Any] = []
     policy = _make_policy_client(cfg, rlor_mgr, policy_ep, api_key, closeables)
@@ -295,7 +330,7 @@ def _resolve_reference_shape(
     return rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
 
 
-def _provision_trainers(
+def _request_trainers(
     *,
     cfg: Any,
     rlor_mgr: TrainerJobManager,
@@ -305,74 +340,172 @@ def _provision_trainers(
     cleanup: ResourceCleanup | None,
     on_status: Callable[[str], None],
 ) -> tuple[Any, Any | None]:
-    """Provision policy + (optional) reference trainers, parallel when both needed."""
+    """POST trainer creation requests sequentially (fast, returns in seconds).
 
-    def _make_one(role: str, profile: Any, *, forward_only: bool, lora: int) -> Any:
-        is_ref = role == "reference"
-        return create_trainer_job(
+    Both requests are issued before any waiting begins so that the caller can
+    immediately proceed to :func:`_request_deployment_or_none` and then
+    :func:`_await_in_parallel`.
+
+    Returns ``(policy_handle, ref_handle)``.  Each handle is either a
+    ``CreatedTrainerJob`` (fresh job, needs :func:`wait_trainer_job`) or a
+    ``TrainerServiceEndpoint`` (reuse path, already polled).
+    """
+    on_status("provisioning policy trainer")
+    policy_handle = request_trainer_job(
+        rlor_mgr,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        profile=policy_profile,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        display_name=f"{role_prefix}-policy",
+        forward_only=False,
+        job_id=cfg.policy_job_id,
+        cleanup=cleanup,
+        on_status=on_status,
+    )
+
+    ref_handle = None
+    if ref_profile is not None:
+        on_status("provisioning reference trainer")
+        ref_handle = request_trainer_job(
             rlor_mgr,
             base_model=cfg.base_model,
             infra=cfg.infra,
-            profile=profile,
-            lora_rank=lora,
+            profile=ref_profile,
+            lora_rank=0,  # reference trainers never carry LoRA
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
-            display_name=f"{role_prefix}-{role}",
-            forward_only=forward_only,
-            job_id=cfg.reference_job_id if is_ref else cfg.policy_job_id,
+            display_name=f"{role_prefix}-reference",
+            forward_only=True,
+            job_id=cfg.reference_job_id,
             cleanup=cleanup,
             on_status=on_status,
         )
 
-    if ref_profile is None:
-        on_status("provisioning policy trainer")
-        return (
-            _make_one("policy", policy_profile, forward_only=False, lora=cfg.lora_rank),
-            None,
+    return policy_handle, ref_handle
+
+
+def _request_deployment_or_none(
+    *,
+    cfg: Any,
+    deploy_mgr: DeploymentManager,
+    policy_handle: Any,
+    cleanup: ResourceCleanup | None,
+    cleanup_on_exit: bool,
+) -> "DeploymentInfo | None":
+    """POST a fresh deployment creation; return ``None`` for the re-attach path.
+
+    When an existing live deployment is found (identified by
+    ``cfg.deployment.deployment_id``), the PATCH + pod-swap dance requires
+    the policy trainer's fully-ready endpoint — that path is serial and
+    handled in :func:`setup_infra` after :func:`_await_in_parallel`.
+
+    For a fresh deployment, the policy trainer's ``job_name`` is available
+    immediately from the ``CreatedTrainerJob`` handle (before the trainer is
+    READY), so we can issue the create POST in parallel with the trainer wait.
+
+    Cleanup is registered here so the scope-exit handler fires even if a
+    later step raises.
+    """
+    dep_id = cfg.deployment.deployment_id
+    if dep_id:
+        existing = deploy_mgr.get(dep_id)
+        if existing and existing.state not in ("FAILED", "DELETED", "DELETING"):
+            # Existing live deployment → must re-attach after trainer is ready.
+            return None
+
+    # Bake the policy trainer's job_name into the deployment at creation time.
+    job_name = getattr(policy_handle, "job_name", None)
+    if job_name:
+        cfg.deployment.hot_load_trainer_job = job_name
+
+    info = request_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+    if cleanup_on_exit and cleanup is not None:
+        cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
+    return info
+
+
+def _await_in_parallel(
+    *,
+    rlor_mgr: TrainerJobManager,
+    policy_handle: Any,
+    ref_handle: Any | None,
+    dep_info: "DeploymentInfo | None",
+    deploy_mgr: "DeploymentManager | None",
+    cfg: Any,
+    role_prefix: str,
+    on_status: Callable[[str], None],
+) -> tuple[Any, Any | None, "DeploymentInfo | None"]:
+    """Wait for all pending resources in parallel using a thread pool.
+
+    Submits up to three futures (policy wait, optional reference wait,
+    optional deployment wait) and collects all results. On any failure,
+    all errors are gathered and re-raised together so operators see the
+    full picture.
+
+    *on_status* callbacks may fire from worker threads; callers only
+    print/log, both of which are thread-safe.
+
+    Returns ``(policy_ep, ref_ep, final_dep_info)``.
+    """
+    max_workers = 1 + (1 if ref_handle is not None else 0) + (1 if dep_info is not None else 0)
+
+    policy_ep = ref_ep = final_dep_info = None
+    errors: list[str] = []
+
+    with ThreadPoolExecutor(max_workers=max(max_workers, 1)) as pool:
+        policy_future = pool.submit(
+            wait_trainer_job,
+            rlor_mgr,
+            policy_handle,
+            infra=cfg.infra,
+            display_name=f"{role_prefix}-policy",
+            forward_only=False,
+            on_status=on_status,
+        )
+        ref_future = (
+            pool.submit(
+                wait_trainer_job,
+                rlor_mgr,
+                ref_handle,
+                infra=cfg.infra,
+                display_name=f"{role_prefix}-reference",
+                forward_only=True,
+                on_status=on_status,
+            )
+            if ref_handle is not None
+            else None
+        )
+        dep_future = (
+            pool.submit(wait_deployment, deploy_mgr, dep_info, cfg.deployment)
+            if dep_info is not None
+            else None
         )
 
-    on_status("provisioning policy and reference trainers")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        policy_future = pool.submit(
-            _make_one, "policy", policy_profile,
-            forward_only=False, lora=cfg.lora_rank,
-        )
-        # Reference trainers never carry LoRA adapters — pass lora=0.
-        reference_future = pool.submit(
-            _make_one, "reference", ref_profile,
-            forward_only=True, lora=0,
-        )
-        errors: list[str] = []
-        policy_ep = reference_ep = None
         try:
             policy_ep = policy_future.result()
         except Exception as e:
             errors.append(f"Policy trainer: {e}")
-        try:
-            reference_ep = reference_future.result()
-        except Exception as e:
-            errors.append(f"Reference trainer: {e}")
-        if errors:
-            raise RuntimeError("Trainer creation failed:\n" + "\n".join(errors))
-        return policy_ep, reference_ep
 
+        if ref_future is not None:
+            try:
+                ref_ep = ref_future.result()
+            except Exception as e:
+                errors.append(f"Reference trainer: {e}")
 
-def _setup_deployment(
-    *,
-    cfg: Any,
-    deploy_mgr: DeploymentManager,
-    policy_ep: Any,
-    cleanup: ResourceCleanup | None,
-    cleanup_on_exit: bool,
-) -> str:
-    """Provision (or reattach) the deployment; register cleanup if requested."""
-    dep_info = setup_or_reattach_deployment(
-        deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra,
-        policy_ep.job_name,
-    )
-    if cleanup_on_exit and cleanup is not None:
-        cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-    return dep_info.inference_model if dep_info else cfg.base_model
+        if dep_future is not None:
+            try:
+                final_dep_info = dep_future.result()
+            except Exception as e:
+                errors.append(f"Deployment: {e}")
+
+    if errors:
+        raise RuntimeError(
+            "Infrastructure provisioning failed:\n" + "\n".join(errors)
+        )
+    return policy_ep, ref_ep, final_dep_info
 
 
 def _make_policy_client(

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Union
 from urllib.parse import urlencode
 
 from fireworks.training.sdk.client import (
@@ -18,14 +19,22 @@ from fireworks.training.sdk import (
     TrainerServiceEndpoint,
 )
 try:
-    from fireworks.training.sdk.trainer import TrainingShapeProfile
+    from fireworks.training.sdk.trainer import TrainingShapeProfile, CreatedTrainerJob
 except ImportError:
-    from fireworks.training.sdk import TrainingShapeProfile
+    try:
+        from fireworks.training.sdk import TrainingShapeProfile, CreatedTrainerJob
+    except ImportError:
+        from fireworks.training.sdk import TrainingShapeProfile
+        CreatedTrainerJob = None  # type: ignore[assignment,misc]
 from fireworks.training.sdk.deployment import DeploymentConfig, DeploymentInfo, DeploymentManager
 from training.utils.config import InfraConfig, DeployConfig
 
 if TYPE_CHECKING:
     from fireworks.training.sdk.weight_syncer import WeightSyncer
+
+# Union of handles returned by request_trainer_job:
+# CreatedTrainerJob for a freshly-POSTed job, TrainerServiceEndpoint for the reuse path.
+TrainerHandle = Any
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +123,7 @@ class ResourceCleanup:
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
         self._deployments: list[tuple[str, str]] = []
+        self._lock = threading.Lock()
         grace_period_s = (
             trainer_cancel_grace_period_s
             if trainer_cancel_grace_period_s is not None
@@ -127,7 +137,8 @@ class ResourceCleanup:
 
     def trainer(self, job_id: str) -> None:
         """Register a trainer job for cancellation on exit."""
-        self._jobs.append(job_id)
+        with self._lock:
+            self._jobs.append(job_id)
 
     def cancel_trainer(self, job_id: str) -> None:
         """Cancel a trainer job now and unregister it from cleanup."""
@@ -146,7 +157,8 @@ class ResourceCleanup:
 
         *action*: ``"delete"`` (default) or ``"scale_to_zero"``.
         """
-        self._deployments.append((dep_id, action))
+        with self._lock:
+            self._deployments.append((dep_id, action))
 
     def __enter__(self) -> ResourceCleanup:
         return self
@@ -231,7 +243,7 @@ def _fetch_job_failure_reason(
         return None
 
 
-def create_trainer_job(
+def request_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,
     base_model: str,
@@ -248,27 +260,24 @@ def create_trainer_job(
     forward_only: bool = False,
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
-) -> TrainerServiceEndpoint:
-    """Create a new RLOR trainer job (or reuse *job_id*).
+) -> TrainerHandle:
+    """POST a trainer job creation request; return immediately without waiting for READY.
+
+    Returns a ``CreatedTrainerJob`` for a freshly-POSTed job (callers must
+    pass the result to :func:`wait_trainer_job` to block until READY), or a
+    ``TrainerServiceEndpoint`` for the reuse path (already polled by
+    ``_reuse_or_resume_job``, so :func:`wait_trainer_job` is a no-op).
 
     Two launch paths:
 
     * **Shape path** (profile provided): sends ``training_shape_ref``
       plus algorithm fields only.  The backend populates accelerator,
-      image tag, node count, sharding, etc. from the validated
-      training shape.
+      image tag, node count, sharding, etc. from the validated shape.
     * **Manual path** (no profile): sends all ``InfraConfig`` fields
       as-is; the server skips shape validation.
 
-    For pre-created jobs (``job_id`` set), the SDK routes through the
-    Fireworks API gateway via
-    ``/training/v1/rlorTrainerJobs/{accountId}/{jobId}/*``. All GPU
-    regions support the gateway, so direct trainer-pod URL overrides
-    are no longer needed.
-
-    *on_status* is an optional callback invoked with a human-readable
-    string at each provisioning milestone (e.g. ``"creating trainer job"``).
-    Recipes can use it to write fine-grained progress to ``RunnerIO``.
+    *cleanup*, when provided, registers the created job for cancellation
+    on scope exit. Thread-safe: ``ResourceCleanup.trainer`` uses a lock.
     """
     trainer_role = "reference" if forward_only else "policy"
 
@@ -318,7 +327,6 @@ def create_trainer_job(
 
     if infra.purpose:
         config.purpose = infra.purpose
-
     config.managed_by = infra.managed_by
 
     logger.info(
@@ -329,27 +337,68 @@ def create_trainer_job(
     )
     _emit(f"creating {trainer_role} trainer '{display_name}'")
 
-    created_job_id: str | None = None
     try:
         created_job = rlor_mgr.create(config)
-        created_job_id = created_job.job_id
-        if cleanup:
-            cleanup.trainer(created_job.job_id)
-        _emit(
-            f"waiting for {trainer_role} trainer '{display_name}' "
-            f"to become ready (job {created_job.job_id})"
+    except Exception as e:
+        error_msg = (
+            f"Failed to create {trainer_role} trainer job '{display_name}' "
+            f"(forward_only={forward_only}): {e}"
         )
+        logger.error(error_msg)
+        _emit(error_msg)
+        raise RuntimeError(error_msg) from e
+
+    if cleanup:
+        cleanup.trainer(created_job.job_id)
+
+    _emit(
+        f"waiting for {trainer_role} trainer '{display_name}' "
+        f"to become ready (job {created_job.job_id})"
+    )
+    return created_job
+
+
+def wait_trainer_job(
+    rlor_mgr: TrainerJobManager,
+    created: TrainerHandle,
+    *,
+    infra: InfraConfig,
+    display_name: str = "trainer",
+    forward_only: bool = False,
+    on_status: StatusCallback | None = None,
+) -> TrainerServiceEndpoint:
+    """Wait for a previously-requested trainer job to become READY.
+
+    When *created* is already a ``TrainerServiceEndpoint`` (reuse path),
+    returns it unchanged — ``_reuse_or_resume_job`` already polled.
+
+    May be called from worker threads; the *on_status* callback and logging
+    are both thread-safe.
+    """
+    if isinstance(created, TrainerServiceEndpoint):
+        return created
+
+    trainer_role = "reference" if forward_only else "policy"
+
+    def _emit(msg: str) -> None:
+        if on_status is not None:
+            try:
+                on_status(msg)
+            except Exception:
+                pass
+
+    created_job_id = created.job_id
+    try:
         endpoint = rlor_mgr.wait_for_ready(
-            created_job.job_id,
-            job_name=created_job.job_name,
+            created.job_id,
+            job_name=created.job_name,
             timeout_s=infra.trainer_timeout_s,
         )
     except Exception as e:
         detail = str(e)
-        if created_job_id:
-            server_reason = _fetch_job_failure_reason(rlor_mgr, created_job_id)
-            if server_reason:
-                detail = f"{detail} — server: {server_reason}"
+        server_reason = _fetch_job_failure_reason(rlor_mgr, created_job_id)
+        if server_reason:
+            detail = f"{detail} — server: {server_reason}"
         logger.error(
             "Failed to create %s trainer job '%s' (forward_only=%s): %s",
             trainer_role,
@@ -374,41 +423,115 @@ def create_trainer_job(
     return endpoint
 
 
-def setup_deployment(
+def create_trainer_job(
+    rlor_mgr: TrainerJobManager,
+    *,
+    base_model: str,
+    infra: InfraConfig,
+    profile: TrainingShapeProfile | None = None,
+    lora_rank: int = 0,
+    max_seq_len: int | None = None,
+    learning_rate: float = 1e-5,
+    grad_accum: int = 1,
+    display_name: str = "trainer",
+    hot_load_deployment_id: str | None = None,
+    extra_args: list[str] | None = None,
+    job_id: str | None = None,
+    forward_only: bool = False,
+    cleanup: ResourceCleanup | None = None,
+    on_status: StatusCallback | None = None,
+) -> TrainerServiceEndpoint:
+    """Create and wait for a trainer job. Thin wrapper kept for backward compatibility."""
+    created = request_trainer_job(
+        rlor_mgr,
+        base_model=base_model,
+        infra=infra,
+        profile=profile,
+        lora_rank=lora_rank,
+        max_seq_len=max_seq_len,
+        learning_rate=learning_rate,
+        grad_accum=grad_accum,
+        display_name=display_name,
+        hot_load_deployment_id=hot_load_deployment_id,
+        extra_args=extra_args,
+        job_id=job_id,
+        forward_only=forward_only,
+        cleanup=cleanup,
+        on_status=on_status,
+    )
+    return wait_trainer_job(
+        rlor_mgr,
+        created,
+        infra=infra,
+        display_name=display_name,
+        forward_only=forward_only,
+        on_status=on_status,
+    )
+
+
+def request_deployment(
     deploy_mgr: DeploymentManager,
     deploy_cfg: DeployConfig,
     base_model: str,
     infra: InfraConfig,
 ) -> DeploymentInfo:
-    """Set up an inference deployment.
+    """POST the deployment creation request; return immediately without waiting for READY.
 
-    * If ``deploy_cfg.deployment_id`` is set, the existing deployment is
-      fetched and waited on until READY.
-    * If ``deploy_cfg.deployment_id`` is ``None``, a new deployment is
-      created with an auto-generated ID derived from the model name.
+    Auto-generates ``deploy_cfg.deployment_id`` when unset. Returns the
+    post-create :class:`DeploymentInfo` (typically ``state=CREATING``).
+    Callers pass the result to :func:`wait_deployment` to block until READY.
     """
     if not deploy_cfg.deployment_id:
         model_short = base_model.rsplit("/", 1)[-1]
         deploy_cfg.deployment_id = f"{model_short}-{int(time.time())}"
 
     info = deploy_mgr.get(deploy_cfg.deployment_id)
-    if not info:
-        dep_config = deploy_cfg.to_deployment_config(base_model, infra)
-        if dep_config.region is None and dep_config.deployment_shape:
-            dep_config.region = _infer_region_from_deployment_shape(
-                deploy_mgr, dep_config.deployment_shape
-            )
-        if dep_config.region is None:
-            info = _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
-        else:
-            info = deploy_mgr.create_or_get(dep_config)
+    if info:
+        return info
 
+    dep_config = deploy_cfg.to_deployment_config(base_model, infra)
+    if dep_config.region is None and dep_config.deployment_shape:
+        dep_config.region = _infer_region_from_deployment_shape(
+            deploy_mgr, dep_config.deployment_shape
+        )
+    if dep_config.region is None:
+        return _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
+    return deploy_mgr.create_or_get(dep_config)
+
+
+def wait_deployment(
+    deploy_mgr: DeploymentManager,
+    info: DeploymentInfo,
+    deploy_cfg: DeployConfig,
+) -> DeploymentInfo:
+    """Wait for a previously-requested deployment to become READY.
+
+    When *info* is already READY or UPDATING, returns it unchanged.
+    May be called from worker threads; SDK polling and logging are thread-safe.
+    """
     if info.state not in ("READY", "UPDATING"):
         info = deploy_mgr.wait_for_ready(
             deploy_cfg.deployment_id,
             timeout_s=deploy_cfg.deployment_timeout_s,
         )
     return info
+
+
+def setup_deployment(
+    deploy_mgr: DeploymentManager,
+    deploy_cfg: DeployConfig,
+    base_model: str,
+    infra: InfraConfig,
+) -> DeploymentInfo:
+    """Set up an inference deployment (create + wait). Thin wrapper kept for backward compatibility.
+
+    * If ``deploy_cfg.deployment_id`` is set, the existing deployment is
+      fetched and waited on until READY.
+    * If ``deploy_cfg.deployment_id`` is ``None``, a new deployment is
+      created with an auto-generated ID derived from the model name.
+    """
+    info = request_deployment(deploy_mgr, deploy_cfg, base_model, infra)
+    return wait_deployment(deploy_mgr, info, deploy_cfg)
 
 
 def setup_or_reattach_deployment(
