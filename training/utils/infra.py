@@ -46,14 +46,20 @@ from fireworks.training.sdk.deployment import (
     DeploymentInfo,
     DeploymentManager,
 )
-from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.config import InfraConfig, DeployConfig, WeightSyncScope
 from training.utils.training_shapes import auto_select_training_shape
 from training.utils.client import ReconnectableClient, DEFAULT_TIMEOUT_S
 
-# Union of handles returned by request_trainer_job:
-# CreatedTrainerJob for a freshly-POSTed job, TrainerServiceEndpoint for the reuse path.
-TrainerHandle = Any
+TrainerHandle = CreatedTrainerJob | TrainerServiceEndpoint
+"""Return type of :func:`request_trainer_job`.
+
+``CreatedTrainerJob`` for a freshly-POSTed job (caller must
+:func:`wait_trainer_job` to block until READY); ``TrainerServiceEndpoint``
+for the reuse path (already polled)."""
+
+StatusCallback = Callable[[str], None]
+"""Invoked with a human-readable provisioning status message at each
+lifecycle step (creating, waiting, ready, failed)."""
 
 logger = logging.getLogger(__name__)
 
@@ -163,10 +169,6 @@ class ResourceCleanup:
         except ValueError:
             pass
 
-    def delete_trainer(self, job_id: str) -> None:
-        """Backward-compatible alias for ``cancel_trainer``."""
-        self.cancel_trainer(job_id)
-
     def deployment(self, dep_id: str, action: str = "delete") -> None:
         """Register a deployment for cleanup on exit.
 
@@ -222,12 +224,6 @@ class ResourceCleanup:
                     self._deploy_mgr.delete(did)
             except Exception as e:
                 logger.warning("Cleanup: failed to clean deployment %s: %s", did, e)
-
-
-StatusCallback = Any
-"""``Callable[[str], None]`` -- invoked with a human-readable provisioning
-status message at each lifecycle step (creating, waiting, ready, failed).
-Declared as ``Any`` to avoid import-time coupling with callers."""
 
 
 def _fetch_job_failure_reason(
@@ -455,7 +451,13 @@ def create_trainer_job(
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
 ) -> TrainerServiceEndpoint:
-    """Create and wait for a trainer job. Thin wrapper kept for backward compatibility."""
+    """Create a trainer job and block until it is READY.
+
+    One-shot wrapper around :func:`request_trainer_job` + :func:`wait_trainer_job`
+    for recipes that only need a single trainer (SFT, ORPO, and tools).
+    RL recipes go through :func:`setup_infra` instead, which fans out
+    policy + reference trainers in parallel.
+    """
     created = request_trainer_job(
         rlor_mgr,
         base_model=base_model,
@@ -537,7 +539,9 @@ def setup_deployment(
     base_model: str,
     infra: InfraConfig,
 ) -> DeploymentInfo:
-    """Set up an inference deployment (create + wait). Thin wrapper kept for backward compatibility.
+    """Create an inference deployment and block until it is READY.
+
+    One-shot wrapper around :func:`request_deployment` + :func:`wait_deployment`.
 
     * If ``deploy_cfg.deployment_id`` is set, the existing deployment is
       fetched and waited on until READY.
@@ -546,79 +550,6 @@ def setup_deployment(
     """
     info = request_deployment(deploy_mgr, deploy_cfg, base_model, infra)
     return wait_deployment(deploy_mgr, info, deploy_cfg)
-
-
-def setup_or_reattach_deployment(
-    deploy_mgr: DeploymentManager,
-    deploy_cfg: DeployConfig,
-    base_model: str,
-    infra: InfraConfig,
-    trainer_job_name: str,
-    weight_syncer: "WeightSyncer | None" = None,
-    reattach_settle_timeout_s: int = 600,
-) -> DeploymentInfo:
-    """Set up a deployment, re-attaching to a new trainer if it already exists.
-
-    If ``deploy_cfg.deployment_id`` names a live deployment (not FAILED /
-    DELETED / DELETING), its hotload bucket is re-pointed to
-    *trainer_job_name* via a PATCH. Otherwise a fresh deployment is created
-    with the trainer reference baked in at creation.
-
-    When *weight_syncer* is provided and a re-attach happens, its delta-chain
-    state is reset so the next checkpoint is treated as ``base`` (the new
-    trainer's bucket has no prior snapshots).
-
-    PATCHing ``hot_load_trainer_job`` causes the serving container to be
-    rolled (the watch dir is in container args, so the new value only takes
-    effect on a fresh pod). This function blocks until the new pod's
-    hotload manager exposes itself, so callers can immediately follow up
-    with a hotload without racing against the rolling restart.
-
-    Caller responsibility: do not invoke this while a hotload is in progress
-    on the same deployment. Switching the bucket URL mid-load would leave
-    the serving container in an undefined state. Server-side enforcement is
-    tracked in fw-ai/fireworks#21732.
-    """
-    existing = (
-        deploy_mgr.get(deploy_cfg.deployment_id)
-        if deploy_cfg.deployment_id
-        else None
-    )
-    if not existing or existing.state in ("FAILED", "DELETED", "DELETING"):
-        deploy_cfg.hot_load_trainer_job = trainer_job_name
-        return setup_deployment(deploy_mgr, deploy_cfg, base_model, infra)
-
-    # Capture the previous replica's pod identity before PATCH so we can
-    # detect when the rolling restart has produced a fresh pod.
-    prev_identity = _read_replica_identity(
-        deploy_mgr, deploy_cfg.deployment_id, base_model
-    )
-
-    deploy_mgr.update(
-        deploy_cfg.deployment_id,
-        body={"hotLoadTrainerJob": trainer_job_name},
-        update_mask="hot_load_trainer_job",
-    )
-    logger.info(
-        "Re-attached deployment %s to trainer %s (prev_pod=%s)",
-        deploy_cfg.deployment_id,
-        trainer_job_name,
-        prev_identity,
-    )
-    _wait_for_reattach_settled(
-        deploy_mgr,
-        deploy_cfg.deployment_id,
-        base_model,
-        prev_identity=prev_identity,
-        timeout_s=reattach_settle_timeout_s,
-    )
-    if weight_syncer is not None:
-        weight_syncer.reset_delta_chain()
-        # Force the syncer to re-run its one-time deployment-state check on
-        # the next hotload. This re-validates that the *new* pod's hotload
-        # manager is up and clears any stale base_identity bookkeeping.
-        weight_syncer._deployment_checked = False  # noqa: SLF001
-    return existing
 
 
 def _read_replica_identity(

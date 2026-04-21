@@ -21,13 +21,13 @@ python training/examples/tools/promote_checkpoint.py \
     --checkpoints-jsonl ./my_training/checkpoints.jsonl \
     --output-model-id my-policy-step-14
 
-# Legacy PER_DEPLOYMENT only — pass the deployment that owns the bucket
+# Pre-migration PER_DEPLOYMENT only — pass the deployment that owns the bucket
 python training/examples/tools/promote_checkpoint.py \
     --checkpoints-jsonl ./my_training/checkpoints.jsonl \
     --hot-load-deployment-id <deployment-id>
 ```
 
-Source: `training/examples/tools/promote_checkpoint.py`. Reads `sampler_path` / `source_job_id` / `base_model` from the jsonl row. For the legacy `PER_DEPLOYMENT` case, see [`rl/hotload.md`](rl/hotload.md#promoting-a-legacy-per_deployment-run).
+Source: `training/examples/tools/promote_checkpoint.py`. Reads `sampler_path` / `source_job_id` / `base_model` from the jsonl row. The modern promote API (`client.promote_checkpoint(name=...)`) works for both `PER_TRAINER` and `PER_DEPLOYMENT` — see [`rl/hotload.md#promoting-a-checkpoint`](rl/hotload.md#promoting-a-checkpoint). The `--hot-load-deployment-id` flag is only needed for deployments that predate the stored-bucket-URL migration.
 
 `output_model_id` is validated server-side at 63 chars — validate client-side too:
 

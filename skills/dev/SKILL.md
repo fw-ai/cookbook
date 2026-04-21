@@ -33,6 +33,13 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "Where does checkpoint state live?" / CheckpointKind / `checkpoints.jsonl` | [`references/checkpoints.md`](references/checkpoints.md) |
 | Error: `checkpoint "<name>" not found in GCS` | [`references/checkpoints.md`](references/checkpoints.md#when-promote-fails) — validate `output_model_id` first; reach out to Fireworks support if still failing |
 | Error: `Hotload failed for snapshot ...` | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) |
+| Error: `hotload flow mismatch: trainer wants deployment-first ... but deployment ... is trainer-first` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — scope crossed at `CreateRlorTrainerJob`; pick one scope |
+| Error: `hotload flow mismatch: trainer T is deployment-first-keyed for deployment D` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — legacy trainer keyed to a different deployment; use a `PER_TRAINER` trainer |
+| Error: `hot_load_bucket_url %q conflicts with hot_load_trainer_job %s; set exactly one` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — drop whichever field is wrong |
+| Error: `invalid FW_HOSTED hot_load_bucket_url` / `must use gs:// scheme` / `path must start with rl-checkpoints/` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — structural validation on FW_HOSTED URL at create/update |
+| Error: `configured FW_HOSTED hot_load bucket is not reachable` / `control plane lacks permission` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — account's `ModelBucket` misprovisioned; reach out to Fireworks support |
+| Error: `cannot cancel job in state: JOB_STATE_DELETED` | [`references/rl/hotload.md`](references/rl/hotload.md#trainer-deletion-and-retention) — trainer is tombstoned during the retention window; no action needed |
+| `list_checkpoints` / `promote_checkpoint` returns NOT_FOUND > 30 days after delete | [`references/rl/hotload.md`](references/rl/hotload.md#trainer-deletion-and-retention) — past retention, expected |
 | HTTP 400 on `output_model_id` | [`references/tools.md`](references/tools.md#promote_checkpointpy) — validate before calling |
 | "Is this `PER_TRAINER` or `PER_DEPLOYMENT` scope?" | [`references/rl/hotload.md`](references/rl/hotload.md#weight-sync-scope-per_trainer-vs-per_deployment) |
 | Manual `accelerator_type` / `node_count` set on `Config` | [`references/shapes.md`](references/shapes.md) — drop them, the profile owns infra |
