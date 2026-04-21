@@ -168,7 +168,12 @@ class ResourceCleanup:
             pass
 
     def delete_trainer(self, job_id: str) -> None:
-        """Alias for :meth:`cancel_trainer`."""
+        """Deprecated alias for :meth:`cancel_trainer`. Will be removed in a future release."""
+        import warnings
+        warnings.warn(
+            "ResourceCleanup.delete_trainer is deprecated; use cancel_trainer.",
+            DeprecationWarning, stacklevel=2,
+        )
         self.cancel_trainer(job_id)
 
     def deployment(self, dep_id: str, action: str = "delete") -> None:
