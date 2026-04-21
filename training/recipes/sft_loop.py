@@ -40,6 +40,8 @@ from training.utils import (
     RunStatus,
     WandBConfig,
     ReconnectableClient,
+    build_lr_per_step,
+    resolve_step_lr,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -118,6 +120,22 @@ class Config:
     train_on_what: str = "all_assistant_messages"
 
     learning_rate: float = 1e-4
+    lr_per_step: list[float] | None = None
+    """Explicit per-step LR list.  When set, ``lr_per_step[step]`` is used
+    instead of *learning_rate*.  Falls back to the last value if the list
+    is shorter than the actual step count."""
+
+    lr_schedule: str = "constant"
+    """LR schedule after warmup: ``"constant"``, ``"cosine"``, or ``"linear"``.
+    Ignored when *lr_per_step* is provided explicitly."""
+
+    warmup_ratio: float = 0.0
+    """Fraction of total steps used for linear LR warmup (0.0 = no warmup)."""
+
+    min_lr_ratio: float = 0.0
+    """Minimum LR as a fraction of ``learning_rate``.  Cosine/linear decay
+    anneals to ``learning_rate * min_lr_ratio``."""
+
     epochs: int = 3
     batch_size: int = 32
     grad_accum: int = 1
@@ -500,17 +518,37 @@ def main(
 
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Training loop (batch-indexed) -------------------------------------
 
         start_batch = data_consumed // effective_batch_size
         total_steps_estimate = total_batches_per_epoch * cfg.epochs
 
+        # Auto-generate lr_per_step from schedule params when the caller
+        # didn't supply an explicit list.
+        if cfg.lr_per_step is None and cfg.lr_schedule != "constant":
+            cfg.lr_per_step = build_lr_per_step(
+                total_steps=total_steps_estimate,
+                peak_lr=cfg.learning_rate,
+                schedule=cfg.lr_schedule,
+                warmup_ratio=cfg.warmup_ratio,
+                min_lr_ratio=cfg.min_lr_ratio,
+            )
+        if cfg.lr_per_step is not None:
+            logger.info(
+                "Per-step LR: %d values, range [%.2e, %.2e]",
+                len(cfg.lr_per_step),
+                min(cfg.lr_per_step),
+                max(cfg.lr_per_step),
+            )
+
         def _run_train_step(
             batch: list[tinker.Datum],
             step: int,
         ) -> int:
+
+            current_lr = resolve_step_lr(step, cfg.lr_per_step, cfg.learning_rate)
+            adam_params = tinker.AdamParams(learning_rate=current_lr, **adam_kwargs)
 
             # Count total tokens for throughput tracking
             step_total_tokens = sum(
@@ -555,15 +593,17 @@ def main(
                 step_metrics["train/tokens_per_sec"] = step_total_tokens / step_wall_time
                 step_metrics["train/tokens_per_sec_fwd_bwd"] = step_total_tokens / fwd_bwd_time if fwd_bwd_time > 0 else 0.0
             step_metrics["train/total_tokens"] = step_total_tokens
+            step_metrics["train/lr"] = current_lr
 
             if response_tokens > 0:
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
-                    step, total_steps_estimate, avg_loss, ppl, step_metrics["train/tokens_per_sec"], step_total_tokens,
+                    "Step %d/%d | lr=%.2e | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
+                    step, total_steps_estimate, current_lr, avg_loss, ppl,
+                    step_metrics.get("train/tokens_per_sec", 0.0), step_total_tokens,
                 )
-                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
+                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl, lr=current_lr)
                 step_metrics.update({
                     "train/step": step,
                     "train/ce_loss": avg_loss,
