@@ -307,6 +307,11 @@ def _provision_trainers(
 ) -> tuple[Any, Any | None]:
     """Provision policy + (optional) reference trainers, parallel when both needed."""
 
+    # base_url_override is an optional per-recipe knob (RL has it; DPO/SFT
+    # don't). Read defensively — duck-typed cfg may omit these fields.
+    policy_base_url = getattr(cfg, "policy_base_url", None)
+    reference_base_url = getattr(cfg, "reference_base_url", None)
+
     def _make_one(role: str, profile: Any, *, forward_only: bool, lora: int) -> Any:
         is_ref = role == "reference"
         return create_trainer_job(
@@ -320,9 +325,7 @@ def _provision_trainers(
             display_name=f"{role_prefix}-{role}",
             forward_only=forward_only,
             job_id=cfg.reference_job_id if is_ref else cfg.policy_job_id,
-            base_url_override=(
-                cfg.reference_base_url if is_ref else cfg.policy_base_url
-            ),
+            base_url_override=reference_base_url if is_ref else policy_base_url,
             cleanup=cleanup,
             on_status=on_status,
         )
@@ -387,7 +390,10 @@ def _make_policy_client(
 ) -> Any:
     """Build the policy ReconnectableClient and register its close."""
     timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-    use_endpoint_override = bool(cfg.policy_base_url or cfg.reference_base_url)
+    use_endpoint_override = bool(
+        getattr(cfg, "policy_base_url", None)
+        or getattr(cfg, "reference_base_url", None)
+    )
     policy = ReconnectableClient(
         rlor_mgr, policy_ep.job_id, cfg.base_model,
         lora_rank=cfg.lora_rank,
@@ -412,7 +418,10 @@ def _make_reference_client(
     """Build the reference client (separate trainer, shared session, or None)."""
     if reference_ep is not None:
         timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-        use_endpoint_override = bool(cfg.policy_base_url or cfg.reference_base_url)
+        use_endpoint_override = bool(
+            getattr(cfg, "policy_base_url", None)
+            or getattr(cfg, "reference_base_url", None)
+        )
         reference = ReconnectableClient(
             rlor_mgr, reference_ep.job_id, cfg.base_model,
             lora_rank=0,                               # ref trainers never carry LoRA
@@ -461,7 +470,7 @@ def _make_inference_components(
         policy_client=policy.inner,
         deploy_mgr=deploy_mgr,
         deployment_id=cfg.deployment.deployment_id,
-        base_model=cfg.rollout_base_model or cfg.base_model,
+        base_model=getattr(cfg, "rollout_base_model", None) or cfg.base_model,
         hotload_timeout=cfg.weight_sync.weight_sync_timeout,
         first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
         lora_rank=cfg.lora_rank,

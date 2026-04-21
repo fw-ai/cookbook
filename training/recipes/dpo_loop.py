@@ -109,12 +109,6 @@ class Config:
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     policy_job_id: str | None = None
     reference_job_id: str | None = None
-    policy_base_url: str | None = None
-    """Bypass direct route by pinning the policy trainer endpoint."""
-    reference_base_url: str | None = None
-    """Bypass direct route by pinning the reference trainer endpoint."""
-    rollout_base_model: str | None = None
-    """Reserved — DPO doesn't sample, kept for API uniformity with setup_infra."""
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
