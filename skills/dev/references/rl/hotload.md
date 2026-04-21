@@ -97,9 +97,9 @@ The control plane catches scope mix-ups at `CreateDeployment` / `CreateRlorTrain
 | Error | Root cause | Recovery |
 |---|---|---|
 | `hotload flow mismatch: trainer wants deployment-first (hot_load_deployment_id=X) but deployment Y is trainer-first (hot_load_trainer_job=Z)` | Trying to launch a `PER_DEPLOYMENT` trainer against a `PER_TRAINER` deployment. The two scopes are mutually exclusive. | Drop `hot_load_deployment_id` from the trainer, or drop `hot_load_trainer_job` from the deployment — pick one scope. |
-| `hotload bucket mismatch: deployment Y has hot_load_bucket_url=P but a trainer with hot_load_deployment_id=X would write to Q` | The deployment was already configured for a different checkpoint source; this trainer would write somewhere the deployment isn't watching. | Reconcile: either clear the deployment's `hot_load_bucket_url` (and let autofill regenerate it) or update this trainer to target the deployment's existing source. |
 | `hotload flow mismatch: trainer T is deployment-first-keyed for deployment D, but you're trying to use it as the source for deployment Y` | Pointing a new deployment's `hot_load_trainer_job` at a `PER_DEPLOYMENT` trainer whose bucket URL is keyed by a different deployment. | Use a `PER_TRAINER` trainer (no `hot_load_deployment_id`) as the source. |
-| `hot_load_bucket_url … conflicts with hot_load_trainer_job … ; set exactly one` | Both fields set in one request with different values. Previously this was a silent override; now rejected. | Drop whichever field is wrong. `PER_TRAINER` deployments set `hot_load_trainer_job` only. |
+| `hot_load_bucket_url %q conflicts with hot_load_trainer_job %s; set exactly one` | CreateDeployment got both fields. | Drop whichever field is wrong. `PER_TRAINER` deployments set `hot_load_trainer_job` only. |
+| `hot_load_bucket_url %q conflicts with hot_load_trainer_job %s; update hot_load_trainer_job instead, or clear it first` | UpdateDeployment got both fields. | Clear `hot_load_bucket_url` first, then PATCH `hot_load_trainer_job`. |
 
 These fire at the gateway, before any DB row is written. You won't see pods silently hotloading nothing for these classes.
 
