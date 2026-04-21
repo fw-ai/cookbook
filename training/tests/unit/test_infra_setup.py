@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import training.utils.rl.infra_setup as infra_setup_mod
+import training.utils.infra as infra_setup_mod
 from training.utils.config import (
     ConcurrencyConfig,
     DeployConfig,
@@ -31,7 +31,7 @@ from training.utils.config import (
     WeightSyncConfig,
 )
 from training.utils.infra import ResourceCleanup
-from training.utils.rl.infra_setup import Infra, setup_infra
+from training.utils.infra import Infra, setup_infra
 
 
 # ---------------------------------------------------------------------------

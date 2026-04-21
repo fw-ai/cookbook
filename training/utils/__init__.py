@@ -104,11 +104,13 @@ from training.utils.data import (
     prepare_sampling_messages,
 )
 from training.utils.infra import (
+    Infra,
     ResourceCleanup,
     get_deployment_gpu_count,
     request_deployment,
     wait_deployment,
     setup_deployment,
+    setup_infra,
     setup_or_reattach_deployment,
     request_trainer_job,
     wait_trainer_job,
