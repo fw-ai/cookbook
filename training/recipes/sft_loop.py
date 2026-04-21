@@ -441,6 +441,51 @@ def main(
         training_data: List[tinker.Datum] = []
         filtered_count = 0
 
+        import resource as _resource
+
+        def _read_cgroup_mem():
+            """Read cgroup memory usage (works in k8s containers)."""
+            for path in [
+                "/sys/fs/cgroup/memory.current",        # cgroup v2
+                "/sys/fs/cgroup/memory/memory.usage_in_bytes",  # cgroup v1
+            ]:
+                try:
+                    with open(path) as f:
+                        return int(f.read().strip())
+                except (FileNotFoundError, ValueError):
+                    continue
+            return 0
+
+        def _read_cgroup_limit():
+            for path in [
+                "/sys/fs/cgroup/memory.max",
+                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            ]:
+                try:
+                    with open(path) as f:
+                        val = f.read().strip()
+                        if val == "max":
+                            return 0
+                        return int(val)
+                except (FileNotFoundError, ValueError):
+                    continue
+            return 0
+
+        def _log_mem(stage: str, i: int, total: int):
+            rss_kib = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            rss_gi = rss_kib / (1024 ** 2)  # ru_maxrss is KiB on Linux
+            cgroup_bytes = _read_cgroup_mem()
+            cgroup_gi = cgroup_bytes / (1024 ** 3)
+            limit_bytes = _read_cgroup_limit()
+            limit_gi = limit_bytes / (1024 ** 3) if limit_bytes else 0
+            logger.info(
+                "[mem] %s %d/%d (%.0f%%) | cgroup=%.1f/%.1f GiB | main_maxrss=%.1f GiB | training_data_len=%d",
+                stage, i, total, 100.0 * i / total,
+                cgroup_gi, limit_gi, rss_gi, len(training_data),
+            )
+
+        _log_mem("before_rendering", 0, total_raw)
+
         num_workers = min(os.cpu_count() or 1, 8)
         use_parallel = num_workers > 1 and total_raw > num_workers
 
@@ -467,6 +512,7 @@ def main(
                         filtered_count += 1
                     if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
                         runner.report_rendering_progress(i + 1, total_raw)
+                        _log_mem("rendering", i + 1, total_raw)
         else:
             for i, row in enumerate(raw_data):
                 datum = _render_one_inline(
@@ -479,6 +525,9 @@ def main(
                     filtered_count += 1
                 if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
                     runner.report_rendering_progress(i + 1, total_raw)
+                    _log_mem("rendering", i + 1, total_raw)
+
+        _log_mem("after_rendering", total_raw, total_raw)
 
         if filtered_count > 0:
             logger.info(
