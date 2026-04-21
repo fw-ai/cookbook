@@ -729,6 +729,15 @@ def get_deployment_gpu_count(
     Reads ``acceleratorCount`` from the deployment shape snapshot; falls back to
     ``replica_count`` if the shape is missing or the field isn't exposed.
     """
+    # Back-compat: old signature accepted a DeployConfig as arg 2. Warn and
+    # return the default — callers on the new signature pass a str.
+    if hasattr(deployment_shape, "deployment_shape"):
+        logger.warning(
+            "get_deployment_gpu_count: passing a DeployConfig is deprecated; "
+            "pass deployment_shape (str) and replica_count separately.",
+        )
+        return replica_count
+
     if not deployment_shape:
         return replica_count  # no shape, assume 1 GPU per replica
 
