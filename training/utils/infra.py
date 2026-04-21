@@ -163,6 +163,15 @@ class ResourceCleanup:
         except ValueError:
             pass
 
+    def delete_trainer(self, job_id: str) -> None:
+        """Deprecated alias for :meth:`cancel_trainer`. Will be removed in a future release."""
+        import warnings
+        warnings.warn(
+            "ResourceCleanup.delete_trainer is deprecated; use cancel_trainer.",
+            DeprecationWarning, stacklevel=2,
+        )
+        self.cancel_trainer(job_id)
+
     def deployment(self, dep_id: str, action: str = "delete") -> None:
         """Register a deployment for cleanup on exit.
 
@@ -546,6 +555,67 @@ def setup_deployment(
     return wait_deployment(deploy_mgr, info, deploy_cfg)
 
 
+def setup_or_reattach_deployment(
+    deploy_mgr: DeploymentManager,
+    deploy_cfg: DeployConfig,
+    base_model: str,
+    infra: InfraConfig,
+    trainer_job_name: str,
+    weight_syncer: "WeightSyncer | None" = None,
+    reattach_settle_timeout_s: int = 600,
+) -> DeploymentInfo:
+    """Deprecated. Standalone helper to create or re-attach a single deployment.
+
+    Kept as a shim so callers of pre-#356 cookbook code still import cleanly.
+    :func:`setup_infra` now wraps the same logic end-to-end via
+    :class:`WeightSyncScope` and the internal ``_provision_trainer_owned`` /
+    ``_provision_deployment_owned`` helpers. New code should use ``setup_infra``.
+
+    If ``deploy_cfg.deployment_id`` names a live deployment, PATCHes its
+    ``hot_load_trainer_job`` to *trainer_job_name* and waits for the pod
+    rolling restart to settle. Otherwise creates a fresh deployment with
+    the trainer reference baked in at creation.
+    """
+    import warnings
+    warnings.warn(
+        "setup_or_reattach_deployment is deprecated; use setup_infra "
+        "(setup_infra handles re-attach when an existing deployment_id is "
+        "passed alongside a fresh trainer). This shim will be removed in a "
+        "future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    existing = (
+        deploy_mgr.get(deploy_cfg.deployment_id)
+        if deploy_cfg.deployment_id
+        else None
+    )
+    if not existing or existing.state in ("FAILED", "DELETED", "DELETING"):
+        fresh = dataclasses.replace(deploy_cfg, hot_load_trainer_job=trainer_job_name)
+        return setup_deployment(deploy_mgr, fresh, base_model, infra)
+
+    prev_identity = _read_replica_identity(
+        deploy_mgr, deploy_cfg.deployment_id, base_model,
+    )
+    deploy_mgr.update(
+        deploy_cfg.deployment_id,
+        body={"hotLoadTrainerJob": trainer_job_name},
+        update_mask="hot_load_trainer_job",
+    )
+    logger.info(
+        "Re-attached deployment %s to trainer %s (prev_pod=%s)",
+        deploy_cfg.deployment_id, trainer_job_name, prev_identity,
+    )
+    _wait_for_reattach_settled(
+        deploy_mgr, deploy_cfg.deployment_id, base_model,
+        prev_identity=prev_identity, timeout_s=reattach_settle_timeout_s,
+    )
+    if weight_syncer is not None:
+        weight_syncer.reset_delta_chain()
+    return existing
+
+
 def _read_replica_identity(
     deploy_mgr: DeploymentManager,
     deployment_id: str,
@@ -830,6 +900,9 @@ class Infra:
     """Resolved reference training-shape ID (auto-selected for full-param + ``needs_reference``)."""
     deployment_id: str | None = None
     """Final deployment ID, including auto-generated ones when ``DeployConfig.deployment_id`` was unset."""
+    deployment_shape: str | None = None
+    """Resolved deployment-shape version (auto-populated from the policy profile when
+    ``DeployConfig.deployment_shape`` was unset). ``None`` when ``needs_inference=False``."""
 
 
 def setup_infra(
@@ -1020,6 +1093,7 @@ def setup_infra(
         training_shape_id=resolved_shape_id,
         ref_training_shape_id=resolved_ref_shape_id,
         deployment_id=resolved_deployment_id,
+        deployment_shape=resolved_deploy_shape if needs_inference else None,
     )
 
 

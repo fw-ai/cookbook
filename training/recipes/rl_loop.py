@@ -29,6 +29,7 @@ import asyncio
 import logging
 from contextlib import ExitStack
 from typing import List, Optional
+import dataclasses
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -371,7 +372,12 @@ def main(
         )
         # Adaptive concurrency — window adjusts based on server-side prefill queue.
         # For fixed (no rate limiting), use FixedConcurrencyController instead.
-        gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
+        # setup_infra does not mutate cfg.deployment; feed the resolved shape
+        # back in via a local copy so get_deployment_gpu_count sees it.
+        resolved_deploy_cfg = dataclasses.replace(
+            cfg.deployment, deployment_shape=infra.deployment_shape,
+        )
+        gpu_count = get_deployment_gpu_count(deploy_mgr, resolved_deploy_cfg)
         concurrency_controller = AdaptiveConcurrencyController(
             initial_window=cfg.concurrency.initial_window or (8 * gpu_count),
             min_window=cfg.concurrency.min_window,
@@ -414,7 +420,7 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
 
-        if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:
+        if cfg.weight_sync.weight_sync_before_training and infra.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 

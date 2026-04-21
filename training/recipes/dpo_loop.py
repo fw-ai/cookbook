@@ -595,7 +595,7 @@ def main(
                 },
                 kind=CheckpointKind.BOTH,
                 base_model=cfg.base_model,
-                training_shape=training_shape_id,
+                training_shape=infra.training_shape_id,
             )
 
             if getattr(cfg, "output_model_id", None):
