@@ -933,57 +933,40 @@ def setup_infra(
         local_deploy_cfg.weight_sync_scope if local_deploy_cfg else WeightSyncScope.PER_TRAINER
     )
 
-    # Phase 2a (PER_DEPLOYMENT only): create/verify deployment before trainers so
-    # we have the deployment ID available for hot_load_deployment_id on trainer creation.
-    # For PER_TRAINER this is deferred to phase 2b so both POST in parallel.
-    dep_info = None
-    resolved_deployment_id = local_deploy_cfg.deployment_id if local_deploy_cfg else None
-    if needs_inference and weight_sync_scope == WeightSyncScope.PER_DEPLOYMENT:
-        dep_info, resolved_deployment_id = _request_deployment_or_none(
-            deploy_mgr=deploy_mgr,
-            deploy_cfg=local_deploy_cfg,
-            base_model=base_model,
-            infra=resolved_infra,
-            policy_handle=None,
-            weight_sync_scope=weight_sync_scope,
-            cleanup=cleanup,
-        )
-
-    # Phase 2b: POST both trainer creation requests (fast, seconds).
-    # PER_DEPLOYMENT passes resolved_deployment_id so each trainer registers
-    # hot_load_deployment_id, making the deployment bucket stable across resumes.
-    hot_load_dep_id = resolved_deployment_id if weight_sync_scope == WeightSyncScope.PER_DEPLOYMENT else None
-    policy_handle, ref_handle = _request_trainers(
-        rlor_mgr=rlor_mgr,
-        base_model=base_model,
-        infra=resolved_infra,
-        policy_profile=policy_profile,
-        ref_profile=ref_profile,
-        lora_rank=lora_rank,
-        max_seq_len=resolved_max_seq_len,
+    # The two scopes differ only in who is created first: whichever side owns
+    # the bucket needs its identifier before the other side can be wired up.
+    trainer_kwargs = dict(
+        rlor_mgr=rlor_mgr, base_model=base_model, infra=resolved_infra,
+        policy_profile=policy_profile, ref_profile=ref_profile,
+        lora_rank=lora_rank, max_seq_len=resolved_max_seq_len,
         learning_rate=learning_rate,
-        policy_job_id=policy_job_id,
-        reference_job_id=reference_job_id,
-        role_prefix=role_prefix,
-        hot_load_deployment_id=hot_load_dep_id,
-        cleanup=cleanup,
-        on_status=emit,
+        policy_job_id=policy_job_id, reference_job_id=reference_job_id,
+        role_prefix=role_prefix, cleanup=cleanup, on_status=emit,
     )
 
-    # Phase 2c: POST a fresh deployment or PATCH a re-attach for PER_TRAINER.
-    # Skipped when needs_inference=False or PER_DEPLOYMENT already handled it.
-    if needs_inference and weight_sync_scope == WeightSyncScope.PER_TRAINER:
-        dep_info, resolved_deployment_id = _request_deployment_or_none(
-            deploy_mgr=deploy_mgr,
-            deploy_cfg=local_deploy_cfg,
-            base_model=base_model,
-            infra=resolved_infra,
-            policy_handle=policy_handle,
-            weight_sync_scope=weight_sync_scope,
-            cleanup=cleanup,
+    dep_info: DeploymentInfo | _ReattachHandle | None = None
+    resolved_deployment_id: str | None = (
+        local_deploy_cfg.deployment_id if local_deploy_cfg else None
+    )
+    if not needs_inference:
+        policy_handle, ref_handle = _request_trainers(**trainer_kwargs, hot_load_deployment_id=None)
+    elif weight_sync_scope == WeightSyncScope.PER_DEPLOYMENT:
+        # Deployment first: its ID feeds each trainer's hot_load_deployment_id.
+        dep_info, resolved_deployment_id = _provision_deployment_owned(
+            deploy_mgr, local_deploy_cfg, base_model, resolved_infra, cleanup=cleanup,
+        )
+        policy_handle, ref_handle = _request_trainers(
+            **trainer_kwargs, hot_load_deployment_id=resolved_deployment_id,
+        )
+    else:  # PER_TRAINER
+        # Trainer first: its job_name feeds the deployment's hot_load_trainer_job.
+        policy_handle, ref_handle = _request_trainers(**trainer_kwargs, hot_load_deployment_id=None)
+        dep_info, resolved_deployment_id = _provision_trainer_owned(
+            deploy_mgr, local_deploy_cfg, base_model, resolved_infra,
+            trainer_job_name=policy_handle.job_name, cleanup=cleanup,
         )
 
-    # Phase 2d: Wait for all pending resources in parallel.
+    # Wait for all pending resources in parallel.
     policy_ep, reference_ep, ready_dep_info = _await_in_parallel(
         rlor_mgr=rlor_mgr,
         policy_handle=policy_handle,
@@ -1175,77 +1158,94 @@ def _request_trainers(
     return policy_handle, ref_handle
 
 
-def _request_deployment_or_none(
-    *,
+def _get_alive_deployment(
+    deploy_mgr: DeploymentManager, dep_id: str | None,
+) -> DeploymentInfo | None:
+    """Return an existing, non-terminal deployment or ``None``."""
+    if not dep_id:
+        return None
+    existing = deploy_mgr.get(dep_id)
+    if existing is None or existing.state in ("FAILED", "DELETED", "DELETING"):
+        return None
+    return existing
+
+
+def _register_deployment_cleanup(
+    cleanup: ResourceCleanup | None, dep_id: str,
+) -> None:
+    if cleanup is not None:
+        cleanup.deployment(dep_id, action="scale_to_zero")
+
+
+def _provision_deployment_owned(
     deploy_mgr: DeploymentManager,
     deploy_cfg: DeployConfig,
     base_model: str,
     infra: InfraConfig,
-    policy_handle: Any,
-    weight_sync_scope: WeightSyncScope,
+    *,
     cleanup: ResourceCleanup | None,
-) -> "tuple[DeploymentInfo | _ReattachHandle, str | None]":
-    """POST a fresh deployment or handle re-attach; return immediately.
+) -> tuple[DeploymentInfo, str]:
+    """PER_DEPLOYMENT: reuse an existing deployment or POST a fresh one.
 
-    ``PER_TRAINER``: sets ``hot_load_trainer_job`` on a fresh deployment, or
-    PATCHes it on an existing one (triggering a pod rolling restart).
-
-    ``PER_DEPLOYMENT``: deployment is wired at trainer creation time via
-    ``hot_load_deployment_id``; this function only creates a fresh deployment
-    when none exists yet, or returns the existing one unchanged.
-
-    Returns ``(dep_info_or_handle, resolved_deployment_id)``.
+    The deployment owns a stable bucket (auto-filled by the server from the
+    deployment ID). Trainers will be created later with ``hot_load_deployment_id``
+    pointing here — no PATCH or re-attach needed.
     """
-    dep_id = deploy_cfg.deployment_id
-    timeout_s = getattr(deploy_cfg, "reattach_settle_timeout_s", None) or 600
-    job_name = getattr(policy_handle, "job_name", None)
+    existing = _get_alive_deployment(deploy_mgr, deploy_cfg.deployment_id)
+    if existing is not None:
+        logger.info("Re-using deployment %s (PER_DEPLOYMENT)", deploy_cfg.deployment_id)
+        _register_deployment_cleanup(cleanup, deploy_cfg.deployment_id)
+        return existing, deploy_cfg.deployment_id
 
-    if dep_id:
-        existing = deploy_mgr.get(dep_id)
-        if existing and existing.state not in ("FAILED", "DELETED", "DELETING"):
-            if weight_sync_scope == WeightSyncScope.PER_DEPLOYMENT:
-                # Trainer was created with hot_load_deployment_id pointing here;
-                # the deployment keeps its existing bucket — nothing to patch.
-                logger.info(
-                    "Re-using deployment %s for deployment-first weight sync (trainer=%s)",
-                    dep_id, job_name,
-                )
-                if cleanup is not None:
-                    cleanup.deployment(dep_id, action="scale_to_zero")
-                return existing, dep_id
-
-            if job_name:
-                # PER_TRAINER re-attach: PATCH deployment to point at new trainer.
-                prev_identity = _read_replica_identity(deploy_mgr, dep_id, base_model)
-                deploy_mgr.update(
-                    dep_id,
-                    body={"hotLoadTrainerJob": job_name},
-                    update_mask="hot_load_trainer_job",
-                )
-                logger.info(
-                    "Re-attached deployment %s to trainer %s (prev_pod=%s) — "
-                    "settling in parallel with trainer waits",
-                    dep_id, job_name, prev_identity,
-                )
-                if cleanup is not None:
-                    cleanup.deployment(dep_id, action="scale_to_zero")
-                return _ReattachHandle(
-                    dep_info=existing,
-                    prev_identity=prev_identity,
-                    deployment_id=dep_id,
-                    timeout_s=timeout_s,
-                ), dep_id
-
-    # Fresh deployment path — work on a local copy so we never mutate caller's object.
     local = dataclasses.replace(deploy_cfg)
-    if weight_sync_scope == WeightSyncScope.PER_TRAINER and job_name:
-        local = dataclasses.replace(local, hot_load_trainer_job=job_name)
-
     info = request_deployment(deploy_mgr, local, base_model, infra)
-    resolved_dep_id = local.deployment_id
-    if cleanup is not None:
-        cleanup.deployment(resolved_dep_id, action="scale_to_zero")
-    return info, resolved_dep_id
+    _register_deployment_cleanup(cleanup, local.deployment_id)
+    return info, local.deployment_id
+
+
+def _provision_trainer_owned(
+    deploy_mgr: DeploymentManager,
+    deploy_cfg: DeployConfig,
+    base_model: str,
+    infra: InfraConfig,
+    *,
+    trainer_job_name: str,
+    cleanup: ResourceCleanup | None,
+) -> tuple[DeploymentInfo | _ReattachHandle, str]:
+    """PER_TRAINER: re-attach an existing deployment to *trainer_job_name* or POST a fresh one.
+
+    Fresh deployments inherit the trainer's bucket URL at creation via
+    ``hot_load_trainer_job``. Existing deployments are re-pointed via a PATCH,
+    which rolls the serving pod — the returned :class:`_ReattachHandle` lets
+    the await step wait for the new pod in parallel with trainer readiness.
+    """
+    existing = _get_alive_deployment(deploy_mgr, deploy_cfg.deployment_id)
+    if existing is not None:
+        dep_id = deploy_cfg.deployment_id
+        prev_identity = _read_replica_identity(deploy_mgr, dep_id, base_model)
+        deploy_mgr.update(
+            dep_id,
+            body={"hotLoadTrainerJob": trainer_job_name},
+            update_mask="hot_load_trainer_job",
+        )
+        logger.info(
+            "Re-attached deployment %s to trainer %s (prev_pod=%s) — "
+            "settling in parallel with trainer waits",
+            dep_id, trainer_job_name, prev_identity,
+        )
+        _register_deployment_cleanup(cleanup, dep_id)
+        timeout_s = getattr(deploy_cfg, "reattach_settle_timeout_s", None) or 600
+        return _ReattachHandle(
+            dep_info=existing,
+            prev_identity=prev_identity,
+            deployment_id=dep_id,
+            timeout_s=timeout_s,
+        ), dep_id
+
+    local = dataclasses.replace(deploy_cfg, hot_load_trainer_job=trainer_job_name)
+    info = request_deployment(deploy_mgr, local, base_model, infra)
+    _register_deployment_cleanup(cleanup, local.deployment_id)
+    return info, local.deployment_id
 
 
 def _await_in_parallel(
