@@ -721,23 +721,14 @@ def _get_deployment_shape_version(
 
 def get_deployment_gpu_count(
     deploy_mgr: DeploymentManager,
-    deployment_shape: "str | DeployConfig | None",
+    deployment_shape: str | None,
     replica_count: int = 1,
 ) -> int:
     """Return total GPU count (``acceleratorCount × replica_count``) for a deployment.
 
     Reads ``acceleratorCount`` from the deployment shape snapshot; falls back to
     ``replica_count`` if the shape is missing or the field isn't exposed.
-
-    For back-compat, a :class:`DeployConfig` may be passed in place of
-    ``deployment_shape`` — its ``deployment_shape`` and ``replica_count`` fields
-    will be read off it.
     """
-    if hasattr(deployment_shape, "deployment_shape"):  # DeployConfig passed
-        cfg = deployment_shape
-        deployment_shape = cfg.deployment_shape
-        replica_count = cfg.replica_count or replica_count
-    replica_count = replica_count or 1
     if not deployment_shape:
         return replica_count  # no shape, assume 1 GPU per replica
 
