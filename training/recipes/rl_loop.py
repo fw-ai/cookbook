@@ -270,7 +270,7 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cleanup_on_exit: bool = False,
+    cancel_on_exit: bool = False,
 ):
     cfg = config
     runner = RunnerIO(cfg.runner)
@@ -351,8 +351,7 @@ def main(
             needs_inference=True,
             role_prefix="grpo",
             api_key=api_key,
-            cleanup=cleanup,
-            cleanup_on_exit=cleanup_on_exit,
+            cleanup=cleanup if cancel_on_exit else None,
             on_status=_on_trainer_status,
         )
         for closeable in infra.closeables:

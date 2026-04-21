@@ -933,7 +933,6 @@ def setup_infra(
     role_prefix: str,
     api_key: str,
     cleanup: ResourceCleanup | None = None,
-    cleanup_on_exit: bool = False,
     on_status: Callable[[str], None] | None = None,
 ) -> Infra:
     """Build all training-side infrastructure in one call.
@@ -957,8 +956,9 @@ def setup_infra(
         needs_inference: Provision an inference deployment.
         role_prefix: Display-name prefix for trainer jobs (e.g. ``"grpo"``, ``"dpo"``).
         api_key: Fireworks API key forwarded to trainer clients.
-        cleanup: Register created resources here for scope-exit cancellation.
-        cleanup_on_exit: Also register the deployment for scale-to-zero on exit.
+        cleanup: When provided, register created trainers for cancellation and
+            deployments for scale-to-zero on scope exit. Pass ``None`` to skip
+            registration (e.g. when resuming and wanting resources to outlive the run).
         on_status: Optional callback receiving human-readable status messages.
 
     Returns:
@@ -1013,8 +1013,6 @@ def setup_infra(
             else deploy_cfg
         )
 
-    trainer_cleanup = cleanup if cleanup_on_exit else None
-
     # Phase 2a: POST both trainer creation requests (fast, seconds).
     policy_handle, ref_handle = _request_trainers(
         rlor_mgr=rlor_mgr,
@@ -1028,7 +1026,7 @@ def setup_infra(
         policy_job_id=policy_job_id,
         reference_job_id=reference_job_id,
         role_prefix=role_prefix,
-        cleanup=trainer_cleanup,
+        cleanup=cleanup,
         on_status=emit,
     )
 
@@ -1045,7 +1043,6 @@ def setup_infra(
             infra=resolved_infra,
             policy_handle=policy_handle,
             cleanup=cleanup,
-            cleanup_on_exit=cleanup_on_exit,
         )
 
     # Phase 2c: Wait for all pending resources in parallel.
@@ -1245,7 +1242,6 @@ def _request_deployment_or_none(
     infra: InfraConfig,
     policy_handle: Any,
     cleanup: ResourceCleanup | None,
-    cleanup_on_exit: bool,
 ) -> "tuple[DeploymentInfo | _ReattachHandle, str | None]":
     """POST a fresh deployment or issue a re-attach PATCH; return immediately.
 
@@ -1273,7 +1269,7 @@ def _request_deployment_or_none(
                     "settling in parallel with trainer waits",
                     dep_id, job_name, prev_identity,
                 )
-                if cleanup_on_exit and cleanup is not None:
+                if cleanup is not None:
                     cleanup.deployment(dep_id, action="scale_to_zero")
                 return _ReattachHandle(
                     dep_info=existing,
@@ -1290,7 +1286,7 @@ def _request_deployment_or_none(
 
     info = request_deployment(deploy_mgr, local, base_model, infra)
     resolved_dep_id = local.deployment_id
-    if cleanup_on_exit and cleanup is not None:
+    if cleanup is not None:
         cleanup.deployment(resolved_dep_id, action="scale_to_zero")
     return info, resolved_dep_id
 

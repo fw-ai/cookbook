@@ -512,7 +512,6 @@ def main(
             role_prefix="dpo",
             api_key=api_key,
             cleanup=cleanup,
-            cleanup_on_exit=True,  # DPO always cleans up trainers at exit
             on_status=_on_trainer_status,
         )
         for closeable in infra.closeables:

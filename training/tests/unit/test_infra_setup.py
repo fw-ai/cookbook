@@ -620,7 +620,6 @@ def test_failure_cleanup_registers_both_resources(monkeypatch):
             needs_reference=True, needs_inference=False,
             role_prefix="dpo", api_key="key",
             cleanup=cleanup,
-            cleanup_on_exit=True,
         )
 
     # Both job IDs must be registered so scope-exit can cancel them.
