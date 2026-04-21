@@ -264,6 +264,10 @@ def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_5():
     assert resolve_renderer_name("moonshotai/Kimi-K2.5") == "kimi_k25"
 
 
+def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_6():
+    assert resolve_renderer_name("moonshotai/Kimi-K2.6") == "kimi_k25"
+
+
 def test_resolve_renderer_name_prefers_minimax_m2() -> None:
     """MiniMax M2 tokenizers should resolve to the custom renderer."""
     assert resolve_renderer_name("MiniMaxAI/MiniMax-M2") == "minimax_m2"

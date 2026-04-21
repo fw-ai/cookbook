@@ -73,6 +73,12 @@ def resolve_renderer_name(
     normalized_model_name = tokenizer_model.lower()
     if "moonshotai/kimi-k2.5" in normalized_model_name:
         return "kimi_k25"
+    # Kimi-K2.6 ships the same tiktoken vocab and special tokens as K2.5, and its
+    # default chat template output is identical to K2.5's (K2.6 only adds an
+    # opt-in preserve_thinking flag). Reuse the kimi_k25 renderer until a
+    # dedicated kimi_k26 renderer is registered in tinker_cookbook.
+    if "moonshotai/kimi-k2.6" in normalized_model_name:
+        return "kimi_k25"
     if "nemotron" in normalized_model_name:
         return "nemotron"
     if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
