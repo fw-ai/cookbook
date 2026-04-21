@@ -438,7 +438,7 @@ def main(
         max_seq_len = cfg.max_seq_len
         total_raw = len(raw_data)
         log_interval = max(1, total_raw // 20)  # ~5% increments for runner progress
-        mem_log_interval = max(1, total_raw // 100)  # ~1% increments for memory trajectory
+        mem_log_interval = 500  # high-res memory sampling (~0.45% per step for 110K rows)
         training_data: List[tinker.Datum] = []
         filtered_count = 0
 
@@ -472,17 +472,76 @@ def main(
                     continue
             return 0
 
-        def _log_mem(stage: str, i: int, total: int):
-            rss_kib = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
-            rss_gi = rss_kib / (1024 ** 2)  # ru_maxrss is KiB on Linux
+        def _proc_vmrss_gi(status_path: str) -> float:
+            try:
+                with open(status_path) as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            return int(line.split()[1]) / (1024 * 1024)  # KiB -> GiB
+            except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError):
+                pass
+            return 0.0
+
+        def _worker_rss_info(main_pid: int):
+            """Return (list_of_(pid, rss_gi), total_gi) for worker processes."""
+            import glob as _glob
+            workers = []
+            for status_path in _glob.glob("/proc/*/status"):
+                try:
+                    pid_str = status_path.split("/")[2]
+                    if not pid_str.isdigit():
+                        continue
+                    pid = int(pid_str)
+                    if pid == main_pid:
+                        continue
+                    with open(status_path) as f:
+                        content = f.read()
+                    ppid = 0
+                    rss_kib = 0
+                    for line in content.split("\n"):
+                        if line.startswith("PPid:"):
+                            ppid = int(line.split()[1])
+                        elif line.startswith("VmRSS:"):
+                            rss_kib = int(line.split()[1])
+                    if ppid == main_pid and rss_kib > 0:
+                        workers.append((pid, rss_kib / (1024 * 1024)))
+                except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, IndexError):
+                    continue
+            workers.sort()
+            return workers, sum(r for _, r in workers)
+
+        _MAIN_PID = os.getpid()
+
+        def _log_mem(stage: str, i: int, total: int, pool=None):
+            peak_kib = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            peak_gi = peak_kib / (1024 ** 2)  # ru_maxrss is KiB on Linux
+            main_cur_gi = _proc_vmrss_gi(f"/proc/{_MAIN_PID}/status")
             cgroup_bytes = _read_cgroup_mem()
             cgroup_gi = cgroup_bytes / (1024 ** 3)
             limit_bytes = _read_cgroup_limit()
             limit_gi = limit_bytes / (1024 ** 3) if limit_bytes else 0
+
+            workers, workers_total = _worker_rss_info(_MAIN_PID)
+            workers_str = ",".join(f"{pid}:{gi:.1f}" for pid, gi in workers)
+
+            pool_info = ""
+            if pool is not None:
+                try:
+                    # Count pending tasks in the pool's result cache.
+                    cache_size = len(pool._cache)
+                    pool_info = f" | pool_cache={cache_size}"
+                except Exception:
+                    pass
+
+            unaccounted = cgroup_gi - main_cur_gi - workers_total
+
             logger.info(
-                "[mem] %s %d/%d (%.0f%%) | cgroup=%.1f/%.1f GiB | main_maxrss=%.1f GiB | training_data_len=%d",
+                "[mem] %s %d/%d (%.0f%%) | cgroup=%.1f/%.1f GiB | main=%.1f cur / %.1f peak GiB"
+                " | workers=%.1f GiB [%s] | unaccounted=%.1f GiB%s | train_data=%d",
                 stage, i, total, 100.0 * i / total,
-                cgroup_gi, limit_gi, rss_gi, len(training_data),
+                cgroup_gi, limit_gi, main_cur_gi, peak_gi,
+                workers_total, workers_str, unaccounted, pool_info,
+                len(training_data),
             )
 
         _log_mem("before_rendering", 0, total_raw)
@@ -518,7 +577,7 @@ def main(
                     if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
                         runner.report_rendering_progress(i + 1, total_raw)
                     if (i + 1) % mem_log_interval == 0 or (i + 1) == total_raw:
-                        _log_mem("rendering", i + 1, total_raw)
+                        _log_mem("rendering", i + 1, total_raw, pool=pool)
         else:
             for i, row in enumerate(raw_data):
                 datum = _render_one_inline(
