@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import transformers
 
@@ -108,9 +109,9 @@ def setup_infra(
     needs_reference: bool,
     needs_inference: bool = True,
     api_key: str,
-    cleanup: Optional[ResourceCleanup] = None,
+    cleanup: ResourceCleanup | None = None,
     cleanup_on_exit: bool = False,
-    on_status: Optional[Callable[[str], None]] = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> Infra:
     """Build all training-side infrastructure in one call.
 
@@ -137,60 +138,14 @@ def setup_infra(
         An :class:`Infra` bundle. Caller registers ``infra.closeables`` and
         (if ``cleanup_on_exit``) the deployment scale-to-zero.
     """
-    _on_status = on_status or (lambda _msg: None)
     if needs_inference and deploy_mgr is None:
         raise ValueError("deploy_mgr is required when needs_inference=True")
 
+    on_status_cb = on_status or _noop_status
     boot_start = time.time()
 
-    # -- Shape resolution (auto-select then fetch profile, in one place) ----
-
-    if cfg.infra.training_shape_id is None:
-        cfg.infra.training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="policy",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected policy training shape: %s", cfg.infra.training_shape_id)
-    policy_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-
-    if (
-        needs_inference
-        and not cfg.deployment.deployment_shape
-        and policy_profile.deployment_shape_version
-    ):
-        cfg.deployment.deployment_shape = policy_profile.deployment_shape_version
-    if cfg.max_seq_len is None:
-        cfg.max_seq_len = policy_profile.max_supported_context_length
-    if cfg.max_seq_len is None:
-        raise ValueError(
-            "max_seq_len is required. Set it in Config, or use a training shape "
-            "(InfraConfig.training_shape_id) to auto-populate it."
-        )
-
-    # ref_profile is non-None only when a *separate* reference trainer is
-    # needed: needs_reference + (full-param OR explicit ref shape).
-    # LoRA + needs_reference + no explicit ref shape → shared-session path,
-    # the policy trainer serves reference via base-only handle.
-    ref_profile = None
-    if cfg.infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-    elif needs_reference and cfg.lora_rank == 0:
-        cfg.infra.ref_training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="reference",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        logger.info(
-            "Auto-selected reference training shape: %s",
-            cfg.infra.ref_training_shape_id,
-        )
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-
+    policy_profile = _resolve_policy_shape(cfg, rlor_mgr, needs_inference)
+    ref_profile = _resolve_reference_shape(cfg, rlor_mgr, needs_reference)
     logger.info(
         "Policy shape=%s  ref shape=%s  deployment_shape=%s",
         cfg.infra.training_shape_id,
@@ -198,164 +153,53 @@ def setup_infra(
         getattr(cfg.deployment, "deployment_shape", None) if needs_inference else None,
     )
 
-    # -- Trainer provisioning (parallel when both needed) -------------------
-
-    _cleanup = cleanup if cleanup_on_exit else None
+    trainer_cleanup = cleanup if cleanup_on_exit else None
     role_prefix = "grpo" if needs_inference else "dpo"
+    policy_ep, reference_ep = _provision_trainers(
+        cfg=cfg,
+        rlor_mgr=rlor_mgr,
+        policy_profile=policy_profile,
+        ref_profile=ref_profile,
+        role_prefix=role_prefix,
+        cleanup=trainer_cleanup,
+        on_status=on_status_cb,
+    )
 
-    def _make_trainer(role: str, profile: Any, *, forward_only: bool, lora: int) -> Any:
-        is_ref = role == "reference"
-        return create_trainer_job(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            infra=cfg.infra,
-            profile=profile,
-            lora_rank=lora,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            display_name=f"{role_prefix}-{role}",
-            forward_only=forward_only,
-            job_id=(
-                getattr(cfg, "reference_job_id", None) if is_ref
-                else getattr(cfg, "policy_job_id", None)
-            ),
-            base_url_override=(
-                getattr(cfg, "reference_base_url", None) if is_ref
-                else getattr(cfg, "policy_base_url", None)
-            ),
-            cleanup=_cleanup,
-            on_status=_on_status,
-        )
-
-    if ref_profile is not None:
-        _on_status("provisioning policy and reference trainers")
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(
-                _make_trainer, "policy", policy_profile,
-                forward_only=False, lora=cfg.lora_rank,
-            )
-            ref_fut = pool.submit(
-                _make_trainer, "reference", ref_profile,
-                forward_only=True, lora=0,  # reference never carries LoRA adapters
-            )
-            errors: list[str] = []
-            policy_ep = reference_ep = None
-            try:
-                policy_ep = pol_fut.result()
-            except Exception as e:
-                errors.append(f"Policy trainer: {e}")
-            try:
-                reference_ep = ref_fut.result()
-            except Exception as e:
-                errors.append(f"Reference trainer: {e}")
-            if errors:
-                raise RuntimeError(
-                    "Trainer creation failed:\n" + "\n".join(errors)
-                )
-    else:
-        _on_status("provisioning policy trainer")
-        policy_ep = _make_trainer(
-            "policy", policy_profile,
-            forward_only=False, lora=cfg.lora_rank,
-        )
-        reference_ep = None
-
-    policy_job_id = policy_ep.job_id
-    reference_job_id = reference_ep.job_id if reference_ep is not None else None
-
-    # -- Deployment (only when needed) --------------------------------------
-
-    dep_info = None
     inference_model = None
     if needs_inference:
-        dep_info = setup_or_reattach_deployment(
-            deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra,
-            policy_ep.job_name,
+        inference_model = _setup_deployment(
+            cfg=cfg,
+            deploy_mgr=deploy_mgr,
+            policy_ep=policy_ep,
+            cleanup=cleanup,
+            cleanup_on_exit=cleanup_on_exit,
         )
-        if cleanup_on_exit and cleanup is not None:
-            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-        inference_model = dep_info.inference_model if dep_info else cfg.base_model
-
-    # -- Trainer clients ----------------------------------------------------
 
     closeables: list[Any] = []
-    timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-    use_endpoint_override = bool(
-        getattr(cfg, "policy_base_url", None) or getattr(cfg, "reference_base_url", None)
+    policy = _make_policy_client(cfg, rlor_mgr, policy_ep, api_key, closeables)
+    reference = _make_reference_client(
+        cfg=cfg,
+        rlor_mgr=rlor_mgr,
+        policy=policy,
+        reference_ep=reference_ep,
+        needs_reference=needs_reference,
+        api_key=api_key,
+        closeables=closeables,
     )
-
-    policy = ReconnectableClient(
-        rlor_mgr, policy_ep.job_id, cfg.base_model,
-        lora_rank=cfg.lora_rank,
-        fw_api_key=api_key,
-        default_timeout=timeout,
-        endpoint=policy_ep if use_endpoint_override else None,
-    )
-    if hasattr(policy, "close"):
-        closeables.append(policy)
-
-    # Reference: separate trainer when ref_profile resolved, else
-    # shared-session base handle when LoRA + needs_reference, else None.
-    reference: Any | None = None
-    if reference_ep is not None:
-        reference = ReconnectableClient(
-            rlor_mgr, reference_ep.job_id, cfg.base_model,
-            lora_rank=0,                                # ref trainers never carry LoRA
-            fw_api_key=api_key,
-            default_timeout=timeout,
-            endpoint=reference_ep if use_endpoint_override else None,
-        )
-        if hasattr(reference, "close"):
-            closeables.append(reference)
-    elif needs_reference and cfg.lora_rank > 0:
-        # LoRA shared-session: policy serves reference via base-only handle on
-        # the same FiretitanServiceClient. Avoids unloading the policy LoRA.
-        reference = policy.create_base_reference()
-        if hasattr(reference, "close"):
-            closeables.append(reference)
-
-    # -- Sampler + weight syncer + concurrency controller (inference only) --
 
     sampler = None
     weight_syncer = None
     concurrency_controller = None
     if needs_inference:
-        tokenizer_model = cfg.deployment.tokenizer_model
-        if not tokenizer_model:
-            raise ValueError(
-                "deployment.tokenizer_model is required for client-side tokenization."
-            )
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            tokenizer_model, trust_remote_code=True,
-        )
-        concurrency_controller = _build_concurrency_controller(
-            cfg.concurrency, deploy_mgr, cfg.deployment,
-        )
-        sampler = DeploymentSampler(
-            inference_url=deploy_mgr.inference_url,
-            model=inference_model,
-            api_key=api_key,
-            tokenizer=tokenizer,
-            concurrency_controller=concurrency_controller,
-        )
-        weight_syncer = WeightSyncer(
-            policy_client=policy.inner,
+        sampler, weight_syncer, concurrency_controller = _make_inference_components(
+            cfg=cfg,
             deploy_mgr=deploy_mgr,
-            deployment_id=cfg.deployment.deployment_id,
-            base_model=getattr(cfg, "rollout_base_model", None) or cfg.base_model,
-            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
-            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
-            lora_rank=cfg.lora_rank,
+            policy=policy,
+            inference_model=inference_model,
+            api_key=api_key,
         )
 
-    # -- Boot metrics -------------------------------------------------------
-
-    boot_metrics: dict = {
-        "train/step": 0,
-        "infra/total_boot_time": time.time() - boot_start,
-    }
-    if needs_inference and deploy_mgr.boot_time_s is not None:
-        boot_metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
+    boot_metrics = _make_boot_metrics(boot_start, deploy_mgr if needs_inference else None)
 
     return Infra(
         policy=policy,
@@ -364,8 +208,8 @@ def setup_infra(
         weight_syncer=weight_syncer,
         concurrency_controller=concurrency_controller,
         policy_profile=policy_profile,
-        policy_job_id=policy_job_id,
-        reference_job_id=reference_job_id,
+        policy_job_id=policy_ep.job_id,
+        reference_job_id=reference_ep.job_id if reference_ep is not None else None,
         inference_model=inference_model,
         boot_metrics=boot_metrics,
         closeables=closeables,
@@ -377,32 +221,297 @@ def setup_infra(
 # ---------------------------------------------------------------------------
 
 
+def _noop_status(_message: str) -> None:
+    """No-op status callback used when caller passes ``on_status=None``."""
+
+
+def _register_closeable(obj: Any, closeables: list[Any]) -> None:
+    """Append ``obj`` to ``closeables`` if it has a ``.close()`` method."""
+    if hasattr(obj, "close"):
+        closeables.append(obj)
+
+
+def _resolve_policy_shape(
+    cfg: Any, rlor_mgr: TrainerJobManager, needs_inference: bool,
+) -> Any:
+    """Auto-select policy shape if unset; resolve to profile; auto-fill cfg."""
+    if cfg.infra.training_shape_id is None:
+        cfg.infra.training_shape_id = auto_select_training_shape(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            trainer_role="policy",
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+        )
+        logger.info(
+            "Auto-selected policy training shape: %s",
+            cfg.infra.training_shape_id,
+        )
+    profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+
+    if (
+        needs_inference
+        and not cfg.deployment.deployment_shape
+        and profile.deployment_shape_version
+    ):
+        cfg.deployment.deployment_shape = profile.deployment_shape_version
+    if cfg.max_seq_len is None:
+        cfg.max_seq_len = profile.max_supported_context_length
+    if cfg.max_seq_len is None:
+        raise ValueError(
+            "max_seq_len is required. Set it in Config, or use a training shape "
+            "(InfraConfig.training_shape_id) to auto-populate it."
+        )
+    return profile
+
+
+def _resolve_reference_shape(
+    cfg: Any, rlor_mgr: TrainerJobManager, needs_reference: bool,
+) -> Any | None:
+    """Resolve reference profile; ``None`` for no-ref or LoRA-shared paths.
+
+    Returns ``None`` when:
+      * ``not needs_reference`` (no reference at all), OR
+      * ``needs_reference`` AND ``lora_rank > 0`` AND no explicit ref shape
+        — the policy trainer will serve reference via base-only handle.
+
+    Explicit ``cfg.infra.ref_training_shape_id`` is always honored.
+    """
+    if cfg.infra.ref_training_shape_id:
+        return rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+    if not (needs_reference and cfg.lora_rank == 0):
+        return None
+    cfg.infra.ref_training_shape_id = auto_select_training_shape(
+        rlor_mgr,
+        base_model=cfg.base_model,
+        trainer_role="reference",
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+    )
+    logger.info(
+        "Auto-selected reference training shape: %s",
+        cfg.infra.ref_training_shape_id,
+    )
+    return rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+
+
+def _provision_trainers(
+    *,
+    cfg: Any,
+    rlor_mgr: TrainerJobManager,
+    policy_profile: Any,
+    ref_profile: Any | None,
+    role_prefix: str,
+    cleanup: ResourceCleanup | None,
+    on_status: Callable[[str], None],
+) -> tuple[Any, Any | None]:
+    """Provision policy + (optional) reference trainers, parallel when both needed."""
+
+    def _make_one(role: str, profile: Any, *, forward_only: bool, lora: int) -> Any:
+        is_ref = role == "reference"
+        return create_trainer_job(
+            rlor_mgr,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            profile=profile,
+            lora_rank=lora,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            display_name=f"{role_prefix}-{role}",
+            forward_only=forward_only,
+            job_id=cfg.reference_job_id if is_ref else cfg.policy_job_id,
+            base_url_override=(
+                cfg.reference_base_url if is_ref else cfg.policy_base_url
+            ),
+            cleanup=cleanup,
+            on_status=on_status,
+        )
+
+    if ref_profile is None:
+        on_status("provisioning policy trainer")
+        return (
+            _make_one("policy", policy_profile, forward_only=False, lora=cfg.lora_rank),
+            None,
+        )
+
+    on_status("provisioning policy and reference trainers")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        policy_future = pool.submit(
+            _make_one, "policy", policy_profile,
+            forward_only=False, lora=cfg.lora_rank,
+        )
+        # Reference trainers never carry LoRA adapters — pass lora=0.
+        reference_future = pool.submit(
+            _make_one, "reference", ref_profile,
+            forward_only=True, lora=0,
+        )
+        errors: list[str] = []
+        policy_ep = reference_ep = None
+        try:
+            policy_ep = policy_future.result()
+        except Exception as e:
+            errors.append(f"Policy trainer: {e}")
+        try:
+            reference_ep = reference_future.result()
+        except Exception as e:
+            errors.append(f"Reference trainer: {e}")
+        if errors:
+            raise RuntimeError("Trainer creation failed:\n" + "\n".join(errors))
+        return policy_ep, reference_ep
+
+
+def _setup_deployment(
+    *,
+    cfg: Any,
+    deploy_mgr: DeploymentManager,
+    policy_ep: Any,
+    cleanup: ResourceCleanup | None,
+    cleanup_on_exit: bool,
+) -> str:
+    """Provision (or reattach) the deployment; register cleanup if requested."""
+    dep_info = setup_or_reattach_deployment(
+        deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra,
+        policy_ep.job_name,
+    )
+    if cleanup_on_exit and cleanup is not None:
+        cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
+    return dep_info.inference_model if dep_info else cfg.base_model
+
+
+def _make_policy_client(
+    cfg: Any,
+    rlor_mgr: TrainerJobManager,
+    policy_ep: Any,
+    api_key: str,
+    closeables: list[Any],
+) -> Any:
+    """Build the policy ReconnectableClient and register its close."""
+    timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
+    use_endpoint_override = bool(cfg.policy_base_url or cfg.reference_base_url)
+    policy = ReconnectableClient(
+        rlor_mgr, policy_ep.job_id, cfg.base_model,
+        lora_rank=cfg.lora_rank,
+        fw_api_key=api_key,
+        default_timeout=timeout,
+        endpoint=policy_ep if use_endpoint_override else None,
+    )
+    _register_closeable(policy, closeables)
+    return policy
+
+
+def _make_reference_client(
+    *,
+    cfg: Any,
+    rlor_mgr: TrainerJobManager,
+    policy: Any,
+    reference_ep: Any | None,
+    needs_reference: bool,
+    api_key: str,
+    closeables: list[Any],
+) -> Any | None:
+    """Build the reference client (separate trainer, shared session, or None)."""
+    if reference_ep is not None:
+        timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
+        use_endpoint_override = bool(cfg.policy_base_url or cfg.reference_base_url)
+        reference = ReconnectableClient(
+            rlor_mgr, reference_ep.job_id, cfg.base_model,
+            lora_rank=0,                               # ref trainers never carry LoRA
+            fw_api_key=api_key,
+            default_timeout=timeout,
+            endpoint=reference_ep if use_endpoint_override else None,
+        )
+        _register_closeable(reference, closeables)
+        return reference
+    if needs_reference and cfg.lora_rank > 0:
+        # LoRA shared-session: policy serves reference via base-only handle on
+        # the same FiretitanServiceClient. Avoids unloading the policy LoRA.
+        reference = policy.create_base_reference()
+        _register_closeable(reference, closeables)
+        return reference
+    return None
+
+
+def _make_inference_components(
+    *,
+    cfg: Any,
+    deploy_mgr: DeploymentManager,
+    policy: Any,
+    inference_model: str | None,
+    api_key: str,
+) -> tuple[Any, Any, Any | None]:
+    """Build the sampler, weight syncer, and concurrency controller."""
+    if not cfg.deployment.tokenizer_model:
+        raise ValueError(
+            "deployment.tokenizer_model is required for client-side tokenization."
+        )
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        cfg.deployment.tokenizer_model, trust_remote_code=True,
+    )
+    concurrency_controller = _build_concurrency_controller(
+        cfg.concurrency, deploy_mgr, cfg.deployment,
+    )
+    sampler = DeploymentSampler(
+        inference_url=deploy_mgr.inference_url,
+        model=inference_model,
+        api_key=api_key,
+        tokenizer=tokenizer,
+        concurrency_controller=concurrency_controller,
+    )
+    weight_syncer = WeightSyncer(
+        policy_client=policy.inner,
+        deploy_mgr=deploy_mgr,
+        deployment_id=cfg.deployment.deployment_id,
+        base_model=cfg.rollout_base_model or cfg.base_model,
+        hotload_timeout=cfg.weight_sync.weight_sync_timeout,
+        first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
+        lora_rank=cfg.lora_rank,
+    )
+    return sampler, weight_syncer, concurrency_controller
+
+
+def _make_boot_metrics(
+    boot_start: float, deploy_mgr: DeploymentManager | None,
+) -> dict:
+    """Build the one-shot boot metrics dict."""
+    metrics: dict = {
+        "train/step": 0,
+        "infra/total_boot_time": time.time() - boot_start,
+    }
+    if deploy_mgr is not None and deploy_mgr.boot_time_s is not None:
+        metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
+    return metrics
+
+
 def _build_concurrency_controller(
     concurrency_config: Any,
     deploy_mgr: DeploymentManager,
     deployment_config: Any,
 ) -> Any | None:
     """Build a concurrency controller from a ``ConcurrencyConfig``."""
-    cc = concurrency_config
-    if cc.mode == "adaptive":
+    mode = concurrency_config.mode
+    if mode == "adaptive":
         gpu_count = get_deployment_gpu_count(deploy_mgr, deployment_config)
-        initial_window = cc.initial_window or (_SLOTS_PER_GPU * gpu_count)
+        initial_window = (
+            concurrency_config.initial_window or (_SLOTS_PER_GPU * gpu_count)
+        )
         controller = AdaptiveConcurrencyController(
             initial_window=initial_window,
-            min_window=cc.min_window,
-            max_window=cc.max_window,
-            prefill_queue_target=cc.prefill_queue_target,
+            min_window=concurrency_config.min_window,
+            max_window=concurrency_config.max_window,
+            prefill_queue_target=concurrency_config.prefill_queue_target,
         )
         logger.info(
             "Using adaptive concurrency (initial=%d, range=%d-%d, target_pq=%.2fs)",
-            initial_window, cc.min_window, cc.max_window, cc.prefill_queue_target,
+            initial_window,
+            concurrency_config.min_window,
+            concurrency_config.max_window,
+            concurrency_config.prefill_queue_target,
         )
         return controller
-    if cc.mode == "fixed":
+    if mode == "fixed":
         logger.info("Using fixed concurrency: unlimited")
         return None
-    if cc.mode is None and cc.max_concurrency is not None:
-        import warnings
+    if mode is None and concurrency_config.max_concurrency is not None:
         warnings.warn(
             "ConcurrencyConfig.max_concurrency is deprecated. "
             "Use mode='adaptive' (default) or mode='fixed' with "
@@ -410,12 +519,12 @@ def _build_concurrency_controller(
             DeprecationWarning,
             stacklevel=2,
         )
-        controller = FixedConcurrencyController(cc.max_concurrency)
+        controller = FixedConcurrencyController(concurrency_config.max_concurrency)
         logger.info(
             "Using fixed concurrency (deprecated max_concurrency=%d)",
-            cc.max_concurrency,
+            concurrency_config.max_concurrency,
         )
         return controller
     raise ValueError(
-        f"Unknown concurrency mode: {cc.mode!r}. Must be 'adaptive' or 'fixed'."
+        f"Unknown concurrency mode: {mode!r}. Must be 'adaptive' or 'fixed'."
     )
