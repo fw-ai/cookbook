@@ -163,7 +163,16 @@ def test_setup_infra_requires_deploy_mgr_when_inference_needed(patch_sdk):
     cfg = _make_cfg()
     with pytest.raises(ValueError, match="deploy_mgr is required"):
         setup_infra(
-            cfg, rlor_mgr=rlor, deploy_mgr=None,
+            rlor_mgr=rlor, deploy_mgr=None,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
             needs_reference=False, needs_inference=True,
             role_prefix="grpo", api_key="key",
         )
@@ -179,7 +188,16 @@ def test_setup_infra_rl_full_param_with_kl_provisions_separate_reference(patch_s
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -210,7 +228,16 @@ def test_setup_infra_rl_full_param_no_kl_skips_reference(patch_sdk):
     cfg = _make_cfg(lora_rank=0)
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=False, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -233,7 +260,16 @@ def test_setup_infra_lora_with_reference_uses_shared_session_rl(patch_sdk):
     cfg = _make_cfg(lora_rank=64)
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -256,7 +292,16 @@ def test_setup_infra_lora_with_reference_uses_shared_session_dpo(patch_sdk):
     cfg = _make_cfg(lora_rank=64)
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=None,
+        rlor_mgr=rlor, deploy_mgr=None,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=False,
         role_prefix="dpo", api_key="key",
     )
@@ -278,7 +323,16 @@ def test_setup_infra_dpo_full_param_provisions_separate_reference(patch_sdk):
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=None,
+        rlor_mgr=rlor, deploy_mgr=None,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=False,
         role_prefix="dpo", api_key="key",
     )
@@ -302,12 +356,21 @@ def test_setup_infra_auto_selects_policy_shape_when_unset(patch_sdk):
     cfg = _make_cfg(training_shape_id=None)
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=False, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
 
-    assert cfg.infra.training_shape_id == "auto-policy"
+    assert infra.training_shape_id == "auto-policy"
     assert infra.policy_profile is not None
 
 
@@ -315,13 +378,22 @@ def test_setup_infra_auto_selects_reference_shape_for_full_param_with_kl(patch_s
     rlor, deploy = _make_mgrs()
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id=None)
 
-    setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+    infra = setup_infra(
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
 
-    assert cfg.infra.ref_training_shape_id == "auto-reference"
+    assert infra.ref_training_shape_id == "auto-reference"
 
 
 def test_setup_infra_does_not_auto_select_ref_for_lora(patch_sdk):
@@ -329,13 +401,22 @@ def test_setup_infra_does_not_auto_select_ref_for_lora(patch_sdk):
     rlor, deploy = _make_mgrs()
     cfg = _make_cfg(lora_rank=64, ref_training_shape_id=None)
 
-    setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+    infra = setup_infra(
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
 
-    assert cfg.infra.ref_training_shape_id is None
+    assert infra.ref_training_shape_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +428,16 @@ def test_setup_infra_returns_closeables_for_caller_to_register(patch_sdk):
     rlor, deploy = _make_mgrs()
     cfg = _make_cfg(lora_rank=64)
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -359,7 +449,16 @@ def test_setup_infra_records_boot_metrics(patch_sdk):
     rlor, deploy = _make_mgrs()
     cfg = _make_cfg()
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=False, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -399,7 +498,16 @@ def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
     setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -440,7 +548,16 @@ def test_parallel_wait_timing(monkeypatch):
 
     t0 = time.monotonic()
     setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -490,7 +607,16 @@ def test_failure_cleanup_registers_both_resources(monkeypatch):
     cleanup = ResourceCleanup(rlor, deploy)
     with pytest.raises(RuntimeError, match="reference trainer failed"):
         setup_infra(
-            cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+            rlor_mgr=rlor, deploy_mgr=deploy,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
             needs_reference=True, needs_inference=False,
             role_prefix="dpo", api_key="key",
             cleanup=cleanup,
@@ -529,7 +655,16 @@ def test_lora_shared_ref_no_ref_trainer_created(monkeypatch):
     cfg = _make_cfg(lora_rank=64)
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -573,7 +708,16 @@ def test_reuse_path_policy_job_id_set(monkeypatch):
     cfg = _make_cfg(lora_rank=0, policy_job_id="pre-created-policy")
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=False, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )
@@ -607,7 +751,16 @@ def test_dpo_full_param_no_deployment(monkeypatch):
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
 
     infra = setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=None,
+        rlor_mgr=rlor, deploy_mgr=None,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=True, needs_inference=False,
         role_prefix="dpo", api_key="key",
     )
@@ -653,7 +806,16 @@ def test_reattach_patch_issued_before_trainer_ready(monkeypatch):
     cfg = _make_cfg(lora_rank=0, deployment_id="dep-1")
 
     setup_infra(
-        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
         needs_reference=False, needs_inference=True,
         role_prefix="grpo", api_key="key",
     )

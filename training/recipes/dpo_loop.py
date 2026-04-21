@@ -281,6 +281,7 @@ async def _train_loop(
     step_offset: int,
     on_ref_done: Callable[[], None] | None = None,
     runner: RunnerIO | None = None,
+    training_shape_id: str | None = None,
 ) -> int:
     """Pipelined DPO training -- ref forward overlaps with policy training.
 
@@ -334,7 +335,7 @@ async def _train_loop(
                     },
                     kind=CheckpointKind.STATE,
                     base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id,
+                    training_shape=training_shape_id,
                 )
 
         step_elapsed = time.monotonic() - step_t0
@@ -496,9 +497,16 @@ def main(
         # when lora_rank > 0, only the policy trainer is provisioned and
         # reference logprobs come from policy.create_base_reference().
         infra = setup_infra(
-            cfg,
             rlor_mgr=rlor_mgr,
             deploy_mgr=None,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=infra.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
             needs_reference=True,
             needs_inference=False,
             role_prefix="dpo",
@@ -537,13 +545,13 @@ def main(
             raise RuntimeError(f"No data loaded from {cfg.dataset}")
 
         tokenized_pairs, filtered_count = _tokenize_pairs(
-            raw_data, tokenizer, renderer, cfg.max_seq_len,
+            raw_data, tokenizer, renderer, infra.max_seq_len,
             runner=runner,
         )
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d pairs filtered (chosen or rejected > %d tokens)",
-                filtered_count, len(raw_data), cfg.max_seq_len,
+                filtered_count, len(raw_data), infra.max_seq_len,
             )
         logger.info("Prepared %d preference pairs", len(tokenized_pairs))
         if not tokenized_pairs:
@@ -571,6 +579,7 @@ def main(
                 tokenized_pairs, reference, policy, adam_params, cfg, step_offset,
                 on_ref_done=_on_ref_done,
                 runner=runner,
+                training_shape_id=infra.training_shape_id,
             )
         )
 
@@ -587,7 +596,7 @@ def main(
                 },
                 kind=CheckpointKind.BOTH,
                 base_model=cfg.base_model,
-                training_shape=cfg.infra.training_shape_id,
+                training_shape=training_shape_id,
             )
 
             if getattr(cfg, "output_model_id", None):

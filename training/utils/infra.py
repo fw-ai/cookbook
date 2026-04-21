@@ -23,7 +23,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import threading
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -141,7 +140,6 @@ class ResourceCleanup:
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
         self._deployments: list[tuple[str, str]] = []
-        self._lock = threading.Lock()
         grace_period_s = (
             trainer_cancel_grace_period_s
             if trainer_cancel_grace_period_s is not None
@@ -155,8 +153,7 @@ class ResourceCleanup:
 
     def trainer(self, job_id: str) -> None:
         """Register a trainer job for cancellation on exit."""
-        with self._lock:
-            self._jobs.append(job_id)
+        self._jobs.append(job_id)
 
     def cancel_trainer(self, job_id: str) -> None:
         """Cancel a trainer job now and unregister it from cleanup."""
@@ -175,8 +172,7 @@ class ResourceCleanup:
 
         *action*: ``"delete"`` (default) or ``"scale_to_zero"``.
         """
-        with self._lock:
-            self._deployments.append((dep_id, action))
+        self._deployments.append((dep_id, action))
 
     def __enter__(self) -> ResourceCleanup:
         return self
@@ -909,15 +905,31 @@ class Infra:
     inference_model: str | None
     boot_metrics: dict
     closeables: list[Any] = field(default_factory=list)
+    max_seq_len: int | None = None
+    """Resolved max sequence length (auto-populated from shape when not provided)."""
+    training_shape_id: str | None = None
+    """Resolved policy training-shape ID (auto-selected if InfraConfig.training_shape_id was None)."""
+    ref_training_shape_id: str | None = None
+    """Resolved reference training-shape ID (auto-selected for full-param + needs_reference)."""
+    deployment_id: str | None = None
+    """Final deployment ID, including auto-generated ones when DeployConfig.deployment_id was unset."""
 
 
 def setup_infra(
-    cfg: Any,
     *,
     rlor_mgr: TrainerJobManager,
     deploy_mgr: DeploymentManager | None = None,
-    needs_reference: bool,
-    needs_inference: bool = True,
+    base_model: str,
+    infra: InfraConfig,
+    deploy_cfg: DeployConfig | None = None,
+    lora_rank: int = 0,
+    max_seq_len: int | None = None,
+    learning_rate: float = 1e-5,
+    step_timeout: float | None = None,
+    policy_job_id: str | None = None,
+    reference_job_id: str | None = None,
+    needs_reference: bool = False,
+    needs_inference: bool = False,
     role_prefix: str,
     api_key: str,
     cleanup: ResourceCleanup | None = None,
@@ -926,30 +938,32 @@ def setup_infra(
 ) -> Infra:
     """Build all training-side infrastructure in one call.
 
-    Generic across loop types (RL, DPO, SFT). Inputs (duck-typed on ``cfg``):
+    Generic across loop types (RL, DPO, SFT).
 
-    Always required:
-        ``base_model``, ``lora_rank``, ``max_seq_len`` (or auto from shape),
-        ``learning_rate``, ``step_timeout``, ``infra`` (InfraConfig),
-        ``policy_job_id`` / ``reference_job_id`` (set to reuse existing
-        trainers).
-        ``role_prefix``: label prefix for display names (e.g. ``"grpo"``,
-        ``"dpo"``, ``"sft"``).
-
-    When ``needs_inference``:
-        ``deployment`` (DeployConfig), ``weight_sync`` (WeightSyncConfig),
-        ``rollout_base_model`` (optional).
-        Plus ``deploy_mgr`` must be provided.
-
-    Mutates ``cfg``:
-        * ``cfg.infra.training_shape_id`` ← auto-selected when ``None``.
-        * ``cfg.infra.ref_training_shape_id`` ← auto-selected when needed.
-        * ``cfg.deployment.deployment_shape`` ← profile default when unset.
-        * ``cfg.max_seq_len`` ← profile's max context when ``None``.
+    Args:
+        rlor_mgr: Trainer job manager.
+        deploy_mgr: Deployment manager. Required when ``needs_inference=True``.
+        base_model: Base model resource name.
+        infra: Infrastructure config (shape IDs, region, etc.). Never mutated.
+        deploy_cfg: Deployment config. Required when ``needs_inference=True``. Never mutated.
+        lora_rank: LoRA rank; 0 means full-parameter.
+        max_seq_len: Max sequence length. Auto-populated from shape when ``None``;
+            exposed on the returned :class:`Infra` as ``max_seq_len``.
+        learning_rate: Optimizer learning rate forwarded to trainer jobs.
+        step_timeout: Per-step RPC timeout. Falls back to SDK default when ``None``.
+        policy_job_id: Reuse an existing policy trainer job instead of creating one.
+        reference_job_id: Reuse an existing reference trainer job.
+        needs_reference: Provision a reference trainer (or shared LoRA session).
+        needs_inference: Provision an inference deployment.
+        role_prefix: Display-name prefix for trainer jobs (e.g. ``"grpo"``, ``"dpo"``).
+        api_key: Fireworks API key forwarded to trainer clients.
+        cleanup: Register created resources here for scope-exit cancellation.
+        cleanup_on_exit: Also register the deployment for scale-to-zero on exit.
+        on_status: Optional callback receiving human-readable status messages.
 
     Returns:
-        An :class:`Infra` bundle. Caller registers ``infra.closeables`` and
-        (if ``cleanup_on_exit``) the deployment scale-to-zero.
+        An :class:`Infra` bundle. Caller registers ``infra.closeables`` on an
+        ``ExitStack``.
     """
     if needs_inference and deploy_mgr is None:
         raise ValueError("deploy_mgr is required when needs_inference=True")
@@ -957,23 +971,62 @@ def setup_infra(
     emit: Callable[[str], None] = on_status or (lambda _: None)
     boot_start = time.time()
 
-    policy_profile = _resolve_policy_shape(cfg, rlor_mgr, needs_inference)
-    ref_profile = _resolve_reference_shape(cfg, rlor_mgr, needs_reference)
+    policy_profile, resolved_max_seq_len, resolved_shape_id, resolved_deploy_shape = (
+        _resolve_policy_shape(
+            rlor_mgr,
+            base_model=base_model,
+            training_shape_id=infra.training_shape_id,
+            deploy_shape=deploy_cfg.deployment_shape if deploy_cfg else None,
+            lora_rank=lora_rank,
+            max_seq_len=max_seq_len,
+            needs_inference=needs_inference,
+        )
+    )
+    ref_profile, resolved_ref_shape_id = _resolve_reference_shape(
+        rlor_mgr,
+        base_model=base_model,
+        ref_training_shape_id=infra.ref_training_shape_id,
+        lora_rank=lora_rank,
+        max_seq_len=resolved_max_seq_len,
+        needs_reference=needs_reference,
+    )
     logger.info(
         "Policy shape=%s  ref shape=%s  deployment_shape=%s",
-        cfg.infra.training_shape_id,
-        cfg.infra.ref_training_shape_id,
-        getattr(cfg.deployment, "deployment_shape", None) if needs_inference else None,
+        resolved_shape_id,
+        resolved_ref_shape_id,
+        resolved_deploy_shape if needs_inference else None,
     )
+
+    # Build an internal InfraConfig carrying the resolved shape IDs (for
+    # request_trainer_job / wait_trainer_job which read infra.trainer_timeout_s etc.)
+    resolved_infra = dataclasses.replace(
+        infra,
+        training_shape_id=resolved_shape_id,
+        ref_training_shape_id=resolved_ref_shape_id,
+    )
+    # Build a local deploy_cfg copy with deployment_shape filled in; never mutates caller's object.
+    local_deploy_cfg: DeployConfig | None = None
+    if deploy_cfg is not None:
+        local_deploy_cfg = (
+            dataclasses.replace(deploy_cfg, deployment_shape=resolved_deploy_shape)
+            if resolved_deploy_shape and not deploy_cfg.deployment_shape
+            else deploy_cfg
+        )
 
     trainer_cleanup = cleanup if cleanup_on_exit else None
 
     # Phase 2a: POST both trainer creation requests (fast, seconds).
     policy_handle, ref_handle = _request_trainers(
-        cfg=cfg,
         rlor_mgr=rlor_mgr,
+        base_model=base_model,
+        infra=resolved_infra,
         policy_profile=policy_profile,
         ref_profile=ref_profile,
+        lora_rank=lora_rank,
+        max_seq_len=resolved_max_seq_len,
+        learning_rate=learning_rate,
+        policy_job_id=policy_job_id,
+        reference_job_id=reference_job_id,
         role_prefix=role_prefix,
         cleanup=trainer_cleanup,
         on_status=emit,
@@ -983,10 +1036,13 @@ def setup_infra(
     # policy_handle.job_name which is available immediately from CreatedTrainerJob
     # before the trainer is READY. Skipped when needs_inference=False.
     dep_info = None
+    resolved_deployment_id = local_deploy_cfg.deployment_id if local_deploy_cfg else None
     if needs_inference:
-        dep_info = _request_deployment_or_none(
-            cfg=cfg,
+        dep_info, resolved_deployment_id = _request_deployment_or_none(
             deploy_mgr=deploy_mgr,
+            deploy_cfg=local_deploy_cfg,
+            base_model=base_model,
+            infra=resolved_infra,
             policy_handle=policy_handle,
             cleanup=cleanup,
             cleanup_on_exit=cleanup_on_exit,
@@ -999,22 +1055,33 @@ def setup_infra(
         ref_handle=ref_handle,
         dep_info=dep_info,
         deploy_mgr=deploy_mgr if needs_inference else None,
-        cfg=cfg,
+        infra=resolved_infra,
+        deploy_cfg=local_deploy_cfg,
+        base_model=base_model,
         role_prefix=role_prefix,
         on_status=emit,
     )
 
     inference_model = None
     if needs_inference:
-        inference_model = ready_dep_info.inference_model or cfg.base_model
+        inference_model = ready_dep_info.inference_model or base_model
 
     closeables: list[Any] = []
-    policy = _make_policy_client(cfg, rlor_mgr, policy_ep, api_key, closeables)
+    policy = _make_policy_client(
+        rlor_mgr, policy_ep,
+        base_model=base_model,
+        lora_rank=lora_rank,
+        step_timeout=step_timeout,
+        api_key=api_key,
+        closeables=closeables,
+    )
     reference = _make_reference_client(
-        cfg=cfg,
         rlor_mgr=rlor_mgr,
-        policy=policy,
         reference_ep=reference_ep,
+        policy=policy,
+        base_model=base_model,
+        lora_rank=lora_rank,
+        step_timeout=step_timeout,
         needs_reference=needs_reference,
         api_key=api_key,
         closeables=closeables,
@@ -1031,6 +1098,10 @@ def setup_infra(
         inference_model=inference_model,
         boot_metrics=boot_metrics,
         closeables=closeables,
+        max_seq_len=resolved_max_seq_len,
+        training_shape_id=resolved_shape_id,
+        ref_training_shape_id=resolved_ref_shape_id,
+        deployment_id=resolved_deployment_id,
     )
 
 
@@ -1040,51 +1111,64 @@ def _register_closeable(obj: Any, closeables: list[Any]) -> None:
 
 
 def _resolve_policy_shape(
-    cfg: Any, rlor_mgr: TrainerJobManager, needs_inference: bool,
-) -> Any:
-    if cfg.infra.training_shape_id is None:
-        cfg.infra.training_shape_id = auto_select_training_shape(
+    rlor_mgr: TrainerJobManager,
+    *,
+    base_model: str,
+    training_shape_id: str | None,
+    deploy_shape: str | None,
+    lora_rank: int,
+    max_seq_len: int | None,
+    needs_inference: bool,
+) -> tuple[Any, int, str | None, str | None]:
+    """Return (profile, resolved_max_seq_len, resolved_shape_id, resolved_deploy_shape)."""
+    if training_shape_id is None:
+        training_shape_id = auto_select_training_shape(
             rlor_mgr,
-            base_model=cfg.base_model,
+            base_model=base_model,
             trainer_role="policy",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
+            lora_rank=lora_rank,
+            max_seq_len=max_seq_len,
         )
-        logger.info("Auto-selected policy training shape: %s", cfg.infra.training_shape_id)
-    profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+        logger.info("Auto-selected policy training shape: %s", training_shape_id)
+    profile = rlor_mgr.resolve_training_profile(training_shape_id)
 
-    if (
-        needs_inference
-        and not cfg.deployment.deployment_shape
-        and profile.deployment_shape_version
-    ):
-        cfg.deployment.deployment_shape = profile.deployment_shape_version
-    if cfg.max_seq_len is None:
-        cfg.max_seq_len = profile.max_supported_context_length
-    if cfg.max_seq_len is None:
+    resolved_deploy_shape = deploy_shape
+    if needs_inference and not deploy_shape and profile.deployment_shape_version:
+        resolved_deploy_shape = profile.deployment_shape_version
+
+    if max_seq_len is None:
+        max_seq_len = profile.max_supported_context_length
+    if max_seq_len is None:
         raise ValueError(
             "max_seq_len is required. Set it in Config, or use a training shape "
             "(InfraConfig.training_shape_id) to auto-populate it."
         )
-    return profile
+    return profile, max_seq_len, training_shape_id, resolved_deploy_shape
 
 
 def _resolve_reference_shape(
-    cfg: Any, rlor_mgr: TrainerJobManager, needs_reference: bool,
-) -> Any | None:
-    if cfg.infra.ref_training_shape_id:
-        return rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-    if not (needs_reference and cfg.lora_rank == 0):
-        return None
-    cfg.infra.ref_training_shape_id = auto_select_training_shape(
+    rlor_mgr: TrainerJobManager,
+    *,
+    base_model: str,
+    ref_training_shape_id: str | None,
+    lora_rank: int,
+    max_seq_len: int,
+    needs_reference: bool,
+) -> tuple[Any | None, str | None]:
+    """Return (ref_profile, resolved_ref_shape_id)."""
+    if ref_training_shape_id:
+        return rlor_mgr.resolve_training_profile(ref_training_shape_id), ref_training_shape_id
+    if not (needs_reference and lora_rank == 0):
+        return None, None
+    ref_training_shape_id = auto_select_training_shape(
         rlor_mgr,
-        base_model=cfg.base_model,
+        base_model=base_model,
         trainer_role="reference",
-        lora_rank=cfg.lora_rank,
-        max_seq_len=cfg.max_seq_len,
+        lora_rank=lora_rank,
+        max_seq_len=max_seq_len,
     )
-    logger.info("Auto-selected reference training shape: %s", cfg.infra.ref_training_shape_id)
-    return rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
+    logger.info("Auto-selected reference training shape: %s", ref_training_shape_id)
+    return rlor_mgr.resolve_training_profile(ref_training_shape_id), ref_training_shape_id
 
 
 def _strip_args(infra: InfraConfig, flags: set[str]) -> InfraConfig:
@@ -1099,10 +1183,16 @@ def _strip_args(infra: InfraConfig, flags: set[str]) -> InfraConfig:
 
 def _request_trainers(
     *,
-    cfg: Any,
     rlor_mgr: TrainerJobManager,
+    base_model: str,
+    infra: InfraConfig,
     policy_profile: Any,
     ref_profile: Any | None,
+    lora_rank: int,
+    max_seq_len: int,
+    learning_rate: float,
+    policy_job_id: str | None,
+    reference_job_id: str | None,
     role_prefix: str,
     cleanup: ResourceCleanup | None,
     on_status: Callable[[str], None],
@@ -1110,15 +1200,15 @@ def _request_trainers(
     on_status("provisioning policy trainer")
     policy_handle = request_trainer_job(
         rlor_mgr,
-        base_model=cfg.base_model,
-        infra=cfg.infra,
+        base_model=base_model,
+        infra=infra,
         profile=policy_profile,
-        lora_rank=cfg.lora_rank,
-        max_seq_len=cfg.max_seq_len,
-        learning_rate=cfg.learning_rate,
+        lora_rank=lora_rank,
+        max_seq_len=max_seq_len,
+        learning_rate=learning_rate,
         display_name=f"{role_prefix}-policy",
         forward_only=False,
-        job_id=cfg.policy_job_id,
+        job_id=policy_job_id,
         cleanup=cleanup,
         on_status=on_status,
     )
@@ -1128,18 +1218,18 @@ def _request_trainers(
         on_status("provisioning reference trainer")
         # Reference trainer runs forward-only: strip --full-oom-check, which
         # triggers a backward warmup that OOMs on smaller reference shapes.
-        ref_infra = _strip_args(cfg.infra, {"--full-oom-check"})
+        ref_infra = _strip_args(infra, {"--full-oom-check"})
         ref_handle = request_trainer_job(
             rlor_mgr,
-            base_model=cfg.base_model,
+            base_model=base_model,
             infra=ref_infra,
             profile=ref_profile,
             lora_rank=0,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
+            max_seq_len=max_seq_len,
+            learning_rate=learning_rate,
             display_name=f"{role_prefix}-reference",
             forward_only=True,
-            job_id=cfg.reference_job_id,
+            job_id=reference_job_id,
             cleanup=cleanup,
             on_status=on_status,
         )
@@ -1149,26 +1239,30 @@ def _request_trainers(
 
 def _request_deployment_or_none(
     *,
-    cfg: Any,
     deploy_mgr: DeploymentManager,
+    deploy_cfg: DeployConfig,
+    base_model: str,
+    infra: InfraConfig,
     policy_handle: Any,
     cleanup: ResourceCleanup | None,
     cleanup_on_exit: bool,
-) -> "DeploymentInfo | _ReattachHandle":
+) -> "tuple[DeploymentInfo | _ReattachHandle, str | None]":
     """POST a fresh deployment or issue a re-attach PATCH; return immediately.
 
     Both paths use ``policy_handle.job_name`` which is available from
     ``CreatedTrainerJob`` before the trainer is READY.
+
+    Returns ``(dep_info_or_handle, resolved_deployment_id)``.
     """
-    dep_id = cfg.deployment.deployment_id
-    timeout_s = getattr(cfg.deployment, "reattach_settle_timeout_s", None) or 600
+    dep_id = deploy_cfg.deployment_id
+    timeout_s = getattr(deploy_cfg, "reattach_settle_timeout_s", None) or 600
     job_name = getattr(policy_handle, "job_name", None)
 
     if dep_id:
         existing = deploy_mgr.get(dep_id)
         if existing and existing.state not in ("FAILED", "DELETED", "DELETING"):
             if job_name:
-                prev_identity = _read_replica_identity(deploy_mgr, dep_id, cfg.base_model)
+                prev_identity = _read_replica_identity(deploy_mgr, dep_id, base_model)
                 deploy_mgr.update(
                     dep_id,
                     body={"hotLoadTrainerJob": job_name},
@@ -1186,15 +1280,19 @@ def _request_deployment_or_none(
                     prev_identity=prev_identity,
                     deployment_id=dep_id,
                     timeout_s=timeout_s,
-                )
+                ), dep_id
 
+    # Work on a local copy so we capture any auto-generated deployment_id without
+    # mutating the caller's DeployConfig.
+    local = dataclasses.replace(deploy_cfg)
     if job_name:
-        cfg.deployment.hot_load_trainer_job = job_name
+        local = dataclasses.replace(local, hot_load_trainer_job=job_name)
 
-    info = request_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
+    info = request_deployment(deploy_mgr, local, base_model, infra)
+    resolved_dep_id = local.deployment_id
     if cleanup_on_exit and cleanup is not None:
-        cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-    return info
+        cleanup.deployment(resolved_dep_id, action="scale_to_zero")
+    return info, resolved_dep_id
 
 
 def _await_in_parallel(
@@ -1204,7 +1302,9 @@ def _await_in_parallel(
     ref_handle: Any | None,
     dep_info: "DeploymentInfo | _ReattachHandle | None",
     deploy_mgr: "DeploymentManager | None",
-    cfg: Any,
+    infra: InfraConfig,
+    deploy_cfg: "DeployConfig | None",
+    base_model: str,
     role_prefix: str,
     on_status: Callable[[str], None],
 ) -> tuple[Any, Any | None, "DeploymentInfo | None"]:
@@ -1219,7 +1319,7 @@ def _await_in_parallel(
             wait_trainer_job,
             rlor_mgr,
             policy_handle,
-            infra=cfg.infra,
+            infra=infra,
             display_name=f"{role_prefix}-policy",
             forward_only=False,
             on_status=on_status,
@@ -1229,7 +1329,7 @@ def _await_in_parallel(
                 wait_trainer_job,
                 rlor_mgr,
                 ref_handle,
-                infra=cfg.infra,
+                infra=infra,
                 display_name=f"{role_prefix}-reference",
                 forward_only=True,
                 on_status=on_status,
@@ -1244,12 +1344,12 @@ def _await_in_parallel(
                 _wait_for_reattach_settled,
                 deploy_mgr,
                 dep_info.deployment_id,
-                cfg.base_model,
+                base_model,
                 prev_identity=dep_info.prev_identity,
                 timeout_s=dep_info.timeout_s,
             )
         else:
-            dep_future = pool.submit(wait_deployment, deploy_mgr, dep_info, cfg.deployment)
+            dep_future = pool.submit(wait_deployment, deploy_mgr, dep_info, deploy_cfg)
 
         try:
             policy_ep = policy_future.result()
@@ -1280,17 +1380,20 @@ def _await_in_parallel(
 
 
 def _make_policy_client(
-    cfg: Any,
     rlor_mgr: TrainerJobManager,
     policy_ep: Any,
+    *,
+    base_model: str,
+    lora_rank: int,
+    step_timeout: float | None,
     api_key: str,
     closeables: list[Any],
 ) -> Any:
     policy = ReconnectableClient(
-        rlor_mgr, policy_ep.job_id, cfg.base_model,
-        lora_rank=cfg.lora_rank,
+        rlor_mgr, policy_ep.job_id, base_model,
+        lora_rank=lora_rank,
         fw_api_key=api_key,
-        default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
+        default_timeout=step_timeout or DEFAULT_TIMEOUT_S,
     )
     _register_closeable(policy, closeables)
     return policy
@@ -1298,24 +1401,26 @@ def _make_policy_client(
 
 def _make_reference_client(
     *,
-    cfg: Any,
     rlor_mgr: TrainerJobManager,
-    policy: Any,
     reference_ep: Any | None,
+    policy: Any,
+    base_model: str,
+    lora_rank: int,
+    step_timeout: float | None,
     needs_reference: bool,
     api_key: str,
     closeables: list[Any],
 ) -> Any | None:
     if reference_ep is not None:
         reference = ReconnectableClient(
-            rlor_mgr, reference_ep.job_id, cfg.base_model,
+            rlor_mgr, reference_ep.job_id, base_model,
             lora_rank=0,
             fw_api_key=api_key,
-            default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
+            default_timeout=step_timeout or DEFAULT_TIMEOUT_S,
         )
         _register_closeable(reference, closeables)
         return reference
-    if needs_reference and cfg.lora_rank > 0:
+    if needs_reference and lora_rank > 0:
         reference = policy.create_base_reference()
         _register_closeable(reference, closeables)
         return reference

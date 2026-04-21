@@ -336,9 +336,17 @@ def main(
         # Shapes + trainers + deployment + trainer clients.
         # LoRA shared-reference branching is handled inside setup_infra.
         infra = setup_infra(
-            cfg,
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
+            base_model=cfg.base_model,
+            infra=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
             needs_reference=(cfg.kl_beta > 0),
             needs_inference=True,
             role_prefix="grpo",
@@ -388,7 +396,7 @@ def main(
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
             deploy_mgr=deploy_mgr,
-            deployment_id=cfg.deployment.deployment_id,
+            deployment_id=infra.deployment_id,
             base_model=cfg.rollout_base_model or cfg.base_model,
             hotload_timeout=cfg.weight_sync.weight_sync_timeout,
             first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
@@ -434,7 +442,7 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            max_seq_len=cfg.max_seq_len,
+            max_seq_len=infra.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
         if cfg.router_replay:
@@ -661,7 +669,7 @@ def main(
                     },
                     kind=CheckpointKind.STATE,
                     base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id,
+                    training_shape=infra.training_shape_id,
                 )
 
             metrics = compute_step_metrics(
@@ -762,7 +770,7 @@ def main(
                     },
                     kind=CheckpointKind.BOTH,
                     base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id,
+                    training_shape=infra.training_shape_id,
                 )
 
                 if getattr(cfg, "output_model_id", None):
