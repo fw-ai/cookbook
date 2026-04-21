@@ -73,9 +73,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-4b")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-4B")
-    parser.add_argument("--training-shape", default="qwen3-4b-minimum")
     parser.add_argument(
-        "--ref-training-shape", default="qwen3-4b-minimum-forward-only",
+        "--training-shape",
+        default="accounts/pyroworks/trainingShapes/qwen3-4b-minimum-lora",
+    )
+    parser.add_argument(
+        "--ref-training-shape",
+        default=None,
+        help="Separate reference shape; None (default) uses LoRA shared-session reference.",
+    )
+    parser.add_argument(
+        "--lora-rank",
+        type=int,
+        default=64,
+        help="LoRA rank; 0 for full-param. Default 64 matches the qwen3-4b-minimum-lora shape.",
     )
     parser.add_argument(
         "--deployment-id",
@@ -121,6 +132,7 @@ def main() -> None:
         max_completion_tokens=128,
         max_rows=5,
         epochs=1,
+        lora_rank=args.lora_rank,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             ref_training_shape_id=args.ref_training_shape,

@@ -75,7 +75,8 @@ def _build_config(
     base_model: str,
     tokenizer_model: str,
     training_shape: str,
-    ref_training_shape: str,
+    ref_training_shape: str | None,
+    lora_rank: int,
     log_path: str,
     run_label: str,
 ) -> rl_loop.Config:
@@ -90,6 +91,7 @@ def _build_config(
         max_completion_tokens=128,
         max_rows=5,
         epochs=1,
+        lora_rank=lora_rank,
         infra=InfraConfig(
             training_shape_id=training_shape,
             ref_training_shape_id=ref_training_shape,
@@ -130,9 +132,20 @@ def main() -> None:
         "--base-model", default="accounts/fireworks/models/qwen3-4b",
     )
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-4B")
-    parser.add_argument("--training-shape", default="qwen3-4b-minimum")
     parser.add_argument(
-        "--ref-training-shape", default="qwen3-4b-minimum-forward-only",
+        "--training-shape",
+        default="accounts/pyroworks/trainingShapes/qwen3-4b-minimum-lora",
+    )
+    parser.add_argument(
+        "--ref-training-shape",
+        default=None,
+        help="Separate reference shape; None (default) uses LoRA shared-session reference.",
+    )
+    parser.add_argument(
+        "--lora-rank",
+        type=int,
+        default=64,
+        help="LoRA rank; 0 for full-param. Default 64 matches the qwen3-4b-minimum-lora shape.",
     )
     parser.add_argument(
         "--deployment-id",
@@ -171,6 +184,7 @@ def main() -> None:
             tokenizer_model=args.tokenizer_model,
             training_shape=args.training_shape,
             ref_training_shape=args.ref_training_shape,
+            lora_rank=args.lora_rank,
             log_path=tempfile.mkdtemp(prefix=f"reattach_{label}_"),
             run_label=f"reattach-{label}-{deployment_id}",
         )
@@ -204,8 +218,19 @@ def main() -> None:
     assert trainer_r1 != trainer_r2, (
         f"re-attach invariant broken: same trainer across both runs ({trainer_r1})"
     )
-    assert cfg2.deployment.hot_load_trainer_job, (
-        "PER_TRAINER regression: deployment was not attached via hot_load_trainer_job"
+
+    # setup_infra is documented "never mutates caller's config" so we can't
+    # check cfg2.deployment — the PATCH is on a local copy. Verify server-side
+    # by reading the deployment's current hot_load_trainer_job directly.
+    resp = deploy_mgr._get(
+        f"/v1/accounts/{deploy_mgr.account_id}/deployments/{deployment_id}",
+        timeout=30,
+    )
+    resp.raise_for_status()
+    dep_trainer = resp.json().get("hotLoadTrainerJob", "")
+    assert trainer_r2 in dep_trainer, (
+        f"PER_TRAINER re-attach regression: deployment {deployment_id} "
+        f"hotLoadTrainerJob={dep_trainer!r} does not reference run-2 trainer {trainer_r2}"
     )
 
     if args.keep_resources:
