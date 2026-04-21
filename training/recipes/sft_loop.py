@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import pickle
 import signal
 import logging
+import tempfile
 from contextlib import ExitStack
-from typing import Any, Dict, List
+from typing import IO, Any, Dict, Iterator, List
 from dataclasses import field, dataclass
 
 import torch
@@ -64,6 +66,110 @@ from training.utils.timer import timer, flush_timing
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Disk-backed Datum store (streaming rendering)
+# ---------------------------------------------------------------------------
+
+
+class DiskBackedDatumStore:
+    """Pickle-backed append-only store for tinker.Datum objects.
+
+    Datums are appended during rendering (write phase) and random-accessed by
+    integer index during training (read phase). All payload bytes live on
+    local disk; only a small `(offset, length)` index is held in RAM. This
+    keeps peak RAM O(num_examples * 16 bytes) instead of
+    O(num_examples * avg_seq_len * bytes_per_token), which is required for
+    large datasets whose rendered Datum list would otherwise exceed the
+    orchestrator pod's memory limit.
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._offsets: List[tuple[int, int]] = []
+        self._write_fh: IO[bytes] | None = None
+        self._read_fh: IO[bytes] | None = None
+
+    def __enter__(self) -> "DiskBackedDatumStore":
+        parent = os.path.dirname(self._path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self._write_fh = open(self._path, "wb")
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close_write()
+        if self._read_fh is not None:
+            self._read_fh.close()
+            self._read_fh = None
+
+    def append(self, datum: tinker.Datum) -> None:
+        if self._write_fh is None:
+            raise RuntimeError("DiskBackedDatumStore is not open for writing")
+        blob = pickle.dumps(datum, protocol=pickle.HIGHEST_PROTOCOL)
+        offset = self._write_fh.tell()
+        self._write_fh.write(blob)
+        self._offsets.append((offset, len(blob)))
+
+    def close_write(self) -> None:
+        if self._write_fh is not None:
+            self._write_fh.flush()
+            try:
+                os.fsync(self._write_fh.fileno())
+            except OSError:
+                pass
+            self._write_fh.close()
+            self._write_fh = None
+
+    def __len__(self) -> int:
+        return len(self._offsets)
+
+    def __getitem__(self, idx: int) -> tinker.Datum:
+        offset, length = self._offsets[idx]
+        if self._read_fh is None:
+            self._read_fh = open(self._path, "rb")
+        self._read_fh.seek(offset)
+        return pickle.loads(self._read_fh.read(length))
+
+    def __iter__(self) -> Iterator[tinker.Datum]:
+        for i in range(len(self._offsets)):
+            yield self[i]
+
+    def disk_size_bytes(self) -> int:
+        try:
+            return os.path.getsize(self._path)
+        except OSError:
+            return 0
+
+
+def _iter_jsonl_rows(
+    path: str, max_examples: int | None = None,
+) -> Iterator[Dict[str, Any]]:
+    """Stream JSON rows from a JSONL file without materialising the list."""
+    yielded = 0
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
+            yielded += 1
+            if max_examples is not None and yielded >= max_examples:
+                return
+
+
+def _count_jsonl_rows(path: str, max_examples: int | None = None) -> int:
+    """Count non-blank lines in a JSONL file without parsing JSON."""
+    n = 0
+    with open(path) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            n += 1
+            if max_examples is not None and n >= max_examples:
+                break
+    return n
+
 
 # ---------------------------------------------------------------------------
 # Parallel rendering worker (multiprocessing)
@@ -424,22 +530,23 @@ def main(
             train_on_what.value,
         )
 
-        raw_data: List[Dict[str, Any]] = []
-        with open(cfg.dataset) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                raw_data.append(json.loads(line))
-                if cfg.max_examples and len(raw_data) >= cfg.max_examples:
-                    break
-        logger.info("Loaded %d examples from %s", len(raw_data), cfg.dataset)
+        # Stream-render the dataset: JSONL rows are yielded lazily and each
+        # rendered Datum is spilled to a disk-backed store so peak RAM stays
+        # bounded. See DiskBackedDatumStore docstring.
+        total_raw = _count_jsonl_rows(cfg.dataset, cfg.max_examples)
+        if total_raw == 0:
+            raise RuntimeError(f"No examples found in {cfg.dataset}")
+        logger.info("Streaming %d examples from %s", total_raw, cfg.dataset)
 
         max_seq_len = cfg.max_seq_len
-        total_raw = len(raw_data)
         log_interval = max(1, total_raw // 20)  # ~5% increments for runner progress
         mem_log_interval = 500  # high-res memory sampling (~0.45% per step for 110K rows)
-        training_data: List[tinker.Datum] = []
+        render_cache_dir = stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="sft_render_")
+        )
+        training_store = stack.enter_context(
+            DiskBackedDatumStore(os.path.join(render_cache_dir, "training.bin"))
+        )
         filtered_count = 0
 
         import resource as _resource
@@ -535,13 +642,15 @@ def main(
 
             unaccounted = cgroup_gi - main_cur_gi - workers_total
 
+            store_disk_gi = training_store.disk_size_bytes() / (1024 ** 3)
             logger.info(
                 "[mem] %s %d/%d (%.0f%%) | cgroup=%.1f/%.1f GiB | main=%.1f cur / %.1f peak GiB"
-                " | workers=%.1f GiB [%s] | unaccounted=%.1f GiB%s | train_data=%d",
+                " | workers=%.1f GiB [%s] | unaccounted=%.1f GiB%s"
+                " | store=%d rows / %.1f GiB disk",
                 stage, i, total, 100.0 * i / total,
                 cgroup_gi, limit_gi, main_cur_gi, peak_gi,
                 workers_total, workers_str, unaccounted, pool_info,
-                len(training_data),
+                len(training_store), store_disk_gi,
             )
 
         _log_mem("before_rendering", 0, total_raw)
@@ -567,11 +676,12 @@ def main(
                     cfg.train_on_what, max_seq_len,
                 ),
             ) as pool:
+                raw_iter = _iter_jsonl_rows(cfg.dataset, cfg.max_examples)
                 for i, datum in enumerate(
-                    pool.imap(_render_one, raw_data, chunksize=render_chunksize)
+                    pool.imap(_render_one, raw_iter, chunksize=render_chunksize)
                 ):
                     if datum is not None:
-                        training_data.append(datum)
+                        training_store.append(datum)
                     else:
                         filtered_count += 1
                     if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
@@ -579,13 +689,13 @@ def main(
                     if (i + 1) % mem_log_interval == 0 or (i + 1) == total_raw:
                         _log_mem("rendering", i + 1, total_raw, pool=pool)
         else:
-            for i, row in enumerate(raw_data):
+            for i, row in enumerate(_iter_jsonl_rows(cfg.dataset, cfg.max_examples)):
                 datum = _render_one_inline(
                     row, renderer=renderer,
                     train_on_what=train_on_what, max_seq_len=max_seq_len,
                 )
                 if datum is not None:
-                    training_data.append(datum)
+                    training_store.append(datum)
                 else:
                     filtered_count += 1
                 if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
@@ -593,32 +703,32 @@ def main(
                 if (i + 1) % mem_log_interval == 0 or (i + 1) == total_raw:
                     _log_mem("rendering", i + 1, total_raw)
 
+        training_store.close_write()
         _log_mem("after_rendering", total_raw, total_raw)
 
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
                 filtered_count,
-                len(raw_data),
+                total_raw,
                 max_seq_len,
             )
-        logger.info("Prepared %d training examples", len(training_data))
-        if not training_data:
+        logger.info("Prepared %d training examples", len(training_store))
+        if len(training_store) == 0:
             raise RuntimeError("No valid training examples after tokenization")
 
         # -- Eval dataset (explicit or auto carve-out) -------------------------
+        # eval_data is a small list of Datums (max_eval_seqs <= 100 typical).
+        # For explicit eval_dataset we also stream rendering to a disk store,
+        # then materialise a bounded list for the eval loop.
         eval_data: List[tinker.Datum] = []
+        training_start_idx = 0
         if cfg.evaluation_dataset:
-            raw_eval: List[Dict[str, Any]] = []
-            with open(cfg.evaluation_dataset) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    raw_eval.append(json.loads(line))
-            total_eval = len(raw_eval)
+            total_eval = _count_jsonl_rows(cfg.evaluation_dataset)
             eval_log_interval = max(1, total_eval // 10)
-            eval_data = []
+            eval_store = stack.enter_context(
+                DiskBackedDatumStore(os.path.join(render_cache_dir, "eval.bin"))
+            )
             if use_parallel:
                 spawn_ctx = multiprocessing.get_context("spawn")
                 with spawn_ctx.Pool(
@@ -629,59 +739,67 @@ def main(
                         cfg.train_on_what, max_seq_len,
                     ),
                 ) as pool:
+                    raw_eval_iter = _iter_jsonl_rows(cfg.evaluation_dataset)
                     for i, datum in enumerate(
-                        pool.imap(_render_one, raw_eval, chunksize=render_chunksize)
+                        pool.imap(_render_one, raw_eval_iter, chunksize=render_chunksize)
                     ):
                         if datum is not None:
-                            eval_data.append(datum)
+                            eval_store.append(datum)
                         if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
                             runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
             else:
-                for i, row in enumerate(raw_eval):
+                for i, row in enumerate(_iter_jsonl_rows(cfg.evaluation_dataset)):
                     datum = _render_one_inline(
                         row, renderer=renderer,
                         train_on_what=train_on_what, max_seq_len=max_seq_len,
                     )
                     if datum is not None:
-                        eval_data.append(datum)
+                        eval_store.append(datum)
                     if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
                         runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
+            eval_store.close_write()
+            eval_data = list(eval_store)
             logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
         elif cfg.eval_auto_carveout:
-            # Auto carve-out: split first N examples as eval
+            # Auto carve-out: split first N examples as eval. The backing file
+            # stays intact; we materialise a small eval list and advance the
+            # training index window past the carveout range.
             carveout_count = compute_eval_carveout(
-                len(training_data), cfg.eval_carve_ratio, cfg.max_eval_seqs,
+                len(training_store), cfg.eval_carve_ratio, cfg.max_eval_seqs,
             )
             if carveout_count > 0:
-                eval_data = training_data[:carveout_count]
-                training_data = training_data[carveout_count:]
+                eval_data = [training_store[i] for i in range(carveout_count)]
+                training_start_idx = carveout_count
                 logger.info(
                     "Auto carve-out: %d eval examples, %d training examples",
-                    len(eval_data), len(training_data),
+                    len(eval_data), len(training_store) - training_start_idx,
                 )
             else:
                 logger.warning("Dataset too small for auto carve-out, skipping eval")
 
+        training_count = len(training_store) - training_start_idx
         effective_batch_size = cfg.batch_size
-        if len(training_data) < effective_batch_size:
+        if training_count < effective_batch_size:
             logger.warning(
                 "Training examples (%d) < batch_size (%d); reducing effective "
                 "batch_size to %d so all examples are trained on.",
-                len(training_data),
+                training_count,
                 effective_batch_size,
-                len(training_data),
+                training_count,
             )
-            effective_batch_size = len(training_data)
+            effective_batch_size = training_count
 
         sft_dataset = SupervisedDatasetFromHFDataset(
-            hf_datasets.Dataset.from_dict({"datum_idx": list(range(len(training_data)))}),
+            hf_datasets.Dataset.from_dict(
+                {"datum_idx": list(range(training_start_idx, len(training_store)))}
+            ),
             batch_size=effective_batch_size,
-            map_fn=lambda row: training_data[row["datum_idx"]],
+            map_fn=lambda row: training_store[row["datum_idx"]],
         )
         total_batches_per_epoch = len(sft_dataset)
         logger.info(
             "Dataset: %d examples, %d batches/epoch, %d epochs",
-            len(training_data),
+            training_count,
             total_batches_per_epoch,
             cfg.epochs,
         )
