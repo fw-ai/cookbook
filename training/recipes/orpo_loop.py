@@ -34,7 +34,6 @@ Infrastructure defaults target Qwen3-235B on 2 nodes with CP=16, EP=8.
 
 from __future__ import annotations
 
-import math
 import os
 import time
 import signal
@@ -56,6 +55,8 @@ from training.utils import (
     RunStatus,
     WandBConfig,
     ReconnectableClient,
+    build_lr_per_step,
+    resolve_step_lr,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -92,6 +93,10 @@ class Config:
 
     orpo_lambda: float = 1.0
     learning_rate: float = 1e-5
+    lr_per_step: list[float] | None = None
+    """Explicit per-step LR list.  When set, ``lr_per_step[step]`` overrides
+    the schedule computed from *lr_schedule*/*warmup_ratio*/*min_lr_ratio*.
+    Falls back to the last value if the list is shorter than the step count."""
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step."""
@@ -147,39 +152,6 @@ class Config:
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
     init_from_checkpoint: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# LR schedule
-# ---------------------------------------------------------------------------
-
-
-def _compute_lr(
-    step: int,
-    total_steps: int,
-    peak_lr: float,
-    warmup_ratio: float,
-    min_lr_ratio: float,
-    schedule: str,
-) -> float:
-    """Linear warmup then cosine/linear/constant decay."""
-    min_lr = peak_lr * min_lr_ratio
-    warmup_steps = int(total_steps * warmup_ratio)
-
-    if step < warmup_steps:
-        return min_lr + (peak_lr - min_lr) * step / max(warmup_steps, 1)
-
-    if schedule == "constant":
-        return peak_lr
-
-    decay_step = step - warmup_steps
-    decay_total = max(total_steps - warmup_steps, 1)
-    if schedule == "cosine":
-        return min_lr + 0.5 * (peak_lr - min_lr) * (1 + math.cos(math.pi * decay_step / decay_total))
-    if schedule == "linear":
-        return peak_lr - (peak_lr - min_lr) * decay_step / decay_total
-
-    raise ValueError(f"Unknown lr_schedule: {schedule!r}. Use 'constant', 'cosine', or 'linear'.")
 
 
 # ---------------------------------------------------------------------------
@@ -351,16 +323,22 @@ def main(
         step = step_offset
         total_steps = ((len(pair_cache) + cfg.batch_size - 1) // cfg.batch_size) * cfg.epochs
 
-        has_lr_schedule = cfg.warmup_ratio > 0 or cfg.lr_schedule != "constant"
-        if has_lr_schedule:
+        # Pre-compute lr_per_step from schedule params (or use the
+        # explicit list the caller already set).
+        if cfg.lr_per_step is None and (cfg.warmup_ratio > 0 or cfg.lr_schedule != "constant"):
+            cfg.lr_per_step = build_lr_per_step(
+                total_steps=total_steps,
+                peak_lr=cfg.learning_rate,
+                schedule=cfg.lr_schedule,
+                warmup_ratio=cfg.warmup_ratio,
+                min_lr_ratio=cfg.min_lr_ratio,
+            )
+        if cfg.lr_per_step is not None:
             logger.info(
-                "LR schedule: %s | warmup_ratio=%.2f (%d steps) | "
-                "peak_lr=%g | min_lr=%g",
-                cfg.lr_schedule,
-                cfg.warmup_ratio,
-                int(total_steps * cfg.warmup_ratio),
-                cfg.learning_rate,
-                cfg.learning_rate * cfg.min_lr_ratio,
+                "Per-step LR: %d values, range [%.2e, %.2e]",
+                len(cfg.lr_per_step),
+                min(cfg.lr_per_step),
+                max(cfg.lr_per_step),
             )
 
         def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
@@ -374,10 +352,7 @@ def main(
                 response_starts.append(pair["response_start"])
                 step_tokens += len(pair["chosen_tokens"]) + len(pair["rejected_tokens"])
 
-            current_lr = _compute_lr(
-                step, total_steps, cfg.learning_rate,
-                cfg.warmup_ratio, cfg.min_lr_ratio, cfg.lr_schedule,
-            )
+            current_lr = resolve_step_lr(step, cfg.lr_per_step, cfg.learning_rate)
             adam_params = tinker.AdamParams(learning_rate=current_lr, **DEFAULT_ADAM)
 
             loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)

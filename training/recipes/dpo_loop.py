@@ -49,6 +49,8 @@ from training.utils import (
     WandBConfig,
     DeployConfig,
     ReconnectableClient,
+    build_lr_per_step,
+    resolve_step_lr,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -86,6 +88,22 @@ class Config:
 
     beta: float = 0.1
     learning_rate: float = 1e-5
+    lr_per_step: list[float] | None = None
+    """Explicit per-step LR list.  When set, ``lr_per_step[step]`` is used
+    instead of *learning_rate*.  Falls back to the last value if the list
+    is shorter than the actual step count."""
+
+    lr_schedule: str = "constant"
+    """LR schedule after warmup: ``"constant"``, ``"cosine"``, or ``"linear"``.
+    Ignored when *lr_per_step* is provided explicitly."""
+
+    warmup_ratio: float = 0.0
+    """Fraction of total steps used for linear LR warmup (0.0 = no warmup)."""
+
+    min_lr_ratio: float = 0.0
+    """Minimum LR as a fraction of ``learning_rate``.  Cosine/linear decay
+    anneals to ``learning_rate * min_lr_ratio``."""
+
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step."""
@@ -278,7 +296,6 @@ async def _train_loop(
     tokenized_pairs: list[tuple[int, dict[str, Any]]],
     reference: ReconnectableClient,
     policy: ReconnectableClient,
-    adam_params: tinker.AdamParams,
     cfg: Config,
     step_offset: int,
     on_ref_done: Callable[[], None] | None = None,
@@ -298,6 +315,24 @@ async def _train_loop(
     step = step_offset
     total_steps = len(tokenized_pairs) * cfg.epochs // batch_size
 
+    # Auto-generate lr_per_step from schedule params when the caller
+    # didn't supply an explicit list.
+    if cfg.lr_per_step is None and cfg.lr_schedule != "constant":
+        cfg.lr_per_step = build_lr_per_step(
+            total_steps=total_steps,
+            peak_lr=cfg.learning_rate,
+            schedule=cfg.lr_schedule,
+            warmup_ratio=cfg.warmup_ratio,
+            min_lr_ratio=cfg.min_lr_ratio,
+        )
+    if cfg.lr_per_step is not None:
+        logger.info(
+            "Per-step LR: %d values, range [%.2e, %.2e]",
+            len(cfg.lr_per_step),
+            min(cfg.lr_per_step),
+            max(cfg.lr_per_step),
+        )
+
     if runner is None:
         runner = RunnerIO()
     ref_cache: dict[int, dict[str, Any]] = {}
@@ -315,9 +350,12 @@ async def _train_loop(
         ref_tokens = step_tokens if epoch == 0 else 0
         total_tokens = step_tokens + ref_tokens
 
+        current_lr = resolve_step_lr(step, cfg.lr_per_step, cfg.learning_rate)
+        step_adam_params = tinker.AdamParams(learning_rate=current_lr, **DEFAULT_ADAM)
+
         with timer("fwd_bwd"):
             fwd_bwd_result = _forward_backward_pairs(step_pairs, policy, cfg.beta)
-        optim_result = policy.optim_step(adam_params)
+        optim_result = policy.optim_step(step_adam_params)
         step += 1
 
         step_metrics: dict[str, Any] = {}
@@ -348,15 +386,16 @@ async def _train_loop(
         avg_margin = fwd_metrics["margin"]
         avg_acc = fwd_metrics["accuracy"]
         logger.info(
-            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | "
+            "Step %d/%d | lr=%.2e | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | "
             "policy=%d ref=%d tok | %.1f tok/s (%.1fs)",
-            step, total_steps, avg_loss, avg_margin, avg_acc * 100,
+            step, total_steps, current_lr, avg_loss, avg_margin, avg_acc * 100,
             step_tokens, ref_tokens, tokens_per_sec, step_elapsed,
         )
         log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc,
-                         tokens_per_sec=tokens_per_sec)
+                         tokens_per_sec=tokens_per_sec, lr=current_lr)
         step_metrics.update({
             "train/step": step,
+            "train/lr": current_lr,
             "train/dpo_loss": avg_loss,
             "train/loss": avg_loss,  # alias for frontend compatibility
             "train/margin": avg_margin,
@@ -590,8 +629,6 @@ def main(
         resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-
         # -- Tokenize + pipelined training -------------------------------------
 
         import transformers
@@ -635,7 +672,7 @@ def main(
         runner.start_training()
         step = asyncio.run(
             _train_loop(
-                tokenized_pairs, reference, policy, adam_params, cfg, step_offset,
+                tokenized_pairs, reference, policy, cfg, step_offset,
                 on_ref_done=_on_ref_done,
                 runner=runner,
             )

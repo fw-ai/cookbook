@@ -365,7 +365,7 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
             1,
         )
 
-    async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
+    async def fake_train_loop(tokenized_pairs, reference, policy,
                               cfg, step_offset, on_ref_done=None, runner=None):
         events["train_loop"] = {
             "tokenized_pairs": tokenized_pairs,
@@ -523,7 +523,7 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
             0,
         )
 
-    async def fake_train_loop(tokenized_pairs, reference, policy, adam_params,
+    async def fake_train_loop(tokenized_pairs, reference, policy,
                               cfg, step_offset, on_ref_done=None, runner=None):
         events["train_loop"] = {
             "tokenized_pairs": tokenized_pairs,
@@ -650,7 +650,6 @@ def test_train_loop_pipeline_and_dcp_save(monkeypatch):
                 tokenized_pairs,
                 FakeReference(),
                 FakePolicy(),
-                adam_params={"lr": 1e-4},
                 cfg=cfg,
                 step_offset=0,
                 on_ref_done=_on_ref_done,
@@ -736,7 +735,6 @@ def test_pipeline_overlap_ref_freed_before_training_done():
         step = asyncio.run(
             mod._train_loop(
                 tokenized, FastReference(), SlowPolicy(),
-                adam_params={"lr": 1e-4},
                 cfg=cfg,
                 step_offset=0,
                 on_ref_done=on_ref_done,

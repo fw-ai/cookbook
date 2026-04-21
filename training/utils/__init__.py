@@ -47,6 +47,8 @@ __all__ = [
     "RunStatus",
     "StepCallback",
     "WandBConfig",
+    "build_lr_per_step",
+    "resolve_step_lr",
     "compute_advantages",
     "compute_pass_at_k",
     "create_trainer_job",
@@ -152,5 +154,6 @@ from training.utils.logging import (
     log_metrics_json,
     compute_pass_at_k,
 )
+from training.utils.lr_schedule import build_lr_per_step, resolve_step_lr
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 from training.utils.validation import validate_config, validate_preflight

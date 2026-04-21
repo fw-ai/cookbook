@@ -49,6 +49,8 @@ from training.utils import (
     WeightSyncConfig,
     ReconnectableClient,
     RLPromptDataset,
+    build_lr_per_step,
+    resolve_step_lr,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -108,6 +110,22 @@ class Config:
     dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
     learning_rate: float = 1e-5
+    lr_per_step: list[float] | None = None
+    """Explicit per-step LR list.  When set, ``lr_per_step[step]`` is used
+    instead of *learning_rate*.  Falls back to the last value if the list
+    is shorter than the actual step count."""
+
+    lr_schedule: str = "constant"
+    """LR schedule after warmup: ``"constant"``, ``"cosine"``, or ``"linear"``.
+    Ignored when *lr_per_step* is provided explicitly."""
+
+    warmup_ratio: float = 0.0
+    """Fraction of total steps used for linear LR warmup (0.0 = no warmup)."""
+
+    min_lr_ratio: float = 0.0
+    """Minimum LR as a fraction of ``learning_rate``.  Cosine/linear decay
+    anneals to ``learning_rate * min_lr_ratio``."""
+
     kl_beta: float = 0.001
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
@@ -573,7 +591,28 @@ def main(
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+
+        # Auto-generate lr_per_step from schedule params when the caller
+        # didn't supply an explicit list.  RL step count is an estimate
+        # (sampling can fail); tail-fallback handles overshoot.
+        total_rl_steps_estimate = len(rl_dataset)
+        if cfg.lr_per_step is None and cfg.lr_schedule != "constant":
+            cfg.lr_per_step = build_lr_per_step(
+                total_steps=total_rl_steps_estimate,
+                peak_lr=cfg.learning_rate,
+                schedule=cfg.lr_schedule,
+                warmup_ratio=cfg.warmup_ratio,
+                min_lr_ratio=cfg.min_lr_ratio,
+            )
+        if cfg.lr_per_step is not None:
+            logger.info(
+                "Per-step LR: %d values, range [%.2e, %.2e]",
+                len(cfg.lr_per_step),
+                min(cfg.lr_per_step),
+                max(cfg.lr_per_step),
+            )
+
+        adam_kwargs = dict(DEFAULT_ADAM)
         # Client-side fallback: build the Python loss closure used by
         # forward_backward_custom(...) when no eligible builtin kernel exists.
         client_loss_builder = build_loss_fn(
@@ -792,13 +831,16 @@ def main(
             fwd_bwd_result = fwd_bwd_one(prompt_groups)
             logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _time.time() - t0)
 
+            current_lr = resolve_step_lr(step, cfg.lr_per_step, cfg.learning_rate)
+            step_adam_params = tinker.AdamParams(learning_rate=current_lr, **adam_kwargs)
+
             t0 = _time.time()
             optim_result = policy.optim_step(
-                adam_params,
+                step_adam_params,
                 grad_accumulation_normalization=cfg.grad_accumulation_normalization,
             )
             step += 1
-            logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
+            logger.info("[step %d] optim_step: done (lr=%.2e, %.1fs)", step, current_lr, _time.time() - t0)
 
             if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
@@ -831,6 +873,7 @@ def main(
                 completions_per_prompt=completions_per_prompt,
             )
             metrics["train/step"] = step
+            metrics["train/lr"] = current_lr
 
             step_tokens = sum(
                 len(d.loss_fn_inputs["target_tokens"].data) for pg in prompt_groups for d in pg.data
@@ -839,13 +882,14 @@ def main(
             avg_acc = metrics.get("rollout/accuracy", 0.0)
             avg_kl = metrics.get("train/mean_kl", 0.0)
             logger.info(
-                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
+                "Step %d | lr=%.2e | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
                 step,
+                current_lr,
                 avg_reward,
                 avg_acc * 100,
                 avg_kl,
             )
-            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
+            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl, lr=current_lr)
             wandb_log(metrics, step)
 
             total_rl_steps = len(rl_dataset) - step_offset
