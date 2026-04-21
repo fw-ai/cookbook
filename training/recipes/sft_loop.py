@@ -437,7 +437,8 @@ def main(
 
         max_seq_len = cfg.max_seq_len
         total_raw = len(raw_data)
-        log_interval = max(1, total_raw // 20)  # ~5% increments
+        log_interval = max(1, total_raw // 20)  # ~5% increments for runner progress
+        mem_log_interval = max(1, total_raw // 100)  # ~1% increments for memory trajectory
         training_data: List[tinker.Datum] = []
         filtered_count = 0
 
@@ -486,13 +487,17 @@ def main(
 
         _log_mem("before_rendering", 0, total_raw)
 
-        num_workers = min(os.cpu_count() or 1, 8)
+        # Conservative parallel settings:
+        #   workers=4 keeps spawn baseline ~28 GiB instead of 56 GiB
+        #   chunksize=10 cuts result-buffer bursts ~10x vs chunksize=100
+        num_workers = min(os.cpu_count() or 1, 4)
+        render_chunksize = 10
         use_parallel = num_workers > 1 and total_raw > num_workers
 
         if use_parallel:
             logger.info(
-                "Rendering %d examples with %d parallel workers",
-                total_raw, num_workers,
+                "Rendering %d examples with %d parallel workers (chunksize=%d)",
+                total_raw, num_workers, render_chunksize,
             )
             spawn_ctx = multiprocessing.get_context("spawn")
             with spawn_ctx.Pool(
@@ -504,7 +509,7 @@ def main(
                 ),
             ) as pool:
                 for i, datum in enumerate(
-                    pool.imap(_render_one, raw_data, chunksize=100)
+                    pool.imap(_render_one, raw_data, chunksize=render_chunksize)
                 ):
                     if datum is not None:
                         training_data.append(datum)
@@ -512,6 +517,7 @@ def main(
                         filtered_count += 1
                     if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
                         runner.report_rendering_progress(i + 1, total_raw)
+                    if (i + 1) % mem_log_interval == 0 or (i + 1) == total_raw:
                         _log_mem("rendering", i + 1, total_raw)
         else:
             for i, row in enumerate(raw_data):
@@ -525,6 +531,7 @@ def main(
                     filtered_count += 1
                 if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
                     runner.report_rendering_progress(i + 1, total_raw)
+                if (i + 1) % mem_log_interval == 0 or (i + 1) == total_raw:
                     _log_mem("rendering", i + 1, total_raw)
 
         _log_mem("after_rendering", total_raw, total_raw)
@@ -564,7 +571,7 @@ def main(
                     ),
                 ) as pool:
                     for i, datum in enumerate(
-                        pool.imap(_render_one, raw_eval, chunksize=100)
+                        pool.imap(_render_one, raw_eval, chunksize=render_chunksize)
                     ):
                         if datum is not None:
                             eval_data.append(datum)
