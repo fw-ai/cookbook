@@ -55,16 +55,14 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     make_batch_dpo_loss_fn,
-    create_trainer_job,
     read_api_extra_headers_env,
     load_preference_dataset,
     build_renderer,
-    auto_select_training_shape,
     render_preference_pair,
     resolve_renderer_name,
 )
-from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
+from training.utils.rl import setup_infra
 from training.utils.timer import timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -485,107 +483,37 @@ def main(
             additional_headers=additional_headers,
         )
 
-    if not cfg.infra.training_shape_id:
-        cfg.infra.training_shape_id = auto_select_training_shape(
-            rlor_mgr, base_model=cfg.base_model, trainer_role="policy",
-            lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected policy training shape: %s", cfg.infra.training_shape_id)
-    if not cfg.infra.ref_training_shape_id:
-        cfg.infra.ref_training_shape_id = auto_select_training_shape(
-            rlor_mgr, base_model=cfg.base_model, trainer_role="reference",
-            lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected reference training shape: %s", cfg.infra.ref_training_shape_id)
-
-    policy_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-    ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-
-    if cfg.max_seq_len is None:
-        cfg.max_seq_len = policy_profile.max_supported_context_length
-
     runner = RunnerIO(cfg.runner)
-    runner.set_accelerator_info(profile=policy_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
         runner.write_status(RunStatus.PENDING, message=msg)
 
     with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
-        # -- Create trainer jobs first (trainer owns the hot-load bucket) ------
-        _on_trainer_status("provisioning policy and reference trainers")
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(
-                create_trainer_job,
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=policy_profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name="dpo-policy",
-                job_id=cfg.policy_job_id,
-                cleanup=cleanup,
-                on_status=_on_trainer_status,
-            )
-            # Reference trainer only runs forward — strip --full-oom-check
-            # (which runs a backward warmup that OOMs on smaller ref shapes)
-            # and don't request LoRA adapters.
-            ref_infra_extra = [
-                a for a in (cfg.infra.extra_args or [])
-                if a != "--full-oom-check"
-            ] or None
-            ref_infra = dataclasses.replace(cfg.infra, extra_args=ref_infra_extra)
-            ref_fut = pool.submit(
-                create_trainer_job,
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=ref_infra,
-                profile=ref_profile,
-                lora_rank=0,
-                max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name="dpo-reference",
-                forward_only=True,
-                job_id=cfg.reference_job_id,
-                cleanup=cleanup,
-                on_status=_on_trainer_status,
-            )
-            # Collect both results so that if both fail we report
-            # both errors instead of swallowing the second one.
-            errors: list[str] = []
-            policy_ep = reference_ep = None
-            try:
-                policy_ep = pol_fut.result()
-            except Exception as e:
-                errors.append(f"Policy trainer: {e}")
-            try:
-                reference_ep = ref_fut.result()
-            except Exception as e:
-                errors.append(f"Reference trainer: {e}")
-            if errors:
-                raise RuntimeError(
-                    "Trainer creation failed:\n" + "\n".join(errors)
-                )
-
-        policy_job_id = policy_ep.job_id
-        reference_job_id = reference_ep.job_id
-
-        _timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-        policy = ReconnectableClient(
-            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
-            default_timeout=_timeout,
+        # One call: shapes + trainers + clients. DPO doesn't need a
+        # deployment/sampler/weight_syncer (needs_inference=False).
+        # needs_reference=True drives the LoRA shared-session optimisation:
+        # when lora_rank > 0, only the policy trainer is provisioned and
+        # reference logprobs come from policy.create_base_reference().
+        infra = setup_infra(
+            cfg,
+            rlor_mgr=rlor_mgr,
+            deploy_mgr=None,
+            needs_reference=True,
+            needs_inference=False,
+            api_key=api_key,
+            cleanup=cleanup,
+            cleanup_on_exit=True,  # DPO always cleans up trainers at exit
+            on_status=_on_trainer_status,
         )
-        # Match the ref trainer's lora_rank=0 (set above).
-        reference = ReconnectableClient(
-            rlor_mgr, reference_ep.job_id, cfg.base_model, 0,
-            default_timeout=_timeout,
-        )
-        if hasattr(policy, "close"):
-            stack.callback(policy.close)
-        if hasattr(reference, "close"):
-            stack.callback(reference.close)
+        for closeable in infra.closeables:
+            stack.callback(closeable.close)
+        runner.set_accelerator_info(profile=infra.policy_profile)
+
+        policy = infra.policy
+        reference = infra.reference
+        policy_job_id = infra.policy_job_id
+        reference_job_id = infra.reference_job_id
 
         resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
         step_offset = resume_info.step if resume_info else 0
@@ -622,9 +550,13 @@ def main(
 
         def _on_ref_done():
             nonlocal reference_job_id
+            # LoRA shared-session: no separate trainer. The base-only handle
+            # is closed via the ExitStack callback; nothing to cancel here.
+            if reference_job_id is None:
+                return
             logger.info("Reference forward complete — closing reference client before trainer cleanup")
             try:
-                if hasattr(reference, "close"):
+                if reference is not None and hasattr(reference, "close"):
                     reference.close()
                 logger.info("Reference forward complete — canceling reference trainer to free GPU")
                 cleanup.cancel_trainer(reference_job_id)

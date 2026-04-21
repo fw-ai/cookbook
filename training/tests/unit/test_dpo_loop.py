@@ -9,6 +9,7 @@ import transformers
 import torch
 
 import training.recipes.dpo_loop as module
+import training.utils.rl.infra_setup as infra_setup_mod
 
 
 class SequenceRenderer:
@@ -380,8 +381,11 @@ def test_main_uses_profile_and_runs_training(monkeypatch):
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
-    monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
-    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(infra_setup_mod, "ThreadPoolExecutor", FakeThreadPoolExecutor)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
+    # make_reference_client (in infra_setup) constructs ReconnectableClient
+    # via its own import — patch that too so the reference client is also faked.
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "_tokenize_pairs", fake_tokenize_pairs)
     monkeypatch.setattr(module, "_train_loop", fake_train_loop)
     monkeypatch.setattr(module, "load_preference_dataset", lambda *args, **kwargs: [{"chosen": {}, "rejected": {}}])
@@ -535,8 +539,11 @@ def test_main_promotes_final_base_checkpoint(monkeypatch):
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
-    monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
-    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(infra_setup_mod, "ThreadPoolExecutor", FakeThreadPoolExecutor)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
+    # make_reference_client (in infra_setup) constructs ReconnectableClient
+    # via its own import — patch that too so the reference client is also faked.
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "_tokenize_pairs", fake_tokenize_pairs)
     monkeypatch.setattr(module, "_train_loop", fake_train_loop)
     monkeypatch.setattr(module, "load_preference_dataset", lambda *args, **kwargs: [{"chosen": {}, "rejected": {}}])

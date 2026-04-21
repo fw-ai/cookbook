@@ -7,6 +7,7 @@ import pytest
 import transformers
 
 import training.recipes.rl_loop as module
+import training.utils.rl.infra_setup as infra_setup_mod
 from training.utils.rl.losses import PromptGroup
 
 
@@ -164,11 +165,11 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
     monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
-    monkeypatch.setattr(module, "setup_or_reattach_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
-    monkeypatch.setattr(module, "ReconnectableClient", FakePolicyClient)
+    monkeypatch.setattr(infra_setup_mod, "setup_or_reattach_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakePolicyClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
-    monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", FakeSampler)
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [])
     monkeypatch.setattr(module, "build_loss_fn", lambda **kwargs: ("loss-builder", kwargs))
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
@@ -296,12 +297,12 @@ def test_lora_shared_reference_creates_single_trainer(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *a, **kw: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *a, **kw: None)
-    monkeypatch.setattr(module, "setup_or_reattach_deployment", lambda *a, **kw: SimpleNamespace(inference_model="m"))
-    monkeypatch.setattr(module, "create_trainer_job", fake_create_trainer_job)
-    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(infra_setup_mod, "setup_or_reattach_deployment", lambda *a, **kw: SimpleNamespace(inference_model="m"))
+    monkeypatch.setattr(infra_setup_mod, "create_trainer_job", fake_create_trainer_job)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
-    monkeypatch.setattr(module, "DeploymentSampler", lambda **kw: None)
-    monkeypatch.setattr(module, "WeightSyncer", lambda **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: None)
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [])
     monkeypatch.setattr(module, "build_loss_fn", lambda **kw: ("builder", kw))
     monkeypatch.setattr(module, "run_rl_loop", fake_run_rl_loop)
@@ -358,12 +359,12 @@ def test_main_raises_when_builtin_loss_with_pp(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "setup_or_reattach_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="m"))
-    monkeypatch.setattr(module, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="j", job_name="accounts/test/rlorTrainerJobs/j"))
-    monkeypatch.setattr(module, "ReconnectableClient", lambda *a, **kw: SimpleNamespace(inner=object()))
+    monkeypatch.setattr(infra_setup_mod, "setup_or_reattach_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="m"))
+    monkeypatch.setattr(infra_setup_mod, "create_trainer_job", lambda *args, **kwargs: SimpleNamespace(job_id="j", job_name="accounts/test/rlorTrainerJobs/j"))
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", lambda *a, **kw: SimpleNamespace(inner=object()))
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
-    monkeypatch.setattr(module, "DeploymentSampler", lambda **kw: None)
-    monkeypatch.setattr(module, "WeightSyncer", lambda **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: None)
     monkeypatch.setattr(module, "build_loss_fn", lambda **kw: None)
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *a, **kw: [])
     from training.utils.checkpoint_utils import ResumeInfo
@@ -595,12 +596,15 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "wandb_finish", lambda: events.__setitem__("wandb_finished", 1))
     monkeypatch.setattr(module, "wandb_log", lambda payload, step=0: events["wandb_logs"].append((step, payload)))
     monkeypatch.setattr(module, "log_metrics_json", lambda step, **kwargs: events.setdefault("metrics_logs", []).append((step, kwargs)))
-    monkeypatch.setattr(module, "setup_or_reattach_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
-    monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
-    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(infra_setup_mod, "setup_or_reattach_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
+    monkeypatch.setattr(infra_setup_mod, "ThreadPoolExecutor", FakeThreadPoolExecutor)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
+    # make_reference_client (in infra_setup) constructs ReconnectableClient
+    # via its own import — patch that too.
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
-    monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", FakeSampler)
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", FakeWeightSyncer)
     from training.utils.checkpoint_utils import ResumeInfo
     monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: ResumeInfo(step=0))
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [
@@ -858,12 +862,15 @@ def test_custom_policy_loss_falls_back_to_two_pass(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "setup_or_reattach_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
-    monkeypatch.setattr(module, "ThreadPoolExecutor", FakeThreadPoolExecutor)
-    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(infra_setup_mod, "setup_or_reattach_deployment", lambda *args, **kwargs: SimpleNamespace(inference_model="accounts/test/models/deployed"))
+    monkeypatch.setattr(infra_setup_mod, "ThreadPoolExecutor", FakeThreadPoolExecutor)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
+    # make_reference_client (in infra_setup) constructs ReconnectableClient
+    # via its own import — patch that too.
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "DeploymentSampler", FakeSampler)
-    monkeypatch.setattr(module, "WeightSyncer", FakeWeightSyncer)
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", FakeSampler)
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", FakeWeightSyncer)
     from training.utils.checkpoint_utils import ResumeInfo
     monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: ResumeInfo(step=0))
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *args, **kwargs: [
