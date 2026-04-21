@@ -270,7 +270,16 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
     cancel_on_exit: bool = False,
+    cleanup_on_exit: bool | None = None,
 ):
+    if cleanup_on_exit is not None:
+        import warnings
+        warnings.warn(
+            "rl_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
+            DeprecationWarning, stacklevel=2,
+        )
+        cancel_on_exit = cleanup_on_exit
+
     cfg = config
     runner = RunnerIO(cfg.runner)
 

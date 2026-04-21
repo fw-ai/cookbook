@@ -140,7 +140,17 @@ class ResourceCleanup:
         rlor_mgr: TrainerJobManager,
         deploy_mgr: DeploymentManager | None = None,
         trainer_cancel_grace_period_s: float | None = None,
+        trainer_delete_grace_period_s: float | None = None,
     ):
+        if trainer_delete_grace_period_s is not None:
+            import warnings
+            warnings.warn(
+                "ResourceCleanup(trainer_delete_grace_period_s=...) is deprecated; "
+                "use trainer_cancel_grace_period_s=...",
+                DeprecationWarning, stacklevel=2,
+            )
+            if trainer_cancel_grace_period_s is None:
+                trainer_cancel_grace_period_s = trainer_delete_grace_period_s
         self._rlor_mgr = rlor_mgr
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
