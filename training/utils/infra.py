@@ -140,7 +140,11 @@ class ResourceCleanup:
         rlor_mgr: TrainerJobManager,
         deploy_mgr: DeploymentManager | None = None,
         trainer_cancel_grace_period_s: float | None = None,
+        trainer_delete_grace_period_s: float | None = None,
     ):
+        # Back-compat: accept trainer_delete_grace_period_s as an alias.
+        if trainer_cancel_grace_period_s is None and trainer_delete_grace_period_s is not None:
+            trainer_cancel_grace_period_s = trainer_delete_grace_period_s
         self._rlor_mgr = rlor_mgr
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
@@ -162,6 +166,15 @@ class ResourceCleanup:
             self._jobs.remove(job_id)
         except ValueError:
             pass
+
+    def delete_trainer(self, job_id: str) -> None:
+        """Deprecated alias for :meth:`cancel_trainer`. Will be removed in a future release."""
+        import warnings
+        warnings.warn(
+            "ResourceCleanup.delete_trainer is deprecated; use cancel_trainer.",
+            DeprecationWarning, stacklevel=2,
+        )
+        self.cancel_trainer(job_id)
 
     def deployment(self, dep_id: str, action: str = "delete") -> None:
         """Register a deployment for cleanup on exit.
@@ -442,6 +455,7 @@ def create_trainer_job(
     extra_args: list[str] | None = None,
     job_id: str | None = None,
     forward_only: bool = False,
+    base_url_override: str | None = None,
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
 ) -> TrainerServiceEndpoint:
@@ -452,6 +466,12 @@ def create_trainer_job(
     RL recipes go through :func:`setup_infra` instead, which fans out
     policy + reference trainers in parallel.
     """
+    if base_url_override is not None:
+        logger.warning(
+            "create_trainer_job(base_url_override=...) is ignored; the gateway "
+            "now routes all trainer traffic. This kwarg is kept for back-compat "
+            "and will be removed in a future release.",
+        )
     created = request_trainer_job(
         rlor_mgr,
         base_model=base_model,
@@ -544,6 +564,56 @@ def setup_deployment(
     """
     info = request_deployment(deploy_mgr, deploy_cfg, base_model, infra)
     return wait_deployment(deploy_mgr, info, deploy_cfg)
+
+
+def setup_or_reattach_deployment(
+    deploy_mgr: DeploymentManager,
+    deploy_cfg: DeployConfig,
+    base_model: str,
+    infra: InfraConfig,
+    trainer_job_name: str,
+    weight_syncer: "WeightSyncer | None" = None,
+    reattach_settle_timeout_s: int = 600,
+) -> DeploymentInfo:
+    """Standalone helper to create or re-attach a single deployment.
+
+    If ``deploy_cfg.deployment_id`` names a live deployment, PATCHes its
+    ``hot_load_trainer_job`` to *trainer_job_name* and waits for the pod
+    rolling restart to settle. Otherwise creates a fresh deployment with
+    the trainer reference baked in at creation.
+
+    :func:`setup_infra` wraps the same logic end-to-end via
+    :class:`WeightSyncScope`; use this helper only when you need the
+    single-resource operation outside the RL / DPO recipes.
+    """
+    existing = (
+        deploy_mgr.get(deploy_cfg.deployment_id)
+        if deploy_cfg.deployment_id
+        else None
+    )
+    if not existing or existing.state in ("FAILED", "DELETED", "DELETING"):
+        fresh = dataclasses.replace(deploy_cfg, hot_load_trainer_job=trainer_job_name)
+        return setup_deployment(deploy_mgr, fresh, base_model, infra)
+
+    prev_identity = _read_replica_identity(
+        deploy_mgr, deploy_cfg.deployment_id, base_model,
+    )
+    deploy_mgr.update(
+        deploy_cfg.deployment_id,
+        body={"hotLoadTrainerJob": trainer_job_name},
+        update_mask="hot_load_trainer_job",
+    )
+    logger.info(
+        "Re-attached deployment %s to trainer %s (prev_pod=%s)",
+        deploy_cfg.deployment_id, trainer_job_name, prev_identity,
+    )
+    _wait_for_reattach_settled(
+        deploy_mgr, deploy_cfg.deployment_id, base_model,
+        prev_identity=prev_identity, timeout_s=reattach_settle_timeout_s,
+    )
+    if weight_syncer is not None:
+        weight_syncer.reset_delta_chain()
+    return existing
 
 
 def _read_replica_identity(
@@ -676,19 +746,31 @@ def _get_deployment_shape_version(
 
 def get_deployment_gpu_count(
     deploy_mgr: DeploymentManager,
-    deploy_cfg: "DeployConfig",
+    deployment_shape: str | None,
+    replica_count: int = 1,
 ) -> int:
-    """Return total GPU count (accelerator_count × replica_count) for a deployment.
+    """Return total GPU count (``acceleratorCount × replica_count``) for a deployment.
 
-    Reads accelerator_count from the deployment shape snapshot.
-    Falls back to 1 if the shape doesn't expose it.
+    Reads ``acceleratorCount`` from the deployment shape snapshot; falls back to
+    ``replica_count`` if the shape is missing or the field isn't exposed.
     """
-    replica_count = deploy_cfg.replica_count or 1
-    if not deploy_cfg.deployment_shape:
+    # Back-compat: old signature accepted a DeployConfig as arg 2. Unpack
+    # it into the new (shape, replica_count) form and warn; fall through to
+    # the single-path body below.
+    if hasattr(deployment_shape, "deployment_shape"):
+        logger.warning(
+            "get_deployment_gpu_count: passing a DeployConfig is deprecated; "
+            "pass deployment_shape (str) and replica_count separately.",
+        )
+        cfg = deployment_shape
+        deployment_shape = cfg.deployment_shape
+        replica_count = cfg.replica_count or replica_count
+
+    if not deployment_shape:
         return replica_count  # no shape, assume 1 GPU per replica
 
     try:
-        version = _get_deployment_shape_version(deploy_mgr, deploy_cfg.deployment_shape)
+        version = _get_deployment_shape_version(deploy_mgr, deployment_shape)
         snapshot = version.get("snapshot", {}) or {}
         accel_count = snapshot.get("acceleratorCount", 1) or 1
         total = accel_count * replica_count
@@ -830,6 +912,14 @@ class Infra:
     """Resolved reference training-shape ID (auto-selected for full-param + ``needs_reference``)."""
     deployment_id: str | None = None
     """Final deployment ID, including auto-generated ones when ``DeployConfig.deployment_id`` was unset."""
+    deployment_shape: str | None = None
+    """Resolved deployment-shape version (auto-populated from the policy profile when
+    ``DeployConfig.deployment_shape`` was unset). ``None`` when ``needs_inference=False``."""
+    deployment_gpu_count: int = 1
+    """Total GPU count for the deployment (``acceleratorCount × replica_count``),
+    computed once from the resolved shape. ``1`` when ``needs_inference=False`` or
+    the shape doesn't expose ``acceleratorCount``. Recipes use this to size
+    concurrency windows, etc."""
 
 
 def setup_infra(
@@ -1007,6 +1097,14 @@ def setup_infra(
 
     boot_metrics = _make_boot_metrics(boot_start, deploy_mgr if needs_inference else None)
 
+    deployment_gpu_count = 1
+    if needs_inference and resolved_deploy_shape:
+        deployment_gpu_count = get_deployment_gpu_count(
+            deploy_mgr,
+            resolved_deploy_shape,
+            replica_count=local_deploy_cfg.replica_count or 1,
+        )
+
     return Infra(
         policy=policy,
         reference=reference,
@@ -1020,6 +1118,8 @@ def setup_infra(
         training_shape_id=resolved_shape_id,
         ref_training_shape_id=resolved_ref_shape_id,
         deployment_id=resolved_deployment_id,
+        deployment_shape=resolved_deploy_shape if needs_inference else None,
+        deployment_gpu_count=deployment_gpu_count,
     )
 
 

@@ -96,7 +96,7 @@ def test_grpo_smoke(
             config,
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
-            cancel_on_exit=True,
+            cleanup_on_exit=True,
         )
 
         assert isinstance(metrics, dict), f"Expected dict, got {type(metrics)}"

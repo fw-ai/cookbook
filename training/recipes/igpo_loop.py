@@ -127,6 +127,10 @@ class Config:
 
     policy_job_id: str | None = None
     reference_job_id: str | None = None
+    policy_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
+    reference_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
 
@@ -239,9 +243,15 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cancel_on_exit: bool = False,
+    cleanup_on_exit: bool = False,
 ):
     cfg = config
+    if cfg.policy_base_url or cfg.reference_base_url:
+        logger.warning(
+            "Config.policy_base_url / Config.reference_base_url are ignored; "
+            "the gateway routes all trainer traffic. These fields are kept for "
+            "back-compat and will be removed in a future release.",
+        )
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
@@ -349,7 +359,7 @@ def main(
         # Create deployment referencing the trainer's hot-load bucket
         cfg.deployment.hot_load_trainer_job = policy_ep.job_name
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
-        if cancel_on_exit:
+        if cleanup_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         policy_job_id = policy_ep.job_id

@@ -162,7 +162,7 @@ def main() -> None:
         config,
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
-        cancel_on_exit=not args.keep_resources,
+        cleanup_on_exit=not args.keep_resources,
     )
     logger.info("Run metrics: %s", metrics)
 
