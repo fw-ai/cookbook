@@ -903,6 +903,11 @@ class Infra:
     deployment_shape: str | None = None
     """Resolved deployment-shape version (auto-populated from the policy profile when
     ``DeployConfig.deployment_shape`` was unset). ``None`` when ``needs_inference=False``."""
+    deployment_gpu_count: int = 1
+    """Total GPU count for the deployment (``acceleratorCount × replica_count``),
+    computed once from the resolved shape. ``1`` when ``needs_inference=False`` or
+    the shape doesn't expose ``acceleratorCount``. Recipes use this to size
+    concurrency windows, etc."""
 
 
 def setup_infra(
@@ -1080,6 +1085,15 @@ def setup_infra(
 
     boot_metrics = _make_boot_metrics(boot_start, deploy_mgr if needs_inference else None)
 
+    deployment_gpu_count = 1
+    if needs_inference and resolved_deploy_shape:
+        # Same lookup get_deployment_gpu_count does, but against the
+        # resolved shape so callers don't need to reconstruct it.
+        deployment_gpu_count = get_deployment_gpu_count(
+            deploy_mgr,
+            dataclasses.replace(local_deploy_cfg, deployment_shape=resolved_deploy_shape),
+        )
+
     return Infra(
         policy=policy,
         reference=reference,
@@ -1094,6 +1108,7 @@ def setup_infra(
         ref_training_shape_id=resolved_ref_shape_id,
         deployment_id=resolved_deployment_id,
         deployment_shape=resolved_deploy_shape if needs_inference else None,
+        deployment_gpu_count=deployment_gpu_count,
     )
 
 

@@ -29,7 +29,6 @@ import asyncio
 import logging
 from contextlib import ExitStack
 from typing import List, Optional
-import dataclasses
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -52,7 +51,6 @@ from training.utils import (
     DeployConfig,
     WeightSyncConfig,
     RLPromptDataset,
-    get_deployment_gpu_count,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -372,21 +370,16 @@ def main(
         )
         # Adaptive concurrency — window adjusts based on server-side prefill queue.
         # For fixed (no rate limiting), use FixedConcurrencyController instead.
-        # setup_infra does not mutate cfg.deployment; feed the resolved shape
-        # back in via a local copy so get_deployment_gpu_count sees it.
-        resolved_deploy_cfg = dataclasses.replace(
-            cfg.deployment, deployment_shape=infra.deployment_shape,
-        )
-        gpu_count = get_deployment_gpu_count(deploy_mgr, resolved_deploy_cfg)
+        initial_window = cfg.concurrency.initial_window or (8 * infra.deployment_gpu_count)
         concurrency_controller = AdaptiveConcurrencyController(
-            initial_window=cfg.concurrency.initial_window or (8 * gpu_count),
+            initial_window=initial_window,
             min_window=cfg.concurrency.min_window,
             max_window=cfg.concurrency.max_window,
             prefill_queue_target=cfg.concurrency.prefill_queue_target,
         )
         logger.info(
             "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
-            cfg.concurrency.initial_window or (8 * gpu_count),
+            initial_window,
             cfg.concurrency.min_window,
             cfg.concurrency.max_window,
             cfg.concurrency.prefill_queue_target,
