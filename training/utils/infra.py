@@ -9,7 +9,7 @@ branching, deployment setup — lives inside :func:`setup_infra`.
 Inference-side objects (sampler, weight syncer, concurrency controller) are
 intentionally *not* created here — each recipe builds them after calling
 :func:`setup_infra` so the construction is visible and customisable in the
-loop. Use :func:`build_concurrency_controller` for the controller.
+loop.
 
 Generic across loop types:
 
@@ -139,22 +139,16 @@ class ResourceCleanup:
         self,
         rlor_mgr: TrainerJobManager,
         deploy_mgr: DeploymentManager | None = None,
-        trainer_delete_grace_period_s: float | None = None,
         trainer_cancel_grace_period_s: float | None = None,
     ):
         self._rlor_mgr = rlor_mgr
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
         self._deployments: list[tuple[str, str]] = []
-        grace_period_s = (
-            trainer_cancel_grace_period_s
-            if trainer_cancel_grace_period_s is not None
-            else trainer_delete_grace_period_s
-        )
         self._trainer_cancel_grace_period_s = (
             _default_trainer_cancel_grace_period_s()
-            if grace_period_s is None
-            else max(0.0, float(grace_period_s))
+            if trainer_cancel_grace_period_s is None
+            else max(0.0, float(trainer_cancel_grace_period_s))
         )
 
     def trainer(self, job_id: str) -> None:
@@ -808,42 +802,34 @@ class Infra:
     Inference-side objects (sampler, weight syncer, concurrency controller)
     are *not* included — each recipe constructs them after calling
     :func:`setup_infra` so they remain visible and customisable in the loop.
-
-    Attributes:
-        policy: Policy trainer client. Always set.
-        reference: Reference trainer client when ``needs_reference``;
-            either a separate :class:`ReconnectableClient` (full-param)
-            or a base-only handle on the policy session (LoRA shared).
-            ``None`` when no reference is needed.
-        policy_profile: Resolved policy training-shape profile.
-        policy_job_id: Policy trainer job ID.
-        reference_job_id: Reference trainer job ID, or ``None`` when no
-            separate reference trainer was provisioned (LoRA shared or
-            ``needs_reference=False``).
-        inference_model: Base model name for inference (may differ from
-            ``cfg.base_model`` when a deployment adapter is mounted).
-            ``None`` when ``needs_inference=False``.
-        boot_metrics: One-shot boot metrics suitable for ``wandb_log``.
-        closeables: Objects with ``.close()`` the caller should register
-            onto an ``ExitStack``.
     """
 
-    policy: Any
-    reference: Any | None
-    policy_profile: Any
+    policy: ReconnectableClient
+    """Policy trainer client. Always set."""
+    reference: ReconnectableClient | None
+    """Reference trainer client: a separate client (full-param) or a base-only
+    handle on the policy session (LoRA shared). ``None`` when no reference is needed."""
+    policy_profile: TrainingShapeProfile
+    """Resolved policy training-shape profile."""
     policy_job_id: str
+    """Policy trainer job ID."""
     reference_job_id: str | None
+    """Reference trainer job ID; ``None`` for LoRA shared or ``needs_reference=False``."""
     inference_model: str | None
-    boot_metrics: dict
+    """Inference model name (may differ from ``base_model`` if an adapter is mounted);
+    ``None`` when ``needs_inference=False``."""
+    boot_metrics: dict[str, float]
+    """One-shot boot metrics suitable for ``wandb_log``."""
     closeables: list[Any] = field(default_factory=list)
+    """Objects with ``.close()`` the caller should register onto an ``ExitStack``."""
     max_seq_len: int | None = None
     """Resolved max sequence length (auto-populated from shape when not provided)."""
     training_shape_id: str | None = None
-    """Resolved policy training-shape ID (auto-selected if InfraConfig.training_shape_id was None)."""
+    """Resolved policy training-shape ID (auto-selected if ``InfraConfig.training_shape_id`` was None)."""
     ref_training_shape_id: str | None = None
-    """Resolved reference training-shape ID (auto-selected for full-param + needs_reference)."""
+    """Resolved reference training-shape ID (auto-selected for full-param + ``needs_reference``)."""
     deployment_id: str | None = None
-    """Final deployment ID, including auto-generated ones when DeployConfig.deployment_id was unset."""
+    """Final deployment ID, including auto-generated ones when ``DeployConfig.deployment_id`` was unset."""
 
 
 def setup_infra(
@@ -851,7 +837,7 @@ def setup_infra(
     rlor_mgr: TrainerJobManager,
     deploy_mgr: DeploymentManager | None = None,
     base_model: str,
-    infra: InfraConfig,
+    infra_cfg: InfraConfig,
     deploy_cfg: DeployConfig | None = None,
     lora_rank: int = 0,
     max_seq_len: int | None = None,
@@ -864,21 +850,21 @@ def setup_infra(
     role_prefix: str,
     api_key: str,
     cleanup: ResourceCleanup | None = None,
-    on_status: Callable[[str], None] | None = None,
+    on_status: StatusCallback | None = None,
 ) -> Infra:
     """Build all training-side infrastructure in one call.
 
-    Generic across loop types (RL, DPO, SFT).
+    Generic across loop types (RL, DPO, SFT). Neither ``infra_cfg`` nor
+    ``deploy_cfg`` is mutated; both are shape-resolved into local copies.
 
     Args:
         rlor_mgr: Trainer job manager.
         deploy_mgr: Deployment manager. Required when ``needs_inference=True``.
         base_model: Base model resource name.
-        infra: Infrastructure config (shape IDs, region, etc.). Never mutated.
-        deploy_cfg: Deployment config. Required when ``needs_inference=True``. Never mutated.
+        infra_cfg: Infrastructure config (shape IDs, region, etc.).
+        deploy_cfg: Deployment config. Required when ``needs_inference=True``.
         lora_rank: LoRA rank; 0 means full-parameter.
-        max_seq_len: Max sequence length. Auto-populated from shape when ``None``;
-            exposed on the returned :class:`Infra` as ``max_seq_len``.
+        max_seq_len: Max sequence length. Auto-populated from shape when ``None``.
         learning_rate: Optimizer learning rate forwarded to trainer jobs.
         step_timeout: Per-step RPC timeout. Falls back to SDK default when ``None``.
         policy_job_id: Reuse an existing policy trainer job instead of creating one.
@@ -899,14 +885,14 @@ def setup_infra(
     if needs_inference and deploy_mgr is None:
         raise ValueError("deploy_mgr is required when needs_inference=True")
 
-    emit: Callable[[str], None] = on_status or (lambda _: None)
+    emit: StatusCallback = on_status or (lambda _: None)
     boot_start = time.time()
 
     policy_profile, resolved_max_seq_len, resolved_shape_id, resolved_deploy_shape = (
         _resolve_policy_shape(
             rlor_mgr,
             base_model=base_model,
-            training_shape_id=infra.training_shape_id,
+            training_shape_id=infra_cfg.training_shape_id,
             deploy_shape=deploy_cfg.deployment_shape if deploy_cfg else None,
             lora_rank=lora_rank,
             max_seq_len=max_seq_len,
@@ -916,7 +902,7 @@ def setup_infra(
     ref_profile, resolved_ref_shape_id = _resolve_reference_shape(
         rlor_mgr,
         base_model=base_model,
-        ref_training_shape_id=infra.ref_training_shape_id,
+        ref_training_shape_id=infra_cfg.ref_training_shape_id,
         lora_rank=lora_rank,
         max_seq_len=resolved_max_seq_len,
         needs_reference=needs_reference,
@@ -928,10 +914,9 @@ def setup_infra(
         resolved_deploy_shape if needs_inference else None,
     )
 
-    # Build an internal InfraConfig carrying the resolved shape IDs (for
-    # request_trainer_job / wait_trainer_job which read infra.trainer_timeout_s etc.)
+    # Internal copy carrying resolved shape IDs for downstream request_trainer_job calls.
     resolved_infra = dataclasses.replace(
-        infra,
+        infra_cfg,
         training_shape_id=resolved_shape_id,
         ref_training_shape_id=resolved_ref_shape_id,
     )

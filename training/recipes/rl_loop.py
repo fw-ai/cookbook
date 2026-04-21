@@ -339,7 +339,7 @@ def main(
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
             base_model=cfg.base_model,
-            infra=cfg.infra,
+            infra_cfg=cfg.infra,
             deploy_cfg=cfg.deployment,
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,

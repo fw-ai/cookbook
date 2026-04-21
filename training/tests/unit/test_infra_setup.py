@@ -165,7 +165,7 @@ def test_setup_infra_requires_deploy_mgr_when_inference_needed(patch_sdk):
         setup_infra(
             rlor_mgr=rlor, deploy_mgr=None,
             base_model=cfg.base_model,
-            infra=cfg.infra,
+            infra_cfg=cfg.infra,
             deploy_cfg=cfg.deployment,
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
@@ -190,7 +190,7 @@ def test_setup_infra_rl_full_param_with_kl_provisions_separate_reference(patch_s
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -230,7 +230,7 @@ def test_setup_infra_rl_full_param_no_kl_skips_reference(patch_sdk):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -262,7 +262,7 @@ def test_setup_infra_lora_with_reference_uses_shared_session_rl(patch_sdk):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -294,7 +294,7 @@ def test_setup_infra_lora_with_reference_uses_shared_session_dpo(patch_sdk):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=None,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -325,7 +325,7 @@ def test_setup_infra_dpo_full_param_provisions_separate_reference(patch_sdk):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=None,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -358,7 +358,7 @@ def test_setup_infra_auto_selects_policy_shape_when_unset(patch_sdk):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -381,7 +381,7 @@ def test_setup_infra_auto_selects_reference_shape_for_full_param_with_kl(patch_s
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -404,7 +404,7 @@ def test_setup_infra_does_not_auto_select_ref_for_lora(patch_sdk):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -430,7 +430,7 @@ def test_setup_infra_returns_closeables_for_caller_to_register(patch_sdk):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -451,7 +451,7 @@ def test_setup_infra_records_boot_metrics(patch_sdk):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -500,7 +500,7 @@ def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
     setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -550,7 +550,7 @@ def test_parallel_wait_timing(monkeypatch):
     setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -609,7 +609,7 @@ def test_failure_cleanup_registers_both_resources(monkeypatch):
         setup_infra(
             rlor_mgr=rlor, deploy_mgr=deploy,
             base_model=cfg.base_model,
-            infra=cfg.infra,
+            infra_cfg=cfg.infra,
             deploy_cfg=cfg.deployment,
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
@@ -656,7 +656,7 @@ def test_lora_shared_ref_no_ref_trainer_created(monkeypatch):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -709,7 +709,7 @@ def test_reuse_path_policy_job_id_set(monkeypatch):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -752,7 +752,7 @@ def test_dpo_full_param_no_deployment(monkeypatch):
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=None,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
@@ -807,7 +807,7 @@ def test_reattach_patch_issued_before_trainer_ready(monkeypatch):
     setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
         base_model=cfg.base_model,
-        infra=cfg.infra,
+        infra_cfg=cfg.infra,
         deploy_cfg=cfg.deployment,
         lora_rank=cfg.lora_rank,
         max_seq_len=cfg.max_seq_len,
