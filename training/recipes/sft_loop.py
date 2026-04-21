@@ -77,6 +77,9 @@ _worker_max_seq_len = None
 
 def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_seq_len):
     """Create a renderer per worker process to avoid pickling the tokenizer."""
+    import gc
+    gc.disable()
+
     global _worker_renderer, _worker_train_on_what, _worker_max_seq_len
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         tokenizer_model, trust_remote_code=True,
