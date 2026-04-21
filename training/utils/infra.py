@@ -39,15 +39,9 @@ from fireworks.training.sdk import (
     TrainerJobConfig,
     TrainerJobManager,
     TrainerServiceEndpoint,
+    TrainingShapeProfile,
+    CreatedTrainerJob,
 )
-try:
-    from fireworks.training.sdk.trainer import TrainingShapeProfile, CreatedTrainerJob
-except ImportError:
-    try:
-        from fireworks.training.sdk import TrainingShapeProfile, CreatedTrainerJob
-    except ImportError:
-        from fireworks.training.sdk import TrainingShapeProfile
-        CreatedTrainerJob = None  # type: ignore[assignment,misc]
 from fireworks.training.sdk.deployment import (
     DeploymentConfig,
     DeploymentInfo,
