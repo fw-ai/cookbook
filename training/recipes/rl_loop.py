@@ -269,17 +269,8 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cancel_on_exit: bool = False,
-    cleanup_on_exit: bool | None = None,
+    cleanup_on_exit: bool = False,
 ):
-    if cleanup_on_exit is not None:
-        import warnings
-        warnings.warn(
-            "rl_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
-            DeprecationWarning, stacklevel=2,
-        )
-        cancel_on_exit = cleanup_on_exit
-
     cfg = config
     runner = RunnerIO(cfg.runner)
 
@@ -359,7 +350,7 @@ def main(
             needs_inference=True,
             role_prefix="grpo",
             api_key=api_key,
-            cleanup=cleanup if cancel_on_exit else None,
+            cleanup=cleanup if cleanup_on_exit else None,
             on_status=_on_trainer_status,
         )
         for closeable in infra.closeables:

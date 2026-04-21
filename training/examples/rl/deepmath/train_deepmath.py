@@ -359,7 +359,7 @@ def main():
         config,
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
-        cancel_on_exit=not args.skip_cleanup,
+        cleanup_on_exit=not args.skip_cleanup,
     )
 
     logger.info("Training complete. Final metrics: %s", metrics)

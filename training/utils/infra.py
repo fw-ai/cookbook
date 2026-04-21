@@ -142,15 +142,9 @@ class ResourceCleanup:
         trainer_cancel_grace_period_s: float | None = None,
         trainer_delete_grace_period_s: float | None = None,
     ):
-        if trainer_delete_grace_period_s is not None:
-            import warnings
-            warnings.warn(
-                "ResourceCleanup(trainer_delete_grace_period_s=...) is deprecated; "
-                "use trainer_cancel_grace_period_s=...",
-                DeprecationWarning, stacklevel=2,
-            )
-            if trainer_cancel_grace_period_s is None:
-                trainer_cancel_grace_period_s = trainer_delete_grace_period_s
+        # Back-compat: accept trainer_delete_grace_period_s as an alias.
+        if trainer_cancel_grace_period_s is None and trainer_delete_grace_period_s is not None:
+            trainer_cancel_grace_period_s = trainer_delete_grace_period_s
         self._rlor_mgr = rlor_mgr
         self._deploy_mgr = deploy_mgr
         self._jobs: list[str] = []
@@ -174,12 +168,7 @@ class ResourceCleanup:
             pass
 
     def delete_trainer(self, job_id: str) -> None:
-        """Deprecated alias for :meth:`cancel_trainer`. Will be removed in a future release."""
-        import warnings
-        warnings.warn(
-            "ResourceCleanup.delete_trainer is deprecated; use cancel_trainer.",
-            DeprecationWarning, stacklevel=2,
-        )
+        """Alias for :meth:`cancel_trainer`."""
         self.cancel_trainer(job_id)
 
     def deployment(self, dep_id: str, action: str = "delete") -> None:
@@ -574,28 +563,17 @@ def setup_or_reattach_deployment(
     weight_syncer: "WeightSyncer | None" = None,
     reattach_settle_timeout_s: int = 600,
 ) -> DeploymentInfo:
-    """Deprecated. Standalone helper to create or re-attach a single deployment.
-
-    Kept as a shim so callers of pre-#356 cookbook code still import cleanly.
-    :func:`setup_infra` now wraps the same logic end-to-end via
-    :class:`WeightSyncScope` and the internal ``_provision_trainer_owned`` /
-    ``_provision_deployment_owned`` helpers. New code should use ``setup_infra``.
+    """Standalone helper to create or re-attach a single deployment.
 
     If ``deploy_cfg.deployment_id`` names a live deployment, PATCHes its
     ``hot_load_trainer_job`` to *trainer_job_name* and waits for the pod
     rolling restart to settle. Otherwise creates a fresh deployment with
     the trainer reference baked in at creation.
-    """
-    import warnings
-    warnings.warn(
-        "setup_or_reattach_deployment is deprecated; use setup_infra "
-        "(setup_infra handles re-attach when an existing deployment_id is "
-        "passed alongside a fresh trainer). This shim will be removed in a "
-        "future release.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
 
+    :func:`setup_infra` wraps the same logic end-to-end via
+    :class:`WeightSyncScope`; use this helper only when you need the
+    single-resource operation outside the RL / DPO recipes.
+    """
     existing = (
         deploy_mgr.get(deploy_cfg.deployment_id)
         if deploy_cfg.deployment_id
