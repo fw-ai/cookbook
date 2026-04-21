@@ -756,19 +756,28 @@ def _get_deployment_shape_version(
 
 def get_deployment_gpu_count(
     deploy_mgr: DeploymentManager,
-    deploy_cfg: "DeployConfig",
+    deployment_shape: "str | DeployConfig | None",
+    replica_count: int = 1,
 ) -> int:
-    """Return total GPU count (accelerator_count × replica_count) for a deployment.
+    """Return total GPU count (``acceleratorCount × replica_count``) for a deployment.
 
-    Reads accelerator_count from the deployment shape snapshot.
-    Falls back to 1 if the shape doesn't expose it.
+    Reads ``acceleratorCount`` from the deployment shape snapshot; falls back to
+    ``replica_count`` if the shape is missing or the field isn't exposed.
+
+    For back-compat, a :class:`DeployConfig` may be passed in place of
+    ``deployment_shape`` — its ``deployment_shape`` and ``replica_count`` fields
+    will be read off it.
     """
-    replica_count = deploy_cfg.replica_count or 1
-    if not deploy_cfg.deployment_shape:
+    if hasattr(deployment_shape, "deployment_shape"):  # DeployConfig passed
+        cfg = deployment_shape
+        deployment_shape = cfg.deployment_shape
+        replica_count = cfg.replica_count or replica_count
+    replica_count = replica_count or 1
+    if not deployment_shape:
         return replica_count  # no shape, assume 1 GPU per replica
 
     try:
-        version = _get_deployment_shape_version(deploy_mgr, deploy_cfg.deployment_shape)
+        version = _get_deployment_shape_version(deploy_mgr, deployment_shape)
         snapshot = version.get("snapshot", {}) or {}
         accel_count = snapshot.get("acceleratorCount", 1) or 1
         total = accel_count * replica_count
@@ -1097,11 +1106,10 @@ def setup_infra(
 
     deployment_gpu_count = 1
     if needs_inference and resolved_deploy_shape:
-        # Same lookup get_deployment_gpu_count does, but against the
-        # resolved shape so callers don't need to reconstruct it.
         deployment_gpu_count = get_deployment_gpu_count(
             deploy_mgr,
-            dataclasses.replace(local_deploy_cfg, deployment_shape=resolved_deploy_shape),
+            resolved_deploy_shape,
+            replica_count=local_deploy_cfg.replica_count or 1,
         )
 
     return Infra(
