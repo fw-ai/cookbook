@@ -126,9 +126,7 @@ class Config:
     """ThreadPoolExecutor max_workers for async IG scoring."""
 
     policy_job_id: str | None = None
-    policy_base_url: str | None = None
     reference_job_id: str | None = None
-    reference_base_url: str | None = None
     init_from_checkpoint: str | None = None
     output_model_id: str | None = None
 
@@ -241,7 +239,7 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cleanup_on_exit: bool = False,
+    cancel_on_exit: bool = False,
 ):
     cfg = config
     runner = RunnerIO(cfg.runner)
@@ -324,7 +322,7 @@ def main(
                     infra=cfg.infra, profile=profile, lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                     display_name="igpo-policy",
-                    job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+                    job_id=cfg.policy_job_id,
                     cleanup=cleanup if not cfg.policy_job_id else None,
                 )
                 ref_fut = pool.submit(
@@ -332,7 +330,7 @@ def main(
                     infra=cfg.infra, profile=ref_profile, lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                     display_name="igpo-reference", forward_only=True,
-                    job_id=cfg.reference_job_id, base_url_override=cfg.reference_base_url,
+                    job_id=cfg.reference_job_id,
                     cleanup=cleanup if not cfg.reference_job_id else None,
                 )
                 policy_ep = pol_fut.result()
@@ -343,7 +341,7 @@ def main(
                 profile=profile, lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                 display_name="igpo-policy",
-                job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+                job_id=cfg.policy_job_id,
                 cleanup=cleanup if not cfg.policy_job_id else None,
             )
             reference_ep = None
@@ -351,7 +349,7 @@ def main(
         # Create deployment referencing the trainer's hot-load bucket
         cfg.deployment.hot_load_trainer_job = policy_ep.job_name
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
-        if cleanup_on_exit:
+        if cancel_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         policy_job_id = policy_ep.job_id
@@ -362,14 +360,12 @@ def main(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
             fw_api_key=api_key,
             default_timeout=_timeout,
-            endpoint=policy_ep if cfg.policy_base_url else None,
         )
         reference = (
             ReconnectableClient(
                 rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
                 fw_api_key=api_key,
                 default_timeout=_timeout,
-                endpoint=reference_ep if cfg.reference_base_url else None,
             )
             if reference_ep else None
         )

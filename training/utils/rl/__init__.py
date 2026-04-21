@@ -18,6 +18,9 @@ __all__ = [
     "DynamicFilterFn",
     "TrainStepFns",
     "run_rl_loop",
+    # Bundled infra setup
+    "Infra",
+    "setup_infra",
     # Metrics helpers
     "add_response_length_stats",
     "add_train_perf_metrics",
@@ -43,6 +46,7 @@ from training.utils.rl.train import (
     run_rl_loop,
 )
 from training.utils.rl.losses import PromptGroup
+from training.utils.infra import Infra, setup_infra
 from training.utils.rl.metrics import (
     build_loop_metrics,
     total_target_tokens,

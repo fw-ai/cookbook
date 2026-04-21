@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Dict, Callable
 from dataclasses import dataclass
 
@@ -92,10 +93,32 @@ class InfraConfig:
     """Skip server-side shape validation. Requires superuser API key."""
 
 
+class WeightSyncScope(Enum):
+    """How trainer weights are synced to the inference deployment.
+
+    ``PER_TRAINER`` (default)
+        Trainer is provisioned first; the deployment is created (or re-wired on
+        resume) to pull weights from that trainer's bucket.  Each trainer gets
+        its own bucket.  On resume, the deployment is re-pointed to the new
+        trainer, which briefly restarts the serving pod.
+
+    ``PER_DEPLOYMENT``
+        Deployment is provisioned first with a stable, deployment-scoped bucket.
+        Trainers are created referencing that deployment so they all write to the
+        same bucket URL.  On resume, a new trainer is created pointing at the
+        same deployment — no serving pod restart required.
+    """
+
+    PER_TRAINER = "per_trainer"
+    PER_DEPLOYMENT = "per_deployment"
+
+
 @dataclass
 class DeployConfig:
     """Inference deployment settings."""
 
+    weight_sync_scope: WeightSyncScope = WeightSyncScope.PER_TRAINER
+    """Controls how trainer weights reach the inference deployment; see :class:`WeightSyncScope`."""
     deployment_id: str | None = None
     """If set, use this existing deployment.  If ``None``, a new deployment
     is auto-created (ID derived from the base model name)."""
@@ -112,6 +135,9 @@ class DeployConfig:
     Format: accounts/{account}/rlorTrainerJobs/{job_id}.
     When set, the deployment copies the trainer's bucket URL at creation."""
     deployment_timeout_s: float = 5400
+    reattach_settle_timeout_s: int = 600
+    """How long to wait for the serving pod to cycle after a re-attach PATCH
+    (separate from the full deployment creation timeout)."""
     deployment_extra_args: list[str] | None = None
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).

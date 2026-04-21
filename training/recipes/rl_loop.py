@@ -33,9 +33,12 @@ from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
 import tinker
+import transformers
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
+from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
     ConcurrencyConfig,
@@ -47,36 +50,27 @@ from training.utils import (
     WandBConfig,
     DeployConfig,
     WeightSyncConfig,
-    ReconnectableClient,
     RLPromptDataset,
+    get_deployment_gpu_count,
     wandb_log,
     setup_wandb,
     wandb_finish,
     validate_config,
     log_metrics_json,
-    get_deployment_gpu_count,
-    setup_deployment,
-    setup_or_reattach_deployment,
     compute_advantages,
-    create_trainer_job,
     read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
-    auto_select_training_shape,
 )
-from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
     CheckpointKind,
 )
-from fireworks.training.sdk.deployment import DeploymentSampler
-
-from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, FixedConcurrencyController
-from training.utils.rl import PromptGroup
+from training.utils.rl import PromptGroup, setup_infra
 from training.utils.rl.tis import TISConfig
-from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.timer import timer, flush_timing
+import time as _time
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
@@ -166,14 +160,8 @@ class Config:
     policy_job_id: str | None = None
     """Pre-created RLOR policy trainer job ID (skip creation if set)."""
 
-    policy_base_url: str | None = None
-    """Base URL for the policy trainer (bypass direct route)."""
-
     reference_job_id: str | None = None
     """Pre-created RLOR reference trainer job ID (skip creation if set)."""
-
-    reference_base_url: str | None = None
-    """Base URL for the reference trainer (bypass direct route)."""
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
@@ -282,7 +270,7 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cleanup_on_exit: bool = False,
+    cancel_on_exit: bool = False,
 ):
     cfg = config
     runner = RunnerIO(cfg.runner)
@@ -339,202 +327,67 @@ def main(
             additional_headers=additional_headers,
         )
 
-    # -- Resolve policy training shape -------------------------------------------
-    if not cfg.infra.training_shape_id:
-        cfg.infra.training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="policy",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected policy training shape: %s", cfg.infra.training_shape_id)
-
-    policy_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-
-    if not cfg.deployment.deployment_shape and policy_profile.deployment_shape_version:
-        cfg.deployment.deployment_shape = policy_profile.deployment_shape_version
-    logger.info(
-        "Policy shape=%s  deployment_shape=%s",
-        cfg.infra.training_shape_id,
-        cfg.deployment.deployment_shape,
-    )
-
-    if cfg.max_seq_len is None:
-        cfg.max_seq_len = policy_profile.max_supported_context_length
-        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
-    if cfg.max_seq_len is None:
-        raise ValueError(
-            "max_seq_len is required. Set it in Config, or use a training shape "
-            "(InfraConfig.training_shape_id) to auto-populate it."
-        )
-
-    # -- Resolve reference training shape ------------------------------------------
-    # ref_profile is non-None only when a *separate* reference trainer is needed.
-    # LoRA + kl_beta > 0 without an explicit ref shape: the policy trainer
-    # serves reference logprobs via a base-only model handle (no extra GPU job).
-    # See create_base_reference() in utils/client.py — both clients share one
-    # FiretitanServiceClient (one session) so they don't reset each other.
-    ref_profile = None
-    if cfg.infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-    elif cfg.kl_beta > 0 and cfg.lora_rank == 0:
-        cfg.infra.ref_training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="reference",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected reference training shape: %s", cfg.infra.ref_training_shape_id)
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-
-    import time as _time
-
-    runner.set_accelerator_info(profile=policy_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
         runner.write_status(RunStatus.PENDING, message=msg)
 
-    _infra_start = _time.time()
-
     with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        # -- Provision trainer jobs ------------------------------------------------
+        # Shapes + trainers + deployment + trainer clients.
+        # LoRA shared-reference branching is handled inside setup_infra.
+        infra = setup_infra(
+            rlor_mgr=rlor_mgr,
+            deploy_mgr=deploy_mgr,
+            base_model=cfg.base_model,
+            infra_cfg=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            needs_reference=(cfg.kl_beta > 0),
+            needs_inference=True,
+            role_prefix="grpo",
+            api_key=api_key,
+            cleanup=cleanup if cancel_on_exit else None,
+            on_status=_on_trainer_status,
+        )
+        for closeable in infra.closeables:
+            stack.callback(closeable.close)
+
+        runner.set_accelerator_info(profile=infra.policy_profile)
+        wandb_log(infra.boot_metrics, step=0)
+
+        policy = infra.policy
+        reference = infra.reference
+        policy_profile = infra.policy_profile
+        policy_job_id = infra.policy_job_id
+        reference_job_id = infra.reference_job_id or infra.policy_job_id
+
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            cfg.deployment.tokenizer_model, trust_remote_code=True,
+        )
+        # Adaptive concurrency — window adjusts based on server-side prefill queue.
+        # For fixed (no rate limiting), use FixedConcurrencyController instead.
+        gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
+        concurrency_controller = AdaptiveConcurrencyController(
+            initial_window=cfg.concurrency.initial_window or (8 * gpu_count),
+            min_window=cfg.concurrency.min_window,
+            max_window=cfg.concurrency.max_window,
+            prefill_queue_target=cfg.concurrency.prefill_queue_target,
+        )
         logger.info(
-            "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
-            prompt_groups_per_step,
-            completions_per_prompt,
+            "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
+            cfg.concurrency.initial_window or (8 * gpu_count),
+            cfg.concurrency.min_window,
+            cfg.concurrency.max_window,
+            cfg.concurrency.prefill_queue_target,
         )
-
-        _cleanup = cleanup if cleanup_on_exit else None
-
-        def _make_trainer(role: str, profile, *, forward_only: bool = False):
-            is_ref = role == "reference"
-            return create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name=f"grpo-{role}",
-                forward_only=forward_only,
-                job_id=cfg.reference_job_id if is_ref else cfg.policy_job_id,
-                base_url_override=cfg.reference_base_url if is_ref else cfg.policy_base_url,
-                cleanup=_cleanup,
-                on_status=_on_trainer_status,
-            )
-
-        if ref_profile is not None:
-            _on_trainer_status("provisioning policy and reference trainers")
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(_make_trainer, "policy", policy_profile)
-                ref_fut = pool.submit(
-                    _make_trainer, "reference", ref_profile, forward_only=True,
-                )
-                errors: list[str] = []
-                policy_ep = reference_ep = None
-                try:
-                    policy_ep = pol_fut.result()
-                except Exception as e:
-                    errors.append(f"Policy trainer: {e}")
-                try:
-                    reference_ep = ref_fut.result()
-                except Exception as e:
-                    errors.append(f"Reference trainer: {e}")
-                if errors:
-                    raise RuntimeError(
-                        "Trainer creation failed:\n" + "\n".join(errors)
-                    )
-        else:
-            _on_trainer_status("provisioning policy trainer")
-            policy_ep = _make_trainer("policy", policy_profile)
-            reference_ep = None
-
-        policy_job_id = policy_ep.job_id
-        reference_job_id = reference_ep.job_id if reference_ep else policy_ep.job_id
-
-        # -- Connect deployment to the trainer's hot-load bucket ----------------
-        dep_info = setup_or_reattach_deployment(
-            deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra, policy_ep.job_name,
-        )
-        if cleanup_on_exit:
-            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-
-        _timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-
-        def _make_client(ep):
-            c = ReconnectableClient(
-                rlor_mgr, ep.job_id, cfg.base_model,
-                lora_rank=cfg.lora_rank,
-                fw_api_key=api_key,
-                default_timeout=_timeout,
-                endpoint=ep if (cfg.policy_base_url or cfg.reference_base_url) else None,
-            )
-            if hasattr(c, "close"):
-                stack.callback(c.close)
-            return c
-
-        policy = _make_client(policy_ep)
-
-        if reference_ep is not None:
-            reference = _make_client(reference_ep)
-        elif cfg.lora_rank > 0 and cfg.kl_beta > 0:
-            # Share the policy trainer's session: base-only model handle, no
-            # second trainer, no second create_session (which would unload the
-            # policy LoRA).
-            reference = policy.create_base_reference()
-            stack.callback(reference.close)
-        else:
-            reference = None
-
-        import transformers
-
-        inference_model = dep_info.inference_model if dep_info else cfg.base_model
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
-
-        # -- Concurrency controller ------------------------------------------------
-        if cfg.concurrency.mode == "adaptive":
-            gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
-            _SLOTS_PER_GPU = 8  # Default concurrent requests per GPU.
-            initial_window = cfg.concurrency.initial_window or (_SLOTS_PER_GPU * gpu_count)
-            concurrency_controller = AdaptiveConcurrencyController(
-                initial_window=initial_window,
-                min_window=cfg.concurrency.min_window,
-                max_window=cfg.concurrency.max_window,
-                prefill_queue_target=cfg.concurrency.prefill_queue_target,
-            )
-            logger.info(
-                "Using adaptive concurrency (initial=%d, range=%d-%d, target_pq=%.2fs)",
-                initial_window,
-                cfg.concurrency.min_window,
-                cfg.concurrency.max_window,
-                cfg.concurrency.prefill_queue_target,
-            )
-        elif cfg.concurrency.mode == "fixed":
-            concurrency_controller = None
-            logger.info("Using fixed concurrency: unlimited")
-        elif cfg.concurrency.mode is None and cfg.concurrency.max_concurrency is not None:
-            import warnings
-            warnings.warn(
-                "ConcurrencyConfig.max_concurrency is deprecated. "
-                "Use mode='adaptive' (default) or mode='fixed' with "
-                "FixedConcurrencyController instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            concurrency_controller = FixedConcurrencyController(cfg.concurrency.max_concurrency)
-            logger.info("Using fixed concurrency (deprecated max_concurrency=%d)", cfg.concurrency.max_concurrency)
-        else:
-            raise ValueError(
-                f"Unknown concurrency mode: {cfg.concurrency.mode!r}. Must be 'adaptive' or 'fixed'."
-            )
-
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
-            model=inference_model,
+            model=infra.inference_model,
             api_key=api_key,
             tokenizer=tokenizer,
             concurrency_controller=concurrency_controller,
@@ -542,21 +395,18 @@ def main(
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
             deploy_mgr=deploy_mgr,
-            deployment_id=cfg.deployment.deployment_id,
+            deployment_id=infra.deployment_id,
             base_model=cfg.rollout_base_model or cfg.base_model,
             hotload_timeout=cfg.weight_sync.weight_sync_timeout,
             first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
             lora_rank=cfg.lora_rank,
         )
 
-        infra_boot_time = _time.time() - _infra_start
-        boot_metrics: dict = {
-            "train/step": 0,
-            "infra/total_boot_time": infra_boot_time,
-        }
-        if deploy_mgr.boot_time_s is not None:
-            boot_metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
-        wandb_log(boot_metrics, step=0)
+        logger.info(
+            "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
+            prompt_groups_per_step,
+            completions_per_prompt,
+        )
 
         # -- Resume ---------------------------------------------------------------
 
@@ -591,7 +441,7 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            max_seq_len=cfg.max_seq_len,
+            max_seq_len=infra.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
         if cfg.router_replay:
@@ -818,7 +668,7 @@ def main(
                     },
                     kind=CheckpointKind.STATE,
                     base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id,
+                    training_shape=infra.training_shape_id,
                 )
 
             metrics = compute_step_metrics(
@@ -919,7 +769,7 @@ def main(
                     },
                     kind=CheckpointKind.BOTH,
                     base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id,
+                    training_shape=infra.training_shape_id,
                 )
 
                 if getattr(cfg, "output_model_id", None):

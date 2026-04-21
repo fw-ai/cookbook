@@ -64,6 +64,6 @@ If `promote_checkpoint` returns `checkpoint "<name>" not found in GCS`:
 
 1. Call `FireworksClient.list_checkpoints(job_id)` (or run the `list_checkpoints.py` CLI wrapper) to see which rows the server will actually accept. See [`tools.md`](tools.md#listing-checkpoints-fireworksclientlist_checkpoints).
 2. Make sure your `output_model_id` passes `validate_output_model_id` and retry `promote_checkpoint.py` against one of those rows.
-3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a legacy deployment-first bucket) require server-side access.
+3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a pre-migration `PER_DEPLOYMENT` bucket) require server-side access.
 
-For the separate legacy-deployment-first recovery path (`--hot-load-deployment-id`), see [`rl/hotload.md`](rl/hotload.md#promoting-a-legacy-deployment-first-run).
+The modern promote API takes a single `name` field and works identically for `PER_TRAINER` and `PER_DEPLOYMENT`. See [`rl/hotload.md#promoting-a-checkpoint`](rl/hotload.md#promoting-a-checkpoint). The legacy `--hot-load-deployment-id` path is only needed for deployments that predate the stored-bucket-URL migration.
