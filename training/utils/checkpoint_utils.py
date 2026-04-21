@@ -75,7 +75,10 @@ def resolve_resume(
     if init_from_checkpoint:
         source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
         path = client.resolve_checkpoint_path(dcp_name, source_job_id=source_job_id)
-        logger.info("Fresh start with pretrained weights: %s", path)
+        logger.info(
+            "Starting at step 0 with weights loaded from %s (no resume — step counter resets)",
+            path,
+        )
         t0 = time.time()
         client.load_state_with_optimizer(path)
         logger.info("Checkpoint loaded (%.1fs)", time.time() - t0)
@@ -93,7 +96,7 @@ def resolve_resume(
             source_job_id=last.get("source_job_id"),
         )
 
-    logger.info("Fresh start (no checkpoint)")
+    logger.info("Starting at step 0 from base model (no checkpoint)")
     return None
 
 

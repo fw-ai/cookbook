@@ -90,7 +90,7 @@ def test_grpo_deepmath_trainer_first(
         config,
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
-        cleanup_on_exit=True,
+        cancel_on_exit=True,
     )
 
     # No seed pinning: this is an API contract smoke (steps complete, cleanup

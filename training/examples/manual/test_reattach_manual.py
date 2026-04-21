@@ -112,7 +112,7 @@ def _build_config(
     )
 
 
-def _run(cfg: rl_loop.Config, rlor_mgr, deploy_mgr, cleanup_on_exit: bool) -> dict:
+def _run(cfg: rl_loop.Config, rlor_mgr, deploy_mgr, cancel_on_exit: bool) -> dict:
     # Lazy import: train_deepmath reads FIREWORKS_API_KEY at import time, so
     # we defer until main() has already validated the env.
     from training.examples.rl.deepmath.train_deepmath import deepmath_reward
@@ -122,7 +122,7 @@ def _run(cfg: rl_loop.Config, rlor_mgr, deploy_mgr, cleanup_on_exit: bool) -> di
     rl_loop.reward_fn = deepmath_reward
     rl_loop.should_accept = lambda _: True  # avoid zero-variance filter on tiny runs
     return rl_loop.main(
-        cfg, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr, cleanup_on_exit=cleanup_on_exit,
+        cfg, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr, cancel_on_exit=cancel_on_exit,
     )
 
 
@@ -190,10 +190,10 @@ def main() -> None:
         )
 
     # Run 1: cold start. setup_infra creates both trainer + deployment.
-    # cleanup_on_exit=False so the deployment survives for run 2.
+    # cancel_on_exit=False so the deployment survives for run 2.
     logger.info("--- Run 1: cold start ---")
     cfg1 = _make_cfg("r1")
-    metrics1 = _run(cfg1, rlor_mgr, deploy_mgr, cleanup_on_exit=False)
+    metrics1 = _run(cfg1, rlor_mgr, deploy_mgr, cancel_on_exit=False)
     logger.info("Run 1 metrics: %s", metrics1)
     trainer_r1 = metrics1.get("policy_job_id")
 
@@ -211,7 +211,7 @@ def main() -> None:
     # fresh trainer, PATCHes hot_load_trainer_job, waits for the pod roll.
     logger.info("--- Run 2: re-attach ---")
     cfg2 = _make_cfg("r2")
-    metrics2 = _run(cfg2, rlor_mgr, deploy_mgr, cleanup_on_exit=not args.keep_resources)
+    metrics2 = _run(cfg2, rlor_mgr, deploy_mgr, cancel_on_exit=not args.keep_resources)
     logger.info("Run 2 metrics: %s", metrics2)
 
     trainer_r2 = metrics2.get("policy_job_id")

@@ -243,8 +243,17 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cleanup_on_exit: bool = False,
+    cancel_on_exit: bool = False,
+    cleanup_on_exit: bool | None = None,
 ):
+    if cleanup_on_exit is not None:
+        import warnings
+        warnings.warn(
+            "igpo_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
+            DeprecationWarning, stacklevel=2,
+        )
+        cancel_on_exit = cleanup_on_exit
+
     cfg = config
     if cfg.policy_base_url or cfg.reference_base_url:
         logger.warning(
@@ -359,7 +368,7 @@ def main(
         # Create deployment referencing the trainer's hot-load bucket
         cfg.deployment.hot_load_trainer_job = policy_ep.job_name
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
-        if cleanup_on_exit:
+        if cancel_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         policy_job_id = policy_ep.job_id

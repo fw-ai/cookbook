@@ -1056,6 +1056,12 @@ def setup_infra(
             trainer_job_name=policy_handle.job_name, cleanup=cleanup,
         )
 
+    # Ensure the deploy_cfg fed into wait_deployment carries the resolved
+    # deployment_id (request_deployment auto-generates it on an inner-scope
+    # copy; without this propagation wait_deployment polls /deployments/None).
+    if local_deploy_cfg is not None and resolved_deployment_id is not None:
+        local_deploy_cfg = dataclasses.replace(local_deploy_cfg, deployment_id=resolved_deployment_id)
+
     # Wait for all pending resources in parallel.
     policy_ep, reference_ep, ready_dep_info = _await_in_parallel(
         rlor_mgr=rlor_mgr,
