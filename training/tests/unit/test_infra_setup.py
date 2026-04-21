@@ -7,10 +7,11 @@ patching the SDK boundary and verifying setup_infra wires things
 together correctly — particularly the LoRA shared-reference path
 that keeps a single trainer alive for both policy and reference.
 
-Parallel-provisioning tests (added with the parallel-trainer-deploy PR) verify:
+Parallel-provisioning tests verify:
   * request phase fires before wait phase
   * trainer and deployment waits overlap in wall time
   * cleanup is registered at request time so failures during wait still clean up
+  * re-attach PATCH is issued before trainer READY (parallel, not serial)
 """
 
 from __future__ import annotations
@@ -136,10 +137,8 @@ def patch_sdk(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
     monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
-    monkeypatch.setattr(
-        infra_setup_mod, "setup_or_reattach_deployment",
-        lambda *a, **kw: SimpleNamespace(inference_model="accounts/test/models/deployed"),
-    )
+    monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
     monkeypatch.setattr(
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
@@ -423,10 +422,8 @@ def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
     monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
-    monkeypatch.setattr(
-        infra_setup_mod, "setup_or_reattach_deployment",
-        lambda *a, **kw: SimpleNamespace(inference_model=None),
-    )
+    monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
     monkeypatch.setattr(
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
@@ -470,10 +467,8 @@ def test_parallel_wait_timing(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
     monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
-    monkeypatch.setattr(
-        infra_setup_mod, "setup_or_reattach_deployment",
-        lambda *a, **kw: SimpleNamespace(inference_model=None),
-    )
+    monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
     monkeypatch.setattr(
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
@@ -522,10 +517,8 @@ def test_failure_cleanup_registers_both_resources(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
     monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
-    monkeypatch.setattr(
-        infra_setup_mod, "setup_or_reattach_deployment",
-        lambda *a, **kw: SimpleNamespace(inference_model=None),
-    )
+    monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
     monkeypatch.setattr(
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
@@ -574,10 +567,8 @@ def test_lora_shared_ref_no_ref_trainer_created(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
     monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
-    monkeypatch.setattr(
-        infra_setup_mod, "setup_or_reattach_deployment",
-        lambda *a, **kw: SimpleNamespace(inference_model="accounts/test/models/deployed"),
-    )
+    monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
     monkeypatch.setattr(
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
@@ -626,10 +617,8 @@ def test_reuse_path_policy_job_id_set(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
     monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
-    monkeypatch.setattr(
-        infra_setup_mod, "setup_or_reattach_deployment",
-        lambda *a, **kw: SimpleNamespace(inference_model="accounts/test/models/deployed"),
-    )
+    monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
+    monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
     monkeypatch.setattr(
         infra_setup_mod, "auto_select_training_shape",
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
@@ -688,3 +677,61 @@ def test_dpo_full_param_no_deployment(monkeypatch):
     assert infra.sampler is None
     assert infra.weight_syncer is None
     assert infra.reference_job_id == "ref-job"
+
+
+def test_reattach_patch_issued_before_trainer_ready(monkeypatch):
+    """Re-attach PATCH fires before trainer READY; settle runs in parallel with trainer wait."""
+    _FakeClient.instances = []
+    events: list[str] = []
+
+    def fake_request_trainer(_rlor, *, display_name, **kwargs):
+        return _trainer_handle("policy-job")
+
+    def fake_wait_trainer(_rlor, created, *, display_name="", **kwargs):
+        time.sleep(0.05)
+        events.append(f"wait_done:{display_name}")
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    def fake_settle(deploy_mgr, dep_id, base_model, *, prev_identity, timeout_s):
+        events.append("settle_start")
+        time.sleep(0.05)
+        events.append("settle_done")
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: "old-pod-id")
+    monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", fake_settle)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+    monkeypatch.setattr(infra_setup_mod, "get_deployment_gpu_count", lambda *a, **kw: 1)
+    monkeypatch.setattr(
+        infra_setup_mod.transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object(),
+    )
+    monkeypatch.setattr(infra_setup_mod, "WeightSyncer", lambda **kw: MagicMock())
+    monkeypatch.setattr(infra_setup_mod, "DeploymentSampler", lambda **kw: MagicMock())
+
+    rlor, deploy = _make_mgrs(profile=_profile())
+    # Existing live deployment → triggers re-attach path.
+    deploy.get.return_value = SimpleNamespace(
+        state="READY", inference_model=None, deployment_id="dep-1",
+    )
+    cfg = _make_cfg(lora_rank=0, deployment_id="dep-1")
+
+    setup_infra(
+        cfg, rlor_mgr=rlor, deploy_mgr=deploy,
+        needs_reference=False, needs_inference=True,
+        api_key="key",
+    )
+
+    # PATCH must have been issued with policy_handle.job_name (available before READY).
+    deploy.update.assert_called_once_with(
+        "dep-1",
+        body={"hotLoadTrainerJob": "jobs/policy-job"},
+        update_mask="hot_load_trainer_job",
+    )
+    # Settle and trainer wait both ran (in parallel).
+    assert "settle_start" in events
+    assert "wait_done:grpo-policy" in events

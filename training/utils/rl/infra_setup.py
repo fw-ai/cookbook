@@ -50,11 +50,11 @@ from training.utils import (
     get_deployment_gpu_count,
     request_deployment,
     request_trainer_job,
-    setup_or_reattach_deployment,
     wait_deployment,
     wait_trainer_job,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
+from training.utils.infra import _read_replica_identity, _wait_for_reattach_settled
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,23 @@ __all__ = ["Infra", "setup_infra"]
 # Default concurrent requests per GPU when AdaptiveConcurrencyController's
 # initial_window is unspecified.
 _SLOTS_PER_GPU = 8
+
+
+@dataclass
+class _ReattachHandle:
+    """Pending re-attach: PATCH has been issued; pod-roll settle is still pending.
+
+    *dep_info* is the existing ``DeploymentInfo`` captured before the PATCH.
+    *prev_identity* is the replica identity before the PATCH so
+    :func:`_wait_for_reattach_settled` can detect the pod roll.
+    *deployment_id* mirrors ``dep_info`` for convenience.
+    *timeout_s* is forwarded to the settle function.
+    """
+
+    dep_info: "DeploymentInfo"
+    prev_identity: str | None
+    deployment_id: str
+    timeout_s: int
 
 
 @dataclass
@@ -171,9 +188,9 @@ def setup_infra(
         on_status=on_status_cb,
     )
 
-    # Phase 2b: POST deployment creation in parallel with trainer POSTs.
-    # Returns None for the re-attach path (existing live deployment) or when
-    # needs_inference=False — both are handled serially below.
+    # Phase 2b: POST a fresh deployment or PATCH a re-attach — both using
+    # policy_handle.job_name which is available immediately from CreatedTrainerJob
+    # before the trainer is READY. Skipped when needs_inference=False.
     dep_info = None
     if needs_inference:
         dep_info = _request_deployment_or_none(
@@ -196,19 +213,9 @@ def setup_infra(
         on_status=on_status_cb,
     )
 
-    # Serial re-attach path: existing live deployment needs the ready trainer endpoint.
     inference_model = None
     if needs_inference:
-        if ready_dep_info is not None:
-            inference_model = ready_dep_info.inference_model or cfg.base_model
-        else:
-            dep_info_reattach = setup_or_reattach_deployment(
-                deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra,
-                policy_ep.job_name,
-            )
-            if cleanup_on_exit and cleanup is not None:
-                cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-            inference_model = dep_info_reattach.inference_model if dep_info_reattach else cfg.base_model
+        inference_model = ready_dep_info.inference_model or cfg.base_model
 
     closeables: list[Any] = []
     policy = _make_policy_client(cfg, rlor_mgr, policy_ep, api_key, closeables)
@@ -394,30 +401,56 @@ def _request_deployment_or_none(
     policy_handle: Any,
     cleanup: ResourceCleanup | None,
     cleanup_on_exit: bool,
-) -> "DeploymentInfo | None":
-    """POST a fresh deployment creation; return ``None`` for the re-attach path.
+) -> "DeploymentInfo | _ReattachHandle":
+    """POST a fresh deployment or issue a re-attach PATCH; return immediately.
 
-    When an existing live deployment is found (identified by
-    ``cfg.deployment.deployment_id``), the PATCH + pod-swap dance requires
-    the policy trainer's fully-ready endpoint — that path is serial and
-    handled in :func:`setup_infra` after :func:`_await_in_parallel`.
+    Both paths use ``policy_handle.job_name`` which is available from
+    ``CreatedTrainerJob`` before the trainer is READY, so this can run
+    immediately after the trainer POST — no waiting required.
 
-    For a fresh deployment, the policy trainer's ``job_name`` is available
-    immediately from the ``CreatedTrainerJob`` handle (before the trainer is
-    READY), so we can issue the create POST in parallel with the trainer wait.
+    **Fresh deployment**: creates a new deployment with the trainer's
+    ``job_name`` baked in at creation time.
+
+    **Re-attach path** (existing live deployment found): issues a
+    ``hotLoadTrainerJob`` PATCH immediately, captures the current replica
+    identity for settling, and returns a :class:`_ReattachHandle`.
+    :func:`_await_in_parallel` will then run :func:`_wait_for_reattach_settled`
+    in parallel with the trainer waits — no serial phase needed.
 
     Cleanup is registered here so the scope-exit handler fires even if a
     later step raises.
     """
     dep_id = cfg.deployment.deployment_id
+    timeout_s = getattr(cfg.deployment, "deployment_timeout_s", None) or 600
+    job_name = getattr(policy_handle, "job_name", None)
+
     if dep_id:
         existing = deploy_mgr.get(dep_id)
         if existing and existing.state not in ("FAILED", "DELETED", "DELETING"):
-            # Existing live deployment → must re-attach after trainer is ready.
-            return None
+            if job_name:
+                # Re-attach: PATCH now with job_name (no need to wait for trainer READY).
+                prev_identity = _read_replica_identity(deploy_mgr, dep_id, cfg.base_model)
+                deploy_mgr.update(
+                    dep_id,
+                    body={"hotLoadTrainerJob": job_name},
+                    update_mask="hot_load_trainer_job",
+                )
+                logger.info(
+                    "Re-attached deployment %s to trainer %s (prev_pod=%s) — "
+                    "settling in parallel with trainer waits",
+                    dep_id, job_name, prev_identity,
+                )
+                if cleanup_on_exit and cleanup is not None:
+                    cleanup.deployment(dep_id, action="scale_to_zero")
+                return _ReattachHandle(
+                    dep_info=existing,
+                    prev_identity=prev_identity,
+                    deployment_id=dep_id,
+                    timeout_s=timeout_s,
+                )
+            # job_name unavailable (SDK bug) — fall through to fresh create.
 
-    # Bake the policy trainer's job_name into the deployment at creation time.
-    job_name = getattr(policy_handle, "job_name", None)
+    # Fresh deployment: bake job_name at creation time.
     if job_name:
         cfg.deployment.hot_load_trainer_job = job_name
 
@@ -432,7 +465,7 @@ def _await_in_parallel(
     rlor_mgr: TrainerJobManager,
     policy_handle: Any,
     ref_handle: Any | None,
-    dep_info: "DeploymentInfo | None",
+    dep_info: "DeploymentInfo | _ReattachHandle | None",
     deploy_mgr: "DeploymentManager | None",
     cfg: Any,
     role_prefix: str,
@@ -441,9 +474,13 @@ def _await_in_parallel(
     """Wait for all pending resources in parallel using a thread pool.
 
     Submits up to three futures (policy wait, optional reference wait,
-    optional deployment wait) and collects all results. On any failure,
-    all errors are gathered and re-raised together so operators see the
-    full picture.
+    optional deployment wait or re-attach settle) and collects all results.
+    On any failure, all errors are gathered and re-raised together so
+    operators see the full picture.
+
+    For :class:`_ReattachHandle`, runs :func:`_wait_for_reattach_settled`
+    in parallel with the trainer waits (the PATCH was already issued in
+    :func:`_request_deployment_or_none`).
 
     *on_status* callbacks may fire from worker threads; callers only
     print/log, both of which are thread-safe.
@@ -478,11 +515,19 @@ def _await_in_parallel(
             if ref_handle is not None
             else None
         )
-        dep_future = (
-            pool.submit(wait_deployment, deploy_mgr, dep_info, cfg.deployment)
-            if dep_info is not None
-            else None
-        )
+        if dep_info is None:
+            dep_future = None
+        elif isinstance(dep_info, _ReattachHandle):
+            dep_future = pool.submit(
+                _wait_for_reattach_settled,
+                deploy_mgr,
+                dep_info.deployment_id,
+                cfg.base_model,
+                prev_identity=dep_info.prev_identity,
+                timeout_s=dep_info.timeout_s,
+            )
+        else:
+            dep_future = pool.submit(wait_deployment, deploy_mgr, dep_info, cfg.deployment)
 
         try:
             policy_ep = policy_future.result()
@@ -497,7 +542,12 @@ def _await_in_parallel(
 
         if dep_future is not None:
             try:
-                final_dep_info = dep_future.result()
+                settle_result = dep_future.result()
+                final_dep_info = (
+                    dep_info.dep_info
+                    if isinstance(dep_info, _ReattachHandle)
+                    else settle_result
+                )
             except Exception as e:
                 errors.append(f"Deployment: {e}")
 
