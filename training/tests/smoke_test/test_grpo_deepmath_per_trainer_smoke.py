@@ -1,8 +1,9 @@
-"""GRPO deepmath smoke test on minimal 1xGPU qwen3-4b shapes (trainer-first).
+"""GRPO deepmath smoke test on minimal 1xGPU qwen3-4b shapes (``WeightSyncScope.PER_TRAINER``).
 
 40 rows, 4 completions/prompt, 2 prompt groups/step, kl_beta>0. Asserts the
-trainer-first invariant (deployment created with hot_load_trainer_job, not
-hot_load_deployment_id).
+``PER_TRAINER`` invariant: the deployment is created with
+``hot_load_trainer_job`` (pointing at the trainer's bucket), not
+``hot_load_deployment_id``.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ _DEEPMATH_DATASET = os.path.abspath(
 
 @pytest.mark.e2e
 @pytest.mark.timeout(3600)
-def test_grpo_deepmath_trainer_first(
+def test_grpo_deepmath_per_trainer(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
@@ -94,12 +95,12 @@ def test_grpo_deepmath_trainer_first(
     )
 
     # No seed pinning: this is an API contract smoke (steps complete, cleanup
-    # runs, trainer-first invariant holds), not a numerical fidelity check.
+    # runs, PER_TRAINER invariant holds), not a numerical fidelity check.
     assert isinstance(metrics, dict)
     assert metrics.get("steps", 0) >= 1, f"no training steps: {metrics}"
     assert metrics.get("reference_job_id"), f"reference trainer not created: {metrics}"
     assert config.deployment.hot_load_trainer_job, (
-        "trainer-first regression: deployment was not attached via hot_load_trainer_job"
+        "PER_TRAINER regression: deployment was not attached via hot_load_trainer_job"
     )
 
     time.sleep(3)
