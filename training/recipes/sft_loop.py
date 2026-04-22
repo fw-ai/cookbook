@@ -14,20 +14,18 @@ Usage:
 
 from __future__ import annotations
 
-import multiprocessing
+import functools
 import os
-import pickle
 import signal
 import logging
 import tempfile
 from contextlib import ExitStack
-from typing import IO, Any, Dict, Iterator, List
+from typing import Any, Dict, List
 from dataclasses import field, dataclass
 
 import torch
 import tinker
 
-import json
 import datasets as hf_datasets
 import transformers
 from dotenv import load_dotenv
@@ -36,13 +34,20 @@ from fireworks.training.sdk import TrainerJobManager
 from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
 from training.utils import (
     DEFAULT_ADAM,
+    DEFAULT_RENDER_CHUNKSIZE,
+    DEFAULT_RENDER_WORKERS,
+    DiskBackedDatumStore,
     InfraConfig,
+    MemTracer,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
     ReconnectableClient,
+    count_jsonl_rows,
+    iter_jsonl_rows,
+    stream_render_to_store,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -68,111 +73,8 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Disk-backed Datum store (streaming rendering)
-# ---------------------------------------------------------------------------
-
-
-class DiskBackedDatumStore:
-    """Pickle-backed append-only store for tinker.Datum objects.
-
-    Datums are appended during rendering (write phase) and random-accessed by
-    integer index during training (read phase). All payload bytes live on
-    local disk; only a small `(offset, length)` index is held in RAM. This
-    keeps peak RAM O(num_examples * 16 bytes) instead of
-    O(num_examples * avg_seq_len * bytes_per_token), which is required for
-    large datasets whose rendered Datum list would otherwise exceed the
-    orchestrator pod's memory limit.
-    """
-
-    def __init__(self, path: str):
-        self._path = path
-        self._offsets: List[tuple[int, int]] = []
-        self._write_fh: IO[bytes] | None = None
-        self._read_fh: IO[bytes] | None = None
-
-    def __enter__(self) -> "DiskBackedDatumStore":
-        parent = os.path.dirname(self._path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        self._write_fh = open(self._path, "wb")
-        return self
-
-    def __exit__(self, *_exc) -> None:
-        self.close_write()
-        if self._read_fh is not None:
-            self._read_fh.close()
-            self._read_fh = None
-
-    def append(self, datum: tinker.Datum) -> None:
-        if self._write_fh is None:
-            raise RuntimeError("DiskBackedDatumStore is not open for writing")
-        blob = pickle.dumps(datum, protocol=pickle.HIGHEST_PROTOCOL)
-        offset = self._write_fh.tell()
-        self._write_fh.write(blob)
-        self._offsets.append((offset, len(blob)))
-
-    def close_write(self) -> None:
-        if self._write_fh is not None:
-            self._write_fh.flush()
-            try:
-                os.fsync(self._write_fh.fileno())
-            except OSError:
-                pass
-            self._write_fh.close()
-            self._write_fh = None
-
-    def __len__(self) -> int:
-        return len(self._offsets)
-
-    def __getitem__(self, idx: int) -> tinker.Datum:
-        offset, length = self._offsets[idx]
-        if self._read_fh is None:
-            self._read_fh = open(self._path, "rb")
-        self._read_fh.seek(offset)
-        return pickle.loads(self._read_fh.read(length))
-
-    def __iter__(self) -> Iterator[tinker.Datum]:
-        for i in range(len(self._offsets)):
-            yield self[i]
-
-    def disk_size_bytes(self) -> int:
-        try:
-            return os.path.getsize(self._path)
-        except OSError:
-            return 0
-
-
-def _iter_jsonl_rows(
-    path: str, max_examples: int | None = None,
-) -> Iterator[Dict[str, Any]]:
-    """Stream JSON rows from a JSONL file without materialising the list."""
-    yielded = 0
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
-            yielded += 1
-            if max_examples is not None and yielded >= max_examples:
-                return
-
-
-def _count_jsonl_rows(path: str, max_examples: int | None = None) -> int:
-    """Count non-blank lines in a JSONL file without parsing JSON."""
-    n = 0
-    with open(path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            n += 1
-            if max_examples is not None and n >= max_examples:
-                break
-    return n
-
-
-# ---------------------------------------------------------------------------
-# Parallel rendering worker (multiprocessing)
+# Per-worker render state (multiprocessing) -- module-level so the spawn
+# pool initializer can populate it before each worker starts consuming rows.
 # ---------------------------------------------------------------------------
 
 _worker_renderer = None
@@ -181,7 +83,7 @@ _worker_max_seq_len = None
 
 
 def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_seq_len):
-    """Create a renderer per worker process to avoid pickling the tokenizer."""
+    """Build a renderer per worker (avoids pickling the tokenizer)."""
     global _worker_renderer, _worker_train_on_what, _worker_max_seq_len
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         tokenizer_model, trust_remote_code=True,
@@ -191,25 +93,20 @@ def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_s
     _worker_max_seq_len = max_seq_len
 
 
-def _render_one(row: dict) -> tinker.Datum | None:
-    """Render a single chat example. Runs in a worker process."""
-    messages = row.get("messages", [])
-    if not messages:
-        return None
-    rendered = render_messages_to_datum(
-        messages,
+def _render_one_worker(row: dict) -> tinker.Datum | None:
+    """Render a single chat example in a worker process."""
+    return _render_messages(
+        row,
         renderer=_worker_renderer,
         train_on_what=_worker_train_on_what,
+        max_seq_len=_worker_max_seq_len,
     )
-    if len(rendered.token_ids) > _worker_max_seq_len or len(rendered.token_ids) < 2:
-        return None
-    return rendered.datum
 
 
-def _render_one_inline(
+def _render_messages(
     row: dict, *, renderer, train_on_what, max_seq_len: int,
 ) -> tinker.Datum | None:
-    """Single-threaded rendering using an already-constructed renderer."""
+    """Render a chat row to a Datum, filtering empty / out-of-range sequences."""
     messages = row.get("messages", [])
     if not messages:
         return None
@@ -530,188 +427,80 @@ def main(
             train_on_what.value,
         )
 
-        # Stream-render the dataset: JSONL rows are yielded lazily and each
+        # Stream-render the dataset: JSONL rows are read lazily and each
         # rendered Datum is spilled to a disk-backed store so peak RAM stays
-        # bounded. See DiskBackedDatumStore docstring.
-        total_raw = _count_jsonl_rows(cfg.dataset, cfg.max_examples)
+        # bounded (O(num_workers * per_worker_render_footprint) instead of
+        # O(num_examples * avg_seq_len * bytes_per_token)).
+        # See docs/engineering/sft-v2-orchestrator-oom-debug.md for the
+        # investigation that led to this design.
+        total_raw = count_jsonl_rows(cfg.dataset, cfg.max_examples)
         if total_raw == 0:
             raise RuntimeError(f"No examples found in {cfg.dataset}")
         logger.info("Streaming %d examples from %s", total_raw, cfg.dataset)
 
         max_seq_len = cfg.max_seq_len
         log_interval = max(1, total_raw // 20)  # ~5% increments for runner progress
-        mem_log_interval = 500  # high-res memory sampling (~0.45% per step for 110K rows)
+        mem_log_interval = 500  # high-res mem sampling (~0.45% per step for 110K rows)
         render_cache_dir = stack.enter_context(
             tempfile.TemporaryDirectory(prefix="sft_render_")
         )
         training_store = stack.enter_context(
             DiskBackedDatumStore(os.path.join(render_cache_dir, "training.bin"))
         )
-        filtered_count = 0
 
-        import resource as _resource
+        mem_tracer = MemTracer(
+            store_callback=lambda: (
+                len(training_store), training_store.disk_size_bytes(),
+            ),
+            log=logger,
+        )
+        mem_tracer.log("before_rendering", 0, total_raw)
 
-        def _read_cgroup_mem():
-            """Read cgroup memory usage (works in k8s containers)."""
-            for path in [
-                "/sys/fs/cgroup/memory.current",        # cgroup v2
-                "/sys/fs/cgroup/memory/memory.usage_in_bytes",  # cgroup v1
-            ]:
-                try:
-                    with open(path) as f:
-                        return int(f.read().strip())
-                except (FileNotFoundError, ValueError):
-                    continue
-            return 0
-
-        def _read_cgroup_limit():
-            for path in [
-                "/sys/fs/cgroup/memory.max",
-                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
-            ]:
-                try:
-                    with open(path) as f:
-                        val = f.read().strip()
-                        if val == "max":
-                            return 0
-                        return int(val)
-                except (FileNotFoundError, ValueError):
-                    continue
-            return 0
-
-        def _proc_vmrss_gi(status_path: str) -> float:
-            try:
-                with open(status_path) as f:
-                    for line in f:
-                        if line.startswith("VmRSS:"):
-                            return int(line.split()[1]) / (1024 * 1024)  # KiB -> GiB
-            except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError):
-                pass
-            return 0.0
-
-        def _worker_rss_info(main_pid: int):
-            """Return (list_of_(pid, rss_gi), total_gi) for worker processes."""
-            import glob as _glob
-            workers = []
-            for status_path in _glob.glob("/proc/*/status"):
-                try:
-                    pid_str = status_path.split("/")[2]
-                    if not pid_str.isdigit():
-                        continue
-                    pid = int(pid_str)
-                    if pid == main_pid:
-                        continue
-                    with open(status_path) as f:
-                        content = f.read()
-                    ppid = 0
-                    rss_kib = 0
-                    for line in content.split("\n"):
-                        if line.startswith("PPid:"):
-                            ppid = int(line.split()[1])
-                        elif line.startswith("VmRSS:"):
-                            rss_kib = int(line.split()[1])
-                    if ppid == main_pid and rss_kib > 0:
-                        workers.append((pid, rss_kib / (1024 * 1024)))
-                except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, IndexError):
-                    continue
-            workers.sort()
-            return workers, sum(r for _, r in workers)
-
-        _MAIN_PID = os.getpid()
-
-        def _log_mem(stage: str, i: int, total: int, pool=None):
-            peak_kib = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
-            peak_gi = peak_kib / (1024 ** 2)  # ru_maxrss is KiB on Linux
-            main_cur_gi = _proc_vmrss_gi(f"/proc/{_MAIN_PID}/status")
-            cgroup_bytes = _read_cgroup_mem()
-            cgroup_gi = cgroup_bytes / (1024 ** 3)
-            limit_bytes = _read_cgroup_limit()
-            limit_gi = limit_bytes / (1024 ** 3) if limit_bytes else 0
-
-            workers, workers_total = _worker_rss_info(_MAIN_PID)
-            workers_str = ",".join(f"{pid}:{gi:.1f}" for pid, gi in workers)
-
-            pool_info = ""
-            if pool is not None:
-                try:
-                    # Count pending tasks in the pool's result cache.
-                    cache_size = len(pool._cache)
-                    pool_info = f" | pool_cache={cache_size}"
-                except Exception:
-                    pass
-
-            unaccounted = cgroup_gi - main_cur_gi - workers_total
-
-            store_disk_gi = training_store.disk_size_bytes() / (1024 ** 3)
-            logger.info(
-                "[mem] %s %d/%d (%.0f%%) | cgroup=%.1f/%.1f GiB | main=%.1f cur / %.1f peak GiB"
-                " | workers=%.1f GiB [%s] | unaccounted=%.1f GiB%s"
-                " | store=%d rows / %.1f GiB disk",
-                stage, i, total, 100.0 * i / total,
-                cgroup_gi, limit_gi, main_cur_gi, peak_gi,
-                workers_total, workers_str, unaccounted, pool_info,
-                len(training_store), store_disk_gi,
-            )
-
-        _log_mem("before_rendering", 0, total_raw)
-
-        # Conservative parallel settings:
-        #   workers=4 keeps spawn baseline ~28 GiB instead of 56 GiB
-        #   chunksize=10 cuts result-buffer bursts ~10x vs chunksize=100
-        num_workers = min(os.cpu_count() or 1, 4)
-        render_chunksize = 10
+        num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         use_parallel = num_workers > 1 and total_raw > num_workers
+        logger.info(
+            "Rendering %d examples (%s, workers=%d, chunksize=%d)",
+            total_raw,
+            "parallel spawn" if use_parallel else "single-process",
+            num_workers if use_parallel else 1,
+            DEFAULT_RENDER_CHUNKSIZE if use_parallel else 1,
+        )
 
-        if use_parallel:
-            logger.info(
-                "Rendering %d examples with %d parallel workers (chunksize=%d)",
-                total_raw, num_workers, render_chunksize,
-            )
-            spawn_ctx = multiprocessing.get_context("spawn")
-            with spawn_ctx.Pool(
-                processes=num_workers,
-                initializer=_init_render_worker,
-                initargs=(
-                    cfg.tokenizer_model, cfg.renderer_name,
-                    cfg.train_on_what, max_seq_len,
-                ),
-            ) as pool:
-                raw_iter = _iter_jsonl_rows(cfg.dataset, cfg.max_examples)
-                for i, datum in enumerate(
-                    pool.imap(_render_one, raw_iter, chunksize=render_chunksize)
-                ):
-                    if datum is not None:
-                        training_store.append(datum)
-                    else:
-                        filtered_count += 1
-                    if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                        runner.report_rendering_progress(i + 1, total_raw)
-                    if (i + 1) % mem_log_interval == 0 or (i + 1) == total_raw:
-                        _log_mem("rendering", i + 1, total_raw, pool=pool)
-        else:
-            for i, row in enumerate(_iter_jsonl_rows(cfg.dataset, cfg.max_examples)):
-                datum = _render_one_inline(
-                    row, renderer=renderer,
-                    train_on_what=train_on_what, max_seq_len=max_seq_len,
+        def _on_render_progress(i: int, _datum: tinker.Datum | None) -> None:
+            if i % log_interval == 0 or i == total_raw:
+                runner.report_rendering_progress(i, total_raw)
+            if i % mem_log_interval == 0 or i == total_raw:
+                mem_tracer.log("rendering", i, total_raw)
+
+        filtered_count = stream_render_to_store(
+            iter_jsonl_rows(cfg.dataset, cfg.max_examples),
+            render_fn=(
+                _render_one_worker if use_parallel
+                else functools.partial(
+                    _render_messages,
+                    renderer=renderer,
+                    train_on_what=train_on_what,
+                    max_seq_len=max_seq_len,
                 )
-                if datum is not None:
-                    training_store.append(datum)
-                else:
-                    filtered_count += 1
-                if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                    runner.report_rendering_progress(i + 1, total_raw)
-                if (i + 1) % mem_log_interval == 0 or (i + 1) == total_raw:
-                    _log_mem("rendering", i + 1, total_raw)
+            ),
+            store=training_store,
+            num_workers=num_workers if use_parallel else 1,
+            chunksize=DEFAULT_RENDER_CHUNKSIZE,
+            initializer=_init_render_worker if use_parallel else None,
+            initargs=(
+                cfg.tokenizer_model, cfg.renderer_name,
+                cfg.train_on_what, max_seq_len,
+            ) if use_parallel else (),
+            on_progress=_on_render_progress,
+        )
 
         training_store.close_write()
-        _log_mem("after_rendering", total_raw, total_raw)
+        mem_tracer.log("after_rendering", total_raw, total_raw)
 
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count,
-                total_raw,
-                max_seq_len,
+                filtered_count, total_raw, max_seq_len,
             )
         logger.info("Prepared %d training examples", len(training_store))
         if len(training_store) == 0:
@@ -724,40 +513,41 @@ def main(
         eval_data: List[tinker.Datum] = []
         training_start_idx = 0
         if cfg.evaluation_dataset:
-            total_eval = _count_jsonl_rows(cfg.evaluation_dataset)
+            total_eval = count_jsonl_rows(cfg.evaluation_dataset)
             eval_log_interval = max(1, total_eval // 10)
             eval_store = stack.enter_context(
                 DiskBackedDatumStore(os.path.join(render_cache_dir, "eval.bin"))
             )
-            if use_parallel:
-                spawn_ctx = multiprocessing.get_context("spawn")
-                with spawn_ctx.Pool(
-                    processes=num_workers,
-                    initializer=_init_render_worker,
-                    initargs=(
-                        cfg.tokenizer_model, cfg.renderer_name,
-                        cfg.train_on_what, max_seq_len,
-                    ),
-                ) as pool:
-                    raw_eval_iter = _iter_jsonl_rows(cfg.evaluation_dataset)
-                    for i, datum in enumerate(
-                        pool.imap(_render_one, raw_eval_iter, chunksize=render_chunksize)
-                    ):
-                        if datum is not None:
-                            eval_store.append(datum)
-                        if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
-                            runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
-            else:
-                for i, row in enumerate(_iter_jsonl_rows(cfg.evaluation_dataset)):
-                    datum = _render_one_inline(
-                        row, renderer=renderer,
-                        train_on_what=train_on_what, max_seq_len=max_seq_len,
+
+            def _on_eval_progress(i: int, _datum: tinker.Datum | None) -> None:
+                if i % eval_log_interval == 0 or i == total_eval:
+                    runner.report_rendering_progress(
+                        i, total_eval, label="rendering eval data",
                     )
-                    if datum is not None:
-                        eval_store.append(datum)
-                    if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
-                        runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
+
+            stream_render_to_store(
+                iter_jsonl_rows(cfg.evaluation_dataset),
+                render_fn=(
+                    _render_one_worker if use_parallel
+                    else functools.partial(
+                        _render_messages,
+                        renderer=renderer,
+                        train_on_what=train_on_what,
+                        max_seq_len=max_seq_len,
+                    )
+                ),
+                store=eval_store,
+                num_workers=num_workers if use_parallel else 1,
+                chunksize=DEFAULT_RENDER_CHUNKSIZE,
+                initializer=_init_render_worker if use_parallel else None,
+                initargs=(
+                    cfg.tokenizer_model, cfg.renderer_name,
+                    cfg.train_on_what, max_seq_len,
+                ) if use_parallel else (),
+                on_progress=_on_eval_progress,
+            )
             eval_store.close_write()
+            # Eval set is bounded (max_eval_seqs ~ 100), safe to materialise.
             eval_data = list(eval_store)
             logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
         elif cfg.eval_auto_carveout:
