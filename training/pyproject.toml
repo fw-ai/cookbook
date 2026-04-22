@@ -16,6 +16,7 @@ dependencies = [
     "transformers",
     "python-dotenv",
     "wandb",
+    "orjson",
 ]
 
 [project.optional-dependencies]
