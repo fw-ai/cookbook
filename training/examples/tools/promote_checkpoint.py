@@ -112,9 +112,11 @@ def parse_args() -> PromoteConfig:
         "--hot-load-deployment-id",
         default=None,
         help=(
-            "[Deprecated] Deployment ID for legacy jobs whose checkpoints "
-            "are associated with a deployment. Migrate to trainer-first "
-            "checkpoints instead. Omit for newer jobs."
+            "[Legacy] Deployment ID for jobs from deployments that predate "
+            "the stored-bucket-URL migration. Modern runs (both PER_TRAINER "
+            "and PER_DEPLOYMENT bucket scopes) do not need this — the "
+            "bucket URL is resolved server-side from the trainer's stored "
+            "metadata. Omit for any run from cookbook >= 0.3.0."
         ),
     )
     args = parser.parse_args()
@@ -217,9 +219,10 @@ def main() -> None:
     logger.info("Output model ID: %s", output_model_id)
     if cfg.hot_load_deployment_id:
         logger.warning(
-            "--hot-load-deployment-id is deprecated. Please migrate to "
-            "trainer-first checkpoints (cookbook >= 0.3.0) which no longer "
-            "require a deployment ID."
+            "--hot-load-deployment-id is only needed for deployments that "
+            "predate the stored-bucket-URL migration. Runs from cookbook "
+            ">= 0.3.0 (both PER_TRAINER and PER_DEPLOYMENT bucket scopes) "
+            "resolve the bucket URL server-side and should omit this flag."
         )
         logger.info("Deployment ID:   %s (legacy)", cfg.hot_load_deployment_id)
 

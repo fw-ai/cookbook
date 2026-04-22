@@ -8,7 +8,7 @@ does not hit.
 | Script | Scope under test | What it runs |
 |---|---|---|
 | `test_reattach_manual.py` | `WeightSyncScope.PER_TRAINER` **re-attach** path | `rl_loop.main` twice sharing one `deployment_id`; the second run must PATCH `hot_load_trainer_job` onto the existing deployment. |
-| `test_deployment_first_manual.py` | `WeightSyncScope.PER_DEPLOYMENT` | Single `rl_loop.main` run where `setup_infra` creates the deployment first, then launches trainers with `hot_load_deployment_id`. |
+| `test_per_deployment_manual.py` | `WeightSyncScope.PER_DEPLOYMENT` | Single `rl_loop.main` run where `setup_infra` provisions the deployment-owned bucket, then launches trainers with `hot_load_deployment_id`. |
 
 Both scripts reuse the deepmath reward + dataset from
 `training/examples/rl/deepmath/` and pin to the 1×GPU qwen3-4b minimum
@@ -21,7 +21,7 @@ Set a pyroworks-dev-scoped key (targets `https://dev.api.fireworks.ai`):
 ```bash
 export FIREWORKS_API_KEY=<pyroworks key>
 python training/examples/manual/test_reattach_manual.py
-python training/examples/manual/test_deployment_first_manual.py
+python training/examples/manual/test_per_deployment_manual.py
 ```
 
 Flags worth knowing:
@@ -45,15 +45,15 @@ The script also asserts that run-1 and run-2 produced *different* trainer
 job IDs — a silently reused trainer would mean the re-attach path was
 never exercised.
 
-**Deployment-first (PER_DEPLOYMENT):**
+**PER_DEPLOYMENT:**
 
 ```
-Creating deployment: <dep_id>          # happens BEFORE any trainer create
+Creating deployment: <dep_id>          # deployment-owned bucket provisioned first
 Creating policy trainer job '...' ...  # then trainers, with hot_load_deployment_id
 ```
 
-No `Re-attached deployment ...` lines — that scope never PATCHes.
+No `Re-attached deployment ...` lines — `PER_DEPLOYMENT` never PATCHes.
 
 The script asserts `config.deployment.hot_load_trainer_job is None` to
-catch a regression where PER_DEPLOYMENT accidentally takes the
-trainer-first wiring.
+catch a regression where `PER_DEPLOYMENT` accidentally takes the
+`PER_TRAINER` wiring.

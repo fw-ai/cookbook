@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Manual test: PER_DEPLOYMENT (deployment-first) flow end-to-end.
+"""Manual test: ``WeightSyncScope.PER_DEPLOYMENT`` flow end-to-end.
 
 Drives ``rl_loop.main`` with ``DeployConfig.weight_sync_scope =
 WeightSyncScope.PER_DEPLOYMENT``. Under this scope:
 
-1. ``setup_infra`` provisions the deployment **first**; its ID is the
-   stable bucket owner.
+1. ``setup_infra`` provisions the deployment-owned bucket first; the
+   deployment ID is the stable bucket owner.
 2. Each trainer is then launched with ``hot_load_deployment_id``
    pointing at that deployment — their buckets co-index with the
    deployment, not with the trainer job.
@@ -13,16 +13,16 @@ WeightSyncScope.PER_DEPLOYMENT``. Under this scope:
 
 Minimal run: 1 prompt group per step, 2 completions, 5 rows, 1 epoch
 on qwen3-4b + the 1xGPU qwen3-4b-minimum training shape. Complements
-the trainer-first path that CI
+the ``PER_TRAINER`` path that CI
 https://github.com/fw-ai/fireworks/actions/runs/24703610604 already
 covers.
 
 Usage:
     export FIREWORKS_API_KEY=<pyroworks key>
-    python training/examples/manual/test_deployment_first_manual.py
+    python training/examples/manual/test_per_deployment_manual.py
 
 What to look for in the logs:
-    Creating deployment: <dep_id>                  # happens BEFORE any trainer
+    Creating deployment: <dep_id>                  # deployment-owned bucket provisioned first
     Creating policy trainer job '...' ...           # then trainers
     (no "Re-attached deployment ..." messages — this scope never PATCHes)
 """
@@ -60,7 +60,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     force=True,
 )
-logger = logging.getLogger("manual.deployment_first")
+logger = logging.getLogger("manual.per_deployment")
 
 _DEEPMATH_DATASET = os.path.abspath(
     os.path.join(
@@ -114,7 +114,7 @@ def main() -> None:
         api_key=api_key, base_url=base_url, hotload_api_url=base_url,
     )
 
-    deployment_id = args.deployment_id or f"depfirst-manual-{uuid.uuid4().hex[:8]}"
+    deployment_id = args.deployment_id or f"perdeploy-manual-{uuid.uuid4().hex[:8]}"
     logger.info("=== Manual PER_DEPLOYMENT test ===")
     logger.info(
         "deployment_id=%s  base_model=%s  training_shape=%s",
@@ -122,7 +122,7 @@ def main() -> None:
     )
 
     config = rl_loop.Config(
-        log_path=tempfile.mkdtemp(prefix="depfirst_manual_"),
+        log_path=tempfile.mkdtemp(prefix="perdeploy_manual_"),
         base_model=args.base_model,
         dataset=_DEEPMATH_DATASET,
         learning_rate=1e-5,
@@ -149,7 +149,7 @@ def main() -> None:
             weight_sync_before_training=True,
             weight_sync_timeout=600,
         ),
-        wandb=WandBConfig(run_name=f"depfirst-{deployment_id}"),
+        wandb=WandBConfig(run_name=f"perdeploy-{deployment_id}"),
     )
 
     # Lazy import: train_deepmath reads FIREWORKS_API_KEY at import time.

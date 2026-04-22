@@ -29,8 +29,8 @@ jobs:
           - tests/smoke_test/test_sft_smoke.py
           - tests/smoke_test/test_dpo_smoke.py
           - tests/smoke_test/test_grpo_smoke.py
-          - tests/smoke_test/test_grpo_deepmath_trainer_first_smoke.py
-          - tests/smoke_test/test_grpo_deepmath_deployment_first_smoke.py
+          - tests/smoke_test/test_grpo_deepmath_per_trainer_smoke.py
+          - tests/smoke_test/test_grpo_deepmath_per_deployment_smoke.py
     defaults:
       run:
         working-directory: training

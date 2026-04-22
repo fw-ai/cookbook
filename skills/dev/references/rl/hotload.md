@@ -4,13 +4,13 @@ RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-tra
 
 All hotload behaviour in `rl_loop.py` is controlled by `cfg.weight_sync: WeightSyncConfig`; the *scope* (who owns the GCS bucket) is set on `DeployConfig.weight_sync_scope`.
 
-For the user-facing overview of the two scopes, see the docs page: [Hotload flows: trainer-first vs deployment-first](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows). This skill is the deep reference — server-side validation details, knob tuning, recovery playbooks.
+For the user-facing overview of the two bucket scopes (`PER_TRAINER` vs `PER_DEPLOYMENT`), see the docs page: [Hotload flows](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows). This skill is the deep reference — server-side validation details, knob tuning, recovery playbooks.
 
 ## Weight sync scope: PER_TRAINER vs PER_DEPLOYMENT
 
 `DeployConfig.weight_sync_scope` (a `WeightSyncScope` enum) controls who owns the GCS bucket and what happens on resume. Mixing scopes on the same trainer ↔ deployment pair is the historical cause of `Hotload failed` and `checkpoint not found in GCS`. The **server now catches most mix-ups at `CreateDeployment` / `CreateRlorTrainerJob` time** (see [Server-side validation](#server-side-validation)), so runtime-level failures are rare in modern runs. They can still surface on trainers created with `--skip-validations` or from pre-validation runs.
 
-### PER_TRAINER (default — required for new work)
+### PER_TRAINER (default)
 
 ```python
 DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
@@ -21,7 +21,7 @@ DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
 3. The **trainer owns** the checkpoints. Promote reads them from the trainer's bucket without any deployment ID.
 4. On resume, the deployment is re-attached to the new trainer (PATCH `hotLoadTrainerJob`), which briefly restarts the serving pod.
 
-Bucket path: `gs://.../rl-checkpoints/{account}/trainer-{trainer_id}/`. Good when one trainer feeds multiple deployments, or for clean per-run isolation. Contract test: `training/tests/smoke_test/test_grpo_deepmath_trainer_first_smoke.py`.
+Bucket path: `gs://.../rl-checkpoints/{account}/trainer-{trainer_id}/`. Good when one trainer feeds multiple deployments, or for clean per-run isolation. Contract test: `training/tests/smoke_test/test_grpo_deepmath_per_trainer_smoke.py`.
 
 ### PER_DEPLOYMENT
 
@@ -92,7 +92,9 @@ eval_dep = deploy_mgr.create_or_get(DeploymentConfig(
 
 ## Server-side validation
 
-The control plane catches scope mix-ups at `CreateDeployment` / `CreateRlorTrainerJob` time and rejects the call with a message that names both resources and suggests the fix. The error links back to the user-facing docs page.
+The control plane catches bucket-scope mix-ups at `CreateDeployment` / `CreateRlorTrainerJob` time and rejects the call with a message that names both resources and suggests the fix. The error links back to the user-facing docs page.
+
+> **Note on wording:** the server still emits "trainer-first" and "deployment-first" in these error strings. They correspond to `PER_TRAINER` and `PER_DEPLOYMENT` bucket scope respectively. Treat the error strings as opaque; the cookbook standardises on the enum wording.
 
 | Error | Root cause | Recovery |
 |---|---|---|
@@ -164,14 +166,14 @@ Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot 
 
 1. **First, check the SDK version matches the cookbook's pin** (see [`../../SKILL.md#first-debug-step--always`](../../SKILL.md#first-debug-step--always)).
 2. **Check if it's a retention-expired trainer.** `list_checkpoints` / `promote_checkpoint` returning `NOT_FOUND` > 30 days after delete is expected — the row is gone and the checkpoints in GCS have been GC'd too.
-3. **If the trainer is alive or within retention:** most causes are a `PER_TRAINER` vs `PER_DEPLOYMENT` scope mix-up on a `--skip-validations` trainer or a pre-validation run. Ask:
-   - Did you create this deployment before the trainer, and then later point a new `PER_TRAINER` trainer at it?
+3. **If the trainer is alive or within retention:** most causes are a `PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up on a `--skip-validations` trainer or a pre-validation run. Ask:
+   - Was this deployment created with its own `hot_load_bucket_url` (i.e. `PER_DEPLOYMENT` scope), and then later attached to a `PER_TRAINER` trainer?
    - Was the trainer originally launched with `hot_load_deployment_id`, and is something now also setting `hot_load_trainer_job` on the deployment?
 
    Either answer means the trainer's bucket and the deployment's bucket disagree. Use one of the [bucket mismatch recovery](#bucket-mismatch-trainer-wrote-to-a-different-bucket-than-the-deployment-watches) options.
 4. If neither applies, or you're unsure how to untangle it, reach out to Fireworks support. Server-side recovery (re-pointing a deployment's bucket, recovering an orphaned sampler blob, looking up a legacy deployment ID) is handled by the Fireworks team.
 
-## New runs: don't blind-copy `hot_load_deployment_id`
+## Picking a scope: don't blind-copy `hot_load_deployment_id`
 
 Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_id` into a new run. Only do so if you deliberately want `PER_DEPLOYMENT` (re-using a warmed deployment across sequential trainers). For a single run or a fan-out pattern, `PER_TRAINER` is the right default — set `hot_load_trainer_job` on the deployment and leave `hot_load_deployment_id` unset.
 
