@@ -40,6 +40,49 @@ def _fake_profile(shape_id: str = "accounts/test/trainingShapes/sft"):
     )
 
 
+def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
+    """warm_start_from_adapter and init_from_checkpoint are mutually exclusive."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
+    )
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-1.7B",
+        max_seq_len=32,
+        lora_rank=16,
+        warm_start_from_adapter="gs://bucket/adapter-dir",
+        init_from_checkpoint="gs://bucket/dcp-dir",
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        module.main(cfg)
+
+
+def test_main_rejects_adapter_with_zero_lora_rank(tmp_path, monkeypatch):
+    """warm_start_from_adapter requires lora_rank > 0 (LoRA training)."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
+    )
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-1.7B",
+        max_seq_len=32,
+        lora_rank=0,
+        warm_start_from_adapter="gs://bucket/adapter-dir",
+    )
+
+    with pytest.raises(ValueError, match="lora_rank > 0"):
+        module.main(cfg)
+
+
 def test_main_requires_tokenizer_model(tmp_path, monkeypatch):
     dataset_path = _write_dataset(
         tmp_path,

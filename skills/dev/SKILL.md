@@ -31,6 +31,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "Hotload keeps failing — is this a `PER_TRAINER` / `PER_DEPLOYMENT` scope mix-up?" | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) — self-check and reach out to Fireworks support |
 | "How do I verify train vs inference logprobs?" | [`references/tools.md`](references/tools.md#verify_logprobspy) |
 | "Where does checkpoint state live?" / CheckpointKind / `checkpoints.jsonl` | [`references/checkpoints.md`](references/checkpoints.md) |
+| "Continue LoRA training from a prior adapter" / `warm_start_from_adapter` | [`references/checkpoints.md`](references/checkpoints.md#warm-start-from-a-promoted-adapter-lora-only) |
 | Error: `checkpoint "<name>" not found in GCS` | [`references/checkpoints.md`](references/checkpoints.md#when-promote-fails) — validate `output_model_id` first; reach out to Fireworks support if still failing |
 | Error: `Hotload failed for snapshot ...` | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) |
 | Error: `hotload flow mismatch: trainer wants deployment-first ... but deployment ... is trainer-first` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — the server still emits the old "trainer-first / deployment-first" wording; it maps to `PER_TRAINER` / `PER_DEPLOYMENT` bucket scope. Scopes crossed at `CreateRlorTrainerJob`; pick one scope. |

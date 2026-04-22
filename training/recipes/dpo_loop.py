@@ -61,7 +61,12 @@ from training.utils import (
     render_preference_pair,
     resolve_renderer_name,
 )
-from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
+from training.utils.checkpoint_utils import (
+    resolve_resume,
+    save_checkpoint,
+    validate_warm_start_config,
+    CheckpointKind,
+)
 from training.utils.rl import setup_infra
 from training.utils.timer import timer, flush_timing
 
@@ -110,6 +115,10 @@ class Config:
     policy_job_id: str | None = None
     reference_job_id: str | None = None
     init_from_checkpoint: str | None = None
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
     runner: RunnerConfig = field(default_factory=RunnerConfig)
@@ -446,6 +455,11 @@ def main(
         deploy=cfg.deployment,
         output_model_id=cfg.output_model_id,
     )
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -523,7 +537,12 @@ def main(
         policy_job_id = infra.policy_job_id
         reference_job_id = infra.reference_job_id
 
-        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = resolve_resume(
+            policy,
+            cfg.log_path,
+            cfg.init_from_checkpoint,
+            cfg.warm_start_from_adapter,
+        )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)

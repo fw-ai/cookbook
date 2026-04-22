@@ -12,6 +12,7 @@ from training.utils.checkpoint_utils import (
     get_last_checkpoint,
     resolve_resume,
     save_checkpoint,
+    validate_warm_start_config,
     CheckpointKind,
     CHECKPOINTS_BASE_NAME,
 )
@@ -116,6 +117,70 @@ class TestResolveResume:
         assert result.source_job_id is None
         client.resolve_checkpoint_path.assert_called_once_with(
             "gs://bucket/path/step-5", source_job_id=None,
+        )
+
+    def test_warm_start_from_adapter_loads_adapter_on_fresh_start(self, log_dir):
+        client = _make_mock_client()
+        result = resolve_resume(
+            client, log_dir, warm_start_from_adapter="gs://bucket/adapter-dir",
+        )
+        assert result.step == 0
+        assert result.source_job_id is None
+        client.load_adapter.assert_called_once_with("gs://bucket/adapter-dir")
+
+    def test_auto_resume_wins_over_warm_start_from_adapter(self, log_dir):
+        client = _make_mock_client()
+        _write_checkpoint(log_dir, {"name": "step-7", "step": 7, "data_consumed": 28,
+                                    "state_path": "gs://bucket/job/step-7"})
+        result = resolve_resume(
+            client, log_dir,
+            warm_start_from_adapter="gs://bucket/adapter-dir",
+        )
+        assert result.step == 7
+        client.load_state_with_optimizer.assert_called_once()
+        client.load_adapter.assert_not_called()
+
+    def test_init_from_checkpoint_wins_over_warm_start_from_adapter(self, log_dir):
+        client = _make_mock_client()
+        result = resolve_resume(
+            client, log_dir,
+            init_from_checkpoint="gs://bucket/dcp",
+            warm_start_from_adapter="gs://bucket/adapter-dir",
+        )
+        assert result.step == 0
+        client.load_state_with_optimizer.assert_called_once()
+        client.load_adapter.assert_not_called()
+
+
+class TestValidateWarmStartConfig:
+    def test_both_set_rejected(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            validate_warm_start_config(
+                warm_start_from_adapter="gs://a",
+                init_from_checkpoint="gs://b",
+                lora_rank=16,
+            )
+
+    def test_adapter_with_zero_lora_rank_rejected(self):
+        with pytest.raises(ValueError, match="lora_rank > 0"):
+            validate_warm_start_config(
+                warm_start_from_adapter="gs://a",
+                init_from_checkpoint=None,
+                lora_rank=0,
+            )
+
+    def test_adapter_with_nonzero_lora_rank_ok(self):
+        validate_warm_start_config(
+            warm_start_from_adapter="gs://a",
+            init_from_checkpoint=None,
+            lora_rank=16,
+        )
+
+    def test_all_none_ok(self):
+        validate_warm_start_config(
+            warm_start_from_adapter=None,
+            init_from_checkpoint=None,
+            lora_rank=0,
         )
 
 

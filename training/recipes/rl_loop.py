@@ -64,6 +64,7 @@ from training.utils import (
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    validate_warm_start_config,
     CheckpointKind,
 )
 from training.utils.rl import PromptGroup, setup_infra
@@ -171,6 +172,11 @@ class Config:
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
+
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
 
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
@@ -311,6 +317,11 @@ def main(
         cfg.deployment,
         output_model_id=cfg.output_model_id,
     )
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -430,7 +441,12 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = resolve_resume(
+            policy,
+            cfg.log_path,
+            cfg.init_from_checkpoint,
+            cfg.warm_start_from_adapter,
+        )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
 

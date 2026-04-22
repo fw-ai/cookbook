@@ -185,6 +185,13 @@ class ReconnectableClient:
     def load_state_with_optimizer(self, path: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.load_state_with_optimizer(path).result(timeout=timeout)
 
+    def load_adapter(self, adapter_path: str, timeout: int = DCP_TIMEOUT_S):
+        """Load HF PEFT adapter weights into the current LoRA session.
+
+        Weights-only (no optimizer, no LR schedule, no data cursor).
+        """
+        return self._client.load_adapter(adapter_path).result(timeout=timeout)
+
     def save_weights_for_sampler_ext(
         self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S
     ):
