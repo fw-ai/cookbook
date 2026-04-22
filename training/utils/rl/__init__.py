@@ -33,6 +33,16 @@ __all__ = [
     "expand_turn_advantages_from_spans",
     "make_igpo_loss_fn",
     "score_prefix",
+    # Env-based rollout abstraction
+    "Message",
+    "MessageEnv",
+    "MessageStepResult",
+    "Transition",
+    "Trajectory",
+    "SingleTurnEnv",
+    "wrap_reward_fn",
+    "tokenize_chat_turn",
+    "get_prefill_logprobs",
 ]
 
 from training.utils.rl.pp import PPBatchRecommendation, compute_pp_recommendation
@@ -63,3 +73,12 @@ from training.utils.rl.igpo import (
     make_igpo_loss_fn,
     score_prefix,
 )
+from training.utils.rl.env import (
+    Message,
+    MessageEnv,
+    MessageStepResult,
+    Trajectory,
+    Transition,
+)
+from training.utils.rl.env_adapters import SingleTurnEnv, wrap_reward_fn
+from training.utils.rl.tokenize import get_prefill_logprobs, tokenize_chat_turn
