@@ -24,7 +24,10 @@ Usage:
 
 from __future__ import annotations
 
+import array
+import functools
 import os
+import tempfile
 import time
 import signal
 import asyncio
@@ -36,12 +39,17 @@ from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
 import tinker
+import transformers
 from tqdm import tqdm
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
     DEFAULT_ADAM,
+    DEFAULT_RENDER_CHUNKSIZE,
+    DEFAULT_RENDER_WORKERS,
+    DiskBackedDatumStore,
     InfraConfig,
+    MemTracer,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
@@ -49,6 +57,9 @@ from training.utils import (
     WandBConfig,
     DeployConfig,
     ReconnectableClient,
+    count_jsonl_rows,
+    iter_preference_examples,
+    stream_render_to_store,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -56,7 +67,6 @@ from training.utils import (
     log_metrics_json,
     make_batch_dpo_loss_fn,
     read_api_extra_headers_env,
-    load_preference_dataset,
     build_renderer,
     render_preference_pair,
     resolve_renderer_name,
@@ -140,84 +150,82 @@ class Config:
 # ---------------------------------------------------------------------------
 
 
-def _tokenize_pair(
-    example: dict[str, Any],
-    tokenizer: Any,
-    renderer: Any,
-    max_seq_len: int,
-) -> dict[str, Any] | None:
-    """Tokenize a single preference pair. Returns None if invalid, 'filtered' if too long."""
-    pair = render_preference_pair(
-        example["chosen"],
-        example["rejected"],
-        renderer=renderer,
+# Module-level worker state for the spawn pool. Populated once per worker via
+# `_init_pair_worker` so we don't re-pickle the tokenizer on every task.
+# Mirrors the sft_loop.py pattern; see fw-ai/cookbook#371.
+_pair_worker_state: dict = {}
+
+
+def _init_pair_worker(tokenizer_model: str, renderer_name: str, max_seq_len: int) -> None:
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        tokenizer_model, trust_remote_code=True,
+    )
+    _pair_worker_state.update(
+        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
         tokenizer=tokenizer,
+        max_seq_len=max_seq_len,
+    )
+
+
+def _render_pair(
+    example: dict[str, Any], *, renderer: Any, tokenizer: Any, max_seq_len: int,
+) -> dict[str, Any] | None:
+    """Render a preference example to a Datum-pair dict, or None if invalid / too long.
+
+    Combines the original ``"filtered"`` (too long) and ``None`` (render failed)
+    cases into a single None return so this fits the
+    :func:`stream_render_to_store` ``T | None`` contract; the caller logs the
+    combined drop count.
+
+    Stores ``chosen_tokens_len`` / ``rejected_tokens_len`` instead of the full
+    token lists — the train loop only needs the lengths for tokens-per-second
+    accounting, and the actual tokens already live inside the datums.
+    """
+    pair = render_preference_pair(
+        example["chosen"], example["rejected"],
+        renderer=renderer, tokenizer=tokenizer,
     )
     if pair is None:
         return None
     if len(pair.chosen_tokens) > max_seq_len or len(pair.rejected_tokens) > max_seq_len:
-        return "filtered"
-
+        return None
     return {
-        "chosen_tokens": pair.chosen_tokens,
-        "rejected_tokens": pair.rejected_tokens,
+        "chosen_tokens_len": len(pair.chosen_tokens),
+        "rejected_tokens_len": len(pair.rejected_tokens),
         "response_start": pair.response_start,
         "chosen_datum": pair.chosen_datum,
         "rejected_datum": pair.rejected_datum,
     }
 
 
-def _tokenize_pairs(
-    raw_data: list[dict[str, Any]],
-    tokenizer: Any,
-    renderer: Any,
-    max_seq_len: int,
-    runner: RunnerIO | None = None,
-) -> tuple[list[tuple[int, dict[str, Any]]], int]:
-    """Tokenize all preference pairs (CPU only).
-
-    Returns ``(tokenized, filtered_count)`` where each entry is
-    ``(original_index, pair_data_dict)``.
-    """
-    total_raw = len(raw_data)
-    log_interval = max(1, total_raw // 20)  # ~5% increments
-    tokenized: list[tuple[int, dict[str, Any]]] = []
-    filtered_count = 0
-    for i, example in enumerate(raw_data):
-        result = _tokenize_pair(example, tokenizer, renderer, max_seq_len)
-        if result == "filtered":
-            filtered_count += 1
-        elif result is not None:
-            tokenized.append((i, result))
-        if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-            if runner is not None:
-                runner.report_rendering_progress(i + 1, total_raw)
-            else:
-                logger.info(
-                    "Rendering preference pairs: %d/%d (%d%%)",
-                    i + 1, total_raw, int(100.0 * (i + 1) / total_raw),
-                )
-    return tokenized, filtered_count
+def _render_pair_worker(example: dict[str, Any]) -> dict[str, Any] | None:
+    return _render_pair(example, **_pair_worker_state)
 
 
 async def _ref_forward_batch(
-    pairs: list[tuple[int, dict[str, Any]]],
+    pairs: list[dict[str, Any]],
     reference: ReconnectableClient,
     semaphore: asyncio.Semaphore,
     ref_batch_size: int,
-) -> list[tuple[int, dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     """Compute reference logprobs for *pairs*, sub-batched by *ref_batch_size*.
 
-    Uses the semaphore for concurrency control.  Returns enriched pairs
-    with ``ref_chosen`` / ``ref_rejected`` logprobs attached.
+    Uses the semaphore for concurrency control. Returns enriched pairs
+    with ``ref_chosen`` / ``ref_rejected`` logprobs attached as
+    :class:`array.array` of ``'f'`` (4 bytes/token vs 28+ bytes for a Python
+    ``list[float]``) — both ``torch.tensor`` and pickle handle them natively.
+
+    Returned pairs preserve the input order. The producer relies on this
+    when appending to ``ref_cache_store`` so that epochs 1+ can iterate the
+    cache sequentially and get the same ordering as epoch 0.
     """
     sub_batches = [pairs[i:i + ref_batch_size] for i in range(0, len(pairs), ref_batch_size)]
 
     async def _process_sub_batch(
-        batch: list[tuple[int, dict[str, Any]]],
-    ) -> list[tuple[int, dict[str, Any]]]:
+        batch: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         datums: list[tinker.Datum] = []
-        for _, pair_data in batch:
+        for pair_data in batch:
             datums.append(pair_data["chosen_datum"])
             datums.append(pair_data["rejected_datum"])
 
@@ -226,17 +234,17 @@ async def _ref_forward_batch(
                 lambda d=datums: reference.forward(d, "cross_entropy")
             )
 
-        results: list[tuple[int, dict[str, Any]]] = []
-        for j, (idx, pair_data) in enumerate(batch):
-            results.append((idx, {
-                "chosen_tokens": pair_data["chosen_tokens"],
-                "rejected_tokens": pair_data["rejected_tokens"],
+        results: list[dict[str, Any]] = []
+        for j, pair_data in enumerate(batch):
+            results.append({
+                "chosen_tokens_len": pair_data["chosen_tokens_len"],
+                "rejected_tokens_len": pair_data["rejected_tokens_len"],
                 "chosen_datum": pair_data["chosen_datum"],
                 "rejected_datum": pair_data["rejected_datum"],
-                "ref_chosen": fwd.loss_fn_outputs[2 * j]["logprobs"].data,
-                "ref_rejected": fwd.loss_fn_outputs[2 * j + 1]["logprobs"].data,
+                "ref_chosen": array.array("f", fwd.loss_fn_outputs[2 * j]["logprobs"].data),
+                "ref_rejected": array.array("f", fwd.loss_fn_outputs[2 * j + 1]["logprobs"].data),
                 "response_start": pair_data["response_start"],
-            }))
+            })
         return results
 
     batch_results = await asyncio.gather(*[_process_sub_batch(b) for b in sub_batches])
@@ -282,7 +290,8 @@ _DONE = object()
 
 
 async def _train_loop(
-    tokenized_pairs: list[tuple[int, dict[str, Any]]],
+    tokenized_store: DiskBackedDatumStore,
+    ref_cache_store: DiskBackedDatumStore | None,
     reference: ReconnectableClient,
     policy: ReconnectableClient,
     adam_params: tinker.AdamParams,
@@ -295,20 +304,26 @@ async def _train_loop(
     """Pipelined DPO training -- ref forward overlaps with policy training.
 
     Epoch 0 runs a producer/consumer pipeline with an unbounded queue:
-    the producer computes reference logprobs at full speed (concurrent
-    via semaphore) while the consumer trains.  Once the producer finishes,
-    *on_ref_done* fires to delete the reference trainer immediately --
-    even while training continues.
+    the producer pulls tokenized pair chunks from ``tokenized_store``,
+    computes reference logprobs at full speed (concurrent via semaphore),
+    and pushes enriched chunks to the consumer that runs train steps.
+    Once the producer finishes, *on_ref_done* fires to delete the reference
+    trainer immediately -- even while training continues.
 
-    Epochs 1+ reuse cached ref logprobs (no ref GPU needed).
+    For multi-epoch runs, ``ref_cache_store`` (must be opened by the caller)
+    captures every enriched pair in producer order so epochs 1+ can stream
+    them sequentially without holding the cache in RAM.
     """
+    multi_epoch = cfg.epochs > 1
+    if multi_epoch and ref_cache_store is None:
+        raise ValueError("ref_cache_store is required when cfg.epochs > 1")
+
     batch_size = cfg.batch_size
     step = step_offset
-    total_steps = len(tokenized_pairs) * cfg.epochs // batch_size
+    total_steps = len(tokenized_store) * cfg.epochs // batch_size
 
     if runner is None:
         runner = RunnerIO()
-    ref_cache: dict[int, dict[str, Any]] = {}
     pipe: asyncio.Queue = asyncio.Queue()
     sem = asyncio.Semaphore(cfg.ref_cache_concurrency)
 
@@ -316,7 +331,7 @@ async def _train_loop(
         nonlocal step
         step_t0 = time.monotonic()
         step_tokens = sum(
-            len(p["chosen_tokens"]) + len(p["rejected_tokens"])
+            p["chosen_tokens_len"] + p["rejected_tokens_len"]
             for p in step_pairs
         )
         # Epoch 0: ref model processed these same sequences; epochs 1+ use cached ref logprobs.
@@ -383,21 +398,23 @@ async def _train_loop(
 
     # -- Epoch 0: pipelined ref forward + training -----------------------------
 
-    multi_epoch = cfg.epochs > 1
-
-    n_batches_epoch0 = (len(tokenized_pairs) + batch_size - 1) // batch_size
+    n_pairs = len(tokenized_store)
+    n_batches_epoch0 = (n_pairs + batch_size - 1) // batch_size
     pbar = tqdm(total=total_steps, desc="DPO training", unit="step")
 
     async def _ref_producer() -> None:
-        for start in range(0, len(tokenized_pairs), batch_size):
-            chunk = tokenized_pairs[start:start + batch_size]
+        for start in range(0, n_pairs, batch_size):
+            stop = min(start + batch_size, n_pairs)
+            chunk = [tokenized_store[i] for i in range(start, stop)]
             enriched = await _ref_forward_batch(
                 chunk, reference, sem, cfg.ref_cache_batch_size,
             )
             if multi_epoch:
-                for idx, pair in enriched:
-                    ref_cache[idx] = pair
-            await pipe.put([pair for _, pair in enriched])
+                # Append in producer order = input order (see _ref_forward_batch
+                # docstring); epochs 1+ then iterate the store sequentially.
+                for pair in enriched:
+                    ref_cache_store.append(pair)
+            await pipe.put(enriched)
         await pipe.put(_DONE)
 
     async def _trainer() -> None:
@@ -415,17 +432,23 @@ async def _train_loop(
         await asyncio.to_thread(on_ref_done)
     await consumer
 
-    # -- Epochs 1+: iterate cached ref logprobs --------------------------------
+    # -- Epochs 1+: stream cached ref logprobs from disk -----------------------
 
-    for epoch in range(1, cfg.epochs):
-        ordered_pairs = [ref_cache[idx] for idx, _ in tokenized_pairs]
-        for start in range(0, len(ordered_pairs), batch_size):
-            chunk = ordered_pairs[start:start + batch_size]
-            _run_train_step(epoch, chunk)
-            pbar.update(1)
+    if multi_epoch:
+        ref_cache_store.close_write()
+        n_cached = len(ref_cache_store)
+        logger.info(
+            "Ref cache built: %d pairs / %.1f GiB on disk",
+            n_cached, ref_cache_store.disk_size_bytes() / (1024 ** 3),
+        )
+        for epoch in range(1, cfg.epochs):
+            for start in range(0, n_cached, batch_size):
+                stop = min(start + batch_size, n_cached)
+                chunk = [ref_cache_store[i] for i in range(start, stop)]
+                _run_train_step(epoch, chunk)
+                pbar.update(1)
 
     pbar.close()
-    ref_cache.clear()
     return step
 
 
@@ -547,32 +570,102 @@ def main(
         wandb_log({"train/step": step_offset}, step_offset)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
-        # -- Tokenize + pipelined training -------------------------------------
+        # -- Tokenize (streaming) + pipelined training -------------------------
+        #
+        # Stream-render preference pairs to a disk-backed store so peak RAM
+        # stays bounded by ``num_workers * per_worker_render_footprint``
+        # instead of scaling with dataset size. For multi-epoch runs we also
+        # open a second disk-backed store for the ref-cache; together this
+        # eliminates the two largest in-memory tables (`tokenized_pairs` and
+        # `ref_cache`) that pushed the orchestrator over the node memory
+        # limit on long-context DPO runs.
+        # See docs/engineering/sft-v2-orchestrator-oom-debug.md.
 
-        import transformers
-
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            cfg.tokenizer_model, trust_remote_code=True,
+        )
         renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
         logger.info(
             "Using renderer=%s for preference tokenization",
             resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
         )
 
-        raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)
-        if not raw_data:
-            raise RuntimeError(f"No data loaded from {cfg.dataset}")
-
-        tokenized_pairs, filtered_count = _tokenize_pairs(
-            raw_data, tokenizer, renderer, infra.max_seq_len,
-            runner=runner,
+        # ``count_jsonl_rows`` is an upper bound (the ``samples`` schema may
+        # collapse multiple rows into 0 or 1 pair) but it's good enough for
+        # progress reporting.
+        total_raw = count_jsonl_rows(cfg.dataset, cfg.max_pairs)
+        if total_raw == 0:
+            raise RuntimeError(f"No data found in {cfg.dataset}")
+        max_seq_len = infra.max_seq_len
+        num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
+        use_parallel = num_workers > 1 and total_raw > num_workers
+        logger.info(
+            "Streaming %d preference rows from %s (%s, workers=%d, chunksize=%d)",
+            total_raw, cfg.dataset,
+            "parallel spawn" if use_parallel else "single-process",
+            num_workers if use_parallel else 1,
+            DEFAULT_RENDER_CHUNKSIZE if use_parallel else 1,
         )
+
+        render_cache_dir = stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="dpo_render_")
+        )
+
+        def _open_store(name: str) -> DiskBackedDatumStore:
+            return stack.enter_context(
+                DiskBackedDatumStore(os.path.join(render_cache_dir, name))
+            )
+
+        tokenized_store = _open_store("tokenized_pairs.bin")
+        # Open the ref-cache store eagerly only for multi-epoch runs; for
+        # single-epoch runs we skip the disk traffic entirely.
+        ref_cache_store: DiskBackedDatumStore | None = (
+            _open_store("ref_cache.bin") if cfg.epochs > 1 else None
+        )
+
+        mem_tracer = MemTracer(
+            store_callback=lambda: (
+                len(tokenized_store), tokenized_store.disk_size_bytes(),
+            ),
+            log=logger,
+        )
+        mem_tracer.log("before_rendering", 0, total_raw)
+
+        log_interval = max(1, total_raw // 20)       # ~5% for runner status
+        mem_log_interval = max(1, total_raw // 200)  # ~0.5% for memory tracing
+
+        def _on_render_progress(i: int, _pair: dict | None) -> None:
+            if i % log_interval == 0 or i == total_raw:
+                runner.report_rendering_progress(i, total_raw)
+            if i % mem_log_interval == 0 or i == total_raw:
+                mem_tracer.log("rendering", i, total_raw)
+
+        filtered_count = stream_render_to_store(
+            iter_preference_examples(cfg.dataset, cfg.max_pairs),
+            render_fn=_render_pair_worker if use_parallel else functools.partial(
+                _render_pair, renderer=renderer, tokenizer=tokenizer,
+                max_seq_len=max_seq_len,
+            ),
+            store=tokenized_store,
+            num_workers=num_workers if use_parallel else 1,
+            chunksize=DEFAULT_RENDER_CHUNKSIZE,
+            initializer=_init_pair_worker if use_parallel else None,
+            initargs=(
+                cfg.tokenizer_model, cfg.renderer_name, max_seq_len,
+            ) if use_parallel else (),
+            on_progress=_on_render_progress,
+        )
+        tokenized_store.close_write()
+        mem_tracer.log("after_rendering", total_raw, total_raw)
+
         if filtered_count > 0:
             logger.info(
-                "Seq-length filter: %d/%d pairs filtered (chosen or rejected > %d tokens)",
-                filtered_count, len(raw_data), infra.max_seq_len,
+                "Seq-length filter: %d/%d pairs dropped "
+                "(chosen or rejected > %d tokens, or render failed)",
+                filtered_count, total_raw, max_seq_len,
             )
-        logger.info("Prepared %d preference pairs", len(tokenized_pairs))
-        if not tokenized_pairs:
+        logger.info("Prepared %d preference pairs", len(tokenized_store))
+        if len(tokenized_store) == 0:
             raise RuntimeError("No valid pairs after tokenization")
 
         def _on_ref_done():
@@ -594,7 +687,8 @@ def main(
         runner.start_training()
         step = asyncio.run(
             _train_loop(
-                tokenized_pairs, reference, policy, adam_params, cfg, step_offset,
+                tokenized_store, ref_cache_store,
+                reference, policy, adam_params, cfg, step_offset,
                 on_ref_done=_on_ref_done,
                 runner=runner,
                 training_shape_id=infra.training_shape_id,
@@ -630,7 +724,7 @@ def main(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                 )
 
-        total_steps = len(tokenized_pairs) * cfg.epochs // cfg.batch_size
+        total_steps = len(tokenized_store) * cfg.epochs // cfg.batch_size
         runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
         runner.write_metadata()
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)

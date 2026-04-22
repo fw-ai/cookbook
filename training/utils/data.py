@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 import torch
 import requests
@@ -57,51 +57,91 @@ def load_jsonl_dataset(path_or_url: str, max_rows: int | None = None) -> List[Di
     return rows
 
 
-def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dict[str, Any]]:
-    """Load preference dataset (chosen/rejected pairs)."""
-    data = []
+def _to_msgs(v: Any) -> List[Dict[str, Any]]:
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str):
+        return [{"role": "assistant", "content": v}]
+    return []
+
+
+def _normalize_preference_row(row: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Normalize one JSONL row to ``{"chosen": ..., "rejected": ...}`` or None.
+
+    Supports three on-disk formats:
+
+      * ``{"chosen": ..., "rejected": ...}`` — pass through.
+      * ``{"samples": [...]}`` with per-sample ``evals.score`` (or ``score``)
+        of 1.0 / 0.0 — derive chosen/rejected.
+      * ``{"input": ..., "preferred_output": ..., "non_preferred_output": ...}``
+        (OpenAI-style preference SFT) — derive chosen/rejected.
+    """
+    if "chosen" in row and "rejected" in row:
+        return row
+    if "samples" in row:
+        chosen = rejected = None
+        for s in row["samples"]:
+            score = s.get("evals", {}).get("score", s.get("score"))
+            if score == 1.0:
+                chosen = s
+            elif score == 0.0:
+                rejected = s
+        if chosen and rejected:
+            return {"chosen": chosen, "rejected": rejected}
+        return None
+    if "preferred_output" in row and "non_preferred_output" in row:
+        inp = row.get("input", {})
+        if isinstance(inp, dict) and "messages" in inp:
+            input_msgs = inp["messages"]
+        elif isinstance(inp, list):
+            input_msgs = inp
+        elif isinstance(inp, str):
+            input_msgs = [{"role": "user", "content": inp}]
+        else:
+            input_msgs = []
+        return {
+            "chosen": {"messages": input_msgs + _to_msgs(row["preferred_output"])},
+            "rejected": {"messages": input_msgs + _to_msgs(row["non_preferred_output"])},
+        }
+    return None
+
+
+def iter_preference_examples(
+    path: str, max_pairs: int | None = None,
+) -> Iterator[Dict[str, Any]]:
+    """Stream normalized preference examples from a JSONL file.
+
+    Yields one ``{"chosen": ..., "rejected": ...}`` dict at a time without
+    materialising the full list. Skips blank lines and rows that don't
+    match any of the supported preference schemas. Stops after ``max_pairs``
+    *valid* pairs when set.
+
+    See :func:`load_preference_dataset` for the eager equivalent and the
+    SFT v2 streaming render fix (fw-ai/cookbook#371) for the motivating
+    OOM context.
+    """
+    yielded = 0
     with open(path) as f:
         for line in f:
-            row = json.loads(line)
-            if "chosen" in row and "rejected" in row:
-                data.append(row)
-            elif "samples" in row:
-                chosen = rejected = None
-                for s in row["samples"]:
-                    score = s.get("evals", {}).get("score", s.get("score"))
-                    if score == 1.0:
-                        chosen = s
-                    elif score == 0.0:
-                        rejected = s
-                if chosen and rejected:
-                    data.append({"chosen": chosen, "rejected": rejected})
-            elif "preferred_output" in row and "non_preferred_output" in row:
-                inp = row.get("input", {})
-                if isinstance(inp, dict) and "messages" in inp:
-                    input_msgs = inp["messages"]
-                elif isinstance(inp, list):
-                    input_msgs = inp
-                elif isinstance(inp, str):
-                    input_msgs = [{"role": "user", "content": inp}]
-                else:
-                    input_msgs = []
+            line = line.strip()
+            if not line:
+                continue
+            pair = _normalize_preference_row(json.loads(line))
+            if pair is None:
+                continue
+            yield pair
+            yielded += 1
+            if max_pairs is not None and yielded >= max_pairs:
+                return
 
-                def _to_msgs(v):
-                    if isinstance(v, list):
-                        return v
-                    if isinstance(v, str):
-                        return [{"role": "assistant", "content": v}]
-                    return []
 
-                data.append(
-                    {
-                        "chosen": {"messages": input_msgs + _to_msgs(row["preferred_output"])},
-                        "rejected": {"messages": input_msgs + _to_msgs(row["non_preferred_output"])},
-                    }
-                )
-            if max_pairs is not None and len(data) >= max_pairs:
-                break
-    return data
+def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dict[str, Any]]:
+    """Load preference dataset (chosen/rejected pairs).
+
+    Eager wrapper around :func:`iter_preference_examples`. Prefer the
+    iterator for large datasets — see ``dpo_loop`` for the streaming usage.
+    """
+    return list(iter_preference_examples(path, max_pairs))
 
 
 def extract_text(item: dict[str, Any]) -> str:
