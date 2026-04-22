@@ -14,9 +14,11 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import os
 import signal
 import logging
+import tempfile
 from contextlib import ExitStack
 from typing import Any, Dict, List
 from dataclasses import field, dataclass
@@ -24,7 +26,6 @@ from dataclasses import field, dataclass
 import torch
 import tinker
 
-import json
 import datasets as hf_datasets
 import transformers
 from dotenv import load_dotenv
@@ -33,13 +34,20 @@ from fireworks.training.sdk import TrainerJobManager
 from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
 from training.utils import (
     DEFAULT_ADAM,
+    DEFAULT_RENDER_CHUNKSIZE,
+    DEFAULT_RENDER_WORKERS,
+    DiskBackedDatumStore,
     InfraConfig,
+    MemTracer,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
     ReconnectableClient,
+    count_jsonl_rows,
+    iter_jsonl_rows,
+    stream_render_to_store,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -65,6 +73,52 @@ from training.utils.timer import timer, flush_timing
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Per-worker render state (multiprocessing) -- module-level so the spawn
+# pool initializer can populate it before each worker starts consuming rows.
+# ---------------------------------------------------------------------------
+
+_worker_renderer = None
+_worker_train_on_what = None
+_worker_max_seq_len = None
+
+
+def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_seq_len):
+    """Build a renderer per worker (avoids pickling the tokenizer)."""
+    global _worker_renderer, _worker_train_on_what, _worker_max_seq_len
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        tokenizer_model, trust_remote_code=True,
+    )
+    _worker_renderer = build_renderer(tokenizer, tokenizer_model, renderer_name)
+    _worker_train_on_what = parse_train_on_what(train_on_what_str)
+    _worker_max_seq_len = max_seq_len
+
+
+def _render_messages(
+    row: dict, *, renderer, train_on_what, max_seq_len: int,
+) -> tinker.Datum | None:
+    """Render a chat row to a Datum, filtering empty / out-of-range sequences."""
+    messages = row.get("messages", [])
+    if not messages:
+        return None
+    rendered = render_messages_to_datum(
+        messages, renderer=renderer, train_on_what=train_on_what,
+    )
+    if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
+        return None
+    return rendered.datum
+
+
+def _render_one_worker(row: dict) -> tinker.Datum | None:
+    """Render a single chat example in a worker process."""
+    return _render_messages(
+        row,
+        renderer=_worker_renderer,
+        train_on_what=_worker_train_on_what,
+        max_seq_len=_worker_max_seq_len,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Eval auto carve-out defaults
@@ -426,112 +480,171 @@ def main(
             train_on_what.value,
         )
 
-        raw_data: List[Dict[str, Any]] = []
-        with open(cfg.dataset) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                raw_data.append(json.loads(line))
-                if cfg.max_examples and len(raw_data) >= cfg.max_examples:
-                    break
-        logger.info("Loaded %d examples from %s", len(raw_data), cfg.dataset)
+        # Stream-render the dataset: JSONL rows are read lazily and each
+        # rendered Datum is spilled to a disk-backed store so peak RAM stays
+        # bounded (O(num_workers * per_worker_render_footprint) instead of
+        # O(num_examples * avg_seq_len * bytes_per_token)).
+        # See docs/engineering/sft-v2-orchestrator-oom-debug.md for the
+        # investigation that led to this design.
+        total_raw = count_jsonl_rows(cfg.dataset, cfg.max_examples)
+        if total_raw == 0:
+            raise RuntimeError(f"No examples found in {cfg.dataset}")
+        logger.info("Streaming %d examples from %s", total_raw, cfg.dataset)
 
         max_seq_len = cfg.max_seq_len
-        filtered_count = 0
+        log_interval = max(1, total_raw // 20)  # ~5% increments for runner progress
+        mem_log_interval = max(1, total_raw // 200)  # ~0.5% for memory tracing
+        render_cache_dir = stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="sft_render_")
+        )
+        training_store = stack.enter_context(
+            DiskBackedDatumStore(os.path.join(render_cache_dir, "training.bin"))
+        )
 
-        def _map_fn(row: dict) -> tinker.Datum | None:
-            nonlocal filtered_count
-            messages = row.get("messages", [])
-            if not messages:
-                filtered_count += 1
-                return None
-            rendered = render_messages_to_datum(
-                messages,
-                renderer=renderer,
-                train_on_what=train_on_what,
-            )
-            if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
-                filtered_count += 1
-                return None
-            return rendered.datum
+        mem_tracer = MemTracer(
+            store_callback=lambda: (
+                len(training_store), training_store.disk_size_bytes(),
+            ),
+            log=logger,
+        )
+        mem_tracer.log("before_rendering", 0, total_raw)
 
-        total_raw = len(raw_data)
-        log_interval = max(1, total_raw // 20)  # ~5% increments
-        training_data: List[tinker.Datum] = []
-        for i, row in enumerate(raw_data):
-            d = _map_fn(row)
-            if d is not None:
-                training_data.append(d)
-            if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                runner.report_rendering_progress(i + 1, total_raw)
+        num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
+        use_parallel = num_workers > 1 and total_raw > num_workers
+        logger.info(
+            "Rendering %d examples (%s, workers=%d, chunksize=%d)",
+            total_raw,
+            "parallel spawn" if use_parallel else "single-process",
+            num_workers if use_parallel else 1,
+            DEFAULT_RENDER_CHUNKSIZE if use_parallel else 1,
+        )
+
+        def _on_render_progress(i: int, _datum: tinker.Datum | None) -> None:
+            if i % log_interval == 0 or i == total_raw:
+                runner.report_rendering_progress(i, total_raw)
+            if i % mem_log_interval == 0 or i == total_raw:
+                mem_tracer.log("rendering", i, total_raw)
+
+        filtered_count = stream_render_to_store(
+            iter_jsonl_rows(cfg.dataset, cfg.max_examples),
+            render_fn=(
+                _render_one_worker if use_parallel
+                else functools.partial(
+                    _render_messages,
+                    renderer=renderer,
+                    train_on_what=train_on_what,
+                    max_seq_len=max_seq_len,
+                )
+            ),
+            store=training_store,
+            num_workers=num_workers if use_parallel else 1,
+            chunksize=DEFAULT_RENDER_CHUNKSIZE,
+            initializer=_init_render_worker if use_parallel else None,
+            initargs=(
+                cfg.tokenizer_model, cfg.renderer_name,
+                cfg.train_on_what, max_seq_len,
+            ) if use_parallel else (),
+            on_progress=_on_render_progress,
+        )
+        training_store.close_write()
+        mem_tracer.log("after_rendering", total_raw, total_raw)
+
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count,
-                len(raw_data),
-                max_seq_len,
+                filtered_count, total_raw, max_seq_len,
             )
-        logger.info("Prepared %d training examples", len(training_data))
-        if not training_data:
+        logger.info("Prepared %d training examples", len(training_store))
+        if len(training_store) == 0:
             raise RuntimeError("No valid training examples after tokenization")
 
         # -- Eval dataset (explicit or auto carve-out) -------------------------
+        # eval_data is a small list of Datums (max_eval_seqs <= 100 typical).
+        # For explicit eval_dataset we also stream rendering to a disk store,
+        # then materialise a bounded list for the eval loop.
         eval_data: List[tinker.Datum] = []
+        training_start_idx = 0
         if cfg.evaluation_dataset:
-            # Explicit eval dataset
-            raw_eval: List[Dict[str, Any]] = []
-            with open(cfg.evaluation_dataset) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    raw_eval.append(json.loads(line))
-            total_eval = len(raw_eval)
+            total_eval = count_jsonl_rows(cfg.evaluation_dataset)
             eval_log_interval = max(1, total_eval // 10)
-            eval_data = []
-            for i, row in enumerate(raw_eval):
-                d = _map_fn(row)
-                if d is not None:
-                    eval_data.append(d)
-                if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
-                    runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
-            logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
+            eval_store = stack.enter_context(
+                DiskBackedDatumStore(os.path.join(render_cache_dir, "eval.bin"))
+            )
+
+            def _on_eval_progress(i: int, _datum: tinker.Datum | None) -> None:
+                if i % eval_log_interval == 0 or i == total_eval:
+                    runner.report_rendering_progress(
+                        i, total_eval, label="rendering eval data",
+                    )
+
+            stream_render_to_store(
+                iter_jsonl_rows(cfg.evaluation_dataset),
+                render_fn=(
+                    _render_one_worker if use_parallel
+                    else functools.partial(
+                        _render_messages,
+                        renderer=renderer,
+                        train_on_what=train_on_what,
+                        max_seq_len=max_seq_len,
+                    )
+                ),
+                store=eval_store,
+                num_workers=num_workers if use_parallel else 1,
+                chunksize=DEFAULT_RENDER_CHUNKSIZE,
+                initializer=_init_render_worker if use_parallel else None,
+                initargs=(
+                    cfg.tokenizer_model, cfg.renderer_name,
+                    cfg.train_on_what, max_seq_len,
+                ) if use_parallel else (),
+                on_progress=_on_eval_progress,
+            )
+            eval_store.close_write()
+            # Eval set is bounded (max_eval_seqs ~ 100), safe to materialise.
+            eval_data = list(eval_store)
+            logger.info(
+                "Loaded %d eval examples from %s",
+                len(eval_data), cfg.evaluation_dataset,
+            )
         elif cfg.eval_auto_carveout:
-            # Auto carve-out: split first N examples as eval
+            # Auto carve-out: split first N examples as eval. The backing file
+            # stays intact; we materialise a small eval list and advance the
+            # training index window past the carveout range.
             carveout_count = compute_eval_carveout(
-                len(training_data), cfg.eval_carve_ratio, cfg.max_eval_seqs,
+                len(training_store), cfg.eval_carve_ratio, cfg.max_eval_seqs,
             )
             if carveout_count > 0:
-                eval_data = training_data[:carveout_count]
-                training_data = training_data[carveout_count:]
+                eval_data = [training_store[i] for i in range(carveout_count)]
+                training_start_idx = carveout_count
                 logger.info(
                     "Auto carve-out: %d eval examples, %d training examples",
-                    len(eval_data), len(training_data),
+                    len(eval_data), len(training_store) - training_start_idx,
                 )
             else:
                 logger.warning("Dataset too small for auto carve-out, skipping eval")
 
+        training_count = len(training_store) - training_start_idx
         effective_batch_size = cfg.batch_size
-        if len(training_data) < effective_batch_size:
+        if training_count < effective_batch_size:
             logger.warning(
                 "Training examples (%d) < batch_size (%d); reducing effective "
                 "batch_size to %d so all examples are trained on.",
-                len(training_data),
+                training_count,
                 effective_batch_size,
-                len(training_data),
+                training_count,
             )
-            effective_batch_size = len(training_data)
+            effective_batch_size = training_count
 
         sft_dataset = SupervisedDatasetFromHFDataset(
-            hf_datasets.Dataset.from_dict({"datum_idx": list(range(len(training_data)))}),
+            hf_datasets.Dataset.from_dict(
+                {"datum_idx": list(range(training_start_idx, len(training_store)))}
+            ),
             batch_size=effective_batch_size,
-            map_fn=lambda row: training_data[row["datum_idx"]],
+            map_fn=lambda row: training_store[row["datum_idx"]],
         )
         total_batches_per_epoch = len(sft_dataset)
         logger.info(
             "Dataset: %d examples, %d batches/epoch, %d epochs",
-            len(training_data),
+            training_count,
             total_batches_per_epoch,
             cfg.epochs,
         )
