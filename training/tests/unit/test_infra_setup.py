@@ -523,7 +523,7 @@ def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
 def test_parallel_wait_timing(monkeypatch):
     """Both trainer waits run in parallel; total wall time ≈ max(N), not sum(N)."""
     _FakeClient.instances = []
-    SLEEP_S = 0.15  # each wait sleeps this long; sum would be 0.30
+    SLEEP_S = 0.5  # each wait sleeps this long; serial would be 2*SLEEP_S = 1.0s
 
     def fake_request_trainer(_rlor, *, display_name, forward_only=False, **kwargs):
         job_id = "ref-job" if "reference" in display_name else "policy-job"
@@ -564,9 +564,12 @@ def test_parallel_wait_timing(monkeypatch):
     elapsed = time.monotonic() - t0
 
     # Parallel: elapsed ≈ SLEEP_S (max of two). Serial would be 2*SLEEP_S.
-    # Allow up to 1.5x to avoid flakes on slow CI.
-    assert elapsed < SLEEP_S * 1.5, (
-        f"Waits appear serial: {elapsed:.3f}s ≥ {SLEEP_S * 1.5:.3f}s (sum would be {SLEEP_S * 2:.3f}s)"
+    # Threshold is 1.5*SLEEP_S (midpoint between parallel and serial), which
+    # cleanly distinguishes the two even with hundreds of ms of fixture/CI
+    # overhead. Using SLEEP_S=0.5s keeps that overhead as noise, not signal.
+    threshold = SLEEP_S * 1.5
+    assert elapsed < threshold, (
+        f"Waits appear serial: {elapsed:.3f}s ≥ {threshold:.3f}s (sum would be {SLEEP_S * 2:.3f}s)"
     )
 
 
