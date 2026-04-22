@@ -204,12 +204,20 @@ class ReconnectableClient:
         tensors that :meth:`LoraModuleManager._save_active_session` would
         otherwise keep clones of on the next session switch.
 
-        No-op when this client shares its :class:`FiretitanServiceClient`
-        with another client (e.g. a base-reference obtained via
-        :meth:`create_base_reference` — unloading from a shared slot would
-        kill the owner's session too).
+        No-ops when:
+
+        - this client shares its :class:`FiretitanServiceClient` with another
+          client (e.g. a base-reference obtained via
+          :meth:`create_base_reference` — unloading from a shared slot would
+          kill the owner's session too);
+        - this client is full-parameter (``lora_rank == 0``) — there is no
+          LoRA session on the server to remove, and the op's
+          ``execute_api_side`` clears request sequencing state that later
+          cross-job reads have been observed to depend on.
         """
         if self._closed or self._client is None or not self._owns_service:
+            return
+        if self._lora_rank == 0:
             return
         try:
             from tinker.types.unload_model_request import UnloadModelRequest
