@@ -137,6 +137,18 @@ class Config:
     grad_clip_norm: float = 1.0
     """Max gradient norm for clipping. 0 = no clipping."""
 
+    adam_beta2: float | None = None
+    """Override Adam beta2 (default 0.999 via DEFAULT_ADAM). Lower values
+    (e.g. 0.98) make the variance estimate converge faster — useful for
+    short runs or recipes like slime's GLM5 SFT."""
+
+    weight_decay: float | None = None
+    """Override Adam weight decay (default 0.01 via DEFAULT_ADAM)."""
+
+    warmup_steps: int = 0
+    """Linear LR warmup from 0 → learning_rate over the first N optimizer
+    steps. 0 disables warmup (lr is constant)."""
+
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
@@ -322,6 +334,36 @@ def main(
             cfg.trainer_job_id,
             cfg.trainer_base_url,
         )
+    elif (
+        not cfg.infra.training_shape_id
+        and (
+            cfg.infra.accelerator_type
+            or cfg.infra.node_count
+            or cfg.infra.custom_image_tag
+            or cfg.infra.extra_args
+        )
+    ):
+        # Manual infra path: caller has supplied explicit infra fields and
+        # no validated training shape exists (e.g. a brand-new base model).
+        # create_trainer_job supports this path; we just skip the shape
+        # lookup. Individual infra fields may still be unset — the server
+        # auto-configures what is omitted.
+        trainer_profile = None
+        if cfg.max_seq_len is None:
+            raise ValueError(
+                "Config.max_seq_len is required when using the manual "
+                "infra path (no training_shape_id)."
+            )
+        logger.info(
+            "Manual infra path: accelerator=%s count=%s nodes=%s "
+            "custom_image_tag=%s max_seq_len=%s extra_args=%s",
+            cfg.infra.accelerator_type,
+            cfg.infra.accelerator_count,
+            cfg.infra.node_count,
+            cfg.infra.custom_image_tag,
+            cfg.max_seq_len,
+            cfg.infra.extra_args,
+        )
     else:
         if not cfg.infra.training_shape_id:
             cfg.infra.training_shape_id = auto_select_training_shape(
@@ -339,7 +381,9 @@ def main(
         if cfg.max_seq_len is None:
             cfg.max_seq_len = profile.max_supported_context_length
 
-    runner.set_accelerator_info(profile=trainer_profile if not _precreated_trainer else None)
+    runner.set_accelerator_info(
+        profile=trainer_profile if not _precreated_trainer and trainer_profile is not None else None,
+    )
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
@@ -500,6 +544,18 @@ def main(
 
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        if cfg.adam_beta2 is not None:
+            adam_kwargs["beta2"] = cfg.adam_beta2
+        if cfg.weight_decay is not None:
+            adam_kwargs["weight_decay"] = cfg.weight_decay
+
+        def _current_lr(optim_step_idx: int) -> float:
+            # 1-indexed optim step; linear warmup from 0 → cfg.learning_rate
+            # over cfg.warmup_steps, constant afterwards.
+            if cfg.warmup_steps > 0 and optim_step_idx <= cfg.warmup_steps:
+                return cfg.learning_rate * (optim_step_idx / cfg.warmup_steps)
+            return cfg.learning_rate
+
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Training loop (batch-indexed) -------------------------------------
@@ -528,7 +584,10 @@ def main(
                     response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch)
 
             with timer("optim_step"):
-                optim_result = client.optim_step(adam_params)
+                # Rebuild AdamParams each step so warmup can scale lr.
+                step_lr = _current_lr(step + 1)
+                step_adam = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
+                optim_result = client.optim_step(step_adam)
             step += 1
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
