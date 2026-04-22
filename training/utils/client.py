@@ -197,27 +197,12 @@ class ReconnectableClient:
         return self.inner.list_checkpoints()
 
     def unload_model(self, timeout: float = 30.0) -> None:
-        """POST ``/api/v1/unload_model`` to drop this client's server-side session.
-
-        Releases the LoRA session slot on the trainer (``max_gpu_sessions=2``
-        default) and frees the ~N × LoRA_bytes of param + grad + optimizer
-        tensors that :meth:`LoraModuleManager._save_active_session` would
-        otherwise keep clones of on the next session switch.
-
-        No-ops when:
-
-        - this client shares its :class:`FiretitanServiceClient` with another
-          client (e.g. a base-reference obtained via
-          :meth:`create_base_reference` — unloading from a shared slot would
-          kill the owner's session too);
-        - this client is full-parameter (``lora_rank == 0``) — there is no
-          LoRA session on the server to remove, and the op's
-          ``execute_api_side`` clears request sequencing state that later
-          cross-job reads have been observed to depend on.
-        """
+        """POST ``/api/v1/unload_model`` to drop this client's LoRA session."""
         if self._closed or self._client is None or not self._owns_service:
             return
         if self._lora_rank == 0:
+            # Full-param: no LoRA session to remove, and the op's api-side
+            # hook clears request-sequencing state that cross-job reads need.
             return
         try:
             from tinker.types.unload_model_request import UnloadModelRequest
@@ -250,9 +235,6 @@ class ReconnectableClient:
                 model_id, self._job_id,
             )
         except Exception as e:
-            # Best-effort: a failed unload leaves a dead session on the server,
-            # which the next create_model may hit as a session-cap error — but
-            # we never want unload to break the train loop itself.
             logger.warning(
                 "unload_model: failed for job %s model %s: %s",
                 self._job_id, model_id, e,
@@ -261,24 +243,13 @@ class ReconnectableClient:
     def close(self, timeout: float = 5.0) -> None:
         """Drop the server-side session, then stop local Tinker background tasks.
 
-        Order matters: ``unload_model`` first while the holder is still
-        running (so the POST can dispatch), then flush telemetry and tear
-        down the holder. Together this returns the trainer's LoRA session
-        slot AND stops local heartbeats without a transient refcount of
-        orphaned session state.
-
-        When this client shares its :class:`FiretitanServiceClient` with
-        another :class:`ReconnectableClient` (e.g. created via
-        :meth:`create_base_reference`), this client does not own the holder
-        and skips both the session unload and the holder teardown — the
-        owning client will clean it up.
+        Shared-service clients (e.g. base-reference) skip both steps — the
+        owning client will clean up.
         """
         if self._closed:
             return
 
-        # Unload BEFORE marking closed or clearing _client — unload_model
-        # itself checks _closed and _owns_service, and we need _client alive
-        # to dispatch the unload POST through the holder.
+        # Unload first while the holder is still alive to dispatch the POST.
         self.unload_model(timeout=timeout)
 
         self._closed = True
