@@ -1182,11 +1182,11 @@ def _resolve_reference_shape(
     """Return (ref_profile, resolved_ref_shape_id)."""
     if ref_training_shape_id:
         if lora_rank > 0:
-            logger.warning(
-                "ref_training_shape_id=%r is set alongside lora_rank=%d. This provisions a "
-                "separate full-param forward-only reference trainer, which defeats LoRA's "
-                "GPU savings. For LoRA, leave ref_training_shape_id unset — setup_infra "
-                "will use the shared-session reference (policy.create_base_reference()).",
+            logger.info(
+                "Using explicit reference shape %s alongside lora_rank=%d. The ref "
+                "trainer will run forward-only on a LoRA-capable shape (its own GPUs). "
+                "To save GPUs via the shared-session reference "
+                "(policy.create_base_reference()), leave ref_training_shape_id unset.",
                 ref_training_shape_id, lora_rank,
             )
         return rlor_mgr.resolve_training_profile(ref_training_shape_id), ref_training_shape_id
@@ -1253,12 +1253,18 @@ def _request_trainers(
         # Reference trainer runs forward-only: strip --full-oom-check, which
         # triggers a backward warmup that OOMs on smaller reference shapes.
         ref_infra = _strip_args(infra, {"--full-oom-check"})
+        # Propagate lora_rank so the gateway infers the correct trainer_mode:
+        #   lora_rank > 0  -> LORA_TRAINER (matches LoRA-capable ref shape)
+        #   lora_rank == 0 -> FORWARD_ONLY (full-param base-weight forward)
+        # A forward-only LoRA ref still loads the adapter on top of base
+        # weights; the adapter is configured upstream and only the forward
+        # pass runs here.
         ref_handle = request_trainer_job(
             rlor_mgr,
             base_model=base_model,
             infra=ref_infra,
             profile=ref_profile,
-            lora_rank=0,
+            lora_rank=lora_rank,
             max_seq_len=max_seq_len,
             learning_rate=learning_rate,
             display_name=f"{role_prefix}-reference",
@@ -1479,9 +1485,12 @@ def _make_reference_client(
     closeables: list[Any],
 ) -> Any | None:
     if reference_ep is not None:
+        # Client lora_rank must match the ref trainer's server config:
+        # a LoRA-capable ref pod expects create_training_client(lora_rank>0),
+        # a full-param forward-only pod expects lora_rank=0.
         reference = ReconnectableClient(
             rlor_mgr, reference_ep.job_id, base_model,
-            lora_rank=0,
+            lora_rank=lora_rank,
             fw_api_key=api_key,
             default_timeout=step_timeout or DEFAULT_TIMEOUT_S,
         )
