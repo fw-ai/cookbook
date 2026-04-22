@@ -196,22 +196,83 @@ class ReconnectableClient:
     def list_checkpoints(self) -> list[str]:
         return self.inner.list_checkpoints()
 
-    def close(self, timeout: float = 5.0) -> None:
-        """Stop local Tinker background tasks for this trainer client.
+    def unload_model(self, timeout: float = 30.0) -> None:
+        """POST ``/api/v1/unload_model`` to drop this client's server-side session.
 
-        The underlying Tinker holder owns background heartbeat / telemetry tasks.
-        Best-effort flush queued telemetry, then stop those tasks before remote
-        trainer cleanup so local tasks do not continue talking to a trainer
-        that has already been deleted.
+        Releases the LoRA session slot on the trainer (``max_gpu_sessions=2``
+        default) and frees the ~N × LoRA_bytes of param + grad + optimizer
+        tensors that :meth:`LoraModuleManager._save_active_session` would
+        otherwise keep clones of on the next session switch.
+
+        No-op when this client shares its :class:`FiretitanServiceClient`
+        with another client (e.g. a base-reference obtained via
+        :meth:`create_base_reference` — unloading from a shared slot would
+        kill the owner's session too).
+        """
+        if self._closed or self._client is None or not self._owns_service:
+            return
+        try:
+            from tinker.types.unload_model_request import UnloadModelRequest
+            from tinker.lib.client_connection_pool_type import ClientConnectionPoolType
+        except ImportError:
+            logger.debug("unload_model: tinker types unavailable — skipping")
+            return
+
+        client = self._client
+        holder = client.holder
+        if holder is None:
+            return
+
+        try:
+            model_id = client._guaranteed_model_id()
+        except Exception:
+            return
+
+        async def _do_unload():
+            with holder.aclient(ClientConnectionPoolType.TRAIN) as async_client:
+                return await async_client.models.unload(
+                    request=UnloadModelRequest(model_id=model_id),
+                )
+
+        try:
+            fut = holder.run_coroutine_threadsafe(_do_unload())
+            fut.result(timeout=timeout)
+            logger.info(
+                "unload_model: dropped server session %s on job %s",
+                model_id, self._job_id,
+            )
+        except Exception as e:
+            # Best-effort: a failed unload leaves a dead session on the server,
+            # which the next create_model may hit as a session-cap error — but
+            # we never want unload to break the train loop itself.
+            logger.warning(
+                "unload_model: failed for job %s model %s: %s",
+                self._job_id, model_id, e,
+            )
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Drop the server-side session, then stop local Tinker background tasks.
+
+        Order matters: ``unload_model`` first while the holder is still
+        running (so the POST can dispatch), then flush telemetry and tear
+        down the holder. Together this returns the trainer's LoRA session
+        slot AND stops local heartbeats without a transient refcount of
+        orphaned session state.
 
         When this client shares its :class:`FiretitanServiceClient` with
         another :class:`ReconnectableClient` (e.g. created via
         :meth:`create_base_reference`), this client does not own the holder
-        and skips the holder/telemetry teardown — the owning client will
-        clean it up.
+        and skips both the session unload and the holder teardown — the
+        owning client will clean it up.
         """
         if self._closed:
             return
+
+        # Unload BEFORE marking closed or clearing _client — unload_model
+        # itself checks _closed and _owns_service, and we need _client alive
+        # to dispatch the unload POST through the holder.
+        self.unload_model(timeout=timeout)
+
         self._closed = True
 
         client = self._client
