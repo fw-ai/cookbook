@@ -74,25 +74,20 @@ from training.utils.timer import timer, flush_timing
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Per-worker render state (multiprocessing) -- module-level so the spawn
-# pool initializer can populate it before each worker starts consuming rows.
-# ---------------------------------------------------------------------------
-
-_worker_renderer = None
-_worker_train_on_what = None
-_worker_max_seq_len = None
+# Module-level so the spawn pool initializer can populate it once per worker
+# (avoids re-pickling the tokenizer on every task).
+_worker_state: dict = {}
 
 
 def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_seq_len):
-    """Build a renderer per worker (avoids pickling the tokenizer)."""
-    global _worker_renderer, _worker_train_on_what, _worker_max_seq_len
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         tokenizer_model, trust_remote_code=True,
     )
-    _worker_renderer = build_renderer(tokenizer, tokenizer_model, renderer_name)
-    _worker_train_on_what = parse_train_on_what(train_on_what_str)
-    _worker_max_seq_len = max_seq_len
+    _worker_state.update(
+        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
+        train_on_what=parse_train_on_what(train_on_what_str),
+        max_seq_len=max_seq_len,
+    )
 
 
 def _render_messages(
@@ -105,19 +100,13 @@ def _render_messages(
     rendered = render_messages_to_datum(
         messages, renderer=renderer, train_on_what=train_on_what,
     )
-    if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
+    if not 2 <= len(rendered.token_ids) <= max_seq_len:
         return None
     return rendered.datum
 
 
 def _render_one_worker(row: dict) -> tinker.Datum | None:
-    """Render a single chat example in a worker process."""
-    return _render_messages(
-        row,
-        renderer=_worker_renderer,
-        train_on_what=_worker_train_on_what,
-        max_seq_len=_worker_max_seq_len,
-    )
+    return _render_messages(row, **_worker_state)
 
 
 # ---------------------------------------------------------------------------
@@ -480,27 +469,51 @@ def main(
             train_on_what.value,
         )
 
-        # Stream-render the dataset: JSONL rows are read lazily and each
-        # rendered Datum is spilled to a disk-backed store so peak RAM stays
-        # bounded (O(num_workers * per_worker_render_footprint) instead of
-        # O(num_examples * avg_seq_len * bytes_per_token)).
-        # See docs/engineering/sft-v2-orchestrator-oom-debug.md for the
-        # investigation that led to this design.
+        # Stream-render dataset to a disk-backed store so peak RAM is bounded
+        # by num_workers * per-worker render footprint instead of scaling with
+        # dataset size. See docs/engineering/sft-v2-orchestrator-oom-debug.md.
         total_raw = count_jsonl_rows(cfg.dataset, cfg.max_examples)
         if total_raw == 0:
             raise RuntimeError(f"No examples found in {cfg.dataset}")
-        logger.info("Streaming %d examples from %s", total_raw, cfg.dataset)
-
         max_seq_len = cfg.max_seq_len
-        log_interval = max(1, total_raw // 20)  # ~5% increments for runner progress
-        mem_log_interval = max(1, total_raw // 200)  # ~0.5% for memory tracing
+        num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
+        use_parallel = num_workers > 1 and total_raw > num_workers
+        logger.info(
+            "Streaming %d examples from %s (%s, workers=%d, chunksize=%d)",
+            total_raw, cfg.dataset,
+            "parallel spawn" if use_parallel else "single-process",
+            num_workers if use_parallel else 1,
+            DEFAULT_RENDER_CHUNKSIZE if use_parallel else 1,
+        )
+
         render_cache_dir = stack.enter_context(
             tempfile.TemporaryDirectory(prefix="sft_render_")
         )
-        training_store = stack.enter_context(
-            DiskBackedDatumStore(os.path.join(render_cache_dir, "training.bin"))
-        )
 
+        def _open_store(name: str) -> DiskBackedDatumStore:
+            return stack.enter_context(
+                DiskBackedDatumStore(os.path.join(render_cache_dir, name))
+            )
+
+        def _stream(src: str, dst: DiskBackedDatumStore, on_progress, max_examples=None) -> int:
+            return stream_render_to_store(
+                iter_jsonl_rows(src, max_examples),
+                render_fn=_render_one_worker if use_parallel else functools.partial(
+                    _render_messages, renderer=renderer,
+                    train_on_what=train_on_what, max_seq_len=max_seq_len,
+                ),
+                store=dst,
+                num_workers=num_workers if use_parallel else 1,
+                chunksize=DEFAULT_RENDER_CHUNKSIZE,
+                initializer=_init_render_worker if use_parallel else None,
+                initargs=(
+                    cfg.tokenizer_model, cfg.renderer_name,
+                    cfg.train_on_what, max_seq_len,
+                ) if use_parallel else (),
+                on_progress=on_progress,
+            )
+
+        training_store = _open_store("training.bin")
         mem_tracer = MemTracer(
             store_callback=lambda: (
                 len(training_store), training_store.disk_size_bytes(),
@@ -509,15 +522,8 @@ def main(
         )
         mem_tracer.log("before_rendering", 0, total_raw)
 
-        num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
-        use_parallel = num_workers > 1 and total_raw > num_workers
-        logger.info(
-            "Rendering %d examples (%s, workers=%d, chunksize=%d)",
-            total_raw,
-            "parallel spawn" if use_parallel else "single-process",
-            num_workers if use_parallel else 1,
-            DEFAULT_RENDER_CHUNKSIZE if use_parallel else 1,
-        )
+        log_interval = max(1, total_raw // 20)       # ~5% for runner status
+        mem_log_interval = max(1, total_raw // 200)  # ~0.5% for memory tracing
 
         def _on_render_progress(i: int, _datum: tinker.Datum | None) -> None:
             if i % log_interval == 0 or i == total_raw:
@@ -525,26 +531,8 @@ def main(
             if i % mem_log_interval == 0 or i == total_raw:
                 mem_tracer.log("rendering", i, total_raw)
 
-        filtered_count = stream_render_to_store(
-            iter_jsonl_rows(cfg.dataset, cfg.max_examples),
-            render_fn=(
-                _render_one_worker if use_parallel
-                else functools.partial(
-                    _render_messages,
-                    renderer=renderer,
-                    train_on_what=train_on_what,
-                    max_seq_len=max_seq_len,
-                )
-            ),
-            store=training_store,
-            num_workers=num_workers if use_parallel else 1,
-            chunksize=DEFAULT_RENDER_CHUNKSIZE,
-            initializer=_init_render_worker if use_parallel else None,
-            initargs=(
-                cfg.tokenizer_model, cfg.renderer_name,
-                cfg.train_on_what, max_seq_len,
-            ) if use_parallel else (),
-            on_progress=_on_render_progress,
+        filtered_count = _stream(
+            cfg.dataset, training_store, _on_render_progress, cfg.max_examples,
         )
         training_store.close_write()
         mem_tracer.log("after_rendering", total_raw, total_raw)
@@ -559,17 +547,14 @@ def main(
             raise RuntimeError("No valid training examples after tokenization")
 
         # -- Eval dataset (explicit or auto carve-out) -------------------------
-        # eval_data is a small list of Datums (max_eval_seqs <= 100 typical).
-        # For explicit eval_dataset we also stream rendering to a disk store,
-        # then materialise a bounded list for the eval loop.
+        # eval_data is a small list of Datums (max_eval_seqs ~ 100 typical),
+        # safe to materialise after streaming.
         eval_data: List[tinker.Datum] = []
         training_start_idx = 0
         if cfg.evaluation_dataset:
             total_eval = count_jsonl_rows(cfg.evaluation_dataset)
             eval_log_interval = max(1, total_eval // 10)
-            eval_store = stack.enter_context(
-                DiskBackedDatumStore(os.path.join(render_cache_dir, "eval.bin"))
-            )
+            eval_store = _open_store("eval.bin")
 
             def _on_eval_progress(i: int, _datum: tinker.Datum | None) -> None:
                 if i % eval_log_interval == 0 or i == total_eval:
@@ -577,38 +562,16 @@ def main(
                         i, total_eval, label="rendering eval data",
                     )
 
-            stream_render_to_store(
-                iter_jsonl_rows(cfg.evaluation_dataset),
-                render_fn=(
-                    _render_one_worker if use_parallel
-                    else functools.partial(
-                        _render_messages,
-                        renderer=renderer,
-                        train_on_what=train_on_what,
-                        max_seq_len=max_seq_len,
-                    )
-                ),
-                store=eval_store,
-                num_workers=num_workers if use_parallel else 1,
-                chunksize=DEFAULT_RENDER_CHUNKSIZE,
-                initializer=_init_render_worker if use_parallel else None,
-                initargs=(
-                    cfg.tokenizer_model, cfg.renderer_name,
-                    cfg.train_on_what, max_seq_len,
-                ) if use_parallel else (),
-                on_progress=_on_eval_progress,
-            )
+            _stream(cfg.evaluation_dataset, eval_store, _on_eval_progress)
             eval_store.close_write()
-            # Eval set is bounded (max_eval_seqs ~ 100), safe to materialise.
             eval_data = list(eval_store)
             logger.info(
                 "Loaded %d eval examples from %s",
                 len(eval_data), cfg.evaluation_dataset,
             )
         elif cfg.eval_auto_carveout:
-            # Auto carve-out: split first N examples as eval. The backing file
-            # stays intact; we materialise a small eval list and advance the
-            # training index window past the carveout range.
+            # Auto carve-out: keep the backing file intact, materialise a small
+            # eval list, and advance the training index past the carveout range.
             carveout_count = compute_eval_carveout(
                 len(training_store), cfg.eval_carve_ratio, cfg.max_eval_seqs,
             )
