@@ -665,13 +665,13 @@ def main(
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + prox_fwd (once) + K × (fwd_bwd + optim_step) + metrics.
+            """ref_forward + prox_fwd (once) + num_minibatches × (fwd_bwd + optim_step) + metrics.
 
-            ``K = cfg.ppo_n_minibatches``. ``prox_lp`` is snapshotted once per
-            rollout batch and reused across all K inner optim steps so the
-            PPO ratio measures genuine policy drift. DCP checkpoints fire
-            only at rollout boundaries (cadence in rollout batches, not
-            optim steps) so resume accounting stays K-independent.
+            ``num_minibatches = cfg.ppo_n_minibatches``. ``prox_lp`` is snapshotted
+            once per rollout batch and reused across every inner optim step so
+            the PPO ratio measures genuine policy drift. DCP checkpoints fire
+            only at rollout boundaries (cadence in rollout batches, not optim
+            steps) so resume accounting is independent of the minibatch count.
             """
             if not prompt_groups:
                 raise ValueError("train_step requires at least one prompt group")
@@ -687,12 +687,12 @@ def main(
             logger.info("[step %d] prox_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
             n = len(data)
-            K = max(1, cfg.ppo_n_minibatches)
-            minibatch_size = max(1, math.ceil(n / K))
+            num_minibatches = max(1, cfg.ppo_n_minibatches)
+            minibatch_size = max(1, math.ceil(n / num_minibatches))
             fwd_bwd_results: list = []
             optim_result: Any = None
-            for k_idx in range(K):
-                minibatch_start = k_idx * minibatch_size
+            for minibatch_idx in range(num_minibatches):
+                minibatch_start = minibatch_idx * minibatch_size
                 minibatch_end = min(minibatch_start + minibatch_size, n)
                 if minibatch_start >= minibatch_end:
                     break
@@ -708,7 +708,7 @@ def main(
                 ))
                 logger.info(
                     "[step %d] fwd_bwd (mb %d/%d): done (%.1fs)",
-                    step + 1, k_idx + 1, K, _time.time() - t0,
+                    step + 1, minibatch_idx + 1, num_minibatches, _time.time() - t0,
                 )
 
                 t0 = _time.time()
@@ -719,10 +719,10 @@ def main(
                 step += 1
                 logger.info(
                     "[step %d] optim_step (mb %d/%d): done (%.1fs)",
-                    step, k_idx + 1, K, _time.time() - t0,
+                    step, minibatch_idx + 1, num_minibatches, _time.time() - t0,
                 )
 
-            rollouts_completed = (step - step_offset) // K
+            rollouts_completed = (step - step_offset) // num_minibatches
             dcp_interval = cfg.weight_sync.dcp_save_interval
             if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
