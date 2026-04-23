@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """GSM8K single-turn async RL -- canonical ``rollout_fn`` example.
 
-Shows the common pattern: a pure ``reward_fn(completion, row) -> float``
-paired with a single-turn rollout closure that calls the cookbook's
-``DeploymentSampler`` and hands back a :class:`Trajectory`.  All three of
-the things the recipe itself doesn't know about -- grading, zero-variance
-filtering, and per-step trajectory dumping -- live in this file.
+Shows the flat ``Rollout`` contract: one :class:`RolloutSample` per
+completion, three parallel lists (``tokens``, ``logprobs``,
+``loss_mask``) plus a scalar reward.  For single-turn rollouts the
+loss_mask is just ``[0]*prompt_len + [1]*completion_len``.
 
 Run::
 
@@ -23,14 +22,9 @@ from typing import Optional
 
 from training.recipes.async_rl_loop import Config, RolloutContext, main
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.trajectory import CompletionSegment, Trajectory
+from training.utils.rl.rollout import Rollout, RolloutSample
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Reward + filter -- user-owned, not the cookbook's concern
-# ---------------------------------------------------------------------------
 
 
 def extract_answer(text: str) -> Optional[str]:
@@ -50,40 +44,31 @@ def reward_fn(completion: str, row: dict) -> float:
 
 
 def should_accept(pg: PromptGroup) -> bool:
-    """Reject zero-variance groups (GRPO would assign zero advantage)."""
+    """Reject zero-variance groups (GRPO assigns zero advantage on ties)."""
     return len(set(pg.rewards)) > 1
 
-
-# ---------------------------------------------------------------------------
-# Optional trajectory dumping -- also user-owned
-# ---------------------------------------------------------------------------
 
 TRAJECTORY_DIR: str | None = os.environ.get("TRAJECTORY_DIR")
 
 
-def _dump_trajectory(traj: Trajectory, version: int) -> None:
+def _dump_rollout(rollout: Rollout, version: int) -> None:
     if not TRAJECTORY_DIR:
         return
     os.makedirs(TRAJECTORY_DIR, exist_ok=True)
     path = os.path.join(TRAJECTORY_DIR, f"version_{version:04d}.jsonl")
     with open(path, "a") as f:
-        for ci, segments in enumerate(traj.completions):
+        for ci, s in enumerate(rollout.samples):
             f.write(json.dumps({
                 "version": version,
                 "completion_index": ci,
-                "reward": traj.rewards[ci],
-                "completion_text": "".join(s.text for s in segments),
-                "finish_reason": segments[-1].finish_reason,
-                "ground_truth": (traj.row_meta or {}).get("ground_truth"),
+                "reward": s.reward,
+                "completion_text": s.text,
+                "finish_reason": s.finish_reason,
+                "ground_truth": (rollout.row_meta or {}).get("ground_truth"),
             }) + "\n")
 
 
-# ---------------------------------------------------------------------------
-# The one extension point
-# ---------------------------------------------------------------------------
-
-
-async def rollout_fn(row: dict, ctx: RolloutContext) -> Trajectory | None:
+async def rollout_fn(row: dict, ctx: RolloutContext) -> Rollout | None:
     messages = row.get("messages") or []
     if not messages:
         return None
@@ -100,38 +85,43 @@ async def rollout_fn(row: dict, ctx: RolloutContext) -> Trajectory | None:
         return None
 
     version = ctx.current_version()
-    prompt_len = sampled[0].prompt_len
-    prompt_tokens = list(sampled[0].full_tokens[:prompt_len])
-
-    completions: list[list[CompletionSegment]] = []
-    rewards: list[float] = []
+    samples: list[RolloutSample] = []
     for s in sampled:
-        completion_tokens = list(s.full_tokens[prompt_len:])
+        tokens = list(s.full_tokens)
+        prompt_len = s.prompt_len
+        comp_len = len(tokens) - prompt_len
+        if comp_len <= 0:
+            return None
+
         inf_lp = list(s.inference_logprobs or [])
-        if len(inf_lp) != len(completion_tokens):
+        if len(inf_lp) != comp_len:
             logger.warning(
-                "logprob length mismatch (got %d, expected %d); dropping row",
-                len(inf_lp), len(completion_tokens),
+                "logprob length %d != completion length %d",
+                len(inf_lp), comp_len,
             )
             return None
-        completions.append([CompletionSegment(
-            tokens=completion_tokens,
-            inference_logprobs=inf_lp,
-            version=version,
+
+        # Flat contract: tokens[:prompt_len] are prompt (mask 0, logprob 0.0);
+        # tokens[prompt_len:] are assistant-generated (mask 1, logprob from sampler).
+        logprobs = [0.0] * prompt_len + inf_lp
+        loss_mask = [0] * prompt_len + [1] * comp_len
+
+        samples.append(RolloutSample(
+            tokens=tokens,
+            logprobs=logprobs,
+            loss_mask=loss_mask,
+            reward=reward_fn(s.text, row),
+            versions=[version] * len(tokens),
             finish_reason=s.finish_reason,
             text=s.text,
-        )])
-        rewards.append(reward_fn(s.text, row))
+        ))
 
-    traj = Trajectory(
-        prompt_tokens=prompt_tokens,
-        completions=completions,
-        rewards=rewards,
-        prompt_messages=messages,
+    rollout = Rollout(
+        samples=samples,
         row_meta={"ground_truth": row.get("ground_truth", "")},
     )
-    _dump_trajectory(traj, version)
-    return traj
+    _dump_rollout(rollout, version)
+    return rollout
 
 
 if __name__ == "__main__":

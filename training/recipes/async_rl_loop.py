@@ -72,7 +72,7 @@ from training.utils.rl.losses import (
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
-from training.utils.rl.trajectory import Trajectory, trajectory_to_prompt_group
+from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
 from training.utils.timer import flush_timing, timer
 
 logger = logging.getLogger(__name__)
@@ -153,7 +153,7 @@ class RolloutContext:
     current_version: Callable[[], int]
 
 
-RolloutFn = Callable[[dict, RolloutContext], Awaitable[Trajectory | None]]
+RolloutFn = Callable[[dict, RolloutContext], Awaitable[Rollout | None]]
 
 
 def main(
@@ -325,14 +325,14 @@ def main(
 
         async def sample_one_prompt(row: dict) -> PromptGroup | None:
             try:
-                traj = await rollout_fn(row, ctx)
+                rollout = await rollout_fn(row, ctx)
             except Exception as e:
                 logger.warning("rollout_fn failed: %s", e)
                 return None
-            if traj is None:
+            if rollout is None:
                 return None
-            return trajectory_to_prompt_group(
-                traj, with_reference=(reference is not None), persist_raw=False,
+            return rollout_to_prompt_group(
+                rollout, with_reference=(reference is not None),
             )
 
         # -- Training callbacks ------------------------------------------------
