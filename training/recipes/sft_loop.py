@@ -573,6 +573,7 @@ def main(
             cfg.init_from_checkpoint,
             cfg.warm_start_from_adapter,
         )
+
         step = resume_info.step if resume_info else 0
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)

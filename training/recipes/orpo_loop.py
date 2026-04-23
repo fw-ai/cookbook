@@ -71,7 +71,12 @@ from training.utils import (
     validate_config,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
+from training.utils.checkpoint_utils import (
+    resolve_resume,
+    save_checkpoint,
+    validate_warm_start_config,
+    CheckpointKind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +152,10 @@ class Config:
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
     init_from_checkpoint: str | None = None
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +212,11 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
 
     if cfg.grad_accum > 1:
         logger.warning(
@@ -281,7 +295,12 @@ def main(
         )
         if hasattr(client, "close"):
             stack.callback(client.close)
-        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = resolve_resume(
+            client,
+            cfg.log_path,
+            cfg.init_from_checkpoint,
+            cfg.warm_start_from_adapter,
+        )
         step_offset = resume_info.step if resume_info else 0
 
         # -- Data ----------------------------------------------------------------

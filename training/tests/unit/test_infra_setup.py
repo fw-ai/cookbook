@@ -521,16 +521,26 @@ def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
 
 
 def test_parallel_wait_timing(monkeypatch):
-    """Both trainer waits run in parallel; total wall time ≈ max(N), not sum(N)."""
+    """Both trainer waits run in parallel; elapsed grows by ~SLEEP_S, not 2×.
+
+    Uses a paired measurement: one run with ``sleep_s > 0`` and one with
+    ``sleep_s = 0`` sharing the exact same setup cost. The difference isolates
+    the wall time consumed by the two ``wait_trainer_job`` sleeps, so fixture
+    and coverage-instrumentation overhead (which can add 200ms+ on CI) does
+    not contribute to the assertion. Parallel → delta ≈ 1×sleep; serial →
+    delta ≈ 2×sleep.
+    """
     _FakeClient.instances = []
-    SLEEP_S = 0.15  # each wait sleeps this long; sum would be 0.30
+    SLEEP_S = 0.2
+
+    sleep_box = [0.0]  # mutable so inner closure sees the current value
 
     def fake_request_trainer(_rlor, *, display_name, forward_only=False, **kwargs):
         job_id = "ref-job" if "reference" in display_name else "policy-job"
         return _trainer_handle(job_id)
 
     def fake_wait_trainer(_rlor, created, *, display_name="", forward_only=False, **kwargs):
-        time.sleep(SLEEP_S)
+        time.sleep(sleep_box[0])
         return _trainer_ep(getattr(created, "job_id", "policy-job"))
 
     monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
@@ -543,30 +553,45 @@ def test_parallel_wait_timing(monkeypatch):
         lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
     )
 
-    rlor, deploy = _make_mgrs(profile=_profile())
-    cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
+    def _run_once() -> float:
+        _FakeClient.instances = []
+        rlor, deploy = _make_mgrs(profile=_profile())
+        cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
+        t0 = time.monotonic()
+        setup_infra(
+            rlor_mgr=rlor, deploy_mgr=deploy,
+            base_model=cfg.base_model,
+            infra_cfg=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            needs_reference=True, needs_inference=True,
+            role_prefix="grpo", api_key="key",
+        )
+        return time.monotonic() - t0
 
-    t0 = time.monotonic()
-    setup_infra(
-        rlor_mgr=rlor, deploy_mgr=deploy,
-        base_model=cfg.base_model,
-        infra_cfg=cfg.infra,
-        deploy_cfg=cfg.deployment,
-        lora_rank=cfg.lora_rank,
-        max_seq_len=cfg.max_seq_len,
-        learning_rate=cfg.learning_rate,
-        step_timeout=cfg.step_timeout,
-        policy_job_id=cfg.policy_job_id,
-        reference_job_id=cfg.reference_job_id,
-        needs_reference=True, needs_inference=True,
-        role_prefix="grpo", api_key="key",
-    )
-    elapsed = time.monotonic() - t0
+    # Warm up first so both measurements run on equally-warm interpreter.
+    sleep_box[0] = 0.0
+    _run_once()
 
-    # Parallel: elapsed ≈ SLEEP_S (max of two). Serial would be 2*SLEEP_S.
-    # Allow up to 1.5x to avoid flakes on slow CI.
-    assert elapsed < SLEEP_S * 1.5, (
-        f"Waits appear serial: {elapsed:.3f}s ≥ {SLEEP_S * 1.5:.3f}s (sum would be {SLEEP_S * 2:.3f}s)"
+    sleep_box[0] = 0.0
+    baseline = _run_once()
+    sleep_box[0] = SLEEP_S
+    with_sleep = _run_once()
+
+    delta = with_sleep - baseline
+    # Parallel: delta ≈ 1*SLEEP_S; serial: delta ≈ 2*SLEEP_S.
+    # Threshold 1.5× is the midpoint — tight enough to catch regressions to
+    # serial, loose enough that jitter alone cannot push a parallel run over.
+    threshold = SLEEP_S * 1.5
+    assert delta < threshold, (
+        f"Waits appear serial: delta={delta:.3f}s ≥ {threshold:.3f}s "
+        f"(baseline={baseline:.3f}s, with_sleep={with_sleep:.3f}s, "
+        f"serial would add ~{SLEEP_S * 2:.3f}s)"
     )
 
 
