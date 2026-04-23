@@ -34,14 +34,14 @@ del _warnings
 
 __all__ = [
     "DEFAULT_ADAM",
-    "DEFAULT_RENDER_CHUNKSIZE",
+    "DEFAULT_PREFETCH_FACTOR",
     "DEFAULT_RENDER_WORKERS",
     "DeployConfig",
-    "DiskBackedDatumStore",
     "EvalFn",
     "WeightSyncConfig",
     "WeightSyncScope",
     "InfraConfig",
+    "JsonlRenderDataset",
     "MemTracer",
     "ReconnectableClient",
     "ResourceCleanup",
@@ -54,7 +54,6 @@ __all__ = [
     "WandBConfig",
     "compute_advantages",
     "compute_pass_at_k",
-    "count_jsonl_rows",
     "create_trainer_job",
     "request_trainer_job",
     "wait_trainer_job",
@@ -64,11 +63,10 @@ __all__ = [
     "encode_text",
     "extract_text",
     "find_common_prefix_length",
-    "iter_jsonl_rows",
     "load_jsonl_dataset",
     "load_preference_dataset",
     "log_metrics_json",
-    "stream_render_to_store",
+    "make_render_dataloader",
     "make_orpo_loss_fn",
     "make_batch_orpo_loss_fn",
     "make_batch_dpo_loss_fn",
@@ -173,12 +171,10 @@ from training.utils.logging import (
 )
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 from training.utils.streaming import (
-    DEFAULT_RENDER_CHUNKSIZE,
+    DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,
-    DiskBackedDatumStore,
-    count_jsonl_rows,
-    iter_jsonl_rows,
-    stream_render_to_store,
+    JsonlRenderDataset,
+    make_render_dataloader,
 )
 from training.utils.memlog import MemTracer
 from training.utils.validation import validate_config, validate_preflight
