@@ -309,6 +309,31 @@ def normalize_messages(messages: Iterable[Mapping[str, Any]]) -> list[Message]:
                 *_ensure_content_parts(normalized_message["content"]),
             ]
 
+        # OpenAI/Fireworks chat convention: assistant turns carry their
+        # chain-of-thought in a top-level ``reasoning_content`` string
+        # (rather than Tinker's ``thinking`` field). Without this branch,
+        # reasoning traces in training datasets are silently dropped here
+        # before they ever reach a renderer, so ``<think>`` blocks show
+        # up empty in the training tokens and the fine-tuned model never
+        # learns to emit a CoT. Treat ``reasoning_content`` as an alias
+        # for ``thinking`` so both keys flow through every renderer that
+        # understands ThinkingPart (qwen3*, kimi_k2*, kimi_k25*,
+        # kimi_k26*, deepseekv3_thinking, nemotron3*, gpt_oss_*).
+        # ``reasoning_content`` takes precedence only when no ``thinking``
+        # field is present; if both are set the ``thinking`` value is
+        # preserved and ``reasoning_content`` is ignored to keep a single
+        # source of truth per message.
+        reasoning_content = message.get("reasoning_content")
+        if thinking is None and reasoning_content is not None:
+            if not isinstance(reasoning_content, str):
+                raise TypeError(
+                    f"Unsupported reasoning_content value type: {type(reasoning_content)!r}"
+                )
+            normalized_message["content"] = [
+                {"type": "thinking", "thinking": reasoning_content},
+                *_ensure_content_parts(normalized_message["content"]),
+            ]
+
         trainable = message.get("trainable")
         if trainable is not None:
             normalized_message["trainable"] = bool(trainable)

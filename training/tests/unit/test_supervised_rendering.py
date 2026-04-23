@@ -236,6 +236,94 @@ def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():
     ]
 
 
+def test_normalize_messages_promotes_reasoning_content_to_thinking_part():
+    """OpenAI-style ``reasoning_content`` should become a ThinkingPart.
+
+    Datasets produced by Fireworks/OpenAI-compatible APIs store the
+    assistant's chain-of-thought in a top-level ``reasoning_content``
+    field rather than Tinker's ``thinking`` field. Without this alias,
+    renderers like KimiK2Renderer see an empty ``thinking_content``
+    string and emit an empty ``<think></think>`` block, so the model
+    never learns to produce reasoning traces.
+    """
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "reasoning_content": "let me compute 2+2",
+                "content": "The answer is 4",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "let me compute 2+2"},
+        {"type": "text", "text": "The answer is 4"},
+    ]
+
+
+def test_normalize_messages_reasoning_content_with_no_text_content():
+    """``reasoning_content`` alone should still produce a ThinkingPart.
+
+    Some reasoning-only turns may carry an empty ``content`` string but
+    a non-empty ``reasoning_content``. The resulting content must keep
+    the ThinkingPart so downstream renderers can still fill the
+    ``<think>...</think>`` block during training.
+    """
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "reasoning_content": "some thoughts",
+                "content": "",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "some thoughts"},
+        {"type": "text", "text": ""},
+    ]
+
+
+def test_normalize_messages_thinking_wins_over_reasoning_content():
+    """If both fields are present, ``thinking`` is preserved as-is.
+
+    Keeps a single source of truth per message to avoid duplicating the
+    chain-of-thought when a caller supplies both the Tinker-native
+    ``thinking`` field and the OpenAI-style ``reasoning_content``.
+    """
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "thinking": "native thinking",
+                "reasoning_content": "openai reasoning",
+                "content": "answer",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "native thinking"},
+        {"type": "text", "text": "answer"},
+    ]
+
+
+def test_normalize_messages_rejects_non_string_reasoning_content():
+    """Non-string ``reasoning_content`` values should raise TypeError."""
+    with pytest.raises(TypeError):
+        normalize_messages(
+            [
+                {
+                    "role": "assistant",
+                    "reasoning_content": ["not", "a", "string"],
+                    "content": "answer",
+                },
+            ]
+        )
+
+
 def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
     calls: list[tuple[str, object | None]] = []
 
