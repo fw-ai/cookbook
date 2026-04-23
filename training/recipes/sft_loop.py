@@ -17,7 +17,8 @@ from __future__ import annotations
 import os
 import signal
 import logging
-import tempfile
+import functools
+from itertools import islice
 from contextlib import ExitStack
 from typing import Any, Dict, List
 from dataclasses import field, dataclass
@@ -25,28 +26,22 @@ from dataclasses import field, dataclass
 import torch
 import tinker
 
-import datasets as hf_datasets
 import transformers
 from dotenv import load_dotenv
 
 from fireworks.training.sdk import TrainerJobManager
-from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
 from training.utils import (
     DEFAULT_ADAM,
-    DEFAULT_RENDER_CHUNKSIZE,
     DEFAULT_RENDER_WORKERS,
-    DiskBackedDatumStore,
     InfraConfig,
-    MemTracer,
+    JsonlRenderDataset,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
     ReconnectableClient,
-    count_jsonl_rows,
-    iter_jsonl_rows,
-    stream_render_to_store,
+    make_render_dataloader,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -73,12 +68,26 @@ from training.utils.timer import timer, flush_timing
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Module-level so the spawn pool initializer can populate it once per worker
-# (avoids re-pickling the tokenizer on every task).
+# Module-level so DataLoader worker_init_fn can populate it once per
+# worker (avoids re-pickling the tokenizer on every batch). The parent
+# process also initialises this dict to support eval-set rendering and
+# auto carve-out, which run in-process with the same render_fn.
 _worker_state: dict = {}
 
 
-def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_seq_len):
+def _init_render_worker(
+    tokenizer_model: str,
+    renderer_name: str,
+    train_on_what_str: str,
+    max_seq_len: int,
+    _worker_id: int | None = None,
+) -> None:
+    """Populate ``_worker_state`` with a tokenizer + renderer.
+
+    ``_worker_id`` is accepted (and ignored) so this function can be
+    used directly as a DataLoader ``worker_init_fn`` after binding the
+    other args via ``functools.partial``.
+    """
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         tokenizer_model, trust_remote_code=True,
     )
@@ -465,154 +474,91 @@ def main(
             stack.callback(client.close)
 
         # -- Prepare data ------------------------------------------------------
-        # Stream-render dataset to a disk-backed store so peak RAM is bounded
-        # by num_workers * per-worker render footprint instead of scaling with
-        # dataset size. See docs/engineering/sft-v2-orchestrator-oom-debug.md.
-        total_raw = count_jsonl_rows(cfg.dataset, cfg.max_examples)
-        if total_raw == 0:
-            raise RuntimeError(f"No examples found in {cfg.dataset}")
+        # Render JSONL rows on the fly inside DataLoader workers so peak
+        # RAM is O(num_workers * per_worker_render_footprint) instead of
+        # O(dataset_size). See docs/engineering/sft-v2-orchestrator-oom-debug.md.
         max_seq_len = cfg.max_seq_len
         num_workers = (
             cfg.render_workers
             if cfg.render_workers is not None
             else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
-        logger.info(
-            "Streaming %d examples from %s (renderer=%s, train_on_what=%s,"
-            " workers=%d, chunksize=%d)",
-            total_raw, cfg.dataset,
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-            cfg.train_on_what,
-            num_workers, DEFAULT_RENDER_CHUNKSIZE,
-        )
-
-        # Initialise _worker_state in the parent too so the same render_fn
-        # (_render_one_worker) is used regardless of whether the helper
-        # picks the in-process loop (num_workers == 1) or the spawn pool.
+        # Initialise the parent's _worker_state so eval / carve-out
+        # rendering (which runs in-process) shares the same render_fn.
         init_args = (
             cfg.tokenizer_model, cfg.renderer_name,
             cfg.train_on_what, max_seq_len,
         )
         _init_render_worker(*init_args)
 
-        render_cache_dir = stack.enter_context(
-            tempfile.TemporaryDirectory(prefix="sft_render_")
+        training_dataset = JsonlRenderDataset(
+            cfg.dataset, _render_one_worker, max_examples=cfg.max_examples,
         )
-
-        def _open_store(name: str) -> DiskBackedDatumStore:
-            return stack.enter_context(
-                DiskBackedDatumStore(os.path.join(render_cache_dir, name))
-            )
-
-        def _stream(src: str, dst: DiskBackedDatumStore, on_progress, max_examples=None) -> int:
-            return stream_render_to_store(
-                iter_jsonl_rows(src, max_examples),
-                render_fn=_render_one_worker,
-                store=dst,
-                num_workers=num_workers,
-                chunksize=DEFAULT_RENDER_CHUNKSIZE,
-                initializer=_init_render_worker,
-                initargs=init_args,
-                on_progress=on_progress,
-            )
-
-        training_store = _open_store("training.bin")
-        mem_tracer = MemTracer(
-            store_callback=lambda: (
-                len(training_store), training_store.disk_size_bytes(),
-            ),
-            log=logger,
+        total_raw = len(training_dataset)
+        if total_raw == 0:
+            raise RuntimeError(f"No examples found in {cfg.dataset}")
+        logger.info(
+            "Indexed %d examples from %s (renderer=%s, train_on_what=%s,"
+            " workers=%d)",
+            total_raw, cfg.dataset,
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            cfg.train_on_what, num_workers,
         )
-        mem_tracer.log("before_rendering", 0, total_raw)
-
-        log_interval = max(1, total_raw // 20)       # ~5% for runner status
-        mem_log_interval = max(1, total_raw // 200)  # ~0.5% for memory tracing
-
-        def _on_render_progress(i: int, _datum: tinker.Datum | None) -> None:
-            if i % log_interval == 0 or i == total_raw:
-                runner.report_rendering_progress(i, total_raw)
-            if i % mem_log_interval == 0 or i == total_raw:
-                mem_tracer.log("rendering", i, total_raw)
-
-        filtered_count = _stream(
-            cfg.dataset, training_store, _on_render_progress, cfg.max_examples,
-        )
-        training_store.close_write()
-        mem_tracer.log("after_rendering", total_raw, total_raw)
-
-        if filtered_count > 0:
-            logger.info(
-                "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count, total_raw, max_seq_len,
-            )
-        logger.info("Prepared %d training examples", len(training_store))
-        if len(training_store) == 0:
-            raise RuntimeError("No valid training examples after tokenization")
 
         # -- Eval dataset (explicit or auto carve-out) -------------------------
-        # eval_data is a small list of Datums (max_eval_seqs ~ 100 typical),
-        # safe to materialise after streaming.
+        # Eval sets are small (max_eval_seqs ~ 100); render eagerly in
+        # the parent process so they can be replayed each epoch.
         eval_data: List[tinker.Datum] = []
-        training_start_idx = 0
         if cfg.evaluation_dataset:
-            total_eval = count_jsonl_rows(cfg.evaluation_dataset)
-            eval_log_interval = max(1, total_eval // 10)
-            eval_store = _open_store("eval.bin")
-
-            def _on_eval_progress(i: int, _datum: tinker.Datum | None) -> None:
-                if i % eval_log_interval == 0 or i == total_eval:
-                    runner.report_rendering_progress(
-                        i, total_eval, label="rendering eval data",
-                    )
-
-            _stream(cfg.evaluation_dataset, eval_store, _on_eval_progress)
-            eval_store.close_write()
-            eval_data = list(eval_store)
+            eval_dataset = JsonlRenderDataset(cfg.evaluation_dataset, _render_one_worker)
+            eval_data = [d for d in (eval_dataset[i] for i in range(len(eval_dataset))) if d is not None]
             logger.info(
                 "Loaded %d eval examples from %s",
                 len(eval_data), cfg.evaluation_dataset,
             )
         elif cfg.eval_auto_carveout:
-            # Auto carve-out: keep the backing file intact, materialise a small
-            # eval list, and advance the training index past the carveout range.
+            # Carve out by JSONL row index (pre-render). The slight
+            # overcount vs post-filter is harmless: filtered rows in the
+            # eval slice yield None and are dropped.
             carveout_count = compute_eval_carveout(
-                len(training_store), cfg.eval_carve_ratio, cfg.max_eval_seqs,
+                total_raw, cfg.eval_carve_ratio, cfg.max_eval_seqs,
             )
             if carveout_count > 0:
-                eval_data = [training_store[i] for i in range(carveout_count)]
-                training_start_idx = carveout_count
+                eval_data = [training_dataset[i] for i in range(carveout_count)]
+                eval_data = [d for d in eval_data if d is not None]
+                training_dataset = training_dataset.with_indices(
+                    list(range(carveout_count, total_raw))
+                )
                 logger.info(
                     "Auto carve-out: %d eval examples, %d training examples",
-                    len(eval_data), len(training_store) - training_start_idx,
+                    len(eval_data), len(training_dataset),
                 )
             else:
                 logger.warning("Dataset too small for auto carve-out, skipping eval")
 
-        training_count = len(training_store) - training_start_idx
+        training_count = len(training_dataset)
         effective_batch_size = cfg.batch_size
         if training_count < effective_batch_size:
             logger.warning(
                 "Training examples (%d) < batch_size (%d); reducing effective "
                 "batch_size to %d so all examples are trained on.",
-                training_count,
-                effective_batch_size,
-                training_count,
+                training_count, effective_batch_size, training_count,
             )
-            effective_batch_size = training_count
+            effective_batch_size = max(1, training_count)
 
-        sft_dataset = SupervisedDatasetFromHFDataset(
-            hf_datasets.Dataset.from_dict(
-                {"datum_idx": list(range(training_start_idx, len(training_store)))}
-            ),
+        loader = make_render_dataloader(
+            training_dataset,
             batch_size=effective_batch_size,
-            map_fn=lambda row: training_store[row["datum_idx"]],
+            num_workers=num_workers,
+            shuffle=True,
+            worker_init_fn=functools.partial(_init_render_worker, *init_args),
         )
-        total_batches_per_epoch = len(sft_dataset)
+        # Pre-filter upper bound; filtered rows make actual batches
+        # smaller but never larger.
+        total_batches_per_epoch = (training_count + effective_batch_size - 1) // effective_batch_size
         logger.info(
-            "Dataset: %d examples, %d batches/epoch, %d epochs",
-            training_count,
-            total_batches_per_epoch,
-            cfg.epochs,
+            "Dataset: %d examples, ~%d batches/epoch, %d epochs",
+            training_count, total_batches_per_epoch, cfg.epochs,
         )
         if eval_data:
             logger.info("Eval dataset: %d examples (eval after each epoch)", len(eval_data))
@@ -730,10 +676,16 @@ def main(
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
         for epoch in range(cfg.epochs):
-            sft_dataset.set_epoch(epoch)
-            epoch_start = start_batch if epoch == 0 else 0
-            for i_batch in range(epoch_start, total_batches_per_epoch):
-                batch = sft_dataset.get_batch(i_batch)
+            # On resume, skip the batches already processed in epoch 0.
+            # Workers still render skipped batches (wasted but bounded by
+            # num_workers * prefetch_factor); resume is rare enough that
+            # this is acceptable.
+            batch_iter = iter(loader)
+            if epoch == 0 and start_batch > 0:
+                batch_iter = islice(batch_iter, start_batch, None)
+            for batch in batch_iter:
+                if not batch:
+                    continue  # entire batch was filtered (None render); skip
                 data_consumed += len(batch)
                 step = _run_train_step(batch, step)
 

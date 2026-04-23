@@ -1,235 +1,169 @@
-"""Streaming dataset rendering utilities.
+"""Streaming dataset rendering via PyTorch DataLoader.
 
-These utilities decouple the *render* phase from RAM. The eager pattern of:
+Renders JSONL rows on the fly inside DataLoader workers, with prefetch
+hiding per-row tokenization behind the GPU train step. Workers are
+spawned (not forked) so each gets its own tokenizer / renderer state
+without copy-on-write inflating the parent's heap.
 
-    raw = list(json.loads(line) for line in f)            # ~10 GiB
-    rendered = pool.map(render_fn, raw)                   # ~400+ GiB
+Replaces the earlier "render to a disk-backed pickle store, then read
+back during training" pipeline because:
 
-does not fit on a single CPU node (allocatable RAM ~120 GiB on m5.8xlarge)
-for realistic SFT/DPO datasets at long context. Instead this module exposes:
+* Per-row CPU render cost is small relative to the trainer's
+  ``forward_backward`` step, so DataLoader prefetch hides it.
+* No disk persistence is needed for SFT -- multi-epoch simply
+  re-renders the same JSONL rows (cheap on the CPU orchestrator pod).
+* Eliminates ~200 LoC of bespoke worker pool / disk store / index code
+  in favour of battle-tested DataLoader machinery.
 
-  * ``iter_jsonl_rows`` / ``count_jsonl_rows`` -- lazy reads of raw JSONL.
-  * ``DiskBackedDatumStore`` -- append-only pickle store for rendered
-    objects, with random read access via an in-memory ``(offset, length)``
-    index (~16 B/row).
-  * ``stream_render_to_store`` -- glue that runs a worker pool and spills
-    each rendered item to a store as it completes (``Pool.imap``).
-
-Peak RAM becomes O(num_workers * per_worker_render_footprint) instead of
-O(num_examples * avg_seq_len * bytes_per_token).
-
-Used today by ``sft_loop``. Designed so DPO/ORPO can adopt the same
-pattern with a different ``render_fn`` and store payload type.
+Used today by ``sft_loop``. DPO/ORPO can reuse :class:`JsonlRenderDataset`
+with a preference-pair ``render_fn``; their multi-epoch reference logprob
+cache is a separate concern (kept on disk so the reference trainer can
+be released after epoch 0).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import multiprocessing
-import os
-import pickle
-from typing import IO, Any, Callable, Dict, Iterable, Iterator, List, Tuple, TypeVar
+from typing import Any, Callable, List
+
+import torch.utils.data as torch_data
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
+# Defaults validated end-to-end on a 110K-example, 256K-context SFT
+# dataset on a 16 vCPU / 58 GiB orchestrator pod.
+DEFAULT_RENDER_WORKERS = 4
+DEFAULT_PREFETCH_FACTOR = 2
 
 
 # ---------------------------------------------------------------------------
-# Disk-backed append-only store
+# JSONL → render → object dataset
 # ---------------------------------------------------------------------------
 
 
-class DiskBackedDatumStore:
-    """Pickle-backed append-only store for arbitrary picklable objects.
+def _scan_jsonl_offsets(path: str, max_examples: int | None = None) -> List[int]:
+    """Return the byte offset of every non-blank line in a JSONL file."""
+    offsets: List[int] = []
+    with open(path, "rb") as f:
+        offset = 0
+        for line in f:
+            if line.strip():
+                offsets.append(offset)
+                if max_examples is not None and len(offsets) >= max_examples:
+                    break
+            offset += len(line)
+    return offsets
 
-    Items are appended during the rendering (write) phase and random-accessed
-    by integer index during training (read) phase. All payload bytes live on
-    local disk; only a small ``(offset, length)`` index is held in RAM.
 
-    Usage::
+class JsonlRenderDataset(torch_data.Dataset):
+    """Map-style dataset that lazily renders each JSONL row on access.
 
-        with DiskBackedDatumStore(path) as store:
-            for item in producer:
-                store.append(item)
-            store.close_write()
-            ...
-            datum = store[i]            # random read
-            for d in store: ...         # sequential read
+    A single linear scan at construction time builds the byte-offset
+    table; each ``__getitem__(i)`` is a seek + readline + ``json.loads``
+    + ``render_fn``. ``render_fn`` must be a top-level (module-level)
+    function so it is picklable for spawn workers.
 
-    The store is named ``DiskBackedDatumStore`` for historical reasons but
-    accepts any picklable payload (tinker.Datum, dict, dataclass, ...).
+    ``render_fn`` may return ``None`` for rows that should be dropped
+    (empty messages, over-length sequences, ...). The companion
+    :func:`make_render_dataloader` wires up a collate that filters Nones.
     """
 
-    def __init__(self, path: str):
+    def __init__(
+        self,
+        path: str,
+        render_fn: Callable[[dict], Any | None],
+        *,
+        max_examples: int | None = None,
+        indices: List[int] | None = None,
+    ):
         self._path = path
-        self._offsets: List[Tuple[int, int]] = []
-        self._write_fh: IO[bytes] | None = None
-        self._read_fh: IO[bytes] | None = None
-
-    def __enter__(self) -> "DiskBackedDatumStore":
-        parent = os.path.dirname(self._path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        self._write_fh = open(self._path, "wb")
-        return self
-
-    def __exit__(self, *_exc) -> None:
-        self.close_write()
-        if self._read_fh is not None:
-            self._read_fh.close()
-            self._read_fh = None
-
-    def append(self, item: Any) -> None:
-        if self._write_fh is None:
-            raise RuntimeError("DiskBackedDatumStore is not open for writing")
-        blob = pickle.dumps(item, protocol=pickle.HIGHEST_PROTOCOL)
-        offset = self._write_fh.tell()
-        self._write_fh.write(blob)
-        self._offsets.append((offset, len(blob)))
-
-    def close_write(self) -> None:
-        """Flush and close the write handle. Idempotent.
-
-        Subsequent ``__getitem__`` calls reopen the file for reading.
-        """
-        if self._write_fh is not None:
-            self._write_fh.flush()
-            try:
-                os.fsync(self._write_fh.fileno())
-            except OSError:
-                pass
-            self._write_fh.close()
-            self._write_fh = None
+        self._render_fn = render_fn
+        self._offsets = _scan_jsonl_offsets(path, max_examples)
+        self._index_map: List[int] = (
+            list(indices)
+            if indices is not None
+            else list(range(len(self._offsets)))
+        )
 
     def __len__(self) -> int:
-        return len(self._offsets)
+        return len(self._index_map)
 
-    def __getitem__(self, idx: int) -> Any:
-        offset, length = self._offsets[idx]
-        if self._read_fh is None:
-            self._read_fh = open(self._path, "rb")
-        self._read_fh.seek(offset)
-        return pickle.loads(self._read_fh.read(length))
+    def __getitem__(self, i: int) -> Any:
+        offset = self._offsets[self._index_map[i]]
+        with open(self._path) as f:
+            f.seek(offset)
+            line = f.readline()
+        return self._render_fn(json.loads(line))
 
-    def __iter__(self) -> Iterator[Any]:
-        for i in range(len(self._offsets)):
-            yield self[i]
+    def with_indices(self, indices: List[int]) -> "JsonlRenderDataset":
+        """Return a view of this dataset restricted to ``indices``.
 
-    def disk_size_bytes(self) -> int:
-        try:
-            return os.path.getsize(self._path)
-        except OSError:
-            return 0
+        Shares the underlying offset table and render_fn; only the
+        index mapping differs. Used to carve out a contiguous eval slice
+        from the head of the training data without rescanning the file.
+        """
+        view = object.__new__(type(self))
+        view._path = self._path
+        view._render_fn = self._render_fn
+        view._offsets = self._offsets
+        view._index_map = list(indices)
+        return view
 
     @property
-    def path(self) -> str:
-        return self._path
+    def num_underlying_rows(self) -> int:
+        return len(self._offsets)
 
 
 # ---------------------------------------------------------------------------
-# Lazy JSONL reads
+# DataLoader factory
 # ---------------------------------------------------------------------------
 
 
-def iter_jsonl_rows(
-    path: str, max_examples: int | None = None,
-) -> Iterator[Dict[str, Any]]:
-    """Stream JSON rows from a JSONL file without materialising the list.
-
-    Skips blank lines. Stops after ``max_examples`` valid rows when set.
-    """
-    yielded = 0
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
-            yielded += 1
-            if max_examples is not None and yielded >= max_examples:
-                return
+def _drop_none_collate(batch: List[Any]) -> List[Any]:
+    return [d for d in batch if d is not None]
 
 
-def count_jsonl_rows(path: str, max_examples: int | None = None) -> int:
-    """Count non-blank lines in a JSONL file without parsing JSON."""
-    n = 0
-    with open(path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            n += 1
-            if max_examples is not None and n >= max_examples:
-                break
-    return n
-
-
-# ---------------------------------------------------------------------------
-# Worker pool that spills directly to a store
-# ---------------------------------------------------------------------------
-
-
-# Conservative defaults validated end-to-end on a 110K-example, 256K-context
-# SFT dataset:
-#   workers=4   ~28 GiB spawn baseline (vs 56 GiB at 8 workers)
-#   chunksize=10 cuts result-buffer bursts ~10x vs the imap default
-DEFAULT_RENDER_WORKERS = 4
-DEFAULT_RENDER_CHUNKSIZE = 10
-
-
-def stream_render_to_store(
-    rows: Iterable[Dict[str, Any]],
+def make_render_dataloader(
+    dataset: torch_data.Dataset,
     *,
-    render_fn: Callable[[Dict[str, Any]], T | None],
-    store: DiskBackedDatumStore,
+    batch_size: int,
     num_workers: int = DEFAULT_RENDER_WORKERS,
-    chunksize: int = DEFAULT_RENDER_CHUNKSIZE,
-    initializer: Callable[..., None] | None = None,
-    initargs: tuple = (),
-    on_progress: Callable[[int, T | None], None] | None = None,
-) -> int:
-    """Render ``rows`` in parallel and append non-None results to ``store``.
+    prefetch_factor: int = DEFAULT_PREFETCH_FACTOR,
+    shuffle: bool = True,
+    worker_init_fn: Callable[[int], None] | None = None,
+) -> torch_data.DataLoader:
+    """Build a DataLoader for ``dataset`` with our spawn / collate defaults.
 
-    Returns the number of rows that were filtered out (``render_fn`` returned
-    ``None``). The total number of rows processed equals
-    ``len(store) + filtered_count`` after this returns.
+    * ``multiprocessing_context="spawn"`` keeps each worker's RSS
+      independent of the parent (no copy-on-write inflation of the
+      tokenizer / renderer state).
+    * ``persistent_workers=True`` keeps the per-worker tokenizer alive
+      across epochs so we pay the spawn-and-init cost once.
+    * ``collate_fn`` returns a python list of rendered items, dropping
+      any ``None`` entries. Tinker's ``forward_backward`` accepts
+      variable-size batches so dropping is safe.
 
-    Uses the ``spawn`` multiprocessing context to avoid Copy-on-Write
-    inflation that would otherwise multiply the parent's heap across
-    workers. ``Pool.imap`` is used (not ``map``) so results stream out
-    one chunk at a time instead of accumulating in the pool's internal
-    queue.
-
-    ``on_progress`` is called with ``(processed_count_one_indexed, item)``
-    after each item; use it to drive progress logging or memory tracing.
-    Pass ``num_workers=1`` to fall back to the single-process path (useful
-    when ``initializer`` cannot be pickled or for unit tests).
+    ``num_workers <= 1`` falls back to single-process rendering. Unit
+    tests rely on this to monkey-patch the renderer (spawn workers can't
+    see test-time monkey patches), and a single worker subprocess
+    rarely earns its keep over in-process rendering anyway.
     """
-    filtered = 0
-
     if num_workers <= 1:
-        for i, row in enumerate(rows):
-            datum = render_fn(row)
-            if datum is None:
-                filtered += 1
-            else:
-                store.append(datum)
-            if on_progress is not None:
-                on_progress(i + 1, datum)
-        return filtered
-
-    spawn_ctx = multiprocessing.get_context("spawn")
-    with spawn_ctx.Pool(
-        processes=num_workers,
-        initializer=initializer,
-        initargs=initargs,
-    ) as pool:
-        for i, datum in enumerate(pool.imap(render_fn, rows, chunksize=chunksize)):
-            if datum is None:
-                filtered += 1
-            else:
-                store.append(datum)
-            if on_progress is not None:
-                on_progress(i + 1, datum)
-    return filtered
+        return torch_data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            collate_fn=_drop_none_collate,
+        )
+    return torch_data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        multiprocessing_context="spawn",
+        worker_init_fn=worker_init_fn,
+        persistent_workers=True,
+        collate_fn=_drop_none_collate,
+    )
