@@ -1,35 +1,28 @@
 #!/usr/bin/env python3
-"""Async RL recipe — gate-native off-policy, single sample-fn extension point.
+"""Async RL recipe -- training mechanics only.
 
-End-to-end demonstration of :func:`run_async_rl_loop`: single-turn GRPO
-sampling against a Fireworks deployment, packaged into a
-:class:`PromptGroup` through the :class:`Trajectory` adapter, with explicit
-off-policy budgeting via ``max_head_offpolicy_versions``.
+One extension point: ``rollout_fn(row, ctx) -> Trajectory | None``.  The user
+owns everything about the rollout (sampling, grading, multi-turn, remote
+agents, per-turn logging).  The recipe owns everything about the training
+side (infra provisioning, loss, optimizer, weight sync, gate-native async
+off-policy scheduling).
 
-Users customize one closure -- ``rollout_one_prompt`` -- to change what a
-single rollout looks like.  Single-turn recipes write it with one call to
-``sampler.sample_with_tokens``; multi-turn / agent / remote-grader setups
-write their own loop inside that closure and hand back a
-:class:`Trajectory` whose segments carry per-turn versions.
-
-Usage::
-
-    export FIREWORKS_API_KEY=...
-    python -m training.recipes.async_rl_loop
+Example users live in :mod:`training.examples`; see
+``training/examples/gsm8k_async/train.py`` for a single-turn reward-function
+pattern and ``training/examples/rollr_cispo/train.py`` for a remote-grader
+integration.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import re
 import signal
 import time as _time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Awaitable, Callable
 
 import tinker
 import transformers
@@ -55,7 +48,6 @@ from training.utils import (
     WeightSyncConfig,
     load_jsonl_dataset,
     log_metrics_json,
-    prepare_sampling_messages,
     read_api_extra_headers_env,
     setup_wandb,
     validate_config,
@@ -79,27 +71,23 @@ from training.utils.rl.losses import (
 )
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.tis import TISConfig
-from training.utils.rl.train import TrainStepFns
-from training.utils.rl.trajectory import (
-    CompletionSegment,
-    Trajectory,
-    trajectory_to_prompt_group,
-)
+from training.utils.rl.train import DynamicFilterFn, TrainStepFns
+from training.utils.rl.trajectory import Trajectory, trajectory_to_prompt_group
 from training.utils.timer import flush_timing, timer
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["Config", "RolloutContext", "RolloutFn", "main"]
 
 
 @dataclass
 class Config:
     log_path: str
-
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     rollout_base_model: str | None = None
-    dataset: str = (
-        "https://raw.githubusercontent.com/eval-protocol/python-sdk/"
-        "main/development/gsm8k_sample.jsonl"
-    )
+    dataset: str | None = None
+    """JSONL dataset path or URL.  Optional -- ``main(..., rows=...)`` also
+    accepts rows directly for users building their dataset in Python."""
 
     learning_rate: float = 1e-5
     kl_beta: float = 0.001
@@ -113,18 +101,9 @@ class Config:
 
     prompt_groups_per_step: int = 1
     max_head_offpolicy_versions: int = 0
-    """Staleness budget, in optimizer-step versions.  ``0`` = strict on-policy.
-
-    The async loop lets rollouts run up to this many versions behind the
-    current policy before the gate blocks further submissions.  Raising this
-    increases throughput at the cost of off-policy drift (bounded by TIS
-    correction in the loss)."""
-
+    """Staleness budget in optimizer-step versions.  ``0`` = strict on-policy."""
     sample_max_concurrency: int | None = None
-    """Optional hard cap on in-flight rollouts (``None`` = gate-bounded only)."""
-
     weight_sync_interval: int = 1
-    """Fire a weight-sync hotload every N optimizer steps."""
 
     grad_accumulation_normalization: GradAccNormalization | str | None = (
         GradAccNormalization.NUM_LOSS_TOKENS
@@ -140,7 +119,6 @@ class Config:
     tis: TISConfig = field(default_factory=TISConfig)
 
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
-    trajectory_dir: str | None = None
 
     policy_job_id: str | None = None
     reference_job_id: str | None = None
@@ -156,64 +134,39 @@ class Config:
     runner: RunnerConfig = field(default_factory=RunnerConfig)
 
 
-def _extract_answer(text: str) -> Optional[str]:
-    match = re.search(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
-    if not match:
-        return None
-    digits = re.search(r"(-?\d+)", match.group(1))
-    return digits.group(1) if digits else None
+@dataclass
+class RolloutContext:
+    """What a ``rollout_fn`` receives to do its job.
+
+    All fields are live: ``current_version()`` returns the up-to-date version
+    counter at call time, so multi-turn rollouts that span a hotload see the
+    new version on later segments.
+    """
+
+    sampler: DeploymentSampler
+    tokenizer: Any
+    completions_per_prompt: int
+    sample_kwargs: dict[str, Any]
+    inference_url: str
+    api_key: str
+    model: str
+    current_version: Callable[[], int]
 
 
-def reward_fn(completion: str, row: dict) -> float:
-    predicted = _extract_answer(completion)
-    truth = _extract_answer(str(row.get("ground_truth", "")))
-    if predicted is None or truth is None:
-        return 0.0
-    return 1.0 if predicted == truth else 0.0
-
-
-def should_accept(pg: PromptGroup) -> bool:
-    """Reject zero-variance groups (all rewards identical)."""
-    return len(set(pg.rewards)) > 1
-
-
-def _dump_trajectory(
-    trajectory_dir: str, step: int, prompt_groups: list[PromptGroup],
-) -> None:
-    os.makedirs(trajectory_dir, exist_ok=True)
-    path = os.path.join(trajectory_dir, f"step_{step:04d}.jsonl")
-    n_records = 0
-    with open(path, "w") as f:
-        for pg_idx, pg in enumerate(prompt_groups):
-            completions = pg.completions or []
-            for comp_idx, comp_text in enumerate(completions):
-                record = {
-                    "step": step,
-                    "prompt_group": pg_idx,
-                    "completion_index": comp_idx,
-                    "prompt": pg.prompt,
-                    "completion": comp_text,
-                    "reward": pg.rewards[comp_idx] if comp_idx < len(pg.rewards) else None,
-                    "advantage": pg.advantages[comp_idx] if comp_idx < len(pg.advantages) else None,
-                    "completion_len": (
-                        pg.completion_lens[comp_idx]
-                        if comp_idx < len(pg.completion_lens) else None
-                    ),
-                    "truncated": (
-                        pg.truncated[comp_idx] if comp_idx < len(pg.truncated) else None
-                    ),
-                    "ground_truth": pg.row_meta.get("ground_truth") if pg.row_meta else None,
-                }
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                n_records += 1
+RolloutFn = Callable[[dict, RolloutContext], Awaitable[Trajectory | None]]
 
 
 def main(
     config: Config,
+    *,
+    rollout_fn: RolloutFn,
+    dynamic_filter_fn: DynamicFilterFn | None = None,
+    rows: list[dict] | None = None,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
     cancel_on_exit: bool = False,
 ) -> None:
+    """Run the async RL loop with a user-supplied rollout function."""
     cfg = config
     runner = RunnerIO(cfg.runner)
 
@@ -224,8 +177,11 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
+    if rows is None and not cfg.dataset:
+        raise ValueError("Provide either cfg.dataset or rows= to main().")
+
     validate_config(
-        cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment,
+        cfg.base_model, cfg.dataset or "", cfg.weight_sync, cfg.deployment,
         output_model_id=cfg.output_model_id,
     )
     if not cfg.deployment.tokenizer_model:
@@ -329,9 +285,10 @@ def main(
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
-        raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
-        all_rows = raw_dataset * cfg.epochs
-        rl_dataset = RLPromptDataset(all_rows, prompts_per_step=cfg.prompt_groups_per_step)
+        if rows is None:
+            raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+            rows = raw_dataset * cfg.epochs
+        rl_dataset = RLPromptDataset(rows, prompts_per_step=cfg.prompt_groups_per_step)
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         client_loss_builder = build_loss_fn(
@@ -354,75 +311,28 @@ def main(
             logprobs=True,
         )
 
-        # -- Rollout: one trajectory per row (single-turn) ---------------------
-        async def rollout_one_prompt(row: dict) -> Trajectory | None:
-            messages = row.get("messages", [])
-            input_messages = prepare_sampling_messages(messages)
-            if not input_messages:
-                return None
-
-            try:
-                sampled = await sampler.sample_with_tokens(
-                    messages=input_messages, n=completions_per_prompt, **sample_kwargs,
-                )
-            except Exception as e:
-                logger.warning("Sampling failed: %s", e)
-                return None
-
-            if not sampled or len(sampled) < completions_per_prompt:
-                return None
-
-            prompt_len = sampled[0].prompt_len
-            prompt_tokens = list(sampled[0].full_tokens[:prompt_len])
-
-            completions: list[list[CompletionSegment]] = []
-            rewards: list[float] = []
-            version_at_submit = current_version
-            for s in sampled:
-                completion_tokens = list(s.full_tokens[prompt_len:])
-                if not s.inference_logprobs:
-                    raise RuntimeError(
-                        "Deployment did not return logprobs. "
-                        "Ensure sample_kwargs['logprobs']=True and the "
-                        "deployment supports logprobs."
-                    )
-                inf_lp = list(s.inference_logprobs)
-                # DeploymentSampler returns logprobs aligned with generated tokens
-                # when echo=False (the default used here).
-                if len(inf_lp) != len(completion_tokens):
-                    raise RuntimeError(
-                        f"Logprob length {len(inf_lp)} != completion length "
-                        f"{len(completion_tokens)}. Cookbook requires pre-aligned "
-                        "logprobs from the rollout source."
-                    )
-                completions.append([
-                    CompletionSegment(
-                        tokens=completion_tokens,
-                        inference_logprobs=inf_lp,
-                        version=version_at_submit,
-                        finish_reason=s.finish_reason,
-                        text=s.text,
-                    )
-                ])
-                rewards.append(reward_fn(s.text, row))
-
-            return Trajectory(
-                prompt_tokens=prompt_tokens,
-                completions=completions,
-                rewards=rewards,
-                prompt_messages=input_messages if cfg.trajectory_dir else None,
-                row_meta={"ground_truth": row.get("ground_truth", "")}
-                if cfg.trajectory_dir else None,
-            )
+        # -- RolloutContext + sample_fn bridge ---------------------------------
+        ctx = RolloutContext(
+            sampler=sampler,
+            tokenizer=tokenizer,
+            completions_per_prompt=completions_per_prompt,
+            sample_kwargs=sample_kwargs,
+            inference_url=deploy_mgr.inference_url,
+            api_key=api_key,
+            model=infra.inference_model,
+            current_version=lambda: current_version,
+        )
 
         async def sample_one_prompt(row: dict) -> PromptGroup | None:
-            traj = await rollout_one_prompt(row)
+            try:
+                traj = await rollout_fn(row, ctx)
+            except Exception as e:
+                logger.warning("rollout_fn failed: %s", e)
+                return None
             if traj is None:
                 return None
             return trajectory_to_prompt_group(
-                traj,
-                with_reference=(reference is not None),
-                persist_raw=bool(cfg.trajectory_dir),
+                traj, with_reference=(reference is not None), persist_raw=False,
             )
 
         # -- Training callbacks ------------------------------------------------
@@ -489,10 +399,7 @@ def main(
                 ) * cfg.prompt_groups_per_step
                 save_checkpoint(
                     policy, f"step-{step}", cfg.log_path,
-                    {
-                        "step": step, "data_consumed": _dc,
-                        "source_job_id": policy_job_id,
-                    },
+                    {"step": step, "data_consumed": _dc, "source_job_id": policy_job_id},
                     kind=CheckpointKind.STATE,
                     base_model=cfg.base_model,
                     training_shape=infra.training_shape_id,
@@ -528,9 +435,6 @@ def main(
                 RunStatus.RUNNING, step=step, total_steps=total_rl_steps, message="training",
             )
             runner.write_metadata()
-
-            if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
             return step, metrics
 
         def _weight_sync(step: int) -> None:
@@ -567,7 +471,7 @@ def main(
                 ),
                 weight_sync_interval=cfg.weight_sync_interval,
                 max_concurrent=cfg.sample_max_concurrency,
-                dynamic_filter_fn=should_accept,
+                dynamic_filter_fn=dynamic_filter_fn,
                 global_step=step_offset,
                 metrics_callback=_metrics_cb,
             )
@@ -581,10 +485,7 @@ def main(
                 cp_name = f"step-{global_step}"
                 paths = save_checkpoint(
                     policy, cp_name, cfg.log_path,
-                    {
-                        "step": global_step, "data_consumed": _dc,
-                        "source_job_id": policy_job_id,
-                    },
+                    {"step": global_step, "data_consumed": _dc, "source_job_id": policy_job_id},
                     kind=CheckpointKind.BOTH,
                     base_model=cfg.base_model,
                     training_shape=infra.training_shape_id,
@@ -600,7 +501,3 @@ def main(
                     )
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
-
-
-if __name__ == "__main__":
-    main(Config(log_path="/tmp/rl-async"))
