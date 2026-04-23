@@ -188,36 +188,6 @@ def save_checkpoint(
     return paths
 
 
-def save_dcp_checkpoint_if_due(
-    client: ReconnectableClient,
-    *,
-    step: int,
-    rollouts_completed: int,
-    dcp_interval: int,
-    log_path: str,
-    resume_info: ResumeInfo | None,
-    prompt_groups_per_step: int,
-    policy_job_id: str,
-    base_model: str,
-    training_shape: str | None,
-) -> None:
-    """Save a STATE checkpoint when ``rollouts_completed`` hits ``dcp_interval``."""
-    if dcp_interval <= 0 or rollouts_completed <= 0 or rollouts_completed % dcp_interval != 0:
-        return
-    data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-        rollouts_completed * prompt_groups_per_step
-    )
-    save_checkpoint(
-        client,
-        f"step-{step}",
-        log_path,
-        {"step": step, "data_consumed": data_consumed, "source_job_id": policy_job_id},
-        kind=CheckpointKind.STATE,
-        base_model=base_model,
-        training_shape=training_shape,
-    )
-
-
 def save_final_checkpoint_and_promote(
     client: ReconnectableClient,
     rlor_mgr: Any,

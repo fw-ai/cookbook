@@ -36,7 +36,7 @@ import transformers
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
-from fireworks.training.sdk.deployment import DeploymentSampler
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
@@ -50,7 +50,6 @@ from training.utils import (
     DeployConfig,
     WeightSyncConfig,
     RLPromptDataset,
-    build_adaptive_concurrency_controller,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -63,9 +62,10 @@ from training.utils import (
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
-    save_dcp_checkpoint_if_due,
+    save_checkpoint,
     save_final_checkpoint_and_promote,
     validate_warm_start_config,
+    CheckpointKind,
 )
 from training.utils.runner import install_cleanup_signal_handlers
 from training.utils.rl import PromptGroup, setup_infra
@@ -360,8 +360,21 @@ def main(
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             cfg.deployment.tokenizer_model, trust_remote_code=True,
         )
-        concurrency_controller = build_adaptive_concurrency_controller(
-            cfg.concurrency, infra.deployment_gpu_count,
+        # Adaptive concurrency — window adjusts based on server-side prefill queue.
+        # For fixed (no rate limiting), use FixedConcurrencyController instead.
+        initial_window = cfg.concurrency.initial_window or (8 * infra.deployment_gpu_count)
+        concurrency_controller = AdaptiveConcurrencyController(
+            initial_window=initial_window,
+            min_window=cfg.concurrency.min_window,
+            max_window=cfg.concurrency.max_window,
+            prefill_queue_target=cfg.concurrency.prefill_queue_target,
+        )
+        logger.info(
+            "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
+            initial_window,
+            cfg.concurrency.min_window,
+            cfg.concurrency.max_window,
+            cfg.concurrency.prefill_queue_target,
         )
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
@@ -672,18 +685,28 @@ def main(
                     step, minibatch_idx + 1, num_minibatches, _time.time() - t0,
                 )
 
-            save_dcp_checkpoint_if_due(
-                policy,
-                step=step,
-                rollouts_completed=(step - step_offset) // num_minibatches,
-                dcp_interval=cfg.weight_sync.dcp_save_interval,
-                log_path=cfg.log_path,
-                resume_info=resume_info,
-                prompt_groups_per_step=prompt_groups_per_step,
-                policy_job_id=policy_job_id,
-                base_model=cfg.base_model,
-                training_shape=infra.training_shape_id,
-            )
+            rollouts_completed = (step - step_offset) // num_minibatches
+            dcp_interval = cfg.weight_sync.dcp_save_interval
+            if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
+                logger.info("[step %d] dcp_save...", step)
+                t0 = _time.time()
+                data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+                    rollouts_completed * prompt_groups_per_step
+                )
+                save_checkpoint(
+                    policy,
+                    f"step-{step}",
+                    cfg.log_path,
+                    {
+                        "step": step,
+                        "data_consumed": data_consumed,
+                        "source_job_id": policy_job_id,
+                    },
+                    kind=CheckpointKind.STATE,
+                    base_model=cfg.base_model,
+                    training_shape=infra.training_shape_id,
+                )
+                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
