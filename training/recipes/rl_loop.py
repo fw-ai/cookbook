@@ -82,7 +82,7 @@ from training.utils.rl.losses import (
     combine_prompt_groups,
     resolve_builtin_loss,
 )
-from training.utils.rl.metrics import add_inference_numerics, compute_step_metrics
+from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 
 logger = logging.getLogger(__name__)
@@ -753,16 +753,6 @@ def main(
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
-            )
-            # Server-side builtin loss kernels bypass the client-side loss_loop
-            # where ``inference_diff``/``inference_kld`` are computed, so emit
-            # them here from the rollout-boundary prox/inf snapshots. Required
-            # by the numerics CI gate; decoupled from policy_loss choice.
-            add_inference_numerics(
-                metrics,
-                prox_logprobs=prox_lp,
-                inf_logprobs=inf_lp,
-                prompt_lens=prompt_lens,
             )
             metrics["train/step"] = step
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any, Sequence
 
 import tinker
@@ -188,47 +187,3 @@ def compute_step_metrics(
             metrics["rollout/raw_reward"] = sum(raw_rewards) / len(raw_rewards)
 
     return metrics
-
-
-def add_inference_numerics(
-    metrics: dict[str, Any],
-    *,
-    prox_logprobs: Sequence,
-    inf_logprobs: Sequence,
-    prompt_lens: Sequence[int],
-) -> None:
-    """Emit trainer-vs-inference log-prob divergence on the rollout batch.
-
-    Writes two keys into ``metrics``:
-      - ``train/inference_diff``: mean |log π_prox − log π_inf| over response tokens
-      - ``train/inference_kld``:  mean (exp(Δ) − Δ − 1) over the same tokens (k3-style)
-
-    The ``prox`` logprobs are the bf16 trainer's recomputation of the
-    rollout, sampled before any optim step has fired; the ``inf`` logprobs
-    come from the fp8 inference server that produced the rollout. The
-    pair measures pure trainer/inference quantization drift at rollout
-    boundary and is independent of which loss kernel runs, so the CI
-    numerics gate stays comparable across ``policy_loss`` choices.
-    """
-    diff_per_sample: list[float] = []
-    kld_per_sample: list[float] = []
-    for i, prompt_len in enumerate(prompt_lens):
-        prox = prox_logprobs[i]
-        inf = inf_logprobs[i]
-        resp_start = max(0, int(prompt_len) - 1)
-        resp_end = min(len(prox), len(inf))
-        if resp_end <= resp_start:
-            continue
-        n = resp_end - resp_start
-        total_diff = 0.0
-        total_kld = 0.0
-        for t in range(resp_start, resp_end):
-            d = float(prox[t]) - float(inf[t])
-            total_diff += abs(d)
-            total_kld += math.exp(d) - d - 1.0
-        diff_per_sample.append(total_diff / n)
-        kld_per_sample.append(total_kld / n)
-
-    if diff_per_sample:
-        metrics["train/inference_diff"] = sum(diff_per_sample) / len(diff_per_sample)
-        metrics["train/inference_kld"] = sum(kld_per_sample) / len(kld_per_sample)
