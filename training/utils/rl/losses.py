@@ -152,6 +152,8 @@ class PromptGroup:
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
     """Per-sample flag: True if completion hit max_completion_tokens."""
+    generation_step: int | None = None
+    """Training step when this group's rollout was submitted (async mode)."""
     prompt: list[dict] | None = None
     """Original prompt messages (for trajectory logging)."""
     completions: list[str] | None = None

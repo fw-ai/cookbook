@@ -18,6 +18,16 @@ __all__ = [
     "DynamicFilterFn",
     "TrainStepFns",
     "run_rl_loop",
+    # Async training loop + env-driven sampling
+    "AsyncConfig",
+    "run_rl_loop_async",
+    "run_env_group_to_trajectories",
+    "run_env_to_trajectory",
+    "trajectories_to_prompt_group",
+    "build_sample_fn",
+    "RewardFn",
+    "EnvBuilder",
+    "RolloutSource",
     # Bundled infra setup
     "Infra",
     "setup_infra",
@@ -82,3 +92,15 @@ from training.utils.rl.env import (
 )
 from training.utils.rl.env_adapters import SingleTurnEnv, wrap_reward_fn
 from training.utils.rl.tokenize import get_prefill_logprobs, tokenize_chat_turn
+from training.utils.rl.train_async import AsyncConfig, run_rl_loop_async
+from training.utils.rl.rollout_runner import (
+    run_env_group_to_trajectories,
+    run_env_to_trajectory,
+)
+from training.utils.rl.rollout_builder import trajectories_to_prompt_group
+from training.utils.rl.sample_fn_factory import (
+    EnvBuilder,
+    RewardFn,
+    RolloutSource,
+    build_sample_fn,
+)
