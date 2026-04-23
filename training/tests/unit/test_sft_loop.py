@@ -149,6 +149,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         dataset=str(dataset_path),
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,
+        render_workers=1,
     )
 
     with pytest.raises(RuntimeError, match="No valid training examples"):
@@ -464,6 +465,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         batch_size=1,
         grad_accum=1,
         log_path=str(tmp_path / "sft_logs"),
+        render_workers=1,
     )
 
     result = module.main(cfg, rlor_mgr=FakeMgr())
@@ -574,6 +576,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
         epochs=1,
         batch_size=1,
         log_path=str(tmp_path / "sft_logs"),
+        render_workers=1,
     )
 
     result = module.main(cfg, rlor_mgr=FakeMgr())
@@ -731,6 +734,7 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
         batch_size=9,  # All 9 training examples in one batch
         log_path=str(tmp_path / "sft_logs"),
         eval_auto_carveout=True,
+        render_workers=1,
     )
 
     result = module.main(cfg, rlor_mgr=FakeMgr())
