@@ -14,7 +14,6 @@ Usage:
 
 from __future__ import annotations
 
-import functools
 import os
 import signal
 import logging
@@ -407,15 +406,6 @@ def main(
             stack.callback(client.close)
 
         # -- Prepare data ------------------------------------------------------
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
-        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
-        train_on_what = parse_train_on_what(cfg.train_on_what)
-        logger.info(
-            "Using renderer=%s train_on_what=%s",
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-            train_on_what.value,
-        )
-
         # Stream-render dataset to a disk-backed store so peak RAM is bounded
         # by num_workers * per-worker render footprint instead of scaling with
         # dataset size. See docs/engineering/sft-v2-orchestrator-oom-debug.md.
@@ -424,14 +414,23 @@ def main(
             raise RuntimeError(f"No examples found in {cfg.dataset}")
         max_seq_len = cfg.max_seq_len
         num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
-        use_parallel = num_workers > 1 and total_raw > num_workers
         logger.info(
-            "Streaming %d examples from %s (%s, workers=%d, chunksize=%d)",
+            "Streaming %d examples from %s (renderer=%s, train_on_what=%s,"
+            " workers=%d, chunksize=%d)",
             total_raw, cfg.dataset,
-            "parallel spawn" if use_parallel else "single-process",
-            num_workers if use_parallel else 1,
-            DEFAULT_RENDER_CHUNKSIZE if use_parallel else 1,
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            cfg.train_on_what,
+            num_workers, DEFAULT_RENDER_CHUNKSIZE,
         )
+
+        # Initialise _worker_state in the parent too so the same render_fn
+        # (_render_one_worker) is used regardless of whether the helper
+        # picks the in-process loop (num_workers == 1) or the spawn pool.
+        init_args = (
+            cfg.tokenizer_model, cfg.renderer_name,
+            cfg.train_on_what, max_seq_len,
+        )
+        _init_render_worker(*init_args)
 
         render_cache_dir = stack.enter_context(
             tempfile.TemporaryDirectory(prefix="sft_render_")
@@ -445,18 +444,12 @@ def main(
         def _stream(src: str, dst: DiskBackedDatumStore, on_progress, max_examples=None) -> int:
             return stream_render_to_store(
                 iter_jsonl_rows(src, max_examples),
-                render_fn=_render_one_worker if use_parallel else functools.partial(
-                    _render_messages, renderer=renderer,
-                    train_on_what=train_on_what, max_seq_len=max_seq_len,
-                ),
+                render_fn=_render_one_worker,
                 store=dst,
-                num_workers=num_workers if use_parallel else 1,
+                num_workers=num_workers,
                 chunksize=DEFAULT_RENDER_CHUNKSIZE,
-                initializer=_init_render_worker if use_parallel else None,
-                initargs=(
-                    cfg.tokenizer_model, cfg.renderer_name,
-                    cfg.train_on_what, max_seq_len,
-                ) if use_parallel else (),
+                initializer=_init_render_worker,
+                initargs=init_args,
                 on_progress=on_progress,
             )
 
