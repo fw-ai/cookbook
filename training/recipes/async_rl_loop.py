@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Async RL recipe -- training mechanics only.
 
-One extension point: ``rollout_fn(row, ctx) -> Trajectory | None``.  The user
+One extension point: ``rollout_fn(row, ctx) -> Rollout | None``.  The user
 owns everything about the rollout (sampling, grading, multi-turn, remote
 agents, per-turn logging).  The recipe owns everything about the training
 side (infra provisioning, loss, optimizer, weight sync, gate-native async
 off-policy scheduling).
+
+The recipe always uses the client-side ``forward_backward_custom`` loss
+path so the same code works for every supported loss (GRPO, DAPO, GSPO,
+CISPO, REINFORCE, etc.), multi-turn masking, and custom corrections.
+Users who want the server-side builtin kernel for a supported loss can
+replace the ``fwd_bwd_one`` body with ``resolve_builtin_loss`` +
+``build_builtin_loss_datums`` + ``policy.forward_backward``; see
+``training/recipes/rl_loop.py`` for the dual-path pattern.
 
 Example users live in :mod:`training.examples`; see
 ``training/examples/gsm8k_async/train.py`` for a single-turn reward-function
@@ -40,14 +48,9 @@ from training.utils import (
     DeployConfig,
     InfraConfig,
     ResourceCleanup,
-    RLPromptDataset,
-    RunnerConfig,
-    RunnerIO,
-    RunStatus,
     WandBConfig,
     WeightSyncConfig,
     load_jsonl_dataset,
-    log_metrics_json,
     read_api_extra_headers_env,
     setup_wandb,
     validate_config,
@@ -63,12 +66,7 @@ from training.utils.rl.async_train import run_async_rl_loop
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.losses import (
-    build_builtin_loss_datums,
-    build_loss_fn,
-    combine_prompt_groups,
-    resolve_builtin_loss,
-)
+from training.utils.rl.losses import build_loss_fn, combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
@@ -123,7 +121,6 @@ class Config:
     policy_job_id: str | None = None
     reference_job_id: str | None = None
     init_from_checkpoint: str | None = None
-    output_model_id: str | None = None
     save_final_checkpoint: bool = True
     step_timeout: int = 0
 
@@ -131,7 +128,6 @@ class Config:
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
-    runner: RunnerConfig = field(default_factory=RunnerConfig)
 
 
 @dataclass
@@ -168,7 +164,6 @@ def main(
 ) -> None:
     """Run the async RL loop with a user-supplied rollout function."""
     cfg = config
-    runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, _):
         name = signal.Signals(signum).name
@@ -182,7 +177,6 @@ def main(
 
     validate_config(
         cfg.base_model, cfg.dataset or "", cfg.weight_sync, cfg.deployment,
-        output_model_id=cfg.output_model_id,
     )
     if not cfg.deployment.tokenizer_model:
         raise ValueError("deployment.tokenizer_model is required.")
@@ -212,12 +206,7 @@ def main(
             api_key=api_key, base_url=base_url, additional_headers=additional_headers,
         )
 
-    runner.write_status(RunStatus.PENDING, message="provisioning")
-
-    def _on_trainer_status(msg: str) -> None:
-        runner.write_status(RunStatus.PENDING, message=msg)
-
-    with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
+    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
         infra = setup_infra(
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
@@ -235,17 +224,14 @@ def main(
             role_prefix="rl-async",
             api_key=api_key,
             cleanup=cleanup if cancel_on_exit else None,
-            on_status=_on_trainer_status,
         )
         for closeable in infra.closeables:
             stack.callback(closeable.close)
 
-        runner.set_accelerator_info(profile=infra.policy_profile)
         wandb_log(infra.boot_metrics, step=0)
 
         policy = infra.policy
         reference = infra.reference
-        policy_profile = infra.policy_profile
         policy_job_id = infra.policy_job_id
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -288,7 +274,6 @@ def main(
         if rows is None:
             raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
             rows = raw_dataset * cfg.epochs
-        rl_dataset = RLPromptDataset(rows, prompts_per_step=cfg.prompt_groups_per_step)
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         client_loss_builder = build_loss_fn(
@@ -336,14 +321,6 @@ def main(
             )
 
         # -- Training callbacks ------------------------------------------------
-        builtin_server_loss = resolve_builtin_loss(
-            cfg.policy_loss, policy_profile,
-            kl_beta=cfg.kl_beta,
-            dapo_config=cfg.dapo, gspo_config=cfg.gspo, cispo_config=cfg.cispo,
-            ratio_log_cap=cfg.ratio_log_cap,
-            eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high,
-        )
-
         def ref_forward(groups: list[PromptGroup]) -> None:
             if reference is None:
                 return
@@ -358,18 +335,14 @@ def main(
                 idx += n
 
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
+            # Always use the client-side custom loss path so multi-turn
+            # loss_mask + per-sample logprobs + user-defined corrections
+            # work uniformly.  To switch to the server-side builtin kernel
+            # for losses that support it (GRPO/DAPO/GSPO/CISPO w/o KL),
+            # see the dual-path pattern in training/recipes/rl_loop.py.
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            if builtin_server_loss is not None:
-                kernel_loss, kernel_config = builtin_server_loss
-                rl_datums = build_builtin_loss_datums(
-                    data, adv, prox_lp, inf_lp, prompt_lens,
-                    cfg.tis, policy_loss=cfg.policy_loss,
-                )
-                return policy.forward_backward(
-                    rl_datums, kernel_loss, loss_fn_config=kernel_config,
-                )
             return policy.forward_backward_custom(
                 data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
             )
@@ -422,19 +395,7 @@ def main(
                 "Step %d | Reward %.3f | Acc %.1f%% | KL %.4f",
                 step, avg_reward, avg_acc * 100, avg_kl,
             )
-            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
             wandb_log(metrics, step)
-
-            step_tokens = sum(
-                len(d.loss_fn_inputs["target_tokens"].data)
-                for pg in prompt_groups for d in pg.data
-            )
-            total_rl_steps = len(rl_dataset) - step_offset
-            runner.append_metrics(step, metrics, tokens=step_tokens)
-            runner.write_status(
-                RunStatus.RUNNING, step=step, total_steps=total_rl_steps, message="training",
-            )
-            runner.write_metadata()
             return step, metrics
 
         def _weight_sync(step: int) -> None:
@@ -452,17 +413,9 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        remaining_rows: list[dict] = []
-        for i_step in range(step_offset, len(rl_dataset)):
-            remaining_rows.extend(rl_dataset.get_batch(i_step))
-
-        total_rl_steps = len(rl_dataset) - step_offset
-        runner.start_training()
-        runner.write_status(RunStatus.RUNNING, total_steps=total_rl_steps, message="training")
-
         global_step = asyncio.run(
             run_async_rl_loop(
-                sample_fns=(sample_one_prompt(row) for row in remaining_rows),
+                sample_fns=(sample_one_prompt(row) for row in rows),
                 train_fns=train_fns,
                 prompt_groups_per_step=cfg.prompt_groups_per_step,
                 max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
@@ -482,22 +435,12 @@ def main(
                 _dc = (resume_info.data_consumed if resume_info else 0) + (
                     global_step - step_offset
                 ) * cfg.prompt_groups_per_step
-                cp_name = f"step-{global_step}"
-                paths = save_checkpoint(
-                    policy, cp_name, cfg.log_path,
+                save_checkpoint(
+                    policy, f"step-{global_step}", cfg.log_path,
                     {"step": global_step, "data_consumed": _dc, "source_job_id": policy_job_id},
                     kind=CheckpointKind.BOTH,
                     base_model=cfg.base_model,
                     training_shape=infra.training_shape_id,
                 )
-                if cfg.output_model_id:
-                    rlor_mgr.promote_checkpoint(
-                        policy_job_id, paths["sampler_path"],
-                        cfg.output_model_id, cfg.base_model,
-                    )
-                    runner.write_output_model(
-                        model_id=cfg.output_model_id, checkpoint=cp_name,
-                        job_id=policy_job_id,
-                    )
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
