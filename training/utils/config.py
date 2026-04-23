@@ -7,7 +7,10 @@ from typing import Dict, Callable
 from dataclasses import dataclass
 
 from fireworks.training.sdk.client import FiretitanTrainingClient
-from fireworks.training.sdk.deployment import DeploymentConfig
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentConfig
+import logging
+
+_concurrency_logger = logging.getLogger(__name__)
 
 DEFAULT_ADAM = dict(beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01, grad_clip_norm=1.0)
 
@@ -52,6 +55,26 @@ class ConcurrencyConfig:
 
     prefill_queue_target: float = 0.5
     """Target prefill queue duration (seconds) for the AIMD controller."""
+
+
+def build_adaptive_concurrency_controller(
+    cfg: ConcurrencyConfig, deployment_gpu_count: int,
+) -> AdaptiveConcurrencyController:
+    """Build an ``AdaptiveConcurrencyController`` from :class:`ConcurrencyConfig`.
+
+    ``initial_window`` defaults to ``8 * deployment_gpu_count`` when unset.
+    """
+    initial_window = cfg.initial_window or (8 * deployment_gpu_count)
+    _concurrency_logger.info(
+        "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
+        initial_window, cfg.min_window, cfg.max_window, cfg.prefill_queue_target,
+    )
+    return AdaptiveConcurrencyController(
+        initial_window=initial_window,
+        min_window=cfg.min_window,
+        max_window=cfg.max_window,
+        prefill_queue_target=cfg.prefill_queue_target,
+    )
 
 
 @dataclass

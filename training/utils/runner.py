@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -43,6 +44,17 @@ from typing import Any
 from training.utils import fileio
 
 logger = logging.getLogger(__name__)
+
+
+def install_cleanup_signal_handlers() -> None:
+    """Convert SIGTERM/SIGINT into SystemExit so `with`/`finally` cleanup runs."""
+    def _handler(signum, frame):
+        name = signal.Signals(signum).name
+        logger.warning("Received %s — raising SystemExit for cleanup", name)
+        raise SystemExit(f"Terminated by {name}")
+
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
 
 
 class RunStatus(str, Enum):

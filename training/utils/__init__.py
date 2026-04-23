@@ -132,6 +132,7 @@ from training.utils.config import (
     StepCallback,
     WeightSyncConfig,
     WeightSyncScope,
+    build_adaptive_concurrency_controller,
 )
 from training.utils.training_shapes import (
     auto_select_training_shape,

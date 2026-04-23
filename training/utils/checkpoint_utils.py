@@ -186,3 +186,76 @@ def save_checkpoint(
     fileio.append_jsonl(fileio.join(log_path, CHECKPOINTS_BASE_NAME), full_dict)
     logger.info("Checkpoint '%s' complete (%.1fs total): %s", name, time.time() - t0, full_dict)
     return paths
+
+
+def save_dcp_checkpoint_if_due(
+    client: ReconnectableClient,
+    *,
+    step: int,
+    rollouts_completed: int,
+    dcp_interval: int,
+    log_path: str,
+    resume_info: ResumeInfo | None,
+    prompt_groups_per_step: int,
+    policy_job_id: str,
+    base_model: str,
+    training_shape: str | None,
+) -> None:
+    """Save a STATE checkpoint when ``rollouts_completed`` hits ``dcp_interval``."""
+    if dcp_interval <= 0 or rollouts_completed <= 0 or rollouts_completed % dcp_interval != 0:
+        return
+    data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+        rollouts_completed * prompt_groups_per_step
+    )
+    save_checkpoint(
+        client,
+        f"step-{step}",
+        log_path,
+        {"step": step, "data_consumed": data_consumed, "source_job_id": policy_job_id},
+        kind=CheckpointKind.STATE,
+        base_model=base_model,
+        training_shape=training_shape,
+    )
+
+
+def save_final_checkpoint_and_promote(
+    client: ReconnectableClient,
+    rlor_mgr: Any,
+    runner: Any,
+    *,
+    global_step: int,
+    step_offset: int,
+    ppo_n_minibatches: int,
+    prompt_groups_per_step: int,
+    resume_info: ResumeInfo | None,
+    log_path: str,
+    base_model: str,
+    training_shape: str | None,
+    policy_job_id: str,
+    output_model_id: str | None,
+) -> None:
+    """Save a BOTH checkpoint at end-of-run and (optionally) promote it."""
+    try:
+        rollouts_this_run = (global_step - step_offset) // max(1, ppo_n_minibatches)
+        data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+            rollouts_this_run * prompt_groups_per_step
+        )
+        cp_name = f"step-{global_step}"
+        paths = save_checkpoint(
+            client,
+            cp_name,
+            log_path,
+            {"step": global_step, "data_consumed": data_consumed, "source_job_id": policy_job_id},
+            kind=CheckpointKind.BOTH,
+            base_model=base_model,
+            training_shape=training_shape,
+        )
+        if output_model_id:
+            rlor_mgr.promote_checkpoint(
+                policy_job_id, paths["sampler_path"], output_model_id, base_model,
+            )
+            runner.write_output_model(
+                model_id=output_model_id, checkpoint=cp_name, job_id=policy_job_id,
+            )
+    except Exception as e:
+        logger.warning("Failed to save final checkpoint: %s", e)

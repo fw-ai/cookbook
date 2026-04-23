@@ -23,9 +23,7 @@ from __future__ import annotations
 
 import os
 import re
-import json
 import math
-import signal
 import asyncio
 import logging
 from contextlib import ExitStack
@@ -38,7 +36,7 @@ import transformers
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
-from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
+from fireworks.training.sdk.deployment import DeploymentSampler
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
@@ -52,6 +50,7 @@ from training.utils import (
     DeployConfig,
     WeightSyncConfig,
     RLPromptDataset,
+    build_adaptive_concurrency_controller,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -64,11 +63,13 @@ from training.utils import (
 )
 from training.utils.checkpoint_utils import (
     resolve_resume,
-    save_checkpoint,
+    save_dcp_checkpoint_if_due,
+    save_final_checkpoint_and_promote,
     validate_warm_start_config,
-    CheckpointKind,
 )
+from training.utils.runner import install_cleanup_signal_handlers
 from training.utils.rl import PromptGroup, setup_infra
+from training.utils.rl.trajectory import dump_trajectory_jsonl
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
 import time as _time
@@ -249,39 +250,6 @@ def should_accept(pg: PromptGroup) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Trajectory logging
-# ---------------------------------------------------------------------------
-
-
-def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptGroup]) -> None:
-    """Write per-step trajectory JSONL: one line per individual completion."""
-    os.makedirs(trajectory_dir, exist_ok=True)
-    path = os.path.join(trajectory_dir, f"step_{step:04d}.jsonl")
-    n_records = 0
-    with open(path, "w") as f:
-        for pg_idx, pg in enumerate(prompt_groups):
-            completions = pg.completions or []
-            for comp_idx, comp_text in enumerate(completions):
-                record = {
-                    "step": step,
-                    "prompt_group": pg_idx,
-                    "completion_index": comp_idx,
-                    "prompt": pg.prompt,
-                    "completion": comp_text,
-                    "reward": pg.rewards[comp_idx] if comp_idx < len(pg.rewards) else None,
-                    "advantage": pg.advantages[comp_idx] if comp_idx < len(pg.advantages) else None,
-                    "completion_len": pg.completion_lens[comp_idx] if comp_idx < len(pg.completion_lens) else None,
-                    "truncated": pg.truncated[comp_idx] if comp_idx < len(pg.truncated) else None,
-                    "ground_truth": pg.row_meta.get("ground_truth") if pg.row_meta else None,
-                }
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                n_records += 1
-    logger.info(
-        "[step %d] Saved trajectory to %s (%d completions from %d groups)", step, path, n_records, len(prompt_groups)
-    )
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -309,15 +277,7 @@ def main(
             "back-compat and will be removed in a future release.",
         )
     runner = RunnerIO(cfg.runner)
-
-    # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
-    def _signal_handler(signum, frame):
-        name = signal.Signals(signum).name
-        logger.warning("Received %s — raising SystemExit for cleanup", name)
-        raise SystemExit(f"Terminated by {name}")
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
+    install_cleanup_signal_handlers()
 
     validate_config(
         cfg.base_model,
@@ -354,18 +314,9 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-        )
-    if deploy_mgr is None:
-        deploy_mgr = DeploymentManager(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-        )
+    mgr_kwargs = dict(api_key=api_key, base_url=base_url, additional_headers=additional_headers)
+    rlor_mgr = rlor_mgr or TrainerJobManager(**mgr_kwargs)
+    deploy_mgr = deploy_mgr or DeploymentManager(**mgr_kwargs)
 
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
@@ -409,21 +360,8 @@ def main(
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             cfg.deployment.tokenizer_model, trust_remote_code=True,
         )
-        # Adaptive concurrency — window adjusts based on server-side prefill queue.
-        # For fixed (no rate limiting), use FixedConcurrencyController instead.
-        initial_window = cfg.concurrency.initial_window or (8 * infra.deployment_gpu_count)
-        concurrency_controller = AdaptiveConcurrencyController(
-            initial_window=initial_window,
-            min_window=cfg.concurrency.min_window,
-            max_window=cfg.concurrency.max_window,
-            prefill_queue_target=cfg.concurrency.prefill_queue_target,
-        )
-        logger.info(
-            "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
-            initial_window,
-            cfg.concurrency.min_window,
-            cfg.concurrency.max_window,
-            cfg.concurrency.prefill_queue_target,
+        concurrency_controller = build_adaptive_concurrency_controller(
+            cfg.concurrency, infra.deployment_gpu_count,
         )
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
@@ -444,8 +382,7 @@ def main(
 
         logger.info(
             "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
-            prompt_groups_per_step,
-            completions_per_prompt,
+            prompt_groups_per_step, completions_per_prompt,
         )
 
         # -- Resume ---------------------------------------------------------------
@@ -735,28 +672,18 @@ def main(
                     step, minibatch_idx + 1, num_minibatches, _time.time() - t0,
                 )
 
-            rollouts_completed = (step - step_offset) // num_minibatches
-            dcp_interval = cfg.weight_sync.dcp_save_interval
-            if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
-                logger.info("[step %d] dcp_save...", step)
-                t0 = _time.time()
-                data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    rollouts_completed * prompt_groups_per_step
-                )
-                save_checkpoint(
-                    policy,
-                    f"step-{step}",
-                    cfg.log_path,
-                    {
-                        "step": step,
-                        "data_consumed": data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
-                    kind=CheckpointKind.STATE,
-                    base_model=cfg.base_model,
-                    training_shape=infra.training_shape_id,
-                )
-                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
+            save_dcp_checkpoint_if_due(
+                policy,
+                step=step,
+                rollouts_completed=(step - step_offset) // num_minibatches,
+                dcp_interval=cfg.weight_sync.dcp_save_interval,
+                log_path=cfg.log_path,
+                resume_info=resume_info,
+                prompt_groups_per_step=prompt_groups_per_step,
+                policy_job_id=policy_job_id,
+                base_model=cfg.base_model,
+                training_shape=infra.training_shape_id,
+            )
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
@@ -793,18 +720,15 @@ def main(
             runner.write_metadata()
 
             if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
+                dump_trajectory_jsonl(cfg.trajectory_dir, step, prompt_groups)
 
             return step, metrics
 
         # -- Run ----------------------------------------------------------------
 
         def _weight_sync(step: int) -> None:
-            logger.info("[step %d] weight_sync: saving + loading...", step)
-            t0 = _time.time()
             with timer("weight_sync"):
                 weight_syncer.save_and_hotload(f"step-{step}")
-            logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
 
         def _loop_metrics_callback(loop_metrics: dict) -> None:
             """Called by run_rl_loop after each train step with loop-level metrics."""
@@ -844,41 +768,19 @@ def main(
         # -- Final checkpoint ----------------------------------------------------
 
         if cfg.save_final_checkpoint and global_step > step_offset:
-            try:
-                # global_step - step_offset is optim-step delta (K× per rollout),
-                # so divide by ppo_n_minibatches to get rollout-batch delta.
-                _rollouts_this_run = (global_step - step_offset) // max(1, cfg.ppo_n_minibatches)
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    _rollouts_this_run * prompt_groups_per_step
-                )
-                cp_name = f"step-{global_step}"
-                paths = save_checkpoint(
-                    policy,
-                    cp_name,
-                    cfg.log_path,
-                    {
-                        "step": global_step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
-                    kind=CheckpointKind.BOTH,
-                    base_model=cfg.base_model,
-                    training_shape=infra.training_shape_id,
-                )
-
-                if getattr(cfg, "output_model_id", None):
-                    rlor_mgr.promote_checkpoint(
-                        policy_job_id,
-                        paths["sampler_path"],
-                        cfg.output_model_id,
-                        cfg.base_model,
-                    )
-                    runner.write_output_model(
-                        model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
-                    )
-            except Exception as e:
-                logger.warning("Failed to save final checkpoint: %s", e)
-
+            save_final_checkpoint_and_promote(
+                policy, rlor_mgr, runner,
+                global_step=global_step,
+                step_offset=step_offset,
+                ppo_n_minibatches=cfg.ppo_n_minibatches,
+                prompt_groups_per_step=prompt_groups_per_step,
+                resume_info=resume_info,
+                log_path=cfg.log_path,
+                base_model=cfg.base_model,
+                training_shape=infra.training_shape_id,
+                policy_job_id=policy_job_id,
+                output_model_id=cfg.output_model_id,
+            )
             runner.write_status(
                 RunStatus.COMPLETED, step=global_step, total_steps=total_rl_steps, message="done",
             )
