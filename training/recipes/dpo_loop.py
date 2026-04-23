@@ -25,7 +25,6 @@ Usage:
 from __future__ import annotations
 
 import array
-import functools
 import os
 import tempfile
 import time
@@ -581,15 +580,6 @@ def main(
         # limit on long-context DPO runs.
         # See docs/engineering/sft-v2-orchestrator-oom-debug.md.
 
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.tokenizer_model, trust_remote_code=True,
-        )
-        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
-        logger.info(
-            "Using renderer=%s for preference tokenization",
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-        )
-
         # ``count_jsonl_rows`` is an upper bound (the ``samples`` schema may
         # collapse multiple rows into 0 or 1 pair) but it's good enough for
         # progress reporting.
@@ -598,14 +588,20 @@ def main(
             raise RuntimeError(f"No data found in {cfg.dataset}")
         max_seq_len = infra.max_seq_len
         num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
-        use_parallel = num_workers > 1 and total_raw > num_workers
         logger.info(
-            "Streaming %d preference rows from %s (%s, workers=%d, chunksize=%d)",
+            "Streaming %d preference rows from %s (renderer=%s, workers=%d,"
+            " chunksize=%d)",
             total_raw, cfg.dataset,
-            "parallel spawn" if use_parallel else "single-process",
-            num_workers if use_parallel else 1,
-            DEFAULT_RENDER_CHUNKSIZE if use_parallel else 1,
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            num_workers, DEFAULT_RENDER_CHUNKSIZE,
         )
+
+        # Initialise _pair_worker_state in the parent too so the same
+        # render_fn (_render_pair_worker) is used regardless of whether the
+        # helper picks the in-process loop (num_workers == 1) or the spawn
+        # pool. Mirrors the sft_loop.py pattern.
+        init_args = (cfg.tokenizer_model, cfg.renderer_name, max_seq_len)
+        _init_pair_worker(*init_args)
 
         render_cache_dir = stack.enter_context(
             tempfile.TemporaryDirectory(prefix="dpo_render_")
@@ -642,17 +638,12 @@ def main(
 
         filtered_count = stream_render_to_store(
             iter_preference_examples(cfg.dataset, cfg.max_pairs),
-            render_fn=_render_pair_worker if use_parallel else functools.partial(
-                _render_pair, renderer=renderer, tokenizer=tokenizer,
-                max_seq_len=max_seq_len,
-            ),
+            render_fn=_render_pair_worker,
             store=tokenized_store,
-            num_workers=num_workers if use_parallel else 1,
+            num_workers=num_workers,
             chunksize=DEFAULT_RENDER_CHUNKSIZE,
-            initializer=_init_pair_worker if use_parallel else None,
-            initargs=(
-                cfg.tokenizer_model, cfg.renderer_name, max_seq_len,
-            ) if use_parallel else (),
+            initializer=_init_pair_worker,
+            initargs=init_args,
             on_progress=_on_render_progress,
         )
         tokenized_store.close_write()
