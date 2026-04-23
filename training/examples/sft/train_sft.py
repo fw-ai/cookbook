@@ -52,6 +52,17 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
+    parser.add_argument(
+        "--skip-validations",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip server-side training-shape validation. Requires a superuser API key. "
+            "Auto-enabled when --training-shape contains '/versions/' (i.e. an explicit "
+            "versioned ref that may be unvalidated, e.g. a freshly PATCHed debug build), "
+            "matching the behavior of train-firetitan's nightly test_shape_e2e.py."
+        ),
+    )
     parser.add_argument("--no-checkpoint", action="store_true",
                         help="Skip final checkpoint save")
     parser.add_argument("--grad-clip-norm", type=float, default=1.0,
@@ -67,10 +78,16 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
 
     args = parse_args()
+    # Mirror train-firetitan's nightly test_shape_e2e: a versioned shape ref
+    # (.../versions/<id>) may point at an unvalidated version (e.g. a freshly
+    # PATCHed debug build), and the gateway rejects non-validated versions
+    # unless the caller is superuser + sets skip_validations.
+    skip_validations = args.skip_validations or ("/versions/" in args.training_shape)
     logger.info(
-        "SFT text2sql training: model=%s shape=%s",
+        "SFT text2sql training: model=%s shape=%s skip_validations=%s",
         args.base_model,
         args.training_shape or "auto",
+        skip_validations,
     )
 
     if not os.path.exists(args.dataset_path):
@@ -105,6 +122,7 @@ def main():
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,
+            skip_validations=skip_validations,
         ),
         wandb=WandBConfig(
             project=args.wandb_project,
