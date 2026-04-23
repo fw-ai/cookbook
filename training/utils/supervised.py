@@ -90,6 +90,16 @@ def resolve_renderer_name(
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
         return "gemma4"
+    # ZhipuAI GLM-5.1 chat template (`[gMASK]<sop>`, `<|user|>`,
+    # `<|assistant|>`, `<think>...</think>`, `<|endoftext|>`). Validated
+    # end-to-end via SFT training. Other GLM versions are out of scope;
+    # opt in explicitly with `renderer_name="glm5"` if you want to try.
+    if (
+        "glm-5p1" in normalized_model_name
+        or "glm-5.1" in normalized_model_name
+        or "glm5" in normalized_model_name
+    ):
+        return "glm5"
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
