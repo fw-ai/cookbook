@@ -134,6 +134,92 @@ class TestBuiltinLossConfig:
             )
 
 
+class TestKLBetaRoutesToClientSide:
+    """Documents the silent-KL-drop bug and the fix contract.
+
+    Bug: the server-side builtin kernels receive datums produced by
+    :func:`training.utils.rl.losses.build_builtin_loss_datums`, whose
+    ``loss_fn_inputs`` are exactly ``{target_tokens, logprobs, advantages}``
+    -- no ``ref_logprobs`` field is ever sent to the trainer. So when a caller
+    sets ``kl_beta > 0`` expecting a KL penalty, the builtin PPO kernel
+    silently drops the ``kl_beta * (pi - pi_ref)`` term.
+
+    Fix: ``resolve_builtin_loss`` must gate on ``kl_beta`` and return ``None``
+    when positive, forcing the recipe onto ``forward_backward_custom(...)``,
+    which is the only path that actually applies the KL penalty.
+    """
+
+    @staticmethod
+    def _builtin_datum():
+        """Run the builtin datum packer the way rl_loop does."""
+        datum = build_datum_from_token_mask(
+            token_ids=[10, 11, 12, 13],
+            token_mask=[0, 1, 1, 1],
+        ).datum
+        rl_datums = build_builtin_loss_datums(
+            data=[datum],
+            advantages=[1.0],
+            prox_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
+            inf_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
+            prompt_lens=[2],
+            policy_loss="grpo",
+        )
+        return rl_datums[0]
+
+    def test_builtin_datum_has_no_ref_logprobs_field(self):
+        """Structural invariant: the server-side path carries no ref logprobs.
+
+        This is the root cause of the silent KL drop. Encoded as a test so the
+        motivation for the ``kl_beta`` gate remains explicit: if this invariant
+        ever changes (e.g. the server kernel learns to consume ref logprobs),
+        the gate below can be relaxed.
+        """
+        fields = set(self._builtin_datum().loss_fn_inputs.keys())
+
+        assert fields == {"target_tokens", "logprobs", "advantages"}, (
+            "build_builtin_loss_datums emitted unexpected fields "
+            f"{fields!r}; the server-side builtin kernel contract is "
+            "(target_tokens, logprobs, advantages) only."
+        )
+        assert "ref_logprobs" not in fields, (
+            "ref_logprobs leaked into the builtin datum -- if the server "
+            "kernel now consumes it, the kl_beta gate can be lifted."
+        )
+
+    def test_resolve_builtin_loss_gates_on_kl_beta_for_grpo(self):
+        """With ``kl_beta > 0`` the dispatch must return ``None`` (client-side)."""
+        try:
+            result = resolve_builtin_loss("grpo", profile=None, kl_beta=0.01)
+        except TypeError as exc:
+            pytest.fail(
+                "resolve_builtin_loss currently ignores kl_beta "
+                f"({exc}). The server-side builtin datum has no "
+                "ref_logprobs field (see "
+                "test_builtin_datum_has_no_ref_logprobs_field), so "
+                "kl_beta > 0 routed to the builtin kernel is silently "
+                "dropped. Add a `kl_beta: float = 0.0` parameter to "
+                "resolve_builtin_loss and return None when it is positive."
+            )
+
+        assert result is None, (
+            "kl_beta>0 requested a KL penalty, but resolve_builtin_loss "
+            f"returned the server-side builtin kernel {result!r}. That "
+            "kernel silently drops the KL term (no ref_logprobs in the "
+            "datum). Must return None to force forward_backward_custom."
+        )
+
+    def test_resolve_builtin_loss_kl_beta_zero_keeps_server_builtin(self):
+        """Regression guard: ``kl_beta == 0`` must still take the fast path."""
+        result = resolve_builtin_loss("grpo", profile=None)
+
+        assert result is not None, (
+            "GRPO with kl_beta=0 must keep the fast server-side PPO path. "
+            "The kl_beta gate must not over-broadly block the builtin path."
+        )
+        kernel, _config = result
+        assert kernel == "ppo"
+
+
 class TestBatchDPOLoss:
 
     def _make_ref_logprobs(self, seq_len: int, seed: int = 0) -> list[float]:

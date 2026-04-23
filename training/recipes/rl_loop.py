@@ -619,10 +619,14 @@ def main(
 
         # Server-side fast path: resolve the builtin kernel/config used by
         # forward_backward(...). Returns None when this loss has no builtin
-        # implementation, and raises when the current profile is ineligible.
+        # implementation, when kl_beta > 0 (builtin kernels do not consume
+        # ref_logprobs, so the KL term would be silently dropped -- see
+        # resolve_builtin_loss docstring), or raises when the current profile
+        # is ineligible.
         builtin_server_loss = resolve_builtin_loss(
             cfg.policy_loss,
             policy_profile,
+            kl_beta=cfg.kl_beta,
             dapo_config=cfg.dapo,
             gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
@@ -630,6 +634,15 @@ def main(
             eps_clip=cfg.eps_clip,
             eps_clip_high=cfg.eps_clip_high,
         )
+        if cfg.kl_beta > 0 and builtin_server_loss is None:
+            logger.info(
+                "policy_loss=%s + kl_beta=%g: routing to client-side "
+                "forward_backward_custom (server-side builtin kernels ignore "
+                "ref_logprobs, so KL would be silently dropped). Expect one "
+                "extra forward pass per step.",
+                cfg.policy_loss,
+                cfg.kl_beta,
+            )
 
         def fwd_bwd_minibatch(
             data, adv, ref_lp, prompt_lens, inf_lp, prox_lp,

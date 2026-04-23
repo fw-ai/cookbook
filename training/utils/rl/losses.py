@@ -51,6 +51,7 @@ def resolve_builtin_loss(
     policy_loss: str,
     profile: Any | None = None,
     *,
+    kl_beta: float = 0.0,
     dapo_config: DAPOConfig | None = None,
     dro_config: DROConfig | None = None,
     gspo_config: GSPOConfig | None = None,
@@ -65,11 +66,20 @@ def resolve_builtin_loss(
     when it otherwise has no builtin kernel config. In both cases the caller
     should fall back to ``forward_backward_custom(...)``.
 
+    Also returns ``None`` when ``kl_beta > 0``. The server-side builtin path
+    packs datums with only ``target_tokens`` / ``logprobs`` / ``advantages``
+    (see :func:`build_builtin_loss_datums`) and never sends ``ref_logprobs``,
+    so the KL term ``kl_beta * (pi - pi_ref)`` would be silently dropped.
+    The caller must use ``forward_backward_custom(...)`` to apply a KL penalty.
+
     Raises ``ValueError`` when the current *profile* cannot use builtin losses
     (for example, PP > 1), instead of silently falling back.
     """
     spec = LOSS_REGISTRY.get(policy_loss)
     if spec is None or spec.builtin_config_builder is None:
+        return None
+
+    if kl_beta > 0.0:
         return None
 
     if profile is not None:
@@ -95,6 +105,8 @@ def resolve_builtin_loss(
 def check_builtin_loss_eligibility(
     policy_loss: str,
     profile: Any | None,
+    *,
+    kl_beta: float = 0.0,
 ) -> None:
     """Reject unsupported parallelism configurations early.
 
@@ -104,12 +116,13 @@ def check_builtin_loss_eligibility(
     - Any builtin loss is used with PP > 1 (server kernels don't support PP)
     - GSPO + TP/CP is caught server-side only (profile doesn't expose TP/CP)
     """
-    resolve_builtin_loss(policy_loss, profile)
+    resolve_builtin_loss(policy_loss, profile, kl_beta=kl_beta)
 
 
 def get_builtin_loss_config(
     policy_loss: str,
     *,
+    kl_beta: float = 0.0,
     dapo_config: DAPOConfig | None = None,
     dro_config: DROConfig | None = None,
     gspo_config: GSPOConfig | None = None,
@@ -126,6 +139,7 @@ def get_builtin_loss_config(
     return resolve_builtin_loss(
         policy_loss,
         None,
+        kl_beta=kl_beta,
         dapo_config=dapo_config,
         dro_config=dro_config,
         gspo_config=gspo_config,
