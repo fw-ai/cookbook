@@ -84,3 +84,51 @@ class TestComputeStepMetrics:
         assert "rollout/filter_ratio" not in metrics
         assert "rollout/sample_fails" not in metrics
         assert "batch/mean_groups_per_fwd_bwd" not in metrics
+
+
+class TestFwdBwdMinibatchAveraging:
+    """With ppo_n_minibatches>1 the per-step train/* metrics must average
+    across minibatches, not report only the last one."""
+
+    @staticmethod
+    def _fake_fwd_bwd(**metrics):
+        return SimpleNamespace(metrics=dict(metrics))
+
+    def test_averages_across_minibatches(self):
+        fwd_bwds = [
+            self._fake_fwd_bwd(ppo_clip_frac=0.0, ppo_ratio_mean=1.00),
+            self._fake_fwd_bwd(ppo_clip_frac=0.1, ppo_ratio_mean=1.05),
+            self._fake_fwd_bwd(ppo_clip_frac=0.3, ppo_ratio_mean=1.20),
+        ]
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=fwd_bwds,
+            optim_result=None,
+            n_accum=len(fwd_bwds),
+            timing_metrics={},
+        )
+        assert metrics["train/ppo_clip_frac"] == (0.0 + 0.1 + 0.3) / 3
+        assert metrics["train/ppo_ratio_mean"] == (1.0 + 1.05 + 1.2) / 3
+
+    def test_k1_matches_single_fwd_bwd_behavior(self):
+        """K=1: report the single minibatch's metrics directly (pre-PR behavior)."""
+        only = self._fake_fwd_bwd(ppo_clip_frac=0.42, ppo_ratio_mean=1.07)
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=[only],
+            optim_result=None,
+            n_accum=1,
+            timing_metrics={},
+        )
+        assert metrics["train/ppo_clip_frac"] == 0.42
+        assert metrics["train/ppo_ratio_mean"] == 1.07
+
+    def test_empty_fwd_bwd_results_emits_no_train_keys(self):
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=[],
+            optim_result=None,
+            n_accum=0,
+            timing_metrics={},
+        )
+        assert not any(k.startswith("train/ppo_") for k in metrics)

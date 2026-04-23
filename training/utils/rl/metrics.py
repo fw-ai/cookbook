@@ -119,11 +119,22 @@ def compute_step_metrics(
             if k not in _SKIP_REMOTE_KEYS:
                 metrics[f"train/{k}"] = v
 
-    last_fwd_bwd = fwd_bwd_results[-1] if fwd_bwd_results else None
-    if last_fwd_bwd is not None:
-        for k, v in last_fwd_bwd.metrics.items():
-            if k not in _SKIP_REMOTE_KEYS:
-                metrics[f"train/{k}"] = v
+    # Average fwd_bwd metrics across inner minibatches. With ppo_n_minibatches=1
+    # this reduces to the pre-PR behavior (one result, mean == that result). With
+    # K>1 the last minibatch alone is misleading — early minibatches haven't
+    # drifted yet so their ppo_clip_frac is ~0, while later ones clip more; the
+    # headline claim of this PR is that clipping fires, which the mean reports
+    # honestly rather than only showing the most-clipped minibatch.
+    if fwd_bwd_results:
+        accum: dict[str, float] = {}
+        for result in fwd_bwd_results:
+            for k, v in result.metrics.items():
+                if k in _SKIP_REMOTE_KEYS:
+                    continue
+                accum[k] = accum.get(k, 0.0) + v
+        n = len(fwd_bwd_results)
+        for k, v in accum.items():
+            metrics[f"train/{k}"] = v / n
 
     all_rewards: list[float] = []
     all_comp_lens: list[int] = []
