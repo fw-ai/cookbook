@@ -23,10 +23,10 @@ Notes:
   assistant turns (before the last user turn) and non-thinking-mode
   outputs collapse to ``<think></think>``.
 - The upstream Jinja template does *not* emit ``<|endoftext|>`` at
-  message boundaries. This renderer appends the eos token to each
-  assistant turn so training teaches the model when to stop — matching
-  the convention used by the other cookbook renderers (Qwen3,
-  Nemotron, MiniMax M2).
+  message boundaries. This renderer appends the eos token only to the
+  *last* message in the conversation, so training on the final assistant
+  turn teaches the model when to stop while historical assistant turns
+  still match the Jinja byte-for-byte.
 
 Only text-only chat, with and without thinking, is implemented here.
 Tools and multimodal content are left for a future extension.
@@ -181,7 +181,13 @@ class GLM5Renderer(Renderer):
         output_str = "".join(parts)
 
         output_tokens = self.tokenizer.encode(output_str, add_special_tokens=False)
-        output_tokens.append(self._end_message_token)
+        # Append <|endoftext|> only on the final message in the conversation.
+        # Historical assistant turns are delimited only by the next role tag
+        # in the GLM Jinja template, so emitting EOS there would add a token
+        # the template never produces. The final turn still gets EOS so the
+        # trained model learns when to stop.
+        if ctx.is_last:
+            output_tokens.append(self._end_message_token)
 
         header = tinker.types.EncodedTextChunk(
             tokens=self.tokenizer.encode(header_str, add_special_tokens=False),
