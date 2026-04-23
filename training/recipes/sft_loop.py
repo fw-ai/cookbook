@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import signal
 import logging
@@ -65,6 +66,56 @@ from training.utils.timer import timer, flush_timing
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Parallel rendering worker (multiprocessing)
+# ---------------------------------------------------------------------------
+
+_worker_renderer = None
+_worker_train_on_what = None
+_worker_max_seq_len = None
+
+
+def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_seq_len):
+    """Create a renderer per worker process to avoid pickling the tokenizer."""
+    global _worker_renderer, _worker_train_on_what, _worker_max_seq_len
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        tokenizer_model, trust_remote_code=True,
+    )
+    _worker_renderer = build_renderer(tokenizer, tokenizer_model, renderer_name)
+    _worker_train_on_what = parse_train_on_what(train_on_what_str)
+    _worker_max_seq_len = max_seq_len
+
+
+def _render_one(row: dict) -> tinker.Datum | None:
+    """Render a single chat example. Runs in a worker process."""
+    messages = row.get("messages", [])
+    if not messages:
+        return None
+    rendered = render_messages_to_datum(
+        messages,
+        renderer=_worker_renderer,
+        train_on_what=_worker_train_on_what,
+    )
+    if len(rendered.token_ids) > _worker_max_seq_len or len(rendered.token_ids) < 2:
+        return None
+    return rendered.datum
+
+
+def _render_one_inline(
+    row: dict, *, renderer, train_on_what, max_seq_len: int,
+) -> tinker.Datum | None:
+    """Single-threaded rendering using an already-constructed renderer."""
+    messages = row.get("messages", [])
+    if not messages:
+        return None
+    rendered = render_messages_to_datum(
+        messages, renderer=renderer, train_on_what=train_on_what,
+    )
+    if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
+        return None
+    return rendered.datum
+
 
 # ---------------------------------------------------------------------------
 # Eval auto carve-out defaults
@@ -396,33 +447,50 @@ def main(
         logger.info("Loaded %d examples from %s", len(raw_data), cfg.dataset)
 
         max_seq_len = cfg.max_seq_len
-        filtered_count = 0
-
-        def _map_fn(row: dict) -> tinker.Datum | None:
-            nonlocal filtered_count
-            messages = row.get("messages", [])
-            if not messages:
-                filtered_count += 1
-                return None
-            rendered = render_messages_to_datum(
-                messages,
-                renderer=renderer,
-                train_on_what=train_on_what,
-            )
-            if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
-                filtered_count += 1
-                return None
-            return rendered.datum
-
         total_raw = len(raw_data)
         log_interval = max(1, total_raw // 20)  # ~5% increments
         training_data: List[tinker.Datum] = []
-        for i, row in enumerate(raw_data):
-            d = _map_fn(row)
-            if d is not None:
-                training_data.append(d)
-            if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                runner.report_rendering_progress(i + 1, total_raw)
+        filtered_count = 0
+
+        num_workers = min(os.cpu_count() or 1, 8)
+        use_parallel = num_workers > 1 and total_raw > num_workers
+
+        if use_parallel:
+            logger.info(
+                "Rendering %d examples with %d parallel workers",
+                total_raw, num_workers,
+            )
+            spawn_ctx = multiprocessing.get_context("spawn")
+            with spawn_ctx.Pool(
+                processes=num_workers,
+                initializer=_init_render_worker,
+                initargs=(
+                    cfg.tokenizer_model, cfg.renderer_name,
+                    cfg.train_on_what, max_seq_len,
+                ),
+            ) as pool:
+                for i, datum in enumerate(
+                    pool.imap(_render_one, raw_data, chunksize=100)
+                ):
+                    if datum is not None:
+                        training_data.append(datum)
+                    else:
+                        filtered_count += 1
+                    if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
+                        runner.report_rendering_progress(i + 1, total_raw)
+        else:
+            for i, row in enumerate(raw_data):
+                datum = _render_one_inline(
+                    row, renderer=renderer,
+                    train_on_what=train_on_what, max_seq_len=max_seq_len,
+                )
+                if datum is not None:
+                    training_data.append(datum)
+                else:
+                    filtered_count += 1
+                if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
+                    runner.report_rendering_progress(i + 1, total_raw)
+
         if filtered_count > 0:
             logger.info(
                 "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
@@ -437,7 +505,6 @@ def main(
         # -- Eval dataset (explicit or auto carve-out) -------------------------
         eval_data: List[tinker.Datum] = []
         if cfg.evaluation_dataset:
-            # Explicit eval dataset
             raw_eval: List[Dict[str, Any]] = []
             with open(cfg.evaluation_dataset) as f:
                 for line in f:
@@ -448,12 +515,33 @@ def main(
             total_eval = len(raw_eval)
             eval_log_interval = max(1, total_eval // 10)
             eval_data = []
-            for i, row in enumerate(raw_eval):
-                d = _map_fn(row)
-                if d is not None:
-                    eval_data.append(d)
-                if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
-                    runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
+            if use_parallel:
+                spawn_ctx = multiprocessing.get_context("spawn")
+                with spawn_ctx.Pool(
+                    processes=num_workers,
+                    initializer=_init_render_worker,
+                    initargs=(
+                        cfg.tokenizer_model, cfg.renderer_name,
+                        cfg.train_on_what, max_seq_len,
+                    ),
+                ) as pool:
+                    for i, datum in enumerate(
+                        pool.imap(_render_one, raw_eval, chunksize=100)
+                    ):
+                        if datum is not None:
+                            eval_data.append(datum)
+                        if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
+                            runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
+            else:
+                for i, row in enumerate(raw_eval):
+                    datum = _render_one_inline(
+                        row, renderer=renderer,
+                        train_on_what=train_on_what, max_seq_len=max_seq_len,
+                    )
+                    if datum is not None:
+                        eval_data.append(datum)
+                    if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
+                        runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
             logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
         elif cfg.eval_auto_carveout:
             # Auto carve-out: split first N examples as eval
