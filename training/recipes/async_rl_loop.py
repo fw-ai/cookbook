@@ -15,10 +15,10 @@ replace the ``fwd_bwd_one`` body with ``resolve_builtin_loss`` +
 ``build_builtin_loss_datums`` + ``policy.forward_backward``; see
 ``training/recipes/rl_loop.py`` for the dual-path pattern.
 
-Example users live in :mod:`training.examples`; see
-``training/examples/gsm8k_async/train.py`` for a single-turn reward-function
-pattern and ``training/examples/rollr_cispo/train.py`` for a remote-grader
-integration.
+The recipe is intentionally stripped-down: no resume, no intra-training
+checkpoint ladder, no orchestrator telemetry, no pre-training hotload.
+Fork it and add whatever your production harness needs on top; see
+``training/examples/`` for working scaffolds.
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ from training.utils import (
     ConcurrencyConfig,
     DeployConfig,
     InfraConfig,
-    ResourceCleanup,
     WandBConfig,
     WeightSyncConfig,
     load_jsonl_dataset,
@@ -56,11 +55,7 @@ from training.utils import (
     validate_config,
     wandb_log,
 )
-from training.utils.checkpoint_utils import (
-    CheckpointKind,
-    resolve_resume,
-    save_checkpoint,
-)
+from training.utils.checkpoint_utils import CheckpointKind, save_checkpoint
 from training.utils.rl import PromptGroup, setup_infra
 from training.utils.rl.async_train import run_async_rl_loop
 from training.utils.rl.cispo import CISPOConfig
@@ -82,7 +77,6 @@ __all__ = ["Config", "RolloutContext", "RolloutFn", "main"]
 class Config:
     log_path: str
     base_model: str = "accounts/fireworks/models/qwen3-8b"
-    rollout_base_model: str | None = None
     dataset: str | None = None
     """JSONL dataset path or URL.  Optional -- ``main(..., rows=...)`` also
     accepts rows directly for users building their dataset in Python."""
@@ -118,12 +112,6 @@ class Config:
 
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
 
-    policy_job_id: str | None = None
-    reference_job_id: str | None = None
-    init_from_checkpoint: str | None = None
-    save_final_checkpoint: bool = True
-    step_timeout: int = 0
-
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
@@ -158,9 +146,6 @@ def main(
     rollout_fn: RolloutFn,
     dynamic_filter_fn: DynamicFilterFn | None = None,
     rows: list[dict] | None = None,
-    rlor_mgr: TrainerJobManager | None = None,
-    deploy_mgr: DeploymentManager | None = None,
-    cancel_on_exit: bool = False,
 ) -> None:
     """Run the async RL loop with a user-supplied rollout function."""
     cfg = config
@@ -174,18 +159,14 @@ def main(
 
     if rows is None and not cfg.dataset:
         raise ValueError("Provide either cfg.dataset or rows= to main().")
-
-    validate_config(
-        cfg.base_model, cfg.dataset or "", cfg.weight_sync, cfg.deployment,
-    )
     if not cfg.deployment.tokenizer_model:
         raise ValueError("deployment.tokenizer_model is required.")
 
-    completions_per_prompt = cfg.completions_per_prompt
+    validate_config(cfg.base_model, cfg.dataset or "", cfg.weight_sync, cfg.deployment)
     setup_wandb(
         cfg.wandb,
         {
-            "completions_per_prompt": completions_per_prompt,
+            "completions_per_prompt": cfg.completions_per_prompt,
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
             "kl_beta": cfg.kl_beta,
@@ -197,16 +178,14 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
-            api_key=api_key, base_url=base_url, additional_headers=additional_headers,
-        )
-    if deploy_mgr is None:
-        deploy_mgr = DeploymentManager(
-            api_key=api_key, base_url=base_url, additional_headers=additional_headers,
-        )
+    rlor_mgr = TrainerJobManager(
+        api_key=api_key, base_url=base_url, additional_headers=additional_headers,
+    )
+    deploy_mgr = DeploymentManager(
+        api_key=api_key, base_url=base_url, additional_headers=additional_headers,
+    )
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
+    with ExitStack() as stack:
         infra = setup_infra(
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
@@ -216,14 +195,11 @@ def main(
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
-            step_timeout=cfg.step_timeout,
-            policy_job_id=cfg.policy_job_id,
-            reference_job_id=cfg.reference_job_id,
             needs_reference=(cfg.kl_beta > 0),
             needs_inference=True,
             role_prefix="rl-async",
             api_key=api_key,
-            cleanup=cleanup if cancel_on_exit else None,
+            cleanup=None,
         )
         for closeable in infra.closeables:
             stack.callback(closeable.close)
@@ -232,7 +208,6 @@ def main(
 
         policy = infra.policy
         reference = infra.reference
-        policy_job_id = infra.policy_job_id
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             cfg.deployment.tokenizer_model, trust_remote_code=True,
@@ -255,21 +230,13 @@ def main(
             policy_client=policy.inner,
             deploy_mgr=deploy_mgr,
             deployment_id=infra.deployment_id,
-            base_model=cfg.rollout_base_model or cfg.base_model,
+            base_model=cfg.base_model,
             hotload_timeout=cfg.weight_sync.weight_sync_timeout,
             first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
             lora_rank=cfg.lora_rank,
         )
 
-        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
-        step_offset = resume_info.step if resume_info else 0
-        wandb_log({"train/step": step_offset}, step_offset)
-
-        current_version = step_offset
-
-        if cfg.weight_sync.weight_sync_before_training and infra.deployment_id:
-            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            weight_syncer.save_and_hotload(name, checkpoint_type="base")
+        current_version = 0
 
         if rows is None:
             raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
@@ -296,11 +263,10 @@ def main(
             logprobs=True,
         )
 
-        # -- RolloutContext + sample_fn bridge ---------------------------------
         ctx = RolloutContext(
             sampler=sampler,
             tokenizer=tokenizer,
-            completions_per_prompt=completions_per_prompt,
+            completions_per_prompt=cfg.completions_per_prompt,
             sample_kwargs=sample_kwargs,
             inference_url=deploy_mgr.inference_url,
             api_key=api_key,
@@ -320,7 +286,6 @@ def main(
                 rollout, with_reference=(reference is not None),
             )
 
-        # -- Training callbacks ------------------------------------------------
         def ref_forward(groups: list[PromptGroup]) -> None:
             if reference is None:
                 return
@@ -335,11 +300,9 @@ def main(
                 idx += n
 
         def fwd_bwd_one(prompt_groups: list[PromptGroup]):
-            # Always use the client-side custom loss path so multi-turn
-            # loss_mask + per-sample logprobs + user-defined corrections
-            # work uniformly.  To switch to the server-side builtin kernel
-            # for losses that support it (GRPO/DAPO/GSPO/CISPO w/o KL),
-            # see the dual-path pattern in training/recipes/rl_loop.py.
+            # Always use forward_backward_custom -- supports every registered
+            # policy_loss, kl_beta > 0, and per-token loss_mask for multi-turn.
+            # For the server-side builtin kernel pattern see rl_loop.py.
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
             prox_fwd = policy.forward(data, "cross_entropy")
             prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
@@ -366,18 +329,6 @@ def main(
             step += 1
             logger.info("[step %d] optim_step (%.1fs)", step, _time.time() - t0)
 
-            if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
-                _dc = (resume_info.data_consumed if resume_info else 0) + (
-                    step - step_offset
-                ) * cfg.prompt_groups_per_step
-                save_checkpoint(
-                    policy, f"step-{step}", cfg.log_path,
-                    {"step": step, "data_consumed": _dc, "source_job_id": policy_job_id},
-                    kind=CheckpointKind.STATE,
-                    base_model=cfg.base_model,
-                    training_shape=infra.training_shape_id,
-                )
-
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
                 fwd_bwd_results=[fwd_bwd_result],
@@ -385,15 +336,15 @@ def main(
                 n_accum=1,
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
-                completions_per_prompt=completions_per_prompt,
+                completions_per_prompt=cfg.completions_per_prompt,
             )
             metrics["train/step"] = step
-            avg_reward = metrics.get("rollout/reward", 0.0)
-            avg_acc = metrics.get("rollout/accuracy", 0.0)
-            avg_kl = metrics.get("train/mean_kl", 0.0)
             logger.info(
                 "Step %d | Reward %.3f | Acc %.1f%% | KL %.4f",
-                step, avg_reward, avg_acc * 100, avg_kl,
+                step,
+                metrics.get("rollout/reward", 0.0),
+                metrics.get("rollout/accuracy", 0.0) * 100,
+                metrics.get("train/mean_kl", 0.0),
             )
             wandb_log(metrics, step)
             return step, metrics
@@ -405,42 +356,29 @@ def main(
             current_version = step
 
         def _metrics_cb(loop_metrics: dict) -> None:
-            if concurrency_controller is not None:
-                cc = concurrency_controller.step_completed()
-                for k, v in cc.items():
-                    loop_metrics[f"concurrency/{k}"] = v
+            for k, v in concurrency_controller.step_completed().items():
+                loop_metrics[f"concurrency/{k}"] = v
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
-
-        train_fns = TrainStepFns(train_step=train_step)
 
         global_step = asyncio.run(
             run_async_rl_loop(
                 sample_fns=(sample_one_prompt(row) for row in rows),
-                train_fns=train_fns,
+                train_fns=TrainStepFns(train_step=train_step),
                 prompt_groups_per_step=cfg.prompt_groups_per_step,
                 max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
-                weight_sync_fn=(
-                    _weight_sync if cfg.weight_sync.weight_sync_interval > 0 else None
-                ),
+                weight_sync_fn=_weight_sync,
                 weight_sync_interval=cfg.weight_sync_interval,
                 max_concurrent=cfg.sample_max_concurrency,
                 dynamic_filter_fn=dynamic_filter_fn,
-                global_step=step_offset,
                 metrics_callback=_metrics_cb,
             )
         )
 
-        if cfg.save_final_checkpoint and global_step > step_offset:
-            try:
-                _dc = (resume_info.data_consumed if resume_info else 0) + (
-                    global_step - step_offset
-                ) * cfg.prompt_groups_per_step
-                save_checkpoint(
-                    policy, f"step-{global_step}", cfg.log_path,
-                    {"step": global_step, "data_consumed": _dc, "source_job_id": policy_job_id},
-                    kind=CheckpointKind.BOTH,
-                    base_model=cfg.base_model,
-                    training_shape=infra.training_shape_id,
-                )
-            except Exception as e:
-                logger.warning("Failed to save final checkpoint: %s", e)
+        if global_step > 0:
+            save_checkpoint(
+                policy, f"step-{global_step}", cfg.log_path,
+                {"step": global_step},
+                kind=CheckpointKind.BOTH,
+                base_model=cfg.base_model,
+                training_shape=infra.training_shape_id,
+            )
