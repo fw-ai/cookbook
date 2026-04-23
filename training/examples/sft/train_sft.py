@@ -44,6 +44,13 @@ def parse_args():
     )
     parser.add_argument("--training-shape", default="")
     parser.add_argument("--region", default="US_VIRGINIA_1")
+    parser.add_argument("--trainer-base-url", default=None,
+                        help="Direct URL to a pre-created trainer (e.g. http://localhost:8099). "
+                             "Bypasses training-shape provisioning and checkpoint promotion.")
+    parser.add_argument("--trainer-job-id", default="local-trainer",
+                        help="Job ID for the pre-created trainer (used only with --trainer-base-url)")
+    parser.add_argument("--max-seq-len", type=int, default=None,
+                        help="Required when --trainer-base-url is set")
     parser.add_argument("--max-examples", type=int, default=500)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -87,6 +94,10 @@ def main():
         base_url=FIREWORKS_BASE_URL,
     )
 
+    use_local_trainer = args.trainer_base_url is not None
+    if use_local_trainer and args.max_seq_len is None:
+        raise ValueError("--max-seq-len is required when --trainer-base-url is set")
+
     config = sft_loop.Config(
         log_path="./text2sql_logs",
         base_model=args.base_model,
@@ -98,10 +109,13 @@ def main():
         batch_size=args.batch_size,
         grad_accum=args.grad_accum,
         max_examples=args.max_examples,
+        max_seq_len=args.max_seq_len,
         lora_rank=args.lora_rank,
-        output_model_id=args.output_model_id,
+        output_model_id=None if use_local_trainer else args.output_model_id,
         grad_clip_norm=args.grad_clip_norm,
         dcp_save_interval=-1 if args.no_checkpoint else 0,
+        trainer_job_id=args.trainer_job_id if use_local_trainer else None,
+        trainer_base_url=args.trainer_base_url,
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             region=args.region,
