@@ -63,6 +63,7 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    validate_warm_start_config,
     CheckpointKind,
 )
 from fireworks.training.sdk.deployment import DeploymentSampler
@@ -126,10 +127,16 @@ class Config:
     """ThreadPoolExecutor max_workers for async IG scoring."""
 
     policy_job_id: str | None = None
-    policy_base_url: str | None = None
     reference_job_id: str | None = None
+    policy_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
     reference_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
     init_from_checkpoint: str | None = None
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
     output_model_id: str | None = None
 
     step_timeout: int = 0
@@ -241,9 +248,24 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cleanup_on_exit: bool = False,
+    cancel_on_exit: bool = False,
+    cleanup_on_exit: bool | None = None,
 ):
+    if cleanup_on_exit is not None:
+        import warnings
+        warnings.warn(
+            "igpo_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
+            DeprecationWarning, stacklevel=2,
+        )
+        cancel_on_exit = cleanup_on_exit
+
     cfg = config
+    if cfg.policy_base_url or cfg.reference_base_url:
+        logger.warning(
+            "Config.policy_base_url / Config.reference_base_url are ignored; "
+            "the gateway routes all trainer traffic. These fields are kept for "
+            "back-compat and will be removed in a future release.",
+        )
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
@@ -257,6 +279,11 @@ def main(
     validate_config(
         cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment,
         output_model_id=cfg.output_model_id,
+    )
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
     )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
@@ -324,7 +351,7 @@ def main(
                     infra=cfg.infra, profile=profile, lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                     display_name="igpo-policy",
-                    job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+                    job_id=cfg.policy_job_id,
                     cleanup=cleanup if not cfg.policy_job_id else None,
                 )
                 ref_fut = pool.submit(
@@ -332,7 +359,7 @@ def main(
                     infra=cfg.infra, profile=ref_profile, lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                     display_name="igpo-reference", forward_only=True,
-                    job_id=cfg.reference_job_id, base_url_override=cfg.reference_base_url,
+                    job_id=cfg.reference_job_id,
                     cleanup=cleanup if not cfg.reference_job_id else None,
                 )
                 policy_ep = pol_fut.result()
@@ -343,7 +370,7 @@ def main(
                 profile=profile, lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                 display_name="igpo-policy",
-                job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+                job_id=cfg.policy_job_id,
                 cleanup=cleanup if not cfg.policy_job_id else None,
             )
             reference_ep = None
@@ -351,7 +378,7 @@ def main(
         # Create deployment referencing the trainer's hot-load bucket
         cfg.deployment.hot_load_trainer_job = policy_ep.job_name
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
-        if cleanup_on_exit:
+        if cancel_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         policy_job_id = policy_ep.job_id
@@ -362,14 +389,12 @@ def main(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
             fw_api_key=api_key,
             default_timeout=_timeout,
-            endpoint=policy_ep if cfg.policy_base_url else None,
         )
         reference = (
             ReconnectableClient(
                 rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
                 fw_api_key=api_key,
                 default_timeout=_timeout,
-                endpoint=reference_ep if cfg.reference_base_url else None,
             )
             if reference_ep else None
         )
@@ -397,7 +422,12 @@ def main(
         )
 
         # Resume
-        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = resolve_resume(
+            policy,
+            cfg.log_path,
+            cfg.init_from_checkpoint,
+            cfg.warm_start_from_adapter,
+        )
         step_offset = resume_info.step if resume_info else 0
 
         if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:

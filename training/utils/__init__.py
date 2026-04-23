@@ -37,6 +37,7 @@ __all__ = [
     "DeployConfig",
     "EvalFn",
     "WeightSyncConfig",
+    "WeightSyncScope",
     "InfraConfig",
     "ReconnectableClient",
     "ResourceCleanup",
@@ -50,6 +51,10 @@ __all__ = [
     "compute_advantages",
     "compute_pass_at_k",
     "create_trainer_job",
+    "request_trainer_job",
+    "wait_trainer_job",
+    "request_deployment",
+    "wait_deployment",
     "read_api_extra_headers_env",
     "encode_text",
     "extract_text",
@@ -100,10 +105,16 @@ from training.utils.data import (
     prepare_sampling_messages,
 )
 from training.utils.infra import (
+    Infra,
     ResourceCleanup,
     get_deployment_gpu_count,
+    request_deployment,
+    wait_deployment,
     setup_deployment,
+    setup_infra,
     setup_or_reattach_deployment,
+    request_trainer_job,
+    wait_trainer_job,
     create_trainer_job,
     read_api_extra_headers_env,
     setup_training_client,
@@ -120,6 +131,7 @@ from training.utils.config import (
     DeployConfig,
     StepCallback,
     WeightSyncConfig,
+    WeightSyncScope,
 )
 from training.utils.training_shapes import (
     auto_select_training_shape,

@@ -57,6 +57,7 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
     resolve_resume,
     save_checkpoint,
+    validate_warm_start_config,
     CheckpointKind,
 )
 from training.utils.losses import make_batch_weighted_sft_loss_fn
@@ -134,6 +135,11 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
+
     grad_clip_norm: float = 1.0
     """Max gradient norm for clipping. 0 = no clipping."""
 
@@ -157,9 +163,7 @@ class Config:
     """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
 
     trainer_base_url: str | None = None
-    """Direct base URL for the trainer (e.g. ``http://localhost:8080``).
-    When set together with ``trainer_job_id``, bypasses the gateway and
-    connects to the trainer directly."""
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
 
     evaluation_dataset: str = ""
     """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
@@ -276,6 +280,12 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
+    if cfg.trainer_base_url:
+        logger.warning(
+            "Config.trainer_base_url is ignored; the gateway routes all trainer "
+            "traffic. This field is kept for back-compat and will be removed "
+            "in a future release.",
+        )
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
@@ -287,6 +297,11 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
 
     if cfg.grad_accum > 1:
         logger.warning(
@@ -311,8 +326,6 @@ def main(
 
     # -- Setup infrastructure ----------------------------------------------
 
-    _precreated_trainer = cfg.trainer_job_id and cfg.trainer_base_url
-
     api_key = os.environ.get("FIREWORKS_API_KEY", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
@@ -324,17 +337,13 @@ def main(
             additional_headers=additional_headers,
         )
 
-    if _precreated_trainer:
-        trainer_infra = cfg.infra
-        trainer_profile = None
-        if cfg.max_seq_len is None:
-            raise ValueError("max_seq_len is required when using a pre-created trainer.")
-        logger.info(
-            "Using pre-created trainer %s at %s",
-            cfg.trainer_job_id,
-            cfg.trainer_base_url,
+    if cfg.trainer_job_id and cfg.max_seq_len is None:
+        raise ValueError(
+            "max_seq_len is required when reusing a pre-created trainer "
+            "(trainer_job_id is set). The auto-selected training shape may not "
+            "match the trainer's actual context length."
         )
-    elif (
+    if (
         not cfg.infra.training_shape_id
         and (
             cfg.infra.accelerator_type
@@ -375,15 +384,11 @@ def main(
             )
             logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
 
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        trainer_profile = profile
-
+        trainer_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
         if cfg.max_seq_len is None:
-            cfg.max_seq_len = profile.max_supported_context_length
+            cfg.max_seq_len = trainer_profile.max_supported_context_length
 
-    runner.set_accelerator_info(
-        profile=trainer_profile if not _precreated_trainer and trainer_profile is not None else None,
-    )
+    runner.set_accelerator_info(profile=trainer_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
@@ -400,7 +405,6 @@ def main(
             learning_rate=cfg.learning_rate,
             display_name="sft-trainer",
             job_id=cfg.trainer_job_id,
-            base_url_override=cfg.trainer_base_url,
             cleanup=cleanup,
             on_status=_on_trainer_status,
         )
@@ -408,7 +412,6 @@ def main(
         client = ReconnectableClient(
             rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key,
             default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
-            endpoint=endpoint if cfg.trainer_base_url else None,
         )
         if hasattr(client, "close"):
             stack.callback(client.close)
@@ -537,7 +540,13 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = resolve_resume(
+            client,
+            cfg.log_path,
+            cfg.init_from_checkpoint,
+            cfg.warm_start_from_adapter,
+        )
+
         step = resume_info.step if resume_info else 0
         data_consumed = resume_info.data_consumed if resume_info else 0
         wandb_log({"train/step": step}, step)

@@ -34,6 +34,35 @@ For full-parameter training, only `base` sampler saves are promotable; `delta` s
 
 ---
 
+## Warm-start from a promoted adapter (LoRA only)
+
+To continue LoRA training from a previously-trained adapter — typically a promoted Fireworks Model or any HF PEFT directory — set `warm_start_from_adapter` on the recipe `Config`:
+
+```python
+cfg = Config(
+    base_model="accounts/fireworks/models/qwen3-8b",
+    lora_rank=16,
+    warm_start_from_adapter="gs://bucket/path/to/adapter-dir",  # contains adapter_model.safetensors
+    ...
+)
+```
+
+Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh.
+
+Priority inside `resolve_resume` (highest first):
+1. `init_from_checkpoint` — explicit DCP resume (weights + optimizer).
+2. `checkpoints.jsonl` has a prior entry — auto-resume the current run.
+3. `warm_start_from_adapter` — fresh start with adapter weights.
+4. None — fresh start from `base_model`.
+
+**Constraints (enforced by `validate_warm_start_config`):**
+- `warm_start_from_adapter` and `init_from_checkpoint` are mutually exclusive.
+- Requires `lora_rank > 0`. Full-parameter continue-training uses `base_model` instead — `warm_start_from_adapter` has no full-param variant.
+
+Supported in all recipe loops: `sft_loop`, `dpo_loop`, `orpo_loop`, `rl_loop`, `igpo_loop`.
+
+---
+
 ## `output_model_id` validation
 
 **Cap: 63 chars, charset `[a-z0-9-]`.** A longer or otherwise-invalid ID is rejected server-side with HTTP 400. Once rejected, that same `checkpoint_id` can later return "not found in GCS" (the staged blob is no longer usable).
@@ -64,6 +93,6 @@ If `promote_checkpoint` returns `checkpoint "<name>" not found in GCS`:
 
 1. Call `FireworksClient.list_checkpoints(job_id)` (or run the `list_checkpoints.py` CLI wrapper) to see which rows the server will actually accept. See [`tools.md`](tools.md#listing-checkpoints-fireworksclientlist_checkpoints).
 2. Make sure your `output_model_id` passes `validate_output_model_id` and retry `promote_checkpoint.py` against one of those rows.
-3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a legacy deployment-first bucket) require server-side access.
+3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a pre-migration `PER_DEPLOYMENT` bucket) require server-side access.
 
-For the separate legacy-deployment-first recovery path (`--hot-load-deployment-id`), see [`rl/hotload.md`](rl/hotload.md#promoting-a-legacy-deployment-first-run).
+The modern promote API takes a single `name` field and works identically for `PER_TRAINER` and `PER_DEPLOYMENT`. See [`rl/hotload.md#promoting-a-checkpoint`](rl/hotload.md#promoting-a-checkpoint). The legacy `--hot-load-deployment-id` path is only needed for deployments that predate the stored-bucket-URL migration.

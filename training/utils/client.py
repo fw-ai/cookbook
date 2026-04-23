@@ -185,6 +185,13 @@ class ReconnectableClient:
     def load_state_with_optimizer(self, path: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.load_state_with_optimizer(path).result(timeout=timeout)
 
+    def load_adapter(self, adapter_path: str, timeout: int = DCP_TIMEOUT_S):
+        """Load HF PEFT adapter weights into the current LoRA session.
+
+        Weights-only (no optimizer, no LR schedule, no data cursor).
+        """
+        return self._client.load_adapter(adapter_path).result(timeout=timeout)
+
     def save_weights_for_sampler_ext(
         self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S
     ):
@@ -196,22 +203,62 @@ class ReconnectableClient:
     def list_checkpoints(self) -> list[str]:
         return self.inner.list_checkpoints()
 
+    def unload_model(self, timeout: float = 30.0) -> None:
+        """POST ``/api/v1/unload_model`` to drop this client's LoRA session."""
+        if self._closed or self._client is None or not self._owns_service:
+            return
+        if self._lora_rank == 0:
+            # Full-param: no LoRA session to remove, and the op's api-side
+            # hook clears request-sequencing state that cross-job reads need.
+            return
+        try:
+            from tinker.types.unload_model_request import UnloadModelRequest
+            from tinker.lib.client_connection_pool_type import ClientConnectionPoolType
+        except ImportError:
+            logger.debug("unload_model: tinker types unavailable — skipping")
+            return
+
+        client = self._client
+        holder = client.holder
+        if holder is None:
+            return
+
+        try:
+            model_id = client._guaranteed_model_id()
+        except Exception:
+            return
+
+        async def _do_unload():
+            with holder.aclient(ClientConnectionPoolType.TRAIN) as async_client:
+                return await async_client.models.unload(
+                    request=UnloadModelRequest(model_id=model_id),
+                )
+
+        try:
+            fut = holder.run_coroutine_threadsafe(_do_unload())
+            fut.result(timeout=timeout)
+            logger.info(
+                "unload_model: dropped server session %s on job %s",
+                model_id, self._job_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "unload_model: failed for job %s model %s: %s",
+                self._job_id, model_id, e,
+            )
+
     def close(self, timeout: float = 5.0) -> None:
-        """Stop local Tinker background tasks for this trainer client.
+        """Drop the server-side session, then stop local Tinker background tasks.
 
-        The underlying Tinker holder owns background heartbeat / telemetry tasks.
-        Best-effort flush queued telemetry, then stop those tasks before remote
-        trainer cleanup so local tasks do not continue talking to a trainer
-        that has already been deleted.
-
-        When this client shares its :class:`FiretitanServiceClient` with
-        another :class:`ReconnectableClient` (e.g. created via
-        :meth:`create_base_reference`), this client does not own the holder
-        and skips the holder/telemetry teardown — the owning client will
-        clean it up.
+        Shared-service clients (e.g. base-reference) skip both steps — the
+        owning client will clean up.
         """
         if self._closed:
             return
+
+        # Unload first while the holder is still alive to dispatch the POST.
+        self.unload_model(timeout=timeout)
+
         self._closed = True
 
         client = self._client
