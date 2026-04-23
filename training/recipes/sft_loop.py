@@ -209,6 +209,12 @@ class Config:
     max_eval_seqs: int = DEFAULT_MAX_EVAL_SEQS
     """Max number of eval sequences for carve-out."""
 
+    render_workers: int | None = None
+    """Number of worker processes for streaming dataset rendering. ``None``
+    auto-selects ``min(os.cpu_count(), DEFAULT_RENDER_WORKERS)``. Set to 1
+    to disable the spawn pool and render in-process (useful for unit tests
+    that monkeypatch the renderer)."""
+
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
@@ -424,7 +430,11 @@ def main(
         if total_raw == 0:
             raise RuntimeError(f"No examples found in {cfg.dataset}")
         max_seq_len = cfg.max_seq_len
-        num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
+        num_workers = (
+            cfg.render_workers
+            if cfg.render_workers is not None
+            else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
+        )
         logger.info(
             "Streaming %d examples from %s (renderer=%s, train_on_what=%s,"
             " workers=%d, chunksize=%d)",
