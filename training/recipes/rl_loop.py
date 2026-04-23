@@ -803,8 +803,12 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
+        # ``step_offset`` counts optim steps (one per inner minibatch); the
+        # dataset is indexed per rollout batch, so divide by ppo_n_minibatches
+        # when resuming under K>1.
+        resume_rollouts = step_offset // max(1, cfg.ppo_n_minibatches)
         remaining_rows = []
-        for i_step in range(step_offset, len(rl_dataset)):
+        for i_step in range(resume_rollouts, len(rl_dataset)):
             remaining_rows.extend(rl_dataset.get_batch(i_step))
 
         total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
@@ -828,9 +832,12 @@ def main(
 
         if cfg.save_final_checkpoint and global_step > step_offset:
             try:
+                # global_step - step_offset is optim-step delta (K× per rollout),
+                # so divide by ppo_n_minibatches to get rollout-batch delta.
+                _rollouts_this_run = (global_step - step_offset) // max(1, cfg.ppo_n_minibatches)
                 _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    global_step - step_offset
-                ) * prompt_groups_per_step
+                    _rollouts_this_run * prompt_groups_per_step
+                )
                 cp_name = f"step-{global_step}"
                 paths = save_checkpoint(
                     policy,
