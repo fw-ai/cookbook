@@ -584,9 +584,124 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     assert result["steps"] == 2
     assert events["optim_steps"] == 2
     assert len(events["batches"]) == 2
-    assert [d._test_id for d in events["batches"][0]] == ["a1"]
-    assert [d._test_id for d in events["batches"][1]] == ["a2"]
+    assert sorted(d._test_id for batch in events["batches"] for d in batch) == ["a1", "a2"]
     assert events["deleted_jobs"] == ["job-sft"]
+
+
+def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
+    """Resume should replay the same epoch-0 shuffle and skip into it deterministically."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+            for i in range(6)
+        ],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    runs: dict[str, list[list[str]]] = {"fresh": [], "resume": []}
+    active = {"name": "fresh"}
+
+    class FakeMgr:
+        def create(self, config):
+            job_id = f"job-{active['name']}"
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            pass
+
+        def delete(self, job_id):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.job_id = kwargs.get("job_id", "job-sft")
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            runs[active["name"]].append([d._test_id for d in batch])
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": len(batch)}
+            )
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def save_state(self, name):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"{name}-sampler")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return name
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "auto_select_training_shape",
+        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
+    )
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datum",
+        lambda messages, **kwargs: SimpleNamespace(
+            token_ids=[1, 2],
+            datum=SimpleNamespace(
+                model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2])]),
+                loss_fn_inputs={
+                    "target_tokens": SimpleNamespace(data=[0, 0]),
+                    "weights": SimpleNamespace(data=[1.0, 1.0]),
+                },
+                _test_id=messages[0]["content"],
+            ),
+        ),
+    )
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=2,
+        epochs=1,
+        seed=123,
+        render_workers=1,
+    )
+
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    active["name"] = "resume"
+    monkeypatch.setattr(
+        module,
+        "resolve_resume",
+        lambda *args, **kwargs: SimpleNamespace(step=1, data_consumed=2),
+    )
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert len(runs["fresh"]) == 3
+    assert runs["resume"] == runs["fresh"][1:]
 
 
 # ---------------------------------------------------------------------------

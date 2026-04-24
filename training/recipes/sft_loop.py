@@ -237,6 +237,13 @@ class Config:
     """Linear LR warmup from 0 → learning_rate over the first N optimizer
     steps. 0 disables warmup (lr is constant)."""
 
+    seed: int = 0
+    """Shuffle seed for the training dataset.
+
+    Re-seeded per epoch as ``seed + epoch`` so fresh runs and resumes see
+    the same raw-row order in epoch 0 before any skipped batches.
+    """
+
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
@@ -533,11 +540,13 @@ def main(
                 training_count, cfg.batch_size, effective_batch_size,
             )
 
+        loader_generator = torch.Generator()
         loader = make_render_dataloader(
             training_dataset,
             batch_size=effective_batch_size,
             num_workers=num_workers,
             shuffle=True,
+            generator=loader_generator,
             worker_init_fn=worker_init_fn,
         )
         # Pre-filter upper bound; filtered rows make actual batches
@@ -545,10 +554,10 @@ def main(
         total_batches_per_epoch = (training_count + effective_batch_size - 1) // effective_batch_size
         logger.info(
             "Dataset: %d examples from %s (renderer=%s, train_on_what=%s,"
-            " workers=%d) -> ~%d batches/epoch x %d epochs%s",
+            " workers=%d, seed=%d) -> ~%d batches/epoch x %d epochs%s",
             training_count, cfg.dataset,
             resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-            cfg.train_on_what, num_workers,
+            cfg.train_on_what, num_workers, cfg.seed,
             total_batches_per_epoch, cfg.epochs,
             f" + {len(eval_data)} eval examples" if eval_data else "",
         )
@@ -666,18 +675,30 @@ def main(
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
         for epoch in range(cfg.epochs):
-            # On resume, skip the batches already processed in epoch 0.
-            # Workers still render skipped batches (wasted but bounded by
-            # num_workers * prefetch_factor); resume is rare enough that
-            # this is acceptable.
+            loader_generator.manual_seed(cfg.seed + epoch)
             batch_iter = iter(loader)
-            if epoch == 0 and start_batch > 0:
-                batch_iter = islice(batch_iter, start_batch, None)
-            for batch in batch_iter:
+            epoch_start_batch = start_batch if epoch == 0 else 0
+            if epoch_start_batch > 0:
+                batch_iter = islice(batch_iter, epoch_start_batch, None)
+
+            epoch_valid_examples = 0
+            for _batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
                 if not batch:
                     continue  # entire batch was filtered (None render); skip
+                epoch_valid_examples += len(batch)
                 data_consumed += len(batch)
                 step = _run_train_step(batch, step)
+
+            if epoch == 0 and start_batch == 0:
+                filtered_count = training_count - epoch_valid_examples
+                if filtered_count > 0:
+                    logger.info(
+                        "Seq-length / format filter: %d/%d raw rows filtered",
+                        filtered_count,
+                        training_count,
+                    )
+                if epoch_valid_examples == 0:
+                    raise RuntimeError("No valid training examples after tokenization")
 
             # Run eval after each epoch
             if eval_data:
