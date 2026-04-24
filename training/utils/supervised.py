@@ -610,20 +610,14 @@ def build_datum_from_token_mask(
     )
 
 
-def render_messages_to_datum(
-    messages: Sequence[Mapping[str, Any]],
+def _datum_from_rendered_example(
+    rendered_input: Any,
+    weights: Any,
     *,
-    renderer: Renderer,
-    train_on_what: str | TrainOnWhat = TrainOnWhat.ALL_ASSISTANT_MESSAGES,
-    max_seq_len: int | None = None,
-    include_loss_mask: bool = False,
+    max_seq_len: int | None,
+    include_loss_mask: bool,
 ) -> RenderedSupervisedDatum:
-    """Render a multi-turn conversation into the shared weighted datum format."""
-    normalized_messages = normalize_messages(messages)
-    rendered_input, weights = renderer.build_supervised_example(
-        normalized_messages,
-        train_on_what=parse_train_on_what(train_on_what),
-    )
+    """Wrap a single ``(model_input, weights)`` pair as a ``RenderedSupervisedDatum``."""
     weight_values = weights.tolist() if hasattr(weights, "tolist") else list(weights)
     if isinstance(rendered_input, tinker.ModelInput):
         return build_datum_from_model_input_and_weights(
@@ -640,6 +634,77 @@ def render_messages_to_datum(
     return build_datum_from_tokens_and_weights(
         token_values,
         weight_values,
+        max_seq_len=max_seq_len,
+        include_loss_mask=include_loss_mask,
+    )
+
+
+def render_messages_to_datums(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    renderer: Renderer,
+    train_on_what: str | TrainOnWhat = TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    max_seq_len: int | None = None,
+    include_loss_mask: bool = False,
+) -> list[RenderedSupervisedDatum]:
+    """Render a multi-turn conversation into one or more weighted training data.
+
+    For renderers that strip thinking content from history (``has_extension_property``
+    is False — e.g. KimiK2/K2.5/K2.6, Qwen3, DeepSeekV3-thinking), a single call to
+    ``build_supervised_example`` with ``ALL_ASSISTANT_MESSAGES`` produces tokens in
+    which every intermediate assistant turn has an empty ``<think></think>`` block
+    while only the *last* assistant turn keeps its chain-of-thought. Training on
+    that sequence teaches the model to emit an empty ``<think></think>`` the
+    majority of the time at inference.
+
+    The fix is to delegate to ``build_supervised_examples`` (plural), which yields
+    one example per assistant turn for renderers without the extension property so
+    every CoT is preserved in the turn it is trained on. For renderers that do
+    have the extension property, the plural form returns a single example and
+    behavior is unchanged.
+    """
+    normalized_messages = normalize_messages(messages)
+    parsed_train_on_what = parse_train_on_what(train_on_what)
+    rendered_examples = renderer.build_supervised_examples(
+        normalized_messages,
+        train_on_what=parsed_train_on_what,
+    )
+    return [
+        _datum_from_rendered_example(
+            rendered_input,
+            weights,
+            max_seq_len=max_seq_len,
+            include_loss_mask=include_loss_mask,
+        )
+        for rendered_input, weights in rendered_examples
+    ]
+
+
+def render_messages_to_datum(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    renderer: Renderer,
+    train_on_what: str | TrainOnWhat = TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    max_seq_len: int | None = None,
+    include_loss_mask: bool = False,
+) -> RenderedSupervisedDatum:
+    """Render a multi-turn conversation into a single weighted datum.
+
+    Back-compat shim around ``renderer.build_supervised_example`` (singular). This
+    does *not* preserve chain-of-thought on intermediate turns for renderers that
+    strip thinking from history. Callers that want correct multi-turn thinking
+    behavior for Kimi/Qwen3/DeepSeek-thinking should prefer
+    ``render_messages_to_datums`` (plural), which delegates to
+    ``build_supervised_examples`` and yields one datum per assistant turn.
+    """
+    normalized_messages = normalize_messages(messages)
+    rendered_input, weights = renderer.build_supervised_example(
+        normalized_messages,
+        train_on_what=parse_train_on_what(train_on_what),
+    )
+    return _datum_from_rendered_example(
+        rendered_input,
+        weights,
         max_seq_len=max_seq_len,
         include_loss_mask=include_loss_mask,
     )

@@ -19,6 +19,11 @@ class StubRenderer:
         self.calls.append((messages, train_on_what))
         return self.tokens, self.weights
 
+    def build_supervised_examples(self, messages, train_on_what):
+        # Mimic renderers that satisfy the extension property: a single example
+        # wrapping the same (model_input, weights) pair.
+        return [self.build_supervised_example(messages, train_on_what)]
+
 
 def _write_dataset(tmp_path, rows):
     dataset_path = tmp_path / "sft.jsonl"
@@ -138,8 +143,8 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         module,
-        "render_messages_to_datum",
-        lambda *args, **kwargs: SimpleNamespace(token_ids=[1], datum={"id": "too-short"}),
+        "render_messages_to_datums",
+        lambda *args, **kwargs: [SimpleNamespace(token_ids=[1], datum={"id": "too-short"})],
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
@@ -225,17 +230,19 @@ def test_main_reduces_batch_size_when_examples_fewer_than_batch_size(tmp_path, m
     )
     monkeypatch.setattr(
         module,
-        "render_messages_to_datum",
-        lambda *args, **kwargs: SimpleNamespace(
-            token_ids=[1, 2, 3],
-            datum=SimpleNamespace(
-                model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
-                loss_fn_inputs={
-                    "target_tokens": SimpleNamespace(data=[2, 3]),
-                    "weights": SimpleNamespace(data=[1.0, 1.0]),
-                },
-            ),
-        ),
+        "render_messages_to_datums",
+        lambda *args, **kwargs: [
+            SimpleNamespace(
+                token_ids=[1, 2, 3],
+                datum=SimpleNamespace(
+                    model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
+                    loss_fn_inputs={
+                        "target_tokens": SimpleNamespace(data=[2, 3]),
+                        "weights": SimpleNamespace(data=[1.0, 1.0]),
+                    },
+                ),
+            )
+        ],
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
@@ -328,19 +335,21 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
     monkeypatch.setattr(module, "auto_select_training_shape", _record_auto_select)
     monkeypatch.setattr(
         module,
-        "render_messages_to_datum",
-        lambda *args, **kwargs: SimpleNamespace(
-            token_ids=[1, 2, 3],
-            datum=SimpleNamespace(
-                model_input=SimpleNamespace(
-                    chunks=[SimpleNamespace(tokens=[1, 2, 3])],
+        "render_messages_to_datums",
+        lambda *args, **kwargs: [
+            SimpleNamespace(
+                token_ids=[1, 2, 3],
+                datum=SimpleNamespace(
+                    model_input=SimpleNamespace(
+                        chunks=[SimpleNamespace(tokens=[1, 2, 3])],
+                    ),
+                    loss_fn_inputs={
+                        "target_tokens": SimpleNamespace(data=[2, 3]),
+                        "weights": SimpleNamespace(data=[1.0, 1.0]),
+                    },
                 ),
-                loss_fn_inputs={
-                    "target_tokens": SimpleNamespace(data=[2, 3]),
-                    "weights": SimpleNamespace(data=[1.0, 1.0]),
-                },
-            ),
-        ),
+            )
+        ],
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
@@ -562,9 +571,9 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
             },
             _test_id=content,
         )
-        return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
+        return [SimpleNamespace(token_ids=[1, 2, 3], datum=datum)]
 
-    monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
+    monkeypatch.setattr(module, "render_messages_to_datums", _fake_render)
 
     cfg = module.Config(
         dataset=str(dataset_path),
@@ -718,9 +727,9 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
             },
             _test_id=f"example-{idx}",
         )
-        return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
+        return [SimpleNamespace(token_ids=[1, 2, 3], datum=datum)]
 
-    monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
+    monkeypatch.setattr(module, "render_messages_to_datums", _fake_render)
 
     cfg = module.Config(
         dataset=str(dataset_path),

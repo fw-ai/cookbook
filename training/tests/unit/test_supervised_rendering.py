@@ -16,6 +16,7 @@ from training.utils.supervised import (
     render_preference_pair,
     normalize_messages,
     render_messages_to_datum,
+    render_messages_to_datums,
 )
 
 
@@ -48,6 +49,34 @@ class SequenceRenderer:
     ):
         self.calls.append((messages, train_on_what))
         return self.outputs[len(self.calls) - 1]
+
+
+class MultiExampleStubRenderer:
+    """Renderer mimicking KimiK2.build_supervised_examples: yields N examples
+    for a multi-turn conversation."""
+
+    def __init__(self, outputs: list[tuple[list[int], list[float]]]):
+        self.outputs = [
+            (
+                torch.tensor(tokens, dtype=torch.int64),
+                torch.tensor(weights, dtype=torch.float32),
+            )
+            for tokens, weights in outputs
+        ]
+        self.single_calls: list[tuple[list[dict], TrainOnWhat]] = []
+        self.plural_calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+    def build_supervised_example(
+        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    ):
+        self.single_calls.append((messages, train_on_what))
+        return self.outputs[0]
+
+    def build_supervised_examples(
+        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN
+    ):
+        self.plural_calls.append((messages, train_on_what))
+        return list(self.outputs)
 
 
 class ModelInputRenderer:
@@ -121,6 +150,98 @@ def test_render_messages_to_datum_preserves_multi_turn_weights():
         1.0,
         1.0,
     ]
+
+
+def test_render_messages_to_datums_uses_plural_build_supervised_examples():
+    """``render_messages_to_datums`` must call ``build_supervised_examples``
+    (plural) so renderers that strip thinking from history (KimiK2/K2.5/K2.6,
+    Qwen3-thinking, DeepSeekV3-thinking) yield one training example per
+    assistant turn. Calling the singular ``build_supervised_example`` with
+    ALL_ASSISTANT_MESSAGES produces a single sequence in which every
+    intermediate assistant turn has an empty ``<think></think>`` block, which
+    is exactly the regression that caused fine-tuned Kimi models to stop
+    emitting reasoning traces at inference.
+    """
+    renderer = MultiExampleStubRenderer(
+        outputs=[
+            ([10, 11, 12, 13], [0, 0, 1, 1]),
+            ([10, 11, 12, 13, 14, 15, 16, 17], [0, 0, 0, 0, 0, 0, 1, 1]),
+        ]
+    )
+
+    rendered = render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "reasoning_content": "t1", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "reasoning_content": "t2", "content": "a2"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    assert renderer.single_calls == []
+    assert len(renderer.plural_calls) == 1
+    _, train_on_what = renderer.plural_calls[0]
+    assert train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+    assert len(rendered) == 2
+    assert rendered[0].token_ids == [10, 11, 12, 13]
+    assert rendered[1].token_ids == [10, 11, 12, 13, 14, 15, 16, 17]
+
+
+def test_render_messages_to_datums_filters_normalized_reasoning_content():
+    """``reasoning_content`` must be promoted to a ThinkingPart before the
+    normalized messages reach ``build_supervised_examples`` so the renderer's
+    per-turn rendering can fill the ``<think>...</think>`` block for every
+    assistant turn instead of emitting an empty placeholder."""
+    renderer = MultiExampleStubRenderer(
+        outputs=[
+            ([10, 11, 12, 13], [0, 0, 1, 1]),
+            ([10, 11, 12, 13, 14, 15, 16, 17], [0, 0, 0, 0, 0, 0, 1, 1]),
+        ]
+    )
+
+    render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "reasoning_content": "t1", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "reasoning_content": "t2", "content": "a2"},
+        ],
+        renderer=renderer,
+    )
+
+    normalized_messages, _ = renderer.plural_calls[0]
+    assistant_messages = [m for m in normalized_messages if m["role"] == "assistant"]
+    assert len(assistant_messages) == 2
+    for msg in assistant_messages:
+        assert msg["content"][0] == {"type": "thinking", "thinking": msg["content"][0]["thinking"]}
+        assert msg["content"][0]["thinking"] in {"t1", "t2"}
+
+
+def test_render_messages_to_datum_still_uses_singular_for_back_compat():
+    """``render_messages_to_datum`` (singular) must keep calling
+    ``build_supervised_example`` for callers that expect a single datum; the
+    fix for multi-turn thinking lives in ``render_messages_to_datums``
+    (plural)."""
+    renderer = MultiExampleStubRenderer(
+        outputs=[
+            ([10, 11, 12, 13], [0, 0, 1, 1]),
+        ]
+    )
+
+    rendered = render_messages_to_datum(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ],
+        renderer=renderer,
+    )
+
+    assert renderer.plural_calls == []
+    assert len(renderer.single_calls) == 1
+    assert rendered.token_ids == [10, 11, 12, 13]
 
 
 def test_render_messages_to_datum_supports_multimodal_model_input():

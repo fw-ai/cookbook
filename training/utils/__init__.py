@@ -78,6 +78,7 @@ __all__ = [
     "parse_train_on_what",
     "render_preference_pair",
     "render_messages_to_datum",
+    "render_messages_to_datums",
     "resolve_renderer_name",
     "prepare_sampling_messages",
     "setup_deployment",
@@ -155,6 +156,7 @@ from training.utils.supervised import (
     parse_train_on_what,
     render_preference_pair,
     render_messages_to_datum,
+    render_messages_to_datums,
     resolve_renderer_name,
 )
 from training.utils.logging import (

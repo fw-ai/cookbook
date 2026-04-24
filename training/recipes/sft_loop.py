@@ -50,7 +50,7 @@ from training.utils import (
     build_renderer,
     parse_train_on_what,
     auto_select_training_shape,
-    render_messages_to_datum,
+    render_messages_to_datums,
     resolve_renderer_name,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
@@ -440,29 +440,40 @@ def main(
         max_seq_len = cfg.max_seq_len
         filtered_count = 0
 
-        def _map_fn(row: dict) -> tinker.Datum | None:
+        def _map_fn(row: dict) -> list[tinker.Datum]:
+            """Render one raw row into zero or more training data.
+
+            For renderers without the sequence-extension property (Kimi K2/K2.5,
+            Qwen3-thinking, DeepSeek V3-thinking), a multi-turn conversation
+            expands into one datum per assistant turn so each turn's
+            chain-of-thought is preserved in the sequence it is trained on.
+            Renderers that satisfy the extension property still yield a single
+            datum, so behavior for plain instruct models is unchanged.
+            """
             nonlocal filtered_count
             messages = row.get("messages", [])
             if not messages:
                 filtered_count += 1
-                return None
-            rendered = render_messages_to_datum(
+                return []
+            rendered_examples = render_messages_to_datums(
                 messages,
                 renderer=renderer,
                 train_on_what=train_on_what,
             )
-            if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
-                filtered_count += 1
-                return None
-            return rendered.datum
+            kept: list[tinker.Datum] = []
+            for rendered in rendered_examples:
+                token_len = len(rendered.token_ids)
+                if token_len > max_seq_len or token_len < 2:
+                    filtered_count += 1
+                    continue
+                kept.append(rendered.datum)
+            return kept
 
         total_raw = len(raw_data)
         log_interval = max(1, total_raw // 20)  # ~5% increments
         training_data: List[tinker.Datum] = []
         for i, row in enumerate(raw_data):
-            d = _map_fn(row)
-            if d is not None:
-                training_data.append(d)
+            training_data.extend(_map_fn(row))
             if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
                 runner.report_rendering_progress(i + 1, total_raw)
         if filtered_count > 0:
@@ -491,9 +502,7 @@ def main(
             eval_log_interval = max(1, total_eval // 10)
             eval_data = []
             for i, row in enumerate(raw_eval):
-                d = _map_fn(row)
-                if d is not None:
-                    eval_data.append(d)
+                eval_data.extend(_map_fn(row))
                 if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
                     runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
             logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
