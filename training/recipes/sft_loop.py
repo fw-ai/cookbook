@@ -118,7 +118,7 @@ def _render_one_worker(row: dict) -> tinker.Datum | None:
 
 
 # ---------------------------------------------------------------------------
-# Eval auto carve-out defaults
+# Dataset preparation
 # ---------------------------------------------------------------------------
 
 DEFAULT_EVAL_CARVE_RATIO = 0.1
@@ -130,27 +130,57 @@ def compute_eval_carveout(
     max_ratio: float = DEFAULT_EVAL_CARVE_RATIO,
     max_seqs: int = DEFAULT_MAX_EVAL_SEQS,
 ) -> int:
-    """Compute number of samples to carve out from training data for eval.
-
-    Mirrors the SFT v1 carve-out logic: take min(total * ratio, max_seqs),
-    but return 0 if the dataset is too small to split.
-
-    Args:
-        total_samples: Total number of tokenized training examples.
-        max_ratio: Max fraction of data to use for eval (default 10%).
-        max_seqs: Absolute cap on eval sequences (default 100).
-
-    Returns:
-        Number of samples to reserve for eval (first N of the dataset).
-    """
+    """Number of head samples to carve out as eval (0 if dataset too small)."""
     if total_samples <= 1:
         return 0
-    carveout = int(total_samples * max_ratio)
-    carveout = min(carveout, max_seqs)
-    # Need at least 1 sample left for training
-    if carveout >= total_samples:
-        return 0
-    return carveout
+    carveout = min(int(total_samples * max_ratio), max_seqs)
+    return 0 if carveout >= total_samples else carveout
+
+
+def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
+    """Render the first ``n`` rows of ``ds`` in-process, dropping Nones."""
+    return [d for d in (ds[i] for i in range(n)) if d is not None]
+
+
+def _prepare_datasets(
+    cfg: "Config",
+) -> tuple[JsonlRenderDataset, List[tinker.Datum]]:
+    """Build the training dataset and (optional) eval set.
+
+    Eval can come from an explicit ``cfg.evaluation_dataset`` or be
+    carved out from the head of the training dataset. In the carve-out
+    case the returned training dataset is sliced past the eval window.
+    """
+    training_ds = JsonlRenderDataset(
+        cfg.dataset, _render_one_worker, max_examples=cfg.max_examples,
+    )
+    if len(training_ds) == 0:
+        raise RuntimeError(f"No examples found in {cfg.dataset}")
+
+    if cfg.evaluation_dataset:
+        eval_ds = JsonlRenderDataset(cfg.evaluation_dataset, _render_one_worker)
+        eval_data = _render_eagerly(eval_ds, len(eval_ds))
+        logger.info(
+            "Loaded %d eval examples from %s",
+            len(eval_data), cfg.evaluation_dataset,
+        )
+        return training_ds, eval_data
+
+    if cfg.eval_auto_carveout:
+        n = compute_eval_carveout(
+            len(training_ds), cfg.eval_carve_ratio, cfg.max_eval_seqs,
+        )
+        if n > 0:
+            eval_data = _render_eagerly(training_ds, n)
+            training_ds = training_ds.with_indices(list(range(n, len(training_ds))))
+            logger.info(
+                "Auto carve-out: %d eval examples, %d training examples",
+                len(eval_data), len(training_ds),
+            )
+            return training_ds, eval_data
+        logger.warning("Dataset too small for auto carve-out, skipping eval")
+
+    return training_ds, []
 
 
 # ---------------------------------------------------------------------------
@@ -435,91 +465,50 @@ def main(
         # Render JSONL rows on the fly inside DataLoader workers so peak
         # RAM is O(num_workers * per_worker_render_footprint) instead of
         # O(dataset_size). See docs/engineering/sft-v2-orchestrator-oom-debug.md.
-        max_seq_len = cfg.max_seq_len
         num_workers = (
             cfg.render_workers
             if cfg.render_workers is not None
             else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
-        # Initialise the parent's _worker_state so eval / carve-out
-        # rendering (which runs in-process) shares the same render_fn.
+        # Initialise the parent's _worker_state (used by eval / carve-out
+        # rendering in-process) and bind the same args as the DataLoader
+        # workers' init_fn.
         init_args = (
             cfg.tokenizer_model, cfg.renderer_name,
-            cfg.train_on_what, max_seq_len,
+            cfg.train_on_what, cfg.max_seq_len,
         )
         _init_render_worker(*init_args)
+        worker_init_fn = functools.partial(_init_render_worker, *init_args)
 
-        training_dataset = JsonlRenderDataset(
-            cfg.dataset, _render_one_worker, max_examples=cfg.max_examples,
-        )
-        total_raw = len(training_dataset)
-        if total_raw == 0:
-            raise RuntimeError(f"No examples found in {cfg.dataset}")
-        logger.info(
-            "Indexed %d examples from %s (renderer=%s, train_on_what=%s,"
-            " workers=%d)",
-            total_raw, cfg.dataset,
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-            cfg.train_on_what, num_workers,
-        )
-
-        # -- Eval dataset (explicit or auto carve-out) -------------------------
-        # Eval sets are small (max_eval_seqs ~ 100); render eagerly in
-        # the parent process so they can be replayed each epoch.
-        eval_data: List[tinker.Datum] = []
-        if cfg.evaluation_dataset:
-            eval_dataset = JsonlRenderDataset(cfg.evaluation_dataset, _render_one_worker)
-            eval_data = [d for d in (eval_dataset[i] for i in range(len(eval_dataset))) if d is not None]
-            logger.info(
-                "Loaded %d eval examples from %s",
-                len(eval_data), cfg.evaluation_dataset,
-            )
-        elif cfg.eval_auto_carveout:
-            # Carve out by JSONL row index (pre-render). The slight
-            # overcount vs post-filter is harmless: filtered rows in the
-            # eval slice yield None and are dropped.
-            carveout_count = compute_eval_carveout(
-                total_raw, cfg.eval_carve_ratio, cfg.max_eval_seqs,
-            )
-            if carveout_count > 0:
-                eval_data = [training_dataset[i] for i in range(carveout_count)]
-                eval_data = [d for d in eval_data if d is not None]
-                training_dataset = training_dataset.with_indices(
-                    list(range(carveout_count, total_raw))
-                )
-                logger.info(
-                    "Auto carve-out: %d eval examples, %d training examples",
-                    len(eval_data), len(training_dataset),
-                )
-            else:
-                logger.warning("Dataset too small for auto carve-out, skipping eval")
-
+        training_dataset, eval_data = _prepare_datasets(cfg)
         training_count = len(training_dataset)
-        effective_batch_size = cfg.batch_size
-        if training_count < effective_batch_size:
+        effective_batch_size = max(1, min(cfg.batch_size, training_count))
+        if effective_batch_size < cfg.batch_size:
             logger.warning(
                 "Training examples (%d) < batch_size (%d); reducing effective "
-                "batch_size to %d so all examples are trained on.",
-                training_count, effective_batch_size, training_count,
+                "batch_size to %d.",
+                training_count, cfg.batch_size, effective_batch_size,
             )
-            effective_batch_size = max(1, training_count)
 
         loader = make_render_dataloader(
             training_dataset,
             batch_size=effective_batch_size,
             num_workers=num_workers,
             shuffle=True,
-            worker_init_fn=functools.partial(_init_render_worker, *init_args),
+            worker_init_fn=worker_init_fn,
         )
         # Pre-filter upper bound; filtered rows make actual batches
         # smaller but never larger.
         total_batches_per_epoch = (training_count + effective_batch_size - 1) // effective_batch_size
         logger.info(
-            "Dataset: %d examples, ~%d batches/epoch, %d epochs",
-            training_count, total_batches_per_epoch, cfg.epochs,
+            "Dataset: %d examples from %s (renderer=%s, train_on_what=%s,"
+            " workers=%d) -> ~%d batches/epoch x %d epochs%s",
+            training_count, cfg.dataset,
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            cfg.train_on_what, num_workers,
+            total_batches_per_epoch, cfg.epochs,
+            f" + {len(eval_data)} eval examples" if eval_data else "",
         )
-        if eval_data:
-            logger.info("Eval dataset: %d examples (eval after each epoch)", len(eval_data))
 
         # -- Resume ---------------------------------------------------------------
 
