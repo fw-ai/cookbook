@@ -58,10 +58,28 @@ def load_jsonl_dataset(path_or_url: str, max_rows: int | None = None) -> List[Di
 
 
 def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dict[str, Any]]:
-    """Load preference dataset (chosen/rejected pairs)."""
+    """Load preference dataset (chosen/rejected pairs).
+
+    Supports three input shapes per row:
+
+    - ``{"chosen": ..., "rejected": ...}``  -- Fireworks / OpenAI-compatible.
+    - ``{"samples": [{"messages": ..., "score": 0.0 | 1.0}, ...]}`` -- our
+      legacy preference-sample format. Scores are *strictly* binary: 1.0
+      marks the chosen sample, 0.0 marks the rejected sample. Graded scores
+      (e.g. 0.5, 0.8) and missing scores raise ``ValueError`` — silently
+      dropping these rows has hidden real customer data quality issues from
+      us in the past.
+    - ``{"input": ..., "preferred_output": ..., "non_preferred_output": ...}``
+      -- OpenAI fine-tuning DPO format.
+
+    Any row that does not match one of the above raises ``ValueError``.
+    """
     data = []
     with open(path) as f:
-        for line in f:
+        for line_no, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
             row = json.loads(line)
             if "chosen" in row and "rejected" in row:
                 data.append(row)
@@ -73,8 +91,23 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
                         chosen = s
                     elif score == 0.0:
                         rejected = s
-                if chosen and rejected:
-                    data.append({"chosen": chosen, "rejected": rejected})
+                    else:
+                        raise ValueError(
+                            f"{path}:{line_no}: invalid preference score "
+                            f"{score!r}. Samples-format preference rows must "
+                            f"use exactly score=1.0 (chosen) or score=0.0 "
+                            f"(rejected); graded/missing scores are not "
+                            f"supported."
+                        )
+                if chosen is None or rejected is None:
+                    raise ValueError(
+                        f"{path}:{line_no}: samples row does not yield both a "
+                        f"chosen (score=1.0) and a rejected (score=0.0) "
+                        f"sample (chosen={chosen is not None}, "
+                        f"rejected={rejected is not None}). Each preference "
+                        f"row must contain at least one of each."
+                    )
+                data.append({"chosen": chosen, "rejected": rejected})
             elif "preferred_output" in row and "non_preferred_output" in row:
                 inp = row.get("input", {})
                 if isinstance(inp, dict) and "messages" in inp:
