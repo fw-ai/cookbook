@@ -164,7 +164,11 @@ class GLM5Renderer(Renderer):
             header_str = "<|system|>"
             output_str = _visible_text(message["content"])
         elif role == "tool":
-            header_str = "<|observation|>"
+            prev_is_tool = (
+                ctx.prev_message is not None
+                and ctx.prev_message.get("role") == "tool"
+            )
+            header_str = "" if prev_is_tool else "<|observation|>"
             output_str = (
                 f"<tool_response>{_visible_text(message['content'])}</tool_response>"
             )
@@ -187,23 +191,28 @@ class GLM5Renderer(Renderer):
         # target for this assistant turn.
         header_str = "<|assistant|>"
 
-        is_historical = (
-            self.strip_thinking_from_history
-            and ctx.last_user_index >= 0
+        before_last_user = (
+            ctx.last_user_index >= 0
             and ctx.idx < ctx.last_user_index
         )
 
         reasoning, visible = _extract_reasoning_and_text(message["content"])
 
-        # Match the shipped HF chat template:
-        # - Historical turns (strip_thinking): ``</think>`` alone, no
-        #   ``<think>`` opener.
-        # - Terminal turn with reasoning: ``<think>{reasoning}</think>``.
-        # - Terminal turn without reasoning: ``<think></think>`` (empty
-        #   think block, thinking-mode default).
+        # Match the shipped HF chat template thinking-block logic:
         #
-        # No newlines between the role tag, the think block, or the content.
-        if is_historical:
+        # 1. Historical turn with strip_thinking=True (the default):
+        #    always ``</think>`` (drops any reasoning).
+        # 2. Historical turn with strip_thinking=False AND reasoning
+        #    exists: ``<think>{reasoning}</think>`` (keep it).
+        # 3. Historical turn with strip_thinking=False AND no reasoning:
+        #    ``</think>`` — the template leaves ``reasoning_content``
+        #    undefined so it falls to the else branch.
+        # 4. Terminal turn with reasoning: ``<think>{reasoning}</think>``.
+        # 5. Terminal turn without reasoning (thinking-mode default):
+        #    ``<think></think>``.
+        if before_last_user and self.strip_thinking_from_history:
+            think_block = "</think>"
+        elif before_last_user and not reasoning:
             think_block = "</think>"
         elif reasoning:
             think_block = f"<think>{reasoning.strip()}</think>"
