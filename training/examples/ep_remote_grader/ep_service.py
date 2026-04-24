@@ -60,7 +60,20 @@ async def _grade(
 
 
 class EPService(RolloutService):
-    """Remote completion + EP grader exposed as a :class:`RolloutService`."""
+    """Remote completion + EP grader exposed as a :class:`RolloutService`.
+
+    ``grade=True`` (default) runs the EP grader inside the service and
+    fills :attr:`RolloutPayload.total_reward` -- the trainer trusts it
+    ("server-wins" convention).  ``grade=False`` leaves ``total_reward``
+    as ``None`` and the caller supplies ``reward_fn`` to
+    :func:`make_text_rollout_fn` to grade trainer-side.  Use
+    ``grade=False`` when grading needs trainer-side state (reference
+    model logprobs, a local reward model, metric joining against a
+    separate dataset).
+    """
+
+    def __init__(self, *, grade: bool = True) -> None:
+        self.grade = grade
 
     async def rollout(
         self,
@@ -79,15 +92,18 @@ class EPService(RolloutService):
             },
         )
 
-        ground_truth = str(row.get("ground_truth", ""))
-        rewards = await asyncio.gather(
-            *(_grade(messages, c, ground_truth) for c in completions),
-        )
+        if self.grade:
+            ground_truth = str(row.get("ground_truth", ""))
+            rewards: List[float | None] = list(await asyncio.gather(
+                *(_grade(messages, c, ground_truth) for c in completions),
+            ))
+        else:
+            rewards = [None] * len(completions)
 
         return [
             RolloutPayload(
                 turns=[TurnRecord(role="assistant", text=c)],
-                total_reward=float(r),
+                total_reward=(None if r is None else float(r)),
                 finish_reason="stop",
             )
             for c, r in zip(completions, rewards)

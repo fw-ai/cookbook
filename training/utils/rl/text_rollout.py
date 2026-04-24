@@ -17,15 +17,20 @@ elsewhere), trusts the supplied per-token ``logprobs``, and skips the
 inference round-trip.  This is the shape to target once upstream
 services capture token-level traces; see issue 23512.
 
-**Text-only single-turn (fallback).**  When turns carry text only, the
-packer expects **exactly one** assistant turn at the end of the
-conversation.  It applies the policy's chat template twice (prompt
-only, then prompt+assistant) to recover the completion's token span,
-issues one ``echo=True, max_tokens=1`` request to score the completion
-under the current policy, and sets ``loss_mask = [0]*prompt_len +
-[1]*comp_len``.  Multi-turn text-only is brittle across tokenizer
-templates (cf. Qwen3 trailing-newline and GLM boundary quirks) and is
-rejected with a clear error -- integrate at the token level instead.
+**Text-only (fallback).**  When turns carry text only, the packer
+rebuilds the conversation incrementally: for each turn it applies the
+policy's chat template to the prefix up to that turn and diffs against
+the previous step to find the turn's span.  For assistant turns it
+uses ``add_generation_prompt=True`` on the pre-turn prefix to locate
+the header/content boundary so ``loss_mask`` goes on the content
+only, not on the role header.  After the full token list is assembled
+it runs one ``echo=True, max_tokens=1`` request to score every token
+under the current policy.  Each prefix step is checked for prefix
+preservation; if the tokenizer drifts across turns (cf. Qwen3 trailing
+newlines, GLM boundary quirks) the pack fails loud with the offending
+turn index rather than silently corrupting the mask.  Services that
+need guaranteed round-trip fidelity should emit token-native turns
+instead.
 
 Reward
 ------
@@ -247,37 +252,82 @@ async def _pack_text_only(
     prompt_messages: List[dict],
     ctx,
 ) -> tuple[List[int], List[float], List[int]]:
-    assistant_turns = [t for t in payload.turns if t.role == "assistant"]
-    if len(assistant_turns) != 1 or payload.turns[-1].role != "assistant":
+    if payload.turns[-1].role != "assistant":
         raise _PackError(
-            "text-only payloads must end with exactly one assistant turn; "
-            "multi-turn services must emit token_ids on every turn (see "
-            "rollout_service.TurnRecord)",
+            "text-only payloads must end with an assistant turn",
         )
-
-    completion_text = assistant_turns[0].text
-    if not completion_text:
-        raise _PackError("assistant turn has empty text")
+    if not any(t.role == "assistant" for t in payload.turns):
+        raise _PackError("text-only payload has no assistant turn to train on")
+    for i, t in enumerate(payload.turns):
+        if t.role == "assistant" and not t.text:
+            raise _PackError(f"assistant turn {i} has empty text")
 
     tokenizer = ctx.tokenizer
-    prompt_ids: List[int] = tokenizer.apply_chat_template(
-        prompt_messages, tokenize=True, add_generation_prompt=True,
-    )
-    full_ids: List[int] = tokenizer.apply_chat_template(
-        [*prompt_messages, {"role": "assistant", "content": completion_text}],
-        tokenize=True, add_generation_prompt=False,
-    )
-    if full_ids[: len(prompt_ids)] != prompt_ids:
-        raise _PackError(
-            "chat template not prefix-preserving; adding the assistant turn "
-            "changed the prompt tokens (tokenizer template bug or a "
-            "system-message rewrite)",
-        )
+    all_messages = list(prompt_messages) + [
+        {"role": t.role, "content": t.text} for t in payload.turns
+    ]
+    n_prompt = len(prompt_messages)
 
-    prompt_len = len(prompt_ids)
-    comp_len = len(full_ids) - prompt_len
-    if comp_len <= 0:
-        raise _PackError("assistant turn produced zero new tokens")
+    loss_mask: List[int] = []
+    prev_tokens: List[int] = (
+        tokenizer.apply_chat_template(
+            prompt_messages, tokenize=True, add_generation_prompt=False,
+        )
+        if prompt_messages
+        else []
+    )
+    loss_mask.extend([0] * len(prev_tokens))
+
+    # Walk each payload turn, tokenize the prefix up to (and including) it,
+    # and diff against the previous step to recover the turn's span.
+    for i, turn in enumerate(payload.turns):
+        full_idx = n_prompt + i + 1
+        full_ids = tokenizer.apply_chat_template(
+            all_messages[:full_idx], tokenize=True, add_generation_prompt=False,
+        )
+        if full_ids[: len(prev_tokens)] != prev_tokens:
+            raise _PackError(
+                f"chat template not prefix-preserving at turn {i} "
+                f"(role={turn.role!r}); the tokenizer rewrote earlier "
+                "tokens after appending this turn -- integrate at the "
+                "token level instead (see TurnRecord.token_ids)",
+            )
+
+        if turn.role == "assistant":
+            # Locate the boundary between assistant header and content
+            # by applying add_generation_prompt=True to the pre-turn prefix.
+            header_ids = tokenizer.apply_chat_template(
+                all_messages[: full_idx - 1],
+                tokenize=True, add_generation_prompt=True,
+            )
+            if full_ids[: len(header_ids)] != header_ids:
+                raise _PackError(
+                    f"assistant header for turn {i} is not a prefix of the "
+                    "full tokenisation -- tokenizer template does not "
+                    "round-trip; integrate at the token level instead",
+                )
+            header_len = len(header_ids)
+            if header_len < len(prev_tokens):
+                raise _PackError(
+                    f"assistant header at turn {i} shorter than prior "
+                    "context -- chat template is not monotonic",
+                )
+            # Header gets mask 0, content gets mask 1.
+            loss_mask.extend([0] * (header_len - len(prev_tokens)))
+            loss_mask.extend([1] * (len(full_ids) - header_len))
+        else:
+            loss_mask.extend([0] * (len(full_ids) - len(prev_tokens)))
+
+        prev_tokens = full_ids
+
+    full_ids = prev_tokens
+    if len(full_ids) < 2:
+        raise _PackError("tokenised conversation shorter than 2 tokens")
+    if not any(m > 0 for m in loss_mask):
+        raise _PackError(
+            "no assistant content tokens after header stripping -- "
+            "assistant turns produced zero new tokens",
+        )
 
     logprobs = await asyncio.to_thread(
         _echo_rescore,
@@ -286,7 +336,6 @@ async def _pack_text_only(
         api_key=ctx.api_key,
         model=ctx.model,
     )
-    loss_mask = [0] * prompt_len + [1] * comp_len
     return full_ids, logprobs, loss_mask
 
 

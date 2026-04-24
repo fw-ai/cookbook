@@ -23,17 +23,45 @@ from training.utils.rl import text_rollout as tr
 
 
 class _FakeTokenizer:
-    """Deterministic chat template: prompt_ids = [10, 11]; full_ids adds
-    [20..20+len(completion)-1]."""
+    """Deterministic, prefix-preserving chat template.
+
+    Each message contributes ``[role_tok, 200, *[ord(c) for c in content]]``
+    so header = 2 tokens, content = one token per character.
+    ``add_generation_prompt=True`` appends an assistant header
+    ``[ROLE_ASSISTANT, 200]`` with no content.  This is monotonic across
+    turns: ``apply_chat_template(m[:i])`` is always a prefix of
+    ``apply_chat_template(m[:i+1])``, which is what the multi-turn
+    packer relies on.
+    """
+
+    _ROLE = {"user": 100, "assistant": 101, "tool": 102, "system": 103}
 
     def apply_chat_template(self, messages, *, tokenize=True, add_generation_prompt=True):
         assert tokenize
+        out: list[int] = []
+        for m in messages:
+            out.append(self._ROLE[m["role"]])
+            out.append(200)
+            out.extend(ord(c) for c in m["content"])
         if add_generation_prompt:
-            return [10, 11]
-        # Append one token per character of the last message's content.
-        last = messages[-1]
-        extra = list(range(20, 20 + len(last["content"])))
-        return [10, 11] + extra
+            out.append(self._ROLE["assistant"])
+            out.append(200)
+        return out
+
+
+class _DriftingTokenizer(_FakeTokenizer):
+    """Like ``_FakeTokenizer`` but rewrites the first token on the second
+    assistant turn -- simulates a tokenizer that isn't prefix-preserving
+    across turns (e.g. the Qwen3/GLM quirks the issue calls out)."""
+
+    def apply_chat_template(self, messages, *, tokenize=True, add_generation_prompt=True):
+        out = super().apply_chat_template(
+            messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt,
+        )
+        assistant_count = sum(1 for m in messages if m["role"] == "assistant")
+        if assistant_count >= 2 and out:
+            out[0] = 999  # retroactive drift
+        return out
 
 
 @dataclass
@@ -166,15 +194,53 @@ class TestTextOnly:
             prompt_messages=[{"role": "user", "content": "hi"}],
             ctx=_FakeCtx(), version=5,
         )
-        # Fake tokenizer: prompt [10,11]; full [10,11,20,21,22] for "abc".
-        assert sample.tokens == [10, 11, 20, 21, 22]
-        assert sample.loss_mask == [0, 0, 1, 1, 1]
-        assert sample.logprobs == [-0.5] * 5
+        # prompt [user, 'h', 'i'] + assistant header + 'a','b','c'
+        expected = [100, 200, ord("h"), ord("i"), 101, 200, ord("a"), ord("b"), ord("c")]
+        assert sample.tokens == expected
+        # header (6 tokens) masked out, content (3 tokens) masked in.
+        assert sample.loss_mask == [0] * 6 + [1] * 3
+        assert sample.logprobs == [-0.5] * len(expected)
         assert sample.reward == 0.25
-        assert patch_echo == [[10, 11, 20, 21, 22]]
+        assert patch_echo == [expected]
 
     @pytest.mark.asyncio
-    async def test_multi_turn_text_only_rejected(self, patch_echo):
+    async def test_multi_turn_text_interleaved_mask(self, patch_echo):
+        """a1 / tool / a2 / tool / a3 -- mask must hit every assistant
+        content span and nothing else."""
+        payload = RolloutPayload(
+            turns=[
+                TurnRecord(role="assistant", text="a1"),
+                TurnRecord(role="tool", text="obs1"),
+                TurnRecord(role="assistant", text="ok"),
+                TurnRecord(role="tool", text="o2"),
+                TurnRecord(role="assistant", text="done"),
+            ],
+            total_reward=1.0,
+        )
+        sample = await tr.pack_payload_to_sample(
+            payload,
+            prompt_messages=[{"role": "user", "content": "hi"}],
+            ctx=_FakeCtx(), version=0,
+        )
+        # Masked-in positions must all decode to assistant content chars,
+        # not role tokens (100-103) or the 200 boundary marker.
+        assistant_chars = set(ord(c) for c in "a1okdone")
+        trained = [tok for tok, m in zip(sample.tokens, sample.loss_mask) if m]
+        assert all(t in assistant_chars for t in trained)
+        assert len(trained) == len("a1") + len("ok") + len("done")
+        # Total tokens == header(2) + "hi"(2) + 3*(asst header 2) + contents +
+        #                 2*(tool header 2 + content).
+        # Sanity-check via re-tokenisation:
+        assert len(sample.tokens) == 2 + 2 + (2 + 2) + (2 + 4) + (2 + 2) + (2 + 2) + (2 + 4)
+        # Echo re-score called once on the full token list.
+        assert patch_echo == [sample.tokens]
+
+    @pytest.mark.asyncio
+    async def test_multi_turn_text_tokenizer_drift_rejected(self, patch_echo):
+        """When the tokenizer isn't prefix-preserving across turns the
+        packer must error loud with the offending turn index, not silently
+        produce a wrong mask."""
+        ctx = _FakeCtx(tokenizer=_DriftingTokenizer())
         payload = RolloutPayload(
             turns=[
                 TurnRecord(role="assistant", text="a1"),
@@ -183,9 +249,27 @@ class TestTextOnly:
             ],
             total_reward=1.0,
         )
-        with pytest.raises(tr._PackError, match="exactly one assistant turn"):
+        with pytest.raises(tr._PackError, match="prefix-preserving"):
             await tr.pack_payload_to_sample(
-                payload, prompt_messages=[], ctx=_FakeCtx(), version=0,
+                payload,
+                prompt_messages=[{"role": "user", "content": "hi"}],
+                ctx=ctx, version=0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_missing_final_assistant_rejected(self, patch_echo):
+        payload = RolloutPayload(
+            turns=[
+                TurnRecord(role="assistant", text="a1"),
+                TurnRecord(role="user", text="followup"),
+            ],
+            total_reward=0.0,
+        )
+        with pytest.raises(tr._PackError, match="end with an assistant"):
+            await tr.pack_payload_to_sample(
+                payload,
+                prompt_messages=[{"role": "user", "content": "q"}],
+                ctx=_FakeCtx(), version=0,
             )
 
     @pytest.mark.asyncio
@@ -195,7 +279,9 @@ class TestTextOnly:
         )
         with pytest.raises(tr._PackError, match="empty text"):
             await tr.pack_payload_to_sample(
-                payload, prompt_messages=[], ctx=_FakeCtx(), version=0,
+                payload,
+                prompt_messages=[{"role": "user", "content": "q"}],
+                ctx=_FakeCtx(), version=0,
             )
 
 
