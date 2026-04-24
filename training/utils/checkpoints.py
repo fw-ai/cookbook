@@ -39,6 +39,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 import training.utils.fileio as fileio
@@ -108,24 +109,6 @@ def _short_name(resource_name: str) -> str:
     return resource_name.rstrip("/").rsplit("/", 1)[-1]
 
 
-def _resolved_save_name(save_result: Any, *, fallback: str) -> str:
-    """Extract the server-authoritative short checkpoint name from save_state's
-    response. Tinker's ``SaveWeightsResponse`` returns a ``path`` URI
-    (e.g. ``tinker://.../step-0``); its basename is what the control plane's
-    ``list_checkpoints`` will surface. Falls back to the caller name if the
-    response shape is unexpected (older clients, tests with naive mocks).
-    """
-    if save_result is None:
-        return fallback
-    path = getattr(save_result, "path", None)
-    if path:
-        return _short_name(str(path))
-    snapshot_name = getattr(save_result, "snapshot_name", None)
-    if snapshot_name:
-        return _short_name(str(snapshot_name))
-    return fallback
-
-
 _SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
 
 
@@ -176,12 +159,18 @@ class TrainingCheckpoints:
         trainer_id: str,
         log_path: str,
         lora_rank: int = 0,
+        save_appear_timeout_s: float = 90.0,
+        save_stabilize_s: float = 15.0,
+        save_poll_s: float = 3.0,
     ) -> None:
         self._client = client
         self._fw_client = fw_client
         self._trainer_id = trainer_id
         self._log_path = log_path
         self._lora_rank = lora_rank
+        self._save_appear_timeout_s = save_appear_timeout_s
+        self._save_stabilize_s = save_stabilize_s
+        self._save_poll_s = save_poll_s
 
     # -- Save --------------------------------------------------------------
 
@@ -210,20 +199,30 @@ class TrainingCheckpoints:
 
         t0 = time.time()
         if resumable:
+            # Record save start time so we can wait for the control plane to
+            # reflect a row newer than this save. The trainer may rename to its
+            # internal step counter (caller passes "step-42", service stores
+            # as "step-0") — and resume reads names from the control plane —
+            # so ``dataloader.json`` must be keyed on whatever name ends up as
+            # the newest resumable row (which is exactly what resume will pick).
+            t_save_iso = datetime.now(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
             logger.info("Saving DCP checkpoint '%s'...", name)
-            result = self._client.save_state(name)
+            self._client.save_state(name)
             logger.info("DCP checkpoint '%s' saved (%.1fs)", name, time.time() - t0)
             if data_consumed is not None:
-                # Key dataloader.json by what the server actually wrote. The
-                # trainer may rename to its internal step counter (e.g. the
-                # caller passes "step-42" but the service stores as "step-0").
-                # Resume reads the row name from the control plane, so the
-                # stored key must match that — not the caller's logical name.
-                actual_name = _resolved_save_name(result, fallback=name)
+                actual_name = self._resolve_cp_name_after_save(
+                    fallback=name,
+                    save_started_iso=t_save_iso,
+                    appear_timeout_s=self._save_appear_timeout_s,
+                    stabilize_s=self._save_stabilize_s,
+                    poll_s=self._save_poll_s,
+                )
                 self._write_dataloader(actual_name, data_consumed)
                 if actual_name != name:
                     logger.info(
-                        "DCP server-returned name %r differs from caller name %r; "
+                        "DCP server-stored name %r differs from caller name %r; "
                         "dataloader.json keyed on server name for resume alignment.",
                         actual_name, name,
                     )
@@ -346,6 +345,68 @@ class TrainingCheckpoints:
 
     def _list_checkpoints(self) -> list[dict]:
         return self._fw_client.list_checkpoints(self._trainer_id)
+
+    def _resolve_cp_name_after_save(
+        self,
+        *,
+        fallback: str,
+        save_started_iso: str,
+        appear_timeout_s: float,
+        stabilize_s: float,
+        poll_s: float,
+    ) -> str:
+        """Wait for the save to surface, let the CP state stabilize, then
+        return the short name of the row resume would pick (newest resumable).
+
+        The control plane can show a transient row name mid-save before the
+        trainer's internal bookkeeping consolidates (e.g. caller writes
+        ``step-2`` but the service later collapses it into ``step-0``). Picking
+        the "first new name" would race with that consolidation and store a
+        dataloader key that resume never sees. Instead we mirror
+        :meth:`_latest_resumable` exactly: after a brief stabilization window,
+        pick the newest resumable row.
+        """
+        deadline = time.time() + appear_timeout_s
+        while time.time() < deadline:
+            try:
+                rows = self._list_checkpoints()
+            except Exception as e:
+                logger.debug(
+                    "list_checkpoints during save-resolution failed: %s; retrying.", e,
+                )
+                time.sleep(poll_s)
+                continue
+            surfaced = any(
+                _is_resumable_row(r)
+                and r.get("createTime", "") >= save_started_iso
+                for r in rows
+            )
+            if surfaced:
+                break
+            time.sleep(poll_s)
+        else:
+            logger.warning(
+                "Timed out after %.0fs waiting for CP to surface save (>= %s); "
+                "falling back to caller name %r for dataloader.json.",
+                appear_timeout_s, save_started_iso, fallback,
+            )
+            return fallback
+
+        time.sleep(stabilize_s)
+
+        try:
+            rows = self._list_checkpoints()
+        except Exception as e:
+            logger.warning(
+                "list_checkpoints after stabilize failed (%s); falling back to %r.",
+                e, fallback,
+            )
+            return fallback
+        resumable = [r for r in rows if _is_resumable_row(r)]
+        if not resumable:
+            return fallback
+        newest = _newest_first(resumable)[0]
+        return _short_name(newest["name"])
 
     def _latest_resumable(self) -> dict | None:
         try:

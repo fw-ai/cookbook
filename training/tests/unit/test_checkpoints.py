@@ -22,40 +22,57 @@ def log_dir():
         yield d
 
 
-def _mock_client(save_state_renames_to: str | None = None):
+def _mock_fw_client(rows=None):
+    """``fw._rows`` is the mutable source of truth; ``list_checkpoints`` returns
+    a snapshot of it. This lets the client mock append a new row on
+    ``save_state``/``save_weights_for_sampler_ext``, exercising the polling
+    codepath in ``TrainingCheckpoints``."""
+    fw = MagicMock()
+    fw._rows = list(rows or [])
+    fw.list_checkpoints = MagicMock(
+        side_effect=lambda job_id, **kw: list(fw._rows)
+    )
+    fw.promote_checkpoint.return_value = {"state": "READY", "kind": "HF_BASE_MODEL"}
+    return fw
+
+
+def _mock_client(fw=None, save_state_renames_to: str | None = None):
     """Build a fake ReconnectableClient.
 
     ``save_state_renames_to`` simulates the service-mode trainer renaming the
-    DCP checkpoint to its internal step counter — when set, every
-    ``save_state(name)`` call returns a path ending in this value instead of
-    the caller name. Default (None) honors the caller name.
+    DCP checkpoint to its internal step counter: when set, the fake appends a
+    CP row named ``save_state_renames_to`` (instead of the caller name) so that
+    ``TrainingCheckpoints._resolve_cp_name_after_save`` polls and finds the
+    renamed row. Default (None) honors the caller name.
     """
     client = MagicMock()
     client.resolve_checkpoint_path.side_effect = (
         lambda name, source_job_id=None: f"path://{source_job_id or 'self'}/{name}"
     )
 
+    # Use a counter so appended rows have monotonically-increasing createTime
+    # (the poll picks newest-first, so this matters for multi-save tests).
+    counter = {"n": 0}
+
     def _save_state(name):
+        cp_name = save_state_renames_to or name
+        if fw is not None:
+            counter["n"] += 1
+            fw._rows.append({
+                "name": f"accounts/a/rlorTrainerJobs/job-1/checkpoints/{cp_name}",
+                "createTime": f"2099-01-01T00:00:{counter['n']:02d}Z",
+                "checkpointType": "CHECKPOINT_TYPE_TRAINING",
+                "promotable": False,
+            })
         result = MagicMock()
-        result.path = f"tinker://policy/{save_state_renames_to or name}"
+        result.path = f"tinker://policy/{cp_name}"
         return result
 
     client.save_state.side_effect = _save_state
-
-    def _save_sampler(name, checkpoint_type="base"):
-        result = MagicMock()
-        result.snapshot_name = f"{name}-snap"
-        return result
-
-    client.save_weights_for_sampler_ext.side_effect = _save_sampler
+    client.save_weights_for_sampler_ext.side_effect = (
+        lambda name, checkpoint_type="base": MagicMock(snapshot_name=f"{name}-snap")
+    )
     return client
-
-
-def _mock_fw_client(rows=None):
-    fw = MagicMock()
-    fw.list_checkpoints.return_value = rows or []
-    fw.promote_checkpoint.return_value = {"state": "READY", "kind": "HF_BASE_MODEL"}
-    return fw
 
 
 def _row(short_name, *, ctype, promotable, create_time):
@@ -68,10 +85,12 @@ def _row(short_name, *, ctype, promotable, create_time):
 
 
 def _make(log_dir, *, fw_rows=None, lora_rank=0, save_state_renames_to: str | None = None):
-    client = _mock_client(save_state_renames_to=save_state_renames_to)
     fw = _mock_fw_client(rows=fw_rows)
+    client = _mock_client(fw=fw, save_state_renames_to=save_state_renames_to)
     ckpt = TrainingCheckpoints(
-        client, fw, trainer_id="job-1", log_path=log_dir, lora_rank=lora_rank
+        client, fw, trainer_id="job-1", log_path=log_dir, lora_rank=lora_rank,
+        # Disable stabilization + tighten timeouts so unit tests run instantly.
+        save_appear_timeout_s=5.0, save_stabilize_s=0.0, save_poll_s=0.01,
     )
     return ckpt, client, fw
 
