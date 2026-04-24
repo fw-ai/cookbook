@@ -98,23 +98,24 @@ def _init_render_worker(
     )
 
 
-def _render_messages(
-    row: dict, *, renderer, train_on_what, max_seq_len: int,
-) -> tinker.Datum | None:
-    """Render a chat row to a Datum, filtering empty / out-of-range sequences."""
+def _render_one_worker(row: dict) -> tinker.Datum | None:
+    """Render a chat row to a Datum, dropping empty / out-of-range sequences.
+
+    Reads renderer / train_on_what / max_seq_len from the per-process
+    ``_worker_state`` populated by ``_init_render_worker``. Top-level
+    so spawn workers can pickle it as the DataLoader's render_fn.
+    """
     messages = row.get("messages", [])
     if not messages:
         return None
     rendered = render_messages_to_datum(
-        messages, renderer=renderer, train_on_what=train_on_what,
+        messages,
+        renderer=_worker_state["renderer"],
+        train_on_what=_worker_state["train_on_what"],
     )
-    if not 2 <= len(rendered.token_ids) <= max_seq_len:
+    if not 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]:
         return None
     return rendered.datum
-
-
-def _render_one_worker(row: dict) -> tinker.Datum | None:
-    return _render_messages(row, **_worker_state)
 
 
 # ---------------------------------------------------------------------------
