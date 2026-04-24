@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 import signal
 import logging
-import functools
 from itertools import islice
 from contextlib import ExitStack
 from typing import Any, Dict, List
@@ -26,7 +25,6 @@ from dataclasses import field, dataclass
 import torch
 import tinker
 
-import transformers
 from dotenv import load_dotenv
 
 from fireworks.training.sdk import TrainerJobManager
@@ -49,11 +47,12 @@ from training.utils import (
     log_metrics_json,
     create_trainer_job,
     read_api_extra_headers_env,
-    build_renderer,
     parse_train_on_what,
+    populate_render_worker_state,
     auto_select_training_shape,
     render_messages_to_datum,
     resolve_renderer_name,
+    setup_render_worker,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
@@ -82,19 +81,18 @@ def _init_render_worker(
     max_seq_len: int,
     _worker_id: int | None = None,
 ) -> None:
-    """Populate ``_worker_state`` with a tokenizer + renderer.
+    """DataLoader ``worker_init_fn`` for SFT chat-row rendering.
 
-    ``_worker_id`` is accepted (and ignored) so this function can be
-    used directly as a DataLoader ``worker_init_fn`` after binding the
-    other args via ``functools.partial``.
+    Module-level (so spawn workers can pickle it) and accepts
+    ``_worker_id`` so it can be passed directly after binding the other
+    args via :func:`setup_render_worker`.
     """
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        tokenizer_model, trust_remote_code=True,
-    )
-    _worker_state.update(
-        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
-        train_on_what=parse_train_on_what(train_on_what_str),
+    populate_render_worker_state(
+        _worker_state,
+        tokenizer_model=tokenizer_model,
+        renderer_name=renderer_name,
         max_seq_len=max_seq_len,
+        train_on_what=parse_train_on_what(train_on_what_str),
     )
 
 
@@ -471,15 +469,11 @@ def main(
             if cfg.render_workers is not None
             else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
-        # Initialise the parent's _worker_state (used by eval / carve-out
-        # rendering in-process) and bind the same args as the DataLoader
-        # workers' init_fn.
-        init_args = (
+        worker_init_fn = setup_render_worker(
+            _init_render_worker,
             cfg.tokenizer_model, cfg.renderer_name,
             cfg.train_on_what, cfg.max_seq_len,
         )
-        _init_render_worker(*init_args)
-        worker_init_fn = functools.partial(_init_render_worker, *init_args)
 
         training_dataset, eval_data = _prepare_datasets(cfg)
         training_count = len(training_dataset)

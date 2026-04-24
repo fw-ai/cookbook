@@ -21,6 +21,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import torch
 import tinker
+import transformers
 from tinker_cookbook.model_info import get_recommended_renderer_name
 from tinker_cookbook.renderers import (
     Message,
@@ -114,6 +115,37 @@ def build_renderer(
             image_processor=get_image_processor(tokenizer_model),
         )
     return get_renderer(resolved_name, tokenizer)
+
+
+def populate_render_worker_state(
+    state: dict,
+    *,
+    tokenizer_model: str,
+    renderer_name: str,
+    max_seq_len: int,
+    **extras: Any,
+) -> None:
+    """Build a tokenizer + renderer and populate ``state`` for DataLoader workers.
+
+    Centralises the per-worker setup that every streaming render recipe needs
+    (SFT, DPO, ORPO, ...). Call from your recipe's module-level
+    ``_init_<recipe>_worker(_worker_id)`` shim, which DataLoader spawns with
+    ``worker_init_fn``. ``state`` must be a module-level dict so the recipe's
+    top-level render function (also picklable for spawn) can read from it.
+
+    Stores ``tokenizer``, ``renderer``, ``max_seq_len`` plus any keyword
+    ``extras`` (e.g. ``train_on_what`` for SFT). Reuses ``trust_remote_code``
+    for HF tokenizer load -- required by Kimi / Qwen image processors.
+    """
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        tokenizer_model, trust_remote_code=True,
+    )
+    state.update(
+        tokenizer=tokenizer,
+        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
+        max_seq_len=max_seq_len,
+        **extras,
+    )
 
 
 # tinker_cookbook.image_processing_utils.get_image_processor has a hard-coded

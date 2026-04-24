@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import array
 import asyncio
-import functools
 import logging
 import os
 import signal
@@ -46,7 +45,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import tinker
-import transformers
 from tqdm import tqdm
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
@@ -63,13 +61,15 @@ from training.utils import (
     RunnerConfig,
     RunnerIO,
     WandBConfig,
-    build_renderer,
     log_metrics_json,
     make_batch_dpo_loss_fn,
     make_render_dataloader,
+    normalize_preference_row,
+    populate_render_worker_state,
     read_api_extra_headers_env,
     render_preference_pair,
     resolve_renderer_name,
+    setup_render_worker,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -81,7 +81,6 @@ from training.utils.checkpoint_utils import (
     save_checkpoint,
     validate_warm_start_config,
 )
-from training.utils.data import _normalize_preference_row
 from training.utils.rl import setup_infra
 from training.utils.timer import flush_timing, timer
 
@@ -163,18 +162,16 @@ def _init_pair_worker(
     max_seq_len: int,
     _worker_id: int | None = None,
 ) -> None:
-    """Populate ``_pair_worker_state`` with a tokenizer + renderer.
+    """DataLoader ``worker_init_fn`` for DPO preference-pair rendering.
 
-    ``_worker_id`` is accepted (and ignored) so this function can be used
-    directly as a DataLoader ``worker_init_fn`` after binding the other
-    args via ``functools.partial``.
+    Module-level (so spawn workers can pickle it) and accepts
+    ``_worker_id`` so it can be passed directly after binding the other
+    args via :func:`setup_render_worker`.
     """
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        tokenizer_model, trust_remote_code=True,
-    )
-    _pair_worker_state.update(
-        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
-        tokenizer=tokenizer,
+    populate_render_worker_state(
+        _pair_worker_state,
+        tokenizer_model=tokenizer_model,
+        renderer_name=renderer_name,
         max_seq_len=max_seq_len,
     )
 
@@ -186,7 +183,7 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | None:
     rendering, and over-length filtering. Returning ``None`` covers all
     drop reasons; the DataLoader's collate filters Nones out of each batch.
     """
-    pair = _normalize_preference_row(row)
+    pair = normalize_preference_row(row)
     if pair is None:
         return None
     rendered = render_preference_pair(
@@ -600,11 +597,10 @@ def main(
         # cache from disk. See fw-ai/cookbook#371 / #373 for OOM context.
 
         max_seq_len = infra.max_seq_len
-        init_args = (cfg.tokenizer_model, cfg.renderer_name, max_seq_len)
-        # Initialise in the parent so the num_workers <= 1 fallback uses
-        # the same render_fn as the spawn workers.
-        _init_pair_worker(*init_args)
-        worker_init_fn = functools.partial(_init_pair_worker, *init_args)
+        worker_init_fn = setup_render_worker(
+            _init_pair_worker,
+            cfg.tokenizer_model, cfg.renderer_name, max_seq_len,
+        )
 
         pair_dataset = JsonlRenderDataset(
             cfg.dataset, _render_pair_worker, max_examples=cfg.max_pairs,
