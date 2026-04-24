@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import inspect
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -907,3 +909,82 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
     assert len(eval_ids) == 10, (
         f"Expected 10 distinct eval rows (10% of 100), got {len(eval_ids)}."
     )
+
+
+# ---------------------------------------------------------------------------
+# Training-data pipeline invariants: every row must be visited each epoch, and
+# the eval carveout must shuffle before slicing so the eval set isn't biased
+# by any ordering already present in the input file.
+# ---------------------------------------------------------------------------
+
+
+def test_sft_data_pipeline_visits_every_training_row() -> None:
+    """Reproduce the SFT main() data pipeline and show that rows are not dropped.
+
+    With 10 rows and batch_size=4, a ``SupervisedDatasetFromHFDataset`` built
+    on the raw list reports ``len = 10 // 4 = 2`` batches and silently drops
+    the last 2 rows every epoch. ``sft_loop.pad_training_data_to_batch_size``
+    pads the list up to a multiple of the effective batch size so the
+    per-epoch iteration covers every row.
+    """
+    import datasets as hf_datasets
+    from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
+
+    raw_training_data = list(range(10))
+    effective_batch_size = 4
+
+    training_data = module.pad_training_data_to_batch_size(
+        raw_training_data, effective_batch_size,
+    )
+
+    sft_dataset = SupervisedDatasetFromHFDataset(
+        hf_datasets.Dataset.from_dict(
+            {"datum_idx": list(range(len(training_data)))}
+        ),
+        batch_size=effective_batch_size,
+        map_fn=lambda row: training_data[row["datum_idx"]],
+    )
+
+    total_batches_per_epoch = len(sft_dataset)
+    expected_batches = math.ceil(len(raw_training_data) / effective_batch_size)
+    assert total_batches_per_epoch == expected_batches, (
+        f"Dataset reports {total_batches_per_epoch} batches/epoch "
+        f"but should cover all {len(raw_training_data)} rows "
+        f"({expected_batches} batches). "
+        f"Fix: pad training_data to a multiple of batch_size before constructing the dataset."
+    )
+
+    seen: list[int] = []
+    for i_batch in range(total_batches_per_epoch):
+        seen.extend(sft_dataset.get_batch(i_batch))
+
+    missing = set(raw_training_data) - set(seen)
+    assert not missing, (
+        f"Rows silently dropped per epoch: {sorted(missing)}. "
+        f"Fix: pad training_data to a multiple of batch_size."
+    )
+
+
+def test_sft_eval_carveout_shuffles_training_data_before_slicing() -> None:
+    """Structural check: the eval carveout code path must shuffle before slicing.
+
+    A plain ``eval_data = training_data[:carveout_count]`` on a dataset ordered
+    by source / difficulty / date yields a biased eval set. The carve-out must
+    run against a pre-shuffled ``training_data``.
+    """
+    src = inspect.getsource(module.main)
+    carveout_marker = "eval_data = training_data[:carveout_count]"
+    if carveout_marker not in src:
+        pytest.fail(
+            "Could not locate the carveout line in sft_loop.main(); "
+            "test needs updating to match the new implementation."
+        )
+    preamble = src.split(carveout_marker)[0]
+    has_shuffle = ("shuffle" in preamble.lower()) or ("random.sample" in preamble)
+    if not has_shuffle:
+        pytest.fail(
+            "SFT eval carveout slices training_data[:N] without shuffling first. "
+            "Any dataset ordered by source/difficulty/date yields a biased eval set. "
+            "Fix: shuffle training_data with a configurable seed before carving out "
+            "the eval set."
+        )
