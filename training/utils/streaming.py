@@ -29,6 +29,7 @@ import os
 import pickle
 from typing import Any, Callable, Iterator, List
 
+import torch
 import torch.utils.data as torch_data
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,7 @@ def make_render_dataloader(
     num_workers: int = DEFAULT_RENDER_WORKERS,
     prefetch_factor: int = DEFAULT_PREFETCH_FACTOR,
     shuffle: bool = True,
+    generator: torch.Generator | None = None,
     worker_init_fn: Callable[[int], None] | None = None,
 ) -> torch_data.DataLoader:
     """Build a DataLoader for ``dataset`` with our spawn / collate defaults.
@@ -156,12 +158,14 @@ def make_render_dataloader(
             dataset,
             batch_size=batch_size,
             shuffle=shuffle,
+            generator=generator,
             collate_fn=_drop_none_collate,
         )
     return torch_data.DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        generator=generator,
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         multiprocessing_context="spawn",

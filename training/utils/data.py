@@ -138,10 +138,116 @@ def iter_preference_examples(
 def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dict[str, Any]]:
     """Load preference dataset (chosen/rejected pairs).
 
-    Eager wrapper around :func:`iter_preference_examples`. Prefer the
-    iterator for large datasets — see ``dpo_loop`` for the streaming usage.
+    Supports three input shapes per row:
+
+    - ``{"chosen": ..., "rejected": ...}`` -- Fireworks / OpenAI-compatible.
+    - ``{"samples": [{"messages": ..., "score": 0.0 | 1.0}, ...]}`` -- our
+      legacy preference-sample format. Scores are *strictly* binary: 1.0
+      marks the chosen sample, 0.0 marks the rejected sample. Graded scores
+      (e.g. 0.5, 0.8) and missing scores raise ``ValueError`` instead of
+      being silently dropped.
+    - ``{"input": ..., "preferred_output": ..., "non_preferred_output": ...}``
+      -- OpenAI fine-tuning DPO format.
+
+    Unlike :func:`iter_preference_examples`, this eager loader is strict:
+    malformed rows fail fast with file:line context so ORPO / older DPO
+    callers surface customer dataset issues early.
     """
-    return list(iter_preference_examples(path, max_pairs))
+    data: list[dict[str, Any]] = []
+    with open(path) as f:
+        for line_no, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if "chosen" in row and "rejected" in row:
+                data.append(row)
+            elif "samples" in row:
+                samples = row["samples"]
+                if not isinstance(samples, list):
+                    raise ValueError(
+                        f"{path}:{line_no}: 'samples' must be a list, got "
+                        f"{type(samples).__name__}."
+                    )
+                chosen = rejected = None
+                for i, sample in enumerate(samples):
+                    if not isinstance(sample, dict):
+                        raise ValueError(
+                            f"{path}:{line_no}: samples[{i}] must be a dict, "
+                            f"got {type(sample).__name__}."
+                        )
+                    evals = sample.get("evals")
+                    if evals is not None and not isinstance(evals, dict):
+                        raise ValueError(
+                            f"{path}:{line_no}: samples[{i}].evals must be a "
+                            f"dict if present, got {type(evals).__name__}."
+                        )
+                    score = (evals or {}).get("score", sample.get("score"))
+                    if score == 1.0:
+                        if chosen is not None:
+                            raise ValueError(
+                                f"{path}:{line_no}: row has multiple samples "
+                                f"with score=1.0; preference is ambiguous. "
+                                f"Each samples row must have exactly one "
+                                f"chosen (score=1.0) and one rejected "
+                                f"(score=0.0) sample."
+                            )
+                        chosen = sample
+                    elif score == 0.0:
+                        if rejected is not None:
+                            raise ValueError(
+                                f"{path}:{line_no}: row has multiple samples "
+                                f"with score=0.0; preference is ambiguous. "
+                                f"Each samples row must have exactly one "
+                                f"chosen (score=1.0) and one rejected "
+                                f"(score=0.0) sample."
+                            )
+                        rejected = sample
+                    else:
+                        raise ValueError(
+                            f"{path}:{line_no}: invalid preference score "
+                            f"{score!r} in samples[{i}]. Samples-format "
+                            f"preference rows must use exactly score=1.0 "
+                            f"(chosen) or score=0.0 (rejected); graded/"
+                            f"missing scores are not supported."
+                        )
+                if chosen is None or rejected is None:
+                    raise ValueError(
+                        f"{path}:{line_no}: samples row does not yield both a "
+                        f"chosen (score=1.0) and a rejected (score=0.0) "
+                        f"sample (chosen={chosen is not None}, "
+                        f"rejected={rejected is not None}). Each preference "
+                        f"row must contain at least one of each."
+                    )
+                data.append({"chosen": chosen, "rejected": rejected})
+            elif "preferred_output" in row and "non_preferred_output" in row:
+                inp = row.get("input", {})
+                if isinstance(inp, dict) and "messages" in inp:
+                    input_msgs = inp["messages"]
+                elif isinstance(inp, list):
+                    input_msgs = inp
+                elif isinstance(inp, str):
+                    input_msgs = [{"role": "user", "content": inp}]
+                else:
+                    input_msgs = []
+                data.append(
+                    {
+                        "chosen": {"messages": input_msgs + _to_msgs(row["preferred_output"])},
+                        "rejected": {"messages": input_msgs + _to_msgs(row["non_preferred_output"])},
+                    }
+                )
+            else:
+                raise ValueError(
+                    f"{path}:{line_no}: row does not match any supported "
+                    f"preference format. Expected one of:\n"
+                    f"  - {{'chosen': ..., 'rejected': ...}}\n"
+                    f"  - {{'samples': [{{'messages': ..., 'score': 0.0|1.0}}, ...]}}\n"
+                    f"  - {{'input': ..., 'preferred_output': ..., 'non_preferred_output': ...}}\n"
+                    f"Got keys: {sorted(row.keys())}"
+                )
+            if max_pairs is not None and len(data) >= max_pairs:
+                break
+    return data
 
 
 def extract_text(item: dict[str, Any]) -> str:

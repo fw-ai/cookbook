@@ -100,6 +100,8 @@ class Config:
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step."""
+    seed: int = 0
+    """Seed for deterministic per-epoch shuffling of preference pairs."""
     grad_accum: int = 1
     """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
@@ -455,6 +457,11 @@ def main(
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 
         for epoch in range(cfg.epochs):
+            # Seed before each epoch so identical configs reproduce the same
+            # data order across runs. Using the global random state (rather
+            # than a local Random instance) preserves the existing test
+            # surface that monkeypatches ``orpo_loop.random.shuffle``.
+            random.seed(cfg.seed + epoch)
             random.shuffle(pair_cache)
             step_t0 = time.monotonic()
             batch_buffer: list[dict] = []

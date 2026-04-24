@@ -216,12 +216,16 @@ def test_dataloader_shuffle_is_deterministic_per_iteration(tmp_path):
     ds = JsonlRenderDataset(path, _identity_render)
 
     import torch  # local import: torch is heavy
-    torch.manual_seed(0)
-    loader = make_render_dataloader(ds, batch_size=8, num_workers=0, shuffle=True)
+    g1 = torch.Generator().manual_seed(0)
+    loader = make_render_dataloader(
+        ds, batch_size=8, num_workers=0, shuffle=True, generator=g1,
+    )
     first = [item["id"] for item in next(iter(loader))]
 
-    torch.manual_seed(0)
-    loader = make_render_dataloader(ds, batch_size=8, num_workers=0, shuffle=True)
+    g2 = torch.Generator().manual_seed(0)
+    loader = make_render_dataloader(
+        ds, batch_size=8, num_workers=0, shuffle=True, generator=g2,
+    )
     second = [item["id"] for item in next(iter(loader))]
 
     assert first == second

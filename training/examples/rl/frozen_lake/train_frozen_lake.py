@@ -742,10 +742,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             # Server-side fast path: resolve the builtin kernel/config used by
             # forward_backward(...). Returns None when this loss has no builtin
-            # implementation, and raises when the current profile is ineligible.
+            # implementation or when kl_beta > 0 (builtin kernels do not
+            # consume ref_logprobs, so the KL term would be silently dropped --
+            # see resolve_builtin_loss docstring), and raises when the current
+            # profile is ineligible.
             builtin_server_loss = resolve_builtin_loss(
                 cfg.policy_loss,
                 profile,
+                kl_beta=cfg.kl_beta,
                 ratio_log_cap=cfg.ratio_log_cap,
             )
 
