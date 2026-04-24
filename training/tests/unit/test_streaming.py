@@ -147,6 +147,18 @@ def test_dataset_with_indices_carve_view(tmp_path):
     assert tail[6] == {"id": 9, "doubled": 18}
 
 
+def test_dataset_init_with_explicit_indices(tmp_path):
+    """Constructor ``indices=...`` lets callers reorder / sub-select rows."""
+    path = str(tmp_path / "data.jsonl")
+    _write_jsonl(path, [{"i": i} for i in range(10)])
+
+    ds = JsonlRenderDataset(path, _identity_render, indices=[7, 2, 9])
+
+    assert len(ds) == 3
+    assert ds.num_underlying_rows == 10  # full file still scanned
+    assert [ds[i]["id"] for i in range(3)] == [7, 2, 9]
+
+
 # ---------------------------------------------------------------------------
 # make_render_dataloader (single-process path)
 # ---------------------------------------------------------------------------
@@ -171,6 +183,30 @@ def test_dataloader_drops_none_and_returns_lists(tmp_path):
     assert flat == [0, 2, 4]
     # Each batch is a plain python list (not stacked).
     assert all(isinstance(b, list) for b in batches)
+
+
+def test_dataloader_num_workers_one_uses_in_process_path(tmp_path):
+    """``num_workers <= 1`` falls back to in-process rendering.
+
+    Verified by passing a closure as render_fn -- closures aren't
+    picklable, so this would raise ``PicklingError`` if a spawn worker
+    were started. sft_loop's unit tests rely on this escape hatch to
+    monkey-patch the renderer.
+    """
+    path = str(tmp_path / "data.jsonl")
+    _write_jsonl(path, [{"i": i} for i in range(4)])
+    captured = {"calls": 0}
+
+    def render_with_closure(row):  # closure -> not picklable
+        captured["calls"] += 1
+        return {"id": row["i"]}
+
+    ds = JsonlRenderDataset(path, render_with_closure)
+    loader = make_render_dataloader(ds, batch_size=4, num_workers=1, shuffle=False)
+
+    batches = list(loader)
+    assert batches == [[{"id": 0}, {"id": 1}, {"id": 2}, {"id": 3}]]
+    assert captured["calls"] == 4  # rendered in the test process
 
 
 def test_dataloader_shuffle_is_deterministic_per_iteration(tmp_path):
