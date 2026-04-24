@@ -38,6 +38,11 @@ __all__ = [
     "Rollout",
     "RolloutSample",
     "rollout_to_prompt_group",
+    # Service-agnostic rollout adapter
+    "RolloutPayload",
+    "RolloutService",
+    "TurnRecord",
+    "make_text_rollout_fn",
 ]
 
 from training.utils.rl.pp import PPBatchRecommendation, compute_pp_recommendation
@@ -70,3 +75,9 @@ from training.utils.rl.igpo import (
 )
 from training.utils.rl.async_train import run_async_rl_loop
 from training.utils.rl.rollout import Rollout, RolloutSample, rollout_to_prompt_group
+from training.utils.rl.rollout_service import (
+    RolloutPayload,
+    RolloutService,
+    TurnRecord,
+)
+from training.utils.rl.text_rollout import make_text_rollout_fn
