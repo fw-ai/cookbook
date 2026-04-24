@@ -3,19 +3,28 @@
 
 Optimisations:
 
+  - **Streaming render**: preference rows are rendered to Datums on the fly
+    inside DataLoader workers (PyTorch ``spawn``), so the orchestrator
+    never holds the full tokenized dataset in RAM. Same machinery as
+    ``sft_loop``; see fw-ai/cookbook#371.
   - **Pipelined ref/training**: reference logprobs are computed
     concurrently with policy training via a producer/consumer pipeline.
     The reference trainer is deleted as soon as all ref forwards
     complete -- even while training continues.
+  - **Append-only ref cache**: for multi-epoch runs, enriched pairs
+    (datums + ref logprobs) are spilled to a tiny pickle log on disk so
+    epochs 1+ stream them sequentially without re-running the reference
+    forward. The log is sequential-only -- no random access, no offset
+    table -- which is sufficient for "iterate front-to-back per epoch".
   - **Client-side fused train steps**: all datums for one optimizer window
-    are sent in a single ``forward_backward_custom`` call so the backend can
-    batch the whole step more efficiently.
+    are sent in a single ``forward_backward_custom`` call so the backend
+    can batch the whole step more efficiently.
 
 Architecture:
     - Policy RLOR job:    forward_backward_custom + optim_step (trainable)
     - Reference RLOR job: forward only (frozen base model, for KL baseline)
-    - Epoch 0: ref forward and training overlap via unbounded asyncio.Queue
-    - Epochs 1+: ref logprobs cached from epoch 0, no ref GPU needed
+    - Epoch 0: DataLoader → ref forward → train via unbounded asyncio.Queue
+    - Epochs 1+: ref logprobs streamed from AppendOnlyPickleLog, no ref GPU
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -25,17 +34,16 @@ Usage:
 from __future__ import annotations
 
 import array
+import asyncio
+import functools
+import logging
 import os
+import signal
 import tempfile
 import time
-import signal
-import asyncio
-import logging
 from contextlib import ExitStack
+from dataclasses import dataclass, field
 from typing import Any, Callable
-import dataclasses
-from dataclasses import field, dataclass
-from concurrent.futures import ThreadPoolExecutor
 
 import tinker
 import transformers
@@ -43,43 +51,42 @@ from tqdm import tqdm
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
+    AppendOnlyPickleLog,
     DEFAULT_ADAM,
-    DEFAULT_RENDER_CHUNKSIZE,
     DEFAULT_RENDER_WORKERS,
-    DiskBackedDatumStore,
+    DeployConfig,
     InfraConfig,
-    MemTracer,
+    JsonlRenderDataset,
+    ReconnectableClient,
     ResourceCleanup,
+    RunStatus,
     RunnerConfig,
     RunnerIO,
-    RunStatus,
     WandBConfig,
-    DeployConfig,
-    ReconnectableClient,
-    count_jsonl_rows,
-    iter_preference_examples,
-    stream_render_to_store,
-    wandb_log,
-    setup_wandb,
-    wandb_finish,
-    validate_config,
+    build_renderer,
     log_metrics_json,
     make_batch_dpo_loss_fn,
+    make_render_dataloader,
     read_api_extra_headers_env,
-    build_renderer,
     render_preference_pair,
     resolve_renderer_name,
+    setup_wandb,
+    validate_config,
+    wandb_finish,
+    wandb_log,
 )
 from training.utils.checkpoint_utils import (
+    CheckpointKind,
     resolve_resume,
     save_checkpoint,
     validate_warm_start_config,
-    CheckpointKind,
 )
+from training.utils.data import _normalize_preference_row
 from training.utils.rl import setup_infra
-from training.utils.timer import timer, flush_timing
+from training.utils.timer import flush_timing, timer
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -105,12 +112,19 @@ class Config:
     """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
+    """Cap on raw JSONL rows (an upper bound on valid pairs after rendering).
+
+    Note: pre-streaming this counted *valid* pairs after schema normalisation;
+    now it caps raw rows. Off-by-a-few only matters for sub-sampled test runs.
+    """
     lora_rank: int = 0
 
     ref_cache_concurrency: int = 16
     """Max concurrent reference forward passes during cache warm-up."""
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
+    render_workers: int = DEFAULT_RENDER_WORKERS
+    """Number of DataLoader workers for streaming render. <=1 = in-process."""
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
@@ -131,31 +145,30 @@ class Config:
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
     runner: RunnerConfig = field(default_factory=RunnerConfig)
-    """Optional orchestration outputs written during training.
-
-    Paths can be set here or via environment variables:
-      COOKBOOK_STATUS_FILE      -- training status + progress (JSON, overwritten each step)
-      COOKBOOK_METADATA_FILE    -- tokens processed + accelerator-seconds (JSON)
-      COOKBOOK_METRICS_FILE     -- per-step metrics (JSONL, appended each step)
-      COOKBOOK_OUTPUT_MODEL_PATH -- final model info written on completion (JSON)
-
-    All paths are optional; unset paths are silently skipped.
-    See training/utils/runner.py for file format details.
-    """
 
 
 # ---------------------------------------------------------------------------
-# Tokenization and reference forward
+# Per-worker render: tokenizer + renderer cached in module-level state
 # ---------------------------------------------------------------------------
 
 
-# Module-level worker state for the spawn pool. Populated once per worker via
-# `_init_pair_worker` so we don't re-pickle the tokenizer on every task.
-# Mirrors the sft_loop.py pattern; see fw-ai/cookbook#371.
+# Populated once per process: in the parent (for num_workers <= 1 fallback)
+# and in each spawn worker via ``_init_pair_worker``. Mirrors sft_loop.py.
 _pair_worker_state: dict = {}
 
 
-def _init_pair_worker(tokenizer_model: str, renderer_name: str, max_seq_len: int) -> None:
+def _init_pair_worker(
+    tokenizer_model: str,
+    renderer_name: str,
+    max_seq_len: int,
+    _worker_id: int | None = None,
+) -> None:
+    """Populate ``_pair_worker_state`` with a tokenizer + renderer.
+
+    ``_worker_id`` is accepted (and ignored) so this function can be used
+    directly as a DataLoader ``worker_init_fn`` after binding the other
+    args via ``functools.partial``.
+    """
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         tokenizer_model, trust_remote_code=True,
     )
@@ -166,39 +179,41 @@ def _init_pair_worker(tokenizer_model: str, renderer_name: str, max_seq_len: int
     )
 
 
-def _render_pair(
-    example: dict[str, Any], *, renderer: Any, tokenizer: Any, max_seq_len: int,
-) -> dict[str, Any] | None:
-    """Render a preference example to a Datum-pair dict, or None if invalid / too long.
+def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Render one JSONL row to a Datum-pair dict, or ``None`` to drop.
 
-    Combines the original ``"filtered"`` (too long) and ``None`` (render failed)
-    cases into a single None return so this fits the
-    :func:`stream_render_to_store` ``T | None`` contract; the caller logs the
-    combined drop count.
-
-    Stores ``chosen_tokens_len`` / ``rejected_tokens_len`` instead of the full
-    token lists — the train loop only needs the lengths for tokens-per-second
-    accounting, and the actual tokens already live inside the datums.
+    Combines schema normalisation (chosen / rejected / samples / OpenAI),
+    rendering, and over-length filtering. Returning ``None`` covers all
+    drop reasons; the DataLoader's collate filters Nones out of each batch.
     """
-    pair = render_preference_pair(
-        example["chosen"], example["rejected"],
-        renderer=renderer, tokenizer=tokenizer,
-    )
+    pair = _normalize_preference_row(row)
     if pair is None:
         return None
-    if len(pair.chosen_tokens) > max_seq_len or len(pair.rejected_tokens) > max_seq_len:
+    rendered = render_preference_pair(
+        pair["chosen"], pair["rejected"],
+        renderer=_pair_worker_state["renderer"],
+        tokenizer=_pair_worker_state["tokenizer"],
+    )
+    if rendered is None:
+        return None
+    max_seq_len = _pair_worker_state["max_seq_len"]
+    if (
+        len(rendered.chosen_tokens) > max_seq_len
+        or len(rendered.rejected_tokens) > max_seq_len
+    ):
         return None
     return {
-        "chosen_tokens_len": len(pair.chosen_tokens),
-        "rejected_tokens_len": len(pair.rejected_tokens),
-        "response_start": pair.response_start,
-        "chosen_datum": pair.chosen_datum,
-        "rejected_datum": pair.rejected_datum,
+        "chosen_tokens_len": len(rendered.chosen_tokens),
+        "rejected_tokens_len": len(rendered.rejected_tokens),
+        "response_start": rendered.response_start,
+        "chosen_datum": rendered.chosen_datum,
+        "rejected_datum": rendered.rejected_datum,
     }
 
 
-def _render_pair_worker(example: dict[str, Any]) -> dict[str, Any] | None:
-    return _render_pair(example, **_pair_worker_state)
+# ---------------------------------------------------------------------------
+# Reference forward
+# ---------------------------------------------------------------------------
 
 
 async def _ref_forward_batch(
@@ -209,20 +224,15 @@ async def _ref_forward_batch(
 ) -> list[dict[str, Any]]:
     """Compute reference logprobs for *pairs*, sub-batched by *ref_batch_size*.
 
-    Uses the semaphore for concurrency control. Returns enriched pairs
-    with ``ref_chosen`` / ``ref_rejected`` logprobs attached as
-    :class:`array.array` of ``'f'`` (4 bytes/token vs 28+ bytes for a Python
-    ``list[float]``) — both ``torch.tensor`` and pickle handle them natively.
-
-    Returned pairs preserve the input order. The producer relies on this
-    when appending to ``ref_cache_store`` so that epochs 1+ can iterate the
-    cache sequentially and get the same ordering as epoch 0.
+    Returns enriched pairs with ``ref_chosen`` / ``ref_rejected`` logprobs
+    attached as :class:`array.array` of ``'f'`` (4 bytes/token vs 28+ for a
+    Python ``list[float]``) — both ``torch.tensor`` and pickle handle them
+    natively. Returned pairs preserve input order so multi-epoch ref-cache
+    iteration keeps producer-order consistent with epoch 0.
     """
     sub_batches = [pairs[i:i + ref_batch_size] for i in range(0, len(pairs), ref_batch_size)]
 
-    async def _process_sub_batch(
-        batch: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+    async def _process_sub_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         datums: list[tinker.Datum] = []
         for pair_data in batch:
             datums.append(pair_data["chosen_datum"])
@@ -277,10 +287,7 @@ def _forward_backward_pairs(
         response_starts.append(cached["response_start"])
 
     loss_fn = make_batch_dpo_loss_fn(
-        ref_chosen_list,
-        ref_rejected_list,
-        response_starts,
-        beta,
+        ref_chosen_list, ref_rejected_list, response_starts, beta,
     )
     return policy.forward_backward_custom(datums, loss_fn)
 
@@ -289,37 +296,40 @@ _DONE = object()
 
 
 async def _train_loop(
-    tokenized_store: DiskBackedDatumStore,
-    ref_cache_store: DiskBackedDatumStore | None,
+    pair_dataset: JsonlRenderDataset,
+    ref_cache_log: AppendOnlyPickleLog | None,
     reference: ReconnectableClient,
     policy: ReconnectableClient,
     adam_params: tinker.AdamParams,
     cfg: Config,
     step_offset: int,
+    *,
+    worker_init_fn: Callable[[int], None] | None = None,
     on_ref_done: Callable[[], None] | None = None,
     runner: RunnerIO | None = None,
     training_shape_id: str | None = None,
 ) -> int:
-    """Pipelined DPO training -- ref forward overlaps with policy training.
+    """Pipelined DPO training -- streaming render + ref forward overlap policy.
 
     Epoch 0 runs a producer/consumer pipeline with an unbounded queue:
-    the producer pulls tokenized pair chunks from ``tokenized_store``,
-    computes reference logprobs at full speed (concurrent via semaphore),
-    and pushes enriched chunks to the consumer that runs train steps.
-    Once the producer finishes, *on_ref_done* fires to delete the reference
-    trainer immediately -- even while training continues.
+    a DataLoader streams rendered preference batches; the producer
+    computes reference logprobs at full speed (concurrent via semaphore)
+    and pushes enriched batches to the consumer that runs train steps.
+    Once the producer finishes, *on_ref_done* fires to delete the
+    reference trainer immediately -- even while training continues.
 
-    For multi-epoch runs, ``ref_cache_store`` (must be opened by the caller)
-    captures every enriched pair in producer order so epochs 1+ can stream
+    For multi-epoch runs, ``ref_cache_log`` (must be opened by the caller)
+    captures every enriched pair in producer order so epochs 1+ stream
     them sequentially without holding the cache in RAM.
     """
     multi_epoch = cfg.epochs > 1
-    if multi_epoch and ref_cache_store is None:
-        raise ValueError("ref_cache_store is required when cfg.epochs > 1")
+    if multi_epoch and ref_cache_log is None:
+        raise ValueError("ref_cache_log is required when cfg.epochs > 1")
 
     batch_size = cfg.batch_size
     step = step_offset
-    total_steps = len(tokenized_store) * cfg.epochs // batch_size
+    # Upper bound: actual count drops empty/over-length rows.
+    total_steps = len(pair_dataset) * cfg.epochs // batch_size
 
     if runner is None:
         runner = RunnerIO()
@@ -395,24 +405,34 @@ async def _train_loop(
         runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
         runner.write_metadata()
 
-    # -- Epoch 0: pipelined ref forward + training -----------------------------
+    # -- Epoch 0: stream render → ref forward → training -----------------------
 
-    n_pairs = len(tokenized_store)
-    n_batches_epoch0 = (n_pairs + batch_size - 1) // batch_size
     pbar = tqdm(total=total_steps, desc="DPO training", unit="step")
+    loader = make_render_dataloader(
+        pair_dataset,
+        batch_size=batch_size,
+        num_workers=cfg.render_workers,
+        shuffle=False,  # ref-cache iteration depends on stable producer order
+        worker_init_fn=worker_init_fn,
+    )
 
     async def _ref_producer() -> None:
-        for start in range(0, n_pairs, batch_size):
-            stop = min(start + batch_size, n_pairs)
-            chunk = [tokenized_store[i] for i in range(start, stop)]
+        # The DataLoader is synchronous; pull each batch via to_thread so
+        # render workers and ref forwards can overlap on the event loop.
+        loader_iter = iter(loader)
+        sentinel = object()
+        while True:
+            batch = await asyncio.to_thread(next, loader_iter, sentinel)
+            if batch is sentinel:
+                break
+            if not batch:  # all rows in this DataLoader batch rendered to None
+                continue
             enriched = await _ref_forward_batch(
-                chunk, reference, sem, cfg.ref_cache_batch_size,
+                batch, reference, sem, cfg.ref_cache_batch_size,
             )
             if multi_epoch:
-                # Append in producer order = input order (see _ref_forward_batch
-                # docstring); epochs 1+ then iterate the store sequentially.
                 for pair in enriched:
-                    ref_cache_store.append(pair)
+                    ref_cache_log.append(pair)
             await pipe.put(enriched)
         await pipe.put(_DONE)
 
@@ -434,16 +454,21 @@ async def _train_loop(
     # -- Epochs 1+: stream cached ref logprobs from disk -----------------------
 
     if multi_epoch:
-        ref_cache_store.close_write()
-        n_cached = len(ref_cache_store)
+        ref_cache_log.close_write()
+        n_cached = len(ref_cache_log)
         logger.info(
             "Ref cache built: %d pairs / %.1f GiB on disk",
-            n_cached, ref_cache_store.disk_size_bytes() / (1024 ** 3),
+            n_cached, ref_cache_log.disk_size_bytes() / (1024 ** 3),
         )
         for epoch in range(1, cfg.epochs):
-            for start in range(0, n_cached, batch_size):
-                stop = min(start + batch_size, n_cached)
-                chunk = [ref_cache_store[i] for i in range(start, stop)]
+            chunk: list[dict[str, Any]] = []
+            for pair in ref_cache_log:
+                chunk.append(pair)
+                if len(chunk) == batch_size:
+                    _run_train_step(epoch, chunk)
+                    pbar.update(1)
+                    chunk = []
+            if chunk:
                 _run_train_step(epoch, chunk)
                 pbar.update(1)
 
@@ -509,15 +534,11 @@ def main(
 
     if rlor_mgr is None:
         rlor_mgr = TrainerJobManager(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
+            api_key=api_key, base_url=base_url, additional_headers=additional_headers,
         )
     if deploy_mgr is None:
         deploy_mgr = DeploymentManager(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
+            api_key=api_key, base_url=base_url, additional_headers=additional_headers,
         )
 
     runner = RunnerIO(cfg.runner)
@@ -569,95 +590,43 @@ def main(
         wandb_log({"train/step": step_offset}, step_offset)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
-        # -- Tokenize (streaming) + pipelined training -------------------------
+        # -- Stream-render dataset + (optional) ref cache ---------------------
         #
-        # Stream-render preference pairs to a disk-backed store so peak RAM
-        # stays bounded by ``num_workers * per_worker_render_footprint``
-        # instead of scaling with dataset size. For multi-epoch runs we also
-        # open a second disk-backed store for the ref-cache; together this
-        # eliminates the two largest in-memory tables (`tokenized_pairs` and
-        # `ref_cache`) that pushed the orchestrator over the node memory
-        # limit on long-context DPO runs.
-        # See docs/engineering/sft-v2-orchestrator-oom-debug.md.
+        # Render preference rows on the fly inside DataLoader workers so the
+        # orchestrator never holds the full tokenized dataset in RAM. For
+        # multi-epoch runs we additionally spool enriched pairs (datums +
+        # ref logprobs) to a small append-only pickle log so the reference
+        # trainer can be released after epoch 0 and epochs 1+ stream the
+        # cache from disk. See fw-ai/cookbook#371 / #373 for OOM context.
 
-        # ``count_jsonl_rows`` is an upper bound (the ``samples`` schema may
-        # collapse multiple rows into 0 or 1 pair) but it's good enough for
-        # progress reporting.
-        total_raw = count_jsonl_rows(cfg.dataset, cfg.max_pairs)
-        if total_raw == 0:
-            raise RuntimeError(f"No data found in {cfg.dataset}")
         max_seq_len = infra.max_seq_len
-        num_workers = min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
-        logger.info(
-            "Streaming %d preference rows from %s (renderer=%s, workers=%d,"
-            " chunksize=%d)",
-            total_raw, cfg.dataset,
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-            num_workers, DEFAULT_RENDER_CHUNKSIZE,
-        )
-
-        # Initialise _pair_worker_state in the parent too so the same
-        # render_fn (_render_pair_worker) is used regardless of whether the
-        # helper picks the in-process loop (num_workers == 1) or the spawn
-        # pool. Mirrors the sft_loop.py pattern.
         init_args = (cfg.tokenizer_model, cfg.renderer_name, max_seq_len)
+        # Initialise in the parent so the num_workers <= 1 fallback uses
+        # the same render_fn as the spawn workers.
         _init_pair_worker(*init_args)
+        worker_init_fn = functools.partial(_init_pair_worker, *init_args)
 
-        render_cache_dir = stack.enter_context(
-            tempfile.TemporaryDirectory(prefix="dpo_render_")
+        pair_dataset = JsonlRenderDataset(
+            cfg.dataset, _render_pair_worker, max_examples=cfg.max_pairs,
+        )
+        if len(pair_dataset) == 0:
+            raise RuntimeError(f"No data found in {cfg.dataset}")
+
+        logger.info(
+            "Streaming %d preference rows from %s (renderer=%s, workers=%d)",
+            len(pair_dataset), cfg.dataset,
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            cfg.render_workers,
         )
 
-        def _open_store(name: str) -> DiskBackedDatumStore:
-            return stack.enter_context(
-                DiskBackedDatumStore(os.path.join(render_cache_dir, name))
+        ref_cache_log: AppendOnlyPickleLog | None = None
+        if cfg.epochs > 1:
+            ref_cache_dir = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="dpo_ref_")
             )
-
-        tokenized_store = _open_store("tokenized_pairs.bin")
-        # Open the ref-cache store eagerly only for multi-epoch runs; for
-        # single-epoch runs we skip the disk traffic entirely.
-        ref_cache_store: DiskBackedDatumStore | None = (
-            _open_store("ref_cache.bin") if cfg.epochs > 1 else None
-        )
-
-        mem_tracer = MemTracer(
-            store_callback=lambda: (
-                len(tokenized_store), tokenized_store.disk_size_bytes(),
-            ),
-            log=logger,
-        )
-        mem_tracer.log("before_rendering", 0, total_raw)
-
-        log_interval = max(1, total_raw // 20)       # ~5% for runner status
-        mem_log_interval = max(1, total_raw // 200)  # ~0.5% for memory tracing
-
-        def _on_render_progress(i: int, _pair: dict | None) -> None:
-            if i % log_interval == 0 or i == total_raw:
-                runner.report_rendering_progress(i, total_raw)
-            if i % mem_log_interval == 0 or i == total_raw:
-                mem_tracer.log("rendering", i, total_raw)
-
-        filtered_count = stream_render_to_store(
-            iter_preference_examples(cfg.dataset, cfg.max_pairs),
-            render_fn=_render_pair_worker,
-            store=tokenized_store,
-            num_workers=num_workers,
-            chunksize=DEFAULT_RENDER_CHUNKSIZE,
-            initializer=_init_pair_worker,
-            initargs=init_args,
-            on_progress=_on_render_progress,
-        )
-        tokenized_store.close_write()
-        mem_tracer.log("after_rendering", total_raw, total_raw)
-
-        if filtered_count > 0:
-            logger.info(
-                "Seq-length filter: %d/%d pairs dropped "
-                "(chosen or rejected > %d tokens, or render failed)",
-                filtered_count, total_raw, max_seq_len,
+            ref_cache_log = stack.enter_context(
+                AppendOnlyPickleLog(os.path.join(ref_cache_dir, "ref_cache.pkl"))
             )
-        logger.info("Prepared %d preference pairs", len(tokenized_store))
-        if len(tokenized_store) == 0:
-            raise RuntimeError("No valid pairs after tokenization")
 
         def _on_ref_done():
             nonlocal reference_job_id
@@ -678,8 +647,9 @@ def main(
         runner.start_training()
         step = asyncio.run(
             _train_loop(
-                tokenized_store, ref_cache_store,
+                pair_dataset, ref_cache_log,
                 reference, policy, adam_params, cfg, step_offset,
+                worker_init_fn=worker_init_fn,
                 on_ref_done=_on_ref_done,
                 runner=runner,
                 training_shape_id=infra.training_shape_id,
@@ -715,7 +685,7 @@ def main(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                 )
 
-        total_steps = len(tokenized_store) * cfg.epochs // cfg.batch_size
+        total_steps = len(pair_dataset) * cfg.epochs // cfg.batch_size
         runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
         runner.write_metadata()
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)

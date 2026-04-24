@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, List
+import os
+import pickle
+from typing import Any, Callable, Iterator, List
 
 import torch.utils.data as torch_data
 
@@ -167,3 +169,74 @@ def make_render_dataloader(
         persistent_workers=True,
         collate_fn=_drop_none_collate,
     )
+
+
+# ---------------------------------------------------------------------------
+# Append-only pickle log (DPO ref-cache)
+# ---------------------------------------------------------------------------
+
+
+class AppendOnlyPickleLog:
+    """Sequential disk-backed object log: append in epoch 0, iterate in epochs 1+.
+
+    Designed for DPO's reference-logprob cache: we need to spool enriched
+    preference pairs to disk so the (expensive) reference trainer can be
+    released after epoch 0, but epochs 1+ only ever iterate the cache
+    front-to-back. That eliminates everything the previous
+    ``DiskBackedDatumStore`` carried (offset index, mmap, random access,
+    truncation safety) and reduces the disk store to ~30 LoC of pickle.
+
+    Lifecycle: ``append(...)`` while writing → ``close_write()`` → iterate
+    via ``for x in log``. Iterating before ``close_write()`` raises.
+    """
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._fh: Any = open(path, "wb")
+        self._count = 0
+
+    def append(self, obj: Any) -> None:
+        if self._fh is None:
+            raise RuntimeError("AppendOnlyPickleLog is closed; cannot append")
+        pickle.dump(obj, self._fh, protocol=pickle.HIGHEST_PROTOCOL)
+        self._count += 1
+
+    def close_write(self) -> None:
+        """Flush + fsync + close the write handle so readers see all data."""
+        if self._fh is None:
+            return
+        self._fh.flush()
+        os.fsync(self._fh.fileno())
+        self._fh.close()
+        self._fh = None
+
+    def __len__(self) -> int:
+        return self._count
+
+    def disk_size_bytes(self) -> int:
+        try:
+            return os.path.getsize(self._path)
+        except OSError:
+            return 0
+
+    def __iter__(self) -> Iterator[Any]:
+        if self._fh is not None:
+            raise RuntimeError(
+                "close_write() must be called before iterating an AppendOnlyPickleLog"
+            )
+        with open(self._path, "rb") as f:
+            while True:
+                try:
+                    yield pickle.load(f)
+                except EOFError:
+                    return
+
+    def close(self) -> None:
+        if self._fh is not None:
+            self.close_write()
+
+    def __enter__(self) -> "AppendOnlyPickleLog":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()

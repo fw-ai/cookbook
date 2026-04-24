@@ -33,6 +33,7 @@ _warnings.filterwarnings(
 del _warnings
 
 __all__ = [
+    "AppendOnlyPickleLog",
     "DEFAULT_ADAM",
     "DEFAULT_PREFETCH_FACTOR",
     "DEFAULT_RENDER_WORKERS",
@@ -173,6 +174,7 @@ from training.utils.logging import (
 )
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 from training.utils.streaming import (
+    AppendOnlyPickleLog,
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,
     JsonlRenderDataset,

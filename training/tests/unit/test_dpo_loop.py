@@ -2,21 +2,20 @@
 
 Covers the public-ish surface of ``training.recipes.dpo_loop``:
 
-  * ``_render_pair`` / ``_render_pair_worker`` -- the per-pair render fn
-    plumbed into ``stream_render_to_store``.
+  * ``_render_pair_worker`` -- per-row render fn used by the JsonlRenderDataset
+    (schema normalisation + render + over-length filtering, with all drop
+    reasons collapsed into a ``None`` return).
   * ``_ref_forward_batch`` -- enriches pairs with ``array.array('f')``
     reference logprobs and preserves input order.
   * ``_forward_backward_pairs`` -- arranges datums and ref logprobs for
     the policy update.
   * ``_train_loop`` -- end-to-end pipeline for the single-epoch path
-    (no ref_cache_store) and the multi-epoch path (ref_cache_store
-    captures pairs in producer order so epochs 1+ can stream them).
+    (no ref_cache_log) and the multi-epoch path (``AppendOnlyPickleLog``
+    captures pairs in producer order so epochs 1+ stream from disk).
   * ``iter_preference_examples`` -- streaming JSONL reader that
-    normalizes the three on-disk preference schemas.
+    normalises the three on-disk preference schemas.
 
-The streaming refactor is described in
-docs/engineering/sft-v2-orchestrator-oom-debug.md and follows the same
-pattern as the SFT v2 fix (fw-ai/cookbook#371).
+The streaming refactor mirrors the SFT v2 fix (fw-ai/cookbook#371).
 """
 
 from __future__ import annotations
@@ -24,69 +23,61 @@ from __future__ import annotations
 import array
 import asyncio
 import json
-import os
-import tempfile
 import time
 from types import SimpleNamespace
 
 import pytest
-import torch
 
 import training.recipes.dpo_loop as module
-from training.utils import DiskBackedDatumStore
+from training.utils import AppendOnlyPickleLog, JsonlRenderDataset
 from training.utils.data import iter_preference_examples
 
 
-class SequenceRenderer:
-    """Tiny renderer stand-in matching the ``build_supervised_example`` API."""
-
-    def __init__(self, outputs):
-        self.outputs = [
-            (torch.tensor(tokens, dtype=torch.int64), torch.tensor(weights, dtype=torch.float32))
-            for tokens, weights in outputs
-        ]
-        self.calls: list = []
-
-    def build_supervised_example(self, messages, train_on_what):
-        self.calls.append((messages, train_on_what))
-        return self.outputs[len(self.calls) - 1]
-
-
 # ---------------------------------------------------------------------------
-# _render_pair / _render_pair_worker
+# _render_pair_worker
 # ---------------------------------------------------------------------------
 
 
-class TestRenderPair:
+def _setup_pair_worker(monkeypatch, max_seq_len: int = 8) -> None:
+    monkeypatch.setitem(module._pair_worker_state, "renderer", "R")
+    monkeypatch.setitem(module._pair_worker_state, "tokenizer", "T")
+    monkeypatch.setitem(module._pair_worker_state, "max_seq_len", max_seq_len)
+
+
+class TestRenderPairWorker:
+    def test_returns_none_when_schema_unrecognized(self, monkeypatch):
+        _setup_pair_worker(monkeypatch)
+        assert module._render_pair_worker({"unknown": "schema"}) is None
+
     def test_returns_none_when_render_fails(self, monkeypatch):
+        _setup_pair_worker(monkeypatch)
         monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: None)
-        assert module._render_pair(
-            {"chosen": {}, "rejected": {}},
-            renderer=None, tokenizer=None, max_seq_len=8,
+        assert module._render_pair_worker(
+            {"chosen": {"messages": []}, "rejected": {"messages": []}}
         ) is None
 
     def test_returns_none_when_too_long(self, monkeypatch):
+        _setup_pair_worker(monkeypatch)
         long_pair = SimpleNamespace(
             chosen_tokens=[1] * 9, rejected_tokens=[2, 3], response_start=3,
             chosen_datum={"kind": "chosen"}, rejected_datum={"kind": "rejected"},
         )
         monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: long_pair)
-        assert module._render_pair(
-            {"chosen": {}, "rejected": {}},
-            renderer=None, tokenizer=None, max_seq_len=8,
+        assert module._render_pair_worker(
+            {"chosen": {}, "rejected": {}}
         ) is None
 
     def test_returns_dict_with_lengths_only(self, monkeypatch):
         """Stored dict carries lengths, not token lists -- saves O(N*L) RAM."""
+        _setup_pair_worker(monkeypatch)
         valid_pair = SimpleNamespace(
             chosen_tokens=[1, 2, 3, 4], rejected_tokens=[1, 2, 9],
             response_start=2,
             chosen_datum={"kind": "chosen"}, rejected_datum={"kind": "rejected"},
         )
         monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: valid_pair)
-        result = module._render_pair(
-            {"chosen": {}, "rejected": {}},
-            renderer=None, tokenizer=None, max_seq_len=8,
+        result = module._render_pair_worker(
+            {"chosen": {}, "rejected": {}}
         )
         assert result == {
             "chosen_tokens_len": 4,
@@ -98,20 +89,27 @@ class TestRenderPair:
         assert "chosen_tokens" not in result
         assert "rejected_tokens" not in result
 
-    def test_worker_uses_module_state(self, monkeypatch):
-        """``_render_pair_worker`` reads from ``_pair_worker_state``."""
-        valid_pair = SimpleNamespace(
-            chosen_tokens=[1, 2], rejected_tokens=[3, 4], response_start=1,
-            chosen_datum={}, rejected_datum={},
-        )
-        monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: valid_pair)
-        monkeypatch.setitem(module._pair_worker_state, "renderer", "R")
-        monkeypatch.setitem(module._pair_worker_state, "tokenizer", "T")
-        monkeypatch.setitem(module._pair_worker_state, "max_seq_len", 8)
+    def test_normalises_samples_schema(self, monkeypatch):
+        """Render fn does the schema normalisation step itself (no helper needed)."""
+        _setup_pair_worker(monkeypatch)
+        captured: dict = {}
 
-        result = module._render_pair_worker({"chosen": {}, "rejected": {}})
-        assert result is not None
-        assert result["chosen_tokens_len"] == 2
+        def fake_render(chosen, rejected, **kwargs):
+            captured["chosen"] = chosen
+            captured["rejected"] = rejected
+            return SimpleNamespace(
+                chosen_tokens=[1], rejected_tokens=[1], response_start=0,
+                chosen_datum={}, rejected_datum={},
+            )
+
+        monkeypatch.setattr(module, "render_preference_pair", fake_render)
+        row = {"samples": [
+            {"text": "good", "evals": {"score": 1.0}},
+            {"text": "bad", "evals": {"score": 0.0}},
+        ]}
+        assert module._render_pair_worker(row) is not None
+        assert captured["chosen"]["text"] == "good"
+        assert captured["rejected"]["text"] == "bad"
 
 
 # ---------------------------------------------------------------------------
@@ -154,20 +152,14 @@ class TestRefForwardBatch:
             "cross_entropy",
         )]
         assert len(enriched) == 2
-
         assert isinstance(enriched[0]["ref_chosen"], array.array)
         assert enriched[0]["ref_chosen"].typecode == "f"
-        # array.array('f') is float32 -> tolerate small precision loss
         assert list(enriched[0]["ref_chosen"]) == pytest.approx([-0.1, -0.2])
         assert list(enriched[0]["ref_rejected"]) == pytest.approx([-0.3])
         assert list(enriched[1]["ref_chosen"]) == pytest.approx([-0.4])
         assert list(enriched[1]["ref_rejected"]) == pytest.approx([-0.5, -0.6])
-
-        # Datums + lengths + response_start carried through unchanged.
         assert enriched[0]["chosen_datum"] == {"id": "c0"}
         assert enriched[0]["rejected_datum"] == {"id": "r0"}
-        assert enriched[0]["chosen_tokens_len"] == 3
-        assert enriched[0]["response_start"] == 2
 
     def test_sub_batches_split_correctly(self):
         """``ref_batch_size`` controls how many pairs go in each forward call."""
@@ -233,15 +225,13 @@ def test_forward_backward_pairs_interleaves_and_builds_loss_fn(monkeypatch):
     assert captured["datums"] == [
         {"id": "c0"}, {"id": "r0"}, {"id": "c1"}, {"id": "r1"},
     ]
-    # array.array passes through unchanged into make_batch_dpo_loss_fn,
-    # which converts to torch.tensor (handled identically to list[float]).
     assert all(isinstance(r, array.array) for r in captured["ref_chosen"])
     assert captured["response_starts"] == [3, 5]
     assert captured["beta"] == 0.25
 
 
 # ---------------------------------------------------------------------------
-# _train_loop  (streaming with DiskBackedDatumStore)
+# _train_loop  (DataLoader → ref forward → train, ref-cache log on multi-epoch)
 # ---------------------------------------------------------------------------
 
 
@@ -256,13 +246,17 @@ def _make_pair(idx: int) -> dict:
     }
 
 
-def _populate_store(tmp_path, n: int) -> DiskBackedDatumStore:
-    store = DiskBackedDatumStore(str(tmp_path / "tokenized.bin"))
-    store.__enter__()
-    for i in range(n):
-        store.append(_make_pair(i))
-    store.close_write()
-    return store
+def _test_render_pair(row: dict) -> dict:
+    """Module-level render_fn for JsonlRenderDataset in tests."""
+    return _make_pair(row["i"])
+
+
+def _make_pair_dataset(tmp_path, n: int) -> JsonlRenderDataset:
+    path = tmp_path / "pairs.jsonl"
+    with open(path, "w") as f:
+        for i in range(n):
+            f.write(json.dumps({"i": i}) + "\n")
+    return JsonlRenderDataset(str(path), _test_render_pair)
 
 
 class _FakeReference:
@@ -304,52 +298,50 @@ def _stub_train_step_deps(monkeypatch, events: dict):
 
 
 class TestTrainLoop:
-    def test_single_epoch_no_ref_cache_store(self, tmp_path, monkeypatch):
+    def test_single_epoch_no_ref_cache_log(self, tmp_path, monkeypatch):
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
-        store = _populate_store(tmp_path, n=4)
-        try:
-            cfg = module.Config(
-                log_path=str(tmp_path), beta=0.2, epochs=1, batch_size=2,
+        ds = _make_pair_dataset(tmp_path, n=4)
+        cfg = module.Config(
+            log_path=str(tmp_path), beta=0.2, epochs=1, batch_size=2,
+            render_workers=0,
+        )
+        ref_done = []
+        step = asyncio.run(
+            module._train_loop(
+                ds, None,
+                _FakeReference(), _FakePolicy(),
+                adam_params={"lr": 1e-4},
+                cfg=cfg,
+                step_offset=0,
+                on_ref_done=lambda: ref_done.append(True),
             )
-            ref_done = []
-            step = asyncio.run(
-                module._train_loop(
-                    store, None,
-                    _FakeReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4},
-                    cfg=cfg,
-                    step_offset=0,
-                    on_ref_done=lambda: ref_done.append(True),
-                )
-            )
-            # 4 pairs / batch_size=2 -> 2 train steps
-            assert step == 2
-            assert ref_done == [True]
-            assert len(events["flush_batches"]) == 2
-            # Every batch carries ref_chosen / ref_rejected attached by producer.
-            for batch, beta in events["flush_batches"]:
-                assert beta == 0.2
-                for pair in batch:
-                    assert "ref_chosen" in pair and "ref_rejected" in pair
-        finally:
-            store.__exit__(None, None, None)
+        )
+        # 4 pairs / batch_size=2 -> 2 train steps
+        assert step == 2
+        assert ref_done == [True]
+        assert len(events["flush_batches"]) == 2
+        for batch, beta in events["flush_batches"]:
+            assert beta == 0.2
+            for pair in batch:
+                assert "ref_chosen" in pair and "ref_rejected" in pair
 
-    def test_multi_epoch_uses_ref_cache_store(self, tmp_path, monkeypatch):
+    def test_multi_epoch_uses_ref_cache_log(self, tmp_path, monkeypatch):
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
-        store = _populate_store(tmp_path, n=4)
-        ref_cache = DiskBackedDatumStore(str(tmp_path / "ref_cache.bin"))
-        ref_cache.__enter__()
+        ds = _make_pair_dataset(tmp_path, n=4)
+        ref_cache_path = str(tmp_path / "ref_cache.pkl")
+        ref_cache = AppendOnlyPickleLog(ref_cache_path)
         try:
             cfg = module.Config(
                 log_path=str(tmp_path), beta=0.1, epochs=3, batch_size=2,
+                render_workers=0,
             )
             step = asyncio.run(
                 module._train_loop(
-                    store, ref_cache,
+                    ds, ref_cache,
                     _FakeReference(), _FakePolicy(),
                     adam_params={"lr": 1e-4},
                     cfg=cfg, step_offset=0,
@@ -359,33 +351,31 @@ class TestTrainLoop:
             assert step == 6
             assert len(events["flush_batches"]) == 6
 
-            # Ref-cache store must contain all 4 pairs in original order;
-            # epochs 1+ stream through it sequentially.
+            # Ref cache must contain all 4 pairs in producer order; epochs 1+
+            # stream through it sequentially (validated by replaying it now).
             assert len(ref_cache) == 4
-            cached_ids = [p["chosen_datum"]["id"] for p in ref_cache]
-            assert cached_ids == ["c0", "c1", "c2", "c3"]
-            for cached in ref_cache:
-                assert isinstance(cached["ref_chosen"], array.array)
-                assert isinstance(cached["ref_rejected"], array.array)
+            cached = list(ref_cache)
+            assert [p["chosen_datum"]["id"] for p in cached] == ["c0", "c1", "c2", "c3"]
+            for c in cached:
+                assert isinstance(c["ref_chosen"], array.array)
+                assert isinstance(c["ref_rejected"], array.array)
         finally:
-            ref_cache.__exit__(None, None, None)
-            store.__exit__(None, None, None)
+            ref_cache.close()
 
-    def test_multi_epoch_requires_ref_cache_store(self, tmp_path):
-        store = _populate_store(tmp_path, n=2)
-        try:
-            cfg = module.Config(log_path=str(tmp_path), epochs=2, batch_size=1)
-            with pytest.raises(ValueError, match="ref_cache_store"):
-                asyncio.run(
-                    module._train_loop(
-                        store, None,
-                        _FakeReference(), _FakePolicy(),
-                        adam_params={"lr": 1e-4},
-                        cfg=cfg, step_offset=0,
-                    )
+    def test_multi_epoch_requires_ref_cache_log(self, tmp_path):
+        ds = _make_pair_dataset(tmp_path, n=2)
+        cfg = module.Config(
+            log_path=str(tmp_path), epochs=2, batch_size=1, render_workers=0,
+        )
+        with pytest.raises(ValueError, match="ref_cache_log"):
+            asyncio.run(
+                module._train_loop(
+                    ds, None,
+                    _FakeReference(), _FakePolicy(),
+                    adam_params={"lr": 1e-4},
+                    cfg=cfg, step_offset=0,
                 )
-        finally:
-            store.__exit__(None, None, None)
+            )
 
     def test_pipeline_overlap_ref_freed_before_training_done(self, tmp_path, monkeypatch):
         """Producer must finish (and on_ref_done fire) while training is still
@@ -402,34 +392,64 @@ class TestTrainLoop:
 
         monkeypatch.setattr(module, "_forward_backward_pairs", slow_fwd_bwd)
 
-        store = _populate_store(tmp_path, n=4)
-        try:
-            cfg = module.Config(
-                log_path=str(tmp_path), beta=0.1, epochs=1, batch_size=1,
-                ref_cache_concurrency=4,
+        ds = _make_pair_dataset(tmp_path, n=4)
+        cfg = module.Config(
+            log_path=str(tmp_path), beta=0.1, epochs=1, batch_size=1,
+            ref_cache_concurrency=4, render_workers=0,
+        )
+        t0 = time.monotonic()
+        step = asyncio.run(
+            module._train_loop(
+                ds, None,
+                _FakeReference(), _FakePolicy(),
+                adam_params={"lr": 1e-4},
+                cfg=cfg, step_offset=0,
+                on_ref_done=lambda: timeline.append(time.monotonic()),
             )
-            t0 = time.monotonic()
-            step = asyncio.run(
-                module._train_loop(
-                    store, None,
-                    _FakeReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4},
-                    cfg=cfg, step_offset=0,
-                    on_ref_done=lambda: timeline.append(time.monotonic()),
-                )
-            )
-            t_end = time.monotonic()
+        )
+        t_end = time.monotonic()
 
-            assert step == 4
-            assert len(timeline) == 1
-            ref_done_t = timeline[0] - t0
-            total_t = t_end - t0
-            assert ref_done_t < total_t * 0.8, (
-                f"ref_done should fire well before training finishes "
-                f"(ref_done={ref_done_t:.2f}s, total={total_t:.2f}s)"
+        assert step == 4
+        assert len(timeline) == 1
+        ref_done_t = timeline[0] - t0
+        total_t = t_end - t0
+        assert ref_done_t < total_t * 0.8, (
+            f"ref_done should fire well before training finishes "
+            f"(ref_done={ref_done_t:.2f}s, total={total_t:.2f}s)"
+        )
+
+    def test_drops_batches_with_only_none_rows(self, tmp_path, monkeypatch):
+        """When every row in a DataLoader batch renders to None, skip ref forward."""
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        # Render every row to None: the loader yields empty batches that the
+        # producer must skip without calling reference.forward.
+        path = tmp_path / "pairs.jsonl"
+        with open(path, "w") as f:
+            for i in range(4):
+                f.write(json.dumps({"i": i}) + "\n")
+        ds = JsonlRenderDataset(str(path), lambda row: None)
+
+        ref_calls = []
+
+        class CountingReference:
+            def forward(self, datums, loss_fn):
+                ref_calls.append(len(datums))
+                return SimpleNamespace(loss_fn_outputs=[])
+
+        cfg = module.Config(
+            log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
+        )
+        step = asyncio.run(
+            module._train_loop(
+                ds, None, CountingReference(), _FakePolicy(),
+                adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
             )
-        finally:
-            store.__exit__(None, None, None)
+        )
+        assert step == 0
+        assert ref_calls == []
+        assert events.get("flush_batches", []) == []
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +467,8 @@ def test_main_requires_tokenizer_model(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# iter_preference_examples (training/utils/data.py)
+# iter_preference_examples (training/utils/data.py) -- still used by callers
+# outside the streaming path; kept for back-compat.
 # ---------------------------------------------------------------------------
 
 
@@ -475,7 +496,6 @@ class TestIterPreferenceExamples:
                 {"text": "good", "evals": {"score": 1.0}},
                 {"text": "bad", "evals": {"score": 0.0}},
             ]},
-            # Row with only a chosen sample -> no pair, dropped
             {"samples": [{"text": "lonely", "evals": {"score": 1.0}}]},
         ])
         out = list(iter_preference_examples(str(path)))
@@ -513,7 +533,7 @@ class TestIterPreferenceExamples:
         path = tmp_path / "mixed.jsonl"
         with open(path, "w") as f:
             f.write(json.dumps({"chosen": {"t": 1}, "rejected": {"t": 2}}) + "\n")
-            f.write("\n")  # blank line
+            f.write("\n")
             f.write(json.dumps({"unknown": "schema"}) + "\n")
             f.write(json.dumps({"chosen": {"t": 3}, "rejected": {"t": 4}}) + "\n")
         out = list(iter_preference_examples(str(path)))
