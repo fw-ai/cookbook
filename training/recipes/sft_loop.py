@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import signal
 import logging
+import random
 import functools
 from itertools import islice
 from contextlib import ExitStack
@@ -149,8 +150,10 @@ def _prepare_datasets(
     """Build the training dataset and (optional) eval set.
 
     Eval can come from an explicit ``cfg.evaluation_dataset`` or be
-    carved out from the head of the training dataset. In the carve-out
-    case the returned training dataset is sliced past the eval window.
+    carved out from a seeded random subset of the training dataset. In
+    the carve-out case the returned training dataset excludes those eval
+    rows but otherwise preserves raw-file order; the training loader
+    still does its own per-epoch shuffling.
     """
     training_ds = JsonlRenderDataset(
         cfg.dataset, _render_one_worker, max_examples=cfg.max_examples,
@@ -172,11 +175,20 @@ def _prepare_datasets(
             len(training_ds), cfg.eval_carve_ratio, cfg.max_eval_seqs,
         )
         if n > 0:
-            eval_data = _render_eagerly(training_ds, n)
-            training_ds = training_ds.with_indices(list(range(n, len(training_ds))))
+            shuffled_indices = list(range(len(training_ds)))
+            random.Random(cfg.seed).shuffle(shuffled_indices)
+            eval_indices = shuffled_indices[:n]
+            eval_index_set = set(eval_indices)
+            eval_data = _render_eagerly(
+                training_ds.with_indices(eval_indices), len(eval_indices),
+            )
+            training_ds = training_ds.with_indices(
+                [idx for idx in range(len(training_ds)) if idx not in eval_index_set]
+            )
             logger.info(
-                "Auto carve-out: %d eval examples, %d training examples",
-                len(eval_data), len(training_ds),
+                "Auto carve-out: %d eval examples, %d training examples "
+                "(seed=%d)",
+                len(eval_data), len(training_ds), cfg.seed,
             )
             return training_ds, eval_data
         logger.warning("Dataset too small for auto carve-out, skipping eval")
@@ -240,8 +252,10 @@ class Config:
     seed: int = 0
     """Shuffle seed for the training dataset.
 
-    Re-seeded per epoch as ``seed + epoch`` so fresh runs and resumes see
-    the same raw-row order in epoch 0 before any skipped batches.
+    Used both for deterministic eval auto-carveout membership and for
+    per-epoch training shuffle as ``seed + epoch`` so fresh runs and
+    resumes see the same raw-row order in epoch 0 before any skipped
+    batches.
     """
 
     step_timeout: int = 0

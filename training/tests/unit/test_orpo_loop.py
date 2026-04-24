@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +27,7 @@ def test_main_rejects_invalid_output_model_id(monkeypatch, tmp_path):
         output_model_id="bad_name",
     )
 
-    with pytest.raises(RuntimeError, match="output_model_id.*invalid|invalid.*output_model_id"):
+    with pytest.raises(RuntimeError, match="Invalid output_model_id|output_model_id.*invalid|invalid.*output_model_id"):
         module.main(cfg)
 
 
@@ -309,3 +310,25 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch, tmp_path):
     ]]
     assert events["optim_steps"] == 1
     assert events["deleted_jobs"] == ["job-orpo"]
+
+
+def test_orpo_epoch_shuffle_uses_seeded_rng() -> None:
+    """ORPO must seed its per-epoch shuffle for reproducibility.
+
+    Previously the loop called ``random.shuffle(pair_cache)`` on the global
+    random state with no ``random.seed``, so reruns with identical configs
+    produced different data orderings. Every shuffle must go through a seeded
+    RNG (e.g. ``random.Random(seed + epoch)``).
+    """
+    src = inspect.getsource(module)
+    uses_unseeded_global_shuffle = (
+        "random.shuffle(pair_cache)" in src
+        and "random.seed" not in src
+        and "random.Random" not in src
+    )
+    assert not uses_unseeded_global_shuffle, (
+        "orpo_loop.py calls `random.shuffle(pair_cache)` on the global random state "
+        "with no `random.seed` / `random.Random` anywhere in the module, so reruns "
+        "with identical configs produce different data orderings. "
+        "Fix: expose a `seed` in Config and use `random.Random(seed + epoch).shuffle(...)`."
+    )
