@@ -110,17 +110,17 @@ def _default_trainer_cancel_grace_period_s() -> float:
     raw = os.environ.get(_TRAINER_CANCEL_GRACE_ENV)
     source_env = _TRAINER_CANCEL_GRACE_ENV
     if raw is None:
-        raw = os.environ.get(_TRAINER_DELETE_GRACE_ENV, "30")
+        raw = os.environ.get(_TRAINER_DELETE_GRACE_ENV, "5")
         source_env = _TRAINER_DELETE_GRACE_ENV
     try:
         return max(0.0, float(raw))
     except ValueError:
         logger.warning(
-            "Invalid %s=%r; falling back to 30s trainer cancel grace period",
+            "Invalid %s=%r; falling back to 5s trainer cancel grace period",
             source_env,
             raw,
         )
-        return 30.0
+        return 5.0
 
 
 class ResourceCleanup:
