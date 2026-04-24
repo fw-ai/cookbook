@@ -99,9 +99,9 @@ class Config:
     learning_rate: float = 1e-5
     epochs: int = 1
     batch_size: int = 4
+    """Number of preference pairs per optimizer step."""
     seed: int = 0
     """Seed for deterministic per-epoch shuffling of preference pairs."""
-    """Number of preference pairs per optimizer step."""
     grad_accum: int = 1
     """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None

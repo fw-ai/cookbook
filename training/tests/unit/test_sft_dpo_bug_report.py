@@ -260,14 +260,155 @@ def test_load_preference_dataset_rejects_rows_without_both_chosen_and_rejected(t
         {
             "samples": [
                 {"messages": [{"role": "assistant", "content": "a"}], "score": 1.0},
-                {"messages": [{"role": "assistant", "content": "b"}], "score": 1.0},
             ],
         },
     ]
     path = _write_jsonl(tmp_path, rows)
 
-    with pytest.raises((ValueError, AssertionError)):
+    with pytest.raises((ValueError, AssertionError)) as excinfo:
         load_preference_dataset(path)
+
+    assert "rejected" in str(excinfo.value).lower()
+
+
+def test_load_preference_dataset_rejects_duplicate_chosen_samples(tmp_path) -> None:
+    """Two samples with score=1.0 in a single row is ambiguous and must raise."""
+    rows = [
+        {
+            "samples": [
+                {"messages": [{"role": "assistant", "content": "a"}], "score": 1.0},
+                {"messages": [{"role": "assistant", "content": "b"}], "score": 1.0},
+                {"messages": [{"role": "assistant", "content": "c"}], "score": 0.0},
+            ],
+        },
+    ]
+    path = _write_jsonl(tmp_path, rows)
+
+    with pytest.raises(ValueError) as excinfo:
+        load_preference_dataset(path)
+
+    msg = str(excinfo.value).lower()
+    assert "ambiguous" in msg or "multiple" in msg, (
+        f"Expected the error to flag the duplicate chosen as ambiguous; got: {excinfo.value!r}"
+    )
+
+
+def test_load_preference_dataset_rejects_unknown_row_format(tmp_path) -> None:
+    """A row that matches none of the supported preference formats must raise,
+    not silently return 0 rows.
+    """
+    rows = [
+        {"foo": "bar"},
+        {"chosen": {"messages": [{"role": "assistant", "content": "a"}]}},  # missing rejected
+    ]
+    path = _write_jsonl(tmp_path, rows)
+
+    with pytest.raises(ValueError) as excinfo:
+        load_preference_dataset(path)
+
+    assert "supported preference format" in str(excinfo.value).lower()
+
+
+def test_load_preference_dataset_rejects_non_list_samples(tmp_path) -> None:
+    """`samples` must be a list — a dict / string / int should raise, not crash
+    with a cryptic AttributeError mid-iteration.
+    """
+    rows = [{"samples": {"this": "is a dict, not a list"}}]
+    path = _write_jsonl(tmp_path, rows)
+
+    with pytest.raises(ValueError) as excinfo:
+        load_preference_dataset(path)
+
+    assert "list" in str(excinfo.value).lower()
+
+
+def test_load_preference_dataset_rejects_non_dict_sample_entry(tmp_path) -> None:
+    """Individual samples entries must be dicts; a string must raise a
+    fail-fast ValueError with file:line context, not AttributeError.
+    """
+    rows = [
+        {
+            "samples": [
+                "not a dict",
+                {"messages": [{"role": "assistant", "content": "b"}], "score": 0.0},
+            ],
+        },
+    ]
+    path = _write_jsonl(tmp_path, rows)
+
+    with pytest.raises(ValueError) as excinfo:
+        load_preference_dataset(path)
+
+    assert "dict" in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Follow-up coverage: DPO must also shuffle epoch 0 so single-epoch runs on
+# file-ordered customer data aren't trained in file order.
+# ---------------------------------------------------------------------------
+
+
+def test_dpo_train_loop_shuffles_epoch_zero(monkeypatch) -> None:
+    """When epochs=1, epoch 0 must still be shuffled (before _ref_producer).
+
+    Without this, a customer file sorted by source/date/difficulty is trained
+    in exactly that order, which biases a single-epoch DPO run — the very
+    problem the cross-epoch shuffle was introduced to solve.
+    """
+    tokenized_pairs = [_make_tokenized_pair(i) for i in range(8)]
+
+    observed_order: list[str] = []
+
+    def fake_fwd_bwd(batch, policy, beta):
+        observed_order.extend(p["chosen_datum"]["id"] for p in batch)
+        return SimpleNamespace(metrics={"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.5})
+
+    monkeypatch.setattr(dpo_module, "_forward_backward_pairs", fake_fwd_bwd)
+    monkeypatch.setattr(dpo_module, "flush_timing", lambda: {})
+    monkeypatch.setattr(dpo_module, "log_metrics_json", lambda *a, **kw: None)
+    monkeypatch.setattr(dpo_module, "wandb_log", lambda *a, **kw: None)
+
+    class FakeReference:
+        def forward(self, datums, loss_fn):
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {"logprobs": SimpleNamespace(data=[-0.1, -0.2])} for _ in datums
+                ]
+            )
+
+    class FakePolicy:
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+    cfg = dpo_module.Config(
+        log_path="/tmp/dpo_epoch0_shuffle",
+        beta=0.1,
+        epochs=1,
+        batch_size=2,
+        ref_cache_concurrency=4,
+    )
+
+    asyncio.run(
+        dpo_module._train_loop(
+            tokenized_pairs,
+            FakeReference(),
+            FakePolicy(),
+            adam_params={"lr": 1e-4},
+            cfg=cfg,
+            step_offset=0,
+        )
+    )
+
+    file_order = [f"c{i}" for i in range(8)]
+    assert observed_order != file_order, (
+        "Epoch 0 trained in exact file order; DPO must shuffle before epoch 0 "
+        "so single-epoch runs on sorted customer data aren't biased. "
+        "Fix: shuffle tokenized_pairs with random.Random(cfg.seed) at the top "
+        "of _train_loop."
+    )
+    assert sorted(observed_order) == sorted(file_order), (
+        f"Every pair must still be visited exactly once per epoch; got {observed_order}"
+    )
 
 
 # ---------------------------------------------------------------------------

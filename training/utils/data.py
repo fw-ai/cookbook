@@ -84,20 +84,53 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
             if "chosen" in row and "rejected" in row:
                 data.append(row)
             elif "samples" in row:
+                samples = row["samples"]
+                if not isinstance(samples, list):
+                    raise ValueError(
+                        f"{path}:{line_no}: 'samples' must be a list, got "
+                        f"{type(samples).__name__}."
+                    )
                 chosen = rejected = None
-                for s in row["samples"]:
-                    score = s.get("evals", {}).get("score", s.get("score"))
+                for i, s in enumerate(samples):
+                    if not isinstance(s, dict):
+                        raise ValueError(
+                            f"{path}:{line_no}: samples[{i}] must be a dict, "
+                            f"got {type(s).__name__}."
+                        )
+                    evals = s.get("evals")
+                    if evals is not None and not isinstance(evals, dict):
+                        raise ValueError(
+                            f"{path}:{line_no}: samples[{i}].evals must be a "
+                            f"dict if present, got {type(evals).__name__}."
+                        )
+                    score = (evals or {}).get("score", s.get("score"))
                     if score == 1.0:
+                        if chosen is not None:
+                            raise ValueError(
+                                f"{path}:{line_no}: row has multiple samples "
+                                f"with score=1.0; preference is ambiguous. "
+                                f"Each samples row must have exactly one "
+                                f"chosen (score=1.0) and one rejected "
+                                f"(score=0.0) sample."
+                            )
                         chosen = s
                     elif score == 0.0:
+                        if rejected is not None:
+                            raise ValueError(
+                                f"{path}:{line_no}: row has multiple samples "
+                                f"with score=0.0; preference is ambiguous. "
+                                f"Each samples row must have exactly one "
+                                f"chosen (score=1.0) and one rejected "
+                                f"(score=0.0) sample."
+                            )
                         rejected = s
                     else:
                         raise ValueError(
                             f"{path}:{line_no}: invalid preference score "
-                            f"{score!r}. Samples-format preference rows must "
-                            f"use exactly score=1.0 (chosen) or score=0.0 "
-                            f"(rejected); graded/missing scores are not "
-                            f"supported."
+                            f"{score!r} in samples[{i}]. Samples-format "
+                            f"preference rows must use exactly score=1.0 "
+                            f"(chosen) or score=0.0 (rejected); graded/"
+                            f"missing scores are not supported."
                         )
                 if chosen is None or rejected is None:
                     raise ValueError(
@@ -131,6 +164,15 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
                         "chosen": {"messages": input_msgs + _to_msgs(row["preferred_output"])},
                         "rejected": {"messages": input_msgs + _to_msgs(row["non_preferred_output"])},
                     }
+                )
+            else:
+                raise ValueError(
+                    f"{path}:{line_no}: row does not match any supported "
+                    f"preference format. Expected one of:\n"
+                    f"  - {{'chosen': ..., 'rejected': ...}}\n"
+                    f"  - {{'samples': [{{'messages': ..., 'score': 0.0|1.0}}, ...]}}\n"
+                    f"  - {{'input': ..., 'preferred_output': ..., 'non_preferred_output': ...}}\n"
+                    f"Got keys: {sorted(row.keys())}"
                 )
             if max_pairs is not None and len(data) >= max_pairs:
                 break

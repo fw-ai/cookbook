@@ -755,3 +755,155 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
     # instead of biased toward the first N rows of the input file.
     all_ids = {f"example-{i}" for i in range(10)}
     assert eval_ids.issubset(all_ids)
+
+
+def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypatch):
+    """Eval-loss curves are only meaningful if the eval set does not drift
+    across epochs. Lock in the invariant that every epoch's eval pass sees the
+    exact same examples in the exact same order.
+
+    Setup: 100 rows, 10% carveout -> 10 eval rows, 90 training rows,
+    batch_size=5 -> 2 eval batches/epoch, 3 epochs -> 6 total eval batches.
+    """
+    rows = [
+        {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+        for i in range(100)
+    ]
+    dataset_path = _write_dataset(tmp_path, rows)
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {
+        "train_batches": [],
+        "eval_batches": [],
+        "deleted_jobs": [],
+    }
+
+    class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        job_id = "job-sft"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            events["train_batches"].append(list(batch))
+            return SimpleNamespace(metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": 2})
+
+        def forward_backward_custom(self, batch, loss_fn):
+            events["eval_batches"].append(list(batch))
+            return SimpleNamespace(metrics={"ce_loss_sum": 0.5, "response_tokens": 2})
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def save_state(self, name):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"{name}-sampler")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return name
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "auto_select_training_shape",
+        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
+    )
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    call_count = {"n": 0}
+
+    def _fake_render(messages, **kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        datum = SimpleNamespace(
+            model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
+            loss_fn_inputs={
+                "target_tokens": SimpleNamespace(data=[0, 0]),
+                "weights": SimpleNamespace(data=[1.0, 1.0]),
+            },
+            _test_id=f"example-{idx}",
+        )
+        return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
+
+    monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
+
+    cfg = module.Config(
+        dataset=str(dataset_path),
+        base_model="accounts/test/models/custom-sft",
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        epochs=3,
+        batch_size=5,
+        log_path=str(tmp_path / "sft_logs"),
+        eval_auto_carveout=True,
+    )
+
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    # 100 rows * 10% carveout = 10 eval rows, batch_size=5 -> 2 eval batches per epoch.
+    # 3 epochs -> 6 eval batches total.
+    eval_batches = events["eval_batches"]
+    assert len(eval_batches) == 6, (
+        f"Expected 6 eval batches (2/epoch * 3 epochs), got {len(eval_batches)}. "
+        f"Either eval ran the wrong number of times or batching changed."
+    )
+
+    eval_batches_per_epoch = 2
+    per_epoch_eval_ids: list[list[str]] = []
+    for epoch_idx in range(3):
+        start = epoch_idx * eval_batches_per_epoch
+        end = start + eval_batches_per_epoch
+        epoch_ids = [d._test_id for batch in eval_batches[start:end] for d in batch]
+        per_epoch_eval_ids.append(epoch_ids)
+
+    assert per_epoch_eval_ids[0] == per_epoch_eval_ids[1], (
+        f"Eval set drifted between epoch 0 and epoch 1.\n"
+        f"  epoch 0: {per_epoch_eval_ids[0]}\n"
+        f"  epoch 1: {per_epoch_eval_ids[1]}\n"
+        f"Eval-loss curves are only comparable across epochs if the eval set "
+        f"(both membership and order) is identical. Do not mutate eval_data or "
+        f"re-derive it inside the epoch loop."
+    )
+    assert per_epoch_eval_ids[1] == per_epoch_eval_ids[2], (
+        f"Eval set drifted between epoch 1 and epoch 2.\n"
+        f"  epoch 1: {per_epoch_eval_ids[1]}\n"
+        f"  epoch 2: {per_epoch_eval_ids[2]}"
+    )
+
+    # Sanity: eval membership is disjoint from training.
+    train_ids = {d._test_id for batch in events["train_batches"] for d in batch}
+    eval_ids = set(per_epoch_eval_ids[0])
+    assert train_ids.isdisjoint(eval_ids), (
+        "Eval rows leaked into training; carveout is broken."
+    )
+    assert len(eval_ids) == 10, (
+        f"Expected 10 distinct eval rows (10% of 100), got {len(eval_ids)}."
+    )

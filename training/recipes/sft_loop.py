@@ -506,6 +506,16 @@ def main(
         if not training_data:
             raise RuntimeError("No valid training examples after tokenization")
 
+        # Shuffle training_data once with cfg.seed so all downstream paths
+        # operate on a representative order rather than raw file order:
+        #   * eval auto-carveout slices from the head — unshuffled input
+        #     produces a biased eval set (all from the first source).
+        #   * pad_training_data_to_batch_size cycles from the head — on the
+        #     non-carveout path, unshuffled input gives the file prefix 2x
+        #     gradient exposure every epoch.
+        # Deterministic per-seed; safe on empty / single-item input.
+        random.Random(cfg.seed).shuffle(training_data)
+
         # -- Eval dataset (explicit or auto carve-out) -------------------------
         eval_data: List[tinker.Datum] = []
         if cfg.evaluation_dataset:
@@ -532,10 +542,8 @@ def main(
                 len(training_data), cfg.eval_carve_ratio, cfg.max_eval_seqs,
             )
             if carveout_count > 0:
-                # Shuffle before slicing so the carveout is a representative
-                # sample of the dataset. Without this, datasets ordered by
-                # source / difficulty / date produce a biased eval set.
-                random.Random(cfg.seed).shuffle(training_data)
+                # training_data was already shuffled with cfg.seed above,
+                # so slicing the head is a representative random sample.
                 eval_data = training_data[:carveout_count]
                 training_data = training_data[carveout_count:]
                 logger.info(

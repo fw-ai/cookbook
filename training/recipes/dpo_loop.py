@@ -311,6 +311,14 @@ async def _train_loop(
     n_batches_per_epoch = (len(tokenized_pairs) + batch_size - 1) // batch_size
     total_steps = n_batches_per_epoch * cfg.epochs
 
+    # Shuffle once before epoch 0 so file-ordered customer datasets (sorted
+    # by source/difficulty/date) don't bias the single-epoch gradient
+    # schedule. ref_cache is keyed by the original dataset index carried
+    # inside the (idx, pair) tuple, so shuffling the outer list preserves
+    # ref-cache correctness and makes epoch 0 consistent with epochs >= 1.
+    tokenized_pairs = list(tokenized_pairs)
+    random.Random(cfg.seed).shuffle(tokenized_pairs)
+
     if runner is None:
         runner = RunnerIO()
     ref_cache: dict[int, dict[str, Any]] = {}
