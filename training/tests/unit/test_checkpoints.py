@@ -11,6 +11,7 @@ from training.utils.checkpoints import (
     DATALOADER_BASE_NAME,
     ResumeInfo,
     TrainingCheckpoints,
+    _logical_name,
     validate_warm_start_config,
 )
 
@@ -219,6 +220,41 @@ class TestSave:
         fw.list_checkpoints.side_effect = RuntimeError("503")
         ckpt.save("step-1", resumable=False, promotable=True)
         client.save_weights_for_sampler_ext.assert_called_once()
+
+    def test_skip_matches_suffixed_server_name(self, log_dir):
+        """The trainer appends ``-<8 hex>`` to sampler names server-side.
+        Skip should match on the logical name (pre-suffix) so callers passing
+        ``step-1`` match a stored row ``step-1-abcd1234``."""
+        existing = [
+            _row("step-1-abcd1234", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                 promotable=True, create_time="2026-04-01T00:00:00Z"),
+        ]
+        ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
+        ckpt.save("step-1", resumable=False, promotable=True)
+        client.save_weights_for_sampler_ext.assert_not_called()
+
+    def test_skip_does_not_match_different_step(self, log_dir):
+        existing = [
+            _row("step-1-abcd1234", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                 promotable=True, create_time="2026-04-01T00:00:00Z"),
+        ]
+        ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
+        ckpt.save("step-2", resumable=False, promotable=True)
+        client.save_weights_for_sampler_ext.assert_called_once()
+
+
+class TestLogicalName:
+    @pytest.mark.parametrize("stored,logical", [
+        ("step-3", "step-3"),
+        ("step-3-abcd1234", "step-3"),
+        ("resume-3-base-45dda197", "resume-3-base"),
+        ("step-11-45dda197", "step-11"),
+        ("step-3-ABCD1234", "step-3-ABCD1234"),  # uppercase — not the pattern
+        ("step-3-12345", "step-3-12345"),         # 5 chars — not 8
+        ("step-3-abcdefghi", "step-3-abcdefghi"),  # 9 chars — not 8
+    ])
+    def test_strip_session_suffix(self, stored, logical):
+        assert _logical_name(stored) == logical
 
 
 # -- promote_latest ------------------------------------------------------------

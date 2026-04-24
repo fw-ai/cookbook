@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -105,6 +106,20 @@ def validate_warm_start_config(
 def _short_name(resource_name: str) -> str:
     """Extract the trailing checkpoint id from a full resource name."""
     return resource_name.rstrip("/").rsplit("/", 1)[-1]
+
+
+_SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
+
+
+def _logical_name(short: str) -> str:
+    """Strip the server-appended session suffix from a sampler checkpoint id.
+
+    Sampler writes (``INFERENCE_*`` rows) get an 8-hex-char session id
+    appended by the trainer (e.g. ``"step-5"`` -> ``"step-5-45dda197"``).
+    DCP (``TRAINING*``) rows keep the original caller-supplied name. For
+    skip-if-exists the caller's logical name is what should match.
+    """
+    return _SESSION_SUFFIX_RE.sub("", short)
 
 
 def _is_resumable_row(row: dict) -> bool:
@@ -331,7 +346,8 @@ class TrainingCheckpoints:
             )
             return False
         return any(
-            r.get("promotable") and _short_name(r.get("name", "")) == name for r in rows
+            r.get("promotable") and _logical_name(_short_name(r.get("name", ""))) == name
+            for r in rows
         )
 
     def _dataloader_path(self) -> str:
