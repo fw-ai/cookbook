@@ -1,35 +1,59 @@
 """Renderer for ZhipuAI GLM-5.1 chat template.
 
-Handles the GLM-5.1 chat format and has been validated end-to-end via
-SFT training on ``accounts/fireworks/models/glm-5p1``. Other GLM
-versions are out of scope for this renderer.
+Handles the GLM-5.1 chat format as shipped with ``zai-org/GLM-5.1``
+(and its FP8 variant ``zai-org/GLM-5.1-FP8``, which ships an identical
+tokenizer and chat template).
 
-Layout for a user/assistant turn::
+Token-level layout matches ``tokenizer.apply_chat_template`` byte-for-byte
+(verified by the unit tests in ``test_glm5_renderer.py``), modulo the
+intentional training EOS on the terminal assistant message.
 
-    [gMASK]<sop><|user|>
-    {user_content}<|assistant|>
-    <think></think>
-    {assistant_content}<|endoftext|>
+Role tag layout (as the shipped Jinja template emits them):
 
-Notes:
+- ``<|system|>{content}``  — no newline after the tag, no newline before the next tag
+- ``<|user|>{content}``    — same
+- ``<|assistant|>...``     — see below
+- ``<|observation|>{content}`` — same
 
-- ``[gMASK]<sop>`` is emitted once at the very start of the conversation
-  (no trailing newline — the upstream template strips it).
-- Role tags are ``<|system|>``, ``<|user|>``, ``<|assistant|>``,
-  ``<|observation|>``; each is followed by a literal newline except
-  ``<|assistant|>`` whose newline is produced as part of the assistant
-  output so the model generates it.
-- Every assistant turn begins with ``<think>...</think>``. Historical
-  assistant turns (before the last user turn) and non-thinking-mode
-  outputs collapse to ``<think></think>``.
-- The upstream Jinja template does *not* emit ``<|endoftext|>`` at
-  message boundaries. This renderer appends the eos token only to the
-  *last* message in the conversation, so training on the final assistant
-  turn teaches the model when to stop while historical assistant turns
-  still match the Jinja byte-for-byte.
+Assistant turn layout:
+
+- **Terminal turn, ``enable_thinking=True`` (default), no reasoning content**::
+
+      <|assistant|><think></think>{content}
+
+- **Terminal turn, reasoning content provided**::
+
+      <|assistant|><think>{reasoning}</think>{content}
+
+- **Terminal turn, ``enable_thinking=False``** (or non-thinking mode) — the
+  shipped template emits ``</think>`` alone so the model skips the think
+  phase::
+
+      <|assistant|></think>{content}
+
+- **Historical assistant turn** (any turn before the last user message) when
+  ``strip_thinking_from_history=True`` (the default)::
+
+      <|assistant|></think>{content}
+
+  Historical turns drop any reasoning content to avoid leaking intermediate
+  reasoning into later turns' context. Matches the shipped template's
+  ``loop.index0 > ns.last_user_index`` branch.
+
+Other invariants:
+
+- ``[gMASK]<sop>`` is emitted once at the very start of the conversation.
+- The shipped Jinja template does **not** emit ``<|endoftext|>`` at message
+  boundaries. This renderer appends ``<|endoftext|>`` only to the *last*
+  message in the conversation so the trained model learns when to stop;
+  historical assistant turns still match the Jinja byte-for-byte without
+  any EOS adjustment.
+- Generation suffix (``add_generation_prompt=True`` in Jinja):
+  ``<|assistant|><think>`` for thinking mode (default),
+  ``<|assistant|></think>`` for non-thinking mode.
 
 Only text-only chat, with and without thinking, is implemented here.
-Tools and multimodal content are left for a future extension.
+Tool calls and multimodal content are left for a future extension.
 """
 
 from __future__ import annotations
@@ -131,16 +155,18 @@ class GLM5Renderer(Renderer):
         role = message["role"]
         if role == "assistant":
             return self._render_assistant(message, ctx)
+        # GLM-5.1 role tags do not have a trailing newline; content is
+        # concatenated directly (e.g. ``<|user|>hello``).
         if role == "user":
-            header_str = "<|user|>\n"
+            header_str = "<|user|>"
             output_str = _visible_text(message["content"])
         elif role == "system":
-            header_str = "<|system|>\n"
+            header_str = "<|system|>"
             output_str = _visible_text(message["content"])
         elif role == "tool":
-            header_str = "<|observation|>\n"
+            header_str = "<|observation|>"
             output_str = (
-                f"<tool_response>\n{_visible_text(message['content'])}\n</tool_response>"
+                f"<tool_response>{_visible_text(message['content'])}</tool_response>"
             )
         else:
             raise ValueError(f"GLM5Renderer: unsupported role {role!r}")
@@ -156,9 +182,9 @@ class GLM5Renderer(Renderer):
         return RenderedMessage(header=header, output=output)
 
     def _render_assistant(self, message: Message, ctx: RenderContext) -> RenderedMessage:
-        # Header is just the role tag. The leading "\n" and the <think>
-        # block live in `output` so they are part of the training target
-        # for this assistant turn.
+        # The role tag ``<|assistant|>`` is the header; the ``<think>...
+        # </think>`` block lives in ``output`` so it is part of the training
+        # target for this assistant turn.
         header_str = "<|assistant|>"
 
         is_historical = (
@@ -168,17 +194,24 @@ class GLM5Renderer(Renderer):
         )
 
         reasoning, visible = _extract_reasoning_and_text(message["content"])
-        if is_historical or not reasoning:
-            think_block = "<think></think>"
-        else:
-            think_block = f"<think>{reasoning.strip()}</think>"
 
-        parts = ["\n", think_block]
+        # Match the shipped HF chat template:
+        # - Historical turns (strip_thinking): ``</think>`` alone, no
+        #   ``<think>`` opener.
+        # - Terminal turn with reasoning: ``<think>{reasoning}</think>``.
+        # - Terminal turn without reasoning: ``<think></think>`` (empty
+        #   think block, thinking-mode default).
+        #
+        # No newlines between the role tag, the think block, or the content.
+        if is_historical:
+            think_block = "</think>"
+        elif reasoning:
+            think_block = f"<think>{reasoning.strip()}</think>"
+        else:
+            think_block = "<think></think>"
+
         visible_stripped = visible.strip()
-        if visible_stripped:
-            parts.append("\n")
-            parts.append(visible_stripped)
-        output_str = "".join(parts)
+        output_str = think_block + visible_stripped
 
         output_tokens = self.tokenizer.encode(output_str, add_special_tokens=False)
         # Append <|endoftext|> only on the final message in the conversation.
@@ -199,7 +232,14 @@ class GLM5Renderer(Renderer):
 
     def _get_generation_suffix(self, role: Role, ctx: RenderContext) -> list[int]:
         del ctx
-        suffix_str = f"<|{role}|>" if role in ("assistant", "user", "system") else f"<|{role}|>"
+        # For the assistant role, match the shipped template's
+        # ``add_generation_prompt=True`` thinking-mode output:
+        # ``<|assistant|><think>``. The model produces the rest of the think
+        # block + ``</think>`` + visible content itself.
+        if role == "assistant":
+            suffix_str = "<|assistant|><think>"
+        else:
+            suffix_str = f"<|{role}|>"
         return self.tokenizer.encode(suffix_str, add_special_tokens=False)
 
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
