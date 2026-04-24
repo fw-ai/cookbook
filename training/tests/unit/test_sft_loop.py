@@ -755,3 +755,126 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
 
     # The eval example should be the first one (example-0)
     assert "example-0" in eval_ids
+
+
+# ---------------------------------------------------------------------------
+# _render_eagerly + _prepare_datasets: dataset-prep helpers extracted from
+# main() so the three eval branches (none / explicit / auto-carveout) and
+# the empty-dataset error are unit-testable without standing up the full
+# trainer / SDK stack.
+# ---------------------------------------------------------------------------
+
+
+def _write_jsonl_at(path, rows):
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    return path
+
+
+def _row(i: int) -> dict:
+    return {"messages": [{"role": "user", "content": f"u{i}"}]}
+
+
+def test_render_eagerly_drops_none(tmp_path, monkeypatch):
+    """_render_eagerly materialises the first n rows and skips Nones."""
+    path = _write_jsonl_at(tmp_path / "data.jsonl", [_row(i) for i in range(4)])
+    monkeypatch.setattr(
+        module,
+        "_render_one_worker",
+        lambda r: None if int(r["messages"][0]["content"][1:]) % 2 else f"d{r['messages'][0]['content'][1:]}",
+    )
+    ds = module.JsonlRenderDataset(str(path), module._render_one_worker)
+
+    assert module._render_eagerly(ds, 4) == ["d0", "d2"]
+    assert module._render_eagerly(ds, 0) == []
+
+
+class TestPrepareDatasets:
+    """Direct tests for the _prepare_datasets helper."""
+
+    @staticmethod
+    def _cfg(tmp_path, dataset_path, **overrides):
+        return module.Config(
+            log_path=str(tmp_path / "logs"),
+            dataset=str(dataset_path),
+            tokenizer_model="Qwen/Qwen3-1.7B",
+            max_seq_len=32,
+            **overrides,
+        )
+
+    def test_no_eval_branch(self, tmp_path, monkeypatch):
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(5)])
+        monkeypatch.setattr(
+            module, "_render_one_worker",
+            lambda r: f"d-{r['messages'][0]['content']}",
+        )
+
+        train_ds, eval_data = module._prepare_datasets(self._cfg(tmp_path, path))
+
+        assert len(train_ds) == 5
+        assert eval_data == []
+
+    def test_raises_on_empty_dataset(self, tmp_path, monkeypatch):
+        path = _write_jsonl_at(tmp_path / "empty.jsonl", [])
+        monkeypatch.setattr(module, "_render_one_worker", lambda r: r)
+
+        with pytest.raises(RuntimeError, match="No examples found"):
+            module._prepare_datasets(self._cfg(tmp_path, path))
+
+    def test_explicit_eval_dataset(self, tmp_path, monkeypatch):
+        train = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(5)])
+        eval_path = _write_jsonl_at(tmp_path / "eval.jsonl", [_row(100 + i) for i in range(3)])
+        monkeypatch.setattr(
+            module, "_render_one_worker",
+            lambda r: f"d-{r['messages'][0]['content']}",
+        )
+
+        cfg = self._cfg(tmp_path, train, evaluation_dataset=str(eval_path))
+        train_ds, eval_data = module._prepare_datasets(cfg)
+
+        assert len(train_ds) == 5
+        assert eval_data == ["d-u100", "d-u101", "d-u102"]
+
+    def test_auto_carveout_slices_training_dataset(self, tmp_path, monkeypatch):
+        # 20 rows, 10% ratio capped at max_eval_seqs=3 → 2 eval, 18 train.
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(20)])
+        monkeypatch.setattr(
+            module, "_render_one_worker",
+            lambda r: f"d-{r['messages'][0]['content']}",
+        )
+
+        cfg = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3)
+        train_ds, eval_data = module._prepare_datasets(cfg)
+
+        assert eval_data == ["d-u0", "d-u1"]
+        assert len(train_ds) == 18
+        assert train_ds[0] == "d-u2"  # carveout window is excluded from training
+
+    def test_auto_carveout_drops_none_rendered_rows(self, tmp_path, monkeypatch):
+        # 20 rows; render returns None for the second row in the carveout window.
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(20)])
+
+        def render(r):
+            content = r["messages"][0]["content"]
+            return None if content == "u1" else f"d-{content}"
+
+        monkeypatch.setattr(module, "_render_one_worker", render)
+
+        cfg = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3)
+        train_ds, eval_data = module._prepare_datasets(cfg)
+
+        # Carveout window is rows 0..1; row 1 renders None and is dropped.
+        assert eval_data == ["d-u0"]
+        # Training slice is rows 2..19 (None passes through; loader drops it).
+        assert len(train_ds) == 18
+
+    def test_auto_carveout_skipped_when_dataset_too_small(self, tmp_path, monkeypatch, caplog):
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(0)])
+        monkeypatch.setattr(module, "_render_one_worker", lambda r: r)
+
+        cfg = self._cfg(tmp_path, path, eval_auto_carveout=True)
+        with caplog.at_level("WARNING"):
+            train_ds, eval_data = module._prepare_datasets(cfg)
+
+        assert eval_data == []
+        assert len(train_ds) == 1
+        assert "too small for auto carve-out" in caplog.text
