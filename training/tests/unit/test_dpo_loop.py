@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import pytest
 import torch
 
 import training.recipes.dpo_loop as module
+from training.utils.data import load_preference_dataset
 
 
 class SequenceRenderer:
@@ -451,3 +453,330 @@ def test_pipeline_overlap_ref_freed_before_training_done():
         mod.flush_timing = orig_flush
         mod.log_metrics_json = orig_log
         mod.wandb_log = orig_wandb
+
+
+# ---------------------------------------------------------------------------
+# _train_loop data-ordering and step-accounting invariants.
+# ---------------------------------------------------------------------------
+
+
+def _make_tokenized_pair(idx: int) -> tuple[int, dict]:
+    return idx, {
+        "chosen_tokens": [1, 2, 3],
+        "rejected_tokens": [1, 2, 4],
+        "response_start": 2,
+        "chosen_datum": {"id": f"c{idx}"},
+        "rejected_datum": {"id": f"r{idx}"},
+    }
+
+
+class _FakeReferenceForShuffleTests:
+    def forward(self, datums, loss_fn):
+        return SimpleNamespace(
+            loss_fn_outputs=[
+                {"logprobs": SimpleNamespace(data=[-0.1, -0.2])} for _ in datums
+            ]
+        )
+
+
+class _FakePolicyForShuffleTests:
+    def optim_step(self, _params, **kwargs):
+        return SimpleNamespace(metrics={})
+
+
+def _patch_loop_noops(monkeypatch):
+    monkeypatch.setattr(module, "flush_timing", lambda: {})
+    monkeypatch.setattr(module, "log_metrics_json", lambda *a, **kw: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *a, **kw: None)
+
+
+def test_dpo_train_loop_shuffles_data_between_epochs(monkeypatch) -> None:
+    """Epoch 1 must NOT visit pairs in the same order as epoch 0.
+
+    Without a cross-epoch shuffle, a customer file ordered by source / date /
+    difficulty gets the same biased schedule every epoch, which is the whole
+    problem epoch shuffling is meant to solve.
+    """
+    tokenized_pairs = [_make_tokenized_pair(i) for i in range(8)]
+    batches_by_epoch: list[list[list[str]]] = []
+    current_epoch_batches: list[list[str]] = []
+    step_counter = {"n": 0}
+    steps_per_epoch = 4  # 8 pairs / batch_size 2
+
+    def fake_fwd_bwd(batch, policy, beta):
+        ids = [p["chosen_datum"]["id"] for p in batch]
+        current_epoch_batches.append(ids)
+        step_counter["n"] += 1
+        if step_counter["n"] % steps_per_epoch == 0:
+            batches_by_epoch.append(list(current_epoch_batches))
+            current_epoch_batches.clear()
+        return SimpleNamespace(metrics={"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.5})
+
+    monkeypatch.setattr(module, "_forward_backward_pairs", fake_fwd_bwd)
+    _patch_loop_noops(monkeypatch)
+
+    cfg = module.Config(
+        log_path="/tmp/dpo_epoch_shuffle",
+        beta=0.1,
+        epochs=2,
+        batch_size=2,
+        ref_cache_concurrency=4,
+    )
+
+    asyncio.run(
+        module._train_loop(
+            tokenized_pairs,
+            _FakeReferenceForShuffleTests(),
+            _FakePolicyForShuffleTests(),
+            adam_params={"lr": 1e-4},
+            cfg=cfg,
+            step_offset=0,
+        )
+    )
+
+    assert len(batches_by_epoch) == 2, (
+        f"Expected 2 complete epochs, captured {len(batches_by_epoch)}"
+    )
+    assert batches_by_epoch[0] != batches_by_epoch[1], (
+        f"Epoch 1 data order is identical to epoch 0 — no shuffle between epochs.\n"
+        f"epoch0={batches_by_epoch[0]}\n"
+        f"epoch1={batches_by_epoch[1]}\n"
+        f"Fix: shuffle `ordered_pairs` before each epoch ≥ 1 "
+        f"(e.g. `random.Random(seed + epoch).shuffle(ordered_pairs)`)."
+    )
+
+
+def test_dpo_train_loop_shuffles_epoch_zero(monkeypatch) -> None:
+    """When epochs=1, epoch 0 must still be shuffled (before _ref_producer).
+
+    Without this, a customer file sorted by source/date/difficulty is trained
+    in exactly that order, which biases a single-epoch DPO run — the very
+    problem the cross-epoch shuffle was introduced to solve.
+    """
+    tokenized_pairs = [_make_tokenized_pair(i) for i in range(8)]
+    observed_order: list[str] = []
+
+    def fake_fwd_bwd(batch, policy, beta):
+        observed_order.extend(p["chosen_datum"]["id"] for p in batch)
+        return SimpleNamespace(metrics={"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.5})
+
+    monkeypatch.setattr(module, "_forward_backward_pairs", fake_fwd_bwd)
+    _patch_loop_noops(monkeypatch)
+
+    cfg = module.Config(
+        log_path="/tmp/dpo_epoch0_shuffle",
+        beta=0.1,
+        epochs=1,
+        batch_size=2,
+        ref_cache_concurrency=4,
+    )
+
+    asyncio.run(
+        module._train_loop(
+            tokenized_pairs,
+            _FakeReferenceForShuffleTests(),
+            _FakePolicyForShuffleTests(),
+            adam_params={"lr": 1e-4},
+            cfg=cfg,
+            step_offset=0,
+        )
+    )
+
+    file_order = [f"c{i}" for i in range(8)]
+    assert observed_order != file_order, (
+        "Epoch 0 trained in exact file order; DPO must shuffle before epoch 0 "
+        "so single-epoch runs on sorted customer data aren't biased. "
+        "Fix: shuffle tokenized_pairs with random.Random(cfg.seed) at the top "
+        "of _train_loop."
+    )
+    assert sorted(observed_order) == sorted(file_order), (
+        f"Every pair must still be visited exactly once per epoch; got {observed_order}"
+    )
+
+
+def test_dpo_total_steps_matches_actual_step_count(monkeypatch) -> None:
+    """The runner-reported total_steps must equal the number of executed steps.
+
+    With 5 pairs and batch_size=2, the producer emits ceil(5/2)=3 batches, so
+    training performs 3 steps. Reporting total_steps=2 (integer division) makes
+    the UI display "Step 3/2".
+    """
+    tokenized_pairs = [_make_tokenized_pair(i) for i in range(5)]
+
+    executed = {"count": 0}
+    reported_total_steps = {"value": None}
+
+    def fake_fwd_bwd(batch, policy, beta):
+        executed["count"] += 1
+        return SimpleNamespace(metrics={"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.5})
+
+    class RecordingRunner:
+        def start_training(self):
+            pass
+
+        def write_status(self, *args, **kwargs):
+            total = kwargs.get("total_steps")
+            if total is not None:
+                reported_total_steps["value"] = total
+
+        def write_metadata(self, *args, **kwargs):
+            pass
+
+        def append_metrics(self, *args, **kwargs):
+            pass
+
+        def report_rendering_progress(self, *args, **kwargs):
+            pass
+
+        def set_accelerator_info(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(module, "_forward_backward_pairs", fake_fwd_bwd)
+    _patch_loop_noops(monkeypatch)
+
+    cfg = module.Config(
+        log_path="/tmp/dpo_total_steps",
+        beta=0.1,
+        epochs=1,
+        batch_size=2,
+        ref_cache_concurrency=4,
+    )
+
+    asyncio.run(
+        module._train_loop(
+            tokenized_pairs,
+            _FakeReferenceForShuffleTests(),
+            _FakePolicyForShuffleTests(),
+            adam_params={"lr": 1e-4},
+            cfg=cfg,
+            step_offset=0,
+            runner=RecordingRunner(),
+        )
+    )
+
+    assert executed["count"] == 3, (
+        f"Expected 3 training steps (ceil(5/2)), got {executed['count']}"
+    )
+    assert reported_total_steps["value"] == 3, (
+        f"_train_loop reported total_steps={reported_total_steps['value']} but actually "
+        f"executed {executed['count']} steps. "
+        "Fix: total_steps = ((N + batch_size - 1) // batch_size) * epochs."
+    )
+
+
+# ---------------------------------------------------------------------------
+# load_preference_dataset validation. The loader is the primary entry point
+# used by the DPO (and ORPO) loops to ingest customer preference data, so its
+# contract lives with the DPO tests: any malformed row must fail fast with a
+# clear ValueError rather than silently dropping data or crashing elsewhere.
+# ---------------------------------------------------------------------------
+
+
+def _write_preference_jsonl(tmp_path, rows):
+    path = tmp_path / "pref.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return str(path)
+
+
+class TestLoadPreferenceDatasetValidation:
+    def test_rejects_non_binary_scores(self, tmp_path) -> None:
+        """A samples-format row with a score outside {0.0, 1.0} should raise."""
+        rows = [
+            {
+                "samples": [
+                    {"messages": [{"role": "assistant", "content": "a"}], "score": 0.5},
+                    {"messages": [{"role": "assistant", "content": "b"}], "score": 0.8},
+                ],
+            },
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises((ValueError, AssertionError)) as excinfo:
+            load_preference_dataset(path)
+
+        assert "score" in str(excinfo.value).lower(), (
+            f"Expected the error to name the offending field; got: {excinfo.value!r}"
+        )
+
+    def test_rejects_rows_without_both_chosen_and_rejected(self, tmp_path) -> None:
+        """A samples-format row that yields no chosen or no rejected must raise."""
+        rows = [
+            {
+                "samples": [
+                    {"messages": [{"role": "assistant", "content": "a"}], "score": 1.0},
+                ],
+            },
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises((ValueError, AssertionError)) as excinfo:
+            load_preference_dataset(path)
+
+        assert "rejected" in str(excinfo.value).lower()
+
+    def test_rejects_duplicate_chosen_samples(self, tmp_path) -> None:
+        """Two samples with score=1.0 in a single row is ambiguous and must raise."""
+        rows = [
+            {
+                "samples": [
+                    {"messages": [{"role": "assistant", "content": "a"}], "score": 1.0},
+                    {"messages": [{"role": "assistant", "content": "b"}], "score": 1.0},
+                    {"messages": [{"role": "assistant", "content": "c"}], "score": 0.0},
+                ],
+            },
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError) as excinfo:
+            load_preference_dataset(path)
+
+        msg = str(excinfo.value).lower()
+        assert "ambiguous" in msg or "multiple" in msg, (
+            f"Expected the error to flag the duplicate chosen as ambiguous; got: {excinfo.value!r}"
+        )
+
+    def test_rejects_unknown_row_format(self, tmp_path) -> None:
+        """A row that matches none of the supported preference formats must raise,
+        not silently return 0 rows.
+        """
+        rows = [
+            {"foo": "bar"},
+            {"chosen": {"messages": [{"role": "assistant", "content": "a"}]}},  # missing rejected
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError) as excinfo:
+            load_preference_dataset(path)
+
+        assert "supported preference format" in str(excinfo.value).lower()
+
+    def test_rejects_non_list_samples(self, tmp_path) -> None:
+        """``samples`` must be a list — a dict / string / int should raise, not
+        crash with a cryptic AttributeError mid-iteration.
+        """
+        rows = [{"samples": {"this": "is a dict, not a list"}}]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError) as excinfo:
+            load_preference_dataset(path)
+
+        assert "list" in str(excinfo.value).lower()
+
+    def test_rejects_non_dict_sample_entry(self, tmp_path) -> None:
+        """Individual samples entries must be dicts; a string must raise a
+        fail-fast ValueError with file:line context, not AttributeError.
+        """
+        rows = [
+            {
+                "samples": [
+                    "not a dict",
+                    {"messages": [{"role": "assistant", "content": "b"}], "score": 0.0},
+                ],
+            },
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError) as excinfo:
+            load_preference_dataset(path)
+
+        assert "dict" in str(excinfo.value).lower()

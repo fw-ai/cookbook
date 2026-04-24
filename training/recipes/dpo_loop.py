@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import random
 import time
 import signal
 import asyncio
@@ -102,6 +103,9 @@ class Config:
     """Max concurrent reference forward passes during cache warm-up."""
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
+
+    seed: int = 0
+    """Seed for deterministic per-epoch data shuffling (epochs >= 1)."""
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
@@ -304,7 +308,16 @@ async def _train_loop(
     """
     batch_size = cfg.batch_size
     step = step_offset
-    total_steps = len(tokenized_pairs) * cfg.epochs // batch_size
+    n_batches_per_epoch = (len(tokenized_pairs) + batch_size - 1) // batch_size
+    total_steps = n_batches_per_epoch * cfg.epochs
+
+    # Shuffle once before epoch 0 so file-ordered customer datasets (sorted
+    # by source/difficulty/date) don't bias the single-epoch gradient
+    # schedule. ref_cache is keyed by the original dataset index carried
+    # inside the (idx, pair) tuple, so shuffling the outer list preserves
+    # ref-cache correctness and makes epoch 0 consistent with epochs >= 1.
+    tokenized_pairs = list(tokenized_pairs)
+    random.Random(cfg.seed).shuffle(tokenized_pairs)
 
     if runner is None:
         runner = RunnerIO()
@@ -385,7 +398,7 @@ async def _train_loop(
 
     multi_epoch = cfg.epochs > 1
 
-    n_batches_epoch0 = (len(tokenized_pairs) + batch_size - 1) // batch_size
+    n_batches_epoch0 = n_batches_per_epoch
     pbar = tqdm(total=total_steps, desc="DPO training", unit="step")
 
     async def _ref_producer() -> None:
@@ -419,6 +432,10 @@ async def _train_loop(
 
     for epoch in range(1, cfg.epochs):
         ordered_pairs = [ref_cache[idx] for idx, _ in tokenized_pairs]
+        # Without this, every epoch >= 1 visits pairs in the exact same order
+        # as epoch 0, which compounds a biased data schedule across the run.
+        rng = random.Random(cfg.seed + epoch)
+        rng.shuffle(ordered_pairs)
         for start in range(0, len(ordered_pairs), batch_size):
             chunk = ordered_pairs[start:start + batch_size]
             _run_train_step(epoch, chunk)
@@ -630,7 +647,7 @@ def main(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                 )
 
-        total_steps = len(tokenized_pairs) * cfg.epochs // cfg.batch_size
+        total_steps = ((len(tokenized_pairs) + cfg.batch_size - 1) // cfg.batch_size) * cfg.epochs
         runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
         runner.write_metadata()
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
