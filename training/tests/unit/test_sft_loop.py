@@ -749,5 +749,9 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
     # They should be disjoint
     assert train_ids.isdisjoint(eval_ids)
 
-    # The eval example should be the first one (example-0)
-    assert "example-0" in eval_ids
+    # Eval example comes from the 10-row dataset. We don't pin which specific
+    # row lands in eval: sft_loop now shuffles with a seeded RNG before the
+    # carve-out so the eval set is representative of the full distribution
+    # instead of biased toward the first N rows of the input file.
+    all_ids = {f"example-{i}" for i in range(10)}
+    assert eval_ids.issubset(all_ids)

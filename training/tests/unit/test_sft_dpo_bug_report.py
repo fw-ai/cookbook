@@ -282,19 +282,24 @@ def test_load_preference_dataset_rejects_rows_without_both_chosen_and_rejected(t
 def test_sft_data_pipeline_visits_every_training_row() -> None:
     """Reproduce the SFT main() data pipeline and show that rows are dropped.
 
-    Ref: sft_loop.main lines 526-531 (dataset construction) and 657-659
-    (per-epoch iteration). With 10 rows and batch_size=4, only 8 are ever fed
-    to `forward_backward`.
+    Ref: sft_loop.main() dataset construction and per-epoch iteration. With
+    10 rows and batch_size=4, the buggy pipeline trains on only 8 rows
+    (``SupervisedDatasetFromHFDataset.__len__`` uses integer division).
 
-    Fix (user preference): pad ``training_data`` up to a multiple of
-    ``effective_batch_size`` inside sft_loop.main() before constructing the
-    SupervisedDatasetFromHFDataset.
+    Fix (user preference): ``sft_loop.pad_training_data_to_batch_size`` pads
+    ``training_data`` up to a multiple of ``effective_batch_size`` before
+    constructing the SupervisedDatasetFromHFDataset.
     """
     import datasets as hf_datasets
     from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
 
-    training_data = list(range(10))
+    raw_training_data = list(range(10))
     effective_batch_size = 4
+
+    # Apply the documented fix from sft_loop.main() before building the dataset.
+    training_data = sft_module.pad_training_data_to_batch_size(
+        raw_training_data, effective_batch_size,
+    )
 
     sft_dataset = SupervisedDatasetFromHFDataset(
         hf_datasets.Dataset.from_dict(
@@ -305,10 +310,11 @@ def test_sft_data_pipeline_visits_every_training_row() -> None:
     )
 
     total_batches_per_epoch = len(sft_dataset)
-    expected_batches = math.ceil(len(training_data) / effective_batch_size)
+    expected_batches = math.ceil(len(raw_training_data) / effective_batch_size)
     assert total_batches_per_epoch == expected_batches, (
         f"Dataset reports {total_batches_per_epoch} batches/epoch "
-        f"but should cover all {len(training_data)} rows ({expected_batches} batches). "
+        f"but should cover all {len(raw_training_data)} rows "
+        f"({expected_batches} batches). "
         f"Fix: pad training_data to a multiple of batch_size before constructing the dataset."
     )
 
@@ -316,7 +322,7 @@ def test_sft_data_pipeline_visits_every_training_row() -> None:
     for i_batch in range(total_batches_per_epoch):
         seen.extend(sft_dataset.get_batch(i_batch))
 
-    missing = set(training_data) - set(seen)
+    missing = set(raw_training_data) - set(seen)
     assert not missing, (
         f"Rows silently dropped per epoch: {sorted(missing)}. "
         f"Fix: pad training_data to a multiple of batch_size."

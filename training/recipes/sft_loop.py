@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import random
 import signal
 import logging
 from contextlib import ExitStack
@@ -102,6 +103,32 @@ def compute_eval_carveout(
     return carveout
 
 
+def pad_training_data_to_batch_size(
+    training_data: List[Any], batch_size: int,
+) -> List[Any]:
+    """Pad ``training_data`` up to a multiple of ``batch_size`` so no row is
+    silently dropped by ``SupervisedDatasetFromHFDataset``.
+
+    ``SupervisedDatasetFromHFDataset.__len__`` uses integer division, and
+    the SFT main loop iterates ``range(len(dataset))`` — so any partial
+    last batch is silently dropped every epoch (e.g. 10 rows / batch 4 →
+    only 8 rows trained). We pad by cycling rows from the head so every
+    original example is visited at least once per epoch.
+
+    Returns a new list; ``training_data`` is not mutated. ``batch_size`` must
+    be >= 1. Empty inputs are returned unchanged.
+    """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    if not training_data:
+        return list(training_data)
+    remainder = len(training_data) % batch_size
+    if remainder == 0:
+        return list(training_data)
+    pad_count = batch_size - remainder
+    return list(training_data) + list(training_data[:pad_count])
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -178,6 +205,9 @@ class Config:
 
     max_eval_seqs: int = DEFAULT_MAX_EVAL_SEQS
     """Max number of eval sequences for carve-out."""
+
+    seed: int = 0
+    """Seed for deterministic dataset shuffling (eval carve-out + padding)."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
@@ -498,16 +528,20 @@ def main(
                     runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
             logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
         elif cfg.eval_auto_carveout:
-            # Auto carve-out: split first N examples as eval
             carveout_count = compute_eval_carveout(
                 len(training_data), cfg.eval_carve_ratio, cfg.max_eval_seqs,
             )
             if carveout_count > 0:
+                # Shuffle before slicing so the carveout is a representative
+                # sample of the dataset. Without this, datasets ordered by
+                # source / difficulty / date produce a biased eval set.
+                random.Random(cfg.seed).shuffle(training_data)
                 eval_data = training_data[:carveout_count]
                 training_data = training_data[carveout_count:]
                 logger.info(
-                    "Auto carve-out: %d eval examples, %d training examples",
-                    len(eval_data), len(training_data),
+                    "Auto carve-out: %d eval examples, %d training examples "
+                    "(shuffled with seed=%d)",
+                    len(eval_data), len(training_data), cfg.seed,
                 )
             else:
                 logger.warning("Dataset too small for auto carve-out, skipping eval")
@@ -522,6 +556,17 @@ def main(
                 len(training_data),
             )
             effective_batch_size = len(training_data)
+
+        original_size = len(training_data)
+        training_data = pad_training_data_to_batch_size(
+            training_data, effective_batch_size,
+        )
+        if len(training_data) != original_size:
+            logger.info(
+                "Padded training_data from %d -> %d row(s) (cycled from the "
+                "head) so every original example is trained on each epoch.",
+                original_size, len(training_data),
+            )
 
         sft_dataset = SupervisedDatasetFromHFDataset(
             hf_datasets.Dataset.from_dict({"datum_idx": list(range(len(training_data)))}),
