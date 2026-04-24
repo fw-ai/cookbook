@@ -1,10 +1,11 @@
 """Verify GLM5Renderer matches HuggingFace apply_chat_template output.
 
-The GLM-5.1 tokenizer isn't yet on the public HuggingFace Hub, so this
-test loads it from a local path when available and skips otherwise. The
-canonical chat template (also used by GLM-4.5 / GLM-4.6) is embedded
-below as a raw string so the test is self-contained and doesn't depend
-on the fireworks internal repo.
+Loads the public ``zai-org/GLM-5.1-FP8`` tokenizer (which ships the
+canonical chat template for GLM-5.1) and checks that every supported
+renderer output matches what ``tokenizer.apply_chat_template`` produces
+byte-for-byte, modulo the intentional training EOS on the terminal
+assistant message. Falls back to a local tokenizer path when the
+HuggingFace Hub isn't reachable (e.g. internal CI).
 
 Run from cookbook/training with:
     PYTHONPATH=../.. python -m pytest training/tests/unit/test_glm5_renderer.py -v -s
@@ -20,113 +21,43 @@ import transformers
 from training.renderer.glm5 import GLM5Renderer
 from tinker_cookbook.renderers.base import TrainOnWhat
 
-# Local tokenizer path (fireworks internal). Falls back to skipping if absent.
+# Public HF tokenizer (ships the canonical GLM-5.1 chat template).
+_PUBLIC_TOKENIZER = "zai-org/GLM-5.1-FP8"
+# Optional local fallback path used when the HF Hub isn't reachable. The
+# tokenizer loaded here must also ship a chat_template attribute equivalent
+# to the one on ``zai-org/GLM-5.1-FP8``; otherwise the parity tests will
+# flag any drift, which is the intended behaviour.
 _LOCAL_TOKENIZER = "/home/yinghanma/ws2/fireworks/py/fireworks/test/serving/text/tokenizers/glm5"
 
-# Canonical GLM chat template. Applies to GLM-4.5, GLM-4.6, and GLM-5.1 —
-# they share the same role delimiters (<|user|>, <|assistant|>, etc.)
-# and thinking-block convention.
-_GLM_CHAT_TEMPLATE = r"""[gMASK]<sop>
-{%- if tools -%}
-<|system|>
-# Tools
 
-You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{% for tool in tools %}
-{{ tool | tojson(ensure_ascii=False) }}
-{% endfor %}
-</tools>
-
-For each function call, output the function name and arguments within the following XML format:
-<tool_call>{function-name}
-<arg_key>{arg-key-1}</arg_key>
-<arg_value>{arg-value-1}</arg_value>
-<arg_key>{arg-key-2}</arg_key>
-<arg_value>{arg-value-2}</arg_value>
-...
-</tool_call>{%- endif -%}
-{%- macro visible_text(content) -%}
-    {%- if content is string -%}
-        {{- content }}
-    {%- elif content is iterable and content is not mapping -%}
-        {%- for item in content -%}
-            {%- if item is mapping and item.type == 'text' -%}
-                {{- item.text }}
-            {%- elif item is string -%}
-                {{- item }}
-            {%- endif -%}
-        {%- endfor -%}
-    {%- else -%}
-        {{- content }}
-    {%- endif -%}
-{%- endmacro -%}
-{%- set ns = namespace(last_user_index=-1) %}
-{%- for m in messages %}
-    {%- if m.role == 'user' %}
-        {% set ns.last_user_index = loop.index0 -%}
-    {%- endif %}
-{%- endfor %}
-{% for m in messages %}
-{%- if m.role == 'user' -%}<|user|>
-{{ visible_text(m.content) }}
-{{- '/nothink' if (enable_thinking is defined and not enable_thinking and not visible_text(m.content).endswith("/nothink")) else '' -}}
-{%- elif m.role == 'assistant' -%}
-<|assistant|>
-{%- set reasoning_content = '' %}
-{%- set content = visible_text(m.content) %}
-{%- if m.reasoning_content is string %}
-    {%- set reasoning_content = m.reasoning_content %}
-{%- else %}
-    {%- if '</think>' in content %}
-        {%- set reasoning_content = content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') %}
-        {%- set content = content.split('</think>')[-1].lstrip('\n') %}
-    {%- endif %}
-{%- endif %}
-{%- if loop.index0 > ns.last_user_index and reasoning_content -%}
-{{ '\n<think>' + reasoning_content.strip() +  '</think>'}}
-{%- else -%}
-{{ '\n<think></think>' }}
-{%- endif -%}
-{%- if content.strip() -%}
-{{ '\n' + content.strip() }}
-{%- endif -%}
-{%- elif m.role == 'tool' -%}
-{%- if m.content is string -%}
-{%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}
-    {{- '<|observation|>' }}
-{%- endif %}
-{{- '\n<tool_response>\n' }}
-{{- m.content }}
-{{- '\n</tool_response>' }}
-{%- else -%}
-<|observation|>{% for tr in m.content %}
-
-<tool_response>
-{{ tr.output if tr.output is defined else tr }}
-</tool_response>{% endfor -%}
-{% endif -%}
-{%- elif m.role == 'system' -%}
-<|system|>
-{{ visible_text(m.content) }}
-{%- endif -%}
-{%- endfor -%}
-{%- if add_generation_prompt -%}
-    <|assistant|>{{- '\n<think></think>' if (enable_thinking is defined and not enable_thinking) else '' -}}
-{%- endif -%}
-"""
+def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
+    """Try the public tokenizer first, fall back to a local checkout."""
+    try:
+        return transformers.AutoTokenizer.from_pretrained(
+            _PUBLIC_TOKENIZER, trust_remote_code=True,
+        )
+    except Exception:  # noqa: BLE001 — network / auth / missing chat_template
+        pass
+    if Path(_LOCAL_TOKENIZER).exists():
+        return transformers.AutoTokenizer.from_pretrained(
+            _LOCAL_TOKENIZER, trust_remote_code=True,
+        )
+    return None
 
 
 @pytest.fixture(scope="module")
 def tokenizer():
-    if not Path(_LOCAL_TOKENIZER).exists():
-        pytest.skip(f"GLM-5.1 tokenizer not available at {_LOCAL_TOKENIZER}")
-    tok = transformers.AutoTokenizer.from_pretrained(
-        _LOCAL_TOKENIZER, trust_remote_code=True,
-    )
-    tok.chat_template = _GLM_CHAT_TEMPLATE
+    tok = _load_tokenizer()
+    if tok is None:
+        pytest.skip(
+            f"GLM-5.1 tokenizer not available (tried {_PUBLIC_TOKENIZER!r} "
+            f"and {_LOCAL_TOKENIZER!r})"
+        )
+    if not getattr(tok, "chat_template", None):
+        pytest.skip(
+            "Loaded GLM-5.1 tokenizer has no chat_template; cannot compare "
+            "against apply_chat_template output."
+        )
     return tok
 
 
@@ -393,8 +324,9 @@ def test_weight_mask_only_covers_assistant_output(tokenizer, renderer):
     """Every non-zero-weight position must decode to an assistant-output token.
 
     Specifically: the trained span for the last assistant turn should be
-    <think></think>\n{content}<|endoftext|> — covering the ``\\n`` and the
-    trailing EOS.
+    ``<think></think>{content}<|endoftext|>`` — matching the shipped
+    Jinja template layout (no leading newline, no newline between the
+    think block and the content) plus the intentional trailing EOS.
     """
     messages = [
         {"role": "user", "content": "What is the secret password?"},
@@ -409,8 +341,8 @@ def test_weight_mask_only_covers_assistant_output(tokenizer, renderer):
     trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
     trained_text = tokenizer.decode(trained_tokens)
 
-    # Should start with '\n<think></think>' and end with the EOS token.
-    assert trained_text.startswith("\n<think></think>"), trained_text
+    # Should start with '<think></think>' (no leading newline) and end with EOS.
+    assert trained_text.startswith("<think></think>"), trained_text
     assert tokens[-1] == _eos(tokenizer), "last token must be <|endoftext|>"
     assert "ALPHA-BRAVO" in trained_text
 
@@ -449,12 +381,23 @@ def test_stop_sequences_returns_eos(tokenizer, renderer):
 
 
 def test_generation_suffix_is_role_tag(tokenizer, renderer):
-    """Generation suffix for role=assistant must decode to '<|assistant|>'."""
+    """Generation suffix for role=assistant must match the shipped Jinja.
+
+    The shipped GLM-5.1 chat template emits ``<|assistant|><think>`` when
+    ``add_generation_prompt=True`` and ``enable_thinking`` is not explicitly
+    false. The renderer default matches that thinking-mode prompt so
+    trained models can continue generating the reasoning block.
+    """
     from tinker_cookbook.renderers.base import RenderContext
 
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
     suffix = renderer._get_generation_suffix("assistant", ctx)
-    assert tokenizer.decode(suffix) == "<|assistant|>"
+    assert tokenizer.decode(suffix) == "<|assistant|><think>"
+
+    # Non-assistant roles still decode to just the role tag (unchanged).
+    for role in ("user", "system"):
+        suffix = renderer._get_generation_suffix(role, ctx)
+        assert tokenizer.decode(suffix) == f"<|{role}|>"
 
 
 def test_parse_response_roundtrip(tokenizer, renderer):
