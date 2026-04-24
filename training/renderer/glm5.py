@@ -1,6 +1,8 @@
 """Renderer for ZhipuAI GLM-5.1 chat template.
 
-Handles the GLM-5.1 chat format as shipped with ``zai-org/GLM-5.1-FP8``.
+Handles the GLM-5.1 chat format as shipped with ``zai-org/GLM-5.1``
+(and its FP8 variant ``zai-org/GLM-5.1-FP8``, which ships an identical
+tokenizer and chat template).
 
 Token-level layout matches ``tokenizer.apply_chat_template`` byte-for-byte
 (verified by the unit tests in ``test_glm5_renderer.py``), modulo the

@@ -1,11 +1,15 @@
 """Verify GLM5Renderer matches HuggingFace apply_chat_template output.
 
-Loads the public ``zai-org/GLM-5.1-FP8`` tokenizer (which ships the
-canonical chat template for GLM-5.1) and checks that every supported
-renderer output matches what ``tokenizer.apply_chat_template`` produces
+Loads the public ``zai-org/GLM-5.1`` tokenizer (which ships the canonical
+chat template for GLM-5.1) and checks that every supported renderer
+output matches what ``tokenizer.apply_chat_template`` produces
 byte-for-byte, modulo the intentional training EOS on the terminal
 assistant message. Falls back to a local tokenizer path when the
 HuggingFace Hub isn't reachable (e.g. internal CI).
+
+The ``zai-org/GLM-5.1-FP8`` repo ships an identical tokenizer + chat
+template (verified: byte-for-byte equal). We use the bf16 repo here
+because it's the canonical architecture reference.
 
 Run from cookbook/training with:
     PYTHONPATH=../.. python -m pytest training/tests/unit/test_glm5_renderer.py -v -s
@@ -22,11 +26,11 @@ from training.renderer.glm5 import GLM5Renderer
 from tinker_cookbook.renderers.base import TrainOnWhat
 
 # Public HF tokenizer (ships the canonical GLM-5.1 chat template).
-_PUBLIC_TOKENIZER = "zai-org/GLM-5.1-FP8"
+_PUBLIC_TOKENIZER = "zai-org/GLM-5.1"
 # Optional local fallback path used when the HF Hub isn't reachable. The
 # tokenizer loaded here must also ship a chat_template attribute equivalent
-# to the one on ``zai-org/GLM-5.1-FP8``; otherwise the parity tests will
-# flag any drift, which is the intended behaviour.
+# to the one on ``zai-org/GLM-5.1``; otherwise the parity tests will flag
+# any drift, which is the intended behaviour.
 _LOCAL_TOKENIZER = "/home/yinghanma/ws2/fireworks/py/fireworks/test/serving/text/tokenizers/glm5"
 
 
