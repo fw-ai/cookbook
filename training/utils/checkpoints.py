@@ -108,6 +108,24 @@ def _short_name(resource_name: str) -> str:
     return resource_name.rstrip("/").rsplit("/", 1)[-1]
 
 
+def _resolved_save_name(save_result: Any, *, fallback: str) -> str:
+    """Extract the server-authoritative short checkpoint name from save_state's
+    response. Tinker's ``SaveWeightsResponse`` returns a ``path`` URI
+    (e.g. ``tinker://.../step-0``); its basename is what the control plane's
+    ``list_checkpoints`` will surface. Falls back to the caller name if the
+    response shape is unexpected (older clients, tests with naive mocks).
+    """
+    if save_result is None:
+        return fallback
+    path = getattr(save_result, "path", None)
+    if path:
+        return _short_name(str(path))
+    snapshot_name = getattr(save_result, "snapshot_name", None)
+    if snapshot_name:
+        return _short_name(str(snapshot_name))
+    return fallback
+
+
 _SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
 
 
@@ -193,10 +211,22 @@ class TrainingCheckpoints:
         t0 = time.time()
         if resumable:
             logger.info("Saving DCP checkpoint '%s'...", name)
-            self._client.save_state(name)
+            result = self._client.save_state(name)
             logger.info("DCP checkpoint '%s' saved (%.1fs)", name, time.time() - t0)
             if data_consumed is not None:
-                self._write_dataloader(name, data_consumed)
+                # Key dataloader.json by what the server actually wrote. The
+                # trainer may rename to its internal step counter (e.g. the
+                # caller passes "step-42" but the service stores as "step-0").
+                # Resume reads the row name from the control plane, so the
+                # stored key must match that — not the caller's logical name.
+                actual_name = _resolved_save_name(result, fallback=name)
+                self._write_dataloader(actual_name, data_consumed)
+                if actual_name != name:
+                    logger.info(
+                        "DCP server-returned name %r differs from caller name %r; "
+                        "dataloader.json keyed on server name for resume alignment.",
+                        actual_name, name,
+                    )
 
         if promotable:
             if self._promotable_exists(name):

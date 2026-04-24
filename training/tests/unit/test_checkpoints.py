@@ -22,11 +22,25 @@ def log_dir():
         yield d
 
 
-def _mock_client():
+def _mock_client(save_state_renames_to: str | None = None):
+    """Build a fake ReconnectableClient.
+
+    ``save_state_renames_to`` simulates the service-mode trainer renaming the
+    DCP checkpoint to its internal step counter — when set, every
+    ``save_state(name)`` call returns a path ending in this value instead of
+    the caller name. Default (None) honors the caller name.
+    """
     client = MagicMock()
     client.resolve_checkpoint_path.side_effect = (
         lambda name, source_job_id=None: f"path://{source_job_id or 'self'}/{name}"
     )
+
+    def _save_state(name):
+        result = MagicMock()
+        result.path = f"tinker://policy/{save_state_renames_to or name}"
+        return result
+
+    client.save_state.side_effect = _save_state
 
     def _save_sampler(name, checkpoint_type="base"):
         result = MagicMock()
@@ -53,8 +67,8 @@ def _row(short_name, *, ctype, promotable, create_time):
     }
 
 
-def _make(log_dir, *, fw_rows=None, lora_rank=0):
-    client = _mock_client()
+def _make(log_dir, *, fw_rows=None, lora_rank=0, save_state_renames_to: str | None = None):
+    client = _mock_client(save_state_renames_to=save_state_renames_to)
     fw = _mock_fw_client(rows=fw_rows)
     ckpt = TrainingCheckpoints(
         client, fw, trainer_id="job-1", log_path=log_dir, lora_rank=lora_rank
@@ -241,6 +255,27 @@ class TestSave:
         ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
         ckpt.save("step-2", resumable=False, promotable=True)
         client.save_weights_for_sampler_ext.assert_called_once()
+
+    def test_dataloader_keyed_on_server_name_when_trainer_renames(self, log_dir):
+        """Trainer service-mode may rename DCP saves to its internal step
+        counter: caller passes "step-42" but the service writes "step-0".
+        ``dataloader.json`` must be keyed on the server-returned name so the
+        resume lookup (which reads names from the control plane) matches."""
+        ckpt, client, _ = _make(log_dir, save_state_renames_to="step-0")
+        ckpt.save("step-42", resumable=True, promotable=False, data_consumed=777)
+        client.save_state.assert_called_once_with("step-42")
+
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
+            data = json.load(f)
+        assert data == {"step-0": 777}, f"expected server name keyed, got {data}"
+
+    def test_dataloader_keyed_on_caller_name_when_no_rename(self, log_dir):
+        """When the server honors the caller name, ``dataloader.json`` keys
+        by the same string (no regression vs prior behavior)."""
+        ckpt, client, _ = _make(log_dir)  # default: no rename
+        ckpt.save("step-5", resumable=True, promotable=False, data_consumed=50)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
+            assert json.load(f) == {"step-5": 50}
 
 
 class TestLogicalName:
