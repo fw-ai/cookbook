@@ -21,6 +21,7 @@ import pytest
 RECIPE_MODULES = [
     "training.recipes.sft_loop",
     "training.recipes.rl_loop",
+    "training.recipes.opd_loop",
     "training.recipes.dpo_loop",
     "training.recipes.orpo_loop",
 ]
@@ -40,6 +41,7 @@ UTIL_MODULES = [
     "training.utils.data",
     "training.utils.infra",
     "training.utils.losses",
+    "training.utils.opd",
     "training.utils.logging",
     "training.utils.checkpoint_utils",
     "training.utils.timer",
@@ -176,6 +178,13 @@ def test_rl_config_defaults():
     from training.recipes.rl_loop import Config
 
     cfg = Config(log_path="/tmp/test")
+    assert cfg.base_model
+
+
+def test_opd_config_defaults():
+    from training.recipes.opd_loop import Config
+
+    cfg = Config(log_path="/tmp/test", teacher_model="accounts/fireworks/models/qwen3-235b-a22b")
     assert cfg.base_model
 
 

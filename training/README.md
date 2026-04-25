@@ -10,6 +10,7 @@ Each recipe is a single Python file you can fork and customize.
 | Recipe | File | Description |
 | --- | --- | --- |
 | GRPO / IS / DAPO / DRO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"importance_sampling"`, `"dapo"`, `"dro"`, `"gspo"`, or `"cispo"`. |
+| OPD | `recipes/opd_loop.py` | Sampled-token on-policy distillation. The student rolls out on policy, a teacher scores those same tokens, and training uses the server-side importance-sampling loss. |
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
 | SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
@@ -81,6 +82,14 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | --- | --- |
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
 | `weight_sync` | `WeightSyncConfig(weight_sync_interval=1)` to sync weights to the deployment |
+
+**OPD** (`recipes/opd_loop.py`) -- also requires:
+
+| Field | What to set |
+| --- | --- |
+| `teacher_model` | Fireworks teacher model or deployment ID using the same tokenizer as the student |
+| `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for student rollouts |
+| `weight_sync` | `WeightSyncConfig(weight_sync_interval=1)` for strict on-policy updates |
 
 When `training_shape_id` is not set, the cookbook auto-selects validated
 trainer shapes at runtime from Fireworks control-plane data. RL-family
