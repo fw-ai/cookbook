@@ -24,11 +24,12 @@ from __future__ import annotations
 import os
 import re
 import json
+import math
 import signal
 import asyncio
 import logging
 from contextlib import ExitStack
-from typing import List, Optional
+from typing import Any, List, Optional
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -145,6 +146,14 @@ class Config:
     """Asymmetric upper clip bound (GRPO only)."""
     ratio_log_cap: float = 20.0
     """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
+    ppo_n_minibatches: int = 1
+    """Number of inner PPO minibatches per rollout batch.
+
+    Each rollout batch runs one ``prox_fwd`` snapshot followed by
+    ``ppo_n_minibatches`` × (``forward_backward`` + ``optim_step``). When
+    >1, the policy drifts across inner steps, so ``prox_lp`` anchors the
+    PPO ratio and the clip does real work. ``1`` reproduces the legacy
+    1:1 behavior."""
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
 
@@ -610,10 +619,14 @@ def main(
 
         # Server-side fast path: resolve the builtin kernel/config used by
         # forward_backward(...). Returns None when this loss has no builtin
-        # implementation, and raises when the current profile is ineligible.
+        # implementation, when kl_beta > 0 (builtin kernels do not consume
+        # ref_logprobs, so the KL term would be silently dropped -- see
+        # resolve_builtin_loss docstring), or raises when the current profile
+        # is ineligible.
         builtin_server_loss = resolve_builtin_loss(
             cfg.policy_loss,
             policy_profile,
+            kl_beta=cfg.kl_beta,
             dapo_config=cfg.dapo,
             gspo_config=cfg.gspo,
             cispo_config=cfg.cispo,
@@ -621,24 +634,25 @@ def main(
             eps_clip=cfg.eps_clip,
             eps_clip_high=cfg.eps_clip_high,
         )
+        if cfg.kl_beta > 0 and builtin_server_loss is None:
+            logger.info(
+                "policy_loss=%s + kl_beta=%g: routing to client-side "
+                "forward_backward_custom (server-side builtin kernels ignore "
+                "ref_logprobs, so KL would be silently dropped). Expect one "
+                "extra forward pass per step.",
+                cfg.policy_loss,
+                cfg.kl_beta,
+            )
 
-        def fwd_bwd_one(prompt_groups: list[PromptGroup]):
-            """One minibatch update using the builtin or client-side loss path."""
-            if not prompt_groups:
-                raise ValueError("fwd_bwd_one requires at least one prompt group")
+        def fwd_bwd_minibatch(
+            data, adv, ref_lp, prompt_lens, inf_lp, prox_lp,
+        ):
+            """One inner PPO minibatch using builtin or client-side loss path.
 
-            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
-
-            t0 = _time.time()
-            prox_fwd = policy.forward(data, "cross_entropy")
-            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("policy_forward: done (%.1fs)", _time.time() - t0)
-
-            t0 = _time.time()
+            Callers pre-compute ``prox_lp`` once per rollout batch and pass
+            a slice of the flattened rollout tensors for this minibatch.
+            """
             if builtin_server_loss is not None:
-                # Server-side builtin path: pre-pack the rollout tensors into
-                # datums the trainer kernel understands, then call
-                # forward_backward(...).
                 kernel_loss, kernel_config = builtin_server_loss
                 rl_datums = build_builtin_loss_datums(
                     data,
@@ -649,69 +663,106 @@ def main(
                     cfg.tis,
                     policy_loss=cfg.policy_loss,
                 )
-                fwd_bwd_result = policy.forward_backward(
+                return policy.forward_backward(
                     rl_datums,
                     kernel_loss,
                     loss_fn_config=kernel_config,
                 )
-            else:
-                # Client-side custom path: execute the Python loss closure
-                # returned by build_loss_fn(...) via forward_backward_custom(...).
-                fwd_bwd_result = policy.forward_backward_custom(
-                    data,
-                    client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
-                )
-            logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
-            return fwd_bwd_result
+            return policy.forward_backward_custom(
+                data,
+                client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+            )
 
         def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + fwd_bwd + optim_step + metrics (1:1)."""
+            """ref_forward + prox_fwd (once) + num_minibatches × (fwd_bwd + optim_step) + metrics.
+
+            ``num_minibatches = cfg.ppo_n_minibatches``. ``prox_lp`` is snapshotted
+            once per rollout batch and reused across every inner optim step so
+            the PPO ratio measures genuine policy drift. DCP checkpoints fire
+            only at rollout boundaries (cadence in rollout batches, not optim
+            steps) so resume accounting is independent of the minibatch count.
+            """
+            if not prompt_groups:
+                raise ValueError("train_step requires at least one prompt group")
+
             t0 = _time.time()
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
+            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
             t0 = _time.time()
-            fwd_bwd_result = fwd_bwd_one(prompt_groups)
-            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _time.time() - t0)
+            prox_fwd = policy.forward(data, "cross_entropy")
+            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+            logger.info("[step %d] prox_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
-            t0 = _time.time()
-            optim_result = policy.optim_step(
-                adam_params,
-                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-            )
-            step += 1
-            logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
+            n = len(data)
+            num_minibatches = max(1, cfg.ppo_n_minibatches)
+            minibatch_size = max(1, math.ceil(n / num_minibatches))
+            fwd_bwd_results: list = []
+            optim_result: Any = None
+            for minibatch_idx in range(num_minibatches):
+                minibatch_start = minibatch_idx * minibatch_size
+                minibatch_end = min(minibatch_start + minibatch_size, n)
+                if minibatch_start >= minibatch_end:
+                    break
 
-            if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
+                t0 = _time.time()
+                fwd_bwd_results.append(fwd_bwd_minibatch(
+                    data[minibatch_start:minibatch_end],
+                    adv[minibatch_start:minibatch_end],
+                    ref_lp[minibatch_start:minibatch_end],
+                    prompt_lens[minibatch_start:minibatch_end],
+                    inf_lp[minibatch_start:minibatch_end],
+                    prox_lp[minibatch_start:minibatch_end],
+                ))
+                logger.info(
+                    "[step %d] fwd_bwd (mb %d/%d): done (%.1fs)",
+                    step + 1, minibatch_idx + 1, num_minibatches, _time.time() - t0,
+                )
+
+                t0 = _time.time()
+                optim_result = policy.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                )
+                step += 1
+                logger.info(
+                    "[step %d] optim_step (mb %d/%d): done (%.1fs)",
+                    step, minibatch_idx + 1, num_minibatches, _time.time() - t0,
+                )
+
+            rollouts_completed = (step - step_offset) // num_minibatches
+            dcp_interval = cfg.weight_sync.dcp_save_interval
+            if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
-                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    step - step_offset
-                ) * prompt_groups_per_step
+                data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+                    rollouts_completed * prompt_groups_per_step
+                )
                 save_checkpoint(
                     policy,
                     f"step-{step}",
                     cfg.log_path,
                     {
                         "step": step,
-                        "data_consumed": _data_consumed,
+                        "data_consumed": data_consumed,
                         "source_job_id": policy_job_id,
                     },
                     kind=CheckpointKind.STATE,
                     base_model=cfg.base_model,
                     training_shape=infra.training_shape_id,
                 )
+                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
-                fwd_bwd_results=[fwd_bwd_result],
+                fwd_bwd_results=fwd_bwd_results,
                 optim_result=optim_result,
-                n_accum=1,
+                n_accum=len(fwd_bwd_results),
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
@@ -734,7 +785,7 @@ def main(
             log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
             wandb_log(metrics, step)
 
-            total_rl_steps = len(rl_dataset) - step_offset
+            total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
             runner.append_metrics(step, metrics, tokens=step_tokens)
             runner.write_status(
                 RunStatus.RUNNING, step=step, total_steps=total_rl_steps, message="training",
@@ -765,11 +816,15 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
+        # ``step_offset`` counts optim steps (one per inner minibatch); the
+        # dataset is indexed per rollout batch, so divide by ppo_n_minibatches
+        # when resuming under K>1.
+        resume_rollouts = step_offset // max(1, cfg.ppo_n_minibatches)
         remaining_rows = []
-        for i_step in range(step_offset, len(rl_dataset)):
+        for i_step in range(resume_rollouts, len(rl_dataset)):
             remaining_rows.extend(rl_dataset.get_batch(i_step))
 
-        total_rl_steps = len(rl_dataset) - step_offset
+        total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_rl_steps, message="training")
 
@@ -790,9 +845,12 @@ def main(
 
         if cfg.save_final_checkpoint and global_step > step_offset:
             try:
+                # global_step - step_offset is optim-step delta (K× per rollout),
+                # so divide by ppo_n_minibatches to get rollout-batch delta.
+                _rollouts_this_run = (global_step - step_offset) // max(1, cfg.ppo_n_minibatches)
                 _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    global_step - step_offset
-                ) * prompt_groups_per_step
+                    _rollouts_this_run * prompt_groups_per_step
+                )
                 cp_name = f"step-{global_step}"
                 paths = save_checkpoint(
                     policy,

@@ -30,7 +30,7 @@ import pytest
 
 import training.recipes.dpo_loop as module
 from training.utils import AppendOnlyPickleLog, JsonlRenderDataset
-from training.utils.data import iter_preference_examples
+from training.utils.data import iter_preference_examples, load_preference_dataset
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +418,8 @@ class TestTrainLoop:
             f"(ref_done={ref_done_t:.2f}s, total={total_t:.2f}s)"
         )
 
-    def test_drops_batches_with_only_none_rows(self, tmp_path, monkeypatch):
-        """When every row in a DataLoader batch renders to None, skip ref forward."""
+    def test_raises_when_all_rows_render_to_none(self, tmp_path, monkeypatch):
+        """All-filtered datasets must fail loudly instead of finishing at step 0."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
@@ -441,15 +441,111 @@ class TestTrainLoop:
         cfg = module.Config(
             log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
         )
+        with pytest.raises(RuntimeError, match="No valid pairs after tokenization"):
+            asyncio.run(
+                module._train_loop(
+                    ds, None, CountingReference(), _FakePolicy(),
+                    adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+                )
+            )
+        assert ref_calls == []
+        assert events.get("flush_batches", []) == []
+
+    def test_max_pairs_caps_valid_pairs_after_filtering(self, tmp_path, monkeypatch):
+        """``max_pairs`` counts valid rendered pairs, not raw JSONL rows."""
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        path = tmp_path / "pairs.jsonl"
+        with open(path, "w") as f:
+            for i in range(5):
+                f.write(json.dumps({"i": i}) + "\n")
+
+        def render_some_none(row: dict) -> dict | None:
+            if row["i"] in {0, 3}:
+                return None
+            return _make_pair(row["i"])
+
+        ds = JsonlRenderDataset(str(path), render_some_none)
+        cfg = module.Config(
+            log_path=str(tmp_path),
+            epochs=1,
+            batch_size=2,
+            render_workers=0,
+            max_pairs=2,
+        )
+
         step = asyncio.run(
             module._train_loop(
-                ds, None, CountingReference(), _FakePolicy(),
+                ds, None, _FakeReference(), _FakePolicy(),
                 adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
             )
         )
-        assert step == 0
-        assert ref_calls == []
-        assert events.get("flush_batches", []) == []
+        assert step == 1
+        assert len(events["flush_batches"]) == 1
+        trained_ids = [pair["chosen_datum"]["id"] for pair in events["flush_batches"][0][0]]
+        assert trained_ids == ["c1", "c2"]
+
+    def test_total_steps_matches_actual_step_count(self, tmp_path, monkeypatch) -> None:
+        """The runner-facing total_steps should use ceil(valid_pairs / batch_size)."""
+        executed = {"count": 0}
+        reported_total_steps = {"value": None}
+
+        def fake_fwd_bwd(batch, policy, beta):
+            executed["count"] += 1
+            return SimpleNamespace(metrics={"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.5})
+
+        class RecordingRunner:
+            def start_training(self):
+                pass
+
+            def write_status(self, *args, **kwargs):
+                total = kwargs.get("total_steps")
+                if total is not None:
+                    reported_total_steps["value"] = total
+
+            def write_metadata(self, *args, **kwargs):
+                pass
+
+            def append_metrics(self, *args, **kwargs):
+                pass
+
+            def report_rendering_progress(self, *args, **kwargs):
+                pass
+
+            def set_accelerator_info(self, *args, **kwargs):
+                pass
+
+        monkeypatch.setattr(module, "_forward_backward_pairs", fake_fwd_bwd)
+        monkeypatch.setattr(module, "flush_timing", lambda: {})
+        monkeypatch.setattr(module, "log_metrics_json", lambda *a, **kw: None)
+        monkeypatch.setattr(module, "wandb_log", lambda *a, **kw: None)
+
+        ds = _make_pair_dataset(tmp_path, n=5)
+        cfg = module.Config(
+            log_path=str(tmp_path),
+            beta=0.1,
+            epochs=1,
+            batch_size=2,
+            ref_cache_concurrency=4,
+            render_workers=0,
+        )
+
+        asyncio.run(
+            module._train_loop(
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params={"lr": 1e-4},
+                cfg=cfg,
+                step_offset=0,
+                runner=RecordingRunner(),
+            )
+        )
+
+        assert executed["count"] == 3
+        assert reported_total_steps["value"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -551,3 +647,83 @@ class TestIterPreferenceExamples:
         assert second["chosen"]["i"] == 1
         with pytest.raises(StopIteration):
             next(it)
+
+
+def _write_preference_jsonl(tmp_path, rows):
+    path = tmp_path / "pref.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return str(path)
+
+
+class TestLoadPreferenceDatasetValidation:
+    def test_rejects_non_binary_scores(self, tmp_path) -> None:
+        rows = [
+            {
+                "samples": [
+                    {"messages": [{"role": "assistant", "content": "a"}], "score": 0.5},
+                    {"messages": [{"role": "assistant", "content": "b"}], "score": 0.8},
+                ],
+            },
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError, match="score"):
+            load_preference_dataset(path)
+
+    def test_rejects_rows_without_both_chosen_and_rejected(self, tmp_path) -> None:
+        rows = [
+            {
+                "samples": [
+                    {"messages": [{"role": "assistant", "content": "a"}], "score": 1.0},
+                ],
+            },
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError, match="rejected"):
+            load_preference_dataset(path)
+
+    def test_rejects_duplicate_chosen_samples(self, tmp_path) -> None:
+        rows = [
+            {
+                "samples": [
+                    {"messages": [{"role": "assistant", "content": "a"}], "score": 1.0},
+                    {"messages": [{"role": "assistant", "content": "b"}], "score": 1.0},
+                    {"messages": [{"role": "assistant", "content": "c"}], "score": 0.0},
+                ],
+            },
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError, match="ambiguous|multiple"):
+            load_preference_dataset(path)
+
+    def test_rejects_unknown_row_format(self, tmp_path) -> None:
+        rows = [
+            {"foo": "bar"},
+            {"chosen": {"messages": [{"role": "assistant", "content": "a"}]}},
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError, match="supported preference format"):
+            load_preference_dataset(path)
+
+    def test_rejects_non_list_samples(self, tmp_path) -> None:
+        path = _write_preference_jsonl(tmp_path, [{"samples": {"not": "a list"}}])
+
+        with pytest.raises(ValueError, match="list"):
+            load_preference_dataset(path)
+
+    def test_rejects_non_dict_sample_entry(self, tmp_path) -> None:
+        rows = [
+            {
+                "samples": [
+                    "not a dict",
+                    {"messages": [{"role": "assistant", "content": "b"}], "score": 0.0},
+                ],
+            },
+        ]
+        path = _write_preference_jsonl(tmp_path, rows)
+
+        with pytest.raises(ValueError, match="dict"):
+            load_preference_dataset(path)

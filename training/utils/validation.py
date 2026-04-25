@@ -7,9 +7,33 @@ Infra-field validation lives in the SDK's ``TrainerJobConfig.validate()``.
 from __future__ import annotations
 
 import logging
+import re
 
-from fireworks.training.sdk.errors import format_sdk_error, DOCS_SDK
-from fireworks.training.sdk import validate_output_model_id
+try:
+    from fireworks.training.sdk.errors import format_sdk_error, DOCS_SDK
+except ImportError:
+    from fireworks.training.sdk.errors import format_sdk_error
+    DOCS_SDK = ""
+try:
+    from fireworks.training.sdk import validate_output_model_id
+except ImportError:
+    _OUTPUT_MODEL_ID_RE = re.compile(
+        r"^(accounts/[^/]+/models/[A-Za-z0-9-]+|[A-Za-z0-9-]+)$"
+    )
+
+    def validate_output_model_id(_value: str) -> list[str]:
+        if _OUTPUT_MODEL_ID_RE.match(_value):
+            return []
+        return [
+            format_sdk_error(
+                "Invalid output_model_id",
+                f"'{_value}' doesn't match expected format.",
+                "Use either a short model name (letters / numbers / '-') or "
+                "a full resource name like accounts/ACCOUNT/models/MODEL_NAME.\n"
+                "  Example: promoted-orpo-model\n"
+                "  Example: accounts/pyroworks/models/my-model",
+            )
+        ]
 from training.utils.config import DeployConfig, WeightSyncConfig
 
 logger = logging.getLogger(__name__)

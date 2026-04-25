@@ -21,6 +21,7 @@ Generic across loop types:
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 import os
 import time
@@ -39,8 +40,11 @@ from fireworks.training.sdk import (
     TrainerJobManager,
     TrainerServiceEndpoint,
     TrainingShapeProfile,
-    CreatedTrainerJob,
 )
+try:
+    from fireworks.training.sdk import CreatedTrainerJob
+except ImportError:
+    CreatedTrainerJob = Any
 from fireworks.training.sdk.deployment import (
     DeploymentConfig,
     DeploymentInfo,
@@ -62,6 +66,13 @@ StatusCallback = Callable[[str], None]
 lifecycle step (creating, waiting, ready, failed)."""
 
 logger = logging.getLogger(__name__)
+
+_TRAINER_JOB_CONFIG_SUPPORTS_SKIP_VALIDATIONS = (
+    "skip_validations" in inspect.signature(TrainerJobConfig).parameters
+)
+_TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF = (
+    "training_shape_ref" in inspect.signature(TrainerJobConfig).parameters
+)
 
 _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_H200", "US_VIRGINIA_1"),
@@ -309,6 +320,12 @@ def request_trainer_job(
         _emit(f"reusing existing {trainer_role} trainer {job_id}")
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
+    extra_trainer_args: dict[str, Any] = {}
+    if _TRAINER_JOB_CONFIG_SUPPORTS_SKIP_VALIDATIONS:
+        extra_trainer_args["skip_validations"] = infra.skip_validations
+    if profile is not None and _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF:
+        extra_trainer_args["training_shape_ref"] = profile.training_shape_version
+
     if profile is not None:
         config = TrainerJobConfig(
             base_model=base_model,
@@ -321,9 +338,11 @@ def request_trainer_job(
             region=infra.region,
             extra_args=extra_args or infra.extra_args,
             forward_only=forward_only,
-            training_shape_ref=profile.training_shape_version,
-            skip_validations=infra.skip_validations,
+            **extra_trainer_args,
         )
+        if not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF:
+            config.training_shape_ref = profile.training_shape_version
+        config.node_count = None
     else:
         config = TrainerJobConfig(
             base_model=base_model,
@@ -341,6 +360,8 @@ def request_trainer_job(
             accelerator_count=infra.accelerator_count,
             forward_only=forward_only,
         )
+        if not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF:
+            config.training_shape_ref = None
 
     if infra.purpose:
         config.purpose = infra.purpose

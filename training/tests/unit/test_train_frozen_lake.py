@@ -616,13 +616,12 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     ]
     assert "fwd_bwd_call" in events
     assert events["build_loss_fn_kwargs"]["ratio_log_cap"] == 9.0
-    from training.utils.rl.losses import get_builtin_loss_config
-    expected_kernel, expected_config = get_builtin_loss_config(
-        cfg.policy_loss,
-        ratio_log_cap=cfg.ratio_log_cap,
-    )
-    assert events["fwd_bwd_call"]["loss_fn"] == expected_kernel
-    assert events["fwd_bwd_call"]["loss_fn_config"] == expected_config
+    # kl_beta > 0 forces the client-side custom path (server builtin kernels
+    # do not consume ref_logprobs and would silently drop the KL penalty --
+    # see resolve_builtin_loss gate in training/utils/rl/losses.py).
+    assert cfg.kl_beta > 0
+    assert events["fwd_bwd_call"]["loss_fn"] == "loss-fn"
+    assert "loss_fn_config" not in events["fwd_bwd_call"]
     assert events["deleted_jobs"] == ["reference-job", "policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1

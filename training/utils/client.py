@@ -14,12 +14,23 @@ from __future__ import annotations
 
 import logging
 import os
+from enum import Enum
 
-from fireworks.training.sdk.client import (
-    FiretitanServiceClient,
-    FiretitanTrainingClient,
-    GradAccNormalization,
-)
+try:
+    from fireworks.training.sdk.client import (
+        FiretitanServiceClient,
+        FiretitanTrainingClient,
+        GradAccNormalization,
+    )
+except ImportError:
+    from fireworks.training.sdk.client import (
+        FiretitanServiceClient,
+        FiretitanTrainingClient,
+    )
+
+    class GradAccNormalization(str, Enum):
+        NUM_SEQUENCES = "num_sequences"
+        NUM_LOSS_TOKENS = "num_loss_tokens"
 from fireworks.training.sdk.trainer import TrainerJobManager, TrainerServiceEndpoint
 import tinker.lib.api_future_impl as tinker_api_future_impl
 from tinker.types.future_retrieve_request import FutureRetrieveRequest as _FutureRetrieveRequest

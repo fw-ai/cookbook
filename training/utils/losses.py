@@ -185,10 +185,16 @@ def make_batch_dpo_loss_fn(
 
         for i in range(n_pairs):
             rs = response_starts[i]
-            pi_chosen = logprobs_list[2 * i][rs:].sum()
-            pi_rejected = logprobs_list[2 * i + 1][rs:].sum()
-            rc = ref_chosen_ts[i][rs:].sum()
-            rr = ref_rejected_ts[i][rs:].sum()
+            # logprobs[j] predicts token[j+1], so the first response token
+            # at full-sequence index `rs` has its logprob at index `rs - 1`.
+            # Slicing [rs:] silently drops that logprob — which is often the
+            # *only* token that differs between chosen and rejected and
+            # collapses the DPO margin to zero. Matches make_batch_orpo_loss_fn.
+            lp_start = max(0, rs - 1)
+            pi_chosen = logprobs_list[2 * i][lp_start:].sum()
+            pi_rejected = logprobs_list[2 * i + 1][lp_start:].sum()
+            rc = ref_chosen_ts[i][lp_start:].sum()
+            rr = ref_rejected_ts[i][lp_start:].sum()
 
             margin = (pi_chosen - rc) - (pi_rejected - rr)
             pair_loss = -F.logsigmoid(beta * margin)
@@ -270,8 +276,12 @@ def make_sft_loss_fn(
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         lp = logprobs_list[0]
-        resp_lp = lp[response_start:]
-        resp_t = targets[response_start:]
+        # Same off-by-one correction as DPO/ORPO/batch-SFT: logprob[j] predicts
+        # token[j+1], so the first response token (at full-sequence index
+        # response_start) has its logprob at index response_start - 1.
+        lp_start = max(0, response_start - 1)
+        resp_lp = lp[lp_start:]
+        resp_t = targets[lp_start:]
         n = max(len(resp_t), 1)
         ce = -resp_lp.sum() / n
         with torch.no_grad():

@@ -111,11 +111,7 @@ class Config:
     """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
-    """Cap on raw JSONL rows (an upper bound on valid pairs after rendering).
-
-    Note: pre-streaming this counted *valid* pairs after schema normalisation;
-    now it caps raw rows. Off-by-a-few only matters for sub-sampled test runs.
-    """
+    """Cap on *valid rendered pairs* after schema/length filtering."""
     lora_rank: int = 0
 
     ref_cache_concurrency: int = 16
@@ -325,8 +321,18 @@ async def _train_loop(
 
     batch_size = cfg.batch_size
     step = step_offset
-    # Upper bound: actual count drops empty/over-length rows.
-    total_steps = len(pair_dataset) * cfg.epochs // batch_size
+    rough_pairs_per_epoch = (
+        min(len(pair_dataset), cfg.max_pairs)
+        if cfg.max_pairs is not None
+        else len(pair_dataset)
+    )
+    total_steps = ((rough_pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
+    total_raw_rows = len(pair_dataset)
+    total_raw_batches = (total_raw_rows + batch_size - 1) // batch_size
+    progress_interval = max(1, total_raw_batches // 20) if total_raw_batches else 1
+    raw_rows_consumed = 0
+    rendered_pairs = 0
+    pairs_per_epoch = 0
 
     if runner is None:
         runner = RunnerIO()
@@ -414,23 +420,61 @@ async def _train_loop(
     )
 
     async def _ref_producer() -> None:
+        nonlocal raw_rows_consumed, rendered_pairs, pairs_per_epoch
         # The DataLoader is synchronous; pull each batch via to_thread so
         # render workers and ref forwards can overlap on the event loop.
         loader_iter = iter(loader)
         sentinel = object()
-        while True:
-            batch = await asyncio.to_thread(next, loader_iter, sentinel)
-            if batch is sentinel:
-                break
-            if not batch:  # all rows in this DataLoader batch rendered to None
-                continue
+        batches_consumed = 0
+        pending_pairs: list[dict[str, Any]] = []
+
+        async def _emit_enriched(chunk: list[dict[str, Any]]) -> None:
+            nonlocal pairs_per_epoch
             enriched = await _ref_forward_batch(
-                batch, reference, sem, cfg.ref_cache_batch_size,
+                chunk, reference, sem, cfg.ref_cache_batch_size,
             )
+            pairs_per_epoch += len(enriched)
             if multi_epoch:
                 for pair in enriched:
                     ref_cache_log.append(pair)
             await pipe.put(enriched)
+
+        while True:
+            batch = await asyncio.to_thread(next, loader_iter, sentinel)
+            if batch is sentinel:
+                break
+            batches_consumed += 1
+            raw_rows_consumed = min(batches_consumed * batch_size, total_raw_rows)
+            if (
+                total_raw_rows > 0
+                and (
+                    batches_consumed % progress_interval == 0
+                    or raw_rows_consumed == total_raw_rows
+                )
+            ):
+                runner.report_rendering_progress(
+                    raw_rows_consumed,
+                    total_raw_rows,
+                    label="rendering/ref cache",
+                )
+            rendered_pairs += len(batch)
+            if not batch:  # all rows in this DataLoader batch rendered to None
+                continue
+            if cfg.max_pairs is not None:
+                remaining = cfg.max_pairs - pairs_per_epoch - len(pending_pairs)
+                if remaining <= 0:
+                    break
+                batch = batch[:remaining]
+                if not batch:
+                    break
+            pending_pairs.extend(batch)
+            while len(pending_pairs) >= batch_size:
+                await _emit_enriched(pending_pairs[:batch_size])
+                pending_pairs = pending_pairs[batch_size:]
+            if cfg.max_pairs is not None and pairs_per_epoch + len(pending_pairs) >= cfg.max_pairs:
+                break
+        if pending_pairs:
+            await _emit_enriched(pending_pairs)
         await pipe.put(_DONE)
 
     async def _trainer() -> None:
@@ -447,6 +491,20 @@ async def _train_loop(
     if on_ref_done is not None:
         await asyncio.to_thread(on_ref_done)
     await consumer
+
+    filtered_count = max(0, raw_rows_consumed - rendered_pairs)
+    if filtered_count > 0:
+        logger.info(
+            "Seq-length / format filter: %d/%d raw rows filtered",
+            filtered_count,
+            raw_rows_consumed,
+        )
+    if rendered_pairs == 0 or pairs_per_epoch == 0:
+        raise RuntimeError("No valid pairs after tokenization")
+
+    total_steps = ((pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
+    pbar.total = total_steps
+    pbar.refresh()
 
     # -- Epochs 1+: stream cached ref logprobs from disk -----------------------
 
@@ -602,17 +660,20 @@ def main(
             cfg.tokenizer_model, cfg.renderer_name, max_seq_len,
         )
 
-        pair_dataset = JsonlRenderDataset(
-            cfg.dataset, _render_pair_worker, max_examples=cfg.max_pairs,
-        )
+        pair_dataset = JsonlRenderDataset(cfg.dataset, _render_pair_worker)
         if len(pair_dataset) == 0:
             raise RuntimeError(f"No data found in {cfg.dataset}")
 
         logger.info(
-            "Streaming %d preference rows from %s (renderer=%s, workers=%d)",
+            "Streaming %d raw preference rows from %s (renderer=%s, workers=%d%s)",
             len(pair_dataset), cfg.dataset,
             resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
             cfg.render_workers,
+            (
+                f", max_pairs={cfg.max_pairs}"
+                if cfg.max_pairs is not None
+                else ""
+            ),
         )
 
         ref_cache_log: AppendOnlyPickleLog | None = None
@@ -681,7 +742,7 @@ def main(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                 )
 
-        total_steps = len(pair_dataset) * cfg.epochs // cfg.batch_size
+        total_steps = step
         runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
         runner.write_metadata()
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
