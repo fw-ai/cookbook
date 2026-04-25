@@ -586,6 +586,11 @@ def main(
         )
         step = resume_info.step if resume_info else 0
         data_consumed = resume_info.data_consumed if resume_info else 0
+        raw_rows_consumed = (
+            getattr(resume_info, "raw_rows_consumed", data_consumed)
+            if resume_info
+            else 0
+        )
         wandb_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
@@ -606,8 +611,14 @@ def main(
 
         # -- Training loop (batch-indexed) -------------------------------------
 
-        start_batch = data_consumed // effective_batch_size
-        total_steps_estimate = total_batches_per_epoch * cfg.epochs
+        total_raw_rows = training_count * cfg.epochs
+        completed_epochs = raw_rows_consumed // training_count if training_count else 0
+        rows_into_current_epoch = raw_rows_consumed % training_count if training_count else 0
+        start_batch = rows_into_current_epoch // effective_batch_size
+        remaining_raw_rows = max(0, total_raw_rows - raw_rows_consumed)
+        total_steps_estimate = step + (
+            (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
+        )
 
         def _run_train_step(
             batch: list[tinker.Datum],
@@ -642,6 +653,7 @@ def main(
                     save_checkpoint(client, f"step-{step}", cfg.log_path, {
                         "step": step,
                         "data_consumed": data_consumed,
+                        "raw_rows_consumed": raw_rows_consumed,
                         "source_job_id": job_id,
                     }, kind=CheckpointKind.STATE,
                     base_model=cfg.base_model,
@@ -688,22 +700,27 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
-        for epoch in range(cfg.epochs):
+        for epoch in range(completed_epochs, cfg.epochs):
             loader_generator.manual_seed(cfg.seed + epoch)
             batch_iter = iter(loader)
-            epoch_start_batch = start_batch if epoch == 0 else 0
+            epoch_start_batch = start_batch if epoch == completed_epochs else 0
             if epoch_start_batch > 0:
                 batch_iter = islice(batch_iter, epoch_start_batch, None)
 
             epoch_valid_examples = 0
-            for _batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
+            for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
+                raw_batch_size = min(
+                    effective_batch_size,
+                    training_count - raw_batch_idx * effective_batch_size,
+                )
+                raw_rows_consumed += raw_batch_size
                 if not batch:
                     continue  # entire batch was filtered (None render); skip
                 epoch_valid_examples += len(batch)
                 data_consumed += len(batch)
                 step = _run_train_step(batch, step)
 
-            if epoch == 0 and start_batch == 0:
+            if epoch == 0 and completed_epochs == 0 and start_batch == 0:
                 filtered_count = training_count - epoch_valid_examples
                 if filtered_count > 0:
                     logger.info(
@@ -741,6 +758,7 @@ def main(
             paths = save_checkpoint(client, cp_name, cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
+                "raw_rows_consumed": raw_rows_consumed,
                 "source_job_id": job_id,
             }, kind=CheckpointKind.BOTH,
             base_model=cfg.base_model,
@@ -757,7 +775,7 @@ def main(
                 )
 
         runner.write_status(
-            RunStatus.COMPLETED, step=step, total_steps=total_steps_estimate, message="done",
+            RunStatus.COMPLETED, step=step, total_steps=step, message="done",
         )
         runner.write_metadata()
         logger.info("Training complete: %d optimizer steps", step)

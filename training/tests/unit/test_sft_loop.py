@@ -41,6 +41,17 @@ def _fake_profile(shape_id: str = "accounts/test/trainingShapes/sft"):
     )
 
 
+def _test_datum(test_id: str):
+    return SimpleNamespace(
+        model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
+        loss_fn_inputs={
+            "target_tokens": SimpleNamespace(data=[0, 0]),
+            "weights": SimpleNamespace(data=[1.0, 1.0]),
+        },
+        _test_id=test_id,
+    )
+
+
 def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
     """warm_start_from_adapter and init_from_checkpoint are mutually exclusive."""
     dataset_path = _write_dataset(
@@ -703,6 +714,196 @@ def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
 
     assert len(runs["fresh"]) == 3
     assert runs["resume"] == runs["fresh"][1:]
+
+
+def test_main_resume_uses_raw_row_cursor_when_filtering_shrinks_batches(tmp_path, monkeypatch):
+    """Resume should skip raw batches even when filtering makes a step smaller."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+            for i in range(4)
+        ],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    runs: dict[str, list[list[str]]] = {"fresh": [], "resume": []}
+    active = {"name": "fresh"}
+
+    class FakeMgr:
+        def create(self, config):
+            job_id = f"job-{active['name']}"
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            pass
+
+        def delete(self, job_id):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.job_id = kwargs.get("job_id", "job-sft")
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            runs[active["name"]].append([d._test_id for d in batch])
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": len(batch)}
+            )
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def close(self):
+            pass
+
+    raw_batches = [
+        [_test_datum("step-1-only")],
+        [_test_datum("step-2-a"), _test_datum("step-2-b")],
+    ]
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "auto_select_training_shape",
+        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
+    )
+    monkeypatch.setattr(module, "make_render_dataloader", lambda *args, **kwargs: raw_batches)
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=2,
+        epochs=1,
+        seed=123,
+        render_workers=1,
+        save_final_checkpoint=False,
+    )
+
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    active["name"] = "resume"
+    monkeypatch.setattr(
+        module,
+        "resolve_resume",
+        lambda *args, **kwargs: SimpleNamespace(
+            step=1,
+            data_consumed=1,
+            raw_rows_consumed=2,
+        ),
+    )
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert runs["fresh"] == [["step-1-only"], ["step-2-a", "step-2-b"]]
+    assert runs["resume"] == runs["fresh"][1:]
+
+
+def test_completed_status_reports_actual_steps_when_filtering_drops_raw_batches(tmp_path, monkeypatch):
+    """Final runner status should report 100% even when filtered raw batches reduce steps."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+            for i in range(8)
+        ],
+    )
+    status_path = tmp_path / "status.json"
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            pass
+
+        def delete(self, job_id):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        job_id = "job-sft"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": len(batch)}
+            )
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def close(self):
+            pass
+
+    raw_batches = [
+        [],
+        [_test_datum("step-1")],
+        [],
+        [_test_datum("step-2")],
+    ]
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "auto_select_training_shape",
+        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
+    )
+    monkeypatch.setattr(module, "make_render_dataloader", lambda *args, **kwargs: raw_batches)
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=2,
+        epochs=1,
+        render_workers=1,
+        save_final_checkpoint=False,
+        runner=module.RunnerConfig(status_file=str(status_path)),
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeMgr())
+    status = json.loads(status_path.read_text())
+
+    assert result["steps"] == 2
+    assert status["message"] == "done"
+    assert status["details"][0]["percent"] == 100
 
 
 # ---------------------------------------------------------------------------
