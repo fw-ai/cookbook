@@ -68,20 +68,22 @@ class TestOverlapRatio:
 
 
 class TestOverlapAdvantage:
-    def test_aligned_distributions(self) -> None:
-        """Student matches teacher probs on overlap -> advantage ~ 0."""
+    def test_identical_distributions(self) -> None:
+        """Identical distributions -> advantage = 0 (same logprobs on overlap)."""
         topk = [_uniform_topk([1, 2, 3, 4])] * 3
         assert compute_overlap_token_advantage(topk, topk) == pytest.approx(0.0, abs=1e-9)
 
-    def test_overconfident_student(self) -> None:
-        """Student overconfident on overlap tokens -> advantage < 0.
+    def test_teacher_and_student_mismatch_is_negative(self) -> None:
+        """Eq. 7 is non-positive and gets more negative under mismatch."""
+        student = [_uniform_topk([1, 2, 3, 4])]
+        teacher = [_peaked_topk(1, [2, 3, 4], peak_prob=0.9)]
+        adv = compute_overlap_token_advantage(student, teacher)
+        assert adv < 0
 
-        When the student concentrates more mass on a single overlap token than
-        the teacher does, the teacher-renorm minus student-renorm sum is
-        negative (the teacher spreads mass more evenly).
-        """
-        student = [_peaked_topk(1, [2, 3], peak_prob=0.95)]
-        teacher = [_uniform_topk([1, 2, 3])]
+    def test_student_overconfident_is_negative(self) -> None:
+        """Student concentrates more mass on overlap tokens -> advantage < 0."""
+        student = [_peaked_topk(1, [2, 3, 4], peak_prob=0.9)]
+        teacher = [_uniform_topk([1, 2, 3, 4])]
         adv = compute_overlap_token_advantage(student, teacher)
         assert adv < 0
 
@@ -141,12 +143,20 @@ class TestOverlapMass:
         assert t_mass == pytest.approx(0.0, abs=1e-9)
 
     def test_partial_overlap_mass(self) -> None:
-        """Partial overlap: mass equals renormalized probability on shared tokens."""
+        """Partial overlap: mass equals original probability on shared tokens."""
         student = [_uniform_topk([1, 2, 3, 4])]
         teacher = [_uniform_topk([3, 4, 5, 6])]
         s_mass, t_mass = compute_overlap_mass(student, teacher)
         assert s_mass == pytest.approx(0.5, abs=1e-6)
         assert t_mass == pytest.approx(0.5, abs=1e-6)
+
+    def test_overlap_mass_does_not_renormalize_topk(self) -> None:
+        """Top-k APIs return full-vocab logprobs, so mass can be below top-k-normalized values."""
+        student = [[(1, math.log(0.2)), (2, math.log(0.1)), (3, math.log(0.05))]]
+        teacher = [[(2, math.log(0.3)), (4, math.log(0.2)), (5, math.log(0.1))]]
+        s_mass, t_mass = compute_overlap_mass(student, teacher)
+        assert s_mass == pytest.approx(0.1, abs=1e-9)
+        assert t_mass == pytest.approx(0.3, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +254,13 @@ class TestComputeOpdMetrics:
         assert metrics["distill/entropy_gap"] == pytest.approx(0.0, abs=1e-9)
         assert metrics["distill/overlap_mass_student"] == pytest.approx(1.0, abs=1e-9)
         assert metrics["distill/overlap_mass_teacher"] == pytest.approx(1.0, abs=1e-9)
+
+    def test_different_distributions_nonzero_advantage(self) -> None:
+        """Different distributions -> advantage is negative."""
+        student = [_uniform_topk([1, 2, 3, 4])] * 4
+        teacher = [_peaked_topk(1, [2, 3, 4], peak_prob=0.9)] * 4
+        metrics = compute_opd_metrics(student, teacher)
+        assert metrics["distill/overlap_advantage"] < 0
 
     def test_custom_bucket_count(self) -> None:
         """Custom bucket_count propagates to per-position keys."""

@@ -7,8 +7,10 @@ Input format per position: ``List[Tuple[int, float]]`` where each tuple is
 ``(token_id, logprob)``.  Sequences are ``List[List[Tuple[int, float]]]``
 (one inner list per position in the response).
 
-All entropy/mass computations use **renormalized** top-k probabilities, matching
-the paper's k=16 setting (Section 2.3, Appendix B.1).
+Entropy is computed on the renormalized top-k support because these helpers only
+receive top-k logprobs.  Overlap mass uses the original full-vocabulary
+probabilities encoded by the logprobs, so it remains comparable to the paper's
+mass diagnostics when the top-k API returns true model logprobs.
 """
 
 from __future__ import annotations
@@ -64,12 +66,12 @@ def compute_overlap_token_advantage(
     student_topk: PositionLogprobs,
     teacher_topk: PositionLogprobs,
 ) -> float:
-    """Eq. 7: distributional agreement within shared tokens.
+    """Eq. 7: distributional agreement within shared top-k tokens.
 
-    For each position, renormalize student and teacher probs onto the
-    intersection token set, then compute
-    ``sum_over_overlap(teacher_renorm - student_renorm) / |overlap|``.
-    Approaching 0 = good alignment.
+    For each position, renormalize student and teacher probabilities onto the
+    overlap set and compute ``mean(p_overlap * log(q_overlap / p_overlap))``.
+    The value approaches zero as the two distributions align and is negative
+    when the student is overconfident or otherwise mismatched on the overlap.
     """
     if not student_topk or not teacher_topk:
         return 0.0
@@ -82,11 +84,13 @@ def compute_overlap_token_advantage(
         overlap = set(s_probs.keys()) & set(t_probs.keys())
         if not overlap:
             continue
-        s_overlap = {tok: s_probs[tok] for tok in overlap}
-        t_overlap = {tok: t_probs[tok] for tok in overlap}
-        s_renorm = _renormalize(s_overlap)
-        t_renorm = _renormalize(t_overlap)
-        adv = sum(t_renorm[tok] - s_renorm[tok] for tok in overlap) / len(overlap)
+        s_overlap = _renormalize({tok: s_probs[tok] for tok in overlap})
+        t_overlap = _renormalize({tok: t_probs[tok] for tok in overlap})
+        adv = sum(
+            s_overlap[tok] * (math.log(t_overlap[tok]) - math.log(s_overlap[tok]))
+            for tok in overlap
+            if s_overlap[tok] > 0 and t_overlap[tok] > 0
+        ) / len(overlap)
         total += adv
         valid_positions += 1
     return total / max(valid_positions, 1)
@@ -120,7 +124,7 @@ def compute_overlap_mass(
     """Eqs. 9-10: probability mass on shared top-k tokens.
 
     Returns ``(student_overlap_mass, teacher_overlap_mass)`` averaged over
-    positions.  In healthy runs both should be 97-99%.
+    positions, using the original probabilities from the top-k logprobs.
     """
     if not student_topk or not teacher_topk:
         return (0.0, 0.0)
@@ -128,8 +132,8 @@ def compute_overlap_mass(
     s_mass_total = 0.0
     t_mass_total = 0.0
     for i in range(n):
-        s_probs = _renormalize(_to_prob_dict(student_topk[i]))
-        t_probs = _renormalize(_to_prob_dict(teacher_topk[i]))
+        s_probs = _to_prob_dict(student_topk[i])
+        t_probs = _to_prob_dict(teacher_topk[i])
         overlap = set(s_probs.keys()) & set(t_probs.keys())
         s_mass_total += sum(s_probs[tok] for tok in overlap)
         t_mass_total += sum(t_probs[tok] for tok in overlap)
