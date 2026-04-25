@@ -21,6 +21,8 @@ import os
 import signal
 import asyncio
 import logging
+import warnings
+import time as _time
 from contextlib import ExitStack
 from typing import Any
 from dataclasses import field, dataclass
@@ -68,9 +70,12 @@ from training.utils.rl import setup_infra
 from training.utils.rl.train import TrainStepFns, run_rl_loop
 from training.utils.timer import flush_timing, timer
 
-import time as _time
-
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -79,6 +84,8 @@ class Config:
     """Directory for checkpoints and logs. Required, no default."""
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
+    """Student model ID. Matches the default used by ``rl_loop.py``."""
+
     rollout_base_model: str | None = None
     dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
@@ -104,24 +111,45 @@ class Config:
     epochs: int = 1
     max_rows: int = 100
     max_seq_len: int | None = None
+    """Max sequence length for sampling and training."""
+
     lora_rank: int = 0
+
     prompt_groups_per_step: int = 1
+    """Number of prompt groups per optimizer step."""
 
     grad_accumulation_normalization: GradAccNormalization | str | None = GradAccNormalization.NUM_LOSS_TOKENS
+    """Normalization mode for accumulated gradients at optim_step."""
 
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
+    """Concurrency control for inference sampling."""
+
     policy_job_id: str | None = None
+    """Pre-created RLOR policy trainer job ID (skip creation if set)."""
+
     init_from_checkpoint: str | None = None
+    """Load pretrained DCP weights on a fresh dataset."""
+
     warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory for LoRA warm start."""
+
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
+
     step_timeout: int = 0
+    """Timeout in seconds for forward_backward / optim_step calls."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="opd-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
+    """Optional orchestration outputs written during training."""
+
+
+# ---------------------------------------------------------------------------
+# Teacher/student logprob helpers
+# ---------------------------------------------------------------------------
 
 
 def _align_completion_logprobs(
@@ -204,15 +232,30 @@ async def _score_with_teacher(
     return _extract_scored_token_logprobs(response, target_len=target_len)
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
 def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
     cancel_on_exit: bool = False,
+    cleanup_on_exit: bool | None = None,
 ):
+    if cleanup_on_exit is not None:
+        warnings.warn(
+            "opd_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        cancel_on_exit = cleanup_on_exit
+
     cfg = config
     runner = RunnerIO(cfg.runner)
 
+    # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
         logger.warning("Received %s; raising SystemExit for cleanup", name)
@@ -242,17 +285,22 @@ def main(
             "Use the HuggingFace tokenizer that matches both student and teacher."
         )
 
+    completions_per_prompt = cfg.completions_per_prompt
+    prompt_groups_per_step = cfg.prompt_groups_per_step
+
     setup_wandb(
         cfg.wandb,
         {
             "teacher_model": cfg.teacher_model,
             "opd_loss_scale": cfg.opd_loss_scale,
             "ratio_log_cap": cfg.ratio_log_cap,
-            "completions_per_prompt": cfg.completions_per_prompt,
-            "prompt_groups_per_step": cfg.prompt_groups_per_step,
+            "completions_per_prompt": completions_per_prompt,
+            "prompt_groups_per_step": prompt_groups_per_step,
             "lr": cfg.learning_rate,
         },
     )
+
+    # -- Setup infrastructure -----------------------------------------------
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -277,6 +325,8 @@ def main(
         runner.write_status(RunStatus.PENDING, message=msg)
 
     with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
+        # Shapes + trainer + deployment + trainer clients. OPD does not need a
+        # reference trainer because teacher scores come from inference.
         infra = setup_infra(
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
@@ -315,6 +365,13 @@ def main(
             max_window=cfg.concurrency.max_window,
             prefill_queue_target=cfg.concurrency.prefill_queue_target,
         )
+        logger.info(
+            "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
+            initial_window,
+            cfg.concurrency.min_window,
+            cfg.concurrency.max_window,
+            cfg.concurrency.prefill_queue_target,
+        )
         student_sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
             model=infra.inference_model,
@@ -341,9 +398,11 @@ def main(
         logger.info(
             "OPD training: teacher=%s | completions_per_prompt=%d | groups_per_step=%d",
             cfg.teacher_model,
-            cfg.completions_per_prompt,
-            cfg.prompt_groups_per_step,
+            completions_per_prompt,
+            prompt_groups_per_step,
         )
+
+        # -- Resume ---------------------------------------------------------------
 
         resume_info = resolve_resume(
             policy,
@@ -358,9 +417,11 @@ def main(
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
+        # -- Prepare sampling and training --------------------------------------
+
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
-        rl_dataset = RLPromptDataset(all_rows, prompts_per_step=cfg.prompt_groups_per_step)
+        rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         server_loss_config = {"ratio_log_cap": cfg.ratio_log_cap}
 
@@ -372,7 +433,10 @@ def main(
             "logprobs": True,
         }
 
+        # -- Sample one prompt (VISIBLE -- customise this) ----------------------
+
         async def sample_one_prompt(row: dict) -> OPDPromptGroup | None:
+            """Sample student completions and score the same tokens with the teacher."""
             messages = row.get("messages", [])
             input_messages = prepare_sampling_messages(messages)
             if not input_messages:
@@ -381,7 +445,7 @@ def main(
             try:
                 sampled = await student_sampler.sample_with_tokens(
                     messages=input_messages,
-                    n=cfg.completions_per_prompt,
+                    n=completions_per_prompt,
                     **sample_kwargs,
                 )
             except Exception as exc:
@@ -460,6 +524,8 @@ def main(
                 truncated=truncated,
             )
 
+        # -- Training callbacks ----------------------------------------------------
+
         def train_step(
             step: int,
             prompt_groups: list[OPDPromptGroup],
@@ -499,7 +565,7 @@ def main(
             dcp_interval = cfg.weight_sync.dcp_save_interval
             if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
                 data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    rollouts_completed * cfg.prompt_groups_per_step
+                    rollouts_completed * prompt_groups_per_step
                 )
                 save_checkpoint(
                     policy,
@@ -568,6 +634,8 @@ def main(
                 loop_metrics[f"concurrency/{key}"] = value
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
+        # -- Run loop -------------------------------------------------------------
+
         remaining_rows = []
         for i_step in range(step_offset, len(rl_dataset)):
             remaining_rows.extend(rl_dataset.get_batch(i_step))
@@ -580,7 +648,7 @@ def main(
             run_rl_loop(
                 sample_fns=(sample_one_prompt(row) for row in remaining_rows),
                 train_fns=TrainStepFns(train_step=train_step),
-                prompt_groups_per_step=cfg.prompt_groups_per_step,
+                prompt_groups_per_step=prompt_groups_per_step,
                 global_step=step_offset,
                 metrics_callback=_loop_metrics_callback,
                 weight_sync_fn=_weight_sync if cfg.weight_sync.weight_sync_interval > 0 else None,
@@ -588,11 +656,13 @@ def main(
             )
         )
 
+        # -- Final checkpoint --------------------------------------------------
+
         if cfg.save_final_checkpoint and global_step > step_offset:
             try:
                 checkpoint_name = f"step-{global_step}"
                 data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    (global_step - step_offset) * cfg.prompt_groups_per_step
+                    (global_step - step_offset) * prompt_groups_per_step
                 )
                 paths = save_checkpoint(
                     policy,
@@ -639,7 +709,10 @@ if __name__ == "__main__":
     cfg = Config(
         log_path="./opd_logs",
         base_model="accounts/fireworks/models/qwen3-8b",
-        teacher_model="accounts/fireworks/models/qwen3-235b-a22b",
+        teacher_model=os.environ.get("OPD_TEACHER_MODEL", ""),
+        infra=InfraConfig(
+            training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200",
+        ),
         deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
     )
     main(cfg)
