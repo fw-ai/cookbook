@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 
 from training.utils.streaming import (
+    AppendOnlyPickleLog,
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,
     JsonlRenderDataset,
@@ -239,3 +240,63 @@ def test_dataloader_shuffle_is_deterministic_per_iteration(tmp_path):
 def test_default_constants_are_sane():
     assert DEFAULT_RENDER_WORKERS >= 1
     assert DEFAULT_PREFETCH_FACTOR >= 1
+
+
+# ---------------------------------------------------------------------------
+# AppendOnlyPickleLog
+# ---------------------------------------------------------------------------
+
+
+class TestAppendOnlyPickleLog:
+    def test_round_trip_preserves_order(self, tmp_path):
+        path = str(tmp_path / "log.pkl")
+        log = AppendOnlyPickleLog(path)
+        for i in range(5):
+            log.append({"i": i, "data": list(range(i + 1))})
+        assert len(log) == 5
+        log.close_write()
+
+        assert list(log) == [{"i": i, "data": list(range(i + 1))} for i in range(5)]
+
+    def test_iter_before_close_write_raises(self, tmp_path):
+        log = AppendOnlyPickleLog(str(tmp_path / "log.pkl"))
+        log.append({"x": 1})
+        with pytest.raises(RuntimeError, match="close_write"):
+            list(log)
+        log.close()
+
+    def test_append_after_close_raises(self, tmp_path):
+        log = AppendOnlyPickleLog(str(tmp_path / "log.pkl"))
+        log.append({"x": 1})
+        log.close_write()
+        with pytest.raises(RuntimeError, match="closed"):
+            log.append({"x": 2})
+
+    def test_context_manager_auto_closes(self, tmp_path):
+        path = str(tmp_path / "log.pkl")
+        with AppendOnlyPickleLog(path) as log:
+            log.append({"hello": "world"})
+        # After __exit__ the log is closed and iterable.
+        assert list(log) == [{"hello": "world"}]
+
+    def test_disk_size_grows_with_appends(self, tmp_path):
+        log = AppendOnlyPickleLog(str(tmp_path / "log.pkl"))
+        log.append({"big": "x" * 4096})
+        size_after_one = log.disk_size_bytes()
+        log.append({"big": "x" * 4096})
+        log.close_write()
+        assert log.disk_size_bytes() > size_after_one
+        assert size_after_one > 4096
+
+    def test_empty_log_iterates_empty(self, tmp_path):
+        log = AppendOnlyPickleLog(str(tmp_path / "log.pkl"))
+        log.close_write()
+        assert list(log) == []
+        assert len(log) == 0
+
+    def test_close_is_idempotent(self, tmp_path):
+        log = AppendOnlyPickleLog(str(tmp_path / "log.pkl"))
+        log.append({"x": 1})
+        log.close()
+        log.close()  # second call no-ops
+        log.close_write()  # also safe

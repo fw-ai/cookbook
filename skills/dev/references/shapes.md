@@ -37,7 +37,11 @@ That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123
 
 For **full-parameter** training with a frozen reference, set `cfg.infra.ref_training_shape_id` explicitly — there is no implicit fallback. It can share the same shape as the policy; the control plane appends `--forward-only` automatically.
 
-For **LoRA** (`lora_rank > 0`), leave `ref_training_shape_id` unset. `setup_infra` uses `policy.create_base_reference()` on the policy trainer for reference logprobs — no separate forward-only trainer, no extra GPUs. Setting `ref_training_shape_id` alongside `lora_rank > 0` logs a warning and still provisions the separate trainer, which defeats LoRA's GPU savings (and can OOM on very large LoRA base models). The CI pattern is `ref_shape = "" if lora_rank > 0 else <explicit shape>`.
+For **LoRA** (`lora_rank > 0`), two valid options:
+- **Shared session (recommended, saves GPUs)**: leave `ref_training_shape_id` unset. `setup_infra` uses `policy.create_base_reference()` on the policy trainer for reference logprobs — no separate trainer, no extra GPUs.
+- **Separate LoRA-capable ref trainer**: set `ref_training_shape_id` to a `LORA_TRAINER` shape (typically the same as the policy shape). `setup_infra` provisions a forward-only LoRA ref trainer (its own GPUs) and forwards `lora_rank` to both the trainer request and the ref client so the gateway infers `trainer_mode=LORA_TRAINER` and matches the shape. CP's V2 DPO auto-resolver picks this path by default for LoRA DPO.
+
+The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 else <explicit shape>`.
 
 ## When to skip validation
 

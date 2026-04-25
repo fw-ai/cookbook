@@ -207,7 +207,8 @@ def test_setup_infra_rl_full_param_with_kl_provisions_separate_reference(patch_s
     assert "grpo-reference" in display_names
     ref_call = next(c for c in patch_sdk.trainer_calls if c["display_name"] == "grpo-reference")
     assert ref_call["forward_only"] is True
-    assert ref_call["lora_rank"] == 0  # ref trainers never carry LoRA
+    # Full-param policy -> ref trainer also full-param, forward-only.
+    assert ref_call["lora_rank"] == 0
 
     assert infra.policy_job_id == "policy-job"
     assert infra.reference_job_id == "ref-job"
@@ -341,9 +342,49 @@ def test_setup_infra_dpo_full_param_provisions_separate_reference(patch_sdk):
     assert display_names == ["dpo-policy", "dpo-reference"]
     assert infra.reference_job_id == "ref-job"
     assert isinstance(infra.reference, _FakeClient)
-    # Reference client created with lora_rank=0 (ref trainers don't carry LoRA).
+    # Full-param DPO: ref trainer + client both lora_rank=0 (FORWARD_ONLY shape).
+    ref_call = next(c for c in patch_sdk.trainer_calls if c["display_name"] == "dpo-reference")
+    assert ref_call["forward_only"] is True
+    assert ref_call["lora_rank"] == 0
     ref_inst = next(c for c in _FakeClient.instances if c.job_id == "ref-job")
     assert ref_inst.lora_rank == 0
+
+
+def test_setup_infra_dpo_lora_propagates_lora_rank_to_reference(patch_sdk):
+    """LoRA DPO: ref trainer + client must carry lora_rank matching policy.
+
+    The gateway's shape-mode validator derives trainer_mode from
+    (forward_only, lora_rank): lora_rank>0 -> LORA_TRAINER. CP's V2
+    auto-resolver picks a LORA_TRAINER shape for the ref of a LoRA DPO,
+    so the cookbook must request the ref trainer with lora_rank>0 to
+    match the shape; otherwise the CreateRlorTrainerJob call is rejected
+    with a 400 (trainer_mode=FORWARD_ONLY vs shape LORA_TRAINER).
+    """
+    rlor, _ = _make_mgrs()
+    cfg = _make_cfg(lora_rank=8, ref_training_shape_id="shape-ref")
+
+    infra = setup_infra(
+        rlor_mgr=rlor, deploy_mgr=None,
+        base_model=cfg.base_model,
+        infra_cfg=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
+        needs_reference=True, needs_inference=False,
+        role_prefix="dpo", api_key="key",
+    )
+
+    ref_call = next(c for c in patch_sdk.trainer_calls if c["display_name"] == "dpo-reference")
+    assert ref_call["forward_only"] is True
+    assert ref_call["lora_rank"] == 8
+
+    ref_inst = next(c for c in _FakeClient.instances if c.job_id == "ref-job")
+    assert ref_inst.lora_rank == 8
+    assert infra.reference_job_id == "ref-job"
 
 
 # ---------------------------------------------------------------------------
