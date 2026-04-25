@@ -47,15 +47,23 @@ class OPDInputMetrics:
     active_tokens: int
     sampled_reverse_kl_sum: float
     opd_advantage_sum: float
+    opd_abs_advantage_sum: float
     teacher_nll_sum: float
     sampling_nll_sum: float
 
     def as_dict(self) -> dict[str, float]:
         denom = max(self.active_tokens, 1)
+        sampled_reverse_kl = self.sampled_reverse_kl_sum / denom
+        opd_advantage = self.opd_advantage_sum / denom
+        abs_logprob_gap = self.opd_abs_advantage_sum / denom
         return {
             "opd_active_tokens": float(self.active_tokens),
-            "opd_sampled_reverse_kl": self.sampled_reverse_kl_sum / denom,
-            "opd_advantage": self.opd_advantage_sum / denom,
+            "opd_sampled_reverse_kl": sampled_reverse_kl,
+            "opd_advantage": opd_advantage,
+            "opd_abs_advantage": abs_logprob_gap,
+            "opd_student_logprob_minus_teacher_logprob": sampled_reverse_kl,
+            "opd_teacher_logprob_minus_student_logprob": opd_advantage,
+            "opd_abs_logprob_gap": abs_logprob_gap,
             "opd_teacher_nll": self.teacher_nll_sum / denom,
             "opd_sampling_nll": self.sampling_nll_sum / denom,
         }
@@ -80,6 +88,23 @@ def _require_lengths_match(name: str, values: Iterable[object], expected: int) -
     if len(result) != expected:
         raise ValueError(f"{name} must have length {expected}, got {len(result)}.")
     return result
+
+
+def _require_active_logprobs(
+    name: str,
+    values: Sequence[float],
+    active_positions: Sequence[int],
+    *,
+    datum_idx: int,
+) -> None:
+    if not active_positions:
+        return
+    required_len = max(active_positions) + 1
+    if len(values) < required_len:
+        raise ValueError(
+            f"Datum {datum_idx}: {name} has length {len(values)}, "
+            f"but active OPD tokens require at least {required_len} logprobs."
+        )
 
 
 def combine_opd_prompt_groups(
@@ -145,6 +170,7 @@ def build_opd_server_datums(
     active_tokens = 0
     sampled_reverse_kl_sum = 0.0
     opd_advantage_sum = 0.0
+    opd_abs_advantage_sum = 0.0
     teacher_nll_sum = 0.0
     sampling_nll_sum = 0.0
 
@@ -156,9 +182,26 @@ def build_opd_server_datums(
         target_tokens = list(target_data.data)
         target_len = len(target_tokens)
         response_start = max(0, int(prompt_lens[idx]) - 1)
-        teacher_lp = _pad_or_trim(teacher_logprobs[idx], target_len)
-        sampling_lp = _pad_or_trim(sampling_logprobs[idx], target_len)
+        raw_teacher_lp = [float(v) for v in teacher_logprobs[idx]]
+        raw_sampling_lp = [float(v) for v in sampling_logprobs[idx]]
         loss_mask = _loss_mask_for_datum(datum, target_len)
+        active_positions = [
+            pos for pos in range(response_start, target_len) if loss_mask[pos] > 0.0
+        ]
+        _require_active_logprobs(
+            "teacher_logprobs",
+            raw_teacher_lp,
+            active_positions,
+            datum_idx=idx,
+        )
+        _require_active_logprobs(
+            "sampling_logprobs",
+            raw_sampling_lp,
+            active_positions,
+            datum_idx=idx,
+        )
+        teacher_lp = _pad_or_trim(raw_teacher_lp, target_len)
+        sampling_lp = _pad_or_trim(raw_sampling_lp, target_len)
 
         advantages = [0.0] * target_len
         for pos in range(response_start, target_len):
@@ -169,6 +212,7 @@ def build_opd_server_datums(
             active_tokens += 1
             sampled_reverse_kl_sum += (sampling_lp[pos] - teacher_lp[pos]) * loss_mask[pos]
             opd_advantage_sum += advantage
+            opd_abs_advantage_sum += abs(advantage)
             teacher_nll_sum += -teacher_lp[pos] * loss_mask[pos]
             sampling_nll_sum += -sampling_lp[pos] * loss_mask[pos]
 
@@ -199,6 +243,7 @@ def build_opd_server_datums(
         active_tokens=active_tokens,
         sampled_reverse_kl_sum=sampled_reverse_kl_sum,
         opd_advantage_sum=opd_advantage_sum,
+        opd_abs_advantage_sum=opd_abs_advantage_sum,
         teacher_nll_sum=teacher_nll_sum,
         sampling_nll_sum=sampling_nll_sum,
     )

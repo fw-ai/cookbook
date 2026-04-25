@@ -21,46 +21,33 @@ def test_deploy_config_omits_region_for_shape_backed_deployments():
     assert config.region is None
 
 
-def test_setup_deployment_omits_placement_for_shape_backed_create():
+def test_setup_deployment_omits_placement_for_shape_backed_create(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        def __init__(self, payload=None):
-            self._payload = payload or {"name": "accounts/acct/deployments/dep-123", "state": "CREATING"}
+    class FakeShapeVersions:
+        def list(self, **kwargs):
+            captured["shape_list_kwargs"] = kwargs
+            return [SimpleNamespace(model_dump=lambda by_alias=True: {"snapshot": {}})]
 
-        def raise_for_status(self):
-            return None
+    class FakeFireworks:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.deployment_shape_versions = FakeShapeVersions()
 
-        def json(self):
-            return self._payload
+    monkeypatch.setattr("training.utils.infra.Fireworks", FakeFireworks)
 
     class FakeMgr:
         account_id = "acct"
+        api_key = "fake-api-key"
+        base_url = "https://api.fireworks.ai"
+        additional_headers = None
 
         def get(self, _deployment_id):
             return None
 
-        def _get(self, path, timeout):
-            captured["shape_path"] = path
-            captured["shape_timeout"] = timeout
-            return FakeResponse(
-                {
-                    "deploymentShapeVersions": [
-                        {
-                            "snapshot": {},
-                        }
-                    ]
-                }
-            )
-
-        def _post(self, path, json, timeout):
-            captured["path"] = path
-            captured["json"] = json
-            captured["timeout"] = timeout
-            return FakeResponse()
-
-        def _parse_deployment_info(self, deployment_id, data):
-            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
+        def create_or_get(self, config):
+            captured["config"] = config
+            return SimpleNamespace(deployment_id=config.deployment_id, state="CREATING")
 
         def wait_for_ready(self, deployment_id, timeout_s):
             return SimpleNamespace(deployment_id=deployment_id, state="READY")
@@ -76,43 +63,46 @@ def test_setup_deployment_omits_placement_for_shape_backed_create():
     )
 
     assert info.state == "READY"
-    assert captured["shape_timeout"] == 30
-    assert captured["timeout"] == 60
-    assert captured["json"]["deploymentShape"] == "accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2"
-    assert "placement" not in captured["json"]
+    assert captured["shape_list_kwargs"] == {
+        "account_id": "fireworks",
+        "deployment_shape_id": "rft-kimi-k2p5-v2",
+        "filter": "latest_validated=true",
+        "page_size": 1,
+        "timeout": 30,
+    }
+    assert captured["config"].deployment_shape == "accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2"
+    assert captured["config"].region is None
 
 
-def test_setup_deployment_infers_ohio_for_b200_shape():
+def test_setup_deployment_infers_ohio_for_b200_shape(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
+    class FakeShapeVersions:
+        def list(self, **kwargs):
+            captured["shape_list_kwargs"] = kwargs
+            return [
+                SimpleNamespace(
+                    model_dump=lambda by_alias=True: {
+                        "snapshot": {"acceleratorType": "NVIDIA_B200_180GB"}
+                    }
+                )
+            ]
 
-        def raise_for_status(self):
-            return None
+    class FakeFireworks:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.deployment_shape_versions = FakeShapeVersions()
 
-        def json(self):
-            return self._payload
+    monkeypatch.setattr("training.utils.infra.Fireworks", FakeFireworks)
 
     class FakeMgr:
         account_id = "acct"
+        api_key = "fake-api-key"
+        base_url = "https://api.fireworks.ai"
+        additional_headers = None
 
         def get(self, _deployment_id):
             return None
-
-        def _get(self, path, timeout):
-            captured["shape_path"] = path
-            captured["shape_timeout"] = timeout
-            return FakeResponse(
-                {
-                    "deploymentShapeVersions": [
-                        {
-                            "snapshot": {"acceleratorType": "NVIDIA_B200_180GB"},
-                        }
-                    ]
-                }
-            )
 
         def create_or_get(self, config):
             captured["config"] = config
@@ -129,41 +119,38 @@ def test_setup_deployment_infers_ohio_for_b200_shape():
     )
 
     assert info.state == "READY"
-    assert captured["shape_timeout"] == 30
-    assert captured["shape_path"].startswith(
-        "/v1/accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2/versions?"
-    )
-    assert "pageSize=1" in captured["shape_path"]
+    assert captured["shape_list_kwargs"]["deployment_shape_id"] == "rft-kimi-k2p5-v2"
+    assert captured["shape_list_kwargs"]["page_size"] == 1
     assert captured["config"].region == "US_OHIO_1"
 
 
-def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
+def test_setup_deployment_infers_virginia_for_versioned_h200_shape(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
+    class FakeShapeVersions:
+        def get(self, **kwargs):
+            captured["shape_get_kwargs"] = kwargs
+            return SimpleNamespace(
+                model_dump=lambda by_alias=True: {
+                    "snapshot": {"acceleratorType": "NVIDIA_H200_141GB"}
+                }
+            )
 
-        def raise_for_status(self):
-            return None
+    class FakeFireworks:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.deployment_shape_versions = FakeShapeVersions()
 
-        def json(self):
-            return self._payload
+    monkeypatch.setattr("training.utils.infra.Fireworks", FakeFireworks)
 
     class FakeMgr:
         account_id = "acct"
+        api_key = "fake-api-key"
+        base_url = "https://api.fireworks.ai"
+        additional_headers = None
 
         def get(self, _deployment_id):
             return None
-
-        def _get(self, path, timeout):
-            captured["shape_path"] = path
-            captured["shape_timeout"] = timeout
-            return FakeResponse(
-                {
-                    "snapshot": {"acceleratorType": "NVIDIA_H200_141GB"},
-                }
-            )
 
         def create_or_get(self, config):
             captured["config"] = config
@@ -180,8 +167,12 @@ def test_setup_deployment_infers_virginia_for_versioned_h200_shape():
     )
 
     assert info.state == "READY"
-    assert captured["shape_path"] == "/v1/accounts/fireworks/deploymentShapes/qwen-h200/versions/rv1"
-    assert captured["shape_timeout"] == 30
+    assert captured["shape_get_kwargs"] == {
+        "account_id": "fireworks",
+        "deployment_shape_id": "qwen-h200",
+        "version_id": "rv1",
+        "timeout": 30,
+    }
     assert captured["config"].region == "US_VIRGINIA_1"
 
 

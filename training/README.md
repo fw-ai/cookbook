@@ -91,6 +91,32 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for student rollouts |
 | `weight_sync` | `WeightSyncConfig(weight_sync_interval=1)` for strict on-policy updates |
 
+If `teacher_model` is a base model resource such as
+`accounts/fireworks/models/qwen3p5-9b`, the OPD recipe creates or reuses a
+separate frozen teacher deployment for scoring during the same provisioning
+phase as the trainer and hot-loaded student deployment. Set
+`teacher_deployment_id` to pin that deployment name. If `teacher_model` is
+already a deployment/deployed model resource, OPD uses it directly.
+
+OPD rows can include `teacher_messages` for privileged teacher context. The
+student samples from `messages`; the frozen teacher scores the sampled response
+under `teacher_messages`. If `teacher_messages` is absent, OPD falls back to
+the student prompt. The aliases `privileged_messages` and
+`teacher_prompt_messages` are also accepted.
+
+For privileged-context validation, `training.utils.opd_eval` provides
+`validate_privileged_opd_dataset(...)`,
+`make_teacher_trace_logprob_gap_eval(...)`, and
+`validate_opd_trace_result(...)` (also re-exported by `recipes/opd_loop.py`
+for convenience). Rows with `expected_answer` and completions that end in
+`Final: ...` can be linted before launch and then track exact final-answer
+accuracy plus the student/teacher logprob gap on the teacher's reasoning trace.
+
+`examples/opd/gsm8k_privileged/prepare_data.py` shows the recommended data
+preparation pattern for real math data: convert GSM8K-style `ground_truth`
+worked solutions into explicit `teacher_messages` before passing the JSONL to
+`recipes/opd_loop.py`.
+
 When `training_shape_id` is not set, the cookbook auto-selects validated
 trainer shapes at runtime from Fireworks control-plane data. RL-family
 recipes also auto-select a validated deployment shape, and DPO / KL
