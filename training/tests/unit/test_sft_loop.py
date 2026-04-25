@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import inspect
 import json
-import math
+import random
 from types import SimpleNamespace
 
 import pytest
@@ -39,6 +38,17 @@ def _fake_profile(shape_id: str = "accounts/test/trainingShapes/sft"):
         node_count=None,
         deployment_shape_version=None,
         pipeline_parallelism=1,
+    )
+
+
+def _test_datum(test_id: str):
+    return SimpleNamespace(
+        model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
+        loss_fn_inputs={
+            "target_tokens": SimpleNamespace(data=[0, 0]),
+            "weights": SimpleNamespace(data=[1.0, 1.0]),
+        },
+        _test_id=test_id,
     )
 
 
@@ -151,6 +161,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         dataset=str(dataset_path),
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=32,
+        render_workers=1,
     )
 
     with pytest.raises(RuntimeError, match="No valid training examples"):
@@ -466,6 +477,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         batch_size=1,
         grad_accum=1,
         log_path=str(tmp_path / "sft_logs"),
+        render_workers=1,
     )
 
     result = module.main(cfg, rlor_mgr=FakeMgr())
@@ -576,6 +588,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
         epochs=1,
         batch_size=1,
         log_path=str(tmp_path / "sft_logs"),
+        render_workers=1,
     )
 
     result = module.main(cfg, rlor_mgr=FakeMgr())
@@ -583,9 +596,314 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     assert result["steps"] == 2
     assert events["optim_steps"] == 2
     assert len(events["batches"]) == 2
-    assert [d._test_id for d in events["batches"][0]] == ["a1"]
-    assert [d._test_id for d in events["batches"][1]] == ["a2"]
+    assert sorted(d._test_id for batch in events["batches"] for d in batch) == ["a1", "a2"]
     assert events["deleted_jobs"] == ["job-sft"]
+
+
+def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
+    """Resume should replay the same epoch-0 shuffle and skip into it deterministically."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+            for i in range(6)
+        ],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    runs: dict[str, list[list[str]]] = {"fresh": [], "resume": []}
+    active = {"name": "fresh"}
+
+    class FakeMgr:
+        def create(self, config):
+            job_id = f"job-{active['name']}"
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            pass
+
+        def delete(self, job_id):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.job_id = kwargs.get("job_id", "job-sft")
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            runs[active["name"]].append([d._test_id for d in batch])
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": len(batch)}
+            )
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def save_state(self, name):
+            return SimpleNamespace(path=name)
+
+        def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            return SimpleNamespace(path=f"{name}-sampler")
+
+        def load_state_with_optimizer(self, path):
+            pass
+
+        def resolve_checkpoint_path(self, name, source_job_id=None):
+            return name
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "auto_select_training_shape",
+        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
+    )
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datum",
+        lambda messages, **kwargs: SimpleNamespace(
+            token_ids=[1, 2],
+            datum=SimpleNamespace(
+                model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2])]),
+                loss_fn_inputs={
+                    "target_tokens": SimpleNamespace(data=[0, 0]),
+                    "weights": SimpleNamespace(data=[1.0, 1.0]),
+                },
+                _test_id=messages[0]["content"],
+            ),
+        ),
+    )
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=2,
+        epochs=1,
+        seed=123,
+        render_workers=1,
+    )
+
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    active["name"] = "resume"
+    monkeypatch.setattr(
+        module,
+        "resolve_resume",
+        lambda *args, **kwargs: SimpleNamespace(step=1, data_consumed=2),
+    )
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert len(runs["fresh"]) == 3
+    assert runs["resume"] == runs["fresh"][1:]
+
+
+def test_main_resume_uses_raw_row_cursor_when_filtering_shrinks_batches(tmp_path, monkeypatch):
+    """Resume should skip raw batches even when filtering makes a step smaller."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+            for i in range(4)
+        ],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    runs: dict[str, list[list[str]]] = {"fresh": [], "resume": []}
+    active = {"name": "fresh"}
+
+    class FakeMgr:
+        def create(self, config):
+            job_id = f"job-{active['name']}"
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            pass
+
+        def delete(self, job_id):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.job_id = kwargs.get("job_id", "job-sft")
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            runs[active["name"]].append([d._test_id for d in batch])
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": len(batch)}
+            )
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def close(self):
+            pass
+
+    raw_batches = [
+        [_test_datum("step-1-only")],
+        [_test_datum("step-2-a"), _test_datum("step-2-b")],
+    ]
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "auto_select_training_shape",
+        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
+    )
+    monkeypatch.setattr(module, "make_render_dataloader", lambda *args, **kwargs: raw_batches)
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=2,
+        epochs=1,
+        seed=123,
+        render_workers=1,
+        save_final_checkpoint=False,
+    )
+
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    active["name"] = "resume"
+    monkeypatch.setattr(
+        module,
+        "resolve_resume",
+        lambda *args, **kwargs: SimpleNamespace(
+            step=1,
+            data_consumed=1,
+            raw_rows_consumed=2,
+        ),
+    )
+    module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert runs["fresh"] == [["step-1-only"], ["step-2-a", "step-2-b"]]
+    assert runs["resume"] == runs["fresh"][1:]
+
+
+def test_completed_status_reports_actual_steps_when_filtering_drops_raw_batches(tmp_path, monkeypatch):
+    """Final runner status should report 100% even when filtered raw batches reduce steps."""
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+            for i in range(8)
+        ],
+    )
+    status_path = tmp_path / "status.json"
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            pass
+
+        def delete(self, job_id):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        job_id = "job-sft"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": len(batch)}
+            )
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def close(self):
+            pass
+
+    raw_batches = [
+        [],
+        [_test_datum("step-1")],
+        [],
+        [_test_datum("step-2")],
+    ]
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module,
+        "auto_select_training_shape",
+        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
+    )
+    monkeypatch.setattr(module, "make_render_dataloader", lambda *args, **kwargs: raw_batches)
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=2,
+        epochs=1,
+        render_workers=1,
+        save_final_checkpoint=False,
+        runner=module.RunnerConfig(status_file=str(status_path)),
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeMgr())
+    status = json.loads(status_path.read_text())
+
+    assert result["steps"] == 2
+    assert status["message"] == "done"
+    assert status["details"][0]["percent"] == 100
 
 
 # ---------------------------------------------------------------------------
@@ -706,19 +1024,15 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
-    # Each example gets a unique _test_id so we can verify disjointness
-    call_count = {"n": 0}
-
     def _fake_render(messages, **kwargs):
-        idx = call_count["n"]
-        call_count["n"] += 1
+        row_idx = int(messages[0]["content"][1:])
         datum = SimpleNamespace(
             model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
             loss_fn_inputs={
                 "target_tokens": SimpleNamespace(data=[0, 0]),
                 "weights": SimpleNamespace(data=[1.0, 1.0]),
             },
-            _test_id=f"example-{idx}",
+            _test_id=f"example-{row_idx}",
         )
         return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
 
@@ -733,6 +1047,7 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
         batch_size=9,  # All 9 training examples in one batch
         log_path=str(tmp_path / "sft_logs"),
         eval_auto_carveout=True,
+        render_workers=1,
     )
 
     result = module.main(cfg, rlor_mgr=FakeMgr())
@@ -752,21 +1067,15 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
     assert train_ids.isdisjoint(eval_ids)
 
     # Eval example comes from the 10-row dataset. We don't pin which specific
-    # row lands in eval: sft_loop now shuffles with a seeded RNG before the
-    # carve-out so the eval set is representative of the full distribution
-    # instead of biased toward the first N rows of the input file.
+    # row lands in eval: auto-carveout now uses a seeded RNG so the eval set is
+    # representative of the full distribution instead of biased toward the
+    # first N rows of the input file.
     all_ids = {f"example-{i}" for i in range(10)}
     assert eval_ids.issubset(all_ids)
 
 
 def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypatch):
-    """Eval-loss curves are only meaningful if the eval set does not drift
-    across epochs. Lock in the invariant that every epoch's eval pass sees the
-    exact same examples in the exact same order.
-
-    Setup: 100 rows, 10% carveout -> 10 eval rows, 90 training rows,
-    batch_size=5 -> 2 eval batches/epoch, 3 epochs -> 6 total eval batches.
-    """
+    """Eval-loss curves are only meaningful if the eval set does not drift."""
     rows = [
         {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
         for i in range(100)
@@ -840,18 +1149,15 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
-    call_count = {"n": 0}
-
     def _fake_render(messages, **kwargs):
-        idx = call_count["n"]
-        call_count["n"] += 1
+        row_idx = int(messages[0]["content"][1:])
         datum = SimpleNamespace(
             model_input=SimpleNamespace(chunks=[SimpleNamespace(tokens=[1, 2, 3])]),
             loss_fn_inputs={
                 "target_tokens": SimpleNamespace(data=[0, 0]),
                 "weights": SimpleNamespace(data=[1.0, 1.0]),
             },
-            _test_id=f"example-{idx}",
+            _test_id=f"example-{row_idx}",
         )
         return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
 
@@ -866,18 +1172,13 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
         batch_size=5,
         log_path=str(tmp_path / "sft_logs"),
         eval_auto_carveout=True,
+        seed=7,
+        render_workers=1,
     )
 
     module.main(cfg, rlor_mgr=FakeMgr())
 
-    # 100 rows * 10% carveout = 10 eval rows, batch_size=5 -> 2 eval batches per epoch.
-    # 3 epochs -> 6 eval batches total.
     eval_batches = events["eval_batches"]
-    assert len(eval_batches) == 6, (
-        f"Expected 6 eval batches (2/epoch * 3 epochs), got {len(eval_batches)}. "
-        f"Either eval ran the wrong number of times or batching changed."
-    )
-
     eval_batches_per_epoch = 2
     per_epoch_eval_ids: list[list[str]] = []
     for epoch_idx in range(3):
@@ -886,105 +1187,160 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
         epoch_ids = [d._test_id for batch in eval_batches[start:end] for d in batch]
         per_epoch_eval_ids.append(epoch_ids)
 
-    assert per_epoch_eval_ids[0] == per_epoch_eval_ids[1], (
-        f"Eval set drifted between epoch 0 and epoch 1.\n"
-        f"  epoch 0: {per_epoch_eval_ids[0]}\n"
-        f"  epoch 1: {per_epoch_eval_ids[1]}\n"
-        f"Eval-loss curves are only comparable across epochs if the eval set "
-        f"(both membership and order) is identical. Do not mutate eval_data or "
-        f"re-derive it inside the epoch loop."
-    )
-    assert per_epoch_eval_ids[1] == per_epoch_eval_ids[2], (
-        f"Eval set drifted between epoch 1 and epoch 2.\n"
-        f"  epoch 1: {per_epoch_eval_ids[1]}\n"
-        f"  epoch 2: {per_epoch_eval_ids[2]}"
-    )
+    assert per_epoch_eval_ids[0] == per_epoch_eval_ids[1]
+    assert per_epoch_eval_ids[1] == per_epoch_eval_ids[2]
 
-    # Sanity: eval membership is disjoint from training.
     train_ids = {d._test_id for batch in events["train_batches"] for d in batch}
     eval_ids = set(per_epoch_eval_ids[0])
-    assert train_ids.isdisjoint(eval_ids), (
-        "Eval rows leaked into training; carveout is broken."
-    )
-    assert len(eval_ids) == 10, (
-        f"Expected 10 distinct eval rows (10% of 100), got {len(eval_ids)}."
-    )
+    assert train_ids.isdisjoint(eval_ids)
+    assert len(eval_ids) == 10
 
 
 # ---------------------------------------------------------------------------
-# Training-data pipeline invariants: every row must be visited each epoch, and
-# the eval carveout must shuffle before slicing so the eval set isn't biased
-# by any ordering already present in the input file.
+# _render_eagerly + _prepare_datasets: dataset-prep helpers extracted from
+# main() so the three eval branches (none / explicit / auto-carveout) and
+# the empty-dataset error are unit-testable without standing up the full
+# trainer / SDK stack.
 # ---------------------------------------------------------------------------
 
 
-def test_sft_data_pipeline_visits_every_training_row() -> None:
-    """Reproduce the SFT main() data pipeline and show that rows are not dropped.
+def _write_jsonl_at(path, rows):
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    return path
 
-    With 10 rows and batch_size=4, a ``SupervisedDatasetFromHFDataset`` built
-    on the raw list reports ``len = 10 // 4 = 2`` batches and silently drops
-    the last 2 rows every epoch. ``sft_loop.pad_training_data_to_batch_size``
-    pads the list up to a multiple of the effective batch size so the
-    per-epoch iteration covers every row.
-    """
-    import datasets as hf_datasets
-    from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
 
-    raw_training_data = list(range(10))
-    effective_batch_size = 4
+def _row(i: int) -> dict:
+    return {"messages": [{"role": "user", "content": f"u{i}"}]}
 
-    training_data = module.pad_training_data_to_batch_size(
-        raw_training_data, effective_batch_size,
+
+def _expected_eval_indices(total_rows: int, carveout_count: int, seed: int) -> list[int]:
+    indices = list(range(total_rows))
+    random.Random(seed).shuffle(indices)
+    return indices[:carveout_count]
+
+
+def test_render_eagerly_drops_none(tmp_path, monkeypatch):
+    """_render_eagerly materialises the first n rows and skips Nones."""
+    path = _write_jsonl_at(tmp_path / "data.jsonl", [_row(i) for i in range(4)])
+    monkeypatch.setattr(
+        module,
+        "_render_one_worker",
+        lambda r: None if int(r["messages"][0]["content"][1:]) % 2 else f"d{r['messages'][0]['content'][1:]}",
     )
+    ds = module.JsonlRenderDataset(str(path), module._render_one_worker)
 
-    sft_dataset = SupervisedDatasetFromHFDataset(
-        hf_datasets.Dataset.from_dict(
-            {"datum_idx": list(range(len(training_data)))}
-        ),
-        batch_size=effective_batch_size,
-        map_fn=lambda row: training_data[row["datum_idx"]],
-    )
-
-    total_batches_per_epoch = len(sft_dataset)
-    expected_batches = math.ceil(len(raw_training_data) / effective_batch_size)
-    assert total_batches_per_epoch == expected_batches, (
-        f"Dataset reports {total_batches_per_epoch} batches/epoch "
-        f"but should cover all {len(raw_training_data)} rows "
-        f"({expected_batches} batches). "
-        f"Fix: pad training_data to a multiple of batch_size before constructing the dataset."
-    )
-
-    seen: list[int] = []
-    for i_batch in range(total_batches_per_epoch):
-        seen.extend(sft_dataset.get_batch(i_batch))
-
-    missing = set(raw_training_data) - set(seen)
-    assert not missing, (
-        f"Rows silently dropped per epoch: {sorted(missing)}. "
-        f"Fix: pad training_data to a multiple of batch_size."
-    )
+    assert module._render_eagerly(ds, 4) == ["d0", "d2"]
+    assert module._render_eagerly(ds, 0) == []
 
 
-def test_sft_eval_carveout_shuffles_training_data_before_slicing() -> None:
-    """Structural check: the eval carveout code path must shuffle before slicing.
+class TestPrepareDatasets:
+    """Direct tests for the _prepare_datasets helper."""
 
-    A plain ``eval_data = training_data[:carveout_count]`` on a dataset ordered
-    by source / difficulty / date yields a biased eval set. The carve-out must
-    run against a pre-shuffled ``training_data``.
-    """
-    src = inspect.getsource(module.main)
-    carveout_marker = "eval_data = training_data[:carveout_count]"
-    if carveout_marker not in src:
-        pytest.fail(
-            "Could not locate the carveout line in sft_loop.main(); "
-            "test needs updating to match the new implementation."
+    @staticmethod
+    def _cfg(tmp_path, dataset_path, **overrides):
+        return module.Config(
+            log_path=str(tmp_path / "logs"),
+            dataset=str(dataset_path),
+            tokenizer_model="Qwen/Qwen3-1.7B",
+            max_seq_len=32,
+            **overrides,
         )
-    preamble = src.split(carveout_marker)[0]
-    has_shuffle = ("shuffle" in preamble.lower()) or ("random.sample" in preamble)
-    if not has_shuffle:
-        pytest.fail(
-            "SFT eval carveout slices training_data[:N] without shuffling first. "
-            "Any dataset ordered by source/difficulty/date yields a biased eval set. "
-            "Fix: shuffle training_data with a configurable seed before carving out "
-            "the eval set."
+
+    def test_no_eval_branch(self, tmp_path, monkeypatch):
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(5)])
+        monkeypatch.setattr(
+            module, "_render_one_worker",
+            lambda r: f"d-{r['messages'][0]['content']}",
         )
+
+        train_ds, eval_data = module._prepare_datasets(self._cfg(tmp_path, path))
+
+        assert len(train_ds) == 5
+        assert eval_data == []
+
+    def test_raises_on_empty_dataset(self, tmp_path, monkeypatch):
+        path = _write_jsonl_at(tmp_path / "empty.jsonl", [])
+        monkeypatch.setattr(module, "_render_one_worker", lambda r: r)
+
+        with pytest.raises(RuntimeError, match="No examples found"):
+            module._prepare_datasets(self._cfg(tmp_path, path))
+
+    def test_explicit_eval_dataset(self, tmp_path, monkeypatch):
+        train = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(5)])
+        eval_path = _write_jsonl_at(tmp_path / "eval.jsonl", [_row(100 + i) for i in range(3)])
+        monkeypatch.setattr(
+            module, "_render_one_worker",
+            lambda r: f"d-{r['messages'][0]['content']}",
+        )
+
+        cfg = self._cfg(tmp_path, train, evaluation_dataset=str(eval_path))
+        train_ds, eval_data = module._prepare_datasets(cfg)
+
+        assert len(train_ds) == 5
+        assert eval_data == ["d-u100", "d-u101", "d-u102"]
+
+    def test_auto_carveout_slices_training_dataset(self, tmp_path, monkeypatch):
+        # 20 rows, 10% ratio capped at max_eval_seqs=3 → 2 eval, 18 train.
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(20)])
+        monkeypatch.setattr(
+            module, "_render_one_worker",
+            lambda r: f"d-{r['messages'][0]['content']}",
+        )
+
+        cfg = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3)
+        train_ds, eval_data = module._prepare_datasets(cfg)
+
+        eval_indices = _expected_eval_indices(total_rows=20, carveout_count=2, seed=cfg.seed)
+        assert eval_data == [f"d-u{i}" for i in eval_indices]
+        assert len(train_ds) == 18
+        train_ids = {train_ds[i] for i in range(len(train_ds))}
+        assert train_ids == {f"d-u{i}" for i in range(20) if i not in set(eval_indices)}
+
+    def test_auto_carveout_drops_none_rendered_rows(self, tmp_path, monkeypatch):
+        # 20 rows; whichever sampled eval rows render to None should be dropped.
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(20)])
+
+        def render(r):
+            content = r["messages"][0]["content"]
+            return None if content == "u1" else f"d-{content}"
+
+        monkeypatch.setattr(module, "_render_one_worker", render)
+
+        cfg = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3)
+        train_ds, eval_data = module._prepare_datasets(cfg)
+
+        eval_indices = _expected_eval_indices(total_rows=20, carveout_count=2, seed=cfg.seed)
+        expected_eval = [f"d-u{i}" for i in eval_indices if i != 1]
+        assert eval_data == expected_eval
+        assert len(train_ds) == 18
+
+    def test_auto_carveout_uses_cfg_seed(self, tmp_path, monkeypatch):
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(20)])
+        monkeypatch.setattr(
+            module, "_render_one_worker",
+            lambda r: f"d-{r['messages'][0]['content']}",
+        )
+
+        cfg_a = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3, seed=7)
+        cfg_b = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3, seed=7)
+        cfg_c = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3, seed=8)
+
+        train_a, eval_a = module._prepare_datasets(cfg_a)
+        train_b, eval_b = module._prepare_datasets(cfg_b)
+        train_c, eval_c = module._prepare_datasets(cfg_c)
+
+        assert eval_a == eval_b
+        assert [train_a[i] for i in range(len(train_a))] == [train_b[i] for i in range(len(train_b))]
+        assert eval_a != eval_c
+
+    def test_auto_carveout_skipped_when_dataset_too_small(self, tmp_path, monkeypatch, caplog):
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(0)])
+        monkeypatch.setattr(module, "_render_one_worker", lambda r: r)
+
+        cfg = self._cfg(tmp_path, path, eval_auto_carveout=True)
+        with caplog.at_level("WARNING"):
+            train_ds, eval_data = module._prepare_datasets(cfg)
+
+        assert eval_data == []
+        assert len(train_ds) == 1
+        assert "too small for auto carve-out" in caplog.text

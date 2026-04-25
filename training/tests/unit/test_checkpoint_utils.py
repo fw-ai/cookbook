@@ -85,13 +85,14 @@ class TestResolveResume:
             "state_path": "cross_job://job-1/step-2",
         })
         _write_checkpoint(log_dir, {
-            "name": "step-4", "step": 4, "data_consumed": 32,
+            "name": "step-4", "step": 4, "data_consumed": 32, "raw_rows_consumed": 40,
             "state_path": "cross_job://job-1/step-4",
         })
         client = _make_mock_client()
         result = resolve_resume(client, log_dir)
         assert result.step == 4
         assert result.data_consumed == 32
+        assert result.raw_rows_consumed == 40
         client.load_state_with_optimizer.assert_called_once_with("cross_job://job-1/step-4")
 
     def test_init_from_checkpoint_simple(self, log_dir):

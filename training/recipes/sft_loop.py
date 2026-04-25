@@ -15,9 +15,11 @@ Usage:
 from __future__ import annotations
 
 import os
-import random
 import signal
 import logging
+import random
+import functools
+from itertools import islice
 from contextlib import ExitStack
 from typing import Any, Dict, List
 from dataclasses import field, dataclass
@@ -25,22 +27,22 @@ from dataclasses import field, dataclass
 import torch
 import tinker
 
-import json
-import datasets as hf_datasets
 import transformers
 from dotenv import load_dotenv
 
 from fireworks.training.sdk import TrainerJobManager
-from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
 from training.utils import (
     DEFAULT_ADAM,
+    DEFAULT_RENDER_WORKERS,
     InfraConfig,
+    JsonlRenderDataset,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
     ReconnectableClient,
+    make_render_dataloader,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -67,8 +69,58 @@ from training.utils.timer import timer, flush_timing
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+# Module-level so DataLoader worker_init_fn can populate it once per
+# worker (avoids re-pickling the tokenizer on every batch). The parent
+# process also initialises this dict to support eval-set rendering and
+# auto carve-out, which run in-process with the same render_fn.
+_worker_state: dict = {}
+
+
+def _init_render_worker(
+    tokenizer_model: str,
+    renderer_name: str,
+    train_on_what_str: str,
+    max_seq_len: int,
+    _worker_id: int | None = None,
+) -> None:
+    """Populate ``_worker_state`` with a tokenizer + renderer.
+
+    ``_worker_id`` is accepted (and ignored) so this function can be
+    used directly as a DataLoader ``worker_init_fn`` after binding the
+    other args via ``functools.partial``.
+    """
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        tokenizer_model, trust_remote_code=True,
+    )
+    _worker_state.update(
+        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
+        train_on_what=parse_train_on_what(train_on_what_str),
+        max_seq_len=max_seq_len,
+    )
+
+
+def _render_one_worker(row: dict) -> tinker.Datum | None:
+    """Render a chat row to a Datum, dropping empty / out-of-range sequences.
+
+    Reads renderer / train_on_what / max_seq_len from the per-process
+    ``_worker_state`` populated by ``_init_render_worker``. Top-level
+    so spawn workers can pickle it as the DataLoader's render_fn.
+    """
+    messages = row.get("messages", [])
+    if not messages:
+        return None
+    rendered = render_messages_to_datum(
+        messages,
+        renderer=_worker_state["renderer"],
+        train_on_what=_worker_state["train_on_what"],
+    )
+    if not 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]:
+        return None
+    return rendered.datum
+
+
 # ---------------------------------------------------------------------------
-# Eval auto carve-out defaults
+# Dataset preparation
 # ---------------------------------------------------------------------------
 
 DEFAULT_EVAL_CARVE_RATIO = 0.1
@@ -80,53 +132,68 @@ def compute_eval_carveout(
     max_ratio: float = DEFAULT_EVAL_CARVE_RATIO,
     max_seqs: int = DEFAULT_MAX_EVAL_SEQS,
 ) -> int:
-    """Compute number of samples to carve out from training data for eval.
-
-    Mirrors the SFT v1 carve-out logic: take min(total * ratio, max_seqs),
-    but return 0 if the dataset is too small to split.
-
-    Args:
-        total_samples: Total number of tokenized training examples.
-        max_ratio: Max fraction of data to use for eval (default 10%).
-        max_seqs: Absolute cap on eval sequences (default 100).
-
-    Returns:
-        Number of samples to reserve for eval (first N of the dataset).
-    """
+    """Number of head samples to carve out as eval (0 if dataset too small)."""
     if total_samples <= 1:
         return 0
-    carveout = int(total_samples * max_ratio)
-    carveout = min(carveout, max_seqs)
-    # Need at least 1 sample left for training
-    if carveout >= total_samples:
-        return 0
-    return carveout
+    carveout = min(int(total_samples * max_ratio), max_seqs)
+    return 0 if carveout >= total_samples else carveout
 
 
-def pad_training_data_to_batch_size(
-    training_data: List[Any], batch_size: int,
-) -> List[Any]:
-    """Pad ``training_data`` up to a multiple of ``batch_size`` so no row is
-    silently dropped by ``SupervisedDatasetFromHFDataset``.
+def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
+    """Render the first ``n`` rows of ``ds`` in-process, dropping Nones."""
+    return [d for d in (ds[i] for i in range(n)) if d is not None]
 
-    ``SupervisedDatasetFromHFDataset.__len__`` uses integer division, and
-    the SFT main loop iterates ``range(len(dataset))`` — so any partial
-    last batch is silently dropped every epoch (e.g. 10 rows / batch 4 →
-    only 8 rows trained). We pad by cycling rows from the head so every
-    original example is visited at least once per epoch.
 
-    Returns a new list; ``training_data`` is not mutated. ``batch_size`` must
-    be >= 1. Empty inputs are returned unchanged.
+def _prepare_datasets(
+    cfg: "Config",
+) -> tuple[JsonlRenderDataset, List[tinker.Datum]]:
+    """Build the training dataset and (optional) eval set.
+
+    Eval can come from an explicit ``cfg.evaluation_dataset`` or be
+    carved out from a seeded random subset of the training dataset. In
+    the carve-out case the returned training dataset excludes those eval
+    rows but otherwise preserves raw-file order; the training loader
+    still does its own per-epoch shuffling.
     """
-    if batch_size < 1:
-        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
-    if not training_data:
-        return list(training_data)
-    remainder = len(training_data) % batch_size
-    if remainder == 0:
-        return list(training_data)
-    pad_count = batch_size - remainder
-    return list(training_data) + list(training_data[:pad_count])
+    training_ds = JsonlRenderDataset(
+        cfg.dataset, _render_one_worker, max_examples=cfg.max_examples,
+    )
+    if len(training_ds) == 0:
+        raise RuntimeError(f"No examples found in {cfg.dataset}")
+
+    if cfg.evaluation_dataset:
+        eval_ds = JsonlRenderDataset(cfg.evaluation_dataset, _render_one_worker)
+        eval_data = _render_eagerly(eval_ds, len(eval_ds))
+        logger.info(
+            "Loaded %d eval examples from %s",
+            len(eval_data), cfg.evaluation_dataset,
+        )
+        return training_ds, eval_data
+
+    if cfg.eval_auto_carveout:
+        n = compute_eval_carveout(
+            len(training_ds), cfg.eval_carve_ratio, cfg.max_eval_seqs,
+        )
+        if n > 0:
+            shuffled_indices = list(range(len(training_ds)))
+            random.Random(cfg.seed).shuffle(shuffled_indices)
+            eval_indices = shuffled_indices[:n]
+            eval_index_set = set(eval_indices)
+            eval_data = _render_eagerly(
+                training_ds.with_indices(eval_indices), len(eval_indices),
+            )
+            training_ds = training_ds.with_indices(
+                [idx for idx in range(len(training_ds)) if idx not in eval_index_set]
+            )
+            logger.info(
+                "Auto carve-out: %d eval examples, %d training examples "
+                "(seed=%d)",
+                len(eval_data), len(training_ds), cfg.seed,
+            )
+            return training_ds, eval_data
+        logger.warning("Dataset too small for auto carve-out, skipping eval")
+
+    return training_ds, []
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +249,15 @@ class Config:
     """Linear LR warmup from 0 → learning_rate over the first N optimizer
     steps. 0 disables warmup (lr is constant)."""
 
+    seed: int = 0
+    """Shuffle seed for the training dataset.
+
+    Used both for deterministic eval auto-carveout membership and for
+    per-epoch training shuffle as ``seed + epoch`` so fresh runs and
+    resumes see the same raw-row order in epoch 0 before any skipped
+    batches.
+    """
+
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
@@ -206,8 +282,11 @@ class Config:
     max_eval_seqs: int = DEFAULT_MAX_EVAL_SEQS
     """Max number of eval sequences for carve-out."""
 
-    seed: int = 0
-    """Seed for deterministic dataset shuffling (eval carve-out + padding)."""
+    render_workers: int | None = None
+    """Number of worker processes for streaming dataset rendering. ``None``
+    auto-selects ``min(os.cpu_count(), DEFAULT_RENDER_WORKERS)``. Set to 1
+    to disable the spawn pool and render in-process (useful for unit tests
+    that monkeypatch the renderer)."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
@@ -447,149 +526,55 @@ def main(
             stack.callback(client.close)
 
         # -- Prepare data ------------------------------------------------------
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
-        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
-        train_on_what = parse_train_on_what(cfg.train_on_what)
-        logger.info(
-            "Using renderer=%s train_on_what=%s",
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-            train_on_what.value,
+        # Render JSONL rows on the fly inside DataLoader workers so peak
+        # RAM is O(num_workers * per_worker_render_footprint) instead of
+        # O(dataset_size). See docs/engineering/sft-v2-orchestrator-oom-debug.md.
+        num_workers = (
+            cfg.render_workers
+            if cfg.render_workers is not None
+            else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
+        # Initialise the parent's _worker_state (used by eval / carve-out
+        # rendering in-process) and bind the same args as the DataLoader
+        # workers' init_fn.
+        init_args = (
+            cfg.tokenizer_model, cfg.renderer_name,
+            cfg.train_on_what, cfg.max_seq_len,
+        )
+        _init_render_worker(*init_args)
+        worker_init_fn = functools.partial(_init_render_worker, *init_args)
 
-        raw_data: List[Dict[str, Any]] = []
-        with open(cfg.dataset) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                raw_data.append(json.loads(line))
-                if cfg.max_examples and len(raw_data) >= cfg.max_examples:
-                    break
-        logger.info("Loaded %d examples from %s", len(raw_data), cfg.dataset)
-
-        max_seq_len = cfg.max_seq_len
-        filtered_count = 0
-
-        def _map_fn(row: dict) -> tinker.Datum | None:
-            nonlocal filtered_count
-            messages = row.get("messages", [])
-            if not messages:
-                filtered_count += 1
-                return None
-            rendered = render_messages_to_datum(
-                messages,
-                renderer=renderer,
-                train_on_what=train_on_what,
-            )
-            if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
-                filtered_count += 1
-                return None
-            return rendered.datum
-
-        total_raw = len(raw_data)
-        log_interval = max(1, total_raw // 20)  # ~5% increments
-        training_data: List[tinker.Datum] = []
-        for i, row in enumerate(raw_data):
-            d = _map_fn(row)
-            if d is not None:
-                training_data.append(d)
-            if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                runner.report_rendering_progress(i + 1, total_raw)
-        if filtered_count > 0:
-            logger.info(
-                "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count,
-                len(raw_data),
-                max_seq_len,
-            )
-        logger.info("Prepared %d training examples", len(training_data))
-        if not training_data:
-            raise RuntimeError("No valid training examples after tokenization")
-
-        # Shuffle training_data once with cfg.seed so all downstream paths
-        # operate on a representative order rather than raw file order:
-        #   * eval auto-carveout slices from the head — unshuffled input
-        #     produces a biased eval set (all from the first source).
-        #   * pad_training_data_to_batch_size cycles from the head — on the
-        #     non-carveout path, unshuffled input gives the file prefix 2x
-        #     gradient exposure every epoch.
-        # Deterministic per-seed; safe on empty / single-item input.
-        random.Random(cfg.seed).shuffle(training_data)
-
-        # -- Eval dataset (explicit or auto carve-out) -------------------------
-        eval_data: List[tinker.Datum] = []
-        if cfg.evaluation_dataset:
-            # Explicit eval dataset
-            raw_eval: List[Dict[str, Any]] = []
-            with open(cfg.evaluation_dataset) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    raw_eval.append(json.loads(line))
-            total_eval = len(raw_eval)
-            eval_log_interval = max(1, total_eval // 10)
-            eval_data = []
-            for i, row in enumerate(raw_eval):
-                d = _map_fn(row)
-                if d is not None:
-                    eval_data.append(d)
-                if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
-                    runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
-            logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
-        elif cfg.eval_auto_carveout:
-            carveout_count = compute_eval_carveout(
-                len(training_data), cfg.eval_carve_ratio, cfg.max_eval_seqs,
-            )
-            if carveout_count > 0:
-                # training_data was already shuffled with cfg.seed above,
-                # so slicing the head is a representative random sample.
-                eval_data = training_data[:carveout_count]
-                training_data = training_data[carveout_count:]
-                logger.info(
-                    "Auto carve-out: %d eval examples, %d training examples "
-                    "(shuffled with seed=%d)",
-                    len(eval_data), len(training_data), cfg.seed,
-                )
-            else:
-                logger.warning("Dataset too small for auto carve-out, skipping eval")
-
-        effective_batch_size = cfg.batch_size
-        if len(training_data) < effective_batch_size:
+        training_dataset, eval_data = _prepare_datasets(cfg)
+        training_count = len(training_dataset)
+        effective_batch_size = max(1, min(cfg.batch_size, training_count))
+        if effective_batch_size < cfg.batch_size:
             logger.warning(
                 "Training examples (%d) < batch_size (%d); reducing effective "
-                "batch_size to %d so all examples are trained on.",
-                len(training_data),
-                effective_batch_size,
-                len(training_data),
-            )
-            effective_batch_size = len(training_data)
-
-        original_size = len(training_data)
-        training_data = pad_training_data_to_batch_size(
-            training_data, effective_batch_size,
-        )
-        if len(training_data) != original_size:
-            logger.info(
-                "Padded training_data from %d -> %d row(s) (cycled from the "
-                "head) so every original example is trained on each epoch.",
-                original_size, len(training_data),
+                "batch_size to %d.",
+                training_count, cfg.batch_size, effective_batch_size,
             )
 
-        sft_dataset = SupervisedDatasetFromHFDataset(
-            hf_datasets.Dataset.from_dict({"datum_idx": list(range(len(training_data)))}),
+        loader_generator = torch.Generator()
+        loader = make_render_dataloader(
+            training_dataset,
             batch_size=effective_batch_size,
-            map_fn=lambda row: training_data[row["datum_idx"]],
+            num_workers=num_workers,
+            shuffle=True,
+            generator=loader_generator,
+            worker_init_fn=worker_init_fn,
         )
-        total_batches_per_epoch = len(sft_dataset)
+        # Pre-filter upper bound; filtered rows make actual batches
+        # smaller but never larger.
+        total_batches_per_epoch = (training_count + effective_batch_size - 1) // effective_batch_size
         logger.info(
-            "Dataset: %d examples, %d batches/epoch, %d epochs",
-            len(training_data),
-            total_batches_per_epoch,
-            cfg.epochs,
+            "Dataset: %d examples from %s (renderer=%s, train_on_what=%s,"
+            " workers=%d, seed=%d) -> ~%d batches/epoch x %d epochs%s",
+            training_count, cfg.dataset,
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            cfg.train_on_what, num_workers, cfg.seed,
+            total_batches_per_epoch, cfg.epochs,
+            f" + {len(eval_data)} eval examples" if eval_data else "",
         )
-        if eval_data:
-            logger.info("Eval dataset: %d examples (eval after each epoch)", len(eval_data))
 
         # -- Resume ---------------------------------------------------------------
 
@@ -599,9 +584,13 @@ def main(
             cfg.init_from_checkpoint,
             cfg.warm_start_from_adapter,
         )
-
         step = resume_info.step if resume_info else 0
         data_consumed = resume_info.data_consumed if resume_info else 0
+        raw_rows_consumed = (
+            getattr(resume_info, "raw_rows_consumed", data_consumed)
+            if resume_info
+            else 0
+        )
         wandb_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
@@ -622,8 +611,14 @@ def main(
 
         # -- Training loop (batch-indexed) -------------------------------------
 
-        start_batch = data_consumed // effective_batch_size
-        total_steps_estimate = total_batches_per_epoch * cfg.epochs
+        total_raw_rows = training_count * cfg.epochs
+        completed_epochs = raw_rows_consumed // training_count if training_count else 0
+        rows_into_current_epoch = raw_rows_consumed % training_count if training_count else 0
+        start_batch = rows_into_current_epoch // effective_batch_size
+        remaining_raw_rows = max(0, total_raw_rows - raw_rows_consumed)
+        total_steps_estimate = step + (
+            (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
+        )
 
         def _run_train_step(
             batch: list[tinker.Datum],
@@ -658,6 +653,7 @@ def main(
                     save_checkpoint(client, f"step-{step}", cfg.log_path, {
                         "step": step,
                         "data_consumed": data_consumed,
+                        "raw_rows_consumed": raw_rows_consumed,
                         "source_job_id": job_id,
                     }, kind=CheckpointKind.STATE,
                     base_model=cfg.base_model,
@@ -704,13 +700,36 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
-        for epoch in range(cfg.epochs):
-            sft_dataset.set_epoch(epoch)
-            epoch_start = start_batch if epoch == 0 else 0
-            for i_batch in range(epoch_start, total_batches_per_epoch):
-                batch = sft_dataset.get_batch(i_batch)
+        for epoch in range(completed_epochs, cfg.epochs):
+            loader_generator.manual_seed(cfg.seed + epoch)
+            batch_iter = iter(loader)
+            epoch_start_batch = start_batch if epoch == completed_epochs else 0
+            if epoch_start_batch > 0:
+                batch_iter = islice(batch_iter, epoch_start_batch, None)
+
+            epoch_valid_examples = 0
+            for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
+                raw_batch_size = min(
+                    effective_batch_size,
+                    training_count - raw_batch_idx * effective_batch_size,
+                )
+                raw_rows_consumed += raw_batch_size
+                if not batch:
+                    continue  # entire batch was filtered (None render); skip
+                epoch_valid_examples += len(batch)
                 data_consumed += len(batch)
                 step = _run_train_step(batch, step)
+
+            if epoch == 0 and completed_epochs == 0 and start_batch == 0:
+                filtered_count = training_count - epoch_valid_examples
+                if filtered_count > 0:
+                    logger.info(
+                        "Seq-length / format filter: %d/%d raw rows filtered",
+                        filtered_count,
+                        training_count,
+                    )
+                if epoch_valid_examples == 0:
+                    raise RuntimeError("No valid training examples after tokenization")
 
             # Run eval after each epoch
             if eval_data:
@@ -739,6 +758,7 @@ def main(
             paths = save_checkpoint(client, cp_name, cfg.log_path, {
                 "step": step,
                 "data_consumed": data_consumed,
+                "raw_rows_consumed": raw_rows_consumed,
                 "source_job_id": job_id,
             }, kind=CheckpointKind.BOTH,
             base_model=cfg.base_model,
@@ -755,7 +775,7 @@ def main(
                 )
 
         runner.write_status(
-            RunStatus.COMPLETED, step=step, total_steps=total_steps_estimate, message="done",
+            RunStatus.COMPLETED, step=step, total_steps=step, message="done",
         )
         runner.write_metadata()
         logger.info("Training complete: %d optimizer steps", step)

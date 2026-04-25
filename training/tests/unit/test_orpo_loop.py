@@ -27,7 +27,7 @@ def test_main_rejects_invalid_output_model_id(monkeypatch, tmp_path):
         output_model_id="bad_name",
     )
 
-    with pytest.raises(RuntimeError, match="output_model_id.*invalid|invalid.*output_model_id"):
+    with pytest.raises(RuntimeError, match="Invalid output_model_id|output_model_id.*invalid|invalid.*output_model_id"):
         module.main(cfg)
 
 

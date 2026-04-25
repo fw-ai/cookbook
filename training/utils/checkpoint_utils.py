@@ -40,6 +40,7 @@ class ResumeInfo:
 
     step: int = 0
     data_consumed: int = 0
+    raw_rows_consumed: int = 0
     source_job_id: str | None = None
 
 
@@ -117,6 +118,10 @@ def resolve_resume(
         return ResumeInfo(
             step=last.get("step", 0),
             data_consumed=last.get("data_consumed", 0),
+            raw_rows_consumed=last.get(
+                "raw_rows_consumed",
+                last.get("data_consumed", 0),
+            ),
             source_job_id=last.get("source_job_id"),
         )
 
