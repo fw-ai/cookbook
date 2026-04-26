@@ -23,7 +23,6 @@ be released after epoch 0).
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import os
@@ -174,23 +173,6 @@ def make_render_dataloader(
         persistent_workers=True,
         collate_fn=_drop_none_collate,
     )
-
-
-def setup_render_worker(
-    init_fn: Callable[..., None], *args: Any,
-) -> Callable[[int | None], None]:
-    """Seed in-process worker state and return a DataLoader ``worker_init_fn``.
-
-    Recipes use a module-level ``_init_<recipe>_worker(*args, _worker_id=None)``
-    that mutates a module-level state dict so spawn workers can pickle it.
-    The parent process *also* needs that state populated for the
-    ``num_workers <= 1`` fallback (used by tests, eval-set rendering, and
-    auto carve-out). This helper does both: invokes ``init_fn`` once now to
-    seed the parent, then returns ``functools.partial(init_fn, *args)``
-    bound for each spawn worker. ``args`` must be picklable.
-    """
-    init_fn(*args)
-    return functools.partial(init_fn, *args)
 
 
 # ---------------------------------------------------------------------------

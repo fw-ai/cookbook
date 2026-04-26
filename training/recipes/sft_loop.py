@@ -18,6 +18,7 @@ import os
 import signal
 import logging
 import random
+import functools
 from itertools import islice
 from contextlib import ExitStack
 from typing import Any, Dict, List
@@ -53,7 +54,6 @@ from training.utils import (
     auto_select_training_shape,
     render_messages_to_datum,
     resolve_renderer_name,
-    setup_render_worker,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoint_utils import (
@@ -85,8 +85,7 @@ def _init_render_worker(
     """DataLoader ``worker_init_fn`` for SFT chat-row rendering.
 
     Module-level (so spawn workers can pickle it) and accepts
-    ``_worker_id`` so it can be passed directly after binding the other
-    args via :func:`setup_render_worker`.
+    ``_worker_id`` so it can be used as a DataLoader ``worker_init_fn``.
     """
     populate_render_worker_state(
         _worker_state,
@@ -532,11 +531,12 @@ def main(
             if cfg.render_workers is not None
             else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
-        worker_init_fn = setup_render_worker(
-            _init_render_worker,
+        init_args = (
             cfg.tokenizer_model, cfg.renderer_name,
             cfg.train_on_what, cfg.max_seq_len,
         )
+        _init_render_worker(*init_args)
+        worker_init_fn = functools.partial(_init_render_worker, *init_args)
 
         training_dataset, eval_data = _prepare_datasets(cfg)
         training_count = len(training_dataset)

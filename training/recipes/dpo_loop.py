@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import array
 import asyncio
+import functools
 import logging
 import os
 import signal
@@ -69,7 +70,6 @@ from training.utils import (
     read_api_extra_headers_env,
     render_preference_pair,
     resolve_renderer_name,
-    setup_render_worker,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -161,8 +161,7 @@ def _init_pair_worker(
     """DataLoader ``worker_init_fn`` for DPO preference-pair rendering.
 
     Module-level (so spawn workers can pickle it) and accepts
-    ``_worker_id`` so it can be passed directly after binding the other
-    args via :func:`setup_render_worker`.
+    ``_worker_id`` so it can be used as a DataLoader ``worker_init_fn``.
     """
     populate_render_worker_state(
         _pair_worker_state,
@@ -655,10 +654,11 @@ def main(
         # cache from disk. See fw-ai/cookbook#371 / #373 for OOM context.
 
         max_seq_len = infra.max_seq_len
-        worker_init_fn = setup_render_worker(
-            _init_pair_worker,
+        init_args = (
             cfg.tokenizer_model, cfg.renderer_name, max_seq_len,
         )
+        _init_pair_worker(*init_args)
+        worker_init_fn = functools.partial(_init_pair_worker, *init_args)
 
         pair_dataset = JsonlRenderDataset(cfg.dataset, _render_pair_worker)
         if len(pair_dataset) == 0:

@@ -28,7 +28,6 @@ from training.utils.streaming import (
     JsonlRenderDataset,
     _scan_jsonl_offsets,
     make_render_dataloader,
-    setup_render_worker,
 )
 
 
@@ -303,40 +302,3 @@ class TestAppendOnlyPickleLog:
         log.close_write()  # also safe
 
 
-# ---------------------------------------------------------------------------
-# setup_render_worker
-# ---------------------------------------------------------------------------
-
-
-class TestSetupRenderWorker:
-    def test_seeds_parent_and_returns_partial(self):
-        seen: list[tuple] = []
-
-        def init_fn(a, b, _worker_id=None):
-            seen.append((a, b, _worker_id))
-
-        worker_init_fn = setup_render_worker(init_fn, "x", 7)
-
-        # Parent invocation seeds in-process state immediately.
-        assert seen == [("x", 7, None)]
-
-        # Returned partial is a DataLoader-shaped worker_init_fn that takes
-        # only the worker id.
-        worker_init_fn(0)
-        worker_init_fn(1)
-        assert seen[1:] == [("x", 7, 0), ("x", 7, 1)]
-
-    def test_returned_partial_is_picklable(self):
-        """Picklability is required for spawn workers."""
-        import pickle
-
-        # Must use a top-level (importable) function for pickle, not a closure.
-        worker_init_fn = setup_render_worker(_recording_init_fn, "tok", "ren", 8)
-
-        roundtripped = pickle.loads(pickle.dumps(worker_init_fn))
-        assert callable(roundtripped)
-
-
-# Module-level so pickle can resolve it by qualified name.
-def _recording_init_fn(*args, _worker_id=None):
-    pass

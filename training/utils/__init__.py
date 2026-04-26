@@ -88,7 +88,6 @@ __all__ = [
     "render_preference_pair",
     "render_messages_to_datum",
     "resolve_renderer_name",
-    "setup_render_worker",
     "prepare_sampling_messages",
     "setup_deployment",
     "setup_or_reattach_deployment",
@@ -184,7 +183,6 @@ from training.utils.streaming import (
     DEFAULT_RENDER_WORKERS,
     JsonlRenderDataset,
     make_render_dataloader,
-    setup_render_worker,
 )
 from training.utils.memlog import MemTracer
 from training.utils.validation import validate_config, validate_preflight
