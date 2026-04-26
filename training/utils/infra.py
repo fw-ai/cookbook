@@ -28,9 +28,9 @@ import time
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable
-from urllib.parse import urlencode
+from typing import Any, Callable, Sequence
 
+from fireworks import ConflictError, Fireworks, omit
 from fireworks.training.sdk.client import (
     FiretitanServiceClient,
     FiretitanTrainingClient,
@@ -65,6 +65,9 @@ StatusCallback = Callable[[str], None]
 """Invoked with a human-readable provisioning status message at each
 lifecycle step (creating, waiting, ready, failed)."""
 
+
+_ProvisionedWaiter = tuple[str, Callable[[], Any]]
+
 logger = logging.getLogger(__name__)
 
 _TRAINER_JOB_CONFIG_SUPPORTS_SKIP_VALIDATIONS = (
@@ -84,6 +87,15 @@ _TRAINER_CANCEL_GRACE_ENV = "FW_TRAINER_CANCEL_GRACE_PERIOD_S"
 _TRAINER_DELETE_GRACE_ENV = "FW_TRAINER_DELETE_GRACE_PERIOD_S"
 
 _FIREWORKS_API_EXTRA_HEADERS_ENV = "FIREWORKS_API_EXTRA_HEADERS"
+
+
+def _fireworks_client(deploy_mgr: DeploymentManager) -> Fireworks:
+    return Fireworks(
+        api_key=deploy_mgr.api_key,
+        account_id=deploy_mgr.account_id,
+        base_url=deploy_mgr.base_url,
+        default_headers=deploy_mgr.additional_headers,
+    )
 
 
 def read_api_extra_headers_env() -> dict[str, str] | None:
@@ -545,8 +557,8 @@ def request_deployment(
         dep_config.region = _infer_region_from_deployment_shape(
             deploy_mgr, dep_config.deployment_shape
         )
-    if dep_config.region is None:
-        return _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
+    if not deploy_cfg.enable_hot_load:
+        return _create_non_hotload_deployment_via_sdk(deploy_mgr, dep_config)
     return deploy_mgr.create_or_get(dep_config)
 
 
@@ -745,24 +757,39 @@ def _get_deployment_shape_version(
     deployment_shape: str,
 ) -> dict[str, Any]:
     """Fetch an exact or latest-validated deployment-shape version."""
-    if "/versions/" in deployment_shape:
-        path = f"/v1/{deployment_shape}"
-    else:
-        path = (
-            f"/v1/{deployment_shape}/versions?"
-            f"{urlencode({'filter': 'latest_validated=true', 'pageSize': 1})}"
+    parts = deployment_shape.strip("/").split("/")
+    if len(parts) not in (4, 6) or parts[0] != "accounts" or parts[2] != "deploymentShapes":
+        raise ValueError(f"Invalid deployment shape resource name: {deployment_shape!r}")
+    if len(parts) == 6 and parts[4] != "versions":
+        raise ValueError(f"Invalid deployment shape version resource name: {deployment_shape!r}")
+
+    account_id = parts[1]
+    shape_id = parts[3]
+    version_id = parts[5] if len(parts) == 6 else None
+    client = _fireworks_client(deploy_mgr)
+    if version_id:
+        version = client.deployment_shape_versions.get(
+            account_id=account_id,
+            deployment_shape_id=shape_id,
+            version_id=version_id,
+            timeout=30,
         )
-    resp = deploy_mgr._get(path, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if "/versions/" in deployment_shape:
-        return data
-    versions = data.get("deploymentShapeVersions", []) or []
+        return version.model_dump(by_alias=True)
+
+    versions = list(
+        client.deployment_shape_versions.list(
+            account_id=account_id,
+            deployment_shape_id=shape_id,
+            filter="latest_validated=true",
+            page_size=1,
+            timeout=30,
+        )
+    )
     if not versions:
         raise RuntimeError(
             f"No latest validated deployment-shape version was returned for '{deployment_shape}'"
         )
-    return versions[0]
+    return versions[0].model_dump(by_alias=True)
 
 
 def get_deployment_gpu_count(
@@ -805,46 +832,53 @@ def get_deployment_gpu_count(
         return replica_count
 
 
-def _create_deployment_via_cookbook(
+def _create_non_hotload_deployment_via_sdk(
     deploy_mgr: DeploymentManager,
     config: DeploymentConfig,
-    purpose: str | None = None,
 ) -> DeploymentInfo:
-    """Create a deployment while leaving placement selection to the control plane."""
-    path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
-    if config.skip_shape_validation:
-        path += "&skipShapeValidation=true"
-    if config.disable_speculative_decoding:
-        path += "&disableSpeculativeDecoding=true"
-
-    body: dict[str, Any] = {
-        "baseModel": config.base_model,
-        "minReplicaCount": config.min_replica_count,
-        "maxReplicaCount": config.max_replica_count,
-        "enableHotLoad": True,
-    }
+    """Create a frozen, non-hotload deployment through the generated Fireworks API client."""
+    if config.hot_load_trainer_job:
+        raise ValueError("non-hotload deployments cannot set hot_load_trainer_job")
     if config.hot_load_bucket_type:
-        body["hotLoadBucketType"] = config.hot_load_bucket_type
-    if config.deployment_shape:
-        body["deploymentShape"] = config.deployment_shape
-    if config.accelerator_type:
-        body["acceleratorType"] = config.accelerator_type
+        raise ValueError("non-hotload deployments cannot set hot_load_bucket_type")
     if config.extra_args:
-        flat: list[str] = []
-        for arg in config.extra_args:
-            flat.extend(arg.split()) if " " in arg else flat.append(arg)
-        body["extraArgs"] = flat
+        raise ValueError("non-hotload deployment extra_args are not exposed by the generated SDK")
     if config.extra_values:
-        body["extraValues"] = config.extra_values
-    if purpose:
-        body["annotations"] = {
-            "internal/purpose": purpose.removeprefix("PURPOSE_").lower(),
-        }
+        raise ValueError("non-hotload deployment extra_values are not exposed by the generated SDK")
 
-    logger.info("Creating deployment: %s", config.deployment_id)
-    resp = deploy_mgr._post(path, json=body, timeout=60)
-    resp.raise_for_status()
-    return deploy_mgr._parse_deployment_info(config.deployment_id, resp.json())
+    client = _fireworks_client(deploy_mgr)
+    logger.info("Creating non-hotload deployment: %s", config.deployment_id)
+    try:
+        deployment = client.deployments.create(
+            account_id=deploy_mgr.account_id,
+            deployment_id=config.deployment_id,
+            base_model=config.base_model,
+            enable_hot_load=False,
+            min_replica_count=config.min_replica_count,
+            max_replica_count=config.max_replica_count,
+            deployment_shape=config.deployment_shape or omit,
+            accelerator_type=(
+                omit
+                if config.deployment_shape
+                else config.accelerator_type
+            ),
+            placement={"region": config.region} if config.region else omit,
+            skip_shape_validation=config.skip_shape_validation or omit,
+            disable_speculative_decoding=config.disable_speculative_decoding or omit,
+            timeout=60,
+        )
+    except ConflictError:
+        info = deploy_mgr.get(config.deployment_id)
+        if info is not None:
+            return info
+        raise
+    return DeploymentInfo(
+        deployment_id=config.deployment_id,
+        name=deployment.name or "",
+        state=deployment.state or "UNKNOWN",
+        hot_load_bucket_url=deployment.hot_load_bucket_url,
+        inference_model=f"accounts/{deploy_mgr.account_id}/deployments/{config.deployment_id}",
+    )
 
 
 def setup_training_client(
@@ -942,7 +976,6 @@ class Infra:
     the shape doesn't expose ``acceleratorCount``. Recipes use this to size
     concurrency windows, etc."""
 
-
 def setup_infra(
     *,
     rlor_mgr: TrainerJobManager,
@@ -962,6 +995,9 @@ def setup_infra(
     api_key: str,
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
+    post_shape_provisioners: Sequence[
+        Callable[[str | None], _ProvisionedWaiter | None]
+    ] | None = None,
 ) -> Infra:
     """Build all training-side infrastructure in one call.
 
@@ -988,6 +1024,10 @@ def setup_infra(
             deployments for scale-to-zero on scope exit. Pass ``None`` to skip
             registration (e.g. when resuming and wanting resources to outlive the run).
         on_status: Optional callback receiving human-readable status messages.
+        post_shape_provisioners: Optional hooks that run after shape resolution
+            and before trainer/deployment waits. Each hook may request an
+            auxiliary resource and return a waiter to run in parallel with the
+            main trainer/deployment readiness waits.
 
     Returns:
         An :class:`Infra` bundle. Caller registers ``infra.closeables`` on an
@@ -1044,6 +1084,12 @@ def setup_infra(
         local_deploy_cfg.weight_sync_scope if local_deploy_cfg else WeightSyncScope.PER_TRAINER
     )
 
+    auxiliary_waiters: list[_ProvisionedWaiter] = []
+    for provisioner in post_shape_provisioners or ():
+        provisioned = provisioner(resolved_deploy_shape if needs_inference else None)
+        if provisioned is not None:
+            auxiliary_waiters.append(provisioned)
+
     # The two scopes differ only in who is created first: whichever side owns
     # the bucket needs its identifier before the other side can be wired up.
     trainer_kwargs = dict(
@@ -1095,6 +1141,7 @@ def setup_infra(
         base_model=base_model,
         role_prefix=role_prefix,
         on_status=emit,
+        auxiliary_waiters=auxiliary_waiters,
     )
 
     inference_model = None
@@ -1401,9 +1448,16 @@ def _await_in_parallel(
     base_model: str,
     role_prefix: str,
     on_status: Callable[[str], None],
+    auxiliary_waiters: Sequence[_ProvisionedWaiter] | None = None,
 ) -> tuple[Any, Any | None, "DeploymentInfo | None"]:
     """Wait for all pending resources in parallel using a thread pool."""
-    max_workers = 1 + (1 if ref_handle is not None else 0) + (1 if dep_info is not None else 0)
+    auxiliary_waiters = list(auxiliary_waiters or ())
+    max_workers = (
+        1
+        + (1 if ref_handle is not None else 0)
+        + (1 if dep_info is not None else 0)
+        + len(auxiliary_waiters)
+    )
 
     policy_ep = ref_ep = final_dep_info = None
     errors: list[str] = []
@@ -1444,6 +1498,10 @@ def _await_in_parallel(
             )
         else:
             dep_future = pool.submit(wait_deployment, deploy_mgr, dep_info, deploy_cfg)
+        auxiliary_futures = {
+            label: pool.submit(wait_fn)
+            for label, wait_fn in auxiliary_waiters
+        }
 
         try:
             policy_ep = policy_future.result()
@@ -1466,6 +1524,12 @@ def _await_in_parallel(
                 )
             except Exception as e:
                 errors.append(f"Deployment: {e}")
+
+        for label, future in auxiliary_futures.items():
+            try:
+                future.result()
+            except Exception as e:
+                errors.append(f"{label}: {e}")
 
     if errors:
         raise RuntimeError("Infrastructure provisioning failed:\n" + "\n".join(errors))
@@ -1532,5 +1596,3 @@ def _make_boot_metrics(boot_start: float, deploy_mgr: DeploymentManager | None) 
     if deploy_mgr is not None and deploy_mgr.boot_time_s is not None:
         metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
     return metrics
-
-

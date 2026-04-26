@@ -136,6 +136,8 @@ class DeployConfig:
     """Trainer job name whose hot-load bucket this deployment should use.
     Format: accounts/{account}/rlorTrainerJobs/{job_id}.
     When set, the deployment copies the trainer's bucket URL at creation."""
+    enable_hot_load: bool = True
+    """Whether to create a hot-load-capable deployment."""
     deployment_timeout_s: float = 5400
     reattach_settle_timeout_s: int = 600
     """How long to wait for the serving pod to cycle after a re-attach PATCH
@@ -202,4 +204,3 @@ class WandBConfig:
     entity: str | None = None
     project: str | None = None
     run_name: str | None = None
-

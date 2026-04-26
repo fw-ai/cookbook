@@ -561,6 +561,91 @@ def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
     )
 
 
+def test_auxiliary_provisioner_waits_with_trainers_and_deployment(monkeypatch):
+    """Auxiliary resources request before waits and wait in the shared pool."""
+    _FakeClient.instances = []
+    events: list[str] = []
+    auxiliary_result = {}
+    sleep_s = 0.05
+
+    def fake_request_trainer(_rlor, *, display_name, **kwargs):
+        events.append(f"request:{display_name}")
+        return _trainer_handle("policy-job")
+
+    def fake_wait_trainer(_rlor, created, *, display_name="", **kwargs):
+        events.append(f"wait_start:{display_name}")
+        time.sleep(sleep_s)
+        events.append(f"wait_done:{display_name}")
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    def fake_request_deployment(_deploy, deploy_cfg, _base_model, _infra):
+        events.append("request:student-deployment")
+        return SimpleNamespace(
+            deployment_id=deploy_cfg.deployment_id,
+            state="CREATING",
+            inference_model="student-model",
+        )
+
+    def fake_wait_deployment(_deploy, info, _deploy_cfg):
+        events.append("wait_start:student-deployment")
+        time.sleep(sleep_s)
+        events.append("wait_done:student-deployment")
+        return SimpleNamespace(
+            deployment_id=info.deployment_id,
+            state="READY",
+            inference_model="student-model",
+        )
+
+    def provision_teacher(resolved_deployment_shape: str | None):
+        events.append(f"request:teacher-deployment:{resolved_deployment_shape}")
+
+        def wait_teacher():
+            events.append("wait_start:teacher-deployment")
+            time.sleep(sleep_s)
+            events.append("wait_done:teacher-deployment")
+            auxiliary_result["teacher_deployment"] = "teacher-model"
+
+        return "teacher_deployment", wait_teacher
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "request_deployment", fake_request_deployment)
+    monkeypatch.setattr(infra_setup_mod, "wait_deployment", fake_wait_deployment)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+
+    rlor, deploy = _make_mgrs(profile=_profile(dep_shape="ds-v1"))
+    deploy.get.return_value = None
+    cfg = _make_cfg(lora_rank=0, deployment_id="dep-1")
+
+    infra = setup_infra(
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra_cfg=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
+        needs_reference=False, needs_inference=True,
+        role_prefix="opd", api_key="key",
+        post_shape_provisioners=[provision_teacher],
+    )
+
+    assert infra.inference_model == "student-model"
+    assert auxiliary_result["teacher_deployment"] == "teacher-model"
+    request_indices = [i for i, event in enumerate(events) if event.startswith("request:")]
+    wait_start_indices = [i for i, event in enumerate(events) if event.startswith("wait_start:")]
+    wait_done_indices = [i for i, event in enumerate(events) if event.startswith("wait_done:")]
+    assert max(request_indices) < min(wait_start_indices), events
+    assert max(wait_start_indices) < min(wait_done_indices), events
+
+
 def test_parallel_wait_timing(monkeypatch):
     """Both trainer waits run in parallel; elapsed grows by ~SLEEP_S, not 2×.
 
