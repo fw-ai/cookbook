@@ -300,5 +300,3 @@ class TestAppendOnlyPickleLog:
         log.close()
         log.close()  # second call no-ops
         log.close_write()  # also safe
-
-
