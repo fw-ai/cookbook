@@ -85,24 +85,34 @@ def auto_select_training_shape(
         return _pick_best(candidates, max_seq_len)
 
     # Fallback: compatible model_type + parameter_count bucket.
-    model_ctx = _fetch_model_context(trainer_mgr, base_model)
-    lo, hi = _param_count_bounds(model_ctx["parameter_count"])
-    candidates = _list_and_filter(
-        trainer_mgr,
-        parent=parent,
-        filter_expr=_combine_filters(
-            f'snapshot.model_type="{model_ctx["model_type"]}"',
-            f"snapshot.parameter_count>={lo}",
-            f"snapshot.parameter_count<={hi}",
-            f'snapshot.trainer_mode="{expected_mode}"',
-            "latest_validated=true",
-            "public=true" if public_only else "",
-        ),
-        expected_mode=expected_mode,
-        max_seq_len=max_seq_len,
-    )
-    if candidates:
-        return _pick_best(candidates, max_seq_len)
+    try:
+        model_ctx = _fetch_model_context(trainer_mgr, base_model)
+    except RuntimeError:
+        logger.warning(
+            "Could not fetch model details for %r; "
+            "skipping parameter-count fallback.",
+            base_model,
+        )
+        model_ctx = None
+
+    if model_ctx is not None:
+        lo, hi = _param_count_bounds(model_ctx["parameter_count"])
+        candidates = _list_and_filter(
+            trainer_mgr,
+            parent=parent,
+            filter_expr=_combine_filters(
+                f'snapshot.model_type="{model_ctx["model_type"]}"',
+                f"snapshot.parameter_count>={lo}",
+                f"snapshot.parameter_count<={hi}",
+                f'snapshot.trainer_mode="{expected_mode}"',
+                "latest_validated=true",
+                "public=true" if public_only else "",
+            ),
+            expected_mode=expected_mode,
+            max_seq_len=max_seq_len,
+        )
+        if candidates:
+            return _pick_best(candidates, max_seq_len)
 
     mode_label = {"LORA_TRAINER": "LoRA", "FORWARD_ONLY": "reference"}.get(
         expected_mode, "full-tune"
