@@ -12,6 +12,7 @@ from training.utils.data import prepare_sampling_messages
 from training.utils.supervised import (
     build_renderer,
     build_datum_from_token_mask,
+    populate_render_worker_state,
     resolve_renderer_name,
     render_preference_pair,
     normalize_messages,
@@ -735,3 +736,59 @@ def test_prepare_sampling_messages_only_strips_trailing_assistant():
     )
 
     assert [m["role"] for m in prepared] == ["system", "user", "assistant", "user"]
+
+
+# ---------------------------------------------------------------------------
+# populate_render_worker_state
+# ---------------------------------------------------------------------------
+
+
+def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
+    """Common keys (tokenizer, renderer, max_seq_len) plus extras land in state."""
+    from training.utils import supervised as sup
+
+    fake_tokenizer = object()
+    fake_renderer = object()
+    monkeypatch.setattr(
+        sup.transformers.AutoTokenizer, "from_pretrained",
+        lambda model, **kwargs: fake_tokenizer,
+    )
+    monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: fake_renderer)
+
+    state: dict = {}
+    populate_render_worker_state(
+        state,
+        tokenizer_model="acme/llama",
+        renderer_name="llama-3",
+        max_seq_len=4096,
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+        custom_extra="hello",
+    )
+
+    assert state["tokenizer"] is fake_tokenizer
+    assert state["renderer"] is fake_renderer
+    assert state["max_seq_len"] == 4096
+    assert state["train_on_what"] == TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    assert state["custom_extra"] == "hello"
+
+
+def test_populate_render_worker_state_uses_trust_remote_code(monkeypatch):
+    """trust_remote_code=True is required for Kimi / Qwen image processors."""
+    from training.utils import supervised as sup
+
+    captured: dict = {}
+
+    def fake_from_pretrained(model, **kwargs):
+        captured.update(model=model, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        sup.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
+    )
+    monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: object())
+
+    populate_render_worker_state(
+        {}, tokenizer_model="m", renderer_name="r", max_seq_len=1,
+    )
+    assert captured["model"] == "m"
+    assert captured["kwargs"].get("trust_remote_code") is True

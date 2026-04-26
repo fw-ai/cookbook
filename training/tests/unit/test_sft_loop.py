@@ -27,6 +27,18 @@ def _write_dataset(tmp_path, rows):
     return dataset_path
 
 
+def _make_stub_render_worker_state(renderer=None, tokenizer=None):
+    """Return a populate_render_worker_state replacement that skips HF tokenizer / renderer load."""
+    def stub(state, *, tokenizer_model, renderer_name, max_seq_len, **extras):
+        state.update(
+            tokenizer=tokenizer if tokenizer is not None else object(),
+            renderer=renderer if renderer is not None else object(),
+            max_seq_len=max_seq_len,
+            **extras,
+        )
+    return stub
+
+
 def _fake_profile(shape_id: str = "accounts/test/trainingShapes/sft"):
     """Stub for ``rlor_mgr.resolve_training_profile()`` returns."""
     return SimpleNamespace(
@@ -140,8 +152,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
@@ -228,8 +239,7 @@ def test_main_reduces_batch_size_when_examples_fewer_than_batch_size(tmp_path, m
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
@@ -335,8 +345,7 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(module, "auto_select_training_shape", _record_auto_select)
     monkeypatch.setattr(
@@ -458,8 +467,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: renderer)
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state(renderer=renderer))
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
@@ -557,8 +565,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
@@ -664,8 +671,7 @@ def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
@@ -773,8 +779,7 @@ def test_main_resume_uses_raw_row_cursor_when_filtering_shrinks_batches(tmp_path
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
@@ -873,8 +878,7 @@ def test_completed_status_reports_actual_steps_when_filtering_drops_raw_batches(
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
@@ -1014,8 +1018,7 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
@@ -1139,8 +1142,7 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
     monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module.transformers.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,

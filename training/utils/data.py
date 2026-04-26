@@ -65,7 +65,7 @@ def _to_msgs(v: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _normalize_preference_row(row: Dict[str, Any]) -> Dict[str, Any] | None:
+def normalize_preference_row(row: Dict[str, Any]) -> Dict[str, Any] | None:
     """Normalize one JSONL row to ``{"chosen": ..., "rejected": ...}`` or None.
 
     Supports three on-disk formats:
@@ -126,7 +126,7 @@ def iter_preference_examples(
             line = line.strip()
             if not line:
                 continue
-            pair = _normalize_preference_row(json.loads(line))
+            pair = normalize_preference_row(json.loads(line))
             if pair is None:
                 continue
             yield pair

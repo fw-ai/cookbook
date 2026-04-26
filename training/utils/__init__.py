@@ -75,6 +75,7 @@ __all__ = [
     "make_batch_sft_loss_fn",
     "make_batch_weighted_sft_loss_fn",
     "make_sft_loss_fn",
+    "normalize_preference_row",
     "RenderedSupervisedDatum",
     "RenderedPreferencePair",
     "build_next_token_datum",
@@ -83,6 +84,7 @@ __all__ = [
     "build_renderer",
     "normalize_messages",
     "parse_train_on_what",
+    "populate_render_worker_state",
     "render_preference_pair",
     "render_messages_to_datum",
     "resolve_renderer_name",
@@ -110,6 +112,7 @@ from training.utils.data import (
     load_jsonl_dataset,
     load_preference_dataset,
     find_common_prefix_length,
+    normalize_preference_row,
     prepare_sampling_messages,
 )
 from training.utils.infra import (
@@ -161,6 +164,7 @@ from training.utils.supervised import (
     build_renderer,
     normalize_messages,
     parse_train_on_what,
+    populate_render_worker_state,
     render_preference_pair,
     render_messages_to_datum,
     resolve_renderer_name,
