@@ -714,7 +714,16 @@ def _infer_region_from_deployment_shape(
     deployment_shape: str,
 ) -> str | None:
     """Infer a rollout region from a validated deployment shape snapshot."""
-    version = _get_deployment_shape_version(deploy_mgr, deployment_shape)
+    try:
+        version = _get_deployment_shape_version(deploy_mgr, deployment_shape)
+    except Exception as e:
+        logger.warning(
+            "Could not fetch deployment shape %s for region inference (%s); "
+            "falling back to auto placement.",
+            deployment_shape,
+            e,
+        )
+        return None
     snapshot = version.get("snapshot", {}) or {}
     accelerator = snapshot.get("acceleratorType", "")
     for prefix, region in _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES:
@@ -825,6 +834,8 @@ def _create_deployment_via_cookbook(
     }
     if config.hot_load_bucket_type:
         body["hotLoadBucketType"] = config.hot_load_bucket_type
+    if config.hot_load_trainer_job:
+        body["hotLoadTrainerJob"] = config.hot_load_trainer_job
     if config.deployment_shape:
         body["deploymentShape"] = config.deployment_shape
     if config.accelerator_type:
@@ -843,6 +854,17 @@ def _create_deployment_via_cookbook(
 
     logger.info("Creating deployment: %s", config.deployment_id)
     resp = deploy_mgr._post(path, json=body, timeout=60)
+    if (
+        resp.status_code == 403
+        and config.disable_speculative_decoding
+        and "disableSpeculativeDecoding" in path
+    ):
+        logger.warning(
+            "Deployment creation returned 403 with disableSpeculativeDecoding; "
+            "retrying without the flag (the deployment shape should handle speculation settings)."
+        )
+        path = path.replace("&disableSpeculativeDecoding=true", "")
+        resp = deploy_mgr._post(path, json=body, timeout=60)
     resp.raise_for_status()
     return deploy_mgr._parse_deployment_info(config.deployment_id, resp.json())
 
