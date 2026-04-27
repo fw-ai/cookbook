@@ -195,3 +195,92 @@ def test_infra_fields_forwarded_to_config():
         infra=InfraConfig(purpose="PURPOSE_PILOT"), profile=PROFILE,
     )
     assert mgr.captured.purpose == "PURPOSE_PILOT"
+
+
+# -----------------------------------------------------------------------
+# Error hint enrichment for shape validation failures
+# -----------------------------------------------------------------------
+
+
+class TestShapeErrorHint:
+    """_shape_error_hint adds actionable guidance to 400 errors."""
+
+    def test_hint_for_pinned_version(self):
+        error = (
+            "no validated training shape exists for "
+            "training_shape=accounts/fw/trainingShapes/ts/versions/abc "
+            "base_model=accounts/fw/models/m trainer_mode=POLICY_TRAINER"
+        )
+        hint = infra_module._shape_error_hint(
+            error, forward_only=False, lora_rank=0,
+        )
+        assert hint is not None
+        assert "/versions/" in hint
+
+    def test_hint_for_forward_only_lora_mismatch(self):
+        error = (
+            "no validated training shape exists for "
+            "training_shape=accounts/fw/trainingShapes/ts "
+            "base_model=accounts/fw/models/m trainer_mode=FORWARD_ONLY"
+        )
+        hint = infra_module._shape_error_hint(
+            error, forward_only=True, lora_rank=32,
+        )
+        assert hint is not None
+        assert "ref_training_shape_id" in hint
+        assert "shared-session" in hint
+
+    def test_hint_for_custom_model(self):
+        error = (
+            "no validated training shape exists for "
+            "training_shape=accounts/fw/trainingShapes/ts "
+            "base_model=accounts/wix/models/c2s-merged-v4 "
+            "trainer_mode=LORA_TRAINER"
+        )
+        hint = infra_module._shape_error_hint(
+            error, forward_only=False, lora_rank=32,
+        )
+        assert hint is not None
+        assert "custom" in hint.lower() or "non-Fireworks" in hint
+
+    def test_hint_generic_fallback(self):
+        error = (
+            "no validated training shape exists for "
+            "training_shape=accounts/fw/trainingShapes/ts "
+            "base_model=accounts/fireworks/models/m trainer_mode=POLICY_TRAINER"
+        )
+        hint = infra_module._shape_error_hint(
+            error, forward_only=False, lora_rank=0,
+        )
+        assert hint is not None
+        assert "auto-selection" in hint
+
+    def test_no_hint_for_unrelated_error(self):
+        hint = infra_module._shape_error_hint(
+            "connection refused", forward_only=False, lora_rank=0,
+        )
+        assert hint is None
+
+    def test_hint_included_in_raised_error(self, caplog):
+        """The enriched hint appears in the RuntimeError from request_trainer_job."""
+        mgr = _FailingMgr(
+            "Client error '400 Bad Request'\n"
+            "no validated training shape exists for "
+            "training_shape=accounts/fw/trainingShapes/ts/versions/old "
+            "base_model=accounts/wix/models/custom trainer_mode=FORWARD_ONLY"
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            infra_module.create_trainer_job(
+                mgr,
+                base_model="accounts/wix/models/custom",
+                infra=InfraConfig(),
+                profile=PROFILE,
+                display_name="dpo-reference",
+                forward_only=True,
+                lora_rank=32,
+            )
+
+        error_str = str(exc_info.value)
+        assert "Hint:" in error_str
+        assert "/versions/" in error_str

@@ -461,6 +461,93 @@ def test_setup_infra_does_not_auto_select_ref_for_lora(patch_sdk):
 
 
 # ---------------------------------------------------------------------------
+# Pinned /versions/ suffix stripping
+# ---------------------------------------------------------------------------
+
+
+def test_setup_infra_strips_pinned_policy_shape_version(patch_sdk, caplog):
+    """Explicit training_shape_id with /versions/... is stripped to bare path."""
+    rlor, deploy = _make_mgrs()
+    cfg = _make_cfg(
+        training_shape_id="accounts/fw/trainingShapes/ts-policy/versions/abc123",
+    )
+
+    with caplog.at_level("WARNING"):
+        infra = setup_infra(
+            rlor_mgr=rlor, deploy_mgr=deploy,
+            base_model=cfg.base_model,
+            infra_cfg=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            needs_reference=False, needs_inference=True,
+            role_prefix="grpo", api_key="key",
+        )
+
+    assert infra.training_shape_id == "accounts/fw/trainingShapes/ts-policy"
+    assert "Stripping pinned version" in caplog.text
+    assert "training_shape_id" in caplog.text
+
+
+def test_setup_infra_strips_pinned_ref_shape_version(patch_sdk, caplog):
+    """Explicit ref_training_shape_id with /versions/... is stripped."""
+    rlor, _ = _make_mgrs()
+    cfg = _make_cfg(
+        lora_rank=0,
+        ref_training_shape_id="accounts/fw/trainingShapes/ts-ref/versions/xyz789",
+    )
+
+    with caplog.at_level("WARNING"):
+        infra = setup_infra(
+            rlor_mgr=rlor, deploy_mgr=None,
+            base_model=cfg.base_model,
+            infra_cfg=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            needs_reference=True, needs_inference=False,
+            role_prefix="dpo", api_key="key",
+        )
+
+    assert infra.ref_training_shape_id == "accounts/fw/trainingShapes/ts-ref"
+    assert "Stripping pinned version" in caplog.text
+    assert "ref_training_shape_id" in caplog.text
+
+
+def test_setup_infra_bare_shape_id_not_stripped(patch_sdk, caplog):
+    """A bare shape path (no /versions/) passes through unchanged."""
+    rlor, deploy = _make_mgrs()
+    cfg = _make_cfg(training_shape_id="accounts/fw/trainingShapes/ts-policy")
+
+    with caplog.at_level("WARNING"):
+        infra = setup_infra(
+            rlor_mgr=rlor, deploy_mgr=deploy,
+            base_model=cfg.base_model,
+            infra_cfg=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            needs_reference=False, needs_inference=True,
+            role_prefix="grpo", api_key="key",
+        )
+
+    assert infra.training_shape_id == "accounts/fw/trainingShapes/ts-policy"
+    assert "Stripping pinned version" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # Closeables + boot metrics
 # ---------------------------------------------------------------------------
 
