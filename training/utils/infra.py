@@ -24,6 +24,7 @@ import dataclasses
 import inspect
 import json
 import os
+import re
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -271,6 +272,58 @@ def _fetch_job_failure_reason(
         return None
 
 
+_NO_VALIDATED_SHAPE_RE = re.compile(
+    r"no validated training shape exists.*?"
+    r"training_shape=(\S+).*?"
+    r"base_model=(\S+).*?"
+    r"trainer_mode=(\S+)",
+    re.IGNORECASE,
+)
+
+
+def _shape_error_hint(error_text: str, *, forward_only: bool, lora_rank: int) -> str | None:
+    """Return actionable guidance when the server rejects a shape/model combo."""
+    m = _NO_VALIDATED_SHAPE_RE.search(error_text)
+    if not m:
+        return None
+
+    shape, base_model, server_mode = m.group(1), m.group(2), m.group(3)
+
+    parts: list[str] = []
+    if "/versions/" in shape:
+        parts.append(
+            "The training shape includes a pinned /versions/<id> suffix — "
+            "pass the bare shape path instead and let the platform pick the "
+            "latest validated version."
+        )
+    if server_mode == "FORWARD_ONLY" and lora_rank > 0:
+        parts.append(
+            f"The reference trainer was requested with lora_rank=0 / "
+            f"FORWARD_ONLY but the selected shape is LoRA-capable.  "
+            f"For LoRA DPO, leave ref_training_shape_id unset — the "
+            f"shared-session reference (policy.create_base_reference()) "
+            f"saves GPUs and avoids this mismatch."
+        )
+    if "accounts/" in base_model and "/models/" in base_model:
+        account = base_model.split("/models/")[0]
+        if "/fireworks/" not in account:
+            parts.append(
+                f"The base model {base_model!r} is a custom (non-Fireworks) model.  "
+                f"The platform validates that the training shape is registered "
+                f"for this exact base model.  Verify the shape supports your "
+                f"model, or omit training_shape_id to let auto-selection find "
+                f"a compatible shape."
+            )
+    if not parts:
+        parts.append(
+            "The training shape has no validated version for this base model "
+            "and trainer mode.  Omit training_shape_id to let auto-selection "
+            "find a compatible shape, or verify the shape is registered for "
+            "your model."
+        )
+    return "  ".join(parts)
+
+
 def request_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,
@@ -378,10 +431,13 @@ def request_trainer_job(
     try:
         created_job = rlor_mgr.create(config)
     except Exception as e:
+        hint = _shape_error_hint(str(e), forward_only=forward_only, lora_rank=lora_rank)
         error_msg = (
             f"Failed to create {trainer_role} trainer job '{display_name}' "
             f"(forward_only={forward_only}): {e}"
         )
+        if hint:
+            error_msg = f"{error_msg}\n  Hint: {hint}"
         logger.error(error_msg)
         _emit(error_msg)
         raise RuntimeError(error_msg) from e
@@ -1155,6 +1211,30 @@ def _register_closeable(obj: Any, closeables: list[Any]) -> None:
         closeables.append(obj)
 
 
+_VERSIONS_SUFFIX_RE = re.compile(r"/versions/[^/]+$")
+
+
+def _strip_version_suffix(shape_id: str, field_name: str) -> str:
+    """Strip a ``/versions/<id>`` suffix from an explicit shape ID.
+
+    Pinning a version locks the run to a potentially stale or unvalidated
+    snapshot and prevents the platform from auto-selecting the latest
+    validated version.  When a pinned suffix is detected, it is stripped
+    and a warning is emitted so the caller can fix their config.
+    """
+    if _VERSIONS_SUFFIX_RE.search(shape_id):
+        bare = _VERSIONS_SUFFIX_RE.sub("", shape_id)
+        logger.warning(
+            "Stripping pinned version from %s=%r → %r.  "
+            "Pinning a /versions/<id> is almost always wrong — the platform "
+            "auto-selects the latest validated version.  Pass the bare shape "
+            "path instead.",
+            field_name, shape_id, bare,
+        )
+        return bare
+    return shape_id
+
+
 def _resolve_policy_shape(
     rlor_mgr: TrainerJobManager,
     *,
@@ -1166,6 +1246,10 @@ def _resolve_policy_shape(
     needs_inference: bool,
 ) -> tuple[Any, int, str | None, str | None]:
     """Return (profile, resolved_max_seq_len, resolved_shape_id, resolved_deploy_shape)."""
+    if training_shape_id is not None:
+        training_shape_id = _strip_version_suffix(
+            training_shape_id, "training_shape_id",
+        )
     if training_shape_id is None:
         training_shape_id = auto_select_training_shape(
             rlor_mgr,
@@ -1201,6 +1285,10 @@ def _resolve_reference_shape(
     needs_reference: bool,
 ) -> tuple[Any | None, str | None]:
     """Return (ref_profile, resolved_ref_shape_id)."""
+    if ref_training_shape_id:
+        ref_training_shape_id = _strip_version_suffix(
+            ref_training_shape_id, "ref_training_shape_id",
+        )
     if ref_training_shape_id:
         if lora_rank > 0:
             logger.info(
