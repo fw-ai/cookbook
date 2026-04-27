@@ -258,8 +258,9 @@ def main() -> None:
         )
         logger.info("Deployment ID:   %s (legacy)", cfg.hot_load_deployment_id)
 
-    # Pass the 4-segment resource name verbatim (fw-ai/fireworks#22837);
-    # no manual disassembly into (job_id, checkpoint_id).
+    # Pass the 4-segment resource name verbatim — no manual disassembly
+    # into (job_id, checkpoint_id). See the public docs page on saving
+    # and loading for the full promote API contract.
     model = trainer_mgr.promote_checkpoint(
         name=resolved.full_name,
         output_model_id=output_model_id,

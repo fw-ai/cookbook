@@ -316,8 +316,8 @@ class TestLogicalName:
 
 class TestPromoteLatest:
     """``promote_latest`` hands the row's 4-segment ``name`` to the SDK
-    verbatim (fw-ai/fireworks#22837). The cookbook does not disassemble
-    into ``(job_id, checkpoint_id)``."""
+    verbatim. The cookbook does not disassemble into
+    ``(job_id, checkpoint_id)``."""
 
     def test_picks_newest_promotable_and_passes_full_name(self, log_dir):
         rows = [

@@ -394,8 +394,44 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         def get(self, _job_id):
             return None
 
-        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id, base_model, **kwargs):
-            events["promotions"].append((job_id, checkpoint_id, output_model_id))
+        def promote_checkpoint(self, *args, name=None, output_model_id=None, base_model=None, **kwargs):
+            assert not args, (
+                "Cookbook should call promote_checkpoint with the 4-segment "
+                f"name= form (4-segment resource path); got positional args {args}"
+            )
+            assert name, "Expected name= 4-segment resource path"
+            short = name.rstrip("/").rsplit("/", 1)[-1]
+            job_part = name.split("/rlorTrainerJobs/", 1)[1].split("/", 1)[0]
+            events["promotions"].append((job_part, short, output_model_id))
+
+        def list_checkpoints(self, job_id, **kwargs):
+            # Reflect what save_state / save_weights have produced so far,
+            # so resume() at startup sees no rows (fresh start) but the
+            # post-save polling and promote_latest see the just-saved rows.
+            rows = []
+            for state_name in events.get("save_state_calls") or []:
+                rows.append({
+                    "name": (
+                        f"accounts/test/rlorTrainerJobs/{job_id}/"
+                        f"checkpoints/{state_name}"
+                    ),
+                    "checkpointType": "CHECKPOINT_TYPE_TRAINING_LORA",
+                    "promotable": False,
+                    "createTime": "2099-04-27T00:00:00Z",
+                })
+            saved_weights = events.get("save_weights") or []
+            for w in saved_weights:
+                w_name = w[0] if isinstance(w, tuple) else w
+                rows.append({
+                    "name": (
+                        f"accounts/test/rlorTrainerJobs/{job_id}/"
+                        f"checkpoints/{w_name}-session"
+                    ),
+                    "checkpointType": "CHECKPOINT_TYPE_INFERENCE_LORA",
+                    "promotable": True,
+                    "createTime": "2099-04-27T00:00:01Z",
+                })
+            return rows
 
     class FakeDeploymentManager:
         inference_url = "https://deployments.unit.test"
@@ -460,8 +496,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
 
         def save_state(self, name, timeout=None):
             events["final_save"] = (name, timeout)
+            events.setdefault("save_state_calls", []).append(name)
 
         def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
+            events.setdefault("save_weights", []).append((name, checkpoint_type))
             return SimpleNamespace(
                 path=f"tinker://unit/sampler/{name}-session",
                 snapshot_name=f"{name}-session",

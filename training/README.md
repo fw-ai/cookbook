@@ -116,8 +116,8 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 
 ## Useful examples
 
-- `examples/snippets/promote_checkpoint.py` reads `checkpoints.jsonl` (produced by cookbook recipes), finds the sampler checkpoint ID and source trainer job, and calls the promotion API to promote it to a deployable Fireworks model. No temporary trainer needed.
-- `examples/snippets/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
+- `examples/tools/promote_checkpoint.py` queries the control plane (`list_checkpoints(job_id)`) for the trainer job's promotable rows and calls the promotion API. No `checkpoints.jsonl`, no temporary trainer — pass `--job-id <id>` and `--base-model <model>` and pick which checkpoint via `--checkpoint-name` / `--step` (default: newest promotable).
+- `examples/tools/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
 
 ## Documentation
 

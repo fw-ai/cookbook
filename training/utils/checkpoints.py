@@ -331,9 +331,11 @@ class TrainingCheckpoints:
                 f"No promotable checkpoints found for trainer job '{self._trainer_id}'. "
                 "Call save(promotable=True) or weight_syncer.save_and_hotload() first."
             )
-        # Use the 4-segment resource name end-to-end (fw-ai/fireworks#22837):
-        # the gateway accepts ``name=`` directly, so we hand the row's
-        # ``name`` field to the SDK without disassembly.
+        # Use the 4-segment resource name end-to-end: the SDK accepts
+        # ``name=`` directly, so we hand the row's ``name`` field through
+        # without disassembly. See the public docs page on saving and
+        # loading (``/fine-tuning/training-api/saving-and-loading``) for
+        # the full promote API contract.
         full_name = rows[0]["name"]
         logger.info(
             "Promoting newest promotable checkpoint: %s -> %s",

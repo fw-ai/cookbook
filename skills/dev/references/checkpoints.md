@@ -1,36 +1,38 @@
 # Checkpoints — where state lives
 
-The `CheckpointKind` enum (`STATE` / `SAMPLER` / `BOTH`) and its helpers live in `training/utils/checkpoint_utils.py`. This file is the practical user-level guide: what ends up in `checkpoints.jsonl`, how to validate an `output_model_id` before promoting, and what to do when a promote fails.
+The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/checkpoints.py`. The control plane is the source of truth for what checkpoints exist; the only cookbook-side state is `dataloader.json`, which maps each saved checkpoint name to a `data_consumed` counter (one int per row).
 
-## Two layers in one line
+## Two axes
 
-- **DCP** (`state_path`) — resume training (optimizer + weights). Not promotable.
-- **Sampler** (`sampler_path`) — HF safetensors blob. Promotable (with one exception: full-param `delta` saves).
+`TrainingCheckpoints.save(name, *, resumable, promotable, data_consumed=None)` — pick capabilities independently:
 
-A `checkpoints.jsonl` row carries either or both.
+- `resumable=True` → DCP write (weights + optimizer). Training can continue from this.
+- `promotable=True` → sampler write (HF safetensors). Eligible for `promote_checkpoint`.
+- Both → DCP + sampler in one call.
 
-## `checkpoints.jsonl`
+Periodic mid-training saves are usually `resumable=True, promotable=False`. The final save is `resumable=True, promotable=True`. For LoRA RL runs `WeightSyncer.save_and_hotload` already produces a promotable row each step — `promote_latest` picks that up automatically without an extra final sampler save.
 
-Written to `{log_path}/checkpoints.jsonl` during the run. One JSON object per save:
+## `dataloader.json`
+
+Written to `{log_path}/dataloader.json`. Single int per checkpoint name:
 
 ```json
-{"name": "step-10", "step": 10, "data_consumed": 40, "state_path": "cross_job://job-abc/step-10", "source_job_id": "job-abc", "base_model": "accounts/fireworks/models/qwen3-8b"}
-{"name": "step-50", "step": 50, "data_consumed": 200, "state_path": "cross_job://job-abc/step-50", "sampler_path": "step-50-a1b2c3d4", "source_job_id": "job-abc", "base_model": "accounts/fireworks/models/qwen3-8b"}
+{"step-10": 40, "step-50": 200}
 ```
 
-`promote_checkpoint.py` reads `name`, `sampler_path`, `source_job_id`, `base_model` from this file — users don't need to touch anything else.
+Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has been, in the new model. The control plane (`FireworksClient.list_checkpoints(job_id)`) is queried at resume / promote time for everything else.
 
-## When each kind is used
+## When each axis is used
 
-- Mid-training saves (`cfg.dcp_save_interval`) → `STATE`.
-- Final save at end of training → `BOTH`.
-- Want a promotable mid-training checkpoint → call the recipe's `save_checkpoint(..., kind=SAMPLER)` or `BOTH` from inside a custom loop.
+- `cfg.dcp_save_interval` > 0 → recipe calls `ckpt.save(resumable=True, promotable=False, ...)` every N steps.
+- End of training → recipe calls `ckpt.save(resumable=True, promotable=True, ...)`.
+- `cfg.output_model_id` set → recipe also calls `ckpt.promote_latest(output_model_id, base_model)`.
 
-If `dcp_save_interval` is `0` (the default), mid-training saves are off — training cannot be resumed from intermediate steps. Set it in the `Config`.
+If `dcp_save_interval` is `0` (the default), mid-training saves are off — training cannot be resumed from intermediate steps. Set it in the recipe's `Config`.
 
-## Delta chain
+## Delta chain (sampler `checkpoint_type`)
 
-For full-parameter training, only `base` sampler saves are promotable; `delta` saves are not. LoRA always saves the full adapter, so every LoRA sampler checkpoint is promotable. `WeightSyncer` manages the base-then-delta pattern automatically in the recipes — users don't drive it by hand.
+This is an SDK-level detail, surfaced when you call `save_weights_for_sampler_ext` directly. For full-parameter training, only `base` sampler saves are promotable; `delta` saves are not. LoRA always saves the full adapter, so every LoRA sampler checkpoint is promotable. `WeightSyncer` manages the base-then-delta pattern automatically; recipe-level `ckpt.save(promotable=True)` always saves `base`.
 
 ---
 
@@ -42,24 +44,35 @@ To continue LoRA training from a previously-trained adapter — typically a prom
 cfg = Config(
     base_model="accounts/fireworks/models/qwen3-8b",
     lora_rank=16,
-    warm_start_from_adapter="gs://bucket/path/to/adapter-dir",  # contains adapter_model.safetensors
+    warm_start_from_adapter="gs://bucket/path/to/adapter-dir",
     ...
 )
 ```
 
 Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh.
 
-Priority inside `resolve_resume` (highest first):
-1. `init_from_checkpoint` — explicit DCP resume (weights + optimizer).
-2. `checkpoints.jsonl` has a prior entry — auto-resume the current run.
+Priority inside `TrainingCheckpoints.resume` (highest first):
+
+1. `init_from_checkpoint` — explicit cross-job DCP resume (weights + optimizer). Step counter resets.
+2. Newest resumable row on the control plane for the current trainer — auto-resume.
 3. `warm_start_from_adapter` — fresh start with adapter weights.
 4. None — fresh start from `base_model`.
 
 **Constraints (enforced by `validate_warm_start_config`):**
+
 - `warm_start_from_adapter` and `init_from_checkpoint` are mutually exclusive.
-- Requires `lora_rank > 0`. Full-parameter continue-training uses `base_model` instead — `warm_start_from_adapter` has no full-param variant.
+- Requires `lora_rank > 0`. Full-parameter continue-training uses `base_model` instead.
 
 Supported in all recipe loops: `sft_loop`, `dpo_loop`, `orpo_loop`, `rl_loop`, `igpo_loop`.
+
+## Cross-run resume
+
+Auto-resume (priority 2) is **scoped to one trainer job**. If you re-run with the same `log_path` but provision a fresh trainer, the new trainer's `list_checkpoints` is empty and resume falls through to fresh start.
+
+To resume across separate `main()` invocations, either:
+
+- Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL/IGPO). The second run reattaches and the CP rows are visible.
+- Or use `init_from_checkpoint=f"{prior_job_id}:step-N"` for explicit cross-job DCP load. This resets the step counter to 0 — fine for warm-start scenarios, not for "continue training and skip to step N".
 
 ---
 
@@ -95,4 +108,4 @@ If `promote_checkpoint` returns `checkpoint "<name>" not found in GCS`:
 2. Make sure your `output_model_id` passes `validate_output_model_id` and retry `promote_checkpoint.py` against one of those rows.
 3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a pre-migration `PER_DEPLOYMENT` bucket) require server-side access.
 
-The modern promote API takes a single `name` field and works identically for `PER_TRAINER` and `PER_DEPLOYMENT`. See [`rl/hotload.md#promoting-a-checkpoint`](rl/hotload.md#promoting-a-checkpoint). The legacy `--hot-load-deployment-id` path is only needed for deployments that predate the stored-bucket-URL migration.
+The modern promote API takes a single `name=` (4-segment resource path from `list_checkpoints` output) and works identically for `PER_TRAINER` and `PER_DEPLOYMENT`. The legacy positional `(job_id, checkpoint_id, ...)` form still works but emits a `DeprecationWarning`. See [`rl/hotload.md#promoting-a-checkpoint`](rl/hotload.md#promoting-a-checkpoint) and `tools.md` for the CLI flow.

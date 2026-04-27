@@ -2,10 +2,13 @@
 
 Two-phase test on qwen3-30b-a3b (MoE) with Router Replay and TIS:
 
-  Phase 1: Train a few steps, save DCP checkpoints to checkpoints.jsonl.
-  Phase 2: New RLOR jobs, same log_dir -- resolve_resume picks up from
-           checkpoints.jsonl, loads cross-job checkpoint, resumes at the
-           saved step (continues dataloader, not from beginning).
+  Phase 1: Train a few steps, save DCP checkpoints. Capture the policy
+           and reference job IDs.
+  Phase 2: Reattach to the same trainers (``policy_job_id``,
+           ``reference_job_id``) with the same ``log_path``.
+           ``TrainingCheckpoints.resume()`` lists the policy trainer's
+           checkpoints on the control plane, picks the newest resumable
+           row, and restores the rollout cursor from ``dataloader.json``.
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training/deployment access
@@ -15,6 +18,7 @@ Requires:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import logging
@@ -22,8 +26,9 @@ import tempfile
 
 import pytest
 
-from training.utils.checkpoint_utils import get_last_checkpoint
+from fireworks.training.sdk import FireworksClient
 from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
+from training.utils.checkpoints import DATALOADER_BASE_NAME
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
 
@@ -103,24 +108,54 @@ class TestGRPOResumeE2E:
         phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
 
         assert isinstance(phase1_metrics, dict)
-        assert "steps" in phase1_metrics
         phase1_steps = phase1_metrics["steps"]
-        assert phase1_steps >= 2, f"Expected >= 2 steps in phase 1, got {phase1_steps}"
-
+        phase1_policy_job_id = phase1_metrics["policy_job_id"]
+        phase1_reference_job_id = phase1_metrics.get("reference_job_id")
         phase1_deployment_id = phase1_config.deployment.deployment_id
-        logger.info("Phase 1 done: %d steps, job=%s, deployment=%s",
-                     phase1_steps, phase1_metrics["policy_job_id"], phase1_deployment_id)
+        assert phase1_steps >= 2, f"Expected >= 2 steps in phase 1, got {phase1_steps}"
+        logger.info(
+            "Phase 1 done: %d steps, policy=%s, reference=%s, deployment=%s",
+            phase1_steps, phase1_policy_job_id, phase1_reference_job_id,
+            phase1_deployment_id,
+        )
 
-        last_ckpt = get_last_checkpoint(log_dir)
-        assert last_ckpt is not None, "Expected at least one checkpoint in checkpoints.jsonl"
-        assert "state_path" in last_ckpt
-        saved_step = last_ckpt["step"]
-        saved_data_consumed = last_ckpt["data_consumed"]
-        logger.info("Phase 1 checkpoint: step=%d data_consumed=%d",
-                     saved_step, saved_data_consumed)
+        # Read the persisted rollout cursor from dataloader.json — the only
+        # cookbook-side state in the new model (one int per checkpoint name).
+        dataloader_path = os.path.join(log_dir, DATALOADER_BASE_NAME)
+        assert os.path.exists(dataloader_path), (
+            f"Phase 1 should have written {DATALOADER_BASE_NAME} under {log_dir}"
+        )
+        with open(dataloader_path) as f:
+            phase1_dataloader = json.load(f)
+        assert phase1_dataloader, "dataloader.json should be non-empty after phase 1"
+        phase1_data_consumed = max(int(v) for v in phase1_dataloader.values())
 
-        # Phase 2: new jobs, same log_dir -- resume from checkpoints.jsonl
-        logger.info("PHASE 2: resume from checkpoints.jsonl (step=%d)", saved_step)
+        # Verify the control plane has at least one resumable row for the
+        # phase-1 policy trainer — phase 2's resume reads from there.
+        api_key = os.environ["FIREWORKS_API_KEY"]
+        base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
+        fw_client = FireworksClient(api_key=api_key, base_url=base_url)
+        phase1_rows = fw_client.list_checkpoints(phase1_policy_job_id)
+        phase1_resumable = [
+            r for r in phase1_rows
+            if (r.get("checkpointType") or "").endswith(("TRAINING", "TRAINING_LORA"))
+        ]
+        assert phase1_resumable, (
+            f"Expected phase 1 to leave a resumable row on the control plane "
+            f"for policy job {phase1_policy_job_id}; got rows: {phase1_rows}"
+        )
+        logger.info(
+            "Phase 1 CP rows: %d resumable (data_consumed=%d)",
+            len(phase1_resumable), phase1_data_consumed,
+        )
+
+        # Phase 2: reattach to the same policy + reference trainers so resume
+        # can find the phase-1 CP rows. Auto-resume across separate trainer
+        # jobs is not supported in the new model.
+        logger.info(
+            "PHASE 2: reattach to policy=%s, reference=%s",
+            phase1_policy_job_id, phase1_reference_job_id,
+        )
 
         phase2_config = Config(
             base_model=e2e_model,
@@ -130,6 +165,8 @@ class TestGRPOResumeE2E:
             epochs=1,
             kl_beta=0,
             log_path=log_dir,
+            policy_job_id=phase1_policy_job_id,
+            reference_job_id=phase1_reference_job_id,
             infra=shared_infra,
             deployment=DeployConfig(
                 deployment_id=phase1_deployment_id,
@@ -144,26 +181,21 @@ class TestGRPOResumeE2E:
         )
 
         phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
-
-        assert isinstance(phase2_metrics, dict)
-        assert "steps" in phase2_metrics
         phase2_steps = phase2_metrics["steps"]
-
-        assert phase2_steps > saved_step, (
-            f"Phase 2 should continue beyond phase 1's saved step {saved_step}, "
-            f"but got {phase2_steps}"
+        assert phase2_steps > phase1_steps, (
+            f"Phase 2 step count ({phase2_steps}) should exceed phase 1's "
+            f"({phase1_steps}); resume probably did not pick up phase 1's CP rows."
         )
 
-        final_ckpt = get_last_checkpoint(log_dir)
-        assert final_ckpt is not None
-        assert final_ckpt["data_consumed"] > saved_data_consumed, (
-            f"Phase 2 data_consumed ({final_ckpt['data_consumed']}) should exceed "
-            f"phase 1's ({saved_data_consumed}) -- dataloader should continue, not restart"
+        with open(dataloader_path) as f:
+            phase2_dataloader = json.load(f)
+        phase2_data_consumed = max(int(v) for v in phase2_dataloader.values())
+        assert phase2_data_consumed > phase1_data_consumed, (
+            f"Phase 2 data_consumed ({phase2_data_consumed}) should exceed "
+            f"phase 1's ({phase1_data_consumed}); rollout cursor should advance."
         )
-
         logger.info(
             "Resume verified: phase1=%d steps (data_consumed=%d), "
             "phase2=%d steps (data_consumed=%d)",
-            saved_step, saved_data_consumed,
-            phase2_steps, final_ckpt["data_consumed"],
+            phase1_steps, phase1_data_consumed, phase2_steps, phase2_data_consumed,
         )

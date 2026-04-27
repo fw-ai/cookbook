@@ -21,14 +21,14 @@ Always required on `Config` + `InfraConfig`:
 - `base_model` — `accounts/fireworks/models/<name>`
 - `dataset` — path to JSONL
 - `tokenizer_model` — HF model name
-- `log_path` — directory for `checkpoints.jsonl` and logs
+- `log_path` — directory for `dataloader.json` and logs
 - `infra.training_shape_id` — **required**; do not set manual `accelerator_type` / `node_count` (see [`shapes.md`](shapes.md))
 
 RL-specific (in `rl_loop.py`'s `Config`): reward function, rollout batch sizes, deployment config (shape is auto-filled from the profile).
 
 ## Resume
 
-Rerun the same script with the same `log_path`. The recipe reads `checkpoints.jsonl`, picks up the last row with a `state_path`, restores DCP state, and continues. See [`checkpoints.md`](checkpoints.md) for the layout.
+Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL/IGPO), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`checkpoints.md`](checkpoints.md) for the full priority order and constraints.
 
 ## Init from another job
 

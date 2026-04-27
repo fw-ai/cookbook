@@ -565,8 +565,15 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         infra_boot_time = time.time() - _infra_start
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
-        from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
-        resume_info = resolve_resume(policy, cfg.log_path)
+        from training.utils.checkpoints import TrainingCheckpoints
+        ckpt = TrainingCheckpoints(
+            policy,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+        resume_info = ckpt.resume()
         step_offset = resume_info.step if resume_info else 0
         if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
@@ -805,15 +812,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     logger.info("[step %d] dcp_save...", step)
                     t0 = time.time()
                     with timer("dcp_save"):
-                        save_checkpoint(
-                            policy, f"step-{step}", cfg.log_path,
-                            {
-                                "step": step,
-                                "data_consumed": step - step_offset,
-                                "source_job_id": policy.job_id,
-                            },
-                            kind=CheckpointKind.STATE,
-                            base_model=cfg.base_model,
+                        ckpt.save(
+                            f"step-{step}",
+                            resumable=True,
+                            promotable=False,
+                            data_consumed=step - step_offset,
                         )
                     logger.info("[step %d] dcp_save: done (%.1fs)", step, time.time() - t0)
 
@@ -892,20 +895,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 try:
                     cp_name = f"step-{global_step}"
                     _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
-                    from training.utils.checkpoint_utils import save_checkpoint
-                    paths = save_checkpoint(policy, cp_name, cfg.log_path, {
-                        "step": global_step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    }, kind="both")
-
+                    ckpt.save(
+                        cp_name,
+                        resumable=True,
+                        promotable=True,
+                        data_consumed=_data_consumed,
+                    )
                     if getattr(cfg, "output_model_id", None):
-                        rlor_mgr.promote_checkpoint(
-                            policy_job_id,
-                            paths["sampler_path"],
-                            cfg.output_model_id,
-                            cfg.base_model,
-                        )
+                        ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 except Exception as e:
                     logger.warning("Failed to save final checkpoint: %s", e)
                 logger.info("Training complete: %d steps", global_step)
