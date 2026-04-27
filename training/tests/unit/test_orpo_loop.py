@@ -69,8 +69,50 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
         def delete(self, job_id):
             self.cancel(job_id)
 
-        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id, base_model, **kwargs):
-            events["promotions"].append((job_id, checkpoint_id, output_model_id))
+        def promote_checkpoint(self, *args, name=None, output_model_id=None, base_model=None, **kwargs):
+            # New-form callers (TrainingCheckpoints.promote_latest) pass the
+            # 4-segment ``name`` kwarg only; we record (job, checkpoint, model)
+            # for assertion compatibility.
+            assert not args, (
+                "Cookbook should only call promote_checkpoint with the 4-segment "
+                f"name= form, got positional args {args}"
+            )
+            assert name, "Expected name= 4-segment resource path"
+            short = name.rstrip("/").rsplit("/", 1)[-1]
+            job_part = name.split("/rlorTrainerJobs/", 1)[1].split("/", 1)[0]
+            events["promotions"].append((job_part, short, output_model_id))
+
+        def list_checkpoints(self, job_id, **kwargs):
+            # Synthesize the rows TrainingCheckpoints needs to see:
+            # a TRAINING_LORA row so save's post-save polling surfaces
+            # immediately, and an INFERENCE_LORA row so promote_latest
+            # has something to pick. Future createTime so the polling's
+            # ``createTime >= save_started_iso`` check succeeds.
+            saved = events.get("save_weights") or []
+            if not saved:
+                return []
+            last_name, _ = saved[-1]
+            stored = f"{last_name}-session"  # match FakeInner snapshot suffix
+            return [
+                {
+                    "name": (
+                        f"accounts/test/rlorTrainerJobs/{job_id}/"
+                        f"checkpoints/{last_name}"
+                    ),
+                    "checkpointType": "CHECKPOINT_TYPE_TRAINING_LORA",
+                    "promotable": False,
+                    "createTime": "2099-04-27T00:00:00Z",
+                },
+                {
+                    "name": (
+                        f"accounts/test/rlorTrainerJobs/{job_id}/"
+                        f"checkpoints/{stored}"
+                    ),
+                    "checkpointType": "CHECKPOINT_TYPE_INFERENCE_LORA",
+                    "promotable": True,
+                    "createTime": "2099-04-27T00:00:01Z",
+                },
+            ]
 
     class FakeInner:
         def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):

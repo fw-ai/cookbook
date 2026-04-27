@@ -56,12 +56,7 @@ from training.utils import (
     resolve_renderer_name,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.checkpoint_utils import (
-    resolve_resume,
-    save_checkpoint,
-    validate_warm_start_config,
-    CheckpointKind,
-)
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.timer import timer, flush_timing
 
@@ -522,6 +517,14 @@ def main(
         if hasattr(client, "close"):
             stack.callback(client.close)
 
+        ckpt = TrainingCheckpoints(
+            client,
+            rlor_mgr,
+            trainer_id=job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
         # -- Prepare data ------------------------------------------------------
         # Render JSONL rows on the fly inside DataLoader workers so peak
         # RAM is O(num_workers * per_worker_render_footprint) instead of
@@ -572,19 +575,16 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(
-            client,
-            cfg.log_path,
-            cfg.init_from_checkpoint,
-            cfg.warm_start_from_adapter,
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step = resume_info.step if resume_info else 0
-        data_consumed = resume_info.data_consumed if resume_info else 0
-        raw_rows_consumed = (
-            getattr(resume_info, "raw_rows_consumed", data_consumed)
-            if resume_info
-            else 0
-        )
+        # Persisted counter is raw_rows_consumed (load-bearing for resume —
+        # determines dataset position). data_consumed is in-memory only
+        # (cosmetic for metrics) and resets on resume.
+        raw_rows_consumed = resume_info.data_consumed if resume_info else 0
+        data_consumed = 0
         wandb_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
@@ -644,14 +644,12 @@ def main(
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 with timer("dcp_save"):
                     logger.info("Saving DCP checkpoint at step %d", step)
-                    save_checkpoint(client, f"step-{step}", cfg.log_path, {
-                        "step": step,
-                        "data_consumed": data_consumed,
-                        "raw_rows_consumed": raw_rows_consumed,
-                        "source_job_id": job_id,
-                    }, kind=CheckpointKind.STATE,
-                    base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id)
+                    ckpt.save(
+                        f"step-{step}",
+                        resumable=True,
+                        promotable=False,
+                        data_consumed=raw_rows_consumed,
+                    )
 
             step_metrics: Dict[str, Any] = flush_timing()
 
@@ -749,21 +747,14 @@ def main(
         if cfg.save_final_checkpoint and step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
-            paths = save_checkpoint(client, cp_name, cfg.log_path, {
-                "step": step,
-                "data_consumed": data_consumed,
-                "raw_rows_consumed": raw_rows_consumed,
-                "source_job_id": job_id,
-            }, kind=CheckpointKind.BOTH,
-            base_model=cfg.base_model,
-            training_shape=cfg.infra.training_shape_id)
+            ckpt.save(
+                cp_name,
+                resumable=True,
+                promotable=True,
+                data_consumed=raw_rows_consumed,
+            )
             if getattr(cfg, "output_model_id", None):
-                rlor_mgr.promote_checkpoint(
-                    job_id,
-                    paths["sampler_path"],
-                    cfg.output_model_id,
-                    cfg.base_model,
-                )
+                ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
                 )

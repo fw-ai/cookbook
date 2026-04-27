@@ -331,13 +331,18 @@ class TrainingCheckpoints:
                 f"No promotable checkpoints found for trainer job '{self._trainer_id}'. "
                 "Call save(promotable=True) or weight_syncer.save_and_hotload() first."
             )
-        name = _short_name(rows[0]["name"])
-        logger.info("Promoting newest promotable checkpoint: %s -> %s", name, output_model_id)
+        # Use the 4-segment resource name end-to-end (fw-ai/fireworks#22837):
+        # the gateway accepts ``name=`` directly, so we hand the row's
+        # ``name`` field to the SDK without disassembly.
+        full_name = rows[0]["name"]
+        logger.info(
+            "Promoting newest promotable checkpoint: %s -> %s",
+            _short_name(full_name), output_model_id,
+        )
         return self._fw_client.promote_checkpoint(
-            self._trainer_id,
-            name,
-            output_model_id,
-            base_model,
+            name=full_name,
+            output_model_id=output_model_id,
+            base_model=base_model,
             hot_load_deployment_id=hot_load_deployment_id,
         )
 
@@ -370,6 +375,16 @@ class TrainingCheckpoints:
         while time.time() < deadline:
             try:
                 rows = self._list_checkpoints()
+            except AttributeError as e:
+                # Permanent: the control-plane client doesn't implement
+                # ``list_checkpoints`` (e.g. a unit-test fake). Don't burn
+                # the appear_timeout — fall back to the caller name now.
+                logger.warning(
+                    "list_checkpoints not implemented on control-plane client (%s); "
+                    "falling back to caller name %r for dataloader.json.",
+                    e, fallback,
+                )
+                return fallback
             except Exception as e:
                 logger.debug(
                     "list_checkpoints during save-resolution failed: %s; retrying.", e,

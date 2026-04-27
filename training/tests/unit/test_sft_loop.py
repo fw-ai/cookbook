@@ -8,6 +8,20 @@ import pytest
 import torch
 
 import training.recipes.sft_loop as module
+from training.utils.checkpoints import TrainingCheckpoints
+
+
+def _patch_resume(monkeypatch, resume_info):
+    """Replace TrainingCheckpoints.resume on the class for unit tests.
+
+    ``resume_info`` is what ``ckpt.resume()`` should return: ``None`` for
+    a fresh start, or a SimpleNamespace with ``step`` / ``data_consumed``
+    fields. After PR #385 ``data_consumed`` carries SFT's
+    ``raw_rows_consumed`` semantically (single load-bearing counter).
+    """
+    monkeypatch.setattr(
+        TrainingCheckpoints, "resume", lambda self, **kwargs: resume_info,
+    )
 
 
 class StubRenderer:
@@ -707,15 +721,12 @@ def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
         render_workers=1,
     )
 
-    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+    _patch_resume(monkeypatch, None)
     module.main(cfg, rlor_mgr=FakeMgr())
 
     active["name"] = "resume"
-    monkeypatch.setattr(
-        module,
-        "resolve_resume",
-        lambda *args, **kwargs: SimpleNamespace(step=1, data_consumed=2),
-    )
+    # data_consumed in the new ResumeInfo is the SFT raw_rows_consumed.
+    _patch_resume(monkeypatch, SimpleNamespace(step=1, data_consumed=2))
     module.main(cfg, rlor_mgr=FakeMgr())
 
     assert len(runs["fresh"]) == 3
@@ -802,19 +813,13 @@ def test_main_resume_uses_raw_row_cursor_when_filtering_shrinks_batches(tmp_path
         save_final_checkpoint=False,
     )
 
-    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+    _patch_resume(monkeypatch, None)
     module.main(cfg, rlor_mgr=FakeMgr())
 
     active["name"] = "resume"
-    monkeypatch.setattr(
-        module,
-        "resolve_resume",
-        lambda *args, **kwargs: SimpleNamespace(
-            step=1,
-            data_consumed=1,
-            raw_rows_consumed=2,
-        ),
-    )
+    # ResumeInfo.data_consumed maps to SFT raw_rows_consumed; the old separate
+    # post-filter data_consumed is now in-memory only and resets on resume.
+    _patch_resume(monkeypatch, SimpleNamespace(step=1, data_consumed=2))
     module.main(cfg, rlor_mgr=FakeMgr())
 
     assert runs["fresh"] == [["step-1-only"], ["step-2-a", "step-2-b"]]
@@ -887,7 +892,7 @@ def test_completed_status_reports_actual_steps_when_filtering_drops_raw_batches(
     )
     monkeypatch.setattr(module, "make_render_dataloader", lambda *args, **kwargs: raw_batches)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
-    monkeypatch.setattr(module, "resolve_resume", lambda *args, **kwargs: None)
+    _patch_resume(monkeypatch, None)
 
     cfg = module.Config(
         log_path=str(tmp_path / "logs"),

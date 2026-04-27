@@ -315,7 +315,11 @@ class TestLogicalName:
 
 
 class TestPromoteLatest:
-    def test_picks_newest_promotable(self, log_dir):
+    """``promote_latest`` hands the row's 4-segment ``name`` to the SDK
+    verbatim (fw-ai/fireworks#22837). The cookbook does not disassemble
+    into ``(job_id, checkpoint_id)``."""
+
+    def test_picks_newest_promotable_and_passes_full_name(self, log_dir):
         rows = [
             _row("step-5", ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
                  promotable=True, create_time="2026-04-01T00:00:00Z"),
@@ -327,10 +331,9 @@ class TestPromoteLatest:
         ckpt, _, fw = _make(log_dir, fw_rows=rows)
         ckpt.promote_latest("my-model", "accounts/a/models/qwen3-1p7b-bf16")
         fw.promote_checkpoint.assert_called_once_with(
-            "job-1",
-            "step-10",
-            "my-model",
-            "accounts/a/models/qwen3-1p7b-bf16",
+            name="accounts/a/rlorTrainerJobs/job-1/checkpoints/step-10",
+            output_model_id="my-model",
+            base_model="accounts/a/models/qwen3-1p7b-bf16",
             hot_load_deployment_id=None,
         )
 
@@ -344,8 +347,8 @@ class TestPromoteLatest:
         ckpt, _, fw = _make(log_dir, fw_rows=rows)
         ckpt.promote_latest("out", "base")
         fw.promote_checkpoint.assert_called_once()
-        args, _ = fw.promote_checkpoint.call_args
-        assert args[1] == "step-5-lora"
+        _, kwargs = fw.promote_checkpoint.call_args
+        assert kwargs["name"].endswith("/checkpoints/step-5-lora")
 
     def test_errors_when_no_promotable(self, log_dir):
         rows = [

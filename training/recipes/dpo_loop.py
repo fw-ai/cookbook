@@ -75,12 +75,7 @@ from training.utils import (
     wandb_finish,
     wandb_log,
 )
-from training.utils.checkpoint_utils import (
-    CheckpointKind,
-    resolve_resume,
-    save_checkpoint,
-    validate_warm_start_config,
-)
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import setup_infra
 from training.utils.timer import flush_timing, timer
 
@@ -361,16 +356,11 @@ async def _train_loop(
 
         if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
             with timer("dcp_save"):
-                save_checkpoint(
-                    policy, f"step-{step}", cfg.log_path,
-                    {
-                        "step": step,
-                        "data_consumed": (step - step_offset) * cfg.batch_size,
-                        "source_job_id": policy.job_id,
-                    },
-                    kind=CheckpointKind.STATE,
-                    base_model=cfg.base_model,
-                    training_shape=training_shape_id,
+                ckpt.save(
+                    f"step-{step}",
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=(step - step_offset) * cfg.batch_size,
                 )
 
         step_elapsed = time.monotonic() - step_t0
@@ -634,11 +624,17 @@ def main(
         policy_job_id = infra.policy_job_id
         reference_job_id = infra.reference_job_id
 
-        resume_info = resolve_resume(
+        ckpt = TrainingCheckpoints(
             policy,
-            cfg.log_path,
-            cfg.init_from_checkpoint,
-            cfg.warm_start_from_adapter,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
@@ -717,27 +713,15 @@ def main(
 
         if cfg.save_final_checkpoint and step > step_offset:
             cp_name = f"step-{step}"
-            paths = save_checkpoint(
-                policy, cp_name, cfg.log_path,
-                {
-                    "step": step,
-                    "data_consumed": (step - step_offset) * cfg.batch_size,
-                    "source_job_id": policy_job_id,
-                },
-                kind=CheckpointKind.BOTH,
-                base_model=cfg.base_model,
-                training_shape=infra.training_shape_id,
+            ckpt.save(
+                cp_name,
+                resumable=True,
+                promotable=True,
+                data_consumed=(step - step_offset) * cfg.batch_size,
             )
 
             if getattr(cfg, "output_model_id", None):
-                if not paths.get("sampler_path"):
-                    raise RuntimeError("Failed to save final base checkpoint for promotion")
-                rlor_mgr.promote_checkpoint(
-                    policy_job_id,
-                    paths["sampler_path"],
-                    cfg.output_model_id,
-                    cfg.base_model,
-                )
+                ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                 )

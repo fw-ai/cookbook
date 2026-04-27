@@ -71,12 +71,7 @@ from training.utils import (
     validate_config,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.checkpoint_utils import (
-    resolve_resume,
-    save_checkpoint,
-    validate_warm_start_config,
-    CheckpointKind,
-)
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 
 logger = logging.getLogger(__name__)
 
@@ -297,11 +292,18 @@ def main(
         )
         if hasattr(client, "close"):
             stack.callback(client.close)
-        resume_info = resolve_resume(
+
+        ckpt = TrainingCheckpoints(
             client,
-            cfg.log_path,
-            cfg.init_from_checkpoint,
-            cfg.warm_start_from_adapter,
+            rlor_mgr,
+            trainer_id=job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step_offset = resume_info.step if resume_info else 0
 
@@ -408,13 +410,12 @@ def main(
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 logger.info("Saving DCP checkpoint at step %d", step)
-                save_checkpoint(client, f"step-{step}", cfg.log_path, {
-                    "step": step,
-                    "data_consumed": (step - step_offset) * cfg.batch_size,
-                    "source_job_id": job_id,
-                }, kind=CheckpointKind.STATE,
-                base_model=cfg.base_model,
-                training_shape=cfg.infra.training_shape_id)
+                ckpt.save(
+                    f"step-{step}",
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=(step - step_offset) * cfg.batch_size,
+                )
 
             step_elapsed = time.monotonic() - step_started_at
             tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
@@ -479,20 +480,14 @@ def main(
         if cfg.save_final_checkpoint and step > step_offset:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
-            paths = save_checkpoint(client, cp_name, cfg.log_path, {
-                "step": step,
-                "data_consumed": (step - step_offset) * cfg.batch_size,
-                "source_job_id": job_id,
-            }, kind=CheckpointKind.BOTH,
-            base_model=cfg.base_model,
-            training_shape=cfg.infra.training_shape_id)
+            ckpt.save(
+                cp_name,
+                resumable=True,
+                promotable=True,
+                data_consumed=(step - step_offset) * cfg.batch_size,
+            )
             if getattr(cfg, "output_model_id", None):
-                rlor_mgr.promote_checkpoint(
-                    job_id,
-                    paths["sampler_path"],
-                    cfg.output_model_id,
-                    cfg.base_model,
-                )
+                ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
                 )
