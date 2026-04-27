@@ -580,11 +580,12 @@ def main(
             warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step = resume_info.step if resume_info else 0
-        # Persisted counter is raw_rows_consumed (load-bearing for resume —
-        # determines dataset position). data_consumed is in-memory only
-        # (cosmetic for metrics) and resets on resume.
+        # ResumeInfo.data_consumed carries SFT raw_rows_consumed: the
+        # load-bearing counter that drives the dataset cursor on resume.
+        # The post-filter counter the old jsonl format also stored is no
+        # longer persisted; metrics that previously used it now derive
+        # from this one cursor.
         raw_rows_consumed = resume_info.data_consumed if resume_info else 0
-        data_consumed = 0
         wandb_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
@@ -709,7 +710,6 @@ def main(
                 if not batch:
                     continue  # entire batch was filtered (None render); skip
                 epoch_valid_examples += len(batch)
-                data_consumed += len(batch)
                 step = _run_train_step(batch, step)
 
             if epoch == 0 and completed_epochs == 0 and start_batch == 0:

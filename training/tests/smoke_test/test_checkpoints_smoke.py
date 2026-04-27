@@ -95,7 +95,15 @@ def _summarize_rows(rows: list[dict]) -> str:
 @pytest.mark.e2e
 @pytest.mark.timeout(2400)
 class TestCheckpointsSmoke:
-    """End-to-end smoke for ``TrainingCheckpoints`` against a real backend."""
+    """End-to-end smoke for ``TrainingCheckpoints`` against a real backend.
+
+    Single test method intentionally bundles several assertions: each
+    end-to-end run provisions a real LoRA trainer (~10 min B200 setup +
+    teardown), so splitting per-concept would 4x the GPU bill for the
+    same coverage. The assertions are grouped by concept inside the
+    method body — when one fails, the failure message + log output
+    identifies which concept broke.
+    """
 
     def test_save_and_promote(
         self,

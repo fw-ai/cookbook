@@ -61,6 +61,7 @@ if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
 from fireworks.training.sdk import FireworksClient, TrainerJobManager
+from training.utils.checkpoints import _logical_name, _short_name
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,10 +71,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-
-# Mirrors training/utils/checkpoints.py: sampler rows get an 8-hex
-# session suffix appended server-side ("step-5" -> "step-5-45dda197").
-_SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
 
 
 @dataclass(frozen=True)
@@ -153,16 +150,6 @@ def parse_args() -> PromoteConfig:
         output_model_id=args.output_model_id,
         hot_load_deployment_id=args.hot_load_deployment_id,
     )
-
-
-def _short_name(resource_name: str) -> str:
-    """Extract the trailing checkpoint id from a full resource name."""
-    return resource_name.rstrip("/").rsplit("/", 1)[-1]
-
-
-def _logical_name(short: str) -> str:
-    """Strip the 8-hex session suffix the trainer appends to sampler names."""
-    return _SESSION_SUFFIX_RE.sub("", short)
 
 
 def _step_from_name(name: str) -> int | None:
