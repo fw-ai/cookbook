@@ -12,16 +12,11 @@ python training/examples/tools/promote_checkpoint.py \
     --job-id <trainer-job-id> \
     --base-model accounts/fireworks/models/qwen3-8b
 
-# Promote a specific checkpoint by name
+# Promote a specific checkpoint. `step-50` matches both an exact row
+# and one stored as `step-50-<8-hex-session-suffix>`.
 python training/examples/tools/promote_checkpoint.py \
     --job-id <trainer-job-id> \
     --checkpoint-name step-50 \
-    --base-model accounts/fireworks/models/qwen3-8b
-
-# ...or by step number
-python training/examples/tools/promote_checkpoint.py \
-    --job-id <trainer-job-id> \
-    --step 50 \
     --base-model accounts/fireworks/models/qwen3-8b
 
 # Override the generated model id (always ≤63 chars, [a-z0-9-])

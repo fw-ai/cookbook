@@ -4,10 +4,10 @@
 
 Queries the control plane for the trainer job's checkpoints
 (``FireworksClient.list_checkpoints``), picks the newest promotable
-row (or a specific one if ``--checkpoint-name`` / ``--step`` is given),
-and calls the promotion API. No temporary trainer is needed —
-promotion is a lightweight metadata + file-copy operation that works
-even after the trainer job has been deleted.
+row (or a specific one if ``--checkpoint-name`` is given), and calls
+the promotion API. No temporary trainer is needed — promotion is a
+lightweight metadata + file-copy operation that works even after the
+trainer job has been deleted.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -17,16 +17,12 @@ Usage:
         --job-id <trainer-job-id> \\
         --base-model accounts/fireworks/models/qwen3-8b
 
-    # Promote a specific checkpoint by name:
+    # Promote a specific checkpoint. ``step-50`` matches both an exact
+    # row stored as ``step-50`` and one stored as ``step-50-a1b2c3d4``
+    # (sampler rows get an 8-hex session suffix appended server-side).
     python promote_checkpoint.py \\
         --job-id <trainer-job-id> \\
         --checkpoint-name step-50 \\
-        --base-model accounts/fireworks/models/qwen3-8b
-
-    # Or by step number (matches "step-<N>" / "step-<N>-<sessionsuffix>"):
-    python promote_checkpoint.py \\
-        --job-id <trainer-job-id> \\
-        --step 50 \\
         --base-model accounts/fireworks/models/qwen3-8b
 
     # Override the auto-generated output model ID:
@@ -77,7 +73,6 @@ load_dotenv()
 class PromoteConfig:
     job_id: str
     checkpoint_name: str | None
-    step: int | None
     base_model: str
     output_model_id: str | None
     hot_load_deployment_id: str | None
@@ -103,17 +98,10 @@ def parse_args() -> PromoteConfig:
     parser.add_argument(
         "--checkpoint-name",
         default=None,
-        help="Specific checkpoint name to promote (e.g. 'step-50' or "
-             "'step-50-a1b2c3d4'). Mutually exclusive with --step. "
+        help="Specific checkpoint name to promote. Matches both the exact "
+             "name (e.g. 'step-50-a1b2c3d4') and the logical name "
+             "(e.g. 'step-50' matches a row stored as 'step-50-a1b2c3d4'). "
              "Defaults to the newest promotable checkpoint.",
-    )
-    parser.add_argument(
-        "--step",
-        type=int,
-        default=None,
-        help="Promote the promotable checkpoint with this step number. "
-             "Matches 'step-<N>' / 'step-<N>-<sessionsuffix>' rows. "
-             "Mutually exclusive with --checkpoint-name.",
     )
     parser.add_argument(
         "--base-model",
@@ -140,27 +128,13 @@ def parse_args() -> PromoteConfig:
         ),
     )
     args = parser.parse_args()
-    if args.checkpoint_name and args.step is not None:
-        parser.error("--checkpoint-name and --step are mutually exclusive")
     return PromoteConfig(
         job_id=args.job_id,
         checkpoint_name=args.checkpoint_name,
-        step=args.step,
         base_model=args.base_model,
         output_model_id=args.output_model_id,
         hot_load_deployment_id=args.hot_load_deployment_id,
     )
-
-
-def _step_from_name(name: str) -> int | None:
-    """Parse the step number from 'step-N' / 'step-N-<suffix>'."""
-    logical = _logical_name(name)
-    if not logical.startswith("step-"):
-        return None
-    try:
-        return int(logical.removeprefix("step-"))
-    except ValueError:
-        return None
 
 
 def _resolve_checkpoint(
@@ -168,10 +142,13 @@ def _resolve_checkpoint(
     job_id: str,
     *,
     checkpoint_name: str | None,
-    step: int | None,
 ) -> ResolvedCheckpoint:
     rows = fw_client.list_checkpoints(job_id)
-    promotable = [r for r in rows if r.get("promotable")]
+    promotable = sorted(
+        (r for r in rows if r.get("promotable")),
+        key=lambda r: r.get("createTime", ""),
+        reverse=True,
+    )
     if not promotable:
         raise SystemExit(
             f"ERROR: no promotable checkpoints found on trainer job '{job_id}'.\n"
@@ -179,7 +156,9 @@ def _resolve_checkpoint(
             "  Promotable rows have checkpointType in (INFERENCE_BASE, INFERENCE_LORA)."
         )
 
-    if checkpoint_name is not None:
+    if checkpoint_name is None:
+        chosen = promotable[0]
+    else:
         target_logical = _logical_name(checkpoint_name)
         matches = [
             r for r in promotable
@@ -190,21 +169,8 @@ def _resolve_checkpoint(
             raise SystemExit(
                 f"ERROR: no promotable checkpoint named '{checkpoint_name}' on job '{job_id}'."
             )
+        # Newest among matches (handles multiple sampler saves at the same logical name).
         chosen = matches[0]
-    elif step is not None:
-        matches = [r for r in promotable if _step_from_name(_short_name(r["name"])) == step]
-        if not matches:
-            raise SystemExit(
-                f"ERROR: no promotable checkpoint at step {step} on job '{job_id}'."
-            )
-        # Pick newest if multiple (e.g. multiple sampler saves at the same step).
-        chosen = sorted(
-            matches, key=lambda r: r.get("createTime", ""), reverse=True,
-        )[0]
-    else:
-        chosen = sorted(
-            promotable, key=lambda r: r.get("createTime", ""), reverse=True,
-        )[0]
 
     return ResolvedCheckpoint(
         full_name=chosen["name"],
@@ -239,7 +205,6 @@ def main() -> None:
         fw_client,
         cfg.job_id,
         checkpoint_name=cfg.checkpoint_name,
-        step=cfg.step,
     )
 
     output_model_id = cfg.output_model_id or _default_output_model_id(
