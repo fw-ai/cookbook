@@ -52,12 +52,23 @@ Other invariants:
   ``<|assistant|><think>`` for thinking mode (default),
   ``<|assistant|></think>`` for non-thinking mode.
 
-Only text-only chat, with and without thinking, is implemented here.
-Tool calls and multimodal content are left for a future extension.
+Tool-call layout (assistant turns only — ``role: "tool"`` responses are
+rendered as ``<|observation|><tool_response>...</tool_response>`` and never
+contribute to loss):
+
+- Each call serialised right after the assistant's visible content with no
+  separator: ``<tool_call>{name}<arg_key>{k}</arg_key><arg_value>{v}</arg_value>...</tool_call>``.
+- Multiple calls in one assistant turn are concatenated end-to-end.
+- ``arguments`` is the JSON-string form Tinker's ``ToolCall`` schema uses;
+  string values are emitted raw, anything else is JSON-encoded with
+  ``ensure_ascii=False`` (matches the shipped Jinja's ``v | tojson`` branch).
+
+Multimodal content is left for a future extension.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -69,6 +80,7 @@ from tinker_cookbook.renderers.base import (
     RenderedMessage,
     Renderer,
     Role,
+    ToolCall,
     parse_response_for_stop_token,
     parse_think_blocks,
 )
@@ -95,6 +107,29 @@ def _visible_text(content: Any) -> str:
                 parts.append(item["text"])
         return "".join(parts)
     return str(content)
+
+
+def _format_arg_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _format_tool_calls(tool_calls: list[ToolCall]) -> str:
+    parts: list[str] = []
+    for tc in tool_calls:
+        raw_args = tc.function.arguments
+        args = json.loads(raw_args) if raw_args else {}
+        if not isinstance(args, Mapping):
+            raise TypeError(
+                f"GLM-5.1 tool arguments must be a JSON object, got {type(args)!r}"
+            )
+        kv = "".join(
+            f"<arg_key>{k}</arg_key><arg_value>{_format_arg_value(v)}</arg_value>"
+            for k, v in args.items()
+        )
+        parts.append(f"<tool_call>{tc.function.name}{kv}</tool_call>")
+    return "".join(parts)
 
 
 def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
@@ -221,6 +256,10 @@ class GLM5Renderer(Renderer):
 
         visible_stripped = visible.strip()
         output_str = think_block + visible_stripped
+
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            output_str += _format_tool_calls(tool_calls)
 
         output_tokens = self.tokenizer.encode(output_str, add_special_tokens=False)
         # Append <|endoftext|> only on the final message in the conversation.

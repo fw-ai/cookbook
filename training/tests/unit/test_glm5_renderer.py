@@ -22,8 +22,20 @@ from pathlib import Path
 import pytest
 import transformers
 
+import json
+from typing import Any
+
 from training.renderer.glm5 import GLM5Renderer
-from tinker_cookbook.renderers.base import TrainOnWhat
+from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
+
+
+def _make_tool_call(name: str, arguments: dict[str, Any]) -> ToolCall:
+    return ToolCall(
+        function=ToolCall.FunctionBody(
+            name=name,
+            arguments=json.dumps(arguments, ensure_ascii=False),
+        )
+    )
 
 # Public HF tokenizer (ships the canonical GLM-5.1 chat template).
 _PUBLIC_TOKENIZER = "zai-org/GLM-5.1"
@@ -851,3 +863,118 @@ def test_supervised_parity(tokenizer, renderer, messages):
     hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
     ours, _ = _renderer_supervised_tokens(renderer, messages)
     _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+# ── Tool call parity ────────────────────────────────────────────────────────
+
+
+def _hf_tool_calls(specs: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Build HF-shaped tool_calls (dict args) from (name, args) specs."""
+    return [
+        {"type": "function", "function": {"name": name, "arguments": args}}
+        for name, args in specs
+    ]
+
+
+@pytest.mark.parametrize(
+    "build_messages",
+    [
+        # Single tool call, no preceding visible content.
+        lambda factory: [
+            {"role": "user", "content": "weather in SF?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": factory([("get_weather", {"city": "SF", "unit": "F"})]),
+            },
+        ],
+        # Tool call with visible content before it.
+        lambda factory: [
+            {"role": "user", "content": "weather in SF?"},
+            {
+                "role": "assistant",
+                "content": "Let me check.",
+                "tool_calls": factory([("get_weather", {"city": "SF"})]),
+            },
+        ],
+        # Multiple tool calls in one assistant turn.
+        lambda factory: [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": factory([("a", {"x": 1}), ("b", {"y": "z"})]),
+            },
+        ],
+        # Mixed argument types: string passes through, others get JSON-encoded.
+        lambda factory: [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": factory(
+                    [("f", {"i": 7, "b": True, "s": "hello", "l": [1, 2]})]
+                ),
+            },
+        ],
+        # Full agent loop: assistant tool call -> tool response -> final answer.
+        lambda factory: [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": factory([("a", {"x": 1})]),
+            },
+            {"role": "tool", "content": "42"},
+            {"role": "assistant", "content": "answer"},
+        ],
+    ],
+    ids=[
+        "single_call_no_text",
+        "single_call_with_text",
+        "two_calls",
+        "mixed_arg_types",
+        "call_then_tool_then_final",
+    ],
+)
+def test_tool_call_supervised_parity(tokenizer, renderer, build_messages):
+    """Tool-call assistant turns match HF byte-for-byte (modulo EOS).
+
+    HF's chat template iterates ``arguments.items()`` so it needs dict-form
+    args; our renderer reads the Tinker ``ToolCall`` schema (JSON-string args).
+    Build both shapes from the same (name, args) spec so the two paths are
+    apples-to-apples.
+    """
+    renderer_messages = build_messages(
+        lambda specs: [_make_tool_call(name, args) for name, args in specs]
+    )
+    hf_messages = build_messages(_hf_tool_calls)
+    hf = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, renderer_messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+def test_tool_call_tokens_are_trained(tokenizer, renderer):
+    """Under all_assistant_messages, tool_call params get nonzero loss weight."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_make_tool_call("get_weather", {"city": "SF"})],
+        },
+    ]
+    tokens, weights = _renderer_supervised_tokens(renderer, messages)
+    assert len(tokens) == len(weights)
+    # The arg_value "SF" must land inside the trained span (weight > 0).
+    sf_token = tokenizer.encode("SF", add_special_tokens=False)
+    assert sf_token, "tokenizer produced empty encoding for 'SF'"
+    for i in range(len(tokens) - len(sf_token) + 1):
+        if tokens[i : i + len(sf_token)] == sf_token:
+            assert all(w > 0 for w in weights[i : i + len(sf_token)]), (
+                f"tool_call arg tokens at {i} have zero weight: "
+                f"{weights[i : i + len(sf_token)]}"
+            )
+            break
+    else:
+        raise AssertionError("'SF' tokens not found in rendered output")
