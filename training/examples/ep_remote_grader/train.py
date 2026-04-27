@@ -5,9 +5,8 @@ Every piece lives somewhere reusable:
 
   * :mod:`training.utils.rl.rollout_service` -- service-agnostic
     protocol and dataclasses (no EP dep).
-  * :mod:`training.utils.rl.text_rollout` -- generic packer that turns
-    service payloads into :class:`~training.utils.rl.rollout.Rollout`,
-    handling tokenization and echo re-score.
+  * :mod:`training.utils.rl.text_rollout` -- token-native packer that
+    turns service payloads into :class:`~training.utils.rl.rollout.Rollout`.
   * :mod:`.ep_service` -- the only file that imports ``eval_protocol``.
   * :mod:`.grader` -- EP-decorated scoring function.
   * :mod:`.mock_agent` -- stand-in remote completion service.

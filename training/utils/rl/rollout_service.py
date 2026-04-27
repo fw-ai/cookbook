@@ -4,26 +4,27 @@ The async RL recipe has exactly one extension point -- ``rollout_fn`` --
 and everything inside it is user territory.  In practice most users plug
 in *some* remote service (an agent framework, a RAG-with-verifier stack,
 an LLM-as-judge loop, eval-protocol, ...).  This module defines the
-shape that lives between the service adapter and the generic
-"tokenize + pack into Rollout" helper in :mod:`training.utils.rl.text_rollout`,
-so the integration split is: *service adapter* on one side, *trainer
-packing* on the other, with neither importing the other's dependencies.
+shape that lives between the service adapter and the generic packer in
+:mod:`training.utils.rl.text_rollout`, so the integration split is:
+*service adapter* on one side, *trainer packing* on the other, with
+neither importing the other's dependencies.
 
 No external deps.  In particular, this module does **not** import
 ``eval_protocol`` or any SDK -- pick it up from a plain service class
 and the cookbook has no opinion on which one.
 
-Forward-compat contract
------------------------
+Token-native contract
+---------------------
 
-A :class:`RolloutPayload` carries either text (with the trainer doing
-echo-rescore + template-based loss-mask derivation) or token-native
-turn records (``token_ids`` + per-token ``logprobs`` + ``role``).  The
-token-native path short-circuits the echo re-score and is the target
-shape once upstream services start emitting it; see
-``https://github.com/fw-ai/fireworks/issues/23512`` for the EP ask.
-Until then, leave ``TurnRecord.token_ids`` / ``logprobs`` as ``None`` and
-the text helper will fall back.
+A :class:`RolloutPayload` is **token-native**: every :class:`TurnRecord`
+carries ``token_ids`` and every assistant turn carries per-token
+``logprobs``, both straight from the same inference call that generated
+them (slime/AReaL convention).  The trainer never re-tokenizes text;
+re-tokenization silently misaligns the loss mask and inference
+logprobs.  Services that today only emit text (e.g. EP's
+``RemoteRolloutProcessor``) must grow a token-native trace before they
+can drive RL training; see
+``https://github.com/fw-ai/fireworks/issues/23512``.
 """
 
 from __future__ import annotations
@@ -44,16 +45,12 @@ Role = Literal["system", "user", "assistant", "tool"]
 
 @dataclass
 class TurnRecord:
-    """One conversational turn, text- or token-native.
+    """One conversational turn, token-native.
 
-    A service that only has the message text fills ``text`` and leaves
-    ``token_ids`` / ``logprobs`` as ``None``; the packer will re-tokenize
-    against the current policy and run an ``echo=True`` re-score.
-
-    A service that captured token-level data (e.g. on the server side
-    with ``logprobs=True``) fills ``token_ids`` everywhere and
-    ``logprobs`` on assistant turns -- the packer trusts it as-is and
-    skips the round-trip.
+    ``token_ids`` is required on every turn.  ``logprobs`` is required
+    on assistant turns and must align 1:1 with ``token_ids``; both must
+    come from the same inference call that generated them.  ``text`` is
+    optional and used only for human-readable logging.
     """
 
     role: Role
@@ -76,10 +73,10 @@ class RolloutPayload:
     turns: List[TurnRecord]
     total_reward: Optional[float] = None
     tokenizer_id: Optional[str] = None
-    """Identifier for the tokenizer used to produce ``token_ids``.  When
-    the packer tokenizes locally it compares against the policy's
-    tokenizer; mismatch triggers a warning and a fallback to re-tokenize
-    from ``text``."""
+    """Identifier for the tokenizer that produced ``token_ids``.  When
+    set, the packer asserts it matches the trainer's tokenizer so a
+    mismatched-vocab integration fails loud instead of training on the
+    wrong token IDs."""
     finish_reason: str = "stop"
     extras: dict = field(default_factory=dict)
 

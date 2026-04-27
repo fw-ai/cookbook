@@ -2,35 +2,28 @@
 
 The recipe needs a ``rollout_fn(row, ctx) -> Rollout | None``.  The most
 common integration pattern is "some remote service produces completion
-data, the trainer tokenizes and re-scores logprobs".  This helper
+data; the trainer accepts token-level data verbatim".  This helper
 collapses the common case to one call::
 
     rollout_fn = make_text_rollout_fn(service)
 
-Supported shapes
-----------------
+Token-native only
+-----------------
 
-**Token-native (fast path).**  When every :class:`TurnRecord` in a
-payload has ``token_ids`` populated, the packer concatenates the per-turn
-tokens, derives ``loss_mask`` from roles (``1`` on assistant, ``0``
-elsewhere), trusts the supplied per-token ``logprobs``, and skips the
-inference round-trip.  This is the shape to target once upstream
-services capture token-level traces; see issue 23512.
+Every :class:`TurnRecord` MUST carry ``token_ids``, and assistant
+turns MUST carry ``logprobs`` aligned with ``token_ids``.  The packer
+concatenates the per-turn tokens, derives ``loss_mask`` from roles
+(``1`` on assistant, ``0`` elsewhere), and trusts the supplied
+per-token ``logprobs`` as-is.
 
-**Text-only (fallback).**  When turns carry text only, the packer
-rebuilds the conversation incrementally: for each turn it applies the
-policy's chat template to the prefix up to that turn and diffs against
-the previous step to find the turn's span.  For assistant turns it
-uses ``add_generation_prompt=True`` on the pre-turn prefix to locate
-the header/content boundary so ``loss_mask`` goes on the content
-only, not on the role header.  After the full token list is assembled
-it runs one ``echo=True, max_tokens=1`` request to score every token
-under the current policy.  Each prefix step is checked for prefix
-preservation; if the tokenizer drifts across turns (cf. Qwen3 trailing
-newlines, GLM boundary quirks) the pack fails loud with the offending
-turn index rather than silently corrupting the mask.  Services that
-need guaranteed round-trip fidelity should emit token-native turns
-instead.
+Re-tokenizing assistant text after the fact silently breaks two
+things: (a) the loss mask drifts off the BPE boundary the engine
+actually generated, and (b) the per-token logprobs no longer align
+with the tokens fed to the trainer.  AReaL and slime both refuse to
+do it; this packer follows the same rule.  Services that today only
+have text -- including EP's RemoteRolloutProcessor -- need to grow a
+token-native trace before they can drive RL training; see
+``https://github.com/fw-ai/fireworks/issues/23512``.
 
 Reward
 ------
@@ -41,11 +34,8 @@ When ``None``, pass ``reward_fn=...`` to grade client-side.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Awaitable, Callable, List, Optional, Union
-
-import requests
 
 from training.utils.rl.rollout import Rollout, RolloutSample
 from training.utils.rl.rollout_service import (
@@ -92,8 +82,7 @@ def make_text_rollout_fn(
     ``service`` returns ``list[RolloutPayload]`` of length
     ``ctx.completions_per_prompt``.  When a payload carries
     ``total_reward=None``, ``reward_fn`` is called; if neither is
-    provided the reward defaults to ``0.0`` (and the trainer will filter
-    the group out if ``dynamic_filter_fn`` rejects zero-variance).
+    provided the pack fails loud.
     """
 
     async def rollout_fn(row: dict, ctx) -> Rollout | None:
@@ -125,7 +114,6 @@ def make_text_rollout_fn(
             try:
                 sample = await pack_payload_to_sample(
                     payload,
-                    prompt_messages=messages,
                     ctx=ctx,
                     version=version,
                     reward_fn=reward_fn,
@@ -155,7 +143,6 @@ class _PackError(RuntimeError):
 async def pack_payload_to_sample(
     payload: RolloutPayload,
     *,
-    prompt_messages: List[dict],
     ctx,
     version: int,
     reward_fn: Optional[RewardFn] = None,
@@ -163,27 +150,25 @@ async def pack_payload_to_sample(
 ) -> RolloutSample:
     """Normalise one :class:`RolloutPayload` into one :class:`RolloutSample`.
 
-    Token-native when every turn has ``token_ids``; text-only
-    single-assistant-turn otherwise.  Raises :class:`_PackError` with a
-    user-actionable message on any structural problem.
+    Token-native only: every turn must carry ``token_ids``, and every
+    assistant turn must carry ``logprobs`` aligned with ``token_ids``.
+    Raises :class:`_PackError` with a user-actionable message on any
+    structural problem.
     """
     if not payload.turns:
         raise _PackError("payload has no turns")
 
-    token_native = all(t.token_ids is not None for t in payload.turns)
-    any_token_native = any(t.token_ids is not None for t in payload.turns)
-    if any_token_native and not token_native:
+    missing = [i for i, t in enumerate(payload.turns) if t.token_ids is None]
+    if missing:
         raise _PackError(
-            "payload mixes token-native and text-only turns; either provide "
-            "token_ids on every turn or none",
+            f"turns {missing} missing token_ids; this packer is token-native "
+            "only.  Have the upstream service emit per-turn token_ids and "
+            "per-token logprobs from the same call that generated them "
+            "(see slime / AReaL).  Re-tokenizing text post-hoc silently "
+            "misaligns the loss mask and inference logprobs.",
         )
 
-    if token_native:
-        tokens, logprobs, loss_mask = _pack_token_native(payload)
-    else:
-        tokens, logprobs, loss_mask = await _pack_text_only(
-            payload, prompt_messages=prompt_messages, ctx=ctx,
-        )
+    tokens, logprobs, loss_mask = _pack_token_native(payload)
 
     reward = payload.total_reward
     if reward is None:
@@ -244,139 +229,3 @@ def _pack_token_native(
     if len(tokens) < 2:
         raise _PackError("payload shorter than 2 tokens")
     return tokens, logprobs, loss_mask
-
-
-async def _pack_text_only(
-    payload: RolloutPayload,
-    *,
-    prompt_messages: List[dict],
-    ctx,
-) -> tuple[List[int], List[float], List[int]]:
-    if payload.turns[-1].role != "assistant":
-        raise _PackError(
-            "text-only payloads must end with an assistant turn",
-        )
-    if not any(t.role == "assistant" for t in payload.turns):
-        raise _PackError("text-only payload has no assistant turn to train on")
-    for i, t in enumerate(payload.turns):
-        if t.role == "assistant" and not t.text:
-            raise _PackError(f"assistant turn {i} has empty text")
-
-    tokenizer = ctx.tokenizer
-    all_messages = list(prompt_messages) + [
-        {"role": t.role, "content": t.text} for t in payload.turns
-    ]
-    n_prompt = len(prompt_messages)
-
-    loss_mask: List[int] = []
-    prev_tokens: List[int] = (
-        tokenizer.apply_chat_template(
-            prompt_messages, tokenize=True, add_generation_prompt=False,
-        )
-        if prompt_messages
-        else []
-    )
-    loss_mask.extend([0] * len(prev_tokens))
-
-    # Walk each payload turn, tokenize the prefix up to (and including) it,
-    # and diff against the previous step to recover the turn's span.
-    for i, turn in enumerate(payload.turns):
-        full_idx = n_prompt + i + 1
-        full_ids = tokenizer.apply_chat_template(
-            all_messages[:full_idx], tokenize=True, add_generation_prompt=False,
-        )
-        if full_ids[: len(prev_tokens)] != prev_tokens:
-            raise _PackError(
-                f"chat template not prefix-preserving at turn {i} "
-                f"(role={turn.role!r}); the tokenizer rewrote earlier "
-                "tokens after appending this turn -- integrate at the "
-                "token level instead (see TurnRecord.token_ids)",
-            )
-
-        if turn.role == "assistant":
-            # Locate the boundary between assistant header and content
-            # by applying add_generation_prompt=True to the pre-turn prefix.
-            header_ids = tokenizer.apply_chat_template(
-                all_messages[: full_idx - 1],
-                tokenize=True, add_generation_prompt=True,
-            )
-            if full_ids[: len(header_ids)] != header_ids:
-                raise _PackError(
-                    f"assistant header for turn {i} is not a prefix of the "
-                    "full tokenisation -- tokenizer template does not "
-                    "round-trip; integrate at the token level instead",
-                )
-            header_len = len(header_ids)
-            if header_len < len(prev_tokens):
-                raise _PackError(
-                    f"assistant header at turn {i} shorter than prior "
-                    "context -- chat template is not monotonic",
-                )
-            # Header gets mask 0, content gets mask 1.
-            loss_mask.extend([0] * (header_len - len(prev_tokens)))
-            loss_mask.extend([1] * (len(full_ids) - header_len))
-        else:
-            loss_mask.extend([0] * (len(full_ids) - len(prev_tokens)))
-
-        prev_tokens = full_ids
-
-    full_ids = prev_tokens
-    if len(full_ids) < 2:
-        raise _PackError("tokenised conversation shorter than 2 tokens")
-    if not any(m > 0 for m in loss_mask):
-        raise _PackError(
-            "no assistant content tokens after header stripping -- "
-            "assistant turns produced zero new tokens",
-        )
-
-    logprobs = await asyncio.to_thread(
-        _echo_rescore,
-        full_ids,
-        inference_url=ctx.inference_url,
-        api_key=ctx.api_key,
-        model=ctx.model,
-    )
-    return full_ids, logprobs, loss_mask
-
-
-def _normalize_completions_url(inference_url: str) -> str:
-    url = inference_url.rstrip("/")
-    for suffix in ("/inference/v1", "/inference"):
-        if url.endswith(suffix):
-            url = url[: -len(suffix)]
-            break
-    return f"{url}/inference/v1/completions"
-
-
-def _echo_rescore(
-    tokens: List[int],
-    *,
-    inference_url: str,
-    api_key: str,
-    model: str,
-) -> List[float]:
-    """Score ``tokens`` under the current policy via ``echo=True, max_tokens=1``.
-
-    Returns a length-``len(tokens)`` list with ``0.0`` at position 0 (no
-    prior context) and per-token logprobs at positions 1..N.  Called
-    off-loop via :func:`asyncio.to_thread` so ``requests`` doesn't block
-    the event loop.
-    """
-    resp = requests.post(
-        _normalize_completions_url(inference_url),
-        json={
-            "model": model,
-            "prompt": tokens,
-            "echo": True,
-            "max_tokens": 1,
-            "logprobs": 0,
-        },
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=120,
-    )
-    resp.raise_for_status()
-    token_lp = resp.json()["choices"][0]["logprobs"]["token_logprobs"]
-    out: List[float] = [0.0 if x is None else float(x) for x in token_lp]
-    if len(out) < len(tokens):
-        out = out + [0.0] * (len(tokens) - len(out))
-    return out[: len(tokens)]

@@ -2,7 +2,7 @@
 
 This is the **only** file in this example that imports ``eval_protocol``.
 Everything upstream (the trainer, the generic packer) stays EP-unaware.
-That boundary matches issue 23512's Gap 3 -- integrating EP into RL
+That boundary matches the EP integration ask -- integrating EP into RL
 training should require a small, stable surface, not the full pytest /
 grader / dataset-adapter stack.
 
@@ -10,19 +10,23 @@ Wiring:
 
   * ``remote_agent_complete`` -- stand-in for whatever completion source
     the user plugs in (agent framework, RAG pipeline, multi-turn tool
-    loop, another LLM).  It returns plain text.
+    loop, another LLM).  Returns token-native completions: token IDs +
+    per-token assistant logprobs straight from the inference call.
   * ``test_math_answer_eval`` -- an EP ``@evaluation_test`` coroutine.
     We call it directly with an :class:`EvaluationRow` to get a scalar
     reward.
   * ``EPService.rollout`` -- fans out ``n`` completions, grades them
-    concurrently, and packs each into a :class:`RolloutPayload` with
-    ``total_reward`` pre-filled (server-wins convention).
+    concurrently, and packs each into a token-native
+    :class:`RolloutPayload` with ``total_reward`` pre-filled
+    (server-wins convention).
 
-Once EP's poll response grows a token-native ``rollout_payload`` field
-(issue 23512, Gap 1), ``EPService`` will populate
-``TurnRecord.token_ids`` / ``logprobs`` directly and the trainer-side
-echo re-score round-trip disappears.  No other file in this example
-changes.
+EP today emits text-only traces; the cookbook trainer is token-native
+only.  This example uses the mock agent's synthetic token IDs to
+demonstrate the target shape.  See
+``https://github.com/fw-ai/fireworks/issues/23512`` for the EP-side
+work that wires the trace pipeline to emit per-call ``token_ids`` +
+per-token assistant ``logprobs`` so ``RemoteRolloutProcessor`` can
+drive RL training without a re-tokenization step.
 """
 
 import asyncio
@@ -32,7 +36,10 @@ from typing import Any, List
 from eval_protocol import EvaluationRow, Message
 
 from training.examples.ep_remote_grader.grader import test_math_answer_eval
-from training.examples.ep_remote_grader.mock_agent import remote_agent_complete
+from training.examples.ep_remote_grader.mock_agent import (
+    MockCompletion,
+    remote_agent_complete,
+)
 from training.utils.rl.rollout_service import (
     RolloutPayload,
     RolloutService,
@@ -57,6 +64,34 @@ async def _grade(
     if graded.evaluation_result is None:
         return 0.0
     return float(graded.evaluation_result.score)
+
+
+def _payload_from_completion(
+    completion: MockCompletion,
+    *,
+    prompt_token_ids: List[int],
+    reward: float | None,
+) -> RolloutPayload:
+    """Pack a token-native completion into a :class:`RolloutPayload`.
+
+    Two turns: the prompt (mask 0) and the assistant span (mask 1).
+    Both ``token_ids`` and ``logprobs`` come straight from the
+    inference call -- never re-tokenized.
+    """
+    return RolloutPayload(
+        turns=[
+            TurnRecord(role="user", token_ids=list(prompt_token_ids)),
+            TurnRecord(
+                role="assistant",
+                text=completion.text,
+                token_ids=list(completion.token_ids),
+                logprobs=list(completion.logprobs),
+                finish_reason=completion.finish_reason,
+            ),
+        ],
+        total_reward=(None if reward is None else float(reward)),
+        finish_reason=completion.finish_reason,
+    )
 
 
 class EPService(RolloutService):
@@ -95,16 +130,17 @@ class EPService(RolloutService):
         if self.grade:
             ground_truth = str(row.get("ground_truth", ""))
             rewards: List[float | None] = list(await asyncio.gather(
-                *(_grade(messages, c, ground_truth) for c in completions),
+                *(_grade(messages, c.text, ground_truth) for c in completions),
             ))
         else:
             rewards = [None] * len(completions)
 
+        # The prompt's token IDs would come from the inference server's
+        # request trace in production.  In this mock we synthesize them
+        # deterministically so the example is self-contained.
+        prompt_token_ids = [2000 + (ord(c) % 100) for m in messages for c in m["content"]]
+
         return [
-            RolloutPayload(
-                turns=[TurnRecord(role="assistant", text=c)],
-                total_reward=(None if r is None else float(r)),
-                finish_reason="stop",
-            )
+            _payload_from_completion(c, prompt_token_ids=prompt_token_ids, reward=r)
             for c, r in zip(completions, rewards)
         ]
