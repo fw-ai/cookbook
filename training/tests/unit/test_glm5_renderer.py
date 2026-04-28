@@ -25,7 +25,10 @@ import pytest
 import transformers
 
 from training.renderer.glm5 import GLM5Renderer
-from training.tests.glm5_serverless_cases import GLM5_SERVERLESS_PROMPT_TOKEN_CASES
+from training.tests.glm5_serverless_cases import (
+    GLM5_SERVERLESS_PROMPT_TOKEN_CASES,
+    GLM5_SERVERLESS_STOP_TOKEN_IDS,
+)
 from training.utils.supervised import normalize_messages
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
@@ -1100,14 +1103,21 @@ def test_bos_tokens_are_gMASK_sop(tokenizer, renderer):
 def test_stop_sequences_returns_eos_and_next_role_tags(tokenizer, renderer):
     stops = renderer.get_stop_sequences()
     expected = [
-        _eos(tokenizer),
-        tokenizer.encode("<|user|>", add_special_tokens=False)[0],
-        tokenizer.encode("<|observation|>", add_special_tokens=False)[0],
+        GLM5_SERVERLESS_STOP_TOKEN_IDS["eos"],
+        GLM5_SERVERLESS_STOP_TOKEN_IDS["user"],
+        GLM5_SERVERLESS_STOP_TOKEN_IDS["observation"],
     ]
     assert stops == expected
+    assert _eos(tokenizer) == GLM5_SERVERLESS_STOP_TOKEN_IDS["eos"]
     assert all(
         len(tokenizer.encode(tag, add_special_tokens=False)) == 1
         for tag in ("<|user|>", "<|observation|>")
+    )
+    assert tokenizer.encode("<|user|>", add_special_tokens=False)[0] == (
+        GLM5_SERVERLESS_STOP_TOKEN_IDS["user"]
+    )
+    assert tokenizer.encode("<|observation|>", add_special_tokens=False)[0] == (
+        GLM5_SERVERLESS_STOP_TOKEN_IDS["observation"]
     )
 
 
@@ -1284,6 +1294,57 @@ def test_generation_prompt_matches_recorded_fireworks_serverless_prompt_ids(
         f"  expected text: {tokenizer.decode(expected)!r}\n"
         f"  ours text:     {tokenizer.decode(ours)!r}"
     )
+
+
+def test_recorded_fireworks_prompt_cases_cover_glm_role_and_tool_tokens(tokenizer):
+    token_ids_by_case = {
+        case["name"]: [int(token_id) for token_id in case["prompt_token_ids"]]
+        for case in GLM5_SERVERLESS_PROMPT_TOKEN_CASES
+    }
+    token_by_text = {}
+    for text in (
+        "<|system|>",
+        "<|user|>",
+        "<|assistant|>",
+        "<|observation|>",
+        "<think>",
+        "</think>",
+        "<tool_call>",
+        "</tool_call>",
+        "<tool_response>",
+        "</tool_response>",
+    ):
+        encoded = tokenizer.encode(text, add_special_tokens=False)
+        assert len(encoded) == 1, f"{text!r} should be a single GLM special token"
+        token_by_text[text] = encoded[0]
+
+    assert token_by_text["<|system|>"] in token_ids_by_case[
+        "multi_tool_calls_nested_args_with_observations"
+    ]
+    assert token_by_text["<|user|>"] in token_ids_by_case[
+        "long_interleaved_preserved_reasoning"
+    ]
+    assert token_by_text["<|assistant|>"] in token_ids_by_case[
+        "long_interleaved_preserved_reasoning"
+    ]
+    assert token_by_text["<|observation|>"] in token_ids_by_case[
+        "multi_tool_calls_nested_args_with_observations"
+    ]
+    for tool_token in (
+        "<tool_call>",
+        "</tool_call>",
+        "<tool_response>",
+        "</tool_response>",
+    ):
+        assert token_by_text[tool_token] in token_ids_by_case[
+            "multi_tool_calls_nested_args_with_observations"
+        ]
+    assert token_ids_by_case["long_interleaved_preserved_reasoning"].count(
+        token_by_text["<think>"]
+    ) >= 4
+    assert token_ids_by_case["long_interleaved_preserved_reasoning"].count(
+        token_by_text["</think>"]
+    ) >= 3
 
 
 # ── Parametrized parity: supervised shapes ──────────────────────────────────
