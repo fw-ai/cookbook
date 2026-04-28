@@ -144,9 +144,9 @@ class Config:
     ppo_n_minibatches: int = 1
     """Number of inner PPO minibatches per rollout batch.
 
-    Each rollout batch runs one ``prox_fwd`` snapshot followed by
+    Each rollout batch snapshots ``old_policy_logprobs`` followed by
     ``ppo_n_minibatches`` × (``forward_backward`` + ``optim_step``). When
-    >1, the policy drifts across inner steps, so ``prox_lp`` anchors the
+    >1, the policy drifts across inner steps, so ``old_policy_logprobs`` anchors the
     PPO ratio and the clip does real work. ``1`` reproduces the legacy
     1:1 behavior."""
     tis: TISConfig = field(default_factory=TISConfig)
@@ -646,11 +646,11 @@ def main(
             )
 
         def fwd_bwd_minibatch(
-            data, adv, ref_lp, prompt_lens, inf_lp, prox_lp,
+            data, adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs,
         ):
             """One inner PPO minibatch using builtin or client-side loss path.
 
-            Callers pre-compute ``prox_lp`` once per rollout batch and pass
+            Callers pre-compute ``old_policy_logprobs`` once per rollout batch and pass
             a slice of the flattened rollout tensors for this minibatch.
             """
             if builtin_server_loss is not None:
@@ -658,7 +658,7 @@ def main(
                 rl_datums = build_builtin_loss_datums(
                     data,
                     adv,
-                    prox_lp,
+                    old_policy_logprobs,
                     inf_lp,
                     prompt_lens,
                     cfg.tis,
@@ -671,7 +671,7 @@ def main(
                 )
             return policy.forward_backward_custom(
                 data,
-                client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+                client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs),
             )
 
         def train_step(
@@ -679,9 +679,9 @@ def main(
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + prox_fwd (once) + num_minibatches × (fwd_bwd + optim_step) + metrics.
+            """ref_forward + old_policy_logprobs snapshot + num_minibatches × (fwd_bwd + optim_step) + metrics.
 
-            ``num_minibatches = cfg.ppo_n_minibatches``. ``prox_lp`` is snapshotted
+            ``num_minibatches = cfg.ppo_n_minibatches``. ``old_policy_logprobs`` is snapshotted
             once per rollout batch and reused across every inner optim step so
             the PPO ratio measures genuine policy drift. DCP checkpoints fire
             only at rollout boundaries (cadence in rollout batches, not optim
@@ -696,9 +696,9 @@ def main(
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
             t0 = _time.time()
-            prox_fwd = policy.forward(data, "cross_entropy")
-            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("[step %d] prox_forward: done (%.1fs)", step + 1, _time.time() - t0)
+            old_policy_fwd = policy.forward(data, "cross_entropy")
+            old_policy_logprobs = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+            logger.info("[step %d] old_policy_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
             n = len(data)
             num_minibatches = max(1, cfg.ppo_n_minibatches)
@@ -718,7 +718,7 @@ def main(
                     ref_lp[minibatch_start:minibatch_end],
                     prompt_lens[minibatch_start:minibatch_end],
                     inf_lp[minibatch_start:minibatch_end],
-                    prox_lp[minibatch_start:minibatch_end],
+                    old_policy_logprobs[minibatch_start:minibatch_end],
                 ))
                 logger.info(
                     "[step %d] fwd_bwd (mb %d/%d): done (%.1fs)",
