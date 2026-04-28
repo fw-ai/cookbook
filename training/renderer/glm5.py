@@ -4,9 +4,12 @@ Handles the GLM-5.1 chat format as shipped with ``zai-org/GLM-5.1``
 (and its FP8 variant ``zai-org/GLM-5.1-FP8``, which ships an identical
 tokenizer and chat template).
 
-Token-level layout matches ``tokenizer.apply_chat_template`` byte-for-byte
+Token-level layout follows ``tokenizer.apply_chat_template`` byte-for-byte
 (verified by the unit tests in ``test_glm5_renderer.py``), modulo the
-intentional training EOS on the terminal assistant message.
+intentional training EOS on the terminal assistant message. The registered
+renderer uses GLM preserved-thinking semantics by default; opt-in
+``strip_thinking_from_history=True`` matches the template's standard
+``clear_thinking`` behavior.
 
 Role tag layout (as the shipped Jinja template emits them):
 
@@ -32,13 +35,17 @@ Assistant turn layout:
       <|assistant|></think>{content}
 
 - **Historical assistant turn** (any turn before the last user message) when
-  ``strip_thinking_from_history=True`` (the default)::
+  ``strip_thinking_from_history=False`` (the default) and reasoning content is
+  provided::
+
+      <|assistant|><think>{reasoning}</think>{content}
+
+- **Historical assistant turn** when ``strip_thinking_from_history=True``::
 
       <|assistant|></think>{content}
 
-  Historical turns drop any reasoning content to avoid leaking intermediate
-  reasoning into later turns' context. Matches the shipped template's
-  ``loop.index0 > ns.last_user_index`` branch.
+  This opt-in strip-history mode matches the shipped template's default
+  ``clear_thinking`` behavior.
 
 Other invariants:
 
@@ -162,7 +169,7 @@ class GLM5Renderer(Renderer):
     def __init__(
         self,
         tokenizer: Tokenizer,
-        strip_thinking_from_history: bool = True,
+        strip_thinking_from_history: bool = False,
     ) -> None:
         super().__init__(tokenizer)
         self.strip_thinking_from_history = strip_thinking_from_history
@@ -195,10 +202,10 @@ class GLM5Renderer(Renderer):
     ):
         """Build extension-safe supervised examples for multi-turn GLM data.
 
-        GLM strips historical thinking by default, so training all assistant
-        messages in one datum can expose earlier assistant turns to a different
-        prefix than generation used at that turn. Match Tinker's Kimi pattern:
-        split by user turns and train the assistant suffix after each user.
+        The registered GLM renderer preserves historical thinking by default,
+        so it can train all assistant messages in one datum. If callers opt
+        into strip-history mode, split by user turns and train each assistant
+        suffix in the same position it would occupy during generation.
         """
         if self.has_extension_property:
             return [
@@ -302,7 +309,7 @@ class GLM5Renderer(Renderer):
 
         # Match the shipped HF chat template thinking-block logic:
         #
-        # 1. Historical turn with strip_thinking=True (the default):
+        # 1. Historical turn with strip_thinking=True:
         #    always ``</think>`` (drops any reasoning).
         # 2. Historical turn with strip_thinking=False AND reasoning
         #    exists: ``<think>{reasoning}</think>`` (keep it).

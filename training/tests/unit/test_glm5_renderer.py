@@ -26,6 +26,7 @@ import transformers
 
 from training.renderer.glm5 import GLM5Renderer
 from training.utils.supervised import normalize_messages
+from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
 
 
@@ -79,13 +80,22 @@ def tokenizer():
 
 @pytest.fixture(scope="module")
 def renderer(tokenizer):
+    """Strip-history renderer used for HF default ``clear_thinking`` parity."""
     return GLM5Renderer(tokenizer, strip_thinking_from_history=True)
 
 
 @pytest.fixture(scope="module")
 def renderer_keep_thinking(tokenizer):
-    """Renderer with ``strip_thinking_from_history=False``."""
-    return GLM5Renderer(tokenizer, strip_thinking_from_history=False)
+    """Registered-default preserve-thinking renderer."""
+    return GLM5Renderer(tokenizer)
+
+
+def test_registered_glm5_default_preserves_thinking(tokenizer):
+    default_renderer = get_renderer("glm5", tokenizer)
+
+    assert isinstance(default_renderer, GLM5Renderer)
+    assert default_renderer.strip_thinking_from_history is False
+    assert default_renderer.has_extension_property is True
 
 
 def _hf_tokens(tokenizer, messages, add_generation_prompt: bool, **kwargs) -> list[int]:
@@ -610,7 +620,7 @@ def _multi_turn_conversation_with_reasoning():
     return renderer_messages, hf_messages
 
 
-def test_default_strips_history_reasoning_in_generation(tokenizer, renderer):
+def test_strip_mode_strips_history_reasoning_in_generation(tokenizer, renderer):
     renderer_messages, hf_messages = _multi_turn_conversation_with_reasoning()
 
     ours = _renderer_generation_tokens(renderer, renderer_messages)
@@ -619,7 +629,7 @@ def test_default_strips_history_reasoning_in_generation(tokenizer, renderer):
 
     assert ours == hf
     assert "HIST_THINK_A" not in decoded
-    # GLM's default history-collapse marker is a bare closing tag.
+    # GLM's strip-history collapse marker is a bare closing tag.
     assert "</think>4" in decoded
 
 
@@ -728,8 +738,8 @@ def _hf_interleaved_tool_messages() -> list[dict[str, Any]]:
     return hf_messages
 
 
-def test_default_preserves_current_interleaved_tool_reasoning(tokenizer, renderer):
-    """Default GLM preserves reasoning in the active user/tool suffix."""
+def test_strip_mode_preserves_current_interleaved_tool_reasoning(tokenizer, renderer):
+    """Strip-history GLM still preserves reasoning in the active user/tool suffix."""
     renderer_messages = normalize_messages(_interleaved_tool_raw_messages())
     hf_messages = _hf_interleaved_tool_messages()
 
