@@ -10,7 +10,6 @@ token IDs as the ground truth for renderer prompt construction.
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from typing import Any
@@ -20,6 +19,7 @@ import transformers
 from fireworks import Fireworks
 
 from training.renderer.glm5 import GLM5Renderer
+from training.tests.glm5_serverless_cases import GLM5_SERVERLESS_PROMPT_TOKEN_CASES
 from training.utils.supervised import normalize_messages
 
 
@@ -82,58 +82,12 @@ def _renderer_prompt_token_ids(
 @pytest.mark.e2e
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize(
-    ("case_name", "messages", "request_kwargs"),
-    [
-        (
-            "single_user",
-            [{"role": "user", "content": "Hello"}],
-            {},
-        ),
-        (
-            "preserved_history_reasoning",
-            [
-                {"role": "user", "content": "What is 2+2?"},
-                {
-                    "role": "assistant",
-                    "reasoning_content": "HIST_THINK_A",
-                    "content": "4",
-                },
-                {"role": "user", "content": "Now what is 3+3?"},
-            ],
-            {"reasoning_history": "preserved"},
-        ),
-        (
-            "tool_response_handoff",
-            [
-                {"role": "user", "content": "weather?"},
-                {
-                    "role": "assistant",
-                    "reasoning_content": "need weather",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "get_weather",
-                                "arguments": json.dumps(
-                                    {"city": "SF"},
-                                    separators=(",", ":"),
-                                ),
-                            },
-                        }
-                    ],
-                },
-                {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
-            ],
-            {"reasoning_history": "preserved"},
-        ),
-    ],
+    "case",
+    GLM5_SERVERLESS_PROMPT_TOKEN_CASES,
+    ids=[case["name"] for case in GLM5_SERVERLESS_PROMPT_TOKEN_CASES],
 )
 def test_glm5_renderer_matches_fireworks_serverless_prompt_token_ids(
-    case_name: str,
-    messages: list[dict[str, Any]],
-    request_kwargs: dict[str, Any],
+    case: dict[str, Any],
 ):
     api_key = os.environ.get("FIREWORKS_API_KEY")
     if not api_key:
@@ -158,13 +112,19 @@ def test_glm5_renderer_matches_fireworks_serverless_prompt_token_ids(
     server_ids = _serverless_prompt_token_ids(
         client,
         model=model,
-        messages=messages,
-        **request_kwargs,
+        messages=case["messages"],
+        **case["request_kwargs"],
     )
-    renderer_ids = _renderer_prompt_token_ids(renderer, messages)
+    recorded_ids = [int(token_id) for token_id in case["prompt_token_ids"]]
+    renderer_ids = _renderer_prompt_token_ids(renderer, case["messages"])
 
+    assert server_ids == recorded_ids, (
+        f"{case['name']} Fireworks serverless prompt tokens changed.\n"
+        f"recorded: {recorded_ids}\n"
+        f"server:   {server_ids}"
+    )
     assert renderer_ids == server_ids, (
-        f"{case_name} GLM5 prompt tokens differ from Fireworks serverless.\n"
+        f"{case['name']} GLM5 prompt tokens differ from Fireworks serverless.\n"
         f"server:   {tokenizer.decode(server_ids)!r}\n"
         f"renderer: {tokenizer.decode(renderer_ids)!r}"
     )

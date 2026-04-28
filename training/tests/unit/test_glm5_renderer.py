@@ -25,6 +25,7 @@ import pytest
 import transformers
 
 from training.renderer.glm5 import GLM5Renderer
+from training.tests.glm5_serverless_cases import GLM5_SERVERLESS_PROMPT_TOKEN_CASES
 from training.utils.supervised import normalize_messages
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
@@ -1257,6 +1258,31 @@ def test_generation_prompt_parity(tokenizer, renderer, messages):
         f"Token mismatch:\n"
         f"  HF text:   {tokenizer.decode(hf)!r}\n"
         f"  ours text: {tokenizer.decode(ours)!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    GLM5_SERVERLESS_PROMPT_TOKEN_CASES,
+    ids=[case["name"] for case in GLM5_SERVERLESS_PROMPT_TOKEN_CASES],
+)
+def test_generation_prompt_matches_recorded_fireworks_serverless_prompt_ids(
+    tokenizer,
+    renderer_keep_thinking,
+    case,
+):
+    """Recorded serverless IDs keep prompt parity covered without Fireworks."""
+    messages = normalize_messages(case["messages"])
+    ours = _renderer_generation_tokens(renderer_keep_thinking, messages)
+    expected = [int(token_id) for token_id in case["prompt_token_ids"]]
+
+    assert ours == expected, (
+        f"{case['name']} token mismatch against recorded Fireworks serverless "
+        "prompt_token_ids:\n"
+        f"  expected: {expected}\n"
+        f"  ours:     {ours}\n"
+        f"  expected text: {tokenizer.decode(expected)!r}\n"
+        f"  ours text:     {tokenizer.decode(ours)!r}"
     )
 
 
