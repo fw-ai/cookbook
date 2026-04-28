@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Train a multi-turn rollout using ``TrajectoryAssembler``.
 
-Mirrors :mod:`training.examples.ep_remote_grader.train` but the rollout
+Mirrors :mod:`training.examples.rl.ep_remote_grader.train` but the rollout
 service is a plain Fireworks Completions client driven by the assembler
 -- no EP dependency.  The interesting code lives in :mod:`.rollout`.
 

@@ -33,12 +33,12 @@ replace ``EPService()`` below.  Nothing else changes.
 Run::
 
     export FIREWORKS_API_KEY=...
-    python -m training.examples.ep_remote_grader.train
+    python -m training.examples.rl.ep_remote_grader.train
 """
 
 from __future__ import annotations
 
-from training.examples.ep_remote_grader.ep_service import EPService, _grade
+from training.examples.rl.ep_remote_grader.ep_service import EPService, _grade
 from training.recipes.async_rl_loop import Config, main
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.rollout_service import RolloutPayload

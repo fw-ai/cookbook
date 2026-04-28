@@ -9,7 +9,7 @@ loss_mask is just ``[0]*prompt_len + [1]*completion_len``.
 Run::
 
     export FIREWORKS_API_KEY=...
-    python -m training.examples.gsm8k_async.train
+    python -m training.examples.rl.gsm8k_async.train
 """
 
 from __future__ import annotations

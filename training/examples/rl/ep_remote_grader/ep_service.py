@@ -35,8 +35,8 @@ from typing import Any, List
 
 from eval_protocol import EvaluationRow, Message
 
-from training.examples.ep_remote_grader.grader import test_math_answer_eval
-from training.examples.ep_remote_grader.mock_agent import (
+from training.examples.rl.ep_remote_grader.grader import test_math_answer_eval
+from training.examples.rl.ep_remote_grader.mock_agent import (
     MockCompletion,
     remote_agent_complete,
 )
