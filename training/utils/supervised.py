@@ -763,6 +763,56 @@ def _build_rendered_supervised_datum(
     )
 
 
+_SPLIT_REQUIRED_TRAINING_MODES = {
+    TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    TrainOnWhat.ALL_MESSAGES,
+    TrainOnWhat.ALL_TOKENS,
+    TrainOnWhat.ALL_USER_AND_SYSTEM_MESSAGES,
+    TrainOnWhat.CUSTOMIZED,
+}
+
+
+def _requires_renderer_supervised_examples(
+    renderer: Renderer,
+    messages: list[Message],
+    train_on_what: TrainOnWhat,
+) -> bool:
+    """Whether rendering must use the renderer's multi-example dispatcher."""
+    if getattr(renderer, "has_extension_property", False):
+        return False
+    if train_on_what not in _SPLIT_REQUIRED_TRAINING_MODES:
+        return False
+    return sum(1 for message in messages if message["role"] == "user") > 1
+
+
+def _build_renderer_supervised_examples(
+    renderer: Renderer,
+    messages: list[Message],
+    train_on_what: TrainOnWhat,
+) -> list[tuple[Any, Any]]:
+    if _requires_renderer_supervised_examples(renderer, messages, train_on_what):
+        build_supervised_examples = getattr(renderer, "build_supervised_examples", None)
+        if build_supervised_examples is None:
+            raise TypeError(
+                f"{type(renderer).__name__} has has_extension_property=False and "
+                f"cannot safely render train_on_what={train_on_what.value!r} without "
+                "build_supervised_examples."
+            )
+        return list(
+            build_supervised_examples(
+                messages,
+                train_on_what=train_on_what,
+            )
+        )
+
+    return [
+        renderer.build_supervised_example(
+            messages,
+            train_on_what=train_on_what,
+        )
+    ]
+
+
 def render_messages_to_datums(
     messages: Sequence[Mapping[str, Any]],
     *,
@@ -771,38 +821,17 @@ def render_messages_to_datums(
     max_seq_len: int | None = None,
     include_loss_mask: bool = False,
 ) -> list[RenderedSupervisedDatum]:
-    """Render a chat row, splitting multi-turn targets when the renderer supports it."""
+    """Render a chat row, splitting multi-target rows when required."""
     normalized_messages = normalize_messages(messages)
     effective_train_on_what = parse_train_on_what(train_on_what)
     if any("trainable" in m for m in normalized_messages):
         effective_train_on_what = TrainOnWhat.CUSTOMIZED
 
-    examples: list[tuple[Any, Any]]
-    if (
-        effective_train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
-        and not getattr(renderer, "has_extension_property", False)
-    ):
-        try:
-            examples = list(
-                renderer.build_supervised_examples(
-                    normalized_messages,
-                    train_on_what=effective_train_on_what,
-                )
-            )
-        except (AttributeError, NotImplementedError):
-            examples = [
-                renderer.build_supervised_example(
-                    normalized_messages,
-                    train_on_what=effective_train_on_what,
-                )
-            ]
-    else:
-        examples = [
-            renderer.build_supervised_example(
-                normalized_messages,
-                train_on_what=effective_train_on_what,
-            )
-        ]
+    examples = _build_renderer_supervised_examples(
+        renderer,
+        normalized_messages,
+        effective_train_on_what,
+    )
 
     return [
         _build_rendered_supervised_datum(

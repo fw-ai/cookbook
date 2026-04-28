@@ -234,6 +234,55 @@ def test_render_messages_to_datums_uses_renderer_split_for_all_assistant_message
     assert renderer.calls[0][1] == TrainOnWhat.ALL_ASSISTANT_MESSAGES
 
 
+def test_render_messages_to_datums_uses_renderer_split_for_weighted_rows():
+    renderer = SplitRenderer()
+
+    rendered = render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1", "weight": 0},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    normalized_messages, train_on_what = renderer.calls[0]
+    assert len(rendered) == 2
+    assert [example.token_ids for example in rendered] == [[10, 11, 12], [20, 21, 22]]
+    assert train_on_what == TrainOnWhat.CUSTOMIZED
+    assert [message["trainable"] for message in normalized_messages] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+
+
+def test_render_messages_to_datums_fails_fast_without_split_implementation():
+    class UnimplementedSplitRenderer:
+        has_extension_property = False
+
+        def build_supervised_examples(self, messages, train_on_what):
+            raise NotImplementedError("split rendering is required")
+
+        def build_supervised_example(self, messages, train_on_what):
+            raise AssertionError("should not fall back to a single datum")
+
+    with pytest.raises(NotImplementedError, match="split rendering is required"):
+        render_messages_to_datums(
+            [
+                {"role": "user", "content": "u1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "u2"},
+                {"role": "assistant", "content": "a2"},
+            ],
+            renderer=UnimplementedSplitRenderer(),
+            train_on_what="all_assistant_messages",
+        )
+
+
 def test_normalize_messages_supports_openai_tool_call_shape():
     normalized = normalize_messages(
         [

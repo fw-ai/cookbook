@@ -25,6 +25,8 @@ def _patch_resume(monkeypatch, resume_info):
 
 
 class StubRenderer:
+    has_extension_property = True
+
     def __init__(self, tokens: list[int], weights: list[float]):
         self.tokens = torch.tensor(tokens, dtype=torch.int64)
         self.weights = torch.tensor(weights, dtype=torch.float32)
