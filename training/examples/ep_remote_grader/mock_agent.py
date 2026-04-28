@@ -4,7 +4,7 @@ Stands in for any production agent framework: a chain-of-tools pipeline,
 a RAG-with-verifier stack, an LLM-as-judge loop.  Returns ``n``
 *token-native* completions concurrently -- the same shape a production
 service must emit to drive RL training.  See
-``https://github.com/fw-ai/fireworks/issues/23512`` for the EP-side
+``https://github.com/fw-ai/fireworks/issues/23756`` for the EP-side
 work that lets ``RemoteRolloutProcessor`` produce this shape from real
 inference traces.
 

@@ -23,7 +23,7 @@ Wiring:
 EP today emits text-only traces; the cookbook trainer is token-native
 only.  This example uses the mock agent's synthetic token IDs to
 demonstrate the target shape.  See
-``https://github.com/fw-ai/fireworks/issues/23512`` for the EP-side
+``https://github.com/fw-ai/fireworks/issues/23756`` for the EP-side
 work that wires the trace pipeline to emit per-call ``token_ids`` +
 per-token assistant ``logprobs`` so ``RemoteRolloutProcessor`` can
 drive RL training without a re-tokenization step.

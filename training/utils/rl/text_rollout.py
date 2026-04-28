@@ -23,7 +23,7 @@ with the tokens fed to the trainer.  AReaL and slime both refuse to
 do it; this packer follows the same rule.  Services that today only
 have text -- including EP's RemoteRolloutProcessor -- need to grow a
 token-native trace before they can drive RL training; see
-``https://github.com/fw-ai/fireworks/issues/23512``.
+``https://github.com/fw-ai/fireworks/issues/23756``.
 
 Reward
 ------

@@ -24,7 +24,12 @@ re-tokenization silently misaligns the loss mask and inference
 logprobs.  Services that today only emit text (e.g. EP's
 ``RemoteRolloutProcessor``) must grow a token-native trace before they
 can drive RL training; see
-``https://github.com/fw-ai/fireworks/issues/23512``.
+``https://github.com/fw-ai/fireworks/issues/23756``.
+
+Use :class:`training.utils.rl.trajectory_assembler.TrajectoryAssembler`
+to build :class:`RolloutPayload` from multi-turn engine calls.  It
+carries the AReaL prefix-equality invariant for free and sets
+``_assembled=True`` so the packer skips its defensive check.
 """
 
 from __future__ import annotations
@@ -79,6 +84,11 @@ class RolloutPayload:
     wrong token IDs."""
     finish_reason: str = "stop"
     extras: dict = field(default_factory=dict)
+    _assembled: bool = False
+    """Set by :class:`TrajectoryAssembler.to_payload`.  Tells the packer
+    that the per-turn ``token_ids`` were stitched with the prefix-equality
+    invariant already enforced, so the defensive consistency check can be
+    skipped.  Hand-built payloads default to ``False`` and get the check."""
 
 
 class RolloutService(Protocol):

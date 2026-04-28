@@ -43,6 +43,12 @@ __all__ = [
     "RolloutService",
     "TurnRecord",
     "make_text_rollout_fn",
+    # Multi-turn assembly
+    "InferenceCall",
+    "PrefixMismatch",
+    "TrajectoryAssembler",
+    "extract_completion",
+    "precompute_chat_suffix",
 ]
 
 from training.utils.rl.pp import PPBatchRecommendation, compute_pp_recommendation
@@ -81,3 +87,9 @@ from training.utils.rl.rollout_service import (
     TurnRecord,
 )
 from training.utils.rl.text_rollout import make_text_rollout_fn
+from training.utils.rl.trajectory_assembler import (
+    InferenceCall,
+    PrefixMismatch,
+    TrajectoryAssembler,
+)
+from training.utils.rl.rollout_helpers import extract_completion, precompute_chat_suffix
