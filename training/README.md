@@ -29,12 +29,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12
 source .venv/bin/activate
 
-# Install the Fireworks training SDK prerelease that provides
-# `fireworks.training.sdk`.
-uv pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook
-
-# Install this package in editable mode
-uv pip install -e .
+# Install this package in editable mode.
+# Dependencies, including the Fireworks training SDK, are pulled from pyproject.toml.
+uv pip install --pre -e .
 
 # If you skip `--pre`, pip may resolve to the stable `0.x` line,
 # which does not include `fireworks.training.sdk` and will cause

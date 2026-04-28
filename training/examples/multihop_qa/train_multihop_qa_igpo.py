@@ -7,7 +7,7 @@ to finish.  IG scoring uses the ground-truth answer as the ``answer_tokens``
 and fires in parallel with generation via ``turn_callback``.
 
 Usage:
-    pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol datasets
+    Follow the setup instructions in ../../README.md.
     python prepare_data.py                     # download HotpotQA → dataset.jsonl
     python train_multihop_qa_igpo.py --training-shape <shape_id> --output-model-id <id>
 """

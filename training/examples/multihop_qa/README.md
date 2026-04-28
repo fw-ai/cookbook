@@ -40,11 +40,9 @@ This keeps the trainer exclusively for `forward_backward` and avoids GPU batchin
 
 ## Quick start
 
-### 1. Install dependencies
+### 1. Set up environment
 
-```bash
-pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol datasets httpx
-```
+Follow the setup instructions in [../../README.md](../../README.md).
 
 ### 2. Prepare dataset
 

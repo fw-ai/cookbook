@@ -8,7 +8,7 @@ Demonstrates reinforcement learning with multi-turn tool-calling:
     it falls back to the client-side custom loss path
 
 Usage:
-    pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol
+    Follow the setup instructions in ../../../README.md.
     export FIREWORKS_API_KEY=...
     python train_frozen_lake.py --training-shape <shape_id>
 """

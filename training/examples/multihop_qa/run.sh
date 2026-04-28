@@ -4,7 +4,7 @@ set -euo pipefail
 # Multi-hop QA IGPO training example.
 #
 # Prerequisites:
-#   pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol datasets
+#   Follow the setup instructions in ../../README.md.
 #   export FIREWORKS_API_KEY=...
 #
 # Step 1: Prepare dataset (downloads HotpotQA hard questions from HuggingFace)
