@@ -15,10 +15,12 @@ replace the ``fwd_bwd_one`` body with ``resolve_builtin_loss`` +
 ``build_builtin_loss_datums`` + ``policy.forward_backward``; see
 ``training/recipes/rl_loop.py`` for the dual-path pattern.
 
-The recipe is intentionally stripped-down: no resume, no intra-training
-checkpoint ladder, no orchestrator telemetry, no pre-training hotload.
-Fork it and add whatever your production harness needs on top; see
-``training/examples/`` for working scaffolds.
+Resume + checkpoint-ladder semantics mirror :mod:`training.recipes.rl_loop`:
+``init_from_checkpoint`` / ``warm_start_from_adapter`` for cold start,
+``dcp_save_interval`` for periodic resumable saves, plus a final
+resumable + promotable save (with optional ``output_model_id`` promote)
+on clean exit.  See :class:`training.utils.checkpoints.TrainingCheckpoints`
+for the semantic axes (resumable vs promotable).
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ from training.utils import (
     validate_config,
     wandb_log,
 )
-from training.utils.checkpoint_utils import CheckpointKind, save_checkpoint
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup, setup_infra
 from training.utils.rl.async_train import run_async_rl_loop
 from training.utils.rl.cispo import CISPOConfig
@@ -117,6 +119,20 @@ class Config:
     weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
 
+    init_from_checkpoint: str | None = None
+    """Resume from a prior checkpoint.  Bare name resumes from this trainer's
+    own history.  ``"job_id:checkpoint_name"`` resumes across trainer jobs."""
+    warm_start_from_adapter: str | None = None
+    """LoRA-only cold start from a HuggingFace adapter (no resume state).
+    Mutually exclusive with ``init_from_checkpoint``.  Requires ``lora_rank > 0``."""
+    save_final_checkpoint: bool = True
+    """Save a resumable+promotable checkpoint at the end of training."""
+    output_model_id: str | None = None
+    """When set on a clean final save, promote the latest checkpoint to this
+    model id (4-segment ``accounts/<acct>/models/<id>`` form)."""
+    policy_job_id: str | None = None
+    """Reuse an existing policy trainer job (e.g. when resuming)."""
+
 
 @dataclass
 class RolloutContext:
@@ -163,6 +179,11 @@ def main(
         raise ValueError("deployment.tokenizer_model is required.")
 
     validate_config(cfg.base_model, cfg.dataset or "", cfg.weight_sync, cfg.deployment)
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
     setup_wandb(
         cfg.wandb,
         {
@@ -195,12 +216,14 @@ def main(
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
+            policy_job_id=cfg.policy_job_id,
             needs_reference=(cfg.kl_beta > 0),
             needs_inference=True,
             role_prefix="rl-async",
             api_key=api_key,
             cleanup=None,
         )
+        policy_job_id = infra.policy_job_id
         for closeable in infra.closeables:
             stack.callback(closeable.close)
 
@@ -236,11 +259,38 @@ def main(
             lora_rank=cfg.lora_rank,
         )
 
-        current_version = 0
+        ckpt = TrainingCheckpoints(
+            policy,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
+        )
+        step_offset = resume_info.step if resume_info else 0
+        if step_offset:
+            logger.info("Resuming from step %d", step_offset)
+            wandb_log({"train/step": step_offset}, step_offset)
+
+        if cfg.weight_sync.weight_sync_before_training and infra.deployment_id:
+            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
+            weight_syncer.save_and_hotload(name, checkpoint_type="base")
+
+        current_version = step_offset
 
         if rows is None:
             raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
             rows = raw_dataset * cfg.epochs
+
+        # On resume, skip rows that fed prior optimizer steps.  One optim step
+        # per ``prompt_groups_per_step`` accepted groups; rejected groups don't
+        # count, so this is best-effort and assumes a stable row order.
+        if step_offset > 0:
+            rows = rows[step_offset * cfg.prompt_groups_per_step :]
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         client_loss_builder = build_loss_fn(
@@ -355,10 +405,43 @@ def main(
                 weight_syncer.save_and_hotload(f"step-{step}")
             current_version = step
 
+        def _data_consumed_at(step: int) -> int:
+            """Best-effort accepted-rollouts count given the optim-step counter.
+
+            Async loop does one optim step per ``prompt_groups_per_step``
+            accepted groups (no minibatching), so the count is just
+            ``step * prompt_groups_per_step`` plus whatever was consumed
+            before the resume.
+            """
+            prior = resume_info.data_consumed if resume_info else 0
+            this_run = max(0, step - step_offset) * cfg.prompt_groups_per_step
+            return prior + this_run
+
+        def _maybe_periodic_save(step: int) -> None:
+            interval = cfg.weight_sync.dcp_save_interval
+            if interval <= 0 or step <= step_offset:
+                return
+            rollouts_completed = step - step_offset
+            if rollouts_completed % interval != 0:
+                return
+            logger.info("[step %d] dcp_save...", step)
+            t0 = _time.time()
+            try:
+                ckpt.save(
+                    f"step-{step}",
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=_data_consumed_at(step),
+                )
+                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
+            except Exception as e:
+                logger.warning("[step %d] dcp_save failed: %s", step, e)
+
         def _metrics_cb(loop_metrics: dict) -> None:
             for k, v in concurrency_controller.step_completed().items():
                 loop_metrics[f"concurrency/{k}"] = v
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
+            _maybe_periodic_save(loop_metrics.get("train/step", 0))
 
         global_step = asyncio.run(
             run_async_rl_loop(
@@ -370,15 +453,21 @@ def main(
                 weight_sync_interval=cfg.weight_sync_interval,
                 max_concurrent=cfg.sample_max_concurrency,
                 dynamic_filter_fn=dynamic_filter_fn,
+                global_step=step_offset,
                 metrics_callback=_metrics_cb,
             )
         )
 
-        if global_step > 0:
-            save_checkpoint(
-                policy, f"step-{global_step}", cfg.log_path,
-                {"step": global_step},
-                kind=CheckpointKind.BOTH,
-                base_model=cfg.base_model,
-                training_shape=infra.training_shape_id,
-            )
+        if cfg.save_final_checkpoint and global_step > step_offset:
+            cp_name = f"step-{global_step}"
+            try:
+                ckpt.save(
+                    cp_name,
+                    resumable=True,
+                    promotable=True,
+                    data_consumed=_data_consumed_at(global_step),
+                )
+                if cfg.output_model_id:
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
+            except Exception as e:
+                logger.warning("Failed to save final checkpoint: %s", e)
