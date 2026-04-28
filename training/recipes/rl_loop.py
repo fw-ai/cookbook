@@ -62,12 +62,7 @@ from training.utils import (
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
-from training.utils.checkpoint_utils import (
-    resolve_resume,
-    save_checkpoint,
-    validate_warm_start_config,
-    CheckpointKind,
-)
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup, setup_infra
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
@@ -442,6 +437,14 @@ def main(
             lora_rank=cfg.lora_rank,
         )
 
+        ckpt = TrainingCheckpoints(
+            policy,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
         logger.info(
             "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
             prompt_groups_per_step,
@@ -450,11 +453,9 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(
-            policy,
-            cfg.log_path,
-            cfg.init_from_checkpoint,
-            cfg.warm_start_from_adapter,
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
@@ -743,18 +744,11 @@ def main(
                 data_consumed = (resume_info.data_consumed if resume_info else 0) + (
                     rollouts_completed * prompt_groups_per_step
                 )
-                save_checkpoint(
-                    policy,
+                ckpt.save(
                     f"step-{step}",
-                    cfg.log_path,
-                    {
-                        "step": step,
-                        "data_consumed": data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
-                    kind=CheckpointKind.STATE,
-                    base_model=cfg.base_model,
-                    training_shape=infra.training_shape_id,
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=data_consumed,
                 )
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
@@ -852,27 +846,15 @@ def main(
                     _rollouts_this_run * prompt_groups_per_step
                 )
                 cp_name = f"step-{global_step}"
-                paths = save_checkpoint(
-                    policy,
+                ckpt.save(
                     cp_name,
-                    cfg.log_path,
-                    {
-                        "step": global_step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
-                    kind=CheckpointKind.BOTH,
-                    base_model=cfg.base_model,
-                    training_shape=infra.training_shape_id,
+                    resumable=True,
+                    promotable=True,
+                    data_consumed=_data_consumed,
                 )
 
                 if getattr(cfg, "output_model_id", None):
-                    rlor_mgr.promote_checkpoint(
-                        policy_job_id,
-                        paths["sampler_path"],
-                        cfg.output_model_id,
-                        cfg.base_model,
-                    )
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                     runner.write_output_model(
                         model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                     )

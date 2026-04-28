@@ -10,6 +10,7 @@ from training.utils.losses import (
     make_batch_orpo_loss_fn,
     make_batch_weighted_sft_loss_fn,
     make_orpo_loss_fn,
+    make_sft_loss_fn,
 )
 from training.utils.rl.common import _normalize_prompt_lens
 from training.utils.rl.gspo import GSPOConfig
@@ -349,3 +350,101 @@ class TestWeightedSFTLoss:
 
         assert torch.allclose(loss_batch, loss_a + loss_b, atol=1e-5)
         assert metrics["microbatch_count"] == 2
+
+
+class TestDPOResponseStartOffByOne:
+    """DPO loss must include the first response token's logprob.
+
+    `logprobs[i]` predicts `token[i+1]`, so a response that starts at
+    index ``response_start`` has its first-token prediction at
+    ``logprobs[response_start - 1]``. A naive slice ``lp[response_start:]``
+    drops the most discriminating token between chosen and rejected.
+    ORPO uses ``lp_start = max(0, response_start - 1)``; DPO must agree.
+    """
+
+    def test_dpo_loss_includes_first_response_token(self) -> None:
+        """chosen=[A, B, C] vs rejected=[A, B, D] with response_start=2.
+
+        The only differing token is the last one. With the buggy slice
+        ``lp[2:]`` the differing logprob is dropped and the margin collapses
+        to 0.
+        """
+        chosen_logprobs = torch.tensor([-0.1, -0.1], dtype=torch.float32)
+        rejected_logprobs = torch.tensor([-0.1, -2.0], dtype=torch.float32)
+        ref_chosen = [-0.5, -1.0]
+        ref_rejected = [-0.5, -1.0]
+        response_start = 2
+
+        loss_fn = make_batch_dpo_loss_fn(
+            [ref_chosen], [ref_rejected], [response_start], beta=0.1,
+        )
+        _, metrics = loss_fn([None, None], [chosen_logprobs, rejected_logprobs])
+
+        assert metrics["margin"] != pytest.approx(0.0, abs=1e-6), (
+            "DPO margin is 0 because the first response token's logprob was sliced away. "
+            "Fix: use `lp_start = max(0, response_start - 1)` (mirroring make_batch_orpo_loss_fn)."
+        )
+        assert metrics["margin"] > 0.0, (
+            f"Policy strongly favors chosen over rejected on the only differing token, "
+            f"so DPO margin should be positive. Got margin={metrics['margin']:.4f}."
+        )
+
+    def test_dpo_and_orpo_agree_on_preferred_direction(self) -> None:
+        """Given identical inputs, DPO and ORPO should both identify chosen as preferred."""
+        chosen_logprobs = torch.tensor([-0.1, -0.1], dtype=torch.float32)
+        rejected_logprobs = torch.tensor([-0.1, -2.0], dtype=torch.float32)
+        ref_chosen = [-0.5, -1.0]
+        ref_rejected = [-0.5, -1.0]
+        response_start = 2
+
+        dpo_loss = make_batch_dpo_loss_fn(
+            [ref_chosen], [ref_rejected], [response_start], beta=0.1,
+        )
+        _, dpo_metrics = dpo_loss(
+            [None, None], [chosen_logprobs.clone(), rejected_logprobs.clone()],
+        )
+
+        orpo_loss = make_batch_orpo_loss_fn([response_start], orpo_lambda=1.0)
+        _, orpo_metrics = orpo_loss(
+            [None, None], [chosen_logprobs.clone(), rejected_logprobs.clone()],
+        )
+
+        assert orpo_metrics["log_odds_ratio"] > 0.0, (
+            "Sanity check: ORPO should prefer chosen; if this fails, the test setup is wrong."
+        )
+        assert dpo_metrics["accuracy"] == orpo_metrics["accuracy"], (
+            f"DPO and ORPO disagree on preferred direction "
+            f"(dpo_acc={dpo_metrics['accuracy']}, orpo_acc={orpo_metrics['accuracy']}). "
+            "Root cause: DPO's logprob slice is off by one relative to ORPO's."
+        )
+
+
+class TestSFTLossResponseStartOffByOne:
+    """`make_sft_loss_fn` had the same off-by-one as DPO — its response-start
+    slice must start at ``max(0, response_start - 1)`` so the first response
+    token's prediction is counted."""
+
+    def test_single_sample_sft_loss_includes_first_response_token(self) -> None:
+        """Full sequence [A, B, C] with response_start=2 (response is just "C").
+
+        target_tokens=[B, C], logprobs=[logp(B|A), logp(C|A,B)].
+
+        Expected loss: -logp(C|A,B) = 1.0.
+        Buggy code slices ``lp[2:]`` which is empty and returns 0.0.
+        """
+        target_tokens = [10, 20]  # B, C
+        response_start = 2
+        logprobs = torch.tensor([0.0, -1.0], dtype=torch.float32)
+
+        loss_fn = make_sft_loss_fn(response_start, target_tokens)
+        loss, metrics = loss_fn([None], [logprobs])
+
+        assert metrics["response_tokens"] == 1, (
+            f"response_start=2 covers exactly 1 response token in a length-3 sequence; "
+            f"got {metrics['response_tokens']}"
+        )
+        assert loss.item() == pytest.approx(1.0, abs=1e-5), (
+            f"SFT single-sample loss dropped the first response token's logprob. "
+            f"Expected CE=1.0 (from logp(C|A,B)=-1.0), got {loss.item():.4f}. "
+            "Fix: use `lp_start = max(0, response_start - 1)` (same fix as DPO)."
+        )

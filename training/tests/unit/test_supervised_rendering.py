@@ -12,6 +12,7 @@ from training.utils.data import prepare_sampling_messages
 from training.utils.supervised import (
     build_renderer,
     build_datum_from_token_mask,
+    populate_render_worker_state,
     resolve_renderer_name,
     render_preference_pair,
     normalize_messages,
@@ -324,6 +325,140 @@ def test_normalize_messages_rejects_non_string_reasoning_content():
         )
 
 
+def test_normalize_messages_translates_weight_zero_to_trainable_false():
+    """Fireworks V1 SFT datasets mark context-only assistant messages with
+    ``weight=0``. Without translating that to Tinker's ``trainable`` field,
+    ``train_on_what=all_assistant_messages`` silently trains on every
+    assistant — including the context-only ones — which teaches thinking
+    models to emit empty ``<think></think>`` for the majority of turns
+    because historical assistants on Kimi/Qwen3/DeepSeek-thinking are
+    rendered with their thinking stripped."""
+    normalized = normalize_messages(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "ctx", "weight": 0},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "train me"},
+        ]
+    )
+
+    assert normalized[0]["trainable"] is False  # user
+    assert normalized[1]["trainable"] is False  # weight=0
+    assert normalized[2]["trainable"] is False  # user
+    assert normalized[3]["trainable"] is True  # weight absent -> assistant default
+
+
+def test_normalize_messages_translates_weight_one_to_trainable_true():
+    """``weight=1`` (explicit trainable marker) must map to ``trainable=True``."""
+    normalized = normalize_messages(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1", "weight": 1},
+        ]
+    )
+
+    assert normalized[1]["trainable"] is True
+
+
+def test_normalize_messages_prefers_explicit_trainable_over_weight():
+    """If both ``trainable`` and ``weight`` are set, ``trainable`` wins."""
+    normalized = normalize_messages(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a", "weight": 1, "trainable": False},
+        ]
+    )
+
+    assert normalized[1]["trainable"] is False
+
+
+def test_normalize_messages_does_not_add_trainable_when_no_weight_or_trainable():
+    """Datasets without ``weight``/``trainable`` on any message must not
+    gain a ``trainable`` field, so renderers still see a back-compatible
+    schema and default ``train_on_what`` modes keep working unchanged."""
+    normalized = normalize_messages(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+    )
+
+    assert "trainable" not in normalized[0]
+    assert "trainable" not in normalized[1]
+
+
+def test_normalize_messages_rejects_non_numeric_weight():
+    """Non-numeric ``weight`` values must raise TypeError to avoid silently
+    accepting garbage data."""
+    with pytest.raises(TypeError):
+        normalize_messages(
+            [
+                {"role": "assistant", "content": "a", "weight": "yes"},
+            ]
+        )
+
+
+def test_render_messages_to_datum_auto_switches_to_customized_when_weight_set():
+    """When the dataset marks messages with ``weight`` / ``trainable``,
+    ``render_messages_to_datum`` must auto-promote ``train_on_what`` to
+    ``CUSTOMIZED`` so the renderer honors the per-message flag. Otherwise
+    the legacy V1 SFT convention (``weight=0`` means "context only")
+    silently degrades into "train on everything" on the V2 path."""
+
+    class RecordingRenderer:
+        def __init__(self):
+            self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+        def build_supervised_example(self, messages, train_on_what):
+            self.calls.append((list(messages), train_on_what))
+            return (
+                torch.tensor([1, 2, 3, 4], dtype=torch.int64),
+                torch.tensor([0, 0, 1, 1], dtype=torch.float32),
+            )
+
+    renderer = RecordingRenderer()
+    render_messages_to_datum(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a", "weight": 0},
+            {"role": "assistant", "content": "b"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+    _, resolved_train_on_what = renderer.calls[0]
+    assert resolved_train_on_what == TrainOnWhat.CUSTOMIZED
+
+
+def test_render_messages_to_datum_keeps_default_train_on_what_without_weight():
+    """Without ``weight``/``trainable`` anywhere in the conversation, the
+    caller-specified ``train_on_what`` must flow through unchanged — this
+    preserves back-compat for datasets that don't use the V1 field."""
+
+    class RecordingRenderer:
+        def __init__(self):
+            self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+        def build_supervised_example(self, messages, train_on_what):
+            self.calls.append((list(messages), train_on_what))
+            return (
+                torch.tensor([1, 2, 3, 4], dtype=torch.int64),
+                torch.tensor([0, 0, 1, 1], dtype=torch.float32),
+            )
+
+    renderer = RecordingRenderer()
+    render_messages_to_datum(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+    _, resolved_train_on_what = renderer.calls[0]
+    assert resolved_train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+
 def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
     calls: list[tuple[str, object | None]] = []
 
@@ -601,3 +736,59 @@ def test_prepare_sampling_messages_only_strips_trailing_assistant():
     )
 
     assert [m["role"] for m in prepared] == ["system", "user", "assistant", "user"]
+
+
+# ---------------------------------------------------------------------------
+# populate_render_worker_state
+# ---------------------------------------------------------------------------
+
+
+def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
+    """Common keys (tokenizer, renderer, max_seq_len) plus extras land in state."""
+    from training.utils import supervised as sup
+
+    fake_tokenizer = object()
+    fake_renderer = object()
+    monkeypatch.setattr(
+        sup.transformers.AutoTokenizer, "from_pretrained",
+        lambda model, **kwargs: fake_tokenizer,
+    )
+    monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: fake_renderer)
+
+    state: dict = {}
+    populate_render_worker_state(
+        state,
+        tokenizer_model="acme/llama",
+        renderer_name="llama-3",
+        max_seq_len=4096,
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+        custom_extra="hello",
+    )
+
+    assert state["tokenizer"] is fake_tokenizer
+    assert state["renderer"] is fake_renderer
+    assert state["max_seq_len"] == 4096
+    assert state["train_on_what"] == TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    assert state["custom_extra"] == "hello"
+
+
+def test_populate_render_worker_state_uses_trust_remote_code(monkeypatch):
+    """trust_remote_code=True is required for Kimi / Qwen image processors."""
+    from training.utils import supervised as sup
+
+    captured: dict = {}
+
+    def fake_from_pretrained(model, **kwargs):
+        captured.update(model=model, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        sup.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
+    )
+    monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: object())
+
+    populate_render_worker_state(
+        {}, tokenizer_model="m", renderer_name="r", max_seq_len=1,
+    )
+    assert captured["model"] == "m"
+    assert captured["kwargs"].get("trust_remote_code") is True

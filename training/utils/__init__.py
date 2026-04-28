@@ -33,12 +33,17 @@ _warnings.filterwarnings(
 del _warnings
 
 __all__ = [
+    "AppendOnlyPickleLog",
     "DEFAULT_ADAM",
+    "DEFAULT_PREFETCH_FACTOR",
+    "DEFAULT_RENDER_WORKERS",
     "DeployConfig",
     "EvalFn",
     "WeightSyncConfig",
     "WeightSyncScope",
     "InfraConfig",
+    "JsonlRenderDataset",
+    "MemTracer",
     "ReconnectableClient",
     "ResourceCleanup",
     "RewardFn",
@@ -59,15 +64,18 @@ __all__ = [
     "encode_text",
     "extract_text",
     "find_common_prefix_length",
+    "iter_preference_examples",
     "load_jsonl_dataset",
     "load_preference_dataset",
     "log_metrics_json",
+    "make_render_dataloader",
     "make_orpo_loss_fn",
     "make_batch_orpo_loss_fn",
     "make_batch_dpo_loss_fn",
     "make_batch_sft_loss_fn",
     "make_batch_weighted_sft_loss_fn",
     "make_sft_loss_fn",
+    "normalize_preference_row",
     "RenderedSupervisedDatum",
     "RenderedPreferencePair",
     "build_next_token_datum",
@@ -76,6 +84,7 @@ __all__ = [
     "build_renderer",
     "normalize_messages",
     "parse_train_on_what",
+    "populate_render_worker_state",
     "render_preference_pair",
     "render_messages_to_datum",
     "resolve_renderer_name",
@@ -99,9 +108,11 @@ from training.utils.data import (
     encode_text,
     extract_text,
     compute_advantages,
+    iter_preference_examples,
     load_jsonl_dataset,
     load_preference_dataset,
     find_common_prefix_length,
+    normalize_preference_row,
     prepare_sampling_messages,
 )
 from training.utils.infra import (
@@ -153,6 +164,7 @@ from training.utils.supervised import (
     build_renderer,
     normalize_messages,
     parse_train_on_what,
+    populate_render_worker_state,
     render_preference_pair,
     render_messages_to_datum,
     resolve_renderer_name,
@@ -165,4 +177,12 @@ from training.utils.logging import (
     compute_pass_at_k,
 )
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
+from training.utils.streaming import (
+    AppendOnlyPickleLog,
+    DEFAULT_PREFETCH_FACTOR,
+    DEFAULT_RENDER_WORKERS,
+    JsonlRenderDataset,
+    make_render_dataloader,
+)
+from training.utils.memlog import MemTracer
 from training.utils.validation import validate_config, validate_preflight

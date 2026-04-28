@@ -60,12 +60,7 @@ from training.utils import (
     prepare_sampling_messages,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.checkpoint_utils import (
-    resolve_resume,
-    save_checkpoint,
-    validate_warm_start_config,
-    CheckpointKind,
-)
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
@@ -421,12 +416,18 @@ def main(
             dcp_timeout=cfg.weight_sync.dcp_timeout,
         )
 
-        # Resume
-        resume_info = resolve_resume(
+        ckpt = TrainingCheckpoints(
             policy,
-            cfg.log_path,
-            cfg.init_from_checkpoint,
-            cfg.warm_start_from_adapter,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
+        # Resume
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step_offset = resume_info.step if resume_info else 0
 
@@ -733,10 +734,11 @@ def main(
                 _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
                     step - step_offset
                 ) * prompt_groups_per_step
-                save_checkpoint(
-                    policy, f"step-{step}", cfg.log_path,
-                    {"step": step, "data_consumed": _data_consumed, "source_job_id": policy_job_id},
-                    kind=CheckpointKind.STATE,
+                ckpt.save(
+                    f"step-{step}",
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=_data_consumed,
                 )
 
             # 6. Metrics
@@ -805,13 +807,14 @@ def main(
                     global_step - step_offset
                 ) * prompt_groups_per_step
                 cp_name = f"step-{global_step}"
-                paths = save_checkpoint(
-                    policy, cp_name, cfg.log_path,
-                    {"step": global_step, "data_consumed": _data_consumed, "source_job_id": policy_job_id},
-                    kind=CheckpointKind.BOTH,
+                ckpt.save(
+                    cp_name,
+                    resumable=True,
+                    promotable=True,
+                    data_consumed=_data_consumed,
                 )
                 if getattr(cfg, "output_model_id", None):
-                    rlor_mgr.promote_checkpoint(policy_job_id, paths["sampler_path"], cfg.output_model_id)
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                     runner.write_output_model(model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id)
             except Exception as e:
                 logger.warning("Final checkpoint failed: %s", e)

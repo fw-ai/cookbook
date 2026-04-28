@@ -1,10 +1,15 @@
 """Verify GLM5Renderer matches HuggingFace apply_chat_template output.
 
-The GLM-5.1 tokenizer isn't yet on the public HuggingFace Hub, so this
-test loads it from a local path when available and skips otherwise. The
-canonical chat template (also used by GLM-4.5 / GLM-4.6) is embedded
-below as a raw string so the test is self-contained and doesn't depend
-on the fireworks internal repo.
+Loads the public ``zai-org/GLM-5.1`` tokenizer (which ships the canonical
+chat template for GLM-5.1) and checks that every supported renderer
+output matches what ``tokenizer.apply_chat_template`` produces
+byte-for-byte, modulo the intentional training EOS on the terminal
+assistant message. Falls back to a local tokenizer path when the
+HuggingFace Hub isn't reachable (e.g. internal CI).
+
+The ``zai-org/GLM-5.1-FP8`` repo ships an identical tokenizer + chat
+template (verified: byte-for-byte equal). We use the bf16 repo here
+because it's the canonical architecture reference.
 
 Run from cookbook/training with:
     PYTHONPATH=../.. python -m pytest training/tests/unit/test_glm5_renderer.py -v -s
@@ -20,113 +25,43 @@ import transformers
 from training.renderer.glm5 import GLM5Renderer
 from tinker_cookbook.renderers.base import TrainOnWhat
 
-# Local tokenizer path (fireworks internal). Falls back to skipping if absent.
+# Public HF tokenizer (ships the canonical GLM-5.1 chat template).
+_PUBLIC_TOKENIZER = "zai-org/GLM-5.1"
+# Optional local fallback path used when the HF Hub isn't reachable. The
+# tokenizer loaded here must also ship a chat_template attribute equivalent
+# to the one on ``zai-org/GLM-5.1``; otherwise the parity tests will flag
+# any drift, which is the intended behaviour.
 _LOCAL_TOKENIZER = "/home/yinghanma/ws2/fireworks/py/fireworks/test/serving/text/tokenizers/glm5"
 
-# Canonical GLM chat template. Applies to GLM-4.5, GLM-4.6, and GLM-5.1 —
-# they share the same role delimiters (<|user|>, <|assistant|>, etc.)
-# and thinking-block convention.
-_GLM_CHAT_TEMPLATE = r"""[gMASK]<sop>
-{%- if tools -%}
-<|system|>
-# Tools
 
-You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{% for tool in tools %}
-{{ tool | tojson(ensure_ascii=False) }}
-{% endfor %}
-</tools>
-
-For each function call, output the function name and arguments within the following XML format:
-<tool_call>{function-name}
-<arg_key>{arg-key-1}</arg_key>
-<arg_value>{arg-value-1}</arg_value>
-<arg_key>{arg-key-2}</arg_key>
-<arg_value>{arg-value-2}</arg_value>
-...
-</tool_call>{%- endif -%}
-{%- macro visible_text(content) -%}
-    {%- if content is string -%}
-        {{- content }}
-    {%- elif content is iterable and content is not mapping -%}
-        {%- for item in content -%}
-            {%- if item is mapping and item.type == 'text' -%}
-                {{- item.text }}
-            {%- elif item is string -%}
-                {{- item }}
-            {%- endif -%}
-        {%- endfor -%}
-    {%- else -%}
-        {{- content }}
-    {%- endif -%}
-{%- endmacro -%}
-{%- set ns = namespace(last_user_index=-1) %}
-{%- for m in messages %}
-    {%- if m.role == 'user' %}
-        {% set ns.last_user_index = loop.index0 -%}
-    {%- endif %}
-{%- endfor %}
-{% for m in messages %}
-{%- if m.role == 'user' -%}<|user|>
-{{ visible_text(m.content) }}
-{{- '/nothink' if (enable_thinking is defined and not enable_thinking and not visible_text(m.content).endswith("/nothink")) else '' -}}
-{%- elif m.role == 'assistant' -%}
-<|assistant|>
-{%- set reasoning_content = '' %}
-{%- set content = visible_text(m.content) %}
-{%- if m.reasoning_content is string %}
-    {%- set reasoning_content = m.reasoning_content %}
-{%- else %}
-    {%- if '</think>' in content %}
-        {%- set reasoning_content = content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') %}
-        {%- set content = content.split('</think>')[-1].lstrip('\n') %}
-    {%- endif %}
-{%- endif %}
-{%- if loop.index0 > ns.last_user_index and reasoning_content -%}
-{{ '\n<think>' + reasoning_content.strip() +  '</think>'}}
-{%- else -%}
-{{ '\n<think></think>' }}
-{%- endif -%}
-{%- if content.strip() -%}
-{{ '\n' + content.strip() }}
-{%- endif -%}
-{%- elif m.role == 'tool' -%}
-{%- if m.content is string -%}
-{%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}
-    {{- '<|observation|>' }}
-{%- endif %}
-{{- '\n<tool_response>\n' }}
-{{- m.content }}
-{{- '\n</tool_response>' }}
-{%- else -%}
-<|observation|>{% for tr in m.content %}
-
-<tool_response>
-{{ tr.output if tr.output is defined else tr }}
-</tool_response>{% endfor -%}
-{% endif -%}
-{%- elif m.role == 'system' -%}
-<|system|>
-{{ visible_text(m.content) }}
-{%- endif -%}
-{%- endfor -%}
-{%- if add_generation_prompt -%}
-    <|assistant|>{{- '\n<think></think>' if (enable_thinking is defined and not enable_thinking) else '' -}}
-{%- endif -%}
-"""
+def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
+    """Try the public tokenizer first, fall back to a local checkout."""
+    try:
+        return transformers.AutoTokenizer.from_pretrained(
+            _PUBLIC_TOKENIZER, trust_remote_code=True,
+        )
+    except Exception:  # noqa: BLE001 — network / auth / missing chat_template
+        pass
+    if Path(_LOCAL_TOKENIZER).exists():
+        return transformers.AutoTokenizer.from_pretrained(
+            _LOCAL_TOKENIZER, trust_remote_code=True,
+        )
+    return None
 
 
 @pytest.fixture(scope="module")
 def tokenizer():
-    if not Path(_LOCAL_TOKENIZER).exists():
-        pytest.skip(f"GLM-5.1 tokenizer not available at {_LOCAL_TOKENIZER}")
-    tok = transformers.AutoTokenizer.from_pretrained(
-        _LOCAL_TOKENIZER, trust_remote_code=True,
-    )
-    tok.chat_template = _GLM_CHAT_TEMPLATE
+    tok = _load_tokenizer()
+    if tok is None:
+        pytest.skip(
+            f"GLM-5.1 tokenizer not available (tried {_PUBLIC_TOKENIZER!r} "
+            f"and {_LOCAL_TOKENIZER!r})"
+        )
+    if not getattr(tok, "chat_template", None):
+        pytest.skip(
+            "Loaded GLM-5.1 tokenizer has no chat_template; cannot compare "
+            "against apply_chat_template output."
+        )
     return tok
 
 
@@ -135,14 +70,23 @@ def renderer(tokenizer):
     return GLM5Renderer(tokenizer, strip_thinking_from_history=True)
 
 
-def _hf_tokens(tokenizer, messages, add_generation_prompt: bool) -> list[int]:
+@pytest.fixture(scope="module")
+def renderer_keep_thinking(tokenizer):
+    """Renderer with ``strip_thinking_from_history=False``."""
+    return GLM5Renderer(tokenizer, strip_thinking_from_history=False)
+
+
+def _hf_tokens(tokenizer, messages, add_generation_prompt: bool, **kwargs) -> list[int]:
     """Tokenize via the HF jinja template, returning a plain list of ints.
 
     apply_chat_template(tokenize=True) returns a BatchEncoding in newer
     transformers and a list in older ones — normalize to a list either way.
+    Extra ``kwargs`` (e.g. ``enable_thinking``, ``clear_thinking``) are
+    forwarded to apply_chat_template.
     """
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=add_generation_prompt,
+        **kwargs,
     )
     return tokenizer.encode(text, add_special_tokens=False)
 
@@ -223,11 +167,30 @@ def test_generation_prompt_multi_turn_history(tokenizer, renderer):
     assert ours == hf
 
 
+def test_generation_prompt_system_only(tokenizer, renderer):
+    """System message only + generation prompt (no user message)."""
+    messages = [{"role": "system", "content": "You are helpful."}]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    ours = _renderer_generation_tokens(renderer, messages)
+    assert ours == hf
+
+
+def test_generation_prompt_after_tool(tokenizer, renderer):
+    """Generation prompt when the last message is a tool response."""
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "content": "sunny, 72F"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    ours = _renderer_generation_tokens(renderer, messages)
+    assert ours == hf
+
+
 # ── Supervised examples (trailing EOS expected on our side) ─────────────────
 
 
 def test_supervised_single_turn_no_thinking(tokenizer, renderer):
-    """Single user → assistant without explicit thinking."""
+    """Single user -> assistant without explicit thinking."""
     messages = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "bye"},
@@ -238,7 +201,7 @@ def test_supervised_single_turn_no_thinking(tokenizer, renderer):
 
 
 def test_supervised_single_turn_with_thinking(tokenizer, renderer):
-    """Single user → assistant with reasoning content."""
+    """Single user -> assistant with reasoning content."""
     messages = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "<think>reason</think>\nbye"},
@@ -301,13 +264,35 @@ def test_supervised_long_content(tokenizer, renderer):
     _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
 
 
+def test_supervised_empty_assistant_content(tokenizer, renderer):
+    """Assistant message with empty string content — only think block emitted."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": ""},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+def test_supervised_whitespace_only_assistant_content(tokenizer, renderer):
+    """Assistant content with only whitespace — stripped to empty."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "   "},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
 # ── History thinking collapse ───────────────────────────────────────────────
 
 
 def test_history_thinking_collapses_to_empty(tokenizer, renderer):
     """Assistant turns BEFORE the last user should have thinking stripped.
 
-    Template rule (Jinja line 60–64):
+    Template rule (Jinja line 60-64):
       If loop.index0 > ns.last_user_index AND reasoning_content:
           emit the reasoning
       else:
@@ -358,11 +343,54 @@ def test_history_no_thinking_in_source(tokenizer, renderer):
     _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
 
 
+def test_history_first_has_thinking_second_does_not(tokenizer, renderer):
+    """u-a(thinking)-u-a(no thinking): historical turn collapsed, terminal
+    gets empty <think></think>."""
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "<think>thinking</think>a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+def test_history_first_no_thinking_second_has_thinking(tokenizer, renderer):
+    """u-a(no thinking)-u-a(thinking): historical collapsed, terminal keeps."""
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "<think>thinking</think>a2"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+def test_history_three_turn_middle_has_thinking(tokenizer, renderer):
+    """u-a-u-a-u-a: three assistant turns. First two are historical (collapsed),
+    third is terminal and keeps its reasoning."""
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "<think>deep thought</think>a2"},
+        {"role": "user", "content": "q3"},
+        {"role": "assistant", "content": "<think>final reasoning</think>a3"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
 # ── Tool / observation rendering ────────────────────────────────────────────
 
 
 def test_tool_observation_message(tokenizer, renderer):
-    """Single tool (observation) message — matches <|observation|>\n<tool_response>..."""
+    """Single tool (observation) message."""
     messages = [
         {"role": "user", "content": "weather?"},
         {"role": "tool", "content": "sunny, 72F"},
@@ -370,6 +398,61 @@ def test_tool_observation_message(tokenizer, renderer):
     hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
     ours = _renderer_generation_tokens(renderer, messages)
     assert ours == hf
+
+
+def test_consecutive_tool_messages_observation_dedup(tokenizer, renderer):
+    """Consecutive tool messages: only the first gets <|observation|> tag.
+
+    The Jinja template checks ``loop.first or (messages[loop.index0-1].role
+    != 'tool')`` — subsequent tool messages omit the <|observation|> tag
+    and just emit <tool_response>...</tool_response>.
+    """
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "content": "sunny"},
+        {"role": "tool", "content": "windy"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    ours = _renderer_generation_tokens(renderer, messages)
+    assert ours == hf
+
+
+def test_three_consecutive_tool_messages(tokenizer, renderer):
+    """Three tool messages in a row — only first gets <|observation|>."""
+    messages = [
+        {"role": "user", "content": "check all"},
+        {"role": "tool", "content": "result1"},
+        {"role": "tool", "content": "result2"},
+        {"role": "tool", "content": "result3"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    ours = _renderer_generation_tokens(renderer, messages)
+    assert ours == hf
+
+
+def test_tool_then_assistant_then_tool(tokenizer, renderer):
+    """Non-consecutive tool messages each get their own <|observation|>."""
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "tool", "content": "first result"},
+        {"role": "assistant", "content": "got it"},
+        {"role": "tool", "content": "second result"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    ours = _renderer_generation_tokens(renderer, messages)
+    assert ours == hf
+
+
+def test_supervised_tool_user_assistant(tokenizer, renderer):
+    """Supervised: user -> tool -> assistant."""
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "content": "sunny, 72F"},
+        {"role": "assistant", "content": "It's sunny and 72F."},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
 
 
 # ── Structured content (list of {"type": "text", ...}) ─────────────────────
@@ -386,6 +469,102 @@ def test_structured_text_content_user(tokenizer, renderer):
     _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
 
 
+def test_structured_text_content_multi_parts(tokenizer, renderer):
+    """Multiple {type:text} items concatenated."""
+    messages = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "part1"},
+            {"type": "text", "text": "part2"},
+        ]},
+        {"role": "assistant", "content": "ack"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+# ── System message variations ───────────────────────────────────────────────
+
+
+def test_multiple_system_messages(tokenizer, renderer):
+    """Two system messages in the conversation."""
+    messages = [
+        {"role": "system", "content": "sys1"},
+        {"role": "user", "content": "q1"},
+        {"role": "system", "content": "sys2"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a1"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+def test_system_mid_conversation(tokenizer, renderer):
+    """System message appearing after a user-assistant exchange."""
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "system", "content": "new instructions"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+# ── strip_thinking_from_history=False (clear_thinking=False) ────────────────
+
+
+def test_keep_thinking_in_history(tokenizer, renderer_keep_thinking):
+    """With strip_thinking_from_history=False, historical reasoning is preserved.
+
+    Maps to the Jinja ``clear_thinking=False`` branch: historical assistant
+    turns emit ``<think>{reasoning}</think>`` instead of ``</think>``.
+    """
+    messages = [
+        {"role": "user", "content": "What is 2+2?"},
+        {"role": "assistant", "content": "<think>2+2=4</think>4"},
+        {"role": "user", "content": "What about 3+3?"},
+        {"role": "assistant", "content": "<think>3+3=6</think>6"},
+    ]
+    hf = _hf_tokens(
+        tokenizer, messages, add_generation_prompt=False, clear_thinking=False,
+    )
+    ours, _ = _renderer_supervised_tokens(renderer_keep_thinking, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+def test_keep_thinking_history_no_thinking_source(tokenizer, renderer_keep_thinking):
+    """strip_thinking_from_history=False with no thinking in source content."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "bye"},
+        {"role": "assistant", "content": "see ya"},
+    ]
+    hf = _hf_tokens(
+        tokenizer, messages, add_generation_prompt=False, clear_thinking=False,
+    )
+    ours, _ = _renderer_supervised_tokens(renderer_keep_thinking, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)
+
+
+def test_keep_thinking_generation_prompt(tokenizer, renderer_keep_thinking):
+    """Generation prompt with strip_thinking_from_history=False."""
+    messages = [
+        {"role": "user", "content": "What is 2+2?"},
+        {"role": "assistant", "content": "<think>2+2=4</think>4"},
+        {"role": "user", "content": "What about 3+3?"},
+    ]
+    hf = _hf_tokens(
+        tokenizer, messages, add_generation_prompt=True, clear_thinking=False,
+    )
+    ours = _renderer_generation_tokens(renderer_keep_thinking, messages)
+    assert ours == hf
+
+
 # ── Weight mask correctness (independent of HF parity) ──────────────────────
 
 
@@ -393,8 +572,9 @@ def test_weight_mask_only_covers_assistant_output(tokenizer, renderer):
     """Every non-zero-weight position must decode to an assistant-output token.
 
     Specifically: the trained span for the last assistant turn should be
-    <think></think>\n{content}<|endoftext|> — covering the ``\\n`` and the
-    trailing EOS.
+    ``<think></think>{content}<|endoftext|>`` — matching the shipped
+    Jinja template layout (no leading newline, no newline between the
+    think block and the content) plus the intentional trailing EOS.
     """
     messages = [
         {"role": "user", "content": "What is the secret password?"},
@@ -409,8 +589,8 @@ def test_weight_mask_only_covers_assistant_output(tokenizer, renderer):
     trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
     trained_text = tokenizer.decode(trained_tokens)
 
-    # Should start with '\n<think></think>' and end with the EOS token.
-    assert trained_text.startswith("\n<think></think>"), trained_text
+    # Should start with '<think></think>' (no leading newline) and end with EOS.
+    assert trained_text.startswith("<think></think>"), trained_text
     assert tokens[-1] == _eos(tokenizer), "last token must be <|endoftext|>"
     assert "ALPHA-BRAVO" in trained_text
 
@@ -433,6 +613,40 @@ def test_weight_mask_multi_turn_covers_all_assistant_turns(tokenizer, renderer):
     assert "u2" not in trained
 
 
+def test_weight_mask_with_thinking(tokenizer, renderer):
+    """Trained span includes the thinking block for terminal turns."""
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "<think>my reasoning</think>answer"},
+    ]
+    tokens, weights = _renderer_supervised_tokens(renderer, messages)
+    trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
+    trained_text = tokenizer.decode(trained_tokens)
+
+    assert "<think>my reasoning</think>" in trained_text
+    assert "answer" in trained_text
+    assert "q" not in trained_text
+
+
+def test_weight_mask_historical_turn_collapsed(tokenizer, renderer):
+    """Trained span of a historical turn uses collapsed form (</think>)."""
+    messages = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "<think>long reasoning</think>a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    tokens, weights = _renderer_supervised_tokens(renderer, messages)
+    trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
+    trained_text = tokenizer.decode(trained_tokens)
+
+    assert "a1" in trained_text
+    assert "a2" in trained_text
+    assert "long reasoning" not in trained_text
+    assert "u1" not in trained_text
+    assert "u2" not in trained_text
+
+
 # ── Renderer API surface ────────────────────────────────────────────────────
 
 
@@ -449,12 +663,23 @@ def test_stop_sequences_returns_eos(tokenizer, renderer):
 
 
 def test_generation_suffix_is_role_tag(tokenizer, renderer):
-    """Generation suffix for role=assistant must decode to '<|assistant|>'."""
+    """Generation suffix for role=assistant must match the shipped Jinja.
+
+    The shipped GLM-5.1 chat template emits ``<|assistant|><think>`` when
+    ``add_generation_prompt=True`` and ``enable_thinking`` is not explicitly
+    false. The renderer default matches that thinking-mode prompt so
+    trained models can continue generating the reasoning block.
+    """
     from tinker_cookbook.renderers.base import RenderContext
 
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
     suffix = renderer._get_generation_suffix("assistant", ctx)
-    assert tokenizer.decode(suffix) == "<|assistant|>"
+    assert tokenizer.decode(suffix) == "<|assistant|><think>"
+
+    # Non-assistant roles still decode to just the role tag (unchanged).
+    for role in ("user", "system"):
+        suffix = renderer._get_generation_suffix(role, ctx)
+        assert tokenizer.decode(suffix) == f"<|{role}|>"
 
 
 def test_parse_response_roundtrip(tokenizer, renderer):
@@ -479,3 +704,150 @@ def test_parse_response_no_stop_token(tokenizer, renderer):
     ids = tokenizer.encode(simulated, add_special_tokens=False)
     _, ok = renderer.parse_response(ids)
     assert ok is False
+
+
+def test_parse_response_empty_thinking(tokenizer, renderer):
+    """parse_response with empty think block extracts content correctly."""
+    simulated = "<think></think>just the answer"
+    ids = tokenizer.encode(simulated, add_special_tokens=False) + [_eos(tokenizer)]
+    message, ok = renderer.parse_response(ids)
+    assert ok is True
+    content = message["content"]
+    text = content if isinstance(content, str) else "".join(
+        p.get("text", "") for p in content if p.get("type") == "text"
+    )
+    assert "just the answer" in text
+
+
+# ── Parametrized parity: generation prompt shapes ───────────────────────────
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [{"role": "user", "content": "Hello"}],
+        [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+        ],
+        [
+            {"role": "user", "content": "What is 2+2?"},
+            {"role": "assistant", "content": "<think>2+2=4</think>4"},
+            {"role": "user", "content": "What about 3+3?"},
+        ],
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "bye"},
+            {"role": "assistant", "content": "goodbye"},
+            {"role": "user", "content": "one more"},
+        ],
+        [{"role": "user", "content": "line one\nline two\nline three"}],
+        [{"role": "user", "content": "```python\nprint('hi')\n```"}],
+        [
+            {"role": "system", "content": "Réponds en français."},
+            {"role": "user", "content": "Bonjour 👋"},
+        ],
+        [{"role": "system", "content": "You are helpful."}],
+        [
+            {"role": "user", "content": "q"},
+            {"role": "tool", "content": "result"},
+        ],
+    ],
+    ids=[
+        "user_only",
+        "system_user",
+        "multi_turn_history",
+        "five_turn_conversation",
+        "multiline_content",
+        "code_block",
+        "unicode_emoji",
+        "system_only",
+        "user_tool",
+    ],
+)
+def test_generation_prompt_parity(tokenizer, renderer, messages):
+    """Parametrized: renderer generation tokens match HF byte-for-byte."""
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
+    ours = _renderer_generation_tokens(renderer, messages)
+    assert ours == hf, (
+        f"Token mismatch:\n"
+        f"  HF text:   {tokenizer.decode(hf)!r}\n"
+        f"  ours text: {tokenizer.decode(ours)!r}"
+    )
+
+
+# ── Parametrized parity: supervised shapes ──────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "bye"},
+        ],
+        [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "<think>reason</think>answer"},
+        ],
+        [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
+        ],
+        [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "<think>r1</think>a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "<think>r2</think>a2"},
+        ],
+        [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "q3"},
+            {"role": "assistant", "content": "a3"},
+        ],
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": ""},
+        ],
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "   "},
+        ],
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "<think>thought 1</think>\nReply 1"},
+            {"role": "assistant", "content": "<think>thought 2</think>\nReply 2"},
+        ],
+        [
+            {"role": "user", "content": "q"},
+            {"role": "tool", "content": "result"},
+            {"role": "assistant", "content": "answer"},
+        ],
+        [
+            {"role": "user", "content": [{"type": "text", "text": "structured"}]},
+            {"role": "assistant", "content": "ack"},
+        ],
+    ],
+    ids=[
+        "simple_pair",
+        "with_thinking",
+        "system_user_assistant",
+        "multi_turn_thinking",
+        "three_turn_no_thinking",
+        "empty_content",
+        "whitespace_content",
+        "two_assistants_after_user",
+        "tool_then_assistant",
+        "structured_content",
+    ],
+)
+def test_supervised_parity(tokenizer, renderer, messages):
+    """Parametrized: supervised tokens match HF byte-for-byte (modulo EOS)."""
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours, _ = _renderer_supervised_tokens(renderer, messages)
+    _assert_parity_modulo_trailing_eos(ours, hf, tokenizer, expect_eos=True)

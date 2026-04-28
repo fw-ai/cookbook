@@ -64,7 +64,7 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 For full-parameter training, the first sampler save is `base` (full weights, ~16 GB for 8B). Subsequent saves are `delta` (XOR diff, ~10× smaller). `WeightSyncer` manages this automatically — users don't pick per-step.
 
 - LoRA always saves the full adapter regardless of `checkpoint_type` — every LoRA sampler checkpoint is promotable.
-- Full-param `delta` saves are **not** promotable. Only `base` saves are. `CheckpointKind` enum + save helpers: `training/utils/checkpoint_utils.py`.
+- Full-param `delta` saves are **not** promotable. Only `base` saves are. The cookbook's `TrainingCheckpoints.save(promotable=True)` always emits a `base` save, so periodic promotables stay promotable. `WeightSyncer.save_and_hotload` switches to `delta` after the first call — those are still visible in `list_checkpoints` and `promote_latest` will pick the most-recent **promotable** row.
 
 ## `dcp_save_interval` for resume
 
@@ -138,7 +138,7 @@ client.promote_checkpoint(
 
 The server parses the trainer id out of `name` and reads `dbJob.HotLoadBucketUrl` as the single source of truth — which was populated at trainer-create time regardless of which scope was used. No `trainer_job_id`, no `checkpoint_id` split, no `hot_load_deployment_id` guess.
 
-The old local-`checkpoints.jsonl` + `promote_checkpoint.py --hot-load-deployment-id` path is no longer needed: the API covers both scopes. It remains in the repo only for deployments that predate the stored-bucket-URL migration; new runs should not use it.
+The legacy `promote_checkpoint.py --hot-load-deployment-id` flag is no longer needed: the API covers both scopes. It remains for deployments that predate the stored-bucket-URL migration; new runs should not use it (passing it now emits a `DeprecationWarning`). The cookbook also no longer writes a `checkpoints.jsonl` registry — the control plane is the source of truth.
 
 ## Bucket mismatch: trainer wrote to a different bucket than the deployment watches
 

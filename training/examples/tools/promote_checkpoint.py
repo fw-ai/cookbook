@@ -2,40 +2,45 @@
 # ruff: noqa: E402
 """Promote a sampler checkpoint to a deployable Fireworks model.
 
-Reads ``checkpoints.jsonl`` (produced by cookbook recipes), finds the
-sampler checkpoint ID and source trainer job, and calls the promotion
-API.  No temporary trainer is needed — promotion is a lightweight
-metadata + file-copy operation that works even after the trainer job
-has been deleted.
+Queries the control plane for the trainer job's checkpoints
+(``FireworksClient.list_checkpoints``), picks the newest promotable
+row (or a specific one if ``--checkpoint-name`` is given), and calls
+the promotion API. No temporary trainer is needed — promotion is a
+lightweight metadata + file-copy operation that works even after the
+trainer job has been deleted.
 
 Usage:
     export FIREWORKS_API_KEY=...
 
-    # Promote the latest checkpoint:
-    python promote_checkpoint.py \
-        --checkpoints-jsonl ./sft_logs/checkpoints.jsonl
+    # Promote the newest promotable checkpoint on a job:
+    python promote_checkpoint.py \\
+        --job-id <trainer-job-id> \\
+        --base-model accounts/fireworks/models/qwen3-8b
 
-    # Promote a specific step:
-    python promote_checkpoint.py \
-        --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
-        --step 10
+    # Promote a specific checkpoint. ``step-50`` matches both an exact
+    # row stored as ``step-50`` and one stored as ``step-50-a1b2c3d4``
+    # (sampler rows get an 8-hex session suffix appended server-side).
+    python promote_checkpoint.py \\
+        --job-id <trainer-job-id> \\
+        --checkpoint-name step-50 \\
+        --base-model accounts/fireworks/models/qwen3-8b
 
-    # Override base model and output model ID:
-    python promote_checkpoint.py \
-        --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
-        --model accounts/fireworks/models/qwen3-8b \
+    # Override the auto-generated output model ID:
+    python promote_checkpoint.py \\
+        --job-id <trainer-job-id> \\
+        --base-model accounts/fireworks/models/qwen3-8b \\
         --output-model-id my-fine-tuned-qwen3-8b
 
     # Legacy jobs that used deployment-owned checkpoints:
-    python promote_checkpoint.py \
-        --checkpoints-jsonl ./sft_logs/checkpoints.jsonl \
+    python promote_checkpoint.py \\
+        --job-id <trainer-job-id> \\
+        --base-model accounts/fireworks/models/qwen3-8b \\
         --hot-load-deployment-id my-deployment
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import re
@@ -51,7 +56,8 @@ _COOKBOOK_ROOT = os.path.abspath(
 if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
-from fireworks.training.sdk import TrainerJobManager
+from fireworks.training.sdk import FireworksClient, TrainerJobManager
+from training.utils.checkpoints import _logical_name, _short_name
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,19 +71,18 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class PromoteConfig:
-    checkpoints_jsonl: str
-    step: int | None
-    base_model: str | None
+    job_id: str
+    checkpoint_name: str | None
+    base_model: str
     output_model_id: str | None
     hot_load_deployment_id: str | None
 
 
 @dataclass(frozen=True)
 class ResolvedCheckpoint:
-    checkpoint_name: str
-    sampler_path: str
-    source_job_id: str
-    base_model: str | None = None
+    full_name: str             # 4-segment resource name
+    short_name: str            # trailing checkpoint id (for log lines only)
+    source_job_id: str         # for log lines only
 
 
 def parse_args() -> PromoteConfig:
@@ -85,23 +90,26 @@ def parse_args() -> PromoteConfig:
         description="Promote a sampler checkpoint to a deployable Fireworks model",
     )
     parser.add_argument(
-        "--checkpoints-jsonl",
+        "--job-id",
         required=True,
-        help="Path to cookbook checkpoints.jsonl.",
+        help="RLOR trainer job ID that produced the checkpoint (the short ID, "
+             "not the full resource name).",
     )
     parser.add_argument(
-        "--step",
-        type=int,
+        "--checkpoint-name",
         default=None,
-        help="Training step to promote. Defaults to the latest checkpoint.",
+        help="Specific checkpoint name to promote. Matches both the exact "
+             "name (e.g. 'step-50-a1b2c3d4') and the logical name "
+             "(e.g. 'step-50' matches a row stored as 'step-50-a1b2c3d4'). "
+             "Defaults to the newest promotable checkpoint.",
     )
     parser.add_argument(
+        "--base-model",
         "--model",
-        default=None,
-        help=(
-            "Base model for metadata inheritance. "
-            "Auto-detected from checkpoint metadata when omitted."
-        ),
+        dest="base_model",
+        required=True,
+        help="Base model resource name for metadata inheritance "
+             "(e.g. accounts/fireworks/models/qwen3-8b).",
     )
     parser.add_argument(
         "--output-model-id",
@@ -121,11 +129,53 @@ def parse_args() -> PromoteConfig:
     )
     args = parser.parse_args()
     return PromoteConfig(
-        checkpoints_jsonl=args.checkpoints_jsonl,
-        step=args.step,
-        base_model=args.model,
+        job_id=args.job_id,
+        checkpoint_name=args.checkpoint_name,
+        base_model=args.base_model,
         output_model_id=args.output_model_id,
         hot_load_deployment_id=args.hot_load_deployment_id,
+    )
+
+
+def _resolve_checkpoint(
+    fw_client: FireworksClient,
+    job_id: str,
+    *,
+    checkpoint_name: str | None,
+) -> ResolvedCheckpoint:
+    rows = fw_client.list_checkpoints(job_id)
+    promotable = sorted(
+        (r for r in rows if r.get("promotable")),
+        key=lambda r: r.get("createTime", ""),
+        reverse=True,
+    )
+    if not promotable:
+        raise SystemExit(
+            f"ERROR: no promotable checkpoints found on trainer job '{job_id}'.\n"
+            "  Run `python list_checkpoints.py --job-id <job-id>` to see all rows.\n"
+            "  Promotable rows have checkpointType in (INFERENCE_BASE, INFERENCE_LORA)."
+        )
+
+    if checkpoint_name is None:
+        chosen = promotable[0]
+    else:
+        target_logical = _logical_name(checkpoint_name)
+        matches = [
+            r for r in promotable
+            if _short_name(r["name"]) == checkpoint_name
+            or _logical_name(_short_name(r["name"])) == target_logical
+        ]
+        if not matches:
+            raise SystemExit(
+                f"ERROR: no promotable checkpoint named '{checkpoint_name}' on job '{job_id}'."
+            )
+        # Newest among matches (handles multiple sampler saves at the same logical name).
+        chosen = matches[0]
+
+    return ResolvedCheckpoint(
+        full_name=chosen["name"],
+        short_name=_short_name(chosen["name"]),
+        source_job_id=job_id,
     )
 
 
@@ -133,57 +183,6 @@ def _sanitize_resource_id(value: str, *, default: str) -> str:
     cleaned = re.sub(r"[^a-z0-9-]+", "-", value.lower())
     cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-")
     return cleaned or default
-
-
-def _load_checkpoint_entries(checkpoints_jsonl: str) -> list[dict]:
-    entries: list[dict] = []
-    with open(checkpoints_jsonl) as f:
-        for line_no, raw_line in enumerate(f, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Could not parse {checkpoints_jsonl}:{line_no} as JSON"
-                ) from exc
-            if not isinstance(entry, dict):
-                raise ValueError(
-                    f"Expected a JSON object at {checkpoints_jsonl}:{line_no}"
-                )
-            entries.append(entry)
-    if not entries:
-        raise ValueError(f"No checkpoint entries found in {checkpoints_jsonl}")
-    return entries
-
-
-def _resolve_checkpoint(
-    checkpoints_jsonl: str,
-    step: int | None,
-) -> ResolvedCheckpoint:
-    entries = _load_checkpoint_entries(checkpoints_jsonl)
-    candidates = [e for e in entries if e.get("sampler_path") and e.get("source_job_id")]
-    if not candidates:
-        raise SystemExit(
-            "ERROR: No checkpoint entries with sampler_path and source_job_id found.\n"
-            "Ensure checkpoints were saved with CheckpointKind.BOTH (the default in cookbook recipes)."
-        )
-
-    if step is not None:
-        matches = [e for e in candidates if e.get("step") == step]
-        if not matches:
-            raise SystemExit(f"ERROR: Step {step} not found in {checkpoints_jsonl}")
-        chosen = matches[-1]
-    else:
-        chosen = candidates[-1]
-
-    return ResolvedCheckpoint(
-        checkpoint_name=str(chosen.get("name", chosen["sampler_path"])),
-        sampler_path=chosen["sampler_path"],
-        source_job_id=chosen["source_job_id"],
-        base_model=chosen.get("base_model"),
-    )
 
 
 def _default_output_model_id(base_model: str, checkpoint_name: str) -> str:
@@ -196,26 +195,24 @@ def _default_output_model_id(base_model: str, checkpoint_name: str) -> str:
 
 def main() -> None:
     cfg = parse_args()
-    resolved = _resolve_checkpoint(cfg.checkpoints_jsonl, cfg.step)
-
-    base_model = cfg.base_model or resolved.base_model
-    if not base_model:
-        raise SystemExit(
-            "ERROR: --model is required (checkpoint has no base_model metadata).\n"
-            "  --model accounts/fireworks/models/<model-name>"
-        )
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-    client = TrainerJobManager(api_key=api_key, base_url=base_url)
+    fw_client = FireworksClient(api_key=api_key, base_url=base_url)
+    trainer_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
 
-    output_model_id = cfg.output_model_id or _default_output_model_id(
-        base_model, resolved.checkpoint_name,
+    resolved = _resolve_checkpoint(
+        fw_client,
+        cfg.job_id,
+        checkpoint_name=cfg.checkpoint_name,
     )
 
-    logger.info("Checkpoint:      %s", resolved.sampler_path)
-    logger.info("Source job:      %s", resolved.source_job_id)
-    logger.info("Base model:      %s", base_model)
+    output_model_id = cfg.output_model_id or _default_output_model_id(
+        cfg.base_model, resolved.short_name,
+    )
+
+    logger.info("Checkpoint:      %s", resolved.full_name)
+    logger.info("Base model:      %s", cfg.base_model)
     logger.info("Output model ID: %s", output_model_id)
     if cfg.hot_load_deployment_id:
         logger.warning(
@@ -226,17 +223,19 @@ def main() -> None:
         )
         logger.info("Deployment ID:   %s (legacy)", cfg.hot_load_deployment_id)
 
-    model = client.promote_checkpoint(
-        resolved.source_job_id,
-        resolved.sampler_path,
-        output_model_id,
-        base_model,
+    # Pass the 4-segment resource name verbatim — no manual disassembly
+    # into (job_id, checkpoint_id). See the public docs page on saving
+    # and loading for the full promote API contract.
+    model = trainer_mgr.promote_checkpoint(
+        name=resolved.full_name,
+        output_model_id=output_model_id,
+        base_model=cfg.base_model,
         hot_load_deployment_id=cfg.hot_load_deployment_id,
     )
 
     logger.info(
         "Promoted model: %s",
-        model.get("name", f"accounts/{client.account_id}/models/{output_model_id}"),
+        model.get("name", f"accounts/{trainer_mgr.account_id}/models/{output_model_id}"),
     )
     logger.info(
         "Model state=%s kind=%s",

@@ -502,8 +502,15 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
             step=0,
         )
 
-        from training.utils.checkpoint_utils import resolve_resume
-        resume_info = resolve_resume(policy, cfg.log_path)
+        from training.utils.checkpoints import TrainingCheckpoints
+        ckpt = TrainingCheckpoints(
+            policy,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+        resume_info = ckpt.resume()
         step_offset = resume_info.step if resume_info else 0
         if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
             weight_syncer._deployment_checked = True
@@ -867,15 +874,15 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     and step % weight_sync_cfg.dcp_save_interval == 0
                 ):
                     with timer("dcp_save"):
-                        from training.utils.checkpoint_utils import save_checkpoint as _save_cp, CheckpointKind
                         _data_consumed = (
                             (resume_info.data_consumed if resume_info else 0)
                             + (step - step_offset) * prompt_groups_per_step
                         )
-                        _save_cp(
-                            policy, f"step-{step}", cfg.log_path,
-                            {"step": step, "data_consumed": _data_consumed, "source_job_id": policy_job_id},
-                            kind=CheckpointKind.STATE,
+                        ckpt.save(
+                            f"step-{step}",
+                            resumable=True,
+                            promotable=False,
+                            data_consumed=_data_consumed,
                         )
 
                 metrics = compute_step_metrics(
@@ -959,25 +966,14 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     _data_consumed = (
                         resume_info.data_consumed if resume_info else 0
                     ) + (global_step - step_offset) * prompt_groups_per_step
-                    from training.utils.checkpoint_utils import save_checkpoint
-
-                    paths = save_checkpoint(
-                        policy,
+                    ckpt.save(
                         cp_name,
-                        cfg.log_path,
-                        {
-                            "step": global_step,
-                            "data_consumed": _data_consumed,
-                            "source_job_id": policy_job_id,
-                        },
-                        kind="both",
+                        resumable=True,
+                        promotable=True,
+                        data_consumed=_data_consumed,
                     )
                     if getattr(cfg, "output_model_id", None):
-                        rlor_mgr.promote_checkpoint(
-                            policy_job_id,
-                            paths["sampler_path"],
-                            cfg.output_model_id,
-                        )
+                        ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 except Exception as e:
                     logger.warning("Failed to save final checkpoint: %s", e)
                 logger.info("Training complete: %d steps", global_step)

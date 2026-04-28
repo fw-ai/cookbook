@@ -4,30 +4,35 @@ Four standalone scripts live in `training/examples/tools/`. Each does one operat
 
 ## `promote_checkpoint.py`
 
-Promote a sampler checkpoint to a deployable Fireworks model.
+Promote a sampler checkpoint to a deployable Fireworks model. Queries the control plane directly via `list_checkpoints(job_id)` — no `checkpoints.jsonl` needed (and none is written; that legacy registry was removed when the cookbook moved to the CP-as-source-of-truth model).
 
 ```bash
-# Promote the latest promotable row
+# Promote the newest promotable checkpoint on a trainer job
 python training/examples/tools/promote_checkpoint.py \
-    --checkpoints-jsonl ./my_training/checkpoints.jsonl
+    --job-id <trainer-job-id> \
+    --base-model accounts/fireworks/models/qwen3-8b
 
-# Promote a specific step
+# Promote a specific checkpoint. `step-50` matches both an exact row
+# and one stored as `step-50-<8-hex-session-suffix>`.
 python training/examples/tools/promote_checkpoint.py \
-    --checkpoints-jsonl ./my_training/checkpoints.jsonl \
-    --step 50
+    --job-id <trainer-job-id> \
+    --checkpoint-name step-50 \
+    --base-model accounts/fireworks/models/qwen3-8b
 
 # Override the generated model id (always ≤63 chars, [a-z0-9-])
 python training/examples/tools/promote_checkpoint.py \
-    --checkpoints-jsonl ./my_training/checkpoints.jsonl \
+    --job-id <trainer-job-id> \
+    --base-model accounts/fireworks/models/qwen3-8b \
     --output-model-id my-policy-step-14
 
 # Pre-migration PER_DEPLOYMENT only — pass the deployment that owns the bucket
 python training/examples/tools/promote_checkpoint.py \
-    --checkpoints-jsonl ./my_training/checkpoints.jsonl \
+    --job-id <trainer-job-id> \
+    --base-model accounts/fireworks/models/qwen3-8b \
     --hot-load-deployment-id <deployment-id>
 ```
 
-Source: `training/examples/tools/promote_checkpoint.py`. Reads `sampler_path` / `source_job_id` / `base_model` from the jsonl row. The modern promote API (`client.promote_checkpoint(name=...)`) works for both `PER_TRAINER` and `PER_DEPLOYMENT` — see [`rl/hotload.md#promoting-a-checkpoint`](rl/hotload.md#promoting-a-checkpoint). The `--hot-load-deployment-id` flag is only needed for deployments that predate the stored-bucket-URL migration.
+Source: `training/examples/tools/promote_checkpoint.py`. Hands the row's 4-segment `name` (`accounts/<a>/rlorTrainerJobs/<j>/checkpoints/<c>`) verbatim to `TrainerJobManager.promote_checkpoint(name=...)` — the modern promote API. See the public docs at [`/fine-tuning/training-api/saving-and-loading`](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading) for the full contract. The `--hot-load-deployment-id` flag is only needed for deployments that predate the stored-bucket-URL migration; passing it emits a `DeprecationWarning`.
 
 `output_model_id` is validated server-side at 63 chars — validate client-side too:
 
@@ -51,7 +56,7 @@ Re-attaching a deployment to a new trainer (to fix a flow-mix bucket-URL drift) 
 
 ## Listing checkpoints (`FireworksClient.list_checkpoints`)
 
-Use this when `checkpoints.jsonl` is missing / stale, or you want to confirm which rows the server will actually accept for `promote_checkpoint`. Works for dead trainers (completed / failed / cancelled / deleted) — only the DB record and GCS blobs need to exist.
+The authoritative list of what the server has for a trainer. Works for dead trainers (completed / failed / cancelled / deleted) — only the DB record and GCS blobs need to exist. This is what `promote_checkpoint.py` calls under the hood; use it directly when you want to inspect or pick a row by hand.
 
 From Python:
 

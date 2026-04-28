@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +27,7 @@ def test_main_rejects_invalid_output_model_id(monkeypatch, tmp_path):
         output_model_id="bad_name",
     )
 
-    with pytest.raises(RuntimeError, match="output_model_id.*invalid|invalid.*output_model_id"):
+    with pytest.raises(RuntimeError, match="Invalid output_model_id|output_model_id.*invalid|invalid.*output_model_id"):
         module.main(cfg)
 
 
@@ -68,8 +69,50 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
         def delete(self, job_id):
             self.cancel(job_id)
 
-        def promote_checkpoint(self, job_id, checkpoint_id, output_model_id, base_model, **kwargs):
-            events["promotions"].append((job_id, checkpoint_id, output_model_id))
+        def promote_checkpoint(self, *args, name=None, output_model_id=None, base_model=None, **kwargs):
+            # New-form callers (TrainingCheckpoints.promote_latest) pass the
+            # 4-segment ``name`` kwarg only; we record (job, checkpoint, model)
+            # for assertion compatibility.
+            assert not args, (
+                "Cookbook should only call promote_checkpoint with the 4-segment "
+                f"name= form, got positional args {args}"
+            )
+            assert name, "Expected name= 4-segment resource path"
+            short = name.rstrip("/").rsplit("/", 1)[-1]
+            job_part = name.split("/rlorTrainerJobs/", 1)[1].split("/", 1)[0]
+            events["promotions"].append((job_part, short, output_model_id))
+
+        def list_checkpoints(self, job_id, **kwargs):
+            # Synthesize the rows TrainingCheckpoints needs to see:
+            # a TRAINING_LORA row so save's post-save polling surfaces
+            # immediately, and an INFERENCE_LORA row so promote_latest
+            # has something to pick. Future createTime so the polling's
+            # ``createTime >= save_started_iso`` check succeeds.
+            saved = events.get("save_weights") or []
+            if not saved:
+                return []
+            last_name, _ = saved[-1]
+            stored = f"{last_name}-session"  # match FakeInner snapshot suffix
+            return [
+                {
+                    "name": (
+                        f"accounts/test/rlorTrainerJobs/{job_id}/"
+                        f"checkpoints/{last_name}"
+                    ),
+                    "checkpointType": "CHECKPOINT_TYPE_TRAINING_LORA",
+                    "promotable": False,
+                    "createTime": "2099-04-27T00:00:00Z",
+                },
+                {
+                    "name": (
+                        f"accounts/test/rlorTrainerJobs/{job_id}/"
+                        f"checkpoints/{stored}"
+                    ),
+                    "checkpointType": "CHECKPOINT_TYPE_INFERENCE_LORA",
+                    "promotable": True,
+                    "createTime": "2099-04-27T00:00:01Z",
+                },
+            ]
 
     class FakeInner:
         def save_weights_for_sampler_ext(self, name, checkpoint_type="base"):
@@ -309,3 +352,25 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch, tmp_path):
     ]]
     assert events["optim_steps"] == 1
     assert events["deleted_jobs"] == ["job-orpo"]
+
+
+def test_orpo_epoch_shuffle_uses_seeded_rng() -> None:
+    """ORPO must seed its per-epoch shuffle for reproducibility.
+
+    Previously the loop called ``random.shuffle(pair_cache)`` on the global
+    random state with no ``random.seed``, so reruns with identical configs
+    produced different data orderings. Every shuffle must go through a seeded
+    RNG (e.g. ``random.Random(seed + epoch)``).
+    """
+    src = inspect.getsource(module)
+    uses_unseeded_global_shuffle = (
+        "random.shuffle(pair_cache)" in src
+        and "random.seed" not in src
+        and "random.Random" not in src
+    )
+    assert not uses_unseeded_global_shuffle, (
+        "orpo_loop.py calls `random.shuffle(pair_cache)` on the global random state "
+        "with no `random.seed` / `random.Random` anywhere in the module, so reruns "
+        "with identical configs produce different data orderings. "
+        "Fix: expose a `seed` in Config and use `random.Random(seed + epoch).shuffle(...)`."
+    )

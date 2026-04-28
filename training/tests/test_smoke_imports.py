@@ -41,7 +41,7 @@ UTIL_MODULES = [
     "training.utils.infra",
     "training.utils.losses",
     "training.utils.logging",
-    "training.utils.checkpoint_utils",
+    "training.utils.checkpoints",
     "training.utils.timer",
     "training.utils.validation",
     "training.utils.rl",

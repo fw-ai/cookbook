@@ -21,6 +21,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import torch
 import tinker
+import transformers
 from tinker_cookbook.model_info import get_recommended_renderer_name
 from tinker_cookbook.renderers import (
     Message,
@@ -124,6 +125,37 @@ def build_renderer(
             image_processor=get_image_processor(tokenizer_model),
         )
     return get_renderer(resolved_name, tokenizer)
+
+
+def populate_render_worker_state(
+    state: dict,
+    *,
+    tokenizer_model: str,
+    renderer_name: str,
+    max_seq_len: int,
+    **extras: Any,
+) -> None:
+    """Build a tokenizer + renderer and populate ``state`` for DataLoader workers.
+
+    Centralises the per-worker setup that every streaming render recipe needs
+    (SFT, DPO, ORPO, ...). Call from your recipe's module-level
+    ``_init_<recipe>_worker(_worker_id)`` shim, which DataLoader spawns with
+    ``worker_init_fn``. ``state`` must be a module-level dict so the recipe's
+    top-level render function (also picklable for spawn) can read from it.
+
+    Stores ``tokenizer``, ``renderer``, ``max_seq_len`` plus any keyword
+    ``extras`` (e.g. ``train_on_what`` for SFT). Reuses ``trust_remote_code``
+    for HF tokenizer load -- required by Kimi / Qwen image processors.
+    """
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        tokenizer_model, trust_remote_code=True,
+    )
+    state.update(
+        tokenizer=tokenizer,
+        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
+        max_seq_len=max_seq_len,
+        **extras,
+    )
 
 
 # tinker_cookbook.image_processing_utils.get_image_processor has a hard-coded
@@ -293,10 +325,68 @@ def _ensure_content_parts(content: str | list[dict[str, Any]]) -> list[dict[str,
     return list(content)
 
 
-def normalize_messages(messages: Iterable[Mapping[str, Any]]) -> list[Message]:
-    """Normalize cookbook/eval-style messages into Tinker's message schema."""
+def _any_message_has_per_message_training_flag(
+    messages: Iterable[Mapping[str, Any]],
+) -> bool:
+    """Return True if any message carries an explicit per-message training flag.
+
+    The Fireworks SFT dataset schema uses ``weight`` (int, 0 or 1) on
+    individual messages to mark which assistant turns should contribute loss.
+    Tinker's schema uses ``trainable`` (bool) for the same purpose. Either
+    field enables the per-message ``CUSTOMIZED`` training path.
+    """
+    return any(("weight" in m) or ("trainable" in m) for m in messages)
+
+
+def _resolve_trainable(
+    message: Mapping[str, Any],
+    *,
+    assistant_default: bool,
+) -> bool:
+    """Derive the per-message ``trainable`` flag from ``trainable`` or ``weight``.
+
+    ``trainable`` (bool) wins if present. Otherwise, a legacy ``weight`` (int
+    or float) maps to ``bool(weight)`` — matching the V1 SFT trainer
+    convention where ``weight=0`` marks an assistant message as context only
+    (no loss) and ``weight=1`` (or the field being absent) marks it as a
+    trainable target. When neither field is present, falls back to
+    ``assistant_default`` (True for assistants, False otherwise).
+    """
+    trainable = message.get("trainable")
+    if trainable is not None:
+        return bool(trainable)
+
+    weight = message.get("weight")
+    if weight is not None:
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            raise TypeError(
+                f"Unsupported weight value type: {type(weight)!r} (expected int or float)"
+            )
+        return bool(weight)
+
+    return assistant_default
+
+
+def normalize_messages(
+    messages: Iterable[Mapping[str, Any]],
+) -> list[Message]:
+    """Normalize cookbook/eval-style messages into Tinker's message schema.
+
+    When any message in the conversation carries an explicit ``weight`` or
+    ``trainable`` field, every returned message gets a ``trainable`` flag so
+    that renderers invoked with ``train_on_what=CUSTOMIZED`` can honor the
+    per-message selection. Assistant messages default to trainable=True,
+    non-assistant messages to False. The legacy Fireworks ``weight`` field
+    (0 or 1) is translated to ``trainable = bool(weight)``, matching the V1
+    SFT trainer semantics.
+    """
+    messages_list = list(messages)
+    use_per_message_trainable = _any_message_has_per_message_training_flag(
+        messages_list
+    )
+
     normalized: list[Message] = []
-    for message in messages:
+    for message in messages_list:
         role = message.get("role")
         if not isinstance(role, str):
             raise ValueError(f"Message is missing a string role: {message}")
@@ -344,9 +434,11 @@ def normalize_messages(messages: Iterable[Mapping[str, Any]]) -> list[Message]:
                 *_ensure_content_parts(normalized_message["content"]),
             ]
 
-        trainable = message.get("trainable")
-        if trainable is not None:
-            normalized_message["trainable"] = bool(trainable)
+        if use_per_message_trainable:
+            normalized_message["trainable"] = _resolve_trainable(
+                message,
+                assistant_default=(role == "assistant"),
+            )
 
         tool_call_id = message.get("tool_call_id")
         if tool_call_id is not None:
@@ -618,11 +710,22 @@ def render_messages_to_datum(
     max_seq_len: int | None = None,
     include_loss_mask: bool = False,
 ) -> RenderedSupervisedDatum:
-    """Render a multi-turn conversation into the shared weighted datum format."""
+    """Render a multi-turn conversation into the shared weighted datum format.
+
+    When any message in the conversation carries an explicit ``weight`` or
+    ``trainable`` field, ``train_on_what`` is overridden to ``CUSTOMIZED`` so
+    that the renderer honors per-message training flags. This matches the V1
+    SFT trainer contract (``weight=0`` means "context-only, no loss") and
+    prevents the cookbook from silently training on assistant turns the
+    dataset author explicitly excluded.
+    """
     normalized_messages = normalize_messages(messages)
+    effective_train_on_what = parse_train_on_what(train_on_what)
+    if any("trainable" in m for m in normalized_messages):
+        effective_train_on_what = TrainOnWhat.CUSTOMIZED
     rendered_input, weights = renderer.build_supervised_example(
         normalized_messages,
-        train_on_what=parse_train_on_what(train_on_what),
+        train_on_what=effective_train_on_what,
     )
     weight_values = weights.tolist() if hasattr(weights, "tolist") else list(weights)
     if isinstance(rendered_input, tinker.ModelInput):
