@@ -5,9 +5,10 @@ Handles the GLM-5.1 chat format as shipped with ``zai-org/GLM-5.1``
 tokenizer and chat template).
 
 Token-level layout follows ``tokenizer.apply_chat_template`` byte-for-byte
-(verified by the unit tests in ``test_glm5_renderer.py``), modulo the
-intentional training EOS on the terminal assistant message. The registered
-renderer uses GLM preserved-thinking semantics by default; opt-in
+(verified by the unit tests in ``test_glm5_renderer.py``), modulo a synthetic
+terminal role sentinel used only for supervised examples that end on an
+assistant message. The registered renderer uses GLM preserved-thinking
+semantics by default; opt-in
 ``strip_thinking_from_history=True`` matches the template's standard
 ``clear_thinking`` behavior.
 
@@ -51,10 +52,12 @@ Other invariants:
 
 - ``[gMASK]<sop>`` is emitted once at the very start of the conversation.
 - The shipped Jinja template does **not** emit ``<|endoftext|>`` at message
-  boundaries. This renderer appends ``<|endoftext|>`` only to the *last*
-  message in the conversation so the trained model learns when to stop;
-  historical assistant turns still match the Jinja byte-for-byte without
-  any EOS adjustment.
+  boundaries. Assistant turns stop by generating the next role sentinel:
+  ``<|user|>`` for a normal assistant answer or ``<|observation|>`` for a
+  tool-call handoff. For supervised examples, this renderer gives those role
+  sentinels loss weight after trainable assistant turns. If a supervised row
+  ends on an assistant message, it appends the appropriate sentinel as
+  ``stop_overlap`` so the trained model still learns where to stop.
 - Generation suffix (``add_generation_prompt=True`` in Jinja):
   ``<|assistant|><think>`` for thinking mode (default),
   ``<|assistant|></think>`` for non-thinking mode.
@@ -82,6 +85,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import tinker
+import torch
 from tinker_cookbook.renderers import register_renderer
 from tinker_cookbook.renderers.base import (
     Message,
@@ -250,16 +254,6 @@ class GLM5Renderer(Renderer):
     def _bos_tokens(self) -> list[int]:
         return self.tokenizer.encode(_BOS_TEXT, add_special_tokens=False)
 
-    @property
-    def _end_message_token(self) -> int:
-        eos = getattr(self.tokenizer, "eos_token_id", None)
-        if eos is None:
-            raise RuntimeError(
-                "GLM5Renderer requires tokenizer.eos_token_id to be set "
-                "(expected <|endoftext|>)."
-            )
-        return int(eos)
-
     def _encode_single_special(self, token_str: str) -> int:
         token_ids = self.tokenizer.encode(token_str, add_special_tokens=False)
         if len(token_ids) != 1:
@@ -278,7 +272,162 @@ class GLM5Renderer(Renderer):
         return self._encode_single_special(_OBSERVATION_TEXT)
 
     def get_stop_sequences(self) -> list[int]:
-        return [self._end_message_token, self._user_token, self._observation_token]
+        return [self._user_token, self._observation_token]
+
+    def _assistant_stop_token(self, message: Message) -> int:
+        return (
+            self._observation_token
+            if message.get("tool_calls")
+            else self._user_token
+        )
+
+    def _assistant_stop_overlap(self, message: Message) -> tinker.EncodedTextChunk:
+        return tinker.types.EncodedTextChunk(
+            tokens=[self._assistant_stop_token(message)]
+        )
+
+    @staticmethod
+    def _output_has_weight(
+        message: Message,
+        *,
+        idx: int,
+        is_last_message: bool,
+        last_user_idx: int,
+        train_on_what: TrainOnWhat,
+    ) -> bool:
+        is_assistant = message["role"] == "assistant"
+        is_user_or_system = message["role"] in ["user", "system"]
+        is_after_last_user = last_user_idx == -1 or idx > last_user_idx
+
+        match train_on_what:
+            case TrainOnWhat.LAST_ASSISTANT_MESSAGE:
+                return is_last_message and is_assistant
+            case TrainOnWhat.LAST_ASSISTANT_TURN:
+                return is_assistant and is_after_last_user
+            case TrainOnWhat.ALL_ASSISTANT_MESSAGES:
+                return is_assistant
+            case TrainOnWhat.ALL_MESSAGES:
+                return True
+            case TrainOnWhat.ALL_TOKENS:
+                return True
+            case TrainOnWhat.ALL_USER_AND_SYSTEM_MESSAGES:
+                return is_user_or_system
+            case TrainOnWhat.CUSTOMIZED:
+                return bool(message.get("trainable", False))
+            case _:
+                raise ValueError(f"Unknown train_on_what: {train_on_what}")
+
+    def _header_is_stop_for_previous_assistant(
+        self,
+        messages: list[Message],
+        *,
+        idx: int,
+        last_user_idx: int,
+        train_on_what: TrainOnWhat,
+    ) -> bool:
+        if idx == 0:
+            return False
+
+        prev_message = messages[idx - 1]
+        if prev_message["role"] != "assistant":
+            return False
+
+        prev_has_weight = self._output_has_weight(
+            prev_message,
+            idx=idx - 1,
+            is_last_message=(idx - 1 == len(messages) - 1),
+            last_user_idx=last_user_idx,
+            train_on_what=train_on_what,
+        )
+        if not prev_has_weight:
+            return False
+
+        current_role = messages[idx]["role"]
+        expected_role = "tool" if prev_message.get("tool_calls") else "user"
+        return current_role == expected_role
+
+    def build_supervised_example(
+        self,
+        messages: list[Message],
+        train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+        """Build a GLM supervised example with role-sentinel stop weights.
+
+        GLM-5.1 uses the next role tag, not EOS, as the assistant stop marker.
+        The base renderer masks headers, so it would not train ``<|user|>`` or
+        ``<|observation|>`` after historical assistant turns. This override
+        preserves the base token layout while assigning loss to those sentinels
+        when they close a trainable assistant turn.
+        """
+        model_input_chunks_weights: list[tuple[tinker.ModelInputChunk, float]] = []
+        if self._bos_tokens:
+            model_input_chunks_weights.append(
+                (tinker.types.EncodedTextChunk(tokens=self._bos_tokens), 0.0)
+            )
+
+        last_user_idx = max(
+            (idx for idx, message in enumerate(messages) if message["role"] == "user"),
+            default=-1,
+        )
+
+        for idx, message in enumerate(messages):
+            if train_on_what == TrainOnWhat.CUSTOMIZED:
+                assert "trainable" in message, (
+                    "When using CUSTOMIZED train_on_what, each message must have "
+                    "a trainable field."
+                )
+            else:
+                assert "trainable" not in message, (
+                    "When using non-CUSTOMIZED train_on_what, each message must "
+                    "not have a trainable field."
+                )
+
+            is_last_message = idx == len(messages) - 1
+            ctx = RenderContext(
+                idx=idx,
+                is_last=is_last_message,
+                prev_message=messages[idx - 1] if idx > 0 else None,
+                last_user_index=last_user_idx,
+            )
+            rendered_message = self.render_message(message, ctx)
+
+            output_has_weight = self._output_has_weight(
+                message,
+                idx=idx,
+                is_last_message=is_last_message,
+                last_user_idx=last_user_idx,
+                train_on_what=train_on_what,
+            )
+
+            header_part = rendered_message.header
+            if header_part:
+                header_weight = int(train_on_what == TrainOnWhat.ALL_TOKENS)
+                if self._header_is_stop_for_previous_assistant(
+                    messages,
+                    idx=idx,
+                    last_user_idx=last_user_idx,
+                    train_on_what=train_on_what,
+                ):
+                    header_weight = 1
+                model_input_chunks_weights.append((header_part, header_weight))
+
+            model_input_chunks_weights += [
+                (output_part, int(output_has_weight))
+                for output_part in rendered_message.output
+                if output_part
+            ]
+
+            if is_last_message and rendered_message.stop_overlap:
+                model_input_chunks_weights.append(
+                    (rendered_message.stop_overlap, int(output_has_weight))
+                )
+
+        weights_data = [
+            w for chunk, w in model_input_chunks_weights for _ in range(chunk.length)
+        ]
+        weights_tensor = torch.tensor(weights_data)
+        model_input_chunks = [chunk for chunk, _ in model_input_chunks_weights]
+        return tinker.ModelInput(chunks=model_input_chunks), weights_tensor
 
     def build_supervised_examples(
         self,
@@ -420,22 +569,21 @@ class GLM5Renderer(Renderer):
         if tool_calls:
             output_str += _format_tool_calls(tool_calls)
 
-        output_tokens = self.tokenizer.encode(output_str, add_special_tokens=False)
-        # Append <|endoftext|> only on the final message in the conversation.
-        # Historical assistant turns are delimited only by the next role tag
-        # in the GLM Jinja template, so emitting EOS there would add a token
-        # the template never produces. The final turn still gets EOS so the
-        # trained model learns when to stop.
-        if ctx.is_last:
-            output_tokens.append(self._end_message_token)
-
         header = tinker.types.EncodedTextChunk(
             tokens=self.tokenizer.encode(header_str, add_special_tokens=False),
         )
         output: list[tinker.ModelInputChunk] = [
-            tinker.types.EncodedTextChunk(tokens=output_tokens),
+            tinker.types.EncodedTextChunk(
+                tokens=self.tokenizer.encode(output_str, add_special_tokens=False),
+            ),
         ]
-        return RenderedMessage(header=header, output=output)
+        return RenderedMessage(
+            header=header,
+            output=output,
+            stop_overlap=(
+                self._assistant_stop_overlap(message) if ctx.is_last else None
+            ),
+        )
 
     def _get_generation_suffix(self, role: Role, ctx: RenderContext) -> list[int]:
         del ctx

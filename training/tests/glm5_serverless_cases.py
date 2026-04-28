@@ -6,7 +6,6 @@ from typing import Any
 
 
 GLM5_SERVERLESS_STOP_TOKEN_IDS = {
-    "eos": 154820,
     "user": 154827,
     "observation": 154829,
 }
