@@ -81,12 +81,13 @@ from tinker_cookbook.renderers.base import (
     Renderer,
     Role,
     ToolCall,
-    parse_response_for_stop_token,
     parse_think_blocks,
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 _BOS_TEXT = "[gMASK]<sop>"
+_USER_TEXT = "<|user|>"
+_OBSERVATION_TEXT = "<|observation|>"
 
 
 def _visible_text(content: Any) -> str:
@@ -183,8 +184,25 @@ class GLM5Renderer(Renderer):
             )
         return int(eos)
 
+    def _encode_single_special(self, token_str: str) -> int:
+        token_ids = self.tokenizer.encode(token_str, add_special_tokens=False)
+        if len(token_ids) != 1:
+            raise RuntimeError(
+                f"GLM5Renderer expected {token_str!r} to encode as one token, "
+                f"got {token_ids}."
+            )
+        return int(token_ids[0])
+
+    @property
+    def _user_token(self) -> int:
+        return self._encode_single_special(_USER_TEXT)
+
+    @property
+    def _observation_token(self) -> int:
+        return self._encode_single_special(_OBSERVATION_TEXT)
+
     def get_stop_sequences(self) -> list[int]:
-        return [self._end_message_token]
+        return [self._end_message_token, self._user_token, self._observation_token]
 
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
         role = message["role"]
@@ -291,10 +309,17 @@ class GLM5Renderer(Renderer):
         return self.tokenizer.encode(suffix_str, add_special_tokens=False)
 
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
-        assistant_message, ok = parse_response_for_stop_token(
-            response=response,
-            tokenizer=self.tokenizer,
-            stop_token=self._end_message_token,
+        end_idx = len(response)
+        for stop_token in self.get_stop_sequences():
+            try:
+                idx = response.index(stop_token)
+            except ValueError:
+                continue
+            end_idx = min(end_idx, idx)
+        ok = end_idx < len(response)
+        assistant_message = Message(
+            role="assistant",
+            content=str(self.tokenizer.decode(response[:end_idx])),
         )
         if not ok:
             return assistant_message, False
