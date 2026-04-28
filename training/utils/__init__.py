@@ -87,6 +87,7 @@ __all__ = [
     "populate_render_worker_state",
     "render_preference_pair",
     "render_messages_to_datum",
+    "render_messages_to_datums",
     "resolve_renderer_name",
     "prepare_sampling_messages",
     "setup_deployment",
@@ -167,6 +168,7 @@ from training.utils.supervised import (
     populate_render_worker_state,
     render_preference_pair,
     render_messages_to_datum,
+    render_messages_to_datums,
     resolve_renderer_name,
 )
 from training.utils.logging import (

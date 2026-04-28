@@ -175,7 +175,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         module,
-        "render_messages_to_datum",
+        "render_messages_to_datums",
         lambda *args, **kwargs: SimpleNamespace(token_ids=[1], datum={"id": "too-short"}),
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
@@ -262,7 +262,7 @@ def test_main_reduces_batch_size_when_examples_fewer_than_batch_size(tmp_path, m
     )
     monkeypatch.setattr(
         module,
-        "render_messages_to_datum",
+        "render_messages_to_datums",
         lambda *args, **kwargs: SimpleNamespace(
             token_ids=[1, 2, 3],
             datum=SimpleNamespace(
@@ -364,7 +364,7 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
     monkeypatch.setattr(module, "auto_select_training_shape", _record_auto_select)
     monkeypatch.setattr(
         module,
-        "render_messages_to_datum",
+        "render_messages_to_datums",
         lambda *args, **kwargs: SimpleNamespace(
             token_ids=[1, 2, 3],
             datum=SimpleNamespace(
@@ -599,7 +599,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
         )
         return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
 
-    monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
+    monkeypatch.setattr(module, "render_messages_to_datums", _fake_render)
 
     cfg = module.Config(
         dataset=str(dataset_path),
@@ -694,7 +694,7 @@ def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         module,
-        "render_messages_to_datum",
+        "render_messages_to_datums",
         lambda messages, **kwargs: SimpleNamespace(
             token_ids=[1, 2],
             datum=SimpleNamespace(
@@ -1044,7 +1044,7 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
         )
         return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
 
-    monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
+    monkeypatch.setattr(module, "render_messages_to_datums", _fake_render)
 
     cfg = module.Config(
         dataset=str(dataset_path),
@@ -1168,7 +1168,7 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
         )
         return SimpleNamespace(token_ids=[1, 2, 3], datum=datum)
 
-    monkeypatch.setattr(module, "render_messages_to_datum", _fake_render)
+    monkeypatch.setattr(module, "render_messages_to_datums", _fake_render)
 
     cfg = module.Config(
         dataset=str(dataset_path),

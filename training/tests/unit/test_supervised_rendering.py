@@ -17,6 +17,7 @@ from training.utils.supervised import (
     render_preference_pair,
     normalize_messages,
     render_messages_to_datum,
+    render_messages_to_datums,
 )
 
 
@@ -72,6 +73,33 @@ class ModelInputRenderer:
         )
         weights = torch.tensor([0, 0, 0, 0, 1, 1, 1], dtype=torch.float32)
         return model_input, weights
+
+
+class SplitRenderer:
+    has_extension_property = False
+
+    def __init__(self):
+        self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+    def build_supervised_examples(
+        self,
+        messages,
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
+    ):
+        self.calls.append((messages, train_on_what))
+        return [
+            (
+                torch.tensor([10, 11, 12], dtype=torch.int64),
+                torch.tensor([0, 1, 1], dtype=torch.float32),
+            ),
+            (
+                torch.tensor([20, 21, 22], dtype=torch.int64),
+                torch.tensor([0, 1, 1], dtype=torch.float32),
+            ),
+        ]
+
+    def build_supervised_example(self, messages, train_on_what):
+        raise AssertionError("render_messages_to_datums should use split examples")
 
 
 def test_render_messages_to_datum_preserves_multi_turn_weights():
@@ -185,6 +213,25 @@ def test_build_datum_from_token_mask_reuses_ui_mask_semantics():
     ]
     assert rendered.datum.loss_fn_inputs["weights"].data == [0.0, 1.0, 1.0, 0.0, 1.0]
     assert rendered.datum.loss_fn_inputs["loss_mask"].data == [0.0, 1.0, 1.0, 0.0, 1.0]
+
+
+def test_render_messages_to_datums_uses_renderer_split_for_all_assistant_messages():
+    renderer = SplitRenderer()
+
+    rendered = render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    assert len(rendered) == 2
+    assert [example.token_ids for example in rendered] == [[10, 11, 12], [20, 21, 22]]
+    assert renderer.calls[0][1] == TrainOnWhat.ALL_ASSISTANT_MESSAGES
 
 
 def test_normalize_messages_supports_openai_tool_call_shape():

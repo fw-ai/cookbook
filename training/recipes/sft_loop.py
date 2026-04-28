@@ -52,7 +52,7 @@ from training.utils import (
     parse_train_on_what,
     populate_render_worker_state,
     auto_select_training_shape,
-    render_messages_to_datum,
+    render_messages_to_datums,
     resolve_renderer_name,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
@@ -91,8 +91,8 @@ def _init_render_worker(
     )
 
 
-def _render_one_worker(row: dict) -> tinker.Datum | None:
-    """Render a chat row to a Datum, dropping empty / out-of-range sequences.
+def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
+    """Render a chat row to one or more Datums, dropping empty / long sequences.
 
     Reads renderer / train_on_what / max_seq_len from the per-process
     ``_worker_state`` populated by ``_init_render_worker``. Top-level
@@ -101,14 +101,23 @@ def _render_one_worker(row: dict) -> tinker.Datum | None:
     messages = row.get("messages", [])
     if not messages:
         return None
-    rendered = render_messages_to_datum(
+    rendered_examples = render_messages_to_datums(
         messages,
         renderer=_worker_state["renderer"],
         train_on_what=_worker_state["train_on_what"],
     )
-    if not 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]:
+    if not isinstance(rendered_examples, list):
+        rendered_examples = [rendered_examples]
+    datums = [
+        rendered.datum
+        for rendered in rendered_examples
+        if 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]
+    ]
+    if not datums:
         return None
-    return rendered.datum
+    if len(datums) == 1:
+        return datums[0]
+    return datums
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +142,27 @@ def compute_eval_carveout(
 
 def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
     """Render the first ``n`` rows of ``ds`` in-process, dropping Nones."""
-    return [d for d in (ds[i] for i in range(n)) if d is not None]
+    datums: List[tinker.Datum] = []
+    for item in (ds[i] for i in range(n)):
+        if item is None:
+            continue
+        if isinstance(item, list):
+            datums.extend(item)
+        else:
+            datums.append(item)
+    return datums
+
+
+def _flatten_rendered_batch(
+    batch: list[tinker.Datum | list[tinker.Datum]],
+) -> list[tinker.Datum]:
+    datums: list[tinker.Datum] = []
+    for item in batch:
+        if isinstance(item, list):
+            datums.extend(item)
+        else:
+            datums.append(item)
+    return datums
 
 
 def _prepare_datasets(
@@ -707,6 +736,7 @@ def main(
                     training_count - raw_batch_idx * effective_batch_size,
                 )
                 raw_rows_consumed += raw_batch_size
+                batch = _flatten_rendered_batch(batch)
                 if not batch:
                     continue  # entire batch was filtered (None render); skip
                 epoch_valid_examples += len(batch)

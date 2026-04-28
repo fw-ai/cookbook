@@ -727,6 +727,21 @@ def render_messages_to_datum(
         normalized_messages,
         train_on_what=effective_train_on_what,
     )
+    return _build_rendered_supervised_datum(
+        rendered_input,
+        weights,
+        max_seq_len=max_seq_len,
+        include_loss_mask=include_loss_mask,
+    )
+
+
+def _build_rendered_supervised_datum(
+    rendered_input: Any,
+    weights: Any,
+    *,
+    max_seq_len: int | None,
+    include_loss_mask: bool,
+) -> RenderedSupervisedDatum:
     weight_values = weights.tolist() if hasattr(weights, "tolist") else list(weights)
     if isinstance(rendered_input, tinker.ModelInput):
         return build_datum_from_model_input_and_weights(
@@ -746,6 +761,58 @@ def render_messages_to_datum(
         max_seq_len=max_seq_len,
         include_loss_mask=include_loss_mask,
     )
+
+
+def render_messages_to_datums(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    renderer: Renderer,
+    train_on_what: str | TrainOnWhat = TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    max_seq_len: int | None = None,
+    include_loss_mask: bool = False,
+) -> list[RenderedSupervisedDatum]:
+    """Render a chat row, splitting multi-turn targets when the renderer supports it."""
+    normalized_messages = normalize_messages(messages)
+    effective_train_on_what = parse_train_on_what(train_on_what)
+    if any("trainable" in m for m in normalized_messages):
+        effective_train_on_what = TrainOnWhat.CUSTOMIZED
+
+    examples: list[tuple[Any, Any]]
+    if (
+        effective_train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+        and not getattr(renderer, "has_extension_property", False)
+    ):
+        try:
+            examples = list(
+                renderer.build_supervised_examples(
+                    normalized_messages,
+                    train_on_what=effective_train_on_what,
+                )
+            )
+        except (AttributeError, NotImplementedError):
+            examples = [
+                renderer.build_supervised_example(
+                    normalized_messages,
+                    train_on_what=effective_train_on_what,
+                )
+            ]
+    else:
+        examples = [
+            renderer.build_supervised_example(
+                normalized_messages,
+                train_on_what=effective_train_on_what,
+            )
+        ]
+
+    return [
+        _build_rendered_supervised_datum(
+            rendered_input,
+            weights,
+            max_seq_len=max_seq_len,
+            include_loss_mask=include_loss_mask,
+        )
+        for rendered_input, weights in examples
+    ]
 
 
 def _common_prefix_length(tokens_a: Sequence[int], tokens_b: Sequence[int]) -> int:

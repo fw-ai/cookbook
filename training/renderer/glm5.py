@@ -69,6 +69,7 @@ Multimodal content is left for a future extension.
 from __future__ import annotations
 
 import json
+import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -81,6 +82,7 @@ from tinker_cookbook.renderers.base import (
     Renderer,
     Role,
     ToolCall,
+    TrainOnWhat,
     parse_response_for_stop_token,
     parse_think_blocks,
 )
@@ -185,6 +187,71 @@ class GLM5Renderer(Renderer):
 
     def get_stop_sequences(self) -> list[int]:
         return [self._end_message_token]
+
+    def build_supervised_examples(
+        self,
+        messages: list[Message],
+        train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_TURN,
+    ):
+        """Build extension-safe supervised examples for multi-turn GLM data.
+
+        GLM strips historical thinking by default, so training all assistant
+        messages in one datum can expose earlier assistant turns to a different
+        prefix than generation used at that turn. Match Tinker's Kimi pattern:
+        split by user turns and train the assistant suffix after each user.
+        """
+        if self.has_extension_property:
+            return [
+                self.build_supervised_example(
+                    messages,
+                    train_on_what=train_on_what,
+                )
+            ]
+
+        if train_on_what in (
+            TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+            TrainOnWhat.LAST_ASSISTANT_TURN,
+        ):
+            return [
+                self.build_supervised_example(
+                    messages,
+                    train_on_what=train_on_what,
+                )
+            ]
+
+        user_message_idxs = [
+            idx for idx, message in enumerate(messages) if message["role"] == "user"
+        ]
+
+        if train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES:
+            warnings.warn(
+                "WARNING: Using train_on_what=ALL_MESSAGES/ALL_TOKENS/"
+                "ALL_USER_AND_SYSTEM_MESSAGES/CUSTOMIZED with a renderer that "
+                "does not satisfy the extension property "
+                "(has_extension_property=False). The same train_on_what mode is "
+                "applied to each user-turn prefix.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        supervised_examples = []
+        for user_message_idx in [*user_message_idxs[1:], len(messages)]:
+            current_messages = messages[:user_message_idx]
+            if train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES:
+                supervised_examples.append(
+                    self.build_supervised_example(
+                        current_messages,
+                        train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
+                    )
+                )
+            else:
+                supervised_examples.append(
+                    self.build_supervised_example(
+                        current_messages,
+                        train_on_what=train_on_what,
+                    )
+                )
+        return supervised_examples
 
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
         role = message["role"]
