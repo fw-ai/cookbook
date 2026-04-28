@@ -1118,6 +1118,66 @@ def test_weight_mask_trains_role_stops_after_historical_assistants(
     assert weights[observation_positions[0]] == 1
 
 
+def test_weight_mask_multi_turn_tool_call_with_thinking_trains_observation_stop(
+    tokenizer, renderer_keep_thinking
+):
+    """Interleaved thinking/tool-call rows train the tool call and observation stop."""
+    messages = [
+        {"role": "system", "content": "Use tools when useful."},
+        {"role": "user", "content": "First question"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "answer directly"},
+                {"type": "text", "text": "first answer"},
+            ],
+        },
+        {"role": "user", "content": "Now lookup the weather"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "need weather tool"},
+                {"type": "text", "text": ""},
+            ],
+            "tool_calls": [_make_tool_call("get_weather", {"city": "SF"})],
+        },
+        {"role": "tool", "content": "sunny"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "tool says sunny"},
+                {"type": "text", "text": "It is sunny."},
+            ],
+        },
+    ]
+    tokens, weights = _renderer_supervised_tokens(renderer_keep_thinking, messages)
+
+    tool_call_open = _encode_single(tokenizer, "<tool_call>")
+    tool_call_close = _encode_single(tokenizer, "</tool_call>")
+    observation = _observation_token(tokenizer)
+    tool_response_open = _encode_single(tokenizer, "<tool_response>")
+    tool_response_close = _encode_single(tokenizer, "</tool_response>")
+
+    tool_call_start = tokens.index(tool_call_open)
+    tool_call_end = tokens.index(tool_call_close, tool_call_start)
+    observation_pos = tokens.index(observation, tool_call_end + 1)
+    tool_response_start = tokens.index(tool_response_open, observation_pos + 1)
+    tool_response_end = tokens.index(tool_response_close, tool_response_start)
+
+    assert observation_pos == tool_call_end + 1
+    assert all(w == 1 for w in weights[tool_call_start : tool_call_end + 1])
+    assert weights[observation_pos] == 1
+    assert all(
+        w == 0 for w in weights[tool_response_start : tool_response_end + 1]
+    )
+
+    trained_text = tokenizer.decode([t for t, w in zip(tokens, weights) if w > 0])
+    assert "<think>need weather tool</think>" in trained_text
+    assert "<tool_call>get_weather" in trained_text
+    assert "<|observation|>" in trained_text
+    assert "<tool_response>sunny</tool_response>" not in trained_text
+
+
 def test_weight_mask_multi_turn_covers_all_assistant_turns(tokenizer, renderer):
     """With TrainOnWhat.ALL_ASSISTANT_MESSAGES, every assistant turn gets trained."""
     messages = [
