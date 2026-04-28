@@ -1096,9 +1096,18 @@ def test_bos_tokens_are_gMASK_sop(tokenizer, renderer):
     assert len(bos) == 2  # [gMASK]=154822, <sop>=154824 on GLM-5.1
 
 
-def test_stop_sequences_returns_eos(tokenizer, renderer):
+def test_stop_sequences_returns_eos_and_next_role_tags(tokenizer, renderer):
     stops = renderer.get_stop_sequences()
-    assert stops == [_eos(tokenizer)]
+    expected = [
+        _eos(tokenizer),
+        tokenizer.encode("<|user|>", add_special_tokens=False)[0],
+        tokenizer.encode("<|observation|>", add_special_tokens=False)[0],
+    ]
+    assert stops == expected
+    assert all(
+        len(tokenizer.encode(tag, add_special_tokens=False)) == 1
+        for tag in ("<|user|>", "<|observation|>")
+    )
 
 
 def test_generation_suffix_is_role_tag(tokenizer, renderer):
@@ -1137,8 +1146,43 @@ def test_parse_response_roundtrip(tokenizer, renderer):
         assert "hello" in content
 
 
+def test_parse_response_stops_at_user_role(tokenizer, renderer):
+    simulated = "<think></think>first answer<|user|>next question"
+    ids = tokenizer.encode(simulated, add_special_tokens=False)
+    message, ok = renderer.parse_response(ids)
+
+    assert ok is True
+    content = message["content"]
+    text = content if isinstance(content, str) else "".join(
+        p.get("text", "") for p in content if p.get("type") == "text"
+    )
+    assert "first answer" in text
+    assert "next question" not in text
+
+
+def test_parse_response_stops_at_observation_role_and_extracts_tool_call(
+    tokenizer, renderer
+):
+    simulated = (
+        "<think>need weather</think>"
+        "<tool_call>get_weather"
+        "<arg_key>city</arg_key><arg_value>SF</arg_value>"
+        "</tool_call>"
+        "<|observation|><tool_response>sunny</tool_response>"
+    )
+    ids = tokenizer.encode(simulated, add_special_tokens=False)
+    message, ok = renderer.parse_response(ids)
+
+    assert ok is True
+    assert message["tool_calls"][0].function.name == "get_weather"
+    assert json.loads(message["tool_calls"][0].function.arguments) == {"city": "SF"}
+    content = message["content"]
+    assert isinstance(content, list)
+    assert content == [{"type": "thinking", "thinking": "need weather"}]
+
+
 def test_parse_response_no_stop_token(tokenizer, renderer):
-    """parse_response should return ok=False if no EOS is present."""
+    """parse_response should return ok=False if no stop marker is present."""
     simulated = "\n<think></think>\nno stop here"
     ids = tokenizer.encode(simulated, add_special_tokens=False)
     _, ok = renderer.parse_response(ids)

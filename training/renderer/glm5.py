@@ -76,6 +76,7 @@ Multimodal content is left for a future extension.
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from collections.abc import Mapping
 from typing import Any
@@ -90,12 +91,19 @@ from tinker_cookbook.renderers.base import (
     Role,
     ToolCall,
     TrainOnWhat,
-    parse_response_for_stop_token,
+    UnparsedToolCall,
     parse_think_blocks,
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 _BOS_TEXT = "[gMASK]<sop>"
+_USER_TEXT = "<|user|>"
+_OBSERVATION_TEXT = "<|observation|>"
+_TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+_TOOL_ARG_RE = re.compile(
+    r"<arg_key>(.*?)</arg_key><arg_value>(.*?)</arg_value>",
+    re.DOTALL,
+)
 
 
 def _visible_text(content: Any) -> str:
@@ -139,6 +147,66 @@ def _format_tool_calls(tool_calls: list[ToolCall]) -> str:
         )
         parts.append(f"<tool_call>{tc.function.name}{kv}</tool_call>")
     return "".join(parts)
+
+
+def _parse_arg_value(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _parse_tool_call(
+    raw_body: str,
+    raw_text: str,
+) -> tuple[ToolCall | None, UnparsedToolCall | None]:
+    first_arg = raw_body.find("<arg_key>")
+    name = raw_body[:first_arg].strip() if first_arg >= 0 else raw_body.strip()
+    if not name:
+        return None, UnparsedToolCall(raw_text=raw_text, error="No tool name found")
+
+    arguments = {
+        match.group(1): _parse_arg_value(match.group(2))
+        for match in _TOOL_ARG_RE.finditer(raw_body)
+    }
+    cleaned_body = _TOOL_ARG_RE.sub("", raw_body).strip()
+    trailing = cleaned_body.removeprefix(name).strip()
+    unparsed = (
+        UnparsedToolCall(
+            raw_text=raw_text,
+            error=f"Unexpected content inside <tool_call>: {trailing!r}",
+        )
+        if trailing
+        else None
+    )
+    return (
+        ToolCall(
+            function=ToolCall.FunctionBody(
+                name=name,
+                arguments=json.dumps(arguments, ensure_ascii=False),
+            )
+        ),
+        unparsed,
+    )
+
+
+def _extract_tool_calls_from_content(
+    content: str,
+) -> tuple[str, list[ToolCall], list[UnparsedToolCall]]:
+    cleaned_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+    unparsed_tool_calls: list[UnparsedToolCall] = []
+    pos = 0
+    for match in _TOOL_CALL_RE.finditer(content):
+        cleaned_parts.append(content[pos : match.start()])
+        tool_call, unparsed = _parse_tool_call(match.group(1), match.group(0))
+        if tool_call is not None:
+            tool_calls.append(tool_call)
+        if unparsed is not None:
+            unparsed_tool_calls.append(unparsed)
+        pos = match.end()
+    cleaned_parts.append(content[pos:])
+    return "".join(cleaned_parts), tool_calls, unparsed_tool_calls
 
 
 def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
@@ -192,8 +260,25 @@ class GLM5Renderer(Renderer):
             )
         return int(eos)
 
+    def _encode_single_special(self, token_str: str) -> int:
+        token_ids = self.tokenizer.encode(token_str, add_special_tokens=False)
+        if len(token_ids) != 1:
+            raise RuntimeError(
+                f"GLM5Renderer expected {token_str!r} to encode as one token, "
+                f"got {token_ids}."
+            )
+        return int(token_ids[0])
+
+    @property
+    def _user_token(self) -> int:
+        return self._encode_single_special(_USER_TEXT)
+
+    @property
+    def _observation_token(self) -> int:
+        return self._encode_single_special(_OBSERVATION_TEXT)
+
     def get_stop_sequences(self) -> list[int]:
-        return [self._end_message_token]
+        return [self._end_message_token, self._user_token, self._observation_token]
 
     def build_supervised_examples(
         self,
@@ -365,17 +450,31 @@ class GLM5Renderer(Renderer):
         return self.tokenizer.encode(suffix_str, add_special_tokens=False)
 
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
-        assistant_message, ok = parse_response_for_stop_token(
-            response=response,
-            tokenizer=self.tokenizer,
-            stop_token=self._end_message_token,
+        end_idx = len(response)
+        for stop_token in self.get_stop_sequences():
+            try:
+                idx = response.index(stop_token)
+            except ValueError:
+                continue
+            end_idx = min(end_idx, idx)
+        ok = end_idx < len(response)
+        assistant_message = Message(
+            role="assistant",
+            content=str(self.tokenizer.decode(response[:end_idx])),
         )
         if not ok:
             return assistant_message, False
         assert isinstance(assistant_message["content"], str)
         content = assistant_message["content"].lstrip("\n")
+        content, tool_calls, unparsed_tool_calls = _extract_tool_calls_from_content(
+            content
+        )
         parts = parse_think_blocks(content)
         assistant_message["content"] = parts if parts is not None else content
+        if tool_calls:
+            assistant_message["tool_calls"] = tool_calls
+        if unparsed_tool_calls:
+            assistant_message["unparsed_tool_calls"] = unparsed_tool_calls
         return assistant_message, True
 
 
