@@ -159,6 +159,15 @@ def _assistant_stop_token(tokenizer, message: dict[str, Any]) -> int:
     )
 
 
+def _find_subsequence(
+    tokens: list[int], subsequence: list[int], *, start: int = 0
+) -> int:
+    for i in range(start, len(tokens) - len(subsequence) + 1):
+        if tokens[i : i + len(subsequence)] == subsequence:
+            return i
+    raise AssertionError(f"Subsequence not found: {subsequence}")
+
+
 def _assert_supervised_parity_with_role_stop(
     ours: list[int],
     hf: list[int],
@@ -1085,10 +1094,45 @@ def test_weight_mask_tool_call_stop_uses_observation(tokenizer, renderer):
     assert _user_token(tokenizer) not in trained_tokens
 
 
+def test_weight_mask_terminal_tool_call_with_thinking_appends_observation_stop(
+    tokenizer, renderer_keep_thinking
+):
+    """Final assistant tool-call rows append/train <|observation|>."""
+    messages = [
+        {"role": "user", "content": "q1"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "answer first"},
+                {"type": "text", "text": "a1"},
+            ],
+        },
+        {"role": "user", "content": "lookup weather"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "need lookup"},
+                {"type": "text", "text": ""},
+            ],
+            "tool_calls": [_make_tool_call("lookup", {"q": "weather"})],
+        },
+    ]
+    tokens, weights = _renderer_supervised_tokens(renderer_keep_thinking, messages)
+    trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
+
+    assert tokens[-1] == _observation_token(tokenizer)
+    assert weights[-1] == 1
+    assert trained_tokens[-1] == _observation_token(tokenizer)
+
+    trained_text = tokenizer.decode(trained_tokens)
+    assert "<think>need lookup</think>" in trained_text
+    assert "<tool_call>lookup" in trained_text
+
+
 def test_weight_mask_trains_role_stops_after_historical_assistants(
     tokenizer, renderer
 ):
-    """Next role tags after trainable assistant turns must carry loss."""
+    """Only role tags that close assistant turns carry loss."""
     messages = [
         {"role": "user", "content": "q1"},
         {"role": "assistant", "content": "a1"},
@@ -1104,18 +1148,35 @@ def test_weight_mask_trains_role_stops_after_historical_assistants(
     tokens, weights = _renderer_supervised_tokens(renderer, messages)
     user = _user_token(tokenizer)
     observation = _observation_token(tokenizer)
+    first_user = tokenizer.encode("<|user|>q1", add_special_tokens=False)
+    second_user = tokenizer.encode("<|user|>q2", add_special_tokens=False)
+    tool_call_close = _encode_single(tokenizer, "</tool_call>")
 
-    user_positions = [i for i, token in enumerate(tokens) if token == user]
-    observation_positions = [
-        i for i, token in enumerate(tokens) if token == observation
-    ]
+    first_user_pos = _find_subsequence(tokens, first_user)
+    second_user_pos = _find_subsequence(tokens, second_user)
+    tool_call_end = tokens.index(tool_call_close)
+    observation_pos = tool_call_end + 1
 
-    assert len(user_positions) == 3
-    assert weights[user_positions[0]] == 0
-    assert weights[user_positions[1]] == 1
-    assert weights[user_positions[2]] == 1
-    assert len(observation_positions) == 1
-    assert weights[observation_positions[0]] == 1
+    assert tokens[first_user_pos] == user
+    assert weights[first_user_pos] == 0
+    assert all(
+        w == 0
+        for w in weights[first_user_pos + 1 : first_user_pos + len(first_user)]
+    )
+
+    assert tokens[second_user_pos] == user
+    assert weights[second_user_pos] == 1
+    assert all(
+        w == 0
+        for w in weights[
+            second_user_pos + 1 : second_user_pos + len(second_user)
+        ]
+    )
+
+    assert tokens[observation_pos] == observation
+    assert weights[observation_pos] == 1
+    assert tokens[-1] == user
+    assert weights[-1] == 1
 
 
 def test_weight_mask_multi_turn_tool_call_with_thinking_trains_observation_stop(
