@@ -2,26 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import sys
-import types
-from pathlib import Path
-import importlib.util
 
-errors_module = types.ModuleType("fireworks.training.sdk.errors")
-errors_module.request_with_retries = lambda fn, *args, **kwargs: fn(*args, **kwargs)
-sys.modules.setdefault("fireworks", types.ModuleType("fireworks"))
-sys.modules.setdefault("fireworks.training", types.ModuleType("fireworks.training"))
-sys.modules.setdefault("fireworks.training.sdk", types.ModuleType("fireworks.training.sdk"))
-sys.modules.setdefault("fireworks.training.sdk.errors", errors_module)
-
-spec = importlib.util.spec_from_file_location(
-    "training_utils_data",
-    Path(__file__).parents[1] / "utils" / "data.py",
-)
-assert spec and spec.loader
-data_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(data_module)
-RLPromptDataset = data_module.RLPromptDataset
+from training.tests._dataloader_test_helpers import load_dataloader_test_modules
 
 
 @dataclass
@@ -29,20 +11,9 @@ class _PromptGroup:
     rewards: list[float]
 
 
-losses_module = types.ModuleType("training.utils.rl.losses")
-losses_module.PromptGroup = _PromptGroup
-sys.modules.setdefault("training.utils.rl.losses", losses_module)
-
-train_spec = importlib.util.spec_from_file_location(
-    "training_utils_rl_train",
-    Path(__file__).parents[1] / "utils" / "rl" / "train.py",
+RLPromptDataset, TrainStepFns, run_rl_loop = load_dataloader_test_modules(
+    "rl_prompt_dataset", prompt_group_cls=_PromptGroup,
 )
-assert train_spec and train_spec.loader
-train_module = importlib.util.module_from_spec(train_spec)
-sys.modules[train_spec.name] = train_module
-train_spec.loader.exec_module(train_module)
-TrainStepFns = train_module.TrainStepFns
-run_rl_loop = train_module.run_rl_loop
 
 
 def test_rl_prompt_dataset_resumes_from_persisted_cursor():
