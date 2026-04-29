@@ -16,20 +16,38 @@ beyond the standard cookbook dev environment.
 
 ## Run
 
+End-to-end flow (GLM5 on B300):
+
 ```bash
+# 1) Spin up a deployment. The default --shape is the GLM5-on-B300
+#    versioned deployment shape; --shape also accepts a training-shape
+#    resource and resolves its pinned deployment_shape_version.
+MODEL=$(python -m training.verifier.spinup_deployment up \
+    --base-model accounts/fireworks/models/glm-5p1 \
+    --shape accounts/fireworks/deploymentShapes/glm-5p1-b300/versions/jqami1br \
+    --deployment-id my-glm5-probe | tail -1)
+
+# 2) Probe one input
 python -m training.verifier render \
     --renderer glm5 \
     --tokenizer-model zai-org/GLM-5.1 \
-    --model accounts/fireworks/models/glm-5p1 \
-    --input examples/glm5_single_turn.json \
-    --output viz/probes/glm5-single-turn.json
+    --model "$MODEL" \
+    --input training/verifier/examples/glm5_single_turn.json \
+    --output probes/glm5-single-turn.json
+
+# 3) Tear down when done
+python -m training.verifier.spinup_deployment down --deployment-id my-glm5-probe
 ```
 
 `--model` is the Fireworks model identifier passed to
-`chat.completions.create`. For a personal deployment use
-`accounts/<acct>/deployedModels/<id>`; spinning the deployment up or
-down is out of scope for this tool — pair it with the existing helper
-script (the same pattern `rl_loop` uses).
+`chat.completions.create`. For a personal deployment the spinup helper
+prints `accounts/<acct>/deployments/<id>` on its last stdout line; pipe
+that through to the probe via `--model`.
+
+`spinup_deployment` accepts either a deployment shape or a training
+shape; for either, versioned input is used as-is and unversioned input
+resolves to the latest validated version. Training-shape input is
+resolved to the pinned `deployment_shape_version` from its profile.
 
 `--api-key` falls back to `FIREWORKS_API_KEY`. `--base-url` falls back
 to `FIREWORKS_BASE_URL`.
