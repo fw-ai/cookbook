@@ -152,6 +152,18 @@ accepted the tokens. If it's `false`, the probe falls back to feeding
 the raw text in as `content` (best-effort) and you should treat the
 trailing rows of the audit table with care.
 
+## Verified against (this PR)
+
+| Renderer | Camp | Model used in e2e | Result |
+|---|---|---|---|
+| `glm5` | A (next-role-tag stop) | `accounts/fireworks/models/glm-5p1` (serverless) | Clean. Trailing `<\|user\|>` in `stop_overlap` is `native_generated` (model emits it). Leading `<think>` in `output` is `prompt_hard_append` with `w=0.0` (renderer's customization split it off, matches empirical). |
+| `qwen3` | B (`<\|im_end\|>` in output) | `accounts/fireworks/models/qwen3-8b` (serverless) | Clean. Trailing `<\|im_end\|>` is `output` / `w=1.0` / `native_generated`. No `stop_overlap` row, by Camp B design. |
+
+The two cases exercise the only two structural shapes the probe currently
+handles, so the next renderer to add (Gemma4, MiniMax M2, Nemotron, Kimi
+K2.5) plugs in without changes — only a new tokenizer pin and an example
+fixture.
+
 ## What's next
 
 Follow-up PRs in this series:
