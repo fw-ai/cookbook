@@ -726,19 +726,18 @@ def main(
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
+            rl_dataset.record_batch(loop_stats, accepted_rows=len(prompt_groups))
+
             # 5. Weight sync
             if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
                 with timer("weight_sync"):
                     weight_syncer.save_and_hotload(f"step-{step}")
             if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    step - step_offset
-                ) * prompt_groups_per_step
                 ckpt.save(
                     f"step-{step}",
                     resumable=True,
                     promotable=False,
-                    data_consumed=_data_consumed,
+                    data_consumed=rl_dataset.data_consumed,
                 )
 
             # 6. Metrics
@@ -781,9 +780,13 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        remaining_rows = []
-        for i_step in range(step_offset, len(rl_dataset)):
-            remaining_rows.extend(rl_dataset.get_batch(i_step))
+        # Prefer the persisted raw-row cursor; fall back to the old step-derived
+        # cursor when resuming checkpoints that predate dataloader.json.
+        rl_dataset.resume(
+            resume_info.data_consumed if resume_info else None,
+            fallback_step=step_offset,
+        )
+        remaining_rows = rl_dataset.rows_from_cursor()
 
         total_rl_steps = len(rl_dataset) - step_offset
         runner.start_training()
@@ -803,15 +806,12 @@ def main(
         # Final checkpoint
         if global_step > step_offset:
             try:
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    global_step - step_offset
-                ) * prompt_groups_per_step
                 cp_name = f"step-{global_step}"
                 ckpt.save(
                     cp_name,
                     resumable=True,
                     promotable=True,
-                    data_consumed=_data_consumed,
+                    data_consumed=rl_dataset.data_consumed,
                 )
                 if getattr(cfg, "output_model_id", None):
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

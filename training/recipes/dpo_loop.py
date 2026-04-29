@@ -291,12 +291,13 @@ async def _train_loop(
     cfg: Config,
     step_offset: int,
     *,
+    prior_data_consumed: int = 0,
     ckpt: TrainingCheckpoints | None = None,
     worker_init_fn: Callable[[int], None] | None = None,
     on_ref_done: Callable[[], None] | None = None,
     runner: RunnerIO | None = None,
     training_shape_id: str | None = None,
-) -> int:
+) -> tuple[int, int]:
     """Pipelined DPO training -- streaming render + ref forward overlap policy.
 
     Epoch 0 runs a producer/consumer pipeline with an unbounded queue:
@@ -357,11 +358,19 @@ async def _train_loop(
 
         if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
             with timer("dcp_save"):
+                # raw_rows_consumed is the producer-side counter (raw rows
+                # pulled from the loader, including render-filtered ones).
+                # It is the same accounting unit SFT/RL persist, so resume
+                # state across recipes is comparable. There is a small
+                # producer-vs-trainer race here -- raw_rows_consumed may
+                # reflect rows rendered ahead of the trainer -- but this
+                # value is informational; DPO resume re-iterates the
+                # DataLoader and uses step_offset, not data_consumed.
                 ckpt.save(
                     f"step-{step}",
                     resumable=True,
                     promotable=False,
-                    data_consumed=(step - step_offset) * cfg.batch_size,
+                    data_consumed=prior_data_consumed + raw_rows_consumed,
                 )
 
         step_elapsed = time.monotonic() - step_t0
@@ -516,9 +525,13 @@ async def _train_loop(
             if chunk:
                 _run_train_step(epoch, chunk)
                 pbar.update(1)
+            # Each completed replay epoch consumes the same source rows
+            # again. Approximation: total_raw_rows per epoch (drops are
+            # not re-streamed; cache holds only post-filter pairs).
+            raw_rows_consumed += total_raw_rows
 
     pbar.close()
-    return step
+    return step, raw_rows_consumed
 
 
 # ---------------------------------------------------------------------------
@@ -698,11 +711,13 @@ def main(
             except Exception as e:
                 logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
 
+        prior_data_consumed = resume_info.data_consumed if resume_info else 0
         runner.start_training()
-        step = asyncio.run(
+        step, raw_rows_consumed = asyncio.run(
             _train_loop(
                 pair_dataset, ref_cache_log,
                 reference, policy, adam_params, cfg, step_offset,
+                prior_data_consumed=prior_data_consumed,
                 ckpt=ckpt,
                 worker_init_fn=worker_init_fn,
                 on_ref_done=_on_ref_done,
@@ -719,7 +734,7 @@ def main(
                 cp_name,
                 resumable=True,
                 promotable=True,
-                data_consumed=(step - step_offset) * cfg.batch_size,
+                data_consumed=prior_data_consumed + raw_rows_consumed,
             )
 
             if getattr(cfg, "output_model_id", None):

@@ -308,7 +308,7 @@ class TestTrainLoop:
             render_workers=0,
         )
         ref_done = []
-        step = asyncio.run(
+        step, raw_rows_consumed = asyncio.run(
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
@@ -320,6 +320,7 @@ class TestTrainLoop:
         )
         # 4 pairs / batch_size=2 -> 2 train steps
         assert step == 2
+        assert raw_rows_consumed == 4
         assert ref_done == [True]
         assert len(events["flush_batches"]) == 2
         for batch, beta in events["flush_batches"]:
@@ -339,7 +340,7 @@ class TestTrainLoop:
                 log_path=str(tmp_path), beta=0.1, epochs=3, batch_size=2,
                 render_workers=0,
             )
-            step = asyncio.run(
+            step, raw_rows_consumed = asyncio.run(
                 module._train_loop(
                     ds, ref_cache,
                     _FakeReference(), _FakePolicy(),
@@ -349,6 +350,8 @@ class TestTrainLoop:
             )
             # 4 pairs * 3 epochs / batch_size=2 = 6 steps
             assert step == 6
+            # Epoch 0 consumes 4 raw rows; replay epochs 1 and 2 add 4 each.
+            assert raw_rows_consumed == 12
             assert len(events["flush_batches"]) == 6
 
             # Ref cache must contain all 4 pairs in producer order; epochs 1+
@@ -398,7 +401,7 @@ class TestTrainLoop:
             ref_cache_concurrency=4, render_workers=0,
         )
         t0 = time.monotonic()
-        step = asyncio.run(
+        step, _ = asyncio.run(
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
@@ -475,7 +478,7 @@ class TestTrainLoop:
             max_pairs=2,
         )
 
-        step = asyncio.run(
+        step, _ = asyncio.run(
             module._train_loop(
                 ds, None, _FakeReference(), _FakePolicy(),
                 adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
@@ -546,6 +549,111 @@ class TestTrainLoop:
 
         assert executed["count"] == 3
         assert reported_total_steps["value"] == 3
+
+    def test_data_consumed_includes_render_drops(self, tmp_path, monkeypatch):
+        """data_consumed at DCP save time must reflect *raw* rows pulled
+        from the loader, including rows that rendered to None. The old
+        ``(step - step_offset) * batch_size`` formula counted only
+        post-filter pairs and drifted on every render-filtered row."""
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        path = tmp_path / "pairs.jsonl"
+        with open(path, "w") as f:
+            for i in range(6):
+                f.write(json.dumps({"i": i}) + "\n")
+
+        def render_drop_some(row: dict) -> dict | None:
+            # Drop rows 1 and 4: 4 raw rows render to a pair, 2 are filtered.
+            if row["i"] in {1, 4}:
+                return None
+            return _make_pair(row["i"])
+
+        ds = JsonlRenderDataset(str(path), render_drop_some)
+        cfg = module.Config(
+            log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
+            dcp_save_interval=1,
+        )
+
+        saves: list[dict] = []
+
+        class _CapturingCkpt:
+            def save(self, name, *, resumable, promotable, data_consumed):
+                saves.append({"name": name, "data_consumed": data_consumed})
+
+        step, raw_rows_consumed = asyncio.run(
+            module._train_loop(
+                ds, None,
+                _FakeReference(), _FakePolicy(),
+                adam_params={"lr": 1e-4},
+                cfg=cfg, step_offset=0,
+                ckpt=_CapturingCkpt(),
+            )
+        )
+        # 4 valid pairs / batch_size=2 = 2 train steps; producer pulled all 6 raw rows.
+        assert step == 2
+        assert raw_rows_consumed == 6
+        # Final DCP save records raw rows (incl. drops), not just the 4 trained pairs.
+        assert saves[-1]["data_consumed"] == 6
+
+    def test_data_consumed_threads_prior_value_on_resume(self, tmp_path, monkeypatch):
+        """A resume from a ckpt with data_consumed=N must persist N + new_raw_rows.
+        Resume cumulative accounting matches SFT/RL semantics."""
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        ds = _make_pair_dataset(tmp_path, n=4)
+        cfg = module.Config(
+            log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
+            dcp_save_interval=1,
+        )
+
+        saves: list[int] = []
+
+        class _CapturingCkpt:
+            def save(self, name, *, resumable, promotable, data_consumed):
+                saves.append(data_consumed)
+
+        step, raw_rows_consumed = asyncio.run(
+            module._train_loop(
+                ds, None,
+                _FakeReference(), _FakePolicy(),
+                adam_params={"lr": 1e-4},
+                cfg=cfg, step_offset=10,
+                prior_data_consumed=100,
+                ckpt=_CapturingCkpt(),
+            )
+        )
+        # 4 raw rows this run; cumulative cursor is 100 (prior) + 4 (new) = 104.
+        assert raw_rows_consumed == 4
+        assert saves[-1] == 104
+
+    def test_data_consumed_grows_per_epoch_in_multi_epoch(self, tmp_path, monkeypatch):
+        """Multi-epoch replay must keep advancing data_consumed by ``total_raw_rows``
+        per replay epoch — otherwise the audit count plateaus after epoch 0."""
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        ds = _make_pair_dataset(tmp_path, n=4)
+        ref_cache_path = str(tmp_path / "ref_cache.pkl")
+        ref_cache = AppendOnlyPickleLog(ref_cache_path)
+        try:
+            cfg = module.Config(
+                log_path=str(tmp_path), epochs=3, batch_size=2, render_workers=0,
+            )
+            step, raw_rows_consumed = asyncio.run(
+                module._train_loop(
+                    ds, ref_cache,
+                    _FakeReference(), _FakePolicy(),
+                    adam_params={"lr": 1e-4},
+                    cfg=cfg, step_offset=0,
+                )
+            )
+            # 4 rows × 3 epochs = 12 raw rows accounted for.
+            assert step == 6
+            assert raw_rows_consumed == 12
+        finally:
+            ref_cache.close()
 
 
 # ---------------------------------------------------------------------------
