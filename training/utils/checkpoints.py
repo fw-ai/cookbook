@@ -60,6 +60,7 @@ class ResumeInfo:
     """Resolved resume state returned by :meth:`TrainingCheckpoints.resume`."""
 
     step: int = 0
+    #: Cumulative raw rows from the source dataset (incl. drops / sample failures), across all runs.
     data_consumed: int = 0
     source_job_id: str | None = None
 

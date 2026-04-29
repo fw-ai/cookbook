@@ -184,6 +184,9 @@ async def _run_pipeline_window(
                     all_raw_rewards = []
                     step_start = time.time()
 
+            # TODO: drops/fails arriving after the last full-batch dispatch in
+            # a window are uncounted (cursor under-counts). See
+            # test_tail_drops_in_window_are_unaccounted.
             if buffer:
                 wall = time.time() - step_start
                 logger.info(
