@@ -1242,7 +1242,13 @@ def test_weight_mask_multi_turn_tool_call_with_thinking_trains_observation_stop(
 def test_weight_mask_parallel_tool_responses_train_single_observation_stop(
     tokenizer, renderer_keep_thinking
 ):
-    """Parallel tool-call responses share one trained observation stop."""
+    """Parallel tool responses share one observation stop.
+
+    The model generates the assistant tool-call block and should learn to stop
+    by producing ``<|observation|>``. The following tool responses are
+    environment-provided context, so their ``<tool_response>...</tool_response>``
+    spans must stay masked even when multiple tool messages follow.
+    """
     messages = [
         {"role": "user", "content": "Plan with two tools"},
         {
@@ -1270,14 +1276,8 @@ def test_weight_mask_parallel_tool_responses_train_single_observation_stop(
     observation = _observation_token(tokenizer)
     user = _user_token(tokenizer)
     tool_call_close = _encode_single(tokenizer, "</tool_call>")
-    first_response = tokenizer.encode(
-        "<tool_response>WEATHER_RESULT_ABC</tool_response>",
-        add_special_tokens=False,
-    )
-    second_response = tokenizer.encode(
-        "<tool_response>CONVERT_RESULT_XYZ</tool_response>",
-        add_special_tokens=False,
-    )
+    first_response_text = "<tool_response>WEATHER_RESULT_ABC</tool_response>"
+    second_response_text = "<tool_response>CONVERT_RESULT_XYZ</tool_response>"
 
     observation_positions = [
         i for i, token in enumerate(tokens) if token == observation
@@ -1285,24 +1285,32 @@ def test_weight_mask_parallel_tool_responses_train_single_observation_stop(
     tool_call_close_positions = [
         i for i, token in enumerate(tokens) if token == tool_call_close
     ]
-    first_response_pos = _find_subsequence(tokens, first_response)
-    second_response_pos = _find_subsequence(tokens, second_response)
 
+    # The two parallel tool calls are both model output. The single
+    # observation tag that follows the last tool call is the model's stop token.
     assert len(tool_call_close_positions) == 2
-    assert observation_positions == [tool_call_close_positions[-1] + 1]
-    assert weights[observation_positions[0]] == 1
-    assert all(
-        w == 0
-        for w in weights[
-            first_response_pos : first_response_pos + len(first_response)
+    assert len(observation_positions) == 1
+    observation_pos = observation_positions[0]
+    assert observation_pos == tool_call_close_positions[-1] + 1
+    assert weights[observation_pos] == 1
+
+    def assert_tool_response_span_is_masked(response_text: str) -> None:
+        response_tokens = tokenizer.encode(response_text, add_special_tokens=False)
+        response_start = _find_subsequence(tokens, response_tokens)
+        response_weights = weights[
+            response_start : response_start + len(response_tokens)
         ]
-    )
-    assert all(
-        w == 0
-        for w in weights[
-            second_response_pos : second_response_pos + len(second_response)
-        ]
-    )
+
+        assert response_weights == [0.0] * len(response_tokens), (
+            f"Tool response {response_text!r} is environment output and should "
+            f"be masked, got weights {response_weights}"
+        )
+
+    assert_tool_response_span_is_masked(first_response_text)
+    assert_tool_response_span_is_masked(second_response_text)
+
+    # The final assistant answer is a normal assistant turn, so its synthetic
+    # terminal stop is <|user|>, separate from the earlier tool-call stop.
     assert tokens[-1] == user
     assert weights[-1] == 1
 
