@@ -1,13 +1,23 @@
 # Renderer verifier
 
-Phase 0 of the renderer verifier: an **empirical probe**. Renders a
-conversation with the cookbook renderer, asks a deployed Fireworks model
-to complete the assistant turn, and emits a JSON artifact whose audit
-table pairs the renderer's per-token claim against empirical provenance.
+Two complementary probes, intentionally separate so CI doesn't depend
+on a deployment and the live-only checks don't pretend to validate
+renderer↔upstream HF intent on their own.
 
-The probe is observational. It does not produce verdicts. Verdict
-layers (L1 spec-driven CPU checks, L2 corpus-scale deployed checks)
-ship in follow-up PRs and consume the same JSON envelope.
+| Layer | Question it answers | Code | Output | Where it runs |
+|---|---|---|---|---|
+| **CPU — HF parity** | Does the renderer match upstream HF's canonical chat template (byte-for-byte)? | `hf_parity.py` + `tests/unit/test_renderer_hf_parity.py` | pytest assertions (no JSON) | Cookbook PR CI on every change |
+| **Live — empirical probe** | Does the renderer match what the deployed model actually emits? | `probe.py` (`verifier render` CLI) | JSON audit-table artifact | Manual / nightly, needs a Fireworks API key |
+
+A renderer can pass one and still fail the other; both are needed.
+A live FAIL with a CPU PASS means the **gateway is stale** relative
+to upstream HF. A CPU FAIL with a live PASS means the renderer +
+gateway agree but both have drifted from upstream HF. A FAIL on
+both means the renderer is wrong by every reference.
+
+The live probe is observational only — it produces no verdicts.
+Spec-driven verdict layers (Phase 1) ship in follow-up PRs and
+consume the same JSON envelope.
 
 ## Install
 
@@ -16,7 +26,21 @@ beyond the standard cookbook dev environment.
 
 ## Run
 
-End-to-end flow (GLM5 on B300):
+### CPU layer — HF parity tests
+
+```bash
+# Runs as part of cookbook's standard pytest pass; nothing extra to invoke
+# in CI. To run locally:
+python -m pytest training/tests/unit/test_renderer_hf_parity.py -v
+```
+
+The tests skip cleanly when the upstream tokenizer can't be downloaded
+(network outage, gated repo) so CI without HF Hub access still
+completes. Cases marked `xfail` track known divergences (see
+`renderer-verifier-findings.md` in this workspace) and flip to PASS
+when fixed; a fix landing makes the test green automatically.
+
+### Live layer — empirical probe
 
 ```bash
 # 1) Spin up a deployment. The default --shape is the GLM5-on-B300
@@ -154,15 +178,27 @@ trailing rows of the audit table with care.
 
 ## Verified against (this PR)
 
-| Renderer | Camp | Model used in e2e | Result |
-|---|---|---|---|
-| `glm5` | A (next-role-tag stop) | `accounts/fireworks/models/glm-5p1` (serverless) | Clean. Trailing `<\|user\|>` in `stop_overlap` is `native_generated` (model emits it). Leading `<think>` in `output` is `prompt_hard_append` with `w=0.0` (renderer's customization split it off, matches empirical). |
-| `qwen3` | B (`<\|im_end\|>` in output) | `accounts/fireworks/models/qwen3-8b` (serverless) | Clean. Trailing `<\|im_end\|>` is `output` / `w=1.0` / `native_generated`. No `stop_overlap` row, by Camp B design. |
+CPU HF parity (CI):
 
-The two cases exercise the only two structural shapes the probe currently
-handles, so the next renderer to add (Gemma4, MiniMax M2, Nemotron, Kimi
-K2.5) plugs in without changes — only a new tokenizer pin and an example
-fixture.
+| Renderer | Tokenizer | Result |
+|---|---|---|
+| `glm5` | `zai-org/GLM-5.1` (single + multi-turn) | PASS |
+| `qwen3` (default thinking) | `Qwen/Qwen3-8B` (single + multi-turn) | PASS |
+| `qwen3_disable_thinking` | `Qwen/Qwen3-8B` (`enable_thinking=False`) | PASS |
+| `kimi_k25` | `moonshotai/Kimi-K2.5` | PASS |
+| `minimax_m2` | `MiniMaxAI/MiniMax-M2` | XFAIL — extra `\n` after `<think>` in renderer's generation suffix |
+
+Live empirical probe (manual):
+
+| Renderer | Camp | Model | Result |
+|---|---|---|---|
+| `glm5` | A | `accounts/fireworks/models/glm-5p1` | Clean. Trailing `<\|user\|>` is `stop_overlap` / `w=1.0` / `native_generated` (model emits it; training reinforces). Leading `<think>` is `output` / `w=0.0` / `prompt_hard_append`. |
+| `qwen3` (thinking) | B | `accounts/fireworks/models/qwen3-8b` | Clean. Trailing `<\|im_end\|>` is `output` / `w=1.0` / `native_generated`. |
+| `qwen3_disable_thinking` | B | `accounts/fireworks/models/qwen3-8b` | FAIL prompt parity vs gateway, but **CPU passes** → gateway is stale on the disable-thinking flag, not a renderer bug. |
+
+The combination is what makes triage tractable. CPU-pass + live-fail
+isolates gateway staleness; CPU-fail + live-fail isolates renderer
+bug; CPU-pass + live-pass is full validation.
 
 ## What's next
 
