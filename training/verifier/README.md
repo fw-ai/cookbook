@@ -142,6 +142,36 @@ JSON, one file per probe. Top-level fields:
   - `tokenization_diverged`: the renderer's re-tokenisation of the
     completion text disagrees with the deployment's token stream.
 
+### Visual review — React viewer
+
+Probe artifacts are JSON-native by design but reading them as raw JSON
+gets old fast. `training/verifier/viewer/index.html` is a single-file
+React app (React 18 + Babel from CDN, no build step) that renders the
+audit table as a colour-coded token stream:
+
+* **Background colour** = provenance bucket
+  (`prompt_hard_append` / `native_generated` / `trailing_hard_append` /
+  `tokenization_diverged`).
+* **Left border colour** = `chunk_source`
+  (`bos` / `header` / `output` / `stop_overlap` / `generation_suffix`).
+* **Underline** = `renderer_claim_weight > 0` (trainable token).
+* **Magenta bold** = token id is in `tokenizer.special_tokens`
+  (the special-token map from `tokenizer.json`).
+* **Hover** any token for the full audit row.
+
+Open `training/verifier/viewer/index.html` directly in a browser
+(`file://...`) and either pick a probe JSON via the file input or
+drop the JSON onto the picker row. Filters at the top let you hide
+specific provenance buckets, restrict to trainable tokens only, or
+restrict to special tokens only.
+
+The viewer is intentionally CDN-only and dependency-free so it can
+ship inside the repo and run from any developer's filesystem without
+a Node toolchain. If we later want a richer GUI (multi-artifact diff,
+sweep summary view), it should keep the same JSON contract — the
+audit-table schema is the long-lived artifact, the viewer is just a
+lens on top.
+
 ### What to look for as a spec author
 
 - Rows where `renderer_claim_weight = 1.0` but `provenance =

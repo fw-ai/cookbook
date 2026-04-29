@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Renderer Verifier — Probe Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-soft: #fafafa;
+      --fg: #1f1f1f;
+      --fg-muted: #6a6a6a;
+      --border: #e5e5e5;
+      --border-strong: #cfcfcf;
+
+      /* Provenance backgrounds (subtle pastels) */
+      --prov-prompt: #eaf3fc;
+      --prov-native: #e8f5ea;
+      --prov-trailing: #fff2e0;
+      --prov-diverged: #ffe8e8;
+
+      /* Chunk-source left-borders */
+      --chunk-bos: #8e24aa;
+      --chunk-header: #5e35b1;
+      --chunk-output: #2e7d32;
+      --chunk-stopover: #ef6c00;
+      --chunk-genprefix: #0277bd;
+
+      /* Other accents */
+      --special-fg: #c2185b;        /* tokens in tokenizer.special_tokens */
+      --trainable-bar: #2e7d32;     /* renderer_claim_weight > 0 marker */
+      --warn: #d84315;
+    }
+    body {
+      margin: 0;
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+    }
+    main {
+      padding: 16px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    h2 { font-size: 14px; margin: 16px 0 6px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .file-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .file-row input[type=file] { font: inherit; }
+    details { margin-bottom: 12px; }
+    summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      column-gap: 12px;
+      row-gap: 2px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+    }
+    .meta-grid dt { color: var(--fg-muted); }
+    .meta-grid dd { margin: 0; word-break: break-all; }
+    .pill {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font: 12px/1.2 ui-monospace, "SF Mono", Menlo, monospace;
+      border: 1px solid var(--border);
+      background: var(--bg-soft);
+      margin-right: 6px;
+    }
+    .pill.ok { background: var(--prov-native); border-color: #a5d6a7; }
+    .pill.warn { background: var(--prov-trailing); border-color: #ffcc80; }
+    .pill.fail { background: var(--prov-diverged); border-color: #ef9a9a; }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      padding: 8px 10px;
+      background: var(--bg-soft);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .legend-item { display: inline-flex; align-items: center; gap: 4px; }
+    .swatch {
+      display: inline-block;
+      width: 12px; height: 12px;
+      border-radius: 2px;
+      border: 1px solid var(--border-strong);
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 14px;
+      padding: 6px 10px;
+      background: var(--bg-soft);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+    .filters label { display: inline-flex; align-items: center; gap: 4px; }
+
+    /* The token stream itself */
+    .stream {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 12px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .tok {
+      display: inline;
+      padding: 1px 1px 1px 3px;
+      margin: 0 1px 0 0;
+      border-left: 2px solid transparent;
+      border-radius: 1px;
+      cursor: default;
+    }
+    .tok.trainable { box-shadow: inset 0 -2px 0 var(--trainable-bar); }
+    .tok.special { color: var(--special-fg); font-weight: 600; }
+    .tok.diverged { outline: 1px dashed var(--warn); }
+
+    .tok-newline {
+      display: inline-block;
+      color: var(--fg-muted);
+      opacity: 0.55;
+      padding-right: 1px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 16px;
+      color: var(--fg-muted);
+      border: 1px dashed var(--border-strong);
+      border-radius: 6px;
+    }
+
+    .table-compact { border-collapse: collapse; font-size: 12px; }
+    .table-compact th, .table-compact td {
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      text-align: left;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    .table-compact th { background: var(--bg-soft); color: var(--fg-muted); font-weight: 600; }
+
+    .footer { margin-top: 24px; color: var(--fg-muted); font-size: 11px; }
+  </style>
+</head>
+<body>
+  <main id="root"></main>
+
+  <script type="text/babel">
+    const { useState, useMemo, useCallback } = React;
+
+    /* ----------------------------------------------------------------- */
+    /* Constants                                                          */
+    /* ----------------------------------------------------------------- */
+
+    const PROV_BG = {
+      prompt_hard_append:   "var(--prov-prompt)",
+      native_generated:     "var(--prov-native)",
+      trailing_hard_append: "var(--prov-trailing)",
+      tokenization_diverged:"var(--prov-diverged)",
+    };
+
+    const CHUNK_BORDER = {
+      bos:               "var(--chunk-bos)",
+      header:            "var(--chunk-header)",
+      output:            "var(--chunk-output)",
+      stop_overlap:      "var(--chunk-stopover)",
+      generation_suffix: "var(--chunk-genprefix)",
+    };
+
+    const PROVENANCES = [
+      "prompt_hard_append",
+      "native_generated",
+      "trailing_hard_append",
+      "tokenization_diverged",
+    ];
+
+    /* ----------------------------------------------------------------- */
+    /* Helpers                                                            */
+    /* ----------------------------------------------------------------- */
+
+    /** Split a decoded string into segments so newlines render as visible
+     * line breaks while keeping the token boundary visible. */
+    function renderDecoded(decoded) {
+      if (decoded == null) return null;
+      const out = [];
+      const lines = decoded.split("\n");
+      lines.forEach((line, i) => {
+        if (i > 0) {
+          out.push(<span className="tok-newline" key={`nl-${i}`}>⏎</span>);
+          out.push(<br key={`br-${i}`} />);
+        }
+        if (line.length > 0) {
+          out.push(<span key={`t-${i}`}>{line}</span>);
+        }
+      });
+      return out;
+    }
+
+    function pillStatus(value) {
+      if (value === true) return "ok";
+      if (value === false) return "fail";
+      return "";
+    }
+
+    /* ----------------------------------------------------------------- */
+    /* Components                                                         */
+    /* ----------------------------------------------------------------- */
+
+    function FilePicker({ onLoad }) {
+      const handleChange = useCallback((e) => {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        const r = new FileReader();
+        r.onload = (ev) => {
+          try {
+            const a = JSON.parse(ev.target.result);
+            onLoad(a, f.name);
+          } catch (err) {
+            alert("Could not parse JSON: " + err.message);
+          }
+        };
+        r.readAsText(f);
+      }, [onLoad]);
+
+      const handleDrop = useCallback((e) => {
+        e.preventDefault();
+        const f = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!f) return;
+        const r = new FileReader();
+        r.onload = (ev) => {
+          try {
+            const a = JSON.parse(ev.target.result);
+            onLoad(a, f.name);
+          } catch (err) {
+            alert("Could not parse JSON: " + err.message);
+          }
+        };
+        r.readAsText(f);
+      }, [onLoad]);
+
+      return (
+        <div className="file-row" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop}>
+          <input type="file" accept=".json,application/json" onChange={handleChange} />
+          <span style={{ color: "var(--fg-muted)", fontSize: 12 }}>
+            …or drop a probe JSON onto this row.
+          </span>
+        </div>
+      );
+    }
+
+    function Meta({ artifact, fileName }) {
+      const r = artifact.renderer || {};
+      const d = artifact.deployment || {};
+      const sampling = d.sampling || {};
+      return (
+        <details open>
+          <summary>{fileName ? `Probe: ${fileName}` : "Probe metadata"}</summary>
+          <dl className="meta-grid">
+            <dt>schema_version</dt><dd>{artifact.schema_version}</dd>
+            <dt>kind</dt><dd>{artifact.kind}</dd>
+            <dt>produced_at</dt><dd>{artifact.produced_at}</dd>
+            <dt>renderer</dt><dd>{r.name} <span style={{ color: "var(--fg-muted)" }}>config={JSON.stringify(r.config || {})}</span></dd>
+            <dt>train_on_what</dt><dd>{r.train_on_what}</dd>
+            <dt>tokenizer</dt><dd>{(artifact.tokenizer || {}).model || "—"}</dd>
+            <dt>deployment.model</dt><dd>{d.model}</dd>
+            <dt>sampling</dt><dd>temperature={sampling.temperature ?? "—"}, max_tokens={sampling.max_tokens ?? "—"}</dd>
+          </dl>
+        </details>
+      );
+    }
+
+    function Sanity({ sanity }) {
+      if (!sanity) return null;
+      const keys = [
+        "renderer_prompt_matches_api_prompt",
+        "full_render_prompt_prefix_matches_api",
+        "renderer_prompt_len",
+        "api_prompt_len",
+        "tokenization_diverged_count",
+        "echo_prompt_stripped",
+        "parse_response_ok",
+        "structural_walk_token_match",
+        "completion_token_count",
+        "completion_stop_reason",
+      ];
+      return (
+        <details open>
+          <summary>Sanity flags</summary>
+          <table className="table-compact">
+            <tbody>
+              {keys.filter((k) => k in sanity).map((k) => {
+                const v = sanity[k];
+                const pill = typeof v === "boolean" ? pillStatus(v) : "";
+                return (
+                  <tr key={k}>
+                    <td>{k}</td>
+                    <td>
+                      {pill ? <span className={`pill ${pill}`}>{String(v)}</span> : <code>{String(v)}</code>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </details>
+      );
+    }
+
+    function Counts({ rows }) {
+      const counts = useMemo(() => {
+        const acc = { provenance: {}, chunk: {} };
+        for (const r of rows) {
+          acc.provenance[r.provenance || "?"] = (acc.provenance[r.provenance || "?"] || 0) + 1;
+          acc.chunk[r.chunk_source || "?"] = (acc.chunk[r.chunk_source || "?"] || 0) + 1;
+        }
+        return acc;
+      }, [rows]);
+      return (
+        <details open>
+          <summary>Counts</summary>
+          <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ color: "var(--fg-muted)", fontSize: 11, marginBottom: 4 }}>by provenance</div>
+              {Object.entries(counts.provenance).map(([k, v]) => (
+                <span key={k} className="pill" style={{ background: PROV_BG[k] || "var(--bg-soft)" }}>
+                  {k}: {v}
+                </span>
+              ))}
+            </div>
+            <div>
+              <div style={{ color: "var(--fg-muted)", fontSize: 11, marginBottom: 4 }}>by chunk_source</div>
+              {Object.entries(counts.chunk).map(([k, v]) => (
+                <span
+                  key={k}
+                  className="pill"
+                  style={{ borderLeft: `4px solid ${CHUNK_BORDER[k] || "var(--border-strong)"}` }}
+                >
+                  {k}: {v}
+                </span>
+              ))}
+            </div>
+          </div>
+        </details>
+      );
+    }
+
+    function Legend() {
+      return (
+        <div className="legend">
+          <span className="legend-item"><span className="swatch" style={{ background: "var(--prov-prompt)" }} /> prompt_hard_append</span>
+          <span className="legend-item"><span className="swatch" style={{ background: "var(--prov-native)" }} /> native_generated</span>
+          <span className="legend-item"><span className="swatch" style={{ background: "var(--prov-trailing)" }} /> trailing_hard_append</span>
+          <span className="legend-item"><span className="swatch" style={{ background: "var(--prov-diverged)" }} /> tokenization_diverged</span>
+          <span style={{ marginLeft: 8 }}>•</span>
+          <span className="legend-item">
+            <span className="swatch" style={{ background: "var(--bg)", borderLeft: "3px solid var(--chunk-output)" }} />
+            chunk_source = output (left border colour-codes the chunk)
+          </span>
+          <span style={{ marginLeft: 8 }}>•</span>
+          <span className="legend-item">
+            <span className="swatch" style={{ background: "var(--bg)", boxShadow: "inset 0 -2px 0 var(--trainable-bar)" }} />
+            renderer_claim_weight &gt; 0 (trainable)
+          </span>
+          <span style={{ marginLeft: 8 }}>•</span>
+          <span className="legend-item">
+            <span style={{ color: "var(--special-fg)", fontWeight: 600, fontFamily: "ui-monospace,Menlo,monospace" }}>&lt;|special|&gt;</span>
+            in tokenizer.special_tokens
+          </span>
+        </div>
+      );
+    }
+
+    function Filters({ enabled, setEnabled }) {
+      const toggle = (k) =>
+        setEnabled((prev) => ({ ...prev, [k]: !prev[k] }));
+      return (
+        <div className="filters">
+          <strong style={{ marginRight: 8 }}>Show:</strong>
+          {PROVENANCES.map((p) => (
+            <label key={p}>
+              <input type="checkbox" checked={!!enabled[p]} onChange={() => toggle(p)} />
+              {p}
+            </label>
+          ))}
+          <span style={{ marginLeft: 8 }}>|</span>
+          <label>
+            <input type="checkbox" checked={!!enabled.onlyTrainable} onChange={() => toggle("onlyTrainable")} />
+            only trainable (w&gt;0)
+          </label>
+          <label>
+            <input type="checkbox" checked={!!enabled.onlySpecial} onChange={() => toggle("onlySpecial")} />
+            only special tokens
+          </label>
+        </div>
+      );
+    }
+
+    function Token({ row, isSpecial }) {
+      const trainable = (row.renderer_claim_weight || 0) > 0.5;
+      const bg = PROV_BG[row.provenance] || "var(--bg-soft)";
+      const borderColor = CHUNK_BORDER[row.chunk_source] || "var(--border-strong)";
+
+      const cls = [
+        "tok",
+        trainable ? "trainable" : "",
+        isSpecial ? "special" : "",
+        row.provenance === "tokenization_diverged" ? "diverged" : "",
+      ].filter(Boolean).join(" ");
+
+      const tip = [
+        `idx=${row.idx}`,
+        `tok=${row.token_id}`,
+        `decoded=${JSON.stringify(row.decoded)}`,
+        `chunk=${row.chunk_source}`,
+        `role=${row.role || "-"}`,
+        `weight=${row.renderer_claim_weight}`,
+        `prov=${row.provenance}`,
+        `msg_idx=${row.msg_idx}`,
+      ].join("\n");
+
+      return (
+        <span
+          className={cls}
+          title={tip}
+          style={{
+            backgroundColor: bg,
+            borderLeftColor: borderColor,
+          }}
+        >
+          {renderDecoded(row.decoded)}
+        </span>
+      );
+    }
+
+    function TokenStream({ artifact, filters }) {
+      const specialIds = useMemo(() => {
+        const ids = new Set();
+        const map = (artifact.tokenizer && artifact.tokenizer.special_tokens) || {};
+        for (const k of Object.keys(map)) ids.add(Number(k));
+        return ids;
+      }, [artifact]);
+
+      const rows = artifact.audit_table || [];
+      const filtered = useMemo(() => {
+        return rows.filter((r) => {
+          if (!filters[r.provenance]) return false;
+          if (filters.onlyTrainable && !((r.renderer_claim_weight || 0) > 0.5)) return false;
+          if (filters.onlySpecial && !specialIds.has(r.token_id)) return false;
+          return true;
+        });
+      }, [rows, filters, specialIds]);
+
+      if (rows.length === 0) {
+        return <div className="empty-state">No audit_table rows in this artifact.</div>;
+      }
+
+      return (
+        <div className="stream">
+          {filtered.map((row) => (
+            <Token key={row.idx} row={row} isSpecial={specialIds.has(row.token_id)} />
+          ))}
+        </div>
+      );
+    }
+
+    function App() {
+      const [artifact, setArtifact] = useState(null);
+      const [fileName, setFileName] = useState(null);
+      const [filters, setFilters] = useState({
+        prompt_hard_append: true,
+        native_generated: true,
+        trailing_hard_append: true,
+        tokenization_diverged: true,
+        onlyTrainable: false,
+        onlySpecial: false,
+      });
+
+      return (
+        <>
+          <h1>Renderer Verifier — Probe Viewer</h1>
+          <FilePicker onLoad={(a, n) => { setArtifact(a); setFileName(n); }} />
+          {artifact == null ? (
+            <div className="empty-state">
+              Load a probe JSON artifact (produced by{" "}
+              <code>python -m training.verifier render</code>) to see the
+              colour-coded token stream.
+            </div>
+          ) : (
+            <>
+              <Meta artifact={artifact} fileName={fileName} />
+              <Sanity sanity={artifact.sanity} />
+              <Counts rows={artifact.audit_table || []} />
+              <h2>Token stream</h2>
+              <Legend />
+              <Filters enabled={filters} setEnabled={setFilters} />
+              <TokenStream artifact={artifact} filters={filters} />
+            </>
+          )}
+          <div className="footer">
+            Hover any token to see its full audit row. Background = provenance,
+            left border colour = chunk_source, underline = trainable
+            (renderer_claim_weight &gt; 0), magenta + bold = token id is in
+            tokenizer.special_tokens.
+          </div>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
