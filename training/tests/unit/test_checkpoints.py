@@ -12,6 +12,7 @@ from training.utils.checkpoints import (
     ResumeInfo,
     TrainingCheckpoints,
     _logical_name,
+    _newest_first,
     validate_warm_start_config,
 )
 
@@ -361,6 +362,38 @@ class TestPromoteLatest:
 
 
 # -- dataloader.json bookkeeping -----------------------------------------------
+
+
+class TestNewestFirstMixedPrecision:
+    """The control plane mixes ``...:13Z`` (second precision) and
+    ``...:13.123456Z`` (microsecond precision) ``createTime`` strings.
+    A lexicographic sort would put the older second-precision row
+    ahead of the newer microsecond-precision one because
+    ``'Z' (90) > '.' (46)``, silently picking a stale checkpoint in
+    ``_latest_resumable`` / ``promote_latest``.
+    """
+
+    def test_microsecond_row_beats_second_row_at_later_wall_time(self):
+        # Newer row uses microsecond precision; older row uses
+        # second precision.  Newer must win.
+        newer = {"name": "step-20", "createTime": "2026-04-29T10:00:13.500000Z"}
+        older = {"name": "step-10", "createTime": "2026-04-29T10:00:12Z"}
+        assert _newest_first([older, newer])[0] is newer
+
+    def test_microsecond_row_beats_same_second_row_with_lex_inversion(self):
+        # Same wall-second; ``...:13Z`` lex-sorts AFTER ``...:13.500Z``
+        # because ``'Z' (90) > '.' (46)``.  Datetime sort must put
+        # the microsecond row first.
+        newer = {"name": "step-20", "createTime": "2026-04-29T10:00:13.500000Z"}
+        older = {"name": "step-10", "createTime": "2026-04-29T10:00:13Z"}
+        assert _newest_first([older, newer])[0] is newer
+
+    def test_unparseable_createtime_sorts_to_end(self):
+        valid = {"name": "step-1", "createTime": "2026-04-29T10:00:13.500000Z"}
+        broken = {"name": "step-2", "createTime": "not-a-timestamp"}
+        missing = {"name": "step-3"}
+        ordered = _newest_first([broken, missing, valid])
+        assert ordered[0] is valid
 
 
 class TestDataloaderJson:

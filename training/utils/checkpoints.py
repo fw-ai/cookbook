@@ -128,8 +128,48 @@ def _is_resumable_row(row: dict) -> bool:
     return any(ctype.endswith(suffix) for suffix in _RESUMABLE_TYPE_SUFFIXES)
 
 
+def _parse_iso_time(value: str | None) -> datetime | None:
+    """Parse an RFC3339 timestamp into an aware ``datetime``.
+
+    Handles both microsecond-precision (``...123456Z``) and
+    second-precision (``...Z``) forms used by the control plane.
+    Returns ``None`` on missing / malformed input so callers can
+    fall back without crashing.
+    """
+    if not value:
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _newest_first(rows: list[dict]) -> list[dict]:
-    return sorted(rows, key=lambda r: r.get("createTime", ""), reverse=True)
+    """Sort rows newest-first by parsed ``createTime``.
+
+    Lexicographic sort is wrong because the control plane mixes
+    second-precision (``...:13Z``) and microsecond-precision
+    (``...:13.123456Z``) timestamps in the same response: ``'Z' (90)
+    > '.' (46)`` makes the older second-precision row sort newer than
+    the newer microsecond-precision one, silently picking a stale
+    checkpoint in :meth:`_latest_resumable` and :meth:`promote_latest`.
+    Sort by parsed datetime instead (epoch fallback for unparseable
+    values so they sort to the end).
+    """
+    NEG_INF = datetime.min.replace(tzinfo=timezone.utc)
+    return sorted(
+        rows,
+        key=lambda r: _parse_iso_time(r.get("createTime")) or NEG_INF,
+        reverse=True,
+    )
 
 
 def _parse_cross_job(spec: str) -> tuple[str | None, str]:
