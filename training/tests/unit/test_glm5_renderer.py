@@ -1322,6 +1322,78 @@ def test_weight_mask_parallel_tool_responses_train_single_observation_stop(
     assert "CONVERT_RESULT_XYZ" not in trained_text
 
 
+def test_weight_mask_parallel_tool_response_audit_table(
+    tokenizer, renderer_keep_thinking
+):
+    """Explicit token/mask table for GLM parallel tool-response rendering."""
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "t"},
+                {"type": "text", "text": ""},
+            ],
+            "tool_calls": [_make_tool_call("f", {"x": 1})],
+        },
+        {"role": "tool", "content": "r1"},
+        {"role": "tool", "content": "r2"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "u"},
+                {"type": "text", "text": "a"},
+            ],
+        },
+    ]
+    tokens, weights = _renderer_supervised_tokens(renderer_keep_thinking, messages)
+
+    # Each row is (position, token id, decoded token text, loss weight).
+    # This makes the important boundaries visible:
+    # - positions 5-17 are model-generated thinking/tool-call/observation stop
+    # - positions 18-25 are tool responses supplied by the environment
+    # - positions 27-31 are the final assistant turn plus its <|user|> stop
+    rows = [
+        (idx, token_id, tokenizer.decode([token_id]), int(weight))
+        for idx, (token_id, weight) in enumerate(zip(tokens, weights))
+    ]
+
+    assert rows == [
+        (0, 154822, "[gMASK]", 0),
+        (1, 154824, "<sop>", 0),
+        (2, 154827, "<|user|>", 0),
+        (3, 80, "q", 0),
+        (4, 154828, "<|assistant|>", 0),
+        (5, 154841, "<think>", 1),
+        (6, 83, "t", 1),
+        (7, 154842, "</think>", 1),
+        (8, 154843, "<tool_call>", 1),
+        (9, 69, "f", 1),
+        (10, 154847, "<arg_key>", 1),
+        (11, 87, "x", 1),
+        (12, 154848, "</arg_key>", 1),
+        (13, 154849, "<arg_value>", 1),
+        (14, 16, "1", 1),
+        (15, 154850, "</arg_value>", 1),
+        (16, 154844, "</tool_call>", 1),
+        (17, 154829, "<|observation|>", 1),
+        (18, 154845, "<tool_response>", 0),
+        (19, 81, "r", 0),
+        (20, 16, "1", 0),
+        (21, 154846, "</tool_response>", 0),
+        (22, 154845, "<tool_response>", 0),
+        (23, 81, "r", 0),
+        (24, 17, "2", 0),
+        (25, 154846, "</tool_response>", 0),
+        (26, 154828, "<|assistant|>", 0),
+        (27, 154841, "<think>", 1),
+        (28, 84, "u", 1),
+        (29, 154842, "</think>", 1),
+        (30, 64, "a", 1),
+        (31, 154827, "<|user|>", 1),
+    ]
+
+
 def test_weight_mask_multi_turn_covers_all_assistant_turns(tokenizer, renderer):
     """With TrainOnWhat.ALL_ASSISTANT_MESSAGES, every assistant turn gets trained."""
     messages = [
