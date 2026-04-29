@@ -679,13 +679,14 @@ def main(
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + old_policy_logprobs snapshot + num_minibatches × (fwd_bwd + optim_step) + metrics.
+            """ref_forward + old_policy_logprobs snapshot + num_minibatches x (fwd_bwd + optim_step) + metrics.
 
-            ``num_minibatches = cfg.ppo_n_minibatches``. ``old_policy_logprobs`` is snapshotted
-            once per rollout batch and reused across every inner optim step so
-            the PPO ratio measures genuine policy drift. DCP checkpoints fire
-            only at rollout boundaries (cadence in rollout batches, not optim
-            steps) so resume accounting is independent of the minibatch count.
+            ``num_minibatches = cfg.ppo_n_minibatches``. ``old_policy_logprobs``
+            is snapshotted once per rollout batch and reused across every inner
+            optim step so the PPO ratio measures genuine policy drift. DCP
+            checkpoints fire only at rollout boundaries (cadence in rollout
+            batches, not optim steps) so resume accounting is independent of
+            the minibatch count.
             """
             if not prompt_groups:
                 raise ValueError("train_step requires at least one prompt group")
@@ -736,19 +737,18 @@ def main(
                     step, minibatch_idx + 1, num_minibatches, _time.time() - t0,
                 )
 
+            rl_dataset.record_batch(loop_stats, accepted_rows=len(prompt_groups))
+
             rollouts_completed = (step - step_offset) // num_minibatches
             dcp_interval = cfg.weight_sync.dcp_save_interval
             if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
-                data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    rollouts_completed * prompt_groups_per_step
-                )
                 ckpt.save(
                     f"step-{step}",
                     resumable=True,
                     promotable=False,
-                    data_consumed=data_consumed,
+                    data_consumed=rl_dataset.data_consumed,
                 )
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
@@ -810,13 +810,14 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        # ``step_offset`` counts optim steps (one per inner minibatch); the
-        # dataset is indexed per rollout batch, so divide by ppo_n_minibatches
-        # when resuming under K>1.
-        resume_rollouts = step_offset // max(1, cfg.ppo_n_minibatches)
-        remaining_rows = []
-        for i_step in range(resume_rollouts, len(rl_dataset)):
-            remaining_rows.extend(rl_dataset.get_batch(i_step))
+        # Prefer the persisted raw-row cursor; fall back to the old step-derived
+        # cursor when resuming checkpoints that predate dataloader.json.
+        rl_dataset.resume(
+            resume_info.data_consumed if resume_info else None,
+            fallback_step=step_offset,
+            minibatches_per_step=cfg.ppo_n_minibatches,
+        )
+        remaining_rows = rl_dataset.rows_from_cursor()
 
         total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
         runner.start_training()
@@ -839,18 +840,12 @@ def main(
 
         if cfg.save_final_checkpoint and global_step > step_offset:
             try:
-                # global_step - step_offset is optim-step delta (K× per rollout),
-                # so divide by ppo_n_minibatches to get rollout-batch delta.
-                _rollouts_this_run = (global_step - step_offset) // max(1, cfg.ppo_n_minibatches)
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    _rollouts_this_run * prompt_groups_per_step
-                )
                 cp_name = f"step-{global_step}"
                 ckpt.save(
                     cp_name,
                     resumable=True,
                     promotable=True,
-                    data_consumed=_data_consumed,
+                    data_consumed=rl_dataset.data_consumed,
                 )
 
                 if getattr(cfg, "output_model_id", None):
