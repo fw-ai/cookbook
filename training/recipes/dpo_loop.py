@@ -291,6 +291,7 @@ async def _train_loop(
     cfg: Config,
     step_offset: int,
     *,
+    ckpt: TrainingCheckpoints | None = None,
     worker_init_fn: Callable[[int], None] | None = None,
     on_ref_done: Callable[[], None] | None = None,
     runner: RunnerIO | None = None,
@@ -702,6 +703,7 @@ def main(
             _train_loop(
                 pair_dataset, ref_cache_log,
                 reference, policy, adam_params, cfg, step_offset,
+                ckpt=ckpt,
                 worker_init_fn=worker_init_fn,
                 on_ref_done=_on_ref_done,
                 runner=runner,
