@@ -551,10 +551,7 @@ class TestTrainLoop:
         assert reported_total_steps["value"] == 3
 
     def test_data_consumed_includes_render_drops(self, tmp_path, monkeypatch):
-        """data_consumed at DCP save time must reflect *raw* rows pulled
-        from the loader, including rows that rendered to None. The old
-        ``(step - step_offset) * batch_size`` formula counted only
-        post-filter pairs and drifted on every render-filtered row."""
+        """``data_consumed`` reflects raw rows pulled (incl. render drops), not post-filter pairs."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
@@ -597,8 +594,7 @@ class TestTrainLoop:
         assert saves[-1]["data_consumed"] == 6
 
     def test_data_consumed_threads_prior_value_on_resume(self, tmp_path, monkeypatch):
-        """A resume from a ckpt with data_consumed=N must persist N + new_raw_rows.
-        Resume cumulative accounting matches SFT/RL semantics."""
+        """Resume persists ``prior_data_consumed + new_raw_rows`` (cumulative across runs)."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
@@ -629,8 +625,7 @@ class TestTrainLoop:
         assert saves[-1] == 104
 
     def test_data_consumed_grows_per_epoch_in_multi_epoch(self, tmp_path, monkeypatch):
-        """Multi-epoch replay must keep advancing data_consumed by ``total_raw_rows``
-        per replay epoch — otherwise the audit count plateaus after epoch 0."""
+        """Multi-epoch replay advances ``data_consumed`` by ``total_raw_rows`` per epoch."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 

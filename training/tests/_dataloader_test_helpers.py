@@ -1,13 +1,5 @@
 """Shared bootstrap for dataloader-cursor tests.
-
-The cookbook's training packages depend on the ``fireworks`` SDK and on
-``training.utils.rl.losses`` (which transitively pulls heavy deps).
-``RLPromptDataset`` and ``run_rl_loop`` themselves need none of that --
-the tests load those two modules directly via ``importlib.util`` and
-stub the SDK surface they touch.
-
-Centralising this avoids ~30 lines of identical bootstrap in every
-cursor test file.
+Loads ``utils/data.py`` and ``utils/rl/train.py`` in isolation, stubbing the SDK.
 """
 
 from __future__ import annotations
@@ -25,22 +17,13 @@ _TRAINING_DIR = _TESTS_DIR.parent
 
 @dataclass
 class _TestPromptGroup:
-    """Minimal stand-in for ``training.utils.rl.losses.PromptGroup``.
-
-    ``run_rl_loop`` only reads ``.rewards`` from prompt groups; tests
-    that need richer fields can subclass.
-    """
+    """Minimal stand-in for ``training.utils.rl.losses.PromptGroup`` (only ``.rewards`` is read)."""
 
     rewards: list[float]
 
 
 def _stub_fireworks_sdk() -> None:
-    """Register no-op ``fireworks.training.sdk.*`` modules.
-
-    ``training.utils.data`` imports ``request_with_retries`` from the
-    SDK's errors submodule. The cursor logic never invokes it, so a
-    pass-through stub is enough for unit tests.
-    """
+    """Pass-through stub for ``fireworks.training.sdk.errors.request_with_retries``."""
     if "fireworks.training.sdk.errors" in sys.modules:
         return
     errors = types.ModuleType("fireworks.training.sdk.errors")
@@ -80,14 +63,8 @@ def load_dataloader_test_modules(
     *,
     prompt_group_cls: type = _TestPromptGroup,
 ) -> tuple[type, type, Any]:
-    """Load ``RLPromptDataset``, ``TrainStepFns``, ``run_rl_loop`` in isolation.
-
-    Each test file passes a unique ``unique_suffix`` so importlib does not
-    return the same cached module across files (which would let one
-    file's monkeypatches leak into another's).
-
-    Returns ``(RLPromptDataset, TrainStepFns, run_rl_loop)``.
-    """
+    """Return ``(RLPromptDataset, TrainStepFns, run_rl_loop)`` loaded under a unique
+    importlib name so monkeypatches don't leak across test files."""
     _stub_fireworks_sdk()
     _stub_rl_losses(prompt_group_cls)
 

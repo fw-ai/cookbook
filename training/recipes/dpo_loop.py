@@ -358,14 +358,8 @@ async def _train_loop(
 
         if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
             with timer("dcp_save"):
-                # raw_rows_consumed is the producer-side counter (raw rows
-                # pulled from the loader, including render-filtered ones).
-                # It is the same accounting unit SFT/RL persist, so resume
-                # state across recipes is comparable. There is a small
-                # producer-vs-trainer race here -- raw_rows_consumed may
-                # reflect rows rendered ahead of the trainer -- but this
-                # value is informational; DPO resume re-iterates the
-                # DataLoader and uses step_offset, not data_consumed.
+                # Audit-only: producer-side raw rows (incl. render drops) so
+                # data_consumed matches SFT/RL semantics.
                 ckpt.save(
                     f"step-{step}",
                     resumable=True,
@@ -525,9 +519,7 @@ async def _train_loop(
             if chunk:
                 _run_train_step(epoch, chunk)
                 pbar.update(1)
-            # Each completed replay epoch consumes the same source rows
-            # again. Approximation: total_raw_rows per epoch (drops are
-            # not re-streamed; cache holds only post-filter pairs).
+            # Replay re-consumes the source rows; cache holds only post-filter pairs.
             raw_rows_consumed += total_raw_rows
 
     pbar.close()
