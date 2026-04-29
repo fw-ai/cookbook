@@ -379,7 +379,7 @@ def run_probe(
     model: str,
     messages: list[dict],
     tools: list[dict] | None = None,
-    max_tokens: int = 256,
+    max_tokens: int = 1024,
     temperature: float = 0.0,
     train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_TURN,
     extra_completion_kwargs: dict[str, Any] | None = None,
@@ -411,9 +411,39 @@ def run_probe(
     api_prompt_tokens = api["prompt_token_ids"]
     completion_tokens = api["completion_token_ids"]
     completion_text = api["completion_text"]
+    echo_stripped = False
 
-    # 3) Full-conversation render (orig + assistant completion as a real turn)
-    completion_message = {"role": "assistant", "content": completion_text}
+    # Some Fireworks endpoints honour ``echo=True`` by returning the prompt
+    # concatenated in front of the model's actual emission — both in
+    # ``completion_token_ids`` and ``message.content``. Detect that and slice
+    # so downstream alignment classifies only the model-emitted span as
+    # native_generated.
+    if (
+        completion_tokens
+        and len(completion_tokens) >= len(api_prompt_tokens)
+        and completion_tokens[: len(api_prompt_tokens)] == api_prompt_tokens
+    ):
+        completion_tokens = completion_tokens[len(api_prompt_tokens):]
+        completion_text = tokenizer.decode(
+            completion_tokens, skip_special_tokens=False
+        )
+        echo_stripped = True
+
+    # 3) Round-trip the completion through the renderer's parser so the
+    # assistant turn we hand back to ``build_supervised_example`` is the
+    # *structured* message (content / reasoning / tool_calls) — not the
+    # model's raw token stream including any trailing stop signal. Without
+    # this, Camp A renderers double up the trailing role tag: once because
+    # it's embedded in the raw content string, and once because the
+    # renderer re-emits it as ``stop_overlap``. parse_response is the
+    # renderer's own definition of "what the assistant turn was", so
+    # using it here keeps the round-trip non-circular while not papering
+    # over real bugs.
+    parsed_msg, parse_ok = renderer.parse_response(completion_tokens)
+    if parse_ok:
+        completion_message: Any = parsed_msg
+    else:
+        completion_message = {"role": "assistant", "content": completion_text}
     full_messages_raw = list(messages) + [completion_message]
     full_messages = normalize_messages(full_messages_raw)
 
@@ -445,6 +475,10 @@ def run_probe(
             full_tokens[: len(api_prompt_tokens)] == api_prompt_tokens
         ),
         "tokenization_diverged_count": sum(1 for p in provenance if p == _PROV_DIVERGED),
+        "echo_prompt_stripped": echo_stripped,
+        "completion_token_count": len(completion_tokens),
+        "completion_stop_reason": api.get("stop_reason"),
+        "parse_response_ok": parse_ok,
     }
 
     # 6) Audit table

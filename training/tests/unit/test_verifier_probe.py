@@ -60,21 +60,26 @@ class _StubTokenizer:
     added_tokens_decoder: dict[int, Any] = {}
 
     _id_to_str = {v: k for k, v in _T.items()}
-    _str_to_ids = {
-        "hello world": [_T["hello"], _T["world"]],
-        "fine thanks": [_T["fine"], _T["thanks"]],
-        "hello": [_T["hello"]],
-        "world": [_T["world"]],
-        "fine": [_T["fine"]],
-        "thanks": [_T["thanks"]],
-        "": [],
-    }
+    # Greedy-longest-match table for the toy tokenizer. The encoder walks
+    # the input left-to-right, picking the longest known prefix at each step;
+    # this lets parse_response's decode→encode round-trip work without
+    # hand-listing every string concatenation.
+    _vocab_strings = ["hello", "world", "fine", "thanks", " "]
 
     def encode(self, s: str, add_special_tokens: bool = True) -> list[int]:
-        if s in self._str_to_ids:
-            return list(self._str_to_ids[s])
-        # Fall back to char-by-char for unknown strings; tests use known ones.
-        raise KeyError(f"unexpected encode input: {s!r}")
+        out: list[int] = []
+        i = 0
+        while i < len(s):
+            best = None
+            for w in self._vocab_strings:
+                if s.startswith(w, i) and (best is None or len(w) > len(best)):
+                    best = w
+            if best is None:
+                raise KeyError(f"unexpected encode input at offset {i}: {s[i:]!r}")
+            if best != " ":  # whitespace-suppressed BPE-ish: drop the space token
+                out.append(_T[best])
+            i += len(best)
+        return out
 
     def decode(self, ids, skip_special_tokens: bool = False) -> str:
         return "".join(self._id_to_str.get(int(i), f"<{i}>") for i in ids)
@@ -112,8 +117,16 @@ class _ToyRenderer(Renderer):
         stop_overlap = tinker.types.EncodedTextChunk(tokens=[_T["<eot>"]])
         return RenderedMessage(output=output, header=header, stop_overlap=stop_overlap)
 
-    def parse_response(self, response: list[int]) -> tuple[Message, bool]:  # pragma: no cover - unused in probe
-        text = self.tokenizer.decode(response, skip_special_tokens=True)
+    def parse_response(self, response: list[int]) -> tuple[Message, bool]:
+        # Strip the trailing <eot> if the model emitted it. The probe relies
+        # on parse_response producing a structured message whose content
+        # does NOT include the renderer's stop signal — otherwise the
+        # round-trip would emit the stop token twice (once from the embedded
+        # content, once from stop_overlap).
+        body = list(response)
+        if body and body[-1] == _T["<eot>"]:
+            body = body[:-1]
+        text = self.tokenizer.decode(body, skip_special_tokens=True)
         return Message(role="assistant", content=text), True
 
 
@@ -235,24 +248,25 @@ def test_run_probe_artifact_shape_and_provenance(toy_renderer):
     assert trailing_row["token_id"] == _T["<eot>"]
 
 
-def test_run_probe_flags_tokenization_divergence(toy_renderer):
-    """If the renderer re-tokenises the completion differently than the API
-    returned, the affected positions are flagged ``tokenization_diverged``."""
+def test_run_probe_strips_echoed_prompt(toy_renderer):
+    """When ``echo=True`` makes the API return prompt+completion in
+    ``completion_token_ids``, the probe must detect and slice the prompt
+    prefix; otherwise alignment classifies the entire span as
+    ``tokenization_diverged``.
+    """
     tokenizer = _StubTokenizer()
     messages = [{"role": "user", "content": "hello"}]
 
     expected_prompt_ids = [_T["<user>"], _T["hello"], _T["<asst>"]]
-    # The deployment claims to have emitted ["world", "fine"] for the
-    # response text "fine thanks". The renderer re-tokenises "fine thanks"
-    # to ["fine", "thanks"], so positions 0 and 1 of the assistant turn
-    # disagree.
-    api_completion_ids = [_T["world"], _T["fine"]]
-    completion_text = "fine thanks"
+    # The model actually emitted ["fine", "thanks"]; the API returns it
+    # *concatenated to the prompt* because of ``echo=True``.
+    actual_completion_ids = [_T["fine"], _T["thanks"]]
+    api_completion_ids = expected_prompt_ids + actual_completion_ids
 
     client = _StubClient(
         prompt_token_ids=expected_prompt_ids,
         completion_token_ids=api_completion_ids,
-        completion_text=completion_text,
+        completion_text="anything-here",  # ignored after slice (re-decoded from tokens)
     )
 
     artifact = run_probe(
@@ -263,4 +277,7 @@ def test_run_probe_flags_tokenization_divergence(toy_renderer):
         messages=messages,
     )
 
-    assert artifact["sanity"]["tokenization_diverged_count"] >= 1
+    assert artifact["sanity"]["echo_prompt_stripped"] is True
+    assert artifact["sanity"]["completion_token_count"] == len(actual_completion_ids)
+    # No spurious divergence after stripping.
+    assert artifact["sanity"]["tokenization_diverged_count"] == 0

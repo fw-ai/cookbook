@@ -1,0 +1,8 @@
+{
+  "messages": [
+    {"role": "system", "content": "Answer with a single integer and nothing else. No reasoning, no punctuation."},
+    {"role": "user", "content": "2 + 2 = ?"}
+  ],
+  "tools": [],
+  "renderer_config": {}
+}

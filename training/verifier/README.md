@@ -133,6 +133,24 @@ JSON, one file per probe. Top-level fields:
   renderer's prompt-time bytes disagree with what the deployment sees.
   That blocks any further conclusion — fix it before reading the audit
   table.
+- `sanity.completion_stop_reason != "stop"` means the model didn't
+  finish naturally (`length` truncation hit `--max-tokens`). The
+  stop-overlap row in the audit table can't be empirically classified
+  in that case — bump `--max-tokens` and re-run before drawing
+  conclusions about the trailing-token bucket.
+
+### How the round-trip is constructed
+
+After getting the model's completion tokens back, the probe runs them
+through `renderer.parse_response()` to recover a *structured* assistant
+message (with thinking / tool_calls separated from `content`) and
+re-renders the conversation. Without this, Camp A renderers (GLM5)
+double-count the trailing role tag — once as part of the embedded
+content string, once as `stop_overlap` — and the audit table becomes
+unreadable. `sanity.parse_response_ok` reports whether the parser
+accepted the tokens. If it's `false`, the probe falls back to feeding
+the raw text in as `content` (best-effort) and you should treat the
+trailing rows of the audit table with care.
 
 ## What's next
 

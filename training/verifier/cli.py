@@ -80,8 +80,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-tokens",
         type=int,
-        default=256,
-        help="Cap on completion tokens. Default 256; raise for long-form probes.",
+        default=1024,
+        help="Cap on completion tokens. Default 1024; thinking-enabled models "
+        "easily produce hundreds of tokens before a natural stop, and the "
+        "probe is most informative when stop_reason=='stop'.",
     )
     p.add_argument(
         "--temperature",
