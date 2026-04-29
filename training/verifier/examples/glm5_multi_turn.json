@@ -1,0 +1,10 @@
+{
+  "messages": [
+    {"role": "system", "content": "Answer briefly."},
+    {"role": "user", "content": "What is 2+2?"},
+    {"role": "assistant", "content": "4."},
+    {"role": "user", "content": "And 3+3?"}
+  ],
+  "tools": [],
+  "renderer_config": {}
+}
