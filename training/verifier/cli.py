@@ -16,6 +16,7 @@ from typing import Any
 
 from tinker_cookbook.renderers.base import TrainOnWhat
 
+from training.verifier.inspect import run_inspect
 from training.verifier.probe import run_probe, write_artifact
 
 
@@ -97,6 +98,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="TrainOnWhat mode used when computing renderer claim weights. "
         "Default last_assistant_turn matches the cookbook SFT default.",
     )
+
+    insp = sub.add_parser(
+        "inspect",
+        help="Pretty-print a probe artifact. Without --all, shows chunk "
+        "boundaries, every special-source row, and every empirically "
+        "suspect row — the structurally interesting subset for spec authors.",
+    )
+    insp.add_argument("path", help="Path to a probe JSON artifact.")
+    insp.add_argument(
+        "--all",
+        dest="show_all",
+        action="store_true",
+        help="Print every audit-table row instead of the boundaries-only digest.",
+    )
+    insp.add_argument(
+        "--filter",
+        dest="filter_prov",
+        default=None,
+        help="Show only rows with this provenance (e.g. trailing_hard_append).",
+    )
+
     return parser
 
 
@@ -135,6 +157,9 @@ def _build_tokenizer(model: str):
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = _build_parser().parse_args(argv)
+
+    if args.cmd == "inspect":
+        return run_inspect(args.path, show_all=args.show_all, filter_prov=args.filter_prov)
 
     if args.cmd != "render":  # pragma: no cover - argparse enforces required=True
         return 2

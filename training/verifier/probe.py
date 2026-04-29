@@ -67,40 +67,35 @@ class _ChunkSpan:
     source: str  # "bos" | "header" | "output" | "stop_overlap" | "generation_suffix"
     msg_idx: int  # -1 for bos / generation_suffix
     role: str | None
-    weight: float
+    weight: float | None  # filled in from build_supervised_example weights tensor
     tokens: list[int]
 
 
-def _render_with_attribution(
+def _structural_spans(
     renderer: Renderer,
     messages: list[dict],
     *,
-    train_on_what: TrainOnWhat,
     include_generation_suffix: bool,
     role: str = "assistant",
 ) -> list[_ChunkSpan]:
-    """Walk messages, render each, return per-chunk attribution.
+    """Walk messages and label each emitted chunk by its structural source.
 
-    This intentionally mirrors ``Renderer.build_supervised_example`` so the
-    chunk boundaries we report match what training would see. We re-walk
-    rather than reusing ``build_supervised_example`` because the latter
-    flattens the chunk source labels.
+    This deliberately does NOT compute weights — the only authoritative
+    source for ``renderer_claim_weight`` is the renderer's own
+    ``build_supervised_example``. Reproducing that logic here would mean
+    duplicating any per-renderer customization (e.g. GLM5's split of the
+    leading ``<think>`` token to weight 0) and silently disagreeing with
+    the renderer the verifier is supposed to be checking against.
 
-    ``include_generation_suffix=True`` matches ``build_generation_prompt``;
-    ``False`` matches ``build_supervised_example``.
+    Spans returned here carry ``weight=None`` and are zipped against the
+    weights tensor from ``build_supervised_example`` in ``run_probe``.
     """
     spans: list[_ChunkSpan] = []
 
     bos = list(getattr(renderer, "_bos_tokens", []) or [])
     if bos:
         spans.append(
-            _ChunkSpan(
-                source="bos",
-                msg_idx=-1,
-                role=None,
-                weight=0.0,
-                tokens=bos,
-            )
+            _ChunkSpan(source="bos", msg_idx=-1, role=None, weight=None, tokens=bos)
         )
 
     last_user_idx = max(
@@ -119,28 +114,6 @@ def _render_with_attribution(
         rendered: RenderedMessage = renderer.render_message(msg, ctx)
 
         is_last_message = idx == n - 1
-        is_assistant = msg["role"] == "assistant"
-        is_after_last_user = last_user_idx == -1 or idx > last_user_idx
-
-        match train_on_what:
-            case TrainOnWhat.LAST_ASSISTANT_MESSAGE:
-                output_weight = 1.0 if (is_last_message and is_assistant) else 0.0
-            case TrainOnWhat.LAST_ASSISTANT_TURN:
-                output_weight = 1.0 if (is_assistant and is_after_last_user) else 0.0
-            case TrainOnWhat.ALL_ASSISTANT_MESSAGES:
-                output_weight = 1.0 if is_assistant else 0.0
-            case TrainOnWhat.ALL_MESSAGES:
-                output_weight = 1.0
-            case TrainOnWhat.ALL_TOKENS:
-                output_weight = 1.0
-            case TrainOnWhat.ALL_USER_AND_SYSTEM_MESSAGES:
-                output_weight = 1.0 if msg["role"] in ("user", "system") else 0.0
-            case TrainOnWhat.CUSTOMIZED:
-                output_weight = 1.0 if msg.get("trainable", False) else 0.0
-            case _:  # pragma: no cover - defensive
-                output_weight = 0.0
-
-        header_weight = 1.0 if train_on_what == TrainOnWhat.ALL_TOKENS else 0.0
 
         if rendered.header is not None:
             tokens = list(rendered.header.tokens)
@@ -150,7 +123,7 @@ def _render_with_attribution(
                         source="header",
                         msg_idx=idx,
                         role=msg["role"],
-                        weight=header_weight,
+                        weight=None,
                         tokens=tokens,
                     )
                 )
@@ -164,7 +137,7 @@ def _render_with_attribution(
                     source="output",
                     msg_idx=idx,
                     role=msg["role"],
-                    weight=output_weight,
+                    weight=None,
                     tokens=tokens,
                 )
             )
@@ -177,7 +150,7 @@ def _render_with_attribution(
                         source="stop_overlap",
                         msg_idx=idx,
                         role=msg["role"],
-                        weight=output_weight,
+                        weight=None,
                         tokens=tokens,
                     )
                 )
@@ -196,7 +169,7 @@ def _render_with_attribution(
                     source="generation_suffix",
                     msg_idx=-1,
                     role=role,
-                    weight=0.0,
+                    weight=None,
                     tokens=suffix,
                 )
             )
@@ -447,13 +420,34 @@ def run_probe(
     full_messages_raw = list(messages) + [completion_message]
     full_messages = normalize_messages(full_messages_raw)
 
-    full_spans = _render_with_attribution(
+    # Authoritative source for tokens AND per-token weights: the renderer's
+    # own build_supervised_example. This honours per-renderer customization
+    # (e.g. GLM5 splits the leading <think> off and assigns it weight 0).
+    si_input, weights_tensor = renderer.build_supervised_example(
+        full_messages, train_on_what=train_on_what
+    )
+    full_tokens: list[int] = list(si_input.to_ints())
+    weights: list[float] = [float(w) for w in weights_tensor.tolist()]
+
+    # Independently walk render_message to label each token by chunk source.
+    # The two walks must produce the same token sequence; if they don't, the
+    # renderer's customization changed token identity (not just chunk
+    # boundaries) — surface that as a sanity failure rather than silently
+    # producing inconsistent attribution.
+    struct_spans = _structural_spans(
         renderer,
         full_messages,
-        train_on_what=train_on_what,
         include_generation_suffix=False,
     )
-    full_tokens, span_refs = _flatten_spans(full_spans)
+    struct_tokens, span_refs = _flatten_spans(struct_spans)
+    structural_token_match = struct_tokens == full_tokens
+    if not structural_token_match:
+        # Pad span_refs so downstream indexing doesn't crash; the sanity flag
+        # tells the human something is off and the audit table will look weird.
+        if len(span_refs) < len(full_tokens):
+            span_refs = span_refs + [span_refs[-1]] * (len(full_tokens) - len(span_refs))
+        else:
+            span_refs = span_refs[: len(full_tokens)]
 
     # 4) Provenance overlay
     prompt_len_for_alignment = len(api_prompt_tokens)
@@ -479,9 +473,11 @@ def run_probe(
         "completion_token_count": len(completion_tokens),
         "completion_stop_reason": api.get("stop_reason"),
         "parse_response_ok": parse_ok,
+        "structural_walk_token_match": structural_token_match,
     }
 
-    # 6) Audit table
+    # 6) Audit table — chunk_source from structural walk, weight from
+    # build_supervised_example weights tensor (authoritative).
     audit: list[dict[str, Any]] = []
     for i, tok_id in enumerate(full_tokens):
         span = span_refs[i]
@@ -494,7 +490,7 @@ def run_probe(
                 "chunk_source": span.source,
                 "msg_idx": span.msg_idx,
                 "role": span.role,
-                "renderer_claim_weight": span.weight,
+                "renderer_claim_weight": weights[i] if i < len(weights) else None,
                 "provenance": provenance[i],
             }
         )
