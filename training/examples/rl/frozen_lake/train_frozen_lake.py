@@ -84,6 +84,67 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Rollout error logging (deduplication)
+# ---------------------------------------------------------------------------
+#
+# When the parser chain fails to recognize a model's tool-call format,
+# every rollout (across every seed × every prompt group) logs the same
+# error string — historically producing thousands of identical
+# "Rollout error for seed N: <message>" lines per training step that
+# bury the actually useful logs (deployment lifecycle, weight sync,
+# step metrics).
+#
+# We dedupe by the error message: log the first ROLLOUT_ERROR_LOG_LIMIT
+# unique-message occurrences in full, then summarize total counts at
+# step boundaries via ``log_rollout_error_summary()``.
+
+ROLLOUT_ERROR_LOG_LIMIT = 8
+
+_rollout_error_counts: Dict[str, int] = {}
+
+
+def _log_rollout_error(seed: Any, message: str) -> None:
+    """Log a per-rollout error, deduplicated by message text.
+
+    The first ``ROLLOUT_ERROR_LOG_LIMIT`` occurrences of each unique
+    message are logged in full so operators can see the actual error
+    text. Subsequent occurrences are silently counted; the totals are
+    flushed via ``log_rollout_error_summary()``.
+    """
+    count = _rollout_error_counts.get(message, 0)
+    _rollout_error_counts[message] = count + 1
+    if count < ROLLOUT_ERROR_LOG_LIMIT:
+        logger.warning("Rollout error for seed %s: %s", seed, message)
+    elif count == ROLLOUT_ERROR_LOG_LIMIT:
+        logger.warning(
+            "Rollout error for seed %s: %s "
+            "(suppressing further occurrences of this message; final count "
+            "will be summarized at end of step)",
+            seed,
+            message,
+        )
+
+
+def log_rollout_error_summary() -> None:
+    """Emit and reset the per-message rollout-error counters.
+
+    Call this once per training step (or at the end of a sample batch)
+    so the suppressed message counts surface in the log even when no
+    successful rollouts produced metrics.
+    """
+    if not _rollout_error_counts:
+        return
+    total = sum(_rollout_error_counts.values())
+    by_msg = sorted(
+        _rollout_error_counts.items(), key=lambda item: item[1], reverse=True
+    )
+    summary = ", ".join(f"{count}x {msg!r}" for msg, count in by_msg)
+    logger.warning("Rollout errors this step: total=%d (%s)", total, summary)
+    _rollout_error_counts.clear()
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -666,9 +727,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         result = await task
                         extra = result.execution_metadata.extra or {}
                         if extra.get("rollout_error"):
-                            logger.warning(
-                                "Rollout error for seed %s: %s",
-                                env_context.get("seed"), extra["rollout_error"],
+                            _log_rollout_error(
+                                env_context.get("seed"),
+                                str(extra["rollout_error"]),
                             )
                             continue
                         completed_rows.append(result)
@@ -792,6 +853,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 loop_stats: dict | None = None,
             ) -> tuple[int, dict]:
                 """ref_forward + fwd_bwd + optim_step + metrics (1:1)."""
+                # Surface any rollout errors that were silently counted during
+                # this step's sampling phase before we move on to forward /
+                # backward — gives operators a chance to see *what* failed
+                # without flooding the log.
+                log_rollout_error_summary()
                 t0 = time.time()
                 ref_forward_batch(prompt_groups)
                 logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
@@ -888,6 +954,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
                 weight_sync_interval=weight_sync_cfg.weight_sync_interval,
             ))
+
+            # Flush any rollout errors that haven't been summarized yet —
+            # critical when no train_step ever ran (e.g. every rollout was
+            # filtered out by the parser chain), since the per-step flush
+            # would otherwise never happen and the log would only show the
+            # first ROLLOUT_ERROR_LOG_LIMIT examples plus a "suppressing"
+            # notice with no totals.
+            log_rollout_error_summary()
 
             # -- Final checkpoint -----------------------------------------------
 

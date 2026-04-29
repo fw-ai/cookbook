@@ -111,6 +111,86 @@ def _load_xml_tool_call_payload_with_text_span(text: str) -> Tuple[Dict[str, Any
     return payload, start, end
 
 
+# Anthropic / Qwen 3.5 style: ``<tool_call>`` wraps an inner
+# ``<function=NAME>...</function>`` element whose children are
+# ``<parameter=KEY>VALUE</parameter>`` blocks. The cookbook's
+# ``_load_xml_tool_call_payload_with_text_span`` (above) only matches the
+# ``<tool_call>{...JSON...}</tool_call>`` variant, so we need a dedicated
+# loader for the ``<function=...>`` shape.
+#
+# Example payload that this loader accepts:
+#
+#   <tool_call>
+#   <function=lake_move>
+#   <parameter=action>RIGHT</parameter>
+#   </function>
+#   </tool_call>
+#
+# The Qwen 3.5 chat template advertises this exact shape in the system
+# prompt (see ``apply_chat_template(..., tools=...)`` output), and the
+# model emits matching tool calls during rollouts.
+_ANTHROPIC_XML_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*"
+    r"<function=(?P<name>[^>\s]+)>(?P<body>.*?)</function>\s*"
+    r"</tool_call>",
+    flags=re.DOTALL,
+)
+_ANTHROPIC_XML_PARAMETER_RE = re.compile(
+    r"<parameter=(?P<key>[^>\s]+)>(?P<value>.*?)</parameter>",
+    flags=re.DOTALL,
+)
+
+
+def _coerce_anthropic_parameter_value(raw: str) -> Any:
+    """Decode an Anthropic-XML <parameter=...>...</parameter> body.
+
+    The body is plain text — the model writes the value verbatim between
+    the opening and closing tags. We try ``json.loads`` first so primitives
+    that look like JSON (numbers, booleans, ``null``, JSON strings/objects/
+    arrays) round-trip with the right type, and fall back to the stripped
+    raw string for everything else.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return ""
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return stripped
+
+
+def _load_anthropic_xml_function_call_payload_with_text_span(
+    text: str,
+) -> Tuple[Dict[str, Any], int, int]:
+    match = _ANTHROPIC_XML_TOOL_CALL_RE.search(text)
+    if not match:
+        raise ValueError("No Anthropic-style <function=...> tool_call block found")
+
+    name = (match.group("name") or "").strip()
+    if not name:
+        raise ValueError("<function=...> tag is missing a function name")
+    body = match.group("body") or ""
+
+    arguments: Dict[str, Any] = {}
+    for param in _ANTHROPIC_XML_PARAMETER_RE.finditer(body):
+        key = (param.group("key") or "").strip()
+        if not key:
+            continue
+        arguments[key] = _coerce_anthropic_parameter_value(param.group("value") or "")
+
+    payload = {
+        "tool_calls": [
+            {
+                "id": f"toolcall_{uuid.uuid4().hex[:12]}",
+                "name": name,
+                "arguments": arguments,
+            }
+        ]
+    }
+    start, end = match.span()
+    return payload, start, end
+
+
 def _load_kimi_native_tool_call_payload_with_text_span(text: str) -> Tuple[Dict[str, Any], int, int]:
     match = re.search(
         r"(?:<\|tool_calls_section_begin\|>)?\s*"
@@ -151,46 +231,73 @@ def _load_kimi_native_tool_call_payload_with_text_span(text: str) -> Tuple[Dict[
     return payload, start, end
 
 
+# Order matters: each loader is tried in turn and the first one that
+# matches wins. Anthropic-XML must come BEFORE
+# `_load_xml_tool_call_payload_with_text_span` because both inspect
+# `<tool_call>...</tool_call>` blocks, and the JSON-body variant would
+# otherwise throw a less-actionable "Invalid JSON inside <tool_call>" on
+# Anthropic-style payloads.
+_TOOL_CALL_LOADERS = (
+    _load_json_object_with_text_span,
+    _load_anthropic_xml_function_call_payload_with_text_span,
+    _load_xml_tool_call_payload_with_text_span,
+    _load_kimi_native_tool_call_payload_with_text_span,
+)
+
+
+class FrozenLakeToolCallParseError(ValueError):
+    """Raised when none of the tool-call loaders match the model output.
+
+    Carries the per-loader errors so callers can log a single, structured
+    summary instead of the misleading last-error-in-the-chain message
+    (e.g. ``"No Kimi native tool_call block found"``) that the previous
+    loop would surface verbatim — confusing operators about which parser
+    actually produced the failure.
+    """
+
+    def __init__(self, errors: Tuple[Tuple[str, str], ...], output_text: str):
+        self.errors = errors
+        self.output_text = output_text
+        names = ", ".join(name for name, _ in errors)
+        sample = output_text.strip().splitlines()[:1]
+        sample_str = sample[0][:120] if sample else ""
+        super().__init__(
+            f"No tool-call loader matched the model output (tried: {names}). "
+            f"First line of output: {sample_str!r}"
+        )
+
+
 def parse_first_frozen_lake_tool_call(output_text: str) -> ParsedToolCall:
     """Parse the first tool call from strict tool-call JSON output."""
-    loaders = (
-        _load_json_object_with_text_span,
-        _load_xml_tool_call_payload_with_text_span,
-        _load_kimi_native_tool_call_payload_with_text_span,
-    )
-    last_error: Exception | None = None
-    for loader in loaders:
+    errors: List[Tuple[str, str]] = []
+    for loader in _TOOL_CALL_LOADERS:
         try:
             payload, _, _ = loader(output_text)
+            # _parse_tool_call_from_payload itself raises on payloads that
+            # don't carry a non-empty `tool_calls` array. Keep that call
+            # inside the try so a stray JSON object (e.g. raw `{"action":
+            # "DOWN"}`) doesn't short-circuit the chain — subsequent
+            # loaders may still recognize the actual tool-call shape.
             return _parse_tool_call_from_payload(payload)
-        except Exception as exc:
-            last_error = exc
+        except Exception as exc:  # noqa: BLE001 — chain captures all loader errors
+            errors.append((loader.__name__, str(exc)))
             continue
-    if last_error is not None:
-        raise last_error
-    raise ValueError("Failed to parse tool call payload")
+    raise FrozenLakeToolCallParseError(tuple(errors), output_text)
 
 
 def parse_first_frozen_lake_tool_call_with_content(output_text: str) -> Tuple[ParsedToolCall, str]:
     """Parse the first tool call and return residual assistant text content."""
-    loaders = (
-        _load_json_object_with_text_span,
-        _load_xml_tool_call_payload_with_text_span,
-        _load_kimi_native_tool_call_payload_with_text_span,
-    )
-    last_error: Exception | None = None
-    for loader in loaders:
+    errors: List[Tuple[str, str]] = []
+    for loader in _TOOL_CALL_LOADERS:
         try:
             payload, json_start, json_end = loader(output_text)
             parsed_tool_call = _parse_tool_call_from_payload(payload)
             content = (output_text[:json_start] + output_text[json_end:]).strip()
             return parsed_tool_call, content
-        except Exception as exc:
-            last_error = exc
+        except Exception as exc:  # noqa: BLE001
+            errors.append((loader.__name__, str(exc)))
             continue
-    if last_error is not None:
-        raise last_error
-    raise ValueError("Failed to parse tool call payload")
+    raise FrozenLakeToolCallParseError(tuple(errors), output_text)
 
 
 def normalize_parsed_tool_call(
