@@ -18,15 +18,19 @@ Role tag layout (as the shipped Jinja template emits them):
 - ``<|assistant|>...``     — see below
 - ``<|observation|>{content}`` — same
 
-Assistant turn layout:
+Assistant turn layout (full token sequence; header/output split noted):
 
 - **Terminal turn, ``enable_thinking=True`` (default), no reasoning content**::
 
       <|assistant|><think></think>{content}
 
+  Header (masked) = ``<|assistant|><think>``, Output (trained) = ``</think>{content}``
+
 - **Terminal turn, reasoning content provided**::
 
       <|assistant|><think>{reasoning}</think>{content}
+
+  Header (masked) = ``<|assistant|><think>``, Output (trained) = ``{reasoning}</think>{content}``
 
 - **Terminal turn, ``enable_thinking=False``** (or non-thinking mode) — the
   shipped template emits ``</think>`` alone so the model skips the think
@@ -380,10 +384,15 @@ class GLM5Renderer(Renderer):
         return RenderedMessage(header=header, output=output)
 
     def _render_assistant(self, message: Message, ctx: RenderContext) -> RenderedMessage:
-        # The role tag ``<|assistant|>`` is the header; the ``<think>...
-        # </think>`` block lives in ``output`` so it is part of the training
-        # target for this assistant turn.
-        header_str = "<|assistant|>"
+        # The header includes ``<|assistant|>`` and, for terminal turns,
+        # the leading ``<think>`` token — matching the generation suffix
+        # ``<|assistant|><think>`` so the model never trains on a token
+        # that is always provided at inference time.
+        #
+        # Historical turns that strip thinking use ``</think>`` (not
+        # ``<think>``) which is part of the model output and stays in the
+        # trained span. Historical turns that preserve thinking include
+        # ``<think>`` in the header as well.
 
         before_last_user = (
             ctx.last_user_index >= 0
@@ -405,16 +414,23 @@ class GLM5Renderer(Renderer):
         # 5. Terminal turn without reasoning (thinking-mode default):
         #    ``<think></think>``.
         if before_last_user and self.strip_thinking_from_history:
-            think_block = "</think>"
+            header_str = "<|assistant|>"
+            output_str = "</think>"
         elif before_last_user and not reasoning:
-            think_block = "</think>"
+            header_str = "<|assistant|>"
+            output_str = "</think>"
+        elif before_last_user and reasoning:
+            header_str = "<|assistant|><think>"
+            output_str = f"{reasoning.strip()}</think>"
         elif reasoning:
-            think_block = f"<think>{reasoning.strip()}</think>"
+            header_str = "<|assistant|><think>"
+            output_str = f"{reasoning.strip()}</think>"
         else:
-            think_block = "<think></think>"
+            header_str = "<|assistant|><think>"
+            output_str = "</think>"
 
         visible_stripped = visible.strip()
-        output_str = think_block + visible_stripped
+        output_str = output_str + visible_stripped
 
         tool_calls = message.get("tool_calls")
         if tool_calls:

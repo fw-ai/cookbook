@@ -802,7 +802,8 @@ def test_interleaved_tool_reasoning_and_params_are_trained(tokenizer, renderer):
     tokens, weights = _renderer_supervised_tokens(renderer, messages)
     trained_text = tokenizer.decode([t for t, w in zip(tokens, weights) if w > 0])
 
-    assert "<think>Need current weather.</think>" in trained_text
+    assert "Need current weather.</think>" in trained_text
+    assert "<think>" not in trained_text, "leading <think> should be masked"
     assert "<tool_call>get_weather" in trained_text
     assert "<arg_value>SF</arg_value>" in trained_text
 
@@ -1014,10 +1015,10 @@ def test_preserve_thinking_build_supervised_examples_keeps_single_example(
 def test_weight_mask_only_covers_assistant_output(tokenizer, renderer):
     """Every non-zero-weight position must decode to an assistant-output token.
 
-    Specifically: the trained span for the last assistant turn should be
-    ``<think></think>{content}<|endoftext|>`` — matching the shipped
-    Jinja template layout (no leading newline, no newline between the
-    think block and the content) plus the intentional trailing EOS.
+    The header ``<|assistant|><think>`` is masked (matching the generation
+    suffix at inference time). The trained span starts at ``</think>``
+    for a no-reasoning terminal turn, so the trained text is
+    ``</think>{content}<|endoftext|>``.
     """
     messages = [
         {"role": "user", "content": "What is the secret password?"},
@@ -1032,8 +1033,9 @@ def test_weight_mask_only_covers_assistant_output(tokenizer, renderer):
     trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
     trained_text = tokenizer.decode(trained_tokens)
 
-    # Should start with '<think></think>' (no leading newline) and end with EOS.
-    assert trained_text.startswith("<think></think>"), trained_text
+    # <think> is in the header (masked); trained span starts with </think>.
+    assert trained_text.startswith("</think>"), trained_text
+    assert "<think>" not in trained_text, "leading <think> should be masked"
     assert tokens[-1] == _eos(tokenizer), "last token must be <|endoftext|>"
     assert "ALPHA-BRAVO" in trained_text
 
@@ -1057,7 +1059,11 @@ def test_weight_mask_multi_turn_covers_all_assistant_turns(tokenizer, renderer):
 
 
 def test_weight_mask_with_thinking(tokenizer, renderer):
-    """Trained span includes the thinking block for terminal turns."""
+    """Trained span includes reasoning content but not the leading <think> tag.
+
+    The header ``<|assistant|><think>`` is masked to match the generation
+    suffix. The trained span is ``my reasoning</think>answer<|endoftext|>``.
+    """
     messages = [
         {"role": "user", "content": "q"},
         {"role": "assistant", "content": "<think>my reasoning</think>answer"},
@@ -1066,8 +1072,10 @@ def test_weight_mask_with_thinking(tokenizer, renderer):
     trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
     trained_text = tokenizer.decode(trained_tokens)
 
-    assert "<think>my reasoning</think>" in trained_text
+    assert "my reasoning" in trained_text
+    assert "</think>" in trained_text
     assert "answer" in trained_text
+    assert "<think>" not in trained_text, "leading <think> should be masked"
     assert "q" not in trained_text
 
 
