@@ -27,6 +27,7 @@ from tinker_cookbook.renderers.base import (
     TrainOnWhat,
 )
 
+from training.verifier.inspect import render_inspect
 from training.verifier.probe import (
     _PROV_NATIVE,
     _PROV_PROMPT,
@@ -281,3 +282,39 @@ def test_run_probe_strips_echoed_prompt(toy_renderer):
     assert artifact["sanity"]["completion_token_count"] == len(actual_completion_ids)
     # No spurious divergence after stripping.
     assert artifact["sanity"]["tokenization_diverged_count"] == 0
+
+
+def test_inspect_renders_structured_summary(toy_renderer):
+    """``inspect`` should print sanity, provenance counts, and key audit rows
+    for any well-formed probe artifact, without crashing on optional fields."""
+    tokenizer = _StubTokenizer()
+    messages = [{"role": "user", "content": "hello"}]
+    expected_prompt_ids = [_T["<user>"], _T["hello"], _T["<asst>"]]
+    completion_ids = [_T["fine"], _T["thanks"]]
+
+    client = _StubClient(
+        prompt_token_ids=expected_prompt_ids,
+        completion_token_ids=completion_ids,
+        completion_text="finethanks",
+    )
+
+    artifact = run_probe(
+        renderer_name=toy_renderer,
+        tokenizer=tokenizer,
+        client=client,
+        model="test/model",
+        messages=messages,
+    )
+
+    text = render_inspect(artifact, show_all=False, filter_prov=None)
+    # Expected sections present
+    for section in ("PROBE", "SANITY", "PROVENANCE COUNTS", "AUDIT TABLE"):
+        assert section in text, f"missing section {section} in inspect output"
+    # Provenance counts mention every observed bucket
+    assert "prompt_hard_append" in text
+    assert "native_generated" in text
+    # Filter mode narrows the table
+    only_native = render_inspect(artifact, show_all=False, filter_prov=_PROV_NATIVE)
+    assert "shown=" in only_native
+    # Filter view should not include any header rows (those are prompt_hard_append)
+    assert "src=header" not in only_native or "filter='native_generated'" in only_native
