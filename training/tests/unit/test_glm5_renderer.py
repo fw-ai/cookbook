@@ -1239,6 +1239,81 @@ def test_weight_mask_multi_turn_tool_call_with_thinking_trains_observation_stop(
     assert "<tool_response>sunny</tool_response>" not in trained_text
 
 
+def test_weight_mask_parallel_tool_responses_train_single_observation_stop(
+    tokenizer, renderer_keep_thinking
+):
+    """Parallel tool-call responses share one trained observation stop."""
+    messages = [
+        {"role": "user", "content": "Plan with two tools"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "need two tools"},
+                {"type": "text", "text": ""},
+            ],
+            "tool_calls": [
+                _make_tool_call("get_weather", {"city": "SF"}),
+                _make_tool_call("convert_units", {"value": 72, "from": "F"}),
+            ],
+        },
+        {"role": "tool", "content": "WEATHER_RESULT_ABC"},
+        {"role": "tool", "content": "CONVERT_RESULT_XYZ"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "combine tool results"},
+                {"type": "text", "text": "done"},
+            ],
+        },
+    ]
+    tokens, weights = _renderer_supervised_tokens(renderer_keep_thinking, messages)
+    observation = _observation_token(tokenizer)
+    user = _user_token(tokenizer)
+    tool_call_close = _encode_single(tokenizer, "</tool_call>")
+    first_response = tokenizer.encode(
+        "<tool_response>WEATHER_RESULT_ABC</tool_response>",
+        add_special_tokens=False,
+    )
+    second_response = tokenizer.encode(
+        "<tool_response>CONVERT_RESULT_XYZ</tool_response>",
+        add_special_tokens=False,
+    )
+
+    observation_positions = [
+        i for i, token in enumerate(tokens) if token == observation
+    ]
+    tool_call_close_positions = [
+        i for i, token in enumerate(tokens) if token == tool_call_close
+    ]
+    first_response_pos = _find_subsequence(tokens, first_response)
+    second_response_pos = _find_subsequence(tokens, second_response)
+
+    assert len(tool_call_close_positions) == 2
+    assert observation_positions == [tool_call_close_positions[-1] + 1]
+    assert weights[observation_positions[0]] == 1
+    assert all(
+        w == 0
+        for w in weights[
+            first_response_pos : first_response_pos + len(first_response)
+        ]
+    )
+    assert all(
+        w == 0
+        for w in weights[
+            second_response_pos : second_response_pos + len(second_response)
+        ]
+    )
+    assert tokens[-1] == user
+    assert weights[-1] == 1
+
+    trained_text = tokenizer.decode([t for t, w in zip(tokens, weights) if w > 0])
+    assert "<tool_call>get_weather" in trained_text
+    assert "<tool_call>convert_units" in trained_text
+    assert "<|observation|>" in trained_text
+    assert "WEATHER_RESULT_ABC" not in trained_text
+    assert "CONVERT_RESULT_XYZ" not in trained_text
+
+
 def test_weight_mask_multi_turn_covers_all_assistant_turns(tokenizer, renderer):
     """With TrainOnWhat.ALL_ASSISTANT_MESSAGES, every assistant turn gets trained."""
     messages = [
