@@ -61,75 +61,153 @@ class _Case:
 # observe; the BUG_COVERAGE table at the bottom maps PR ids to which row(s)
 # would surface a regression of that bug.
 
+_SHORT_MSGS = [
+    {"role": "system", "content": "Answer with a single integer and nothing else."},
+    {"role": "user", "content": "2 + 2 = ?"},
+]
+_MULTI_TURN_MSGS = [
+    {"role": "system", "content": "Answer briefly."},
+    {"role": "user", "content": "What is 2+2?"},
+    {"role": "assistant", "content": "4."},
+    {"role": "user", "content": "And 3+3?"},
+]
+
+
 _CATALOGUE: list[_Case] = [
+    # ---- GLM5 family ------------------------------------------------------
     _Case(
-        case_id="glm5-single-turn",
+        case_id="glm5-glm5p1-single-turn",
         renderer="glm5",
         tokenizer_model="zai-org/GLM-5.1",
         serverless_model="accounts/fireworks/models/glm-5p1",
-        messages=[
-            {"role": "system", "content": "Answer with a single integer and nothing else."},
-            {"role": "user", "content": "2 + 2 = ?"},
-        ],
+        messages=_SHORT_MSGS,
         bug_refs=("cookbook#384", "cookbook#389", "cookbook#400"),
     ),
     _Case(
-        case_id="glm5-multi-turn",
+        case_id="glm5-glm5p1-multi-turn",
         renderer="glm5",
         tokenizer_model="zai-org/GLM-5.1",
         serverless_model="accounts/fireworks/models/glm-5p1",
-        messages=[
-            {"role": "system", "content": "Answer briefly."},
-            {"role": "user", "content": "What is 2+2?"},
-            {"role": "assistant", "content": "4."},
-            {"role": "user", "content": "And 3+3?"},
-        ],
+        messages=_MULTI_TURN_MSGS,
         bug_refs=("cookbook#397", "cookbook#400"),
     ),
     _Case(
-        case_id="qwen3-thinking-single-turn",
+        case_id="glm5-glm5-base-single-turn",
+        renderer="glm5",
+        tokenizer_model="zai-org/GLM-5",
+        serverless_model="accounts/fireworks/models/glm-5",
+        messages=_SHORT_MSGS,
+        bug_refs=("cookbook#384",),
+    ),
+    # ---- Qwen3 (default thinking) ----------------------------------------
+    _Case(
+        case_id="qwen3-thinking-qwen3-8b",
         renderer="qwen3",
         tokenizer_model="Qwen/Qwen3-8B",
         serverless_model="accounts/fireworks/models/qwen3-8b",
-        messages=[
-            {"role": "system", "content": "Answer with a single integer and nothing else."},
-            {"role": "user", "content": "2 + 2 = ?"},
-        ],
+        messages=_SHORT_MSGS,
         bug_refs=("tinker#178", "tinker#247", "tinker#341"),
     ),
     _Case(
-        case_id="qwen3-disable-thinking-single-turn",
+        case_id="qwen3-thinking-qwen3-8b-multi-turn",
+        renderer="qwen3",
+        tokenizer_model="Qwen/Qwen3-8B",
+        serverless_model="accounts/fireworks/models/qwen3-8b",
+        messages=_MULTI_TURN_MSGS,
+        bug_refs=("tinker#142", "tinker#341"),
+    ),
+    # ---- Qwen3 disable-thinking ------------------------------------------
+    _Case(
+        case_id="qwen3-disable-thinking-qwen3-8b",
         renderer="qwen3_disable_thinking",
         tokenizer_model="Qwen/Qwen3-8B",
         serverless_model="accounts/fireworks/models/qwen3-8b",
-        messages=[
-            {"role": "system", "content": "Answer with a single integer and nothing else."},
-            {"role": "user", "content": "2 + 2 = ?"},
-        ],
+        messages=_SHORT_MSGS,
         bug_refs=("tinker#50", "tinker#178"),
     ),
+    # Note: qwen3-{4b,32b,30b-a3b}, qwen3-*-instruct-2507, qwen3-coder*,
+    # qwen3p5-27b are listed by the inference catalogue endpoint but return
+    # 404 on chat.completions.create from this dev API key. They're
+    # account-scoped models, not actually serverless-deployed; not probable
+    # without a personal deployment. Removed from the sweep to keep it
+    # exercising real coverage.
+    # ---- Kimi K2.5 + K2.6 (per cookbook #357 K2.6 routes to kimi_k25) ----
     _Case(
-        case_id="deepseekv3-single-turn",
+        case_id="kimi_k25-kimi-k2p5",
+        renderer="kimi_k25",
+        tokenizer_model="moonshotai/Kimi-K2.5",
+        serverless_model="accounts/fireworks/models/kimi-k2p5",
+        messages=_SHORT_MSGS,
+        bug_refs=("tinker#248", "tinker#384", "tinker#393", "tinker#410"),
+    ),
+    _Case(
+        case_id="kimi_k25-disable-thinking-kimi-k2p5",
+        renderer="kimi_k25_disable_thinking",
+        tokenizer_model="moonshotai/Kimi-K2.5",
+        serverless_model="accounts/fireworks/models/kimi-k2p5",
+        messages=_SHORT_MSGS,
+        bug_refs=("tinker#393",),
+    ),
+    _Case(
+        case_id="kimi_k25-kimi-k2p6",
+        renderer="kimi_k25",
+        tokenizer_model="moonshotai/Kimi-K2.5",
+        serverless_model="accounts/fireworks/models/kimi-k2p6",
+        messages=_SHORT_MSGS,
+        bug_refs=("cookbook#357", "tinker#410"),
+    ),
+    # ---- DeepSeek V3 / V4 (deepseek-v3p1 served as v3, v4-pro as v4) -----
+    _Case(
+        case_id="deepseekv3-deepseek-v3p1",
         renderer="deepseekv3",
         tokenizer_model="deepseek-ai/DeepSeek-V3",
         serverless_model="accounts/fireworks/models/deepseek-v3p1",
-        messages=[
-            {"role": "system", "content": "Answer with a single integer and nothing else."},
-            {"role": "user", "content": "2 + 2 = ?"},
-        ],
+        messages=_SHORT_MSGS,
         bug_refs=("tinker#139", "tinker#247"),
     ),
     _Case(
-        case_id="deepseekv3-thinking-single-turn",
+        case_id="deepseekv3-thinking-deepseek-v3p1",
         renderer="deepseekv3_thinking",
         tokenizer_model="deepseek-ai/DeepSeek-V3",
         serverless_model="accounts/fireworks/models/deepseek-v3p1",
-        messages=[
-            {"role": "system", "content": "Answer with a single integer and nothing else."},
-            {"role": "user", "content": "2 + 2 = ?"},
-        ],
+        messages=_SHORT_MSGS,
         bug_refs=("tinker#264", "tinker#267", "tinker#285"),
     ),
+    # Note: accounts/fireworks/models/deepseek-v4-pro is callable but
+    # returns no prompt_token_ids / token_ids even with echo=True +
+    # raw_output=True + return_token_ids=True; the v4 inference path
+    # doesn't expose the echo surface the probe needs. Not probable from
+    # this stack.
+    # ---- MiniMax M2 ------------------------------------------------------
+    _Case(
+        case_id="minimax_m2-minimax-m2p7",
+        renderer="minimax_m2",
+        tokenizer_model="MiniMaxAI/MiniMax-M2",
+        serverless_model="accounts/fireworks/models/minimax-m2p7",
+        messages=_SHORT_MSGS,
+        bug_refs=("cookbook#280",),
+    ),
+    # ---- Llama 3.3 -------------------------------------------------------
+    _Case(
+        case_id="llama3-llama-v3p3-70b",
+        renderer="llama3",
+        tokenizer_model="meta-llama/Llama-3.3-70B-Instruct",
+        serverless_model="accounts/fireworks/models/llama-v3p3-70b-instruct",
+        messages=_SHORT_MSGS,
+        bug_refs=(),
+    ),
+    _Case(
+        case_id="llama3-llama-v3p3-70b-multi-turn",
+        renderer="llama3",
+        tokenizer_model="meta-llama/Llama-3.3-70B-Instruct",
+        serverless_model="accounts/fireworks/models/llama-v3p3-70b-instruct",
+        messages=_MULTI_TURN_MSGS,
+        bug_refs=(),
+    ),
+    # ---- pyroworks personal models (account-scoped, but visible to this key)
+    # Note: accounts/pyroworks/models/qwen3-1p7b is listed but currently
+    # serves "no healthy upstream" (scaled to zero, no warmup). Add back
+    # if/when a deployment is provisioned for the dev account.
 ]
 
 
@@ -188,19 +266,26 @@ def _signal_row(case_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def _verdict(signal: dict[str, Any]) -> str:
-    """Coarse pass/warn/fail bucket per row."""
+    """Coarse pass/warn/fail bucket per row.
+
+    Order matters: prompt-parity failures are blocking and reported first.
+    Length-truncated completions are reported next because they invalidate
+    the trailing-token and parse_response checks (the model never reached
+    its natural stop, so any "model didn't emit X" finding is just "we
+    cut it off").
+    """
     if signal.get("prompt_parity") is False:
         return "FAIL: HF prompt parity"
     if signal.get("structural_walk_token_match") is False:
         return "FAIL: structural walk diverges"
+    if signal.get("stop_reason") != "stop":
+        return "INFO: completion truncated (stop_reason!=stop) — re-run with higher max_tokens"
     if signal.get("parse_response_ok") is False:
         return "WARN: parse_response_ok=False"
     if (signal.get("tokenization_diverged_count") or 0) > 0:
         return "WARN: tokenization diverged"
     if (signal.get("trailing_w1_count") or 0) > 0:
         return "WARN: trailing token w=1.0 not emitted (loss-mask suspect)"
-    if signal.get("stop_reason") != "stop":
-        return "INFO: completion truncated (stop_reason!=stop) — re-run with higher max_tokens"
     return "PASS"
 
 
@@ -216,7 +301,7 @@ def run_sweep(*, output_dir: str, api_key: str | None, base_url: str | None, max
     # Lazy imports — the sweep needs the real client and HF tokenizer; the
     # core probe module stays import-light for unit tests.
     from fireworks import Fireworks  # type: ignore[import-not-found]
-    import transformers  # type: ignore[import-not-found]
+    from tinker_cookbook.tokenizer_utils import get_tokenizer
 
     client_kwargs: dict[str, Any] = {"api_key": api_key}
     if base_url:
@@ -228,9 +313,10 @@ def run_sweep(*, output_dir: str, api_key: str | None, base_url: str | None, max
         logger.info("=== %s (renderer=%s, model=%s) ===", case.case_id, case.renderer, case.serverless_model)
         artifact_path = out / f"{case.case_id}.json"
         try:
-            tokenizer = transformers.AutoTokenizer.from_pretrained(
-                case.tokenizer_model, trust_remote_code=True,
-            )
+            # ``get_tokenizer`` knows about per-model quirks (Llama-3 gating
+            # proxy, Kimi revision pinning, etc.) so the sweep doesn't
+            # hand-maintain that table.
+            tokenizer = get_tokenizer(case.tokenizer_model)
             artifact = run_probe(
                 renderer_name=case.renderer,
                 tokenizer=tokenizer,
@@ -298,7 +384,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", required=True, help="Directory to write probe JSONs and summary.json into.")
     p.add_argument("--api-key", default=None, help="Fireworks API key. Falls back to FIREWORKS_API_KEY.")
     p.add_argument("--base-url", default=None, help="Override Fireworks base URL (FIREWORKS_BASE_URL fallback).")
-    p.add_argument("--max-tokens", type=int, default=512, help="Per-completion cap. Default 512 keeps the sweep fast; bump if a row trips stop_reason=length.")
+    p.add_argument("--max-tokens", type=int, default=1024, help="Per-completion cap. Default 1024; thinking-enabled multi-turn easily exceeds 512.")
     return p
 
 
