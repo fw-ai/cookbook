@@ -19,55 +19,17 @@ class RLPromptDataset:
     """Batch-indexed prompt dataset for RL training.
 
     Follows tinker_cookbook's dataset pattern (``get_batch`` / ``__len__``)
-    but returns raw row dicts instead of ``EnvGroupBuilder``. Rows are kept
-    opaque so text, tool, and multimodal schemas can share the same cursor.
+    but returns raw row dicts instead of ``EnvGroupBuilder``.
     """
 
     def __init__(self, rows: list[dict], prompts_per_step: int):
         self.rows = rows
         self.prompts_per_step = prompts_per_step
-        self.cursor = 0
 
     def get_batch(self, index: int) -> list[dict]:
         start = index * self.prompts_per_step
         end = min(start + self.prompts_per_step, len(self.rows))
         return self.rows[start:end]
-
-    @property
-    def data_consumed(self) -> int:
-        return self.cursor
-
-    def rows_from_cursor(self) -> list[dict]:
-        return self.rows[self.cursor:]
-
-    def cursor_from_step(self, step: int, *, minibatches_per_step: int = 1) -> int:
-        rollouts = step // max(1, minibatches_per_step)
-        return rollouts * self.prompts_per_step
-
-    def resume(
-        self,
-        data_consumed: int | None,
-        *,
-        fallback_step: int = 0,
-        minibatches_per_step: int = 1,
-    ) -> None:
-        if data_consumed is not None and (data_consumed > 0 or fallback_step == 0):
-            self.cursor = min(max(0, data_consumed), len(self.rows))
-            return
-        self.cursor = min(
-            max(0, self.cursor_from_step(fallback_step, minibatches_per_step=minibatches_per_step)),
-            len(self.rows),
-        )
-
-    def record_batch(self, loop_stats: dict | None, accepted_rows: int) -> None:
-        if not loop_stats:
-            self.cursor = min(self.cursor + accepted_rows, len(self.rows))
-            return
-        try:
-            total_sampled = int(loop_stats.get("total_sampled", accepted_rows))
-        except (TypeError, ValueError):
-            total_sampled = accepted_rows
-        self.cursor = min(self.cursor + max(0, total_sampled), len(self.rows))
 
     def __len__(self) -> int:
         return math.ceil(len(self.rows) / self.prompts_per_step) if self.rows else 0

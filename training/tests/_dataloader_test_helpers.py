@@ -1,5 +1,5 @@
 """Shared bootstrap for dataloader-cursor tests.
-Loads ``utils/data.py`` and ``utils/rl/train.py`` in isolation, stubbing the SDK.
+Loads ``utils/dataloader_cursor.py`` and ``utils/rl/train.py`` in isolation, stubbing the SDK.
 """
 
 from __future__ import annotations
@@ -29,17 +29,12 @@ def _stub_fireworks_sdk() -> None:
     errors = types.ModuleType("fireworks.training.sdk.errors")
     errors.request_with_retries = lambda fn, *args, **kwargs: fn(*args, **kwargs)
     sys.modules.setdefault("fireworks", types.ModuleType("fireworks"))
-    sys.modules.setdefault(
-        "fireworks.training", types.ModuleType("fireworks.training"),
-    )
-    sys.modules.setdefault(
-        "fireworks.training.sdk", types.ModuleType("fireworks.training.sdk"),
-    )
+    sys.modules.setdefault("fireworks.training", types.ModuleType("fireworks.training"))
+    sys.modules.setdefault("fireworks.training.sdk", types.ModuleType("fireworks.training.sdk"))
     sys.modules["fireworks.training.sdk.errors"] = errors
 
 
 def _stub_rl_losses(prompt_group_cls: type) -> None:
-    """Register a stub ``training.utils.rl.losses`` exposing ``PromptGroup``."""
     if "training.utils.rl.losses" in sys.modules:
         return
     losses = types.ModuleType("training.utils.rl.losses")
@@ -58,24 +53,19 @@ def _load_module(unique_name: str, relpath: str) -> Any:
     return module
 
 
-def load_dataloader_test_modules(
+def load_cursor() -> type:
+    """Return ``RawRowCursor`` loaded directly (no SDK deps)."""
+    m = _load_module("dataloader_cursor_test_load", "utils/dataloader_cursor.py")
+    return m.RawRowCursor
+
+
+def load_rl_train(
     unique_suffix: str,
     *,
     prompt_group_cls: type = _TestPromptGroup,
-) -> tuple[type, type, Any]:
-    """Return ``(RLPromptDataset, TrainStepFns, run_rl_loop)`` loaded under a unique
-    importlib name so monkeypatches don't leak across test files."""
+) -> tuple[type, Any]:
+    """Return ``(TrainStepFns, run_rl_loop)`` loaded under a unique importlib name."""
     _stub_fireworks_sdk()
     _stub_rl_losses(prompt_group_cls)
-
-    data_module = _load_module(
-        f"training_utils_data_{unique_suffix}", "utils/data.py",
-    )
-    train_module = _load_module(
-        f"training_utils_rl_train_{unique_suffix}", "utils/rl/train.py",
-    )
-    return (
-        data_module.RLPromptDataset,
-        train_module.TrainStepFns,
-        train_module.run_rl_loop,
-    )
+    m = _load_module(f"rl_train_test_{unique_suffix}", "utils/rl/train.py")
+    return m.TrainStepFns, m.run_rl_loop

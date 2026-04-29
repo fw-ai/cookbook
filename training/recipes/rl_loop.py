@@ -51,6 +51,7 @@ from training.utils import (
     WandBConfig,
     DeployConfig,
     WeightSyncConfig,
+    RawRowCursor,
     RLPromptDataset,
     wandb_log,
     setup_wandb,
@@ -70,7 +71,7 @@ import time as _time
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
 from training.utils.rl.losses import (
     build_builtin_loss_datums,
     build_loss_fn,
@@ -469,6 +470,7 @@ def main(
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
+        cursor = RawRowCursor(max_rows=len(all_rows))
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         # Client-side fallback: build the Python loss closure used by
         # forward_backward_custom(...) when no eligible builtin kernel exists.
@@ -737,7 +739,7 @@ def main(
                     step, minibatch_idx + 1, num_minibatches, _time.time() - t0,
                 )
 
-            rl_dataset.record_batch(loop_stats, accepted_rows=len(prompt_groups))
+            cursor.record(raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups)))
 
             rollouts_completed = (step - step_offset) // num_minibatches
             dcp_interval = cfg.weight_sync.dcp_save_interval
@@ -748,7 +750,7 @@ def main(
                     f"step-{step}",
                     resumable=True,
                     promotable=False,
-                    data_consumed=rl_dataset.data_consumed,
+                    data_consumed=cursor.value,
                 )
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
@@ -810,14 +812,14 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        # Prefer the persisted raw-row cursor; fall back to the old step-derived
-        # cursor when resuming checkpoints that predate dataloader.json.
-        rl_dataset.resume(
+        # Prefer the persisted raw-row cursor; fall back to step-derived for
+        # legacy checkpoints (dataloader.json predates this PR).
+        rollouts_done = step_offset // max(1, cfg.ppo_n_minibatches)
+        cursor.resume(
             resume_info.data_consumed if resume_info else None,
-            fallback_step=step_offset,
-            minibatches_per_step=cfg.ppo_n_minibatches,
+            fallback=rollouts_done * prompt_groups_per_step,
         )
-        remaining_rows = rl_dataset.rows_from_cursor()
+        remaining_rows = all_rows[cursor.value:]
 
         total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
         runner.start_training()
@@ -845,7 +847,7 @@ def main(
                     cp_name,
                     resumable=True,
                     promotable=True,
-                    data_consumed=rl_dataset.data_consumed,
+                    data_consumed=cursor.value,
                 )
 
                 if getattr(cfg, "output_model_id", None):

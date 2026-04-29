@@ -35,6 +35,7 @@ from training.utils import (
     DEFAULT_RENDER_WORKERS,
     InfraConfig,
     JsonlRenderDataset,
+    RawRowCursor,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
@@ -609,12 +610,9 @@ def main(
             warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step = resume_info.step if resume_info else 0
-        # ResumeInfo.data_consumed carries SFT raw_rows_consumed: the
-        # load-bearing counter that drives the dataset cursor on resume.
-        # The post-filter counter the old jsonl format also stored is no
-        # longer persisted; metrics that previously used it now derive
-        # from this one cursor.
-        raw_rows_consumed = resume_info.data_consumed if resume_info else 0
+        total_raw_rows = training_count * cfg.epochs
+        cursor = RawRowCursor(max_rows=total_raw_rows)
+        cursor.resume(resume_info.data_consumed if resume_info else None)
         wandb_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
@@ -635,11 +633,10 @@ def main(
 
         # -- Training loop (batch-indexed) -------------------------------------
 
-        total_raw_rows = training_count * cfg.epochs
-        completed_epochs = raw_rows_consumed // training_count if training_count else 0
-        rows_into_current_epoch = raw_rows_consumed % training_count if training_count else 0
+        completed_epochs = cursor.value // training_count if training_count else 0
+        rows_into_current_epoch = cursor.value % training_count if training_count else 0
         start_batch = rows_into_current_epoch // effective_batch_size
-        remaining_raw_rows = max(0, total_raw_rows - raw_rows_consumed)
+        remaining_raw_rows = max(0, total_raw_rows - cursor.value)
         total_steps_estimate = step + (
             (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
         )
@@ -678,7 +675,7 @@ def main(
                         f"step-{step}",
                         resumable=True,
                         promotable=False,
-                        data_consumed=raw_rows_consumed,
+                        data_consumed=cursor.value,
                     )
 
             step_metrics: Dict[str, Any] = flush_timing()
@@ -735,7 +732,7 @@ def main(
                     effective_batch_size,
                     training_count - raw_batch_idx * effective_batch_size,
                 )
-                raw_rows_consumed += raw_batch_size
+                cursor.record(raw_batch_size)
                 batch = _flatten_rendered_batch(batch)
                 if not batch:
                     continue  # entire batch was filtered (None render); skip
@@ -781,7 +778,7 @@ def main(
                 cp_name,
                 resumable=True,
                 promotable=True,
-                data_consumed=raw_rows_consumed,
+                data_consumed=cursor.value,
             )
             if getattr(cfg, "output_model_id", None):
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

@@ -47,6 +47,7 @@ from training.utils import (
     DeployConfig,
     WeightSyncConfig,
     ReconnectableClient,
+    RawRowCursor,
     RLPromptDataset,
     wandb_log,
     setup_wandb,
@@ -66,7 +67,7 @@ from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.timer import timer, flush_timing
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
 from training.utils.rl.losses import (
     build_loss_fn,
     combine_prompt_groups,
@@ -439,6 +440,7 @@ def main(
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
+        cursor = RawRowCursor(max_rows=len(all_rows))
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         sample_kwargs: dict = dict(
@@ -726,7 +728,7 @@ def main(
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
-            rl_dataset.record_batch(loop_stats, accepted_rows=len(prompt_groups))
+            cursor.record(raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups)))
 
             # 5. Weight sync
             if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
@@ -737,7 +739,7 @@ def main(
                     f"step-{step}",
                     resumable=True,
                     promotable=False,
-                    data_consumed=rl_dataset.data_consumed,
+                    data_consumed=cursor.value,
                 )
 
             # 6. Metrics
@@ -780,13 +782,13 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        # Prefer the persisted raw-row cursor; fall back to the old step-derived
-        # cursor when resuming checkpoints that predate dataloader.json.
-        rl_dataset.resume(
+        # Prefer the persisted raw-row cursor; fall back to step-derived for
+        # legacy checkpoints (dataloader.json predates this PR).
+        cursor.resume(
             resume_info.data_consumed if resume_info else None,
-            fallback_step=step_offset,
+            fallback=step_offset * prompt_groups_per_step,
         )
-        remaining_rows = rl_dataset.rows_from_cursor()
+        remaining_rows = all_rows[cursor.value:]
 
         total_rl_steps = len(rl_dataset) - step_offset
         runner.start_training()
@@ -811,7 +813,7 @@ def main(
                     cp_name,
                     resumable=True,
                     promotable=True,
-                    data_consumed=rl_dataset.data_consumed,
+                    data_consumed=cursor.value,
                 )
                 if getattr(cfg, "output_model_id", None):
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

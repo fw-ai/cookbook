@@ -31,7 +31,19 @@ __all__ = [
     "TrainStepFns",
     "DynamicFilterFn",
     "run_rl_loop",
+    "raw_rows_from_stats",
 ]
+
+
+def raw_rows_from_stats(loop_stats: dict | None, accepted_rows: int) -> int:
+    """Extract ``total_sampled`` (raw rows pulled, incl. drops/fails) from a
+    ``run_rl_loop`` stats dict; fall back to ``accepted_rows`` when missing/malformed."""
+    if not loop_stats:
+        return accepted_rows
+    try:
+        return int(loop_stats.get("total_sampled", accepted_rows))
+    except (TypeError, ValueError):
+        return accepted_rows
 
 DynamicFilterFn = Callable[[PromptGroup], bool]
 """Filter callback applied after sampling, before training.

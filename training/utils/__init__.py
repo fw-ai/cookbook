@@ -47,6 +47,7 @@ __all__ = [
     "ReconnectableClient",
     "ResourceCleanup",
     "RewardFn",
+    "RawRowCursor",
     "RLPromptDataset",
     "RunnerConfig",
     "RunnerIO",
@@ -116,6 +117,7 @@ from training.utils.data import (
     normalize_preference_row,
     prepare_sampling_messages,
 )
+from training.utils.dataloader_cursor import RawRowCursor
 from training.utils.infra import (
     Infra,
     ResourceCleanup,

@@ -29,8 +29,15 @@ from types import SimpleNamespace
 import pytest
 
 import training.recipes.dpo_loop as module
-from training.utils import AppendOnlyPickleLog, JsonlRenderDataset
+from training.utils import AppendOnlyPickleLog, JsonlRenderDataset, RawRowCursor
 from training.utils.data import iter_preference_examples, load_preference_dataset
+
+
+def _new_cursor(*, max_rows: int | None = None, persisted: int | None = None) -> RawRowCursor:
+    cursor = RawRowCursor(max_rows=max_rows)
+    if persisted is not None:
+        cursor.resume(persisted)
+    return cursor
 
 
 # ---------------------------------------------------------------------------
@@ -308,19 +315,21 @@ class TestTrainLoop:
             render_workers=0,
         )
         ref_done = []
-        step, raw_rows_consumed = asyncio.run(
+        cursor = _new_cursor(max_rows=4)
+        step = asyncio.run(
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
                 adam_params={"lr": 1e-4},
                 cfg=cfg,
                 step_offset=0,
+                cursor=cursor,
                 on_ref_done=lambda: ref_done.append(True),
             )
         )
         # 4 pairs / batch_size=2 -> 2 train steps
         assert step == 2
-        assert raw_rows_consumed == 4
+        assert cursor.value == 4
         assert ref_done == [True]
         assert len(events["flush_batches"]) == 2
         for batch, beta in events["flush_batches"]:
@@ -340,18 +349,20 @@ class TestTrainLoop:
                 log_path=str(tmp_path), beta=0.1, epochs=3, batch_size=2,
                 render_workers=0,
             )
-            step, raw_rows_consumed = asyncio.run(
+            cursor = _new_cursor(max_rows=4 * 3)
+            step = asyncio.run(
                 module._train_loop(
                     ds, ref_cache,
                     _FakeReference(), _FakePolicy(),
                     adam_params={"lr": 1e-4},
                     cfg=cfg, step_offset=0,
+                    cursor=cursor,
                 )
             )
             # 4 pairs * 3 epochs / batch_size=2 = 6 steps
             assert step == 6
             # Epoch 0 consumes 4 raw rows; replay epochs 1 and 2 add 4 each.
-            assert raw_rows_consumed == 12
+            assert cursor.value == 12
             assert len(events["flush_batches"]) == 6
 
             # Ref cache must contain all 4 pairs in producer order; epochs 1+
@@ -377,6 +388,7 @@ class TestTrainLoop:
                     _FakeReference(), _FakePolicy(),
                     adam_params={"lr": 1e-4},
                     cfg=cfg, step_offset=0,
+                    cursor=_new_cursor(max_rows=4),
                 )
             )
 
@@ -401,12 +413,13 @@ class TestTrainLoop:
             ref_cache_concurrency=4, render_workers=0,
         )
         t0 = time.monotonic()
-        step, _ = asyncio.run(
+        step = asyncio.run(
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
                 adam_params={"lr": 1e-4},
                 cfg=cfg, step_offset=0,
+                cursor=_new_cursor(max_rows=4),
                 on_ref_done=lambda: timeline.append(time.monotonic()),
             )
         )
@@ -449,6 +462,7 @@ class TestTrainLoop:
                 module._train_loop(
                     ds, None, CountingReference(), _FakePolicy(),
                     adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+                    cursor=_new_cursor(max_rows=4),
                 )
             )
         assert ref_calls == []
@@ -478,10 +492,11 @@ class TestTrainLoop:
             max_pairs=2,
         )
 
-        step, _ = asyncio.run(
+        step = asyncio.run(
             module._train_loop(
                 ds, None, _FakeReference(), _FakePolicy(),
                 adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+                cursor=_new_cursor(max_rows=5),
             )
         )
         assert step == 1
@@ -543,6 +558,7 @@ class TestTrainLoop:
                 adam_params={"lr": 1e-4},
                 cfg=cfg,
                 step_offset=0,
+                cursor=_new_cursor(max_rows=5),
                 runner=RecordingRunner(),
             )
         )
@@ -578,23 +594,25 @@ class TestTrainLoop:
             def save(self, name, *, resumable, promotable, data_consumed):
                 saves.append({"name": name, "data_consumed": data_consumed})
 
-        step, raw_rows_consumed = asyncio.run(
+        cursor = _new_cursor(max_rows=6)
+        step = asyncio.run(
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
                 adam_params={"lr": 1e-4},
                 cfg=cfg, step_offset=0,
+                cursor=cursor,
                 ckpt=_CapturingCkpt(),
             )
         )
         # 4 valid pairs / batch_size=2 = 2 train steps; producer pulled all 6 raw rows.
         assert step == 2
-        assert raw_rows_consumed == 6
+        assert cursor.value == 6
         # Final DCP save records raw rows (incl. drops), not just the 4 trained pairs.
         assert saves[-1]["data_consumed"] == 6
 
     def test_data_consumed_threads_prior_value_on_resume(self, tmp_path, monkeypatch):
-        """Resume persists ``prior_data_consumed + new_raw_rows`` (cumulative across runs)."""
+        """Cursor pre-resumed to ``persisted=100`` accumulates new raw rows on top."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
@@ -610,18 +628,20 @@ class TestTrainLoop:
             def save(self, name, *, resumable, promotable, data_consumed):
                 saves.append(data_consumed)
 
-        step, raw_rows_consumed = asyncio.run(
+        # max_rows=None: pretend a larger source where 100 prior rows were consumed.
+        cursor = _new_cursor(persisted=100)
+        step = asyncio.run(
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
                 adam_params={"lr": 1e-4},
                 cfg=cfg, step_offset=10,
-                prior_data_consumed=100,
+                cursor=cursor,
                 ckpt=_CapturingCkpt(),
             )
         )
-        # 4 raw rows this run; cumulative cursor is 100 (prior) + 4 (new) = 104.
-        assert raw_rows_consumed == 4
+        # 4 raw rows this run on top of 100 prior → cursor=104.
+        assert cursor.value == 104
         assert saves[-1] == 104
 
     def test_data_consumed_grows_per_epoch_in_multi_epoch(self, tmp_path, monkeypatch):
@@ -636,17 +656,19 @@ class TestTrainLoop:
             cfg = module.Config(
                 log_path=str(tmp_path), epochs=3, batch_size=2, render_workers=0,
             )
-            step, raw_rows_consumed = asyncio.run(
+            cursor = _new_cursor(max_rows=4 * 3)
+            step = asyncio.run(
                 module._train_loop(
                     ds, ref_cache,
                     _FakeReference(), _FakePolicy(),
                     adam_params={"lr": 1e-4},
                     cfg=cfg, step_offset=0,
+                    cursor=cursor,
                 )
             )
             # 4 rows × 3 epochs = 12 raw rows accounted for.
             assert step == 6
-            assert raw_rows_consumed == 12
+            assert cursor.value == 12
         finally:
             ref_cache.close()
 
