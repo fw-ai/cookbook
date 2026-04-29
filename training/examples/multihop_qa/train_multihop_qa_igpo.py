@@ -7,7 +7,7 @@ to finish.  IG scoring uses the ground-truth answer as the ``answer_tokens``
 and fires in parallel with generation via ``turn_callback``.
 
 Usage:
-    Follow the setup instructions in ../../README.md.
+    pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol datasets
     python prepare_data.py                     # download HotpotQA → dataset.jsonl
     python train_multihop_qa_igpo.py --training-shape <shape_id> --output-model-id <id>
 """
@@ -41,6 +41,7 @@ from training.examples.frozen_lake.masking import (
 )
 from training.examples.multihop_qa.multihop_qa_rollout import (
     MultiHopQARolloutProcessor,
+    MultiHopQARolloutService,
 )
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
@@ -66,6 +67,9 @@ from training.utils import (
     build_datum_from_token_mask,
 )
 from training.utils.rl import PromptGroup
+from training.utils.rl.renderer_rollout import make_remote_rollout_fn
+from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
+from training.utils.rl.text_rollout import pack_payload_to_sample
 from training.utils.rl.train import TrainStepFns, run_rl_loop
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.tis import TISConfig
@@ -520,6 +524,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
             for _hotload_attempt in range(3):
                 try:
                     weight_syncer.save_and_hotload(name, checkpoint_type="base")
+                    ckpt.invalidate_promotable_snapshot_cache()
                     break
                 except RuntimeError as e:
                     if _hotload_attempt < 2:
@@ -605,6 +610,43 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
         try:
             # -- Sample one prompt with interleaved IG scoring -----------------
 
+            # Cookbook-native rollout-fn wiring: ``MultiHopQARolloutService``
+            # implements the cookbook ``RolloutService`` contract.  We drive
+            # it through ``make_remote_rollout_fn`` (now extras-aware) so the
+            # IGPO step-reward / row-id metadata each payload carries
+            # survives into ``rollout.row_meta["payload_extras"]``.
+
+            class _RolloutCtx:
+                def __init__(self, version_cell: list[int]) -> None:
+                    self.completions_per_prompt = completions_per_prompt
+                    self.sample_kwargs: Dict[str, Any] = {}
+                    self.tokenizer_id = cfg.tokenizer_model
+                    self._version_cell = version_cell
+
+                def current_version(self) -> int:
+                    return self._version_cell[0]
+
+            _version_cell = [step_offset]
+            _rollout_ctx = _RolloutCtx(_version_cell)
+
+            def _assistant_spans(loss_mask: List[int]) -> List[tuple[int, int]]:
+                """Return (start, end) indices of each assistant span in
+                ``loss_mask`` (assistant tokens masked 1, gap tokens 0).
+
+                One span per assistant turn; empty list when no assistant
+                tokens are present."""
+                spans: List[tuple[int, int]] = []
+                start: int | None = None
+                for i, m in enumerate(loss_mask):
+                    if m == 1 and start is None:
+                        start = i
+                    elif m == 0 and start is not None:
+                        spans.append((start, i))
+                        start = None
+                if start is not None:
+                    spans.append((start, len(loss_mask)))
+                return spans
+
             async def sample_one_prompt(
                 row_data: Dict[str, Any],
             ) -> PromptGroup | None:
@@ -616,6 +658,18 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     logger.warning("Empty answer tokens for GT: %r", ground_truth)
                     return None
 
+                messages_raw = row_data.get("messages") or []
+                question = ""
+                for m in messages_raw:
+                    if m.get("role") == "user":
+                        question = m.get("content", "")
+                        break
+
+                # IGPO turn scorer — restored online IG behavior.  The
+                # service is constructed per-call with the scorer's
+                # ``on_turn_complete`` callback so the processor's
+                # in-flight ``turn_callback`` hook drives the scorer
+                # during generation.
                 scorer = IGPOTurnScorer(
                     answer_tokens=answer_tokens,
                     executor=scoring_executor,
@@ -627,64 +681,78 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     tokenizer=tokenizer,
                 )
 
-                context = row_data.get("context") or {}
-                messages_raw = row_data.get("messages") or []
-                question = ""
-                for m in messages_raw:
-                    if m.get("role") == "user":
-                        question = m.get("content", "")
-                        break
+                service_row = {
+                    "context": row_data.get("context") or {},
+                    "ground_truth": ground_truth,
+                    "question": question,
+                    "messages": list(messages_raw),
+                }
+                # Pre-register turn_futs for the row_ids the service will
+                # emit (matches legacy entrypoint shape).
+                pre_row_ids = MultiHopQARolloutService.prepare_row_ids(
+                    n=completions_per_prompt, row=service_row,
+                )
+                for rid in pre_row_ids:
+                    scorer._turn_futs[rid] = []
 
-                rows: List[EvaluationRow] = []
-                for rollout_idx in range(completions_per_prompt):
-                    row_id = f"q_{hash(question) % 100000}_{rollout_idx}"
-                    rows.append(
-                        EvaluationRow(
-                            input_metadata=InputMetadata(
-                                row_id=row_id,
-                                dataset_info={
-                                    "context": context,
-                                    "ground_truth": ground_truth,
-                                    "question": question,
-                                },
-                            ),
-                            messages=[
-                                Message(role=m["role"], content=m["content"])
-                                for m in messages_raw
-                            ],
-                        )
-                    )
+                rollout_service = MultiHopQARolloutService(
+                    processor=rollout_processor,
+                    rollout_config=rollout_config,
+                    tokenizer_id=cfg.tokenizer_model,
+                    turn_callback=scorer.on_turn_complete,
+                )
+                _multihop_rollout_fn = make_remote_rollout_fn(rollout_service)
 
-                rollout_config_with_cb = RolloutProcessorConfig(
-                    completion_params=rollout_config.completion_params,
-                    mcp_config_path=rollout_config.mcp_config_path,
-                    steps=rollout_config.steps,
-                    semaphore=rollout_config.semaphore,
-                    kwargs={"turn_callback": scorer.on_turn_complete},
+                rollout = await _multihop_rollout_fn(service_row, _rollout_ctx)
+                if rollout is None or len(rollout.samples) < 2:
+                    return None
+
+                # ``payload_extras`` carries per-payload step_rewards +
+                # row_id (from the service).  Match payloads to scorer
+                # state via the row_id so the IG bookkeeping uses the
+                # actual scorer record, not a stub.
+                payload_extras_list: List[Dict[str, Any]] = list(
+                    (rollout.row_meta or {}).get("payload_extras") or []
                 )
 
-                for row in rows:
-                    scorer._turn_futs[row.input_metadata.row_id] = []
+                # ``on_rollout_start`` runs after rollouts complete because
+                # the prompt_tokens it baselines on come from the first
+                # turn's prompt_ids in the assembled trajectory (mirrors
+                # legacy timing).
+                for sample, extras in zip(rollout.samples, payload_extras_list):
+                    rid = extras.get("row_id")
+                    if rid is None:
+                        continue
+                    spans = _assistant_spans(sample.loss_mask)
+                    if not spans:
+                        continue
+                    # Initial prompt span = tokens before the first
+                    # assistant span (the user/system seed prefix).
+                    first_assistant_start = spans[0][0]
+                    prompt_tokens = list(sample.tokens[:first_assistant_start])
+                    if prompt_tokens:
+                        scorer.on_rollout_start(rid, prompt_tokens)
 
-                tasks = rollout_processor(rows, rollout_config_with_cb)
-                completed_rows: List[EvaluationRow] = []
-                for task in tasks:
-                    try:
-                        result = await task
-                        extra = result.execution_metadata.extra or {}
-                        if extra.get("rollout_error"):
-                            logger.warning(
-                                "Rollout error: %s", extra["rollout_error"]
-                            )
-                            continue
-                        completed_rows.append(result)
-                    except Exception as e:
-                        logger.warning("Rollout task failed: %s", e)
+                all_ig_rewards: List[List[float]] = []
+                all_outcome_rewards: List[List[float]] = []
+                for sample, extras in zip(rollout.samples, payload_extras_list):
+                    step_rewards = list(extras.get("step_rewards") or [])
+                    rid = extras.get("row_id")
+                    if rid is not None and rid in scorer._baselines:
+                        ig_r, outcome_r = await asyncio.to_thread(
+                            scorer.collect_rewards, rid, step_rewards
+                        )
+                    else:
+                        # Fallback (no callback fired or scorer baseline
+                        # missing — same shape as legacy fallback branch).
+                        ig_r = [0.0] * len(step_rewards)
+                        outcome_r = list(step_rewards)
+                    all_ig_rewards.append(ig_r)
+                    all_outcome_rewards.append(outcome_r)
 
                 if trajectory_log:
-                    for row in completed_rows:
-                        extra = row.execution_metadata.extra or {}
-                        sr = extra.get("step_rewards", [])
+                    for sample, extras in zip(rollout.samples, payload_extras_list):
+                        sr = list(extras.get("step_rewards") or [])
                         entry = {
                             "question": question[:100],
                             "ground_truth": ground_truth,
@@ -693,38 +761,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                             "num_turns": len(sr),
                         }
                         trajectory_log.write(json.dumps(entry) + "\n")
-                        trajectory_log.flush()
-
-                if len(completed_rows) < 2:
-                    return None
-
-                for row in completed_rows:
-                    extra = row.execution_metadata.extra or {}
-                    traces = extra.get("token_turn_traces") or []
-                    if traces:
-                        prompt_tokens = [
-                            int(x)
-                            for x in traces[0].get("prompt_ids", [])
-                        ]
-                        scorer.on_rollout_start(
-                            row.input_metadata.row_id, prompt_tokens
-                        )
-
-                all_ig_rewards: List[List[float]] = []
-                all_outcome_rewards: List[List[float]] = []
-                for row in completed_rows:
-                    extra = row.execution_metadata.extra or {}
-                    step_rewards = extra.get("step_rewards") or []
-                    row_id = row.input_metadata.row_id
-                    if row_id in scorer._baselines:
-                        ig_r, outcome_r = await asyncio.to_thread(
-                            scorer.collect_rewards, row_id, step_rewards
-                        )
-                    else:
-                        ig_r = [0.0] * len(step_rewards)
-                        outcome_r = list(step_rewards)
-                    all_ig_rewards.append(ig_r)
-                    all_outcome_rewards.append(outcome_r)
+                    trajectory_log.flush()
 
                 turn_adv = compute_turn_advantages(
                     ig_rewards=all_ig_rewards,
@@ -732,58 +769,48 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     gamma=cfg.gamma,
                 )
 
-                all_datums: List[tinker.Datum] = []
-                all_ref_datums: List[tinker.Datum] = []
-                all_rewards: List[float] = []
-                all_inf_logprobs: List[List[float]] = []
+                # Build per-sample per_token_advantages in target-token
+                # coordinates (length ``len(tokens) - 1``, advantage
+                # written at indices ``[s-1, e-1)`` for each
+                # full-token-coord assistant span ``[s, e)``).  This
+                # matches the coordinate system ``make_igpo_loss_fn``
+                # consumes (``response_start = prompt_len - 1``).
                 all_per_token_adv: List[List[float]] = []
-                first_prompt_len = 0
+                for sample, row_turn_adv in zip(rollout.samples, turn_adv):
+                    spans = _assistant_spans(sample.loss_mask)
+                    n_targets = max(0, len(sample.tokens) - 1)
+                    pta = [0.0] * n_targets
+                    for span_idx, (s, e) in enumerate(spans):
+                        if span_idx >= len(row_turn_adv):
+                            break
+                        adv = float(row_turn_adv[span_idx])
+                        # Full-token assistant span [s, e) maps to target
+                        # indices [s-1, e-1).  Spans always start at s>=1
+                        # (the prompt is the first user/system span), so
+                        # s-1 >= 0 in practice; clamp defensively.
+                        t_start = max(0, s - 1)
+                        t_end = max(0, e - 1)
+                        for k in range(t_start, t_end):
+                            pta[k] = adv
+                    all_per_token_adv.append(pta)
 
-                for i, row in enumerate(completed_rows):
-                    row_turn_adv = turn_adv[i] if i < len(turn_adv) else []
-                    datums, prompt_len, inf_lps, rewards, per_token_adv = (
-                        evaluation_row_to_igpo_training_data(row, row_turn_adv)
-                    )
-                    if not datums:
-                        continue
-                    all_datums.extend(datums)
-                    all_rewards.extend(rewards)
-                    all_inf_logprobs.extend(inf_lps)
-                    all_per_token_adv.append(per_token_adv)
-                    if first_prompt_len == 0:
-                        first_prompt_len = prompt_len
+                # Stash IGPO row_meta on the rollout (rollout_to_prompt_group
+                # forwards row_meta to the resulting PromptGroup unchanged).
+                rich_row_meta = dict(rollout.row_meta or {})
+                rich_row_meta.update({
+                    "ground_truth": ground_truth,
+                    "question": question,
+                    "per_token_advantages": all_per_token_adv,
+                    "turn_rewards": all_outcome_rewards,
+                    "ig_rewards": all_ig_rewards,
+                    "outcome_rewards": all_outcome_rewards,
+                })
+                rollout.row_meta = rich_row_meta
 
-                    if use_reference:
-                        for d in datums:
-                            all_ref_datums.append(
-                                tinker.Datum(
-                                    model_input=d.model_input,
-                                    loss_fn_inputs=d.loss_fn_inputs,
-                                )
-                            )
-
-                if not all_datums or len(all_rewards) < 2:
+                pg = rollout_to_prompt_group(rollout, with_reference=use_reference)
+                if pg is None:
                     return None
-
-                scalar_advantages = [
-                    sum(ta) / len(ta) if ta else 0.0
-                    for ta in turn_adv[: len(all_datums)]
-                ]
-
-                return PromptGroup(
-                    data=all_datums,
-                    ref_data=all_ref_datums,
-                    advantages=scalar_advantages,
-                    ref_logprobs=[],
-                    prompt_len=first_prompt_len,
-                    rewards=all_rewards,
-                    inf_logprobs=all_inf_logprobs,
-                    row_meta={
-                        "per_token_advantages": all_per_token_adv,
-                        "ig_rewards": all_ig_rewards,
-                        "outcome_rewards": all_outcome_rewards,
-                    },
-                )
+                return pg
 
             # -- Training callbacks --------------------------------------------
 
@@ -868,6 +895,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                 ):
                     with timer("weight_sync"):
                         weight_syncer.save_and_hotload(f"step-{step}")
+                    ckpt.invalidate_promotable_snapshot_cache()
 
                 if (
                     weight_sync_cfg.dcp_save_interval > 0

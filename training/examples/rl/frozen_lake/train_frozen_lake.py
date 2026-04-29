@@ -8,7 +8,7 @@ Demonstrates reinforcement learning with multi-turn tool-calling:
     it falls back to the client-side custom loss path
 
 Usage:
-    Follow the setup instructions in ../../../README.md.
+    pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol
     export FIREWORKS_API_KEY=...
     python train_frozen_lake.py --training-shape <shape_id>
 """
@@ -39,6 +39,7 @@ from eval_protocol.pytest.types import RolloutProcessorConfig
 
 from training.examples.rl.frozen_lake.frozen_lake_rollout import (
     DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
+    FrozenLakeRolloutService,
     FrozenLakeToolRolloutProcessor,
 )
 from training.examples.rl.frozen_lake.masking import (
@@ -600,6 +601,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
+            ckpt.invalidate_promotable_snapshot_cache()
 
         # -- Wait for deployment readiness -----------------------------------
 
@@ -660,94 +662,87 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         trajectory_path = f"/tmp/frozen_lake_trajectories_{int(time.time())}.jsonl"
         trajectory_log = open(trajectory_path, "a")
         logger.info("Logging trajectories to %s", trajectory_path)
+
+        # -- Cookbook-native rollout-fn wiring --------------------------------
+        # Replace the inline EvaluationRow + processor + PromptGroup
+        # assembly with the cookbook surface: a ``RolloutService`` adapter
+        # wrapping the FrozenLake processor, plus
+        # ``make_remote_rollout_fn(service)`` to drive token-native rollouts
+        # and ``rollout_to_prompt_group`` to feed the trainer.
+        rollout_service = FrozenLakeRolloutService(
+            processor=rollout_processor,
+            rollout_config=rollout_config,
+            tokenizer_id=cfg.tokenizer_model,
+        )
+        # FrozenLake's first observation is generated inside the processor
+        # (env.reset()), so the seed conversation is genuinely empty when
+        # ``sample_one_prompt`` is called.  Pass ``allow_empty_messages=True``
+        # so the cookbook helper forwards through to ``service.rollout``
+        # instead of short-circuiting on an empty messages list.
+        _frozen_lake_rollout_fn = make_remote_rollout_fn(
+            rollout_service, allow_empty_messages=True,
+        )
+
+        class _RolloutCtx:
+            """Minimal context passed to ``make_remote_rollout_fn`` so the
+            cookbook helper has the per-call kwargs it expects.  We do not
+            use the recipe-level :class:`RolloutContext` here because this
+            entrypoint runs its own custom training loop."""
+
+            def __init__(self, version_cell: list[int]) -> None:
+                self.completions_per_prompt = completions_per_prompt
+                self.sample_kwargs: Dict[str, Any] = {}
+                self.tokenizer_id = cfg.tokenizer_model
+                self._version_cell = version_cell
+
+            def current_version(self) -> int:
+                return self._version_cell[0]
+
+        _version_cell = [step_offset]
+        _rollout_ctx = _RolloutCtx(_version_cell)
+
         try:
-            # -- Sample one prompt group ----------------------------------------
-
             async def sample_one_prompt(env_context: Dict[str, Any]) -> PromptGroup | None:
-                """Run completions_per_prompt rollouts for one seed, return PromptGroup."""
-                rows: List[EvaluationRow] = []
-                for rollout_idx in range(completions_per_prompt):
-                    rows.append(EvaluationRow(
-                        input_metadata=InputMetadata(
-                            row_id=f"seed_{env_context.get('seed', 0)}_{rollout_idx}",
-                            dataset_info={
-                                "environment_context": dict(env_context),
-                                "user_prompt_template": cfg.user_prompt_template,
-                                "visual_prompt_template": cfg.visual_prompt_template,
-                            },
-                        ),
-                    ))
+                """Sample one FrozenLake prompt group via the cookbook surface."""
+                # The processor builds the seed conversation itself (system
+                # prompt + first env observation), so we pass ``messages=[]``
+                # explicitly.  ``make_remote_rollout_fn`` was constructed
+                # with ``allow_empty_messages=True`` so it forwards rather
+                # than short-circuits.
+                row = {
+                    "messages": [],
+                    "env_context": dict(env_context),
+                }
+                if cfg.user_prompt_template:
+                    row["user_prompt_template"] = cfg.user_prompt_template
+                if cfg.visual_prompt_template:
+                    row["visual_prompt_template"] = cfg.visual_prompt_template
 
-                tasks = rollout_processor(rows, rollout_config)
-                completed_rows: List[EvaluationRow] = []
-                for task in tasks:
-                    try:
-                        result = await task
-                        extra = result.execution_metadata.extra or {}
-                        if extra.get("rollout_error"):
-                            logger.warning(
-                                "Rollout error for seed %s: %s",
-                                env_context.get("seed"), extra["rollout_error"],
-                            )
-                            continue
-                        completed_rows.append(result)
-                    except Exception as e:
-                        logger.warning("Rollout task failed for seed %s: %s", env_context.get("seed"), e)
+                try:
+                    rollout: Rollout | None = await _frozen_lake_rollout_fn(row, _rollout_ctx)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("frozen_lake rollout_fn failed: %s", exc)
+                    return None
+                if rollout is None or len(rollout.samples) < 2:
+                    return None
 
+                # Optional trajectory log — preserve the existing JSONL format
+                # by reading rewards / finish_reasons off the cookbook samples.
                 if trajectory_log:
-                    for row in completed_rows:
-                        extra = row.execution_metadata.extra or {}
+                    for s in rollout.samples:
                         entry = {
                             "seed": env_context.get("seed"),
-                            "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in (row.messages or [])],
-                            "step_rewards": extra.get("step_rewards", []),
-                            "reward": 1.0 if extra.get("step_rewards") and float(extra["step_rewards"][-1]) > 0 else 0.0,
-                            "rollout_error": extra.get("rollout_error"),
+                            "reward": s.reward,
+                            "finish_reason": s.finish_reason,
+                            "completion_len": int(sum(s.loss_mask)),
                         }
                         trajectory_log.write(json.dumps(entry) + "\n")
-                        trajectory_log.flush()
+                    trajectory_log.flush()
 
-                if len(completed_rows) < 2:
+                pg = rollout_to_prompt_group(rollout, with_reference=use_reference)
+                if pg is None:
                     return None
-
-                all_datums: List[tinker.Datum] = []
-                all_ref_datums: List[tinker.Datum] = []
-                all_rewards: List[float] = []
-                all_inf_logprobs: List[List[float]] = []
-                first_prompt_len = 0
-
-                for row in completed_rows:
-                    datums, prompt_len, inf_lps, rewards = evaluation_row_to_training_data(row)
-                    if not datums:
-                        continue
-                    all_datums.extend(datums)
-                    all_rewards.extend(rewards)
-                    all_inf_logprobs.extend(inf_lps)
-                    if first_prompt_len == 0:
-                        first_prompt_len = prompt_len
-
-                    if use_reference:
-                        for d in datums:
-                            ref_datum = tinker.Datum(
-                                model_input=d.model_input,
-                                loss_fn_inputs=d.loss_fn_inputs,
-                            )
-                            all_ref_datums.append(ref_datum)
-
-                if not all_datums or len(all_rewards) < 2:
-                    return None
-
-                advantages = compute_advantages(all_rewards)
-
-                return PromptGroup(
-                    data=all_datums,
-                    ref_data=all_ref_datums,
-                    advantages=advantages,
-                    ref_logprobs=[],
-                    prompt_len=first_prompt_len,
-                    rewards=all_rewards,
-                    inf_logprobs=all_inf_logprobs,
-                )
+                return pg
 
             # -- Training callbacks ---------------------------------------------
 
@@ -874,6 +869,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 t0 = time.time()
                 with timer("weight_sync"):
                     weight_syncer.save_and_hotload(f"step-{step}")
+                ckpt.invalidate_promotable_snapshot_cache()
                 logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
 
             train_fns = TrainStepFns(train_step=train_step)

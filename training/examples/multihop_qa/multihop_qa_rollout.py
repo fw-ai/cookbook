@@ -12,6 +12,7 @@ the same format as ``FrozenLakeToolRolloutProcessor``, so
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -28,7 +29,7 @@ from eval_protocol.integrations.fireworks_v1_completions_client import (
     strip_chat_special_tokens,
     to_openai_tool_calls,
 )
-from eval_protocol.models import EvaluationRow, Message
+from eval_protocol.models import EvaluationRow, InputMetadata, Message
 from eval_protocol.pytest.rollout_processor import RolloutProcessor
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
@@ -530,3 +531,223 @@ class MultiHopQARolloutProcessor(RolloutProcessor):
                 return await process_row(target_row)
 
         return [asyncio.create_task(_sem_wrapper(row)) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Cookbook ``RolloutService`` adapter — token-native bridge from the
+# MultiHopQA processor to ``make_remote_rollout_fn(...)``.  Lives in this
+# already-EP-aware module so AC-6's "no new eval_protocol importers
+# outside ep_remote_grader/" boundary is preserved.
+# ---------------------------------------------------------------------------
+
+
+from training.utils.rl.rollout_service import (  # noqa: E402  (intentional: keep adapter colocated)
+    RolloutPayload,
+    RolloutService,
+)
+from training.utils.rl.trajectory_assembler import (  # noqa: E402
+    InferenceCall,
+    PrefixMismatch,
+    TrajectoryAssembler,
+)
+
+
+class MultiHopQARolloutService(RolloutService):
+    """RolloutService adapter for the MultiHopQA processor.
+
+    Mirrors :class:`training.examples.rl.frozen_lake.frozen_lake_rollout.FrozenLakeRolloutService`;
+    the per-turn token-trace shape is identical so the same
+    ``token_turn_traces`` -> :class:`TrajectoryAssembler` ->
+    :class:`RolloutPayload` pipeline applies.
+
+    Forwards ``messages`` into ``EvaluationRow.messages`` and preserves
+    the multihop_qa-specific ``dataset_info`` fields (``context``,
+    ``ground_truth``, ``question``) so the processor's grader sees the
+    same row metadata it always has.
+    """
+
+    def __init__(
+        self,
+        *,
+        processor: MultiHopQARolloutProcessor,
+        rollout_config: Any,
+        tokenizer_id: Optional[str] = None,
+        turn_callback: Optional[Any] = None,
+    ) -> None:
+        self.processor = processor
+        self.rollout_config = rollout_config
+        self.tokenizer_id = tokenizer_id
+        # When set, the service builds a per-call ``RolloutProcessorConfig``
+        # with ``kwargs={"turn_callback": turn_callback}`` so the processor's
+        # in-flight turn-callback hook (used by IGPO scoring) keeps working
+        # through the cookbook ``RolloutService`` surface.
+        self.turn_callback = turn_callback
+
+    @staticmethod
+    def prepare_row_ids(*, n: int, row: Dict[str, Any]) -> List[str]:
+        """Return the row_ids the service will assign for ``rollout(n=n, row=row)``.
+
+        Exposed so callers (e.g. the IGPO entrypoint) can pre-register
+        scorer state keyed by the same row_ids the service emits.
+
+        ID derivation:
+
+        * Explicit ``row['id']`` / ``row['question_id']`` /
+          ``row['env_context']['question_id']`` wins (caller takes
+          responsibility for uniqueness).
+        * Otherwise we hash a JSON-serialized projection of the
+          row (question + ground_truth + messages) with blake2b and
+          use the 16-hex-character digest as the base.  This was a
+          ``q_{hash(question) % 100000}`` modulus before, which:
+          (1) collided whenever two distinct rows happened to share a
+          question text (legitimate for datasets that repeat questions
+          across grading splits), and (2) had only 100k buckets so any
+          run >= ~400 rows had a non-trivial birthday-paradox collision
+          probability.  The scorer's ``_turn_futs`` / baseline dicts
+          are keyed on the row_id, so a collision overwrites another
+          row's in-flight state and attaches rewards to the wrong
+          sample.  blake2b-64 (~16e18 buckets) makes accidental
+          collisions vanishingly unlikely.
+        """
+        explicit_id = row.get("id") or row.get("question_id") or (row.get("env_context") or {}).get("question_id")
+        if explicit_id is not None:
+            base = str(explicit_id)
+        else:
+            payload = json.dumps(
+                {
+                    "question": row.get("question") or "",
+                    "ground_truth": row.get("ground_truth") or "",
+                    "messages": row.get("messages") or [],
+                },
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+            base = "q_" + hashlib.blake2b(payload, digest_size=8).hexdigest()
+        return [f"{base}_{i}" for i in range(n)]
+
+    async def rollout(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        n: int,
+        sample_kwargs: Dict[str, Any],
+        row: Dict[str, Any],
+    ) -> List[RolloutPayload]:
+        # Identical row_id derivation to ``prepare_row_ids`` so callers
+        # that pre-register scorer state see the same IDs the service
+        # emits.
+        row_ids = self.prepare_row_ids(n=n, row=row)
+
+        # Derive the question from the user message when not supplied.
+        derived_question = row.get("question") or ""
+        if not derived_question:
+            for m in (messages or []):
+                role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+                content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+                if role == "user" and content:
+                    derived_question = str(content)
+                    break
+
+        dataset_info = {
+            "context": row.get("context") or {},
+            "ground_truth": str(row.get("ground_truth", "")),
+            "question": derived_question,
+        }
+        # Pass through any env_context too (mirrors frozen_lake's shape so
+        # callers can use either convention).
+        env_context = row.get("env_context")
+        if env_context:
+            dataset_info["environment_context"] = dict(env_context)
+
+        seed_messages = [
+            Message.model_validate(m) if not isinstance(m, Message) else m
+            for m in (messages or [])
+        ]
+
+        ep_rows: List[EvaluationRow] = []
+        for rid in row_ids:
+            ep_rows.append(EvaluationRow(
+                input_metadata=InputMetadata(
+                    row_id=rid,
+                    dataset_info=dict(dataset_info),
+                ),
+                messages=list(seed_messages),
+            ))
+
+        # Per-call rollout_config with the IGPO turn_callback (when set)
+        # so the processor's in-flight hook can drive the scorer.
+        if self.turn_callback is not None:
+            effective_config = RolloutProcessorConfig(
+                completion_params=self.rollout_config.completion_params,
+                mcp_config_path=self.rollout_config.mcp_config_path,
+                steps=self.rollout_config.steps,
+                semaphore=self.rollout_config.semaphore,
+                kwargs={"turn_callback": self.turn_callback},
+            )
+        else:
+            effective_config = self.rollout_config
+
+        tasks = self.processor(ep_rows, effective_config)
+        payloads: List[RolloutPayload] = []
+        for t in tasks:
+            try:
+                completed = await t
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("multihop_qa rollout task failed: %s", exc)
+                continue
+            payload = self._row_to_payload(completed)
+            if payload is None:
+                continue
+            # Surface the row_id (the same string passed to scorer
+            # callbacks) on payload.extras so the entrypoint can call
+            # ``scorer.collect_rewards(row_id, step_rewards)`` after
+            # rollout completion.
+            row_id = getattr(getattr(completed, "input_metadata", None), "row_id", None)
+            if row_id is not None:
+                payload.extras = dict(payload.extras)
+                payload.extras["row_id"] = str(row_id)
+            payloads.append(payload)
+        return payloads
+
+    def _row_to_payload(self, row: EvaluationRow) -> Optional[RolloutPayload]:
+        extra = (row.execution_metadata.extra if row.execution_metadata else None) or {}
+        if extra.get("rollout_error"):
+            return None
+        traces = list(extra.get("token_turn_traces") or [])
+        step_rewards = list(extra.get("step_rewards") or [])
+        if not traces:
+            return None
+
+        assembler = TrajectoryAssembler(tokenizer_id=self.tokenizer_id)
+        for trace in traces:
+            prompt_ids = list(trace.get("prompt_ids") or [])
+            completion_ids = list(trace.get("completion_ids") or [])
+            completion_logprobs = list(trace.get("completion_logprobs") or [])
+            if not completion_ids:
+                continue
+            if len(completion_logprobs) != len(completion_ids):
+                logger.warning(
+                    "multihop_qa turn trace skipped: completion_logprobs (%d) "
+                    "!= completion_ids (%d)",
+                    len(completion_logprobs), len(completion_ids),
+                )
+                return None
+            try:
+                assembler.add_call(InferenceCall(
+                    input_tokens=prompt_ids,
+                    output_tokens=completion_ids,
+                    output_logprobs=completion_logprobs,
+                    finish_reason=str(trace.get("finish_reason") or "stop"),
+                ))
+            except PrefixMismatch as exc:
+                logger.warning("multihop_qa PrefixMismatch: %s", exc)
+                return None
+
+        total_reward = float(step_rewards[-1]) if step_rewards else 0.0
+        payload = assembler.to_payload(total_reward=total_reward)
+        # Surface the per-turn step rewards on the payload's extras so the
+        # entrypoint can derive per-turn / per-token advantages from them.
+        payload.extras = dict(payload.extras)
+        payload.extras["step_rewards"] = list(step_rewards)
+        payload.extras["ground_truth"] = extra.get("ground_truth", "")
+        return payload

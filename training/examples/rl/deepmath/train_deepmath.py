@@ -23,8 +23,12 @@ if _SRC not in sys.path:
 
 from math_verify import parse as math_parse, verify as math_verify
 
+import transformers
+
 import training.recipes.rl_loop as rl_loop
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
+from fireworks.training.sdk.deployment import DeploymentSampler
+from training.recipes.rl_loop import RolloutContext
 from training.utils import (
     InfraConfig,
     WandBConfig,
@@ -32,6 +36,9 @@ from training.utils import (
     WeightSyncConfig,
 )
 from training.utils.rl import TISConfig
+from training.utils.rl.renderer_rollout import single_turn_renderer_rollout
+from training.utils.rl.rollout import Rollout
+from training.utils.supervised import build_renderer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -268,6 +275,69 @@ def deepmath_reward(completion: str, row: dict) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Renderer-backed rollout wiring
+# ---------------------------------------------------------------------------
+
+
+async def _deepmath_message_builder(row: dict, ctx: RolloutContext) -> list[dict]:
+    msgs = row.get("messages")
+    if msgs:
+        return list(msgs)
+    return [{"role": "user", "content": str(row.get("prompt", row.get("question", "")))}]
+
+
+async def _deepmath_reward_fn(row, parsed_message, parse_success):
+    """Wraps :func:`deepmath_reward` for the renderer-backed helper.
+
+    On parse failure, returns 0.0 (zero-reward pattern) so GRPO sees a
+    contrast against successful completions.  Switch to ``return None`` to
+    DROP instead.
+    """
+    text = getattr(parsed_message, "content", None) or str(parsed_message)
+    if not parse_success:
+        return 0.0
+    return deepmath_reward(text, row)
+
+
+def _build_deepmath_rollout_fn(args: TrainArgs):
+    """Build a renderer-backed ``rollout_fn`` for the synchronous recipe.
+
+    Replaces the legacy pattern of mutating ``rl_loop.reward_fn`` (which
+    only worked because the recipe's default sampling path baked the reward
+    function in by name).  The new pluggable ``rollout_fn`` keyword on
+    ``rl_loop.main(...)`` makes the wiring explicit.
+    """
+    cached: dict[str, object] = {}
+
+    async def rollout_fn(row: dict, ctx: RolloutContext) -> Rollout | None:
+        if "renderer" not in cached:
+            tokenizer = transformers.AutoTokenizer.from_pretrained(
+                args.tokenizer_model, trust_remote_code=True,
+            )
+            renderer = build_renderer(tokenizer, args.tokenizer_model)
+            sampler = DeploymentSampler(
+                inference_url=ctx.inference_base_url,
+                model=ctx.model,
+                api_key=ctx.api_key,
+                tokenizer=tokenizer,
+            )
+            cached["renderer"] = renderer
+            cached["sampler"] = sampler
+            cached["sample_with_prompt_tokens"] = sampler.sample_with_prompt_tokens
+
+        return await single_turn_renderer_rollout(
+            row,
+            ctx,
+            renderer=cached["renderer"],
+            sample_with_prompt_tokens=cached["sample_with_prompt_tokens"],
+            message_builder=_deepmath_message_builder,
+            reward_fn=_deepmath_reward_fn,
+        )
+
+    return rollout_fn
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -364,12 +434,13 @@ def main():
         args.prompt_groups_per_step,
     )
 
-    rl_loop.reward_fn = deepmath_reward
+    rollout_fn = _build_deepmath_rollout_fn(args)
     metrics = rl_loop.main(
         config,
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
         cancel_on_exit=not args.skip_cleanup,
+        rollout_fn=rollout_fn,
     )
 
     logger.info("Training complete. Final metrics: %s", metrics)

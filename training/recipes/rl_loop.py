@@ -33,7 +33,7 @@ import signal
 import asyncio
 import logging
 from contextlib import ExitStack
-from typing import Any, List, Optional
+from typing import Any, Awaitable, Callable, List, Optional
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -70,6 +70,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup, setup_infra
+from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
 import time as _time
@@ -298,6 +299,36 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
 
 
 # ---------------------------------------------------------------------------
+# Pluggable rollout context
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RolloutContext:
+    """What a custom ``rollout_fn`` receives in the synchronous recipe.
+
+    Mirrors :class:`training.recipes.async_rl_loop.RolloutContext` so the
+    same ``rollout_fn(row, ctx) -> Rollout | None`` callable can drive
+    either recipe.  All fields are public (read-only by convention);
+    rollout functions read these to render prompts, sample, and emit
+    :class:`Rollout` objects.
+    """
+
+    tokenizer: Any
+    tokenizer_id: str
+    completions_per_prompt: int
+    sample_kwargs: dict[str, Any]
+    sample_with_tokens: Callable[..., Awaitable[Any]]
+    inference_base_url: str
+    api_key: str
+    model: str
+    current_version: Callable[[], int]
+
+
+RolloutFn = Callable[[dict, "RolloutContext"], Awaitable[Optional[Rollout]]]
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -308,7 +339,18 @@ def main(
     deploy_mgr: DeploymentManager | None = None,
     cancel_on_exit: bool = False,
     cleanup_on_exit: bool | None = None,
+    *,
+    rollout_fn: RolloutFn | None = None,
+    ctx_extras: dict[str, Any] | None = None,
 ):
+    """``ctx_extras`` is attached to the ``RolloutContext`` passed to
+    ``rollout_fn`` via ``setattr``.  The shipped multi-turn examples
+    (``examples/rl/multi_turn_minimal_renderer``, ``multi_turn_tool``)
+    read ``ctx.renderer``, ``ctx.sample_with_prompt_tokens``, and
+    ``ctx.build_env``; the user's wiring code constructs those objects
+    and passes them through ``ctx_extras={...}`` so the example
+    ``rollout_fn`` runs unmodified.
+    """
     if cleanup_on_exit is not None:
         import warnings
         warnings.warn(
@@ -510,8 +552,46 @@ def main(
 
         # -- Sample one prompt (VISIBLE -- customise this) ----------------------
 
+        # Live integer cell so RolloutContext.current_version() returns
+        # the latest weight-sync version when the user passes a custom
+        # rollout_fn.
+        _version_cell = {"v": step_offset}
+
+        ctx = RolloutContext(
+            tokenizer=tokenizer,
+            tokenizer_id=cfg.deployment.tokenizer_model,
+            completions_per_prompt=completions_per_prompt,
+            sample_kwargs=sample_kwargs,
+            sample_with_tokens=sampler.sample_with_tokens,
+            inference_base_url=deploy_mgr.inference_url,
+            api_key=api_key,
+            model=infra.inference_model,
+            current_version=lambda: _version_cell["v"],
+        )
+        # Attach any caller-supplied extras (e.g. ``renderer``,
+        # ``sample_with_prompt_tokens``, ``build_env`` for the shipped
+        # multi-turn example rollouts) so the example ``rollout_fn``
+        # runs unmodified through this hook.
+        if ctx_extras:
+            for k, v in ctx_extras.items():
+                setattr(ctx, k, v)
+
+        async def _sample_one_prompt_via_rollout_fn(row: dict) -> PromptGroup | None:
+            # Don't catch exceptions: deterministic integration bugs
+            # from the user's ``rollout_fn`` MUST fail loud.  Swallowing
+            # them as ``None`` would let the loop count them as
+            # ``sample_fail`` and persist broken rows as consumed.
+            rollout = await rollout_fn(row, ctx)  # type: ignore[misc]
+            if rollout is None:
+                return None
+            return rollout_to_prompt_group(
+                rollout, with_reference=(reference is not None),
+            )
+
         async def sample_one_prompt(row: dict) -> PromptGroup | None:
             """Sample completions for one prompt and return a PromptGroup."""
+            if rollout_fn is not None:
+                return await _sample_one_prompt_via_rollout_fn(row)
             messages = row.get("messages", [])
             input_messages = prepare_sampling_messages(messages)
             if not input_messages:
@@ -804,6 +884,7 @@ def main(
             t0 = _time.time()
             with timer("weight_sync"):
                 weight_syncer.save_and_hotload(f"step-{step}")
+            _version_cell["v"] = step
             logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
 
         def _loop_metrics_callback(loop_metrics: dict) -> None:

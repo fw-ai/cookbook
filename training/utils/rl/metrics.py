@@ -135,6 +135,7 @@ def compute_step_metrics(
     timing_metrics: dict[str, Any],
     loop_stats: dict | None = None,
     completions_per_prompt: int = 1,
+    fwd_bwd_weights: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Compute all per-step wandb metrics from prompt groups and remote results.
 
@@ -155,15 +156,21 @@ def compute_step_metrics(
     # Mean across inner minibatches (last-only would hide that early
     # minibatches don't clip yet while later ones do).
     if fwd_bwd_results:
+        weights: list[float]
+        if fwd_bwd_weights is not None and len(fwd_bwd_weights) == len(fwd_bwd_results):
+            weights = [float(w) for w in fwd_bwd_weights]
+        else:
+            weights = [1.0] * len(fwd_bwd_results)
+        total_weight = sum(weights) or float(len(fwd_bwd_results))
+
         accum: dict[str, float] = {}
-        for result in fwd_bwd_results:
+        for result, w in zip(fwd_bwd_results, weights):
             for k, v in result.metrics.items():
                 if k in _SKIP_REMOTE_KEYS:
                     continue
-                accum[k] = accum.get(k, 0.0) + v
-        n = len(fwd_bwd_results)
+                accum[k] = accum.get(k, 0.0) + float(v) * w
         for k, v in accum.items():
-            metrics[f"train/{k}"] = v / n
+            metrics[f"train/{k}"] = v / total_weight
 
     all_rewards: list[float] = []
     all_comp_lens: list[int] = []

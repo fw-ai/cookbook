@@ -24,7 +24,7 @@ from eval_protocol.integrations.fireworks_v1_completions_client import (
     strip_chat_special_tokens,
     to_openai_tool_calls,
 )
-from eval_protocol.models import EvaluationRow, Message
+from eval_protocol.models import EvaluationRow, InputMetadata, Message
 from eval_protocol.pytest.rollout_processor import RolloutProcessor
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
@@ -1249,3 +1249,139 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                 return await process_row(target_row)
 
         return [asyncio.create_task(_sem_wrapper(row)) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Cookbook ``RolloutService`` adapter — token-native bridge from the
+# FrozenLake processor to ``make_remote_rollout_fn(...)``.  Lives in this
+# already-EP-aware module so AC-6's "no new eval_protocol importers
+# outside ep_remote_grader/" boundary is preserved (this file already
+# imports ``eval_protocol.models`` for the processor itself).
+# ---------------------------------------------------------------------------
+
+
+from training.utils.rl.rollout_service import (  # noqa: E402  (intentional: keep adapter colocated)
+    RolloutPayload,
+    RolloutService,
+)
+from training.utils.rl.trajectory_assembler import (  # noqa: E402
+    InferenceCall,
+    PrefixMismatch,
+    TrajectoryAssembler,
+)
+
+
+class FrozenLakeRolloutService(RolloutService):
+    """RolloutService adapter for the FrozenLake tool-rollout processor.
+
+    Wraps :class:`FrozenLakeToolRolloutProcessor` in the cookbook's
+    ``RolloutService`` shape so the trainer can consume frozen_lake
+    rollouts via :func:`training.utils.rl.text_rollout.make_text_rollout_fn`
+    (re-exported as ``make_remote_rollout_fn``).  Per-turn token traces
+    from the processor (``execution_metadata.extra["token_turn_traces"]``)
+    are stitched into a token-native :class:`RolloutPayload` whose
+    loss-mask is correct (1 only on assistant-generated tokens, 0 on
+    user / tool / template-suffix gap tokens) via
+    :class:`TrajectoryAssembler`.
+
+    Domain logic (env, prompt, tool parsing) is unchanged.
+    """
+
+    def __init__(
+        self,
+        *,
+        processor: FrozenLakeToolRolloutProcessor,
+        rollout_config: Any,
+        tokenizer_id: Optional[str] = None,
+    ) -> None:
+        self.processor = processor
+        self.rollout_config = rollout_config
+        self.tokenizer_id = tokenizer_id
+
+    async def rollout(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        n: int,
+        sample_kwargs: Dict[str, Any],
+        row: Dict[str, Any],
+    ) -> List[RolloutPayload]:
+        """Run ``n`` FrozenLake rollouts and emit token-native payloads.
+
+        Forwards ``messages`` into ``EvaluationRow.messages`` (the
+        processor reads them as the seed conversation) and preserves the
+        domain-specific row metadata (``env_context``,
+        ``user_prompt_template``, ``visual_prompt_template``).
+        """
+        env_context = dict(row.get("env_context") or {})
+        seed = env_context.get("seed", 0)
+        seed_messages = [Message.model_validate(m) if not isinstance(m, Message) else m
+                         for m in (messages or [])]
+
+        ep_rows: List[EvaluationRow] = []
+        for i in range(n):
+            input_metadata = InputMetadata(
+                row_id=f"seed_{seed}_{i}",
+                dataset_info={
+                    "environment_context": dict(env_context),
+                    **{
+                        k: row[k]
+                        for k in ("user_prompt_template", "visual_prompt_template")
+                        if k in row
+                    },
+                },
+            )
+            ep_rows.append(EvaluationRow(
+                input_metadata=input_metadata,
+                messages=list(seed_messages),
+            ))
+
+        tasks = self.processor(ep_rows, self.rollout_config)
+        payloads: List[RolloutPayload] = []
+        for t in tasks:
+            try:
+                completed = await t
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("frozen_lake rollout task failed: %s", exc)
+                continue
+            payload = self._row_to_payload(completed)
+            if payload is not None:
+                payloads.append(payload)
+        return payloads
+
+    def _row_to_payload(self, row: EvaluationRow) -> Optional[RolloutPayload]:
+        extra = (row.execution_metadata.extra if row.execution_metadata else None) or {}
+        if extra.get("rollout_error"):
+            return None
+        traces = list(extra.get("token_turn_traces") or [])
+        step_rewards = list(extra.get("step_rewards") or [])
+        if not traces:
+            return None
+
+        assembler = TrajectoryAssembler(tokenizer_id=self.tokenizer_id)
+        for trace in traces:
+            prompt_ids = list(trace.get("prompt_ids") or [])
+            completion_ids = list(trace.get("completion_ids") or [])
+            completion_logprobs = list(trace.get("completion_logprobs") or [])
+            if not completion_ids:
+                continue
+            if len(completion_logprobs) != len(completion_ids):
+                logger.warning(
+                    "frozen_lake turn trace skipped: completion_logprobs (%d) "
+                    "!= completion_ids (%d)",
+                    len(completion_logprobs), len(completion_ids),
+                )
+                return None
+            try:
+                assembler.add_call(InferenceCall(
+                    input_tokens=prompt_ids,
+                    output_tokens=completion_ids,
+                    output_logprobs=completion_logprobs,
+                    finish_reason=str(trace.get("finish_reason") or "stop"),
+                ))
+            except PrefixMismatch as exc:
+                logger.warning("frozen_lake PrefixMismatch: %s", exc)
+                return None
+
+        total_reward = float(step_rewards[-1]) if step_rewards else 0.0
+        return assembler.to_payload(total_reward=total_reward)
