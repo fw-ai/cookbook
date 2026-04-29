@@ -61,6 +61,9 @@ Other invariants:
 - Generation suffix (``add_generation_prompt=True`` in Jinja):
   ``<|assistant|><think>`` for thinking mode (default),
   ``<|assistant|></think>`` for non-thinking mode.
+- In supervised examples, the opening ``<think>`` token is kept in the
+  rendered sequence for template parity but masked out of the loss because it
+  is already injected by the generation suffix.
 
 Tool-call layout (assistant turns only — ``role: "tool"`` responses are
 rendered as ``<|observation|><tool_response>...</tool_response>`` and never
@@ -271,6 +274,10 @@ class GLM5Renderer(Renderer):
     def _observation_token(self) -> int:
         return self._encode_single_special(_OBSERVATION_TEXT)
 
+    @property
+    def _think_open_token(self) -> int:
+        return self._encode_single_special("<think>")
+
     def get_stop_sequences(self) -> list[int]:
         return [self._user_token, self._observation_token]
 
@@ -346,6 +353,48 @@ class GLM5Renderer(Renderer):
         expected_role = "tool" if prev_message.get("tool_calls") else "user"
         return current_role == expected_role
 
+    def _append_output_chunks_with_weights(
+        self,
+        model_input_chunks_weights: list[tuple[tinker.ModelInputChunk, float]],
+        *,
+        message: Message,
+        output_parts: list[tinker.ModelInputChunk],
+        output_has_weight: bool,
+        train_on_what: TrainOnWhat,
+    ) -> None:
+        for output_part in output_parts:
+            if not output_part:
+                continue
+
+            if (
+                message["role"] == "assistant"
+                and output_has_weight
+                and train_on_what != TrainOnWhat.ALL_TOKENS
+                and isinstance(output_part, tinker.types.EncodedTextChunk)
+                and output_part.tokens
+                and int(output_part.tokens[0]) == self._think_open_token
+            ):
+                # ``add_generation_prompt=True`` injects
+                # ``<|assistant|><think>``. Keep the token in the rendered
+                # sequence for template parity, but mask it because the model
+                # starts generating after that prefix.
+                model_input_chunks_weights.append(
+                    (tinker.types.EncodedTextChunk(tokens=[output_part.tokens[0]]), 0.0)
+                )
+                if len(output_part.tokens) > 1:
+                    model_input_chunks_weights.append(
+                        (
+                            tinker.types.EncodedTextChunk(
+                                tokens=list(output_part.tokens[1:])
+                            ),
+                            1.0,
+                        )
+                    )
+            else:
+                model_input_chunks_weights.append(
+                    (output_part, int(output_has_weight))
+                )
+
     def build_supervised_example(
         self,
         messages: list[Message],
@@ -411,11 +460,13 @@ class GLM5Renderer(Renderer):
                     header_weight = 1
                 model_input_chunks_weights.append((header_part, header_weight))
 
-            model_input_chunks_weights += [
-                (output_part, int(output_has_weight))
-                for output_part in rendered_message.output
-                if output_part
-            ]
+            self._append_output_chunks_with_weights(
+                model_input_chunks_weights,
+                message=message,
+                output_parts=rendered_message.output,
+                output_has_weight=output_has_weight,
+                train_on_what=train_on_what,
+            )
 
             if is_last_message and rendered_message.stop_overlap:
                 model_input_chunks_weights.append(
@@ -529,9 +580,10 @@ class GLM5Renderer(Renderer):
         return RenderedMessage(header=header, output=output)
 
     def _render_assistant(self, message: Message, ctx: RenderContext) -> RenderedMessage:
-        # The role tag ``<|assistant|>`` is the header; the ``<think>...
-        # </think>`` block lives in ``output`` so it is part of the training
-        # target for this assistant turn.
+        # The role tag ``<|assistant|>`` is the header. Thinking-mode
+        # assistants keep the template's opening ``<think>`` in ``output`` for
+        # token parity, but supervised rendering masks that prefix because
+        # ``add_generation_prompt=True`` injects it before model generation.
         header_str = "<|assistant|>"
 
         before_last_user = (

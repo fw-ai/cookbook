@@ -839,7 +839,8 @@ def test_interleaved_tool_reasoning_and_params_are_trained(tokenizer, renderer):
     tokens, weights = _renderer_supervised_tokens(renderer, messages)
     trained_text = tokenizer.decode([t for t, w in zip(tokens, weights) if w > 0])
 
-    assert "<think>Need current weather.</think>" in trained_text
+    assert "<think>" not in trained_text
+    assert "Need current weather.</think>" in trained_text
     assert "<tool_call>get_weather" in trained_text
     assert "<arg_value>SF</arg_value>" in trained_text
 
@@ -1051,9 +1052,10 @@ def test_preserve_thinking_build_supervised_examples_keeps_single_example(
 def test_weight_mask_only_covers_assistant_output(tokenizer, renderer):
     """Every non-zero-weight position must decode to an assistant-output token.
 
-    Specifically: the trained span for the last assistant turn should be
-    ``<think></think>{content}<|user|>``. GLM-5.1 stops normal assistant
-    answers by generating the next user role tag, not EOS.
+    Specifically: the rendered assistant turn contains
+    ``<think></think>{content}<|user|>``, but ``<think>`` is masked because
+    GLM-5.1 injects it in the generation prefix. The model trains from
+    ``</think>`` through the normal ``<|user|>`` stop.
     """
     messages = [
         {"role": "user", "content": "What is the secret password?"},
@@ -1068,9 +1070,9 @@ def test_weight_mask_only_covers_assistant_output(tokenizer, renderer):
     trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
     trained_text = tokenizer.decode(trained_tokens)
 
-    # Should start with '<think></think>' (no leading newline) and end with
-    # the normal assistant stop sentinel.
-    assert trained_text.startswith("<think></think>"), trained_text
+    # The opening '<think>' is part of the generation prefix, so it is masked.
+    assert trained_text.startswith("</think>"), trained_text
+    assert "<think>" not in trained_text
     assert tokens[-1] == _user_token(tokenizer), "last token must be <|user|>"
     assert trained_tokens[-1] == _user_token(tokenizer)
     assert "ALPHA-BRAVO" in trained_text
@@ -1125,7 +1127,8 @@ def test_weight_mask_terminal_tool_call_with_thinking_appends_observation_stop(
     assert trained_tokens[-1] == _observation_token(tokenizer)
 
     trained_text = tokenizer.decode(trained_tokens)
-    assert "<think>need lookup</think>" in trained_text
+    assert "<think>" not in trained_text
+    assert "need lookup</think>" in trained_text
     assert "<tool_call>lookup" in trained_text
 
 
@@ -1233,7 +1236,8 @@ def test_weight_mask_multi_turn_tool_call_with_thinking_trains_observation_stop(
     )
 
     trained_text = tokenizer.decode([t for t, w in zip(tokens, weights) if w > 0])
-    assert "<think>need weather tool</think>" in trained_text
+    assert "<think>" not in trained_text
+    assert "need weather tool</think>" in trained_text
     assert "<tool_call>get_weather" in trained_text
     assert "<|observation|>" in trained_text
     assert "<tool_response>sunny</tool_response>" not in trained_text
@@ -1350,7 +1354,8 @@ def test_weight_mask_parallel_tool_response_audit_table(
 
     # Each row is (position, token id, decoded token text, loss weight).
     # This makes the important boundaries visible:
-    # - positions 5-17 are model-generated thinking/tool-call/observation stop
+    # - position 5 is the injected <think> prefix and stays masked
+    # - positions 6-17 are model-generated thinking/tool-call/observation stop
     # - positions 18-25 are tool responses supplied by the environment
     # - positions 27-31 are the final assistant turn plus its <|user|> stop
     rows = [
@@ -1364,7 +1369,7 @@ def test_weight_mask_parallel_tool_response_audit_table(
         (2, 154827, "<|user|>", 0),
         (3, 80, "q", 0),
         (4, 154828, "<|assistant|>", 0),
-        (5, 154841, "<think>", 1),
+        (5, 154841, "<think>", 0),
         (6, 83, "t", 1),
         (7, 154842, "</think>", 1),
         (8, 154843, "<tool_call>", 1),
@@ -1386,7 +1391,7 @@ def test_weight_mask_parallel_tool_response_audit_table(
         (24, 17, "2", 0),
         (25, 154846, "</tool_response>", 0),
         (26, 154828, "<|assistant|>", 0),
-        (27, 154841, "<think>", 1),
+        (27, 154841, "<think>", 0),
         (28, 84, "u", 1),
         (29, 154842, "</think>", 1),
         (30, 64, "a", 1),
@@ -1422,7 +1427,8 @@ def test_weight_mask_with_thinking(tokenizer, renderer):
     trained_tokens = [t for t, w in zip(tokens, weights) if w > 0]
     trained_text = tokenizer.decode(trained_tokens)
 
-    assert "<think>my reasoning</think>" in trained_text
+    assert "<think>" not in trained_text
+    assert "my reasoning</think>" in trained_text
     assert "answer" in trained_text
     assert "q" not in trained_text
 
