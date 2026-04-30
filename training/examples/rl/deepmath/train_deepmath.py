@@ -305,14 +305,17 @@ def _build_deepmath_rollout_fn(args: TrainArgs):
         args.tokenizer_model, trust_remote_code=True,
     )
     renderer = build_renderer(tokenizer, args.tokenizer_model)
+    sampler: DeploymentSampler | None = None
 
     async def rollout_fn(row: dict, ctx: RolloutContext) -> Rollout | None:
-        sampler = DeploymentSampler(
-            inference_url=ctx.inference_base_url,
-            model=ctx.model,
-            api_key=ctx.api_key,
-            tokenizer=tokenizer,
-        )
+        nonlocal sampler
+        if sampler is None:
+            sampler = DeploymentSampler(
+                inference_url=ctx.inference_base_url,
+                model=ctx.model,
+                api_key=ctx.api_key,
+                tokenizer=tokenizer,
+            )
         return await single_turn_renderer_rollout(
             row,
             ctx,
