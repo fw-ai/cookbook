@@ -46,7 +46,7 @@ def test_grpo_deepmath_per_trainer(
 ):
     # Late imports: module collection must not require FIREWORKS_API_KEY.
     from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
-    from training.recipes.rl_loop import Config, main
+    from training.recipes.rl_loop import Config, default_rollout_fn, main
     import training.recipes.rl_loop as rl_mod
     from training.examples.rl.deepmath.train_deepmath import deepmath_reward
 
@@ -92,6 +92,7 @@ def test_grpo_deepmath_per_trainer(
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
         cancel_on_exit=True,
+        rollout_fn=default_rollout_fn,
     )
 
     # No seed pinning: this is an API contract smoke (steps complete, cleanup

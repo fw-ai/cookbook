@@ -2,7 +2,7 @@
 """``RolloutService``-driven generic remote-rollout example.
 
 Wires :func:`make_remote_rollout_fn` (re-exported from
-``training.utils.rl.renderer_rollout``) with a deterministic mock
+``training.utils.rl.rollout``) with a deterministic mock
 ``RolloutService`` so users can see the token-native contract end to end
 without standing up a real inference service.  The renderer is applied
 service-side; the cookbook helper itself is renderer-name-agnostic.
@@ -25,7 +25,7 @@ from training.examples.rl.remote_rollout.mock_service import MockRolloutService
 from training.recipes.async_rl_loop import Config, main
 from training.utils import DeployConfig
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.renderer_rollout import make_remote_rollout_fn
+from training.utils.rl.rollout import make_remote_rollout_fn
 
 
 logger = logging.getLogger(__name__)

@@ -67,9 +67,9 @@ from training.utils import (
     build_datum_from_token_mask,
 )
 from training.utils.rl import PromptGroup
-from training.utils.rl.renderer_rollout import make_remote_rollout_fn
+from training.utils.rl.rollout import make_remote_rollout_fn
 from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
-from training.utils.rl.text_rollout import pack_payload_to_sample
+from training.utils.rl.rollout import pack_payload_to_sample
 from training.utils.rl.train import TrainStepFns, run_rl_loop
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.tis import TISConfig

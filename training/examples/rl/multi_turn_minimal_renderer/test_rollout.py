@@ -304,7 +304,7 @@ class TestPrefixMismatchPropagates:
         benign sample miss, so training churned through every prompt
         with no actionable signal.  The exception now propagates so
         the integration bug fails loud."""
-        from training.utils.rl.trajectory_assembler import PrefixMismatch
+        from training.utils.rl.rollout import PrefixMismatch
 
         first_prompt = [1, 2, 3]
         out1 = [10, 11]

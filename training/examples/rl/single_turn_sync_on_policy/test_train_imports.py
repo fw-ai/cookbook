@@ -45,7 +45,7 @@ def test_does_not_import_async_recipe():
 
 def test_uses_single_turn_renderer_rollout():
     mods = _imported_modules(_TRAIN_PATH)
-    assert "training.utils.rl.renderer_rollout" in mods
+    assert "training.utils.rl.rollout" in mods
 
 
 def test_calls_main_with_rollout_fn_kwarg():

@@ -2,7 +2,7 @@
 """Single-turn renderer-backed synchronous on-policy RL example.
 
 Wires :func:`single_turn_renderer_rollout` (from
-``training.utils.rl.renderer_rollout``) into the **synchronous** RL
+``training.utils.rl.rollout``) into the **synchronous** RL
 recipe ``training.recipes.rl_loop``.  The recipe accepts an optional
 ``rollout_fn(row, ctx) -> Rollout | None`` keyword argument (mirroring the
 async recipe's contract) so renderer-backed rollouts plug in directly.
@@ -26,7 +26,7 @@ from fireworks.training.sdk.deployment import DeploymentSampler
 
 from training.recipes.rl_loop import Config, RolloutContext, main
 from training.utils import DeployConfig
-from training.utils.rl.renderer_rollout import single_turn_renderer_rollout
+from training.utils.rl.rollout import single_turn_renderer_rollout
 from training.utils.rl.rollout import Rollout
 from training.utils.supervised import build_renderer
 

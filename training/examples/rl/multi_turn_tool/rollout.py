@@ -50,8 +50,7 @@ from training.examples.rl._renderer_turn_loop import (
     pack_assembled_to_sample,
     renderer_turn_step,
 )
-from training.utils.rl.rollout import Rollout
-from training.utils.rl.trajectory_assembler import TrajectoryAssembler
+from training.utils.rl.rollout import Rollout, TrajectoryAssembler
 
 
 logger = logging.getLogger(__name__)

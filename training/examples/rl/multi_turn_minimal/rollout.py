@@ -29,9 +29,12 @@ from typing import Any, List
 
 import httpx
 
-from training.utils.rl.rollout_helpers import extract_completion, precompute_chat_suffix
-from training.utils.rl.rollout_service import RolloutPayload
-from training.utils.rl.trajectory_assembler import TrajectoryAssembler
+from training.utils.rl.rollout import (
+    RolloutPayload,
+    TrajectoryAssembler,
+    extract_completion,
+    precompute_chat_suffix,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -50,7 +53,7 @@ class MultiTurnService:
             turn (matches AReaL's ``MultiTurnWorkflow``).
         reward_fn: ``(messages, payload) -> float``, called once at end
             of rollout.  When ``None``, the trainer must supply
-            ``reward_fn=`` to ``make_text_rollout_fn``.
+            ``reward_fn=`` to ``make_remote_rollout_fn``.
     """
 
     def __init__(

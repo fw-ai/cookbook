@@ -541,13 +541,11 @@ class MultiHopQARolloutProcessor(RolloutProcessor):
 # ---------------------------------------------------------------------------
 
 
-from training.utils.rl.rollout_service import (  # noqa: E402  (intentional: keep adapter colocated)
-    RolloutPayload,
-    RolloutService,
-)
-from training.utils.rl.trajectory_assembler import (  # noqa: E402
+from training.utils.rl.rollout import (  # noqa: E402  (intentional: keep adapter colocated)
     InferenceCall,
     PrefixMismatch,
+    RolloutPayload,
+    RolloutService,
     TrajectoryAssembler,
 )
 

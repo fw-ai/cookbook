@@ -23,7 +23,7 @@ from typing import Any, List
 import pytest
 
 from training.examples.multihop_qa.multihop_qa_rollout import MultiHopQARolloutService
-from training.utils.rl.text_rollout import pack_payload_to_sample
+from training.utils.rl.rollout import pack_payload_to_sample
 
 
 class _StubProcessor:

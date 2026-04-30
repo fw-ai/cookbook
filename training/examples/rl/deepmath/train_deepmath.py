@@ -36,7 +36,7 @@ from training.utils import (
     WeightSyncConfig,
 )
 from training.utils.rl import TISConfig
-from training.utils.rl.renderer_rollout import single_turn_renderer_rollout
+from training.utils.rl.rollout import single_turn_renderer_rollout
 from training.utils.rl.rollout import Rollout
 from training.utils.supervised import build_renderer
 

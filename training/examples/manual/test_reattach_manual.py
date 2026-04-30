@@ -123,6 +123,7 @@ def _run(cfg: rl_loop.Config, rlor_mgr, deploy_mgr, cancel_on_exit: bool) -> dic
     rl_loop.should_accept = lambda _: True  # avoid zero-variance filter on tiny runs
     return rl_loop.main(
         cfg, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr, cancel_on_exit=cancel_on_exit,
+        rollout_fn=rl_loop.default_rollout_fn,
     )
 
 

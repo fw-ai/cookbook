@@ -18,8 +18,8 @@ from training.recipes.async_rl_loop import Config, RolloutContext, main
 from training.utils import DeployConfig
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.rollout import Rollout
-from training.utils.rl.rollout_service import RolloutPayload
-from training.utils.rl.text_rollout import make_text_rollout_fn
+from training.utils.rl.rollout import RolloutPayload
+from training.utils.rl.rollout import make_remote_rollout_fn
 
 
 def should_accept(pg: PromptGroup) -> bool:
@@ -67,7 +67,7 @@ if __name__ == "__main__":
                 followup_text="Please refine your answer.",
                 reward_fn=length_reward,
             )
-            cached_rollout_fn.append(make_text_rollout_fn(service))
+            cached_rollout_fn.append(make_remote_rollout_fn(service))
         return await cached_rollout_fn[0](row, ctx)
 
     rows = [

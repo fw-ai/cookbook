@@ -1,4 +1,4 @@
-"""Unit tests for ``training.utils.rl.renderer_rollout``.
+"""Unit tests for ``training.utils.rl.rollout``.
 
 Covers the ``model_input_to_token_ids`` adapter (text-only acceptance,
 multimodal rejection) and ``single_turn_renderer_rollout`` against a curated
@@ -29,13 +29,9 @@ _TINKER_COOKBOOK = Path(__file__).resolve().parents[4] / "tinker-cookbook"
 if _TINKER_COOKBOOK.exists() and str(_TINKER_COOKBOOK) not in sys.path:
     sys.path.insert(0, str(_TINKER_COOKBOOK))
 
-from training.utils.rl.renderer_rollout import (
+from training.utils.rl.rollout import (
     MultimodalRenderingNotSupported,
-    RolloutHelperInfo,
-    helper_info,  # backward-compat alias of renderer_helper_info
-    make_remote_rollout_fn,
     model_input_to_token_ids,
-    renderer_helper_info,
     single_turn_renderer_rollout,
 )
 
@@ -564,7 +560,7 @@ class TestCanaryRenderers:
 
 
 _HELPER_MODULE_PATH = (
-    Path(__file__).resolve().parents[2] / "utils" / "rl" / "renderer_rollout.py"
+    Path(__file__).resolve().parents[2] / "utils" / "rl" / "rollout" / "renderer.py"
 )
 
 
@@ -583,44 +579,3 @@ class TestHelperModuleStructure:
     def test_helper_does_not_reference_sample_with_tokens_messages_kwarg(self):
         text = _HELPER_MODULE_PATH.read_text()
         assert "sample_with_tokens(messages=" not in text
-
-    def test_helper_info_exposes_triage_fields(self):
-        renderer = _StubRenderer([1, 2], ["</s>"], name="stub-name")
-        info = renderer_helper_info(renderer, tokenizer_id="tok", max_tokens=512)
-        assert isinstance(info, RolloutHelperInfo)
-        assert info.tokenizer_id == "tok"
-        assert info.renderer_name == "stub-name"
-        assert info.stop_condition == ["</s>"]
-        assert info.max_tokens == 512
-
-    def test_helper_info_alias_kept_for_back_compat(self):
-        # `helper_info` was the Round-0 name; `renderer_helper_info` is the
-        # public AC-8 surface.  Both should work and return identical data.
-        renderer = _StubRenderer([1, 2], ["</s>"], name="stub-name")
-        a = helper_info(renderer, tokenizer_id="t", max_tokens=64)
-        b = renderer_helper_info(renderer, tokenizer_id="t", max_tokens=64)
-        assert a == b
-
-    def test_single_turn_helper_exposes_helper_info_accessor(self):
-        # AC-8 triage metadata: the helper function itself exposes a
-        # `helper_info` callable so runtime triage code can grab the four
-        # triage fields without re-deriving them.
-        info_fn = getattr(single_turn_renderer_rollout, "helper_info", None)
-        assert info_fn is not None
-        renderer = _StubRenderer([1], ["</s>"], name="r")
-        info = info_fn(renderer, tokenizer_id="tk", max_tokens=42)
-        assert isinstance(info, RolloutHelperInfo)
-        assert info.tokenizer_id == "tk"
-        assert info.max_tokens == 42
-
-    def test_helper_info_is_in_public_all(self):
-        import training.utils.rl.renderer_rollout as mod
-        assert "RolloutHelperInfo" in mod.__all__
-        assert "renderer_helper_info" in mod.__all__
-
-    def test_remote_rollout_helper_is_reexported(self):
-        # Renderer-backed remote-rollout surface — same callable as
-        # text_rollout.make_text_rollout_fn (renderer is applied service-side
-        # so the helper is renderer-name-agnostic by design).
-        from training.utils.rl import text_rollout as tr
-        assert make_remote_rollout_fn is tr.make_text_rollout_fn

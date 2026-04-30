@@ -163,6 +163,7 @@ def main() -> None:
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
         cancel_on_exit=not args.keep_resources,
+        rollout_fn=rl_loop.default_rollout_fn,
     )
     logger.info("Run metrics: %s", metrics)
 

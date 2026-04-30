@@ -32,7 +32,7 @@ from fireworks.training.sdk.deployment import DeploymentSampler
 from training.recipes.async_rl_loop import Config, RolloutContext, main
 from training.utils import DeployConfig
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.renderer_rollout import single_turn_renderer_rollout
+from training.utils.rl.rollout import single_turn_renderer_rollout
 from training.utils.rl.rollout import Rollout
 from training.utils.supervised import build_renderer
 

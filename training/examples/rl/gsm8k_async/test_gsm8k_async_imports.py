@@ -31,7 +31,7 @@ def _imports(path: Path) -> set[str]:
 
 def test_uses_single_turn_renderer_rollout():
     mods = _imports(_TRAIN)
-    assert "training.utils.rl.renderer_rollout.single_turn_renderer_rollout" in mods
+    assert "training.utils.rl.rollout.single_turn_renderer_rollout" in mods
 
 
 def test_does_not_use_legacy_sample_with_tokens_messages_kwarg():

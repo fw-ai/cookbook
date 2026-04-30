@@ -3,9 +3,9 @@
 
 Every piece lives somewhere reusable:
 
-  * :mod:`training.utils.rl.rollout_service` -- service-agnostic
+  * :mod:`training.utils.rl.rollout` -- service-agnostic
     protocol and dataclasses (no EP dep).
-  * :mod:`training.utils.rl.text_rollout` -- token-native packer that
+  * :mod:`training.utils.rl.rollout` -- token-native packer that
     turns service payloads into :class:`~training.utils.rl.rollout.Rollout`.
   * :mod:`.ep_service` -- the only file that imports ``eval_protocol``.
   * :mod:`.grader` -- EP-decorated scoring function.
@@ -21,7 +21,7 @@ Reward plumbing supports both conventions (text_rollout checks
     trainer-side state.
 
   * **Trainer-graded**: ``EPService(grade=False)`` returns
-    ``total_reward=None`` and ``make_text_rollout_fn`` is handed a
+    ``total_reward=None`` and ``make_remote_rollout_fn`` is handed a
     ``reward_fn(row, payload) -> float``.  Use when the reward needs
     trainer-side state (reference model, local reward model, etc.) or
     when grading is expensive and you want to batch it.
@@ -44,8 +44,8 @@ from training.examples.rl.ep_remote_grader.ep_service import EPService, _grade
 from training.recipes.async_rl_loop import Config, main
 from training.utils import DeployConfig
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.rollout_service import RolloutPayload
-from training.utils.rl.text_rollout import make_text_rollout_fn
+from training.utils.rl.rollout import RolloutPayload
+from training.utils.rl.rollout import make_remote_rollout_fn
 from training.utils.supervised import build_renderer
 
 
@@ -92,11 +92,11 @@ if __name__ == "__main__":
     renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
 
     # Server-graded: EPService grades internally and fills total_reward.
-    rollout_fn = make_text_rollout_fn(EPService(renderer=renderer))
+    rollout_fn = make_remote_rollout_fn(EPService(renderer=renderer))
 
     # Trainer-graded alternative -- uncomment to use; swap the two lines:
     #
-    #   rollout_fn = make_text_rollout_fn(
+    #   rollout_fn = make_remote_rollout_fn(
     #       EPService(renderer=renderer, grade=False),
     #       reward_fn=trainer_grade,
     #   )

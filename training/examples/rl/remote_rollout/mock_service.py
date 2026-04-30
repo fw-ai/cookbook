@@ -5,7 +5,7 @@ outside of the cookbook process: a service returns
 ``list[RolloutPayload]`` with per-turn ``token_ids`` and per-token
 assistant ``logprobs`` already attached.  The cookbook's
 ``make_remote_rollout_fn`` (re-exported from
-``training.utils.rl.renderer_rollout``) packs those payloads into
+``training.utils.rl.rollout``) packs those payloads into
 ``RolloutSample`` via ``pack_payload_to_sample`` — token-native validation
 is enforced, no fallback re-tokenization.
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any, List
 
-from training.utils.rl.rollout_service import RolloutPayload, TurnRecord
+from training.utils.rl.rollout import RolloutPayload, TurnRecord
 
 
 def _logprobs_for(tokens: List[int]) -> List[float]:

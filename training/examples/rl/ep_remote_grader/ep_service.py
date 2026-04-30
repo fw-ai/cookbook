@@ -46,8 +46,8 @@ from training.examples.rl.ep_remote_grader.mock_agent import (
     MockCompletion,
     remote_agent_complete,
 )
-from training.utils.rl.renderer_rollout import model_input_to_token_ids
-from training.utils.rl.rollout_service import (
+from training.utils.rl.rollout import model_input_to_token_ids
+from training.utils.rl.rollout import (
     RolloutPayload,
     RolloutService,
     TurnRecord,
@@ -108,7 +108,7 @@ class EPService(RolloutService):
     fills :attr:`RolloutPayload.total_reward` -- the trainer trusts it
     ("server-wins" convention).  ``grade=False`` leaves ``total_reward``
     as ``None`` and the caller supplies ``reward_fn`` to
-    :func:`make_text_rollout_fn` to grade trainer-side.  Use
+    :func:`make_remote_rollout_fn` to grade trainer-side.  Use
     ``grade=False`` when grading needs trainer-side state (reference
     model logprobs, a local reward model, metric joining against a
     separate dataset).

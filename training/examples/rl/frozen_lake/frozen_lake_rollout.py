@@ -1260,13 +1260,11 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
 # ---------------------------------------------------------------------------
 
 
-from training.utils.rl.rollout_service import (  # noqa: E402  (intentional: keep adapter colocated)
-    RolloutPayload,
-    RolloutService,
-)
-from training.utils.rl.trajectory_assembler import (  # noqa: E402
+from training.utils.rl.rollout import (  # noqa: E402  (intentional: keep adapter colocated)
     InferenceCall,
     PrefixMismatch,
+    RolloutPayload,
+    RolloutService,
     TrajectoryAssembler,
 )
 
@@ -1276,7 +1274,7 @@ class FrozenLakeRolloutService(RolloutService):
 
     Wraps :class:`FrozenLakeToolRolloutProcessor` in the cookbook's
     ``RolloutService`` shape so the trainer can consume frozen_lake
-    rollouts via :func:`training.utils.rl.text_rollout.make_text_rollout_fn`
+    rollouts via :func:`training.utils.rl.rollout.make_remote_rollout_fn`
     (re-exported as ``make_remote_rollout_fn``).  Per-turn token traces
     from the processor (``execution_metadata.extra["token_turn_traces"]``)
     are stitched into a token-native :class:`RolloutPayload` whose

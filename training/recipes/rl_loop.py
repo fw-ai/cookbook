@@ -33,7 +33,7 @@ import signal
 import asyncio
 import logging
 from contextlib import ExitStack
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, Optional
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -63,14 +63,13 @@ from training.utils import (
     wandb_finish,
     validate_config,
     log_metrics_json,
-    compute_advantages,
     read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup, setup_infra
-from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
+from training.utils.rl.rollout import Rollout, RolloutSample, rollout_to_prompt_group
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
 import time as _time
@@ -89,7 +88,6 @@ from training.utils.rl.losses import (
     validate_loss_path,
 )
 from training.utils.rl.metrics import compute_step_metrics
-from training.utils.rl.router_replay import build_r3_routing_matrices
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +129,16 @@ class Config:
     ``optim_step`` pair fires (1:1 ratio)."""
 
     router_replay: bool = False
+    """Enable Router Replay (R3): capture per-token MoE routing matrices
+    at inference and replay them through ``tinker.ModelInput.from_ints
+    (routing_matrices=...)`` at training time.  When ``True``, the recipe
+    asks the deployment for ``include_routing_matrix=True`` and the
+    default rollout stores ``s.routing_matrices`` on each
+    :class:`RolloutSample`."""
     router_replay_completion_only: bool = True
+    """When ``router_replay=True``, blank out prompt-position routing
+    matrices so only completion-token routing is replayed (server picks
+    its own routing for prompt tokens)."""
 
     grad_accumulation_normalization: GradAccNormalization | str | None = GradAccNormalization.NUM_LOSS_TOKENS
     """Normalization mode for accumulated gradients at optim_step.
@@ -188,12 +195,6 @@ class Config:
 
     reference_job_id: str | None = None
     """Pre-created RLOR reference trainer job ID (skip creation if set)."""
-
-    policy_base_url: str | None = None
-    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
-
-    reference_base_url: str | None = None
-    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
@@ -277,19 +278,21 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
     n_records = 0
     with open(path, "w") as f:
         for pg_idx, pg in enumerate(prompt_groups):
-            completions = pg.completions or []
+            meta = pg.row_meta or {}
+            prompt = meta.get("prompt")
+            completions = meta.get("completions") or []
             for comp_idx, comp_text in enumerate(completions):
                 record = {
                     "step": step,
                     "prompt_group": pg_idx,
                     "completion_index": comp_idx,
-                    "prompt": pg.prompt,
+                    "prompt": prompt,
                     "completion": comp_text,
                     "reward": pg.rewards[comp_idx] if comp_idx < len(pg.rewards) else None,
                     "advantage": pg.advantages[comp_idx] if comp_idx < len(pg.advantages) else None,
                     "completion_len": pg.completion_lens[comp_idx] if comp_idx < len(pg.completion_lens) else None,
                     "truncated": pg.truncated[comp_idx] if comp_idx < len(pg.truncated) else None,
-                    "ground_truth": pg.row_meta.get("ground_truth") if pg.row_meta else None,
+                    "ground_truth": meta.get("ground_truth"),
                 }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 n_records += 1
@@ -307,7 +310,7 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
 class RolloutContext:
     """What a custom ``rollout_fn`` receives in the synchronous recipe.
 
-    Mirrors :class:`training.advanced.async_rl.RolloutContext` so the
+    Mirrors :class:`training.recipes.async_rl_loop.RolloutContext` so the
     same ``rollout_fn(row, ctx) -> Rollout | None`` callable can drive
     either recipe.  All fields are public (read-only by convention);
     rollout functions read these to render prompts, sample, and emit
@@ -329,6 +332,82 @@ RolloutFn = Callable[[dict, "RolloutContext"], Awaitable[Optional[Rollout]]]
 
 
 # ---------------------------------------------------------------------------
+# Default rollout fn — single-turn, messages-based
+# ---------------------------------------------------------------------------
+
+
+async def default_rollout_fn(row: dict, ctx: "RolloutContext") -> Rollout | None:
+    """Single-turn ``rollout_fn`` used by the basic GRPO recipe.
+
+    Reads ``row["messages"]``, drives ``ctx.sample_with_tokens`` for
+    ``ctx.completions_per_prompt`` completions, and grades each with the
+    module-level :func:`reward_fn`.  Customize by passing your own
+    ``rollout_fn=...`` to :func:`main` (see
+    ``examples/rl/single_turn_sync_on_policy/train.py`` and
+    ``examples/rl/deepmath/train_deepmath.py`` for renderer-backed
+    overrides; ``examples/rl/multi_turn_minimal_renderer/rollout.py``
+    for the multi-turn pattern).
+    """
+    messages = row.get("messages", [])
+    input_messages = prepare_sampling_messages(messages)
+    if not input_messages:
+        return None
+    sampled = await ctx.sample_with_tokens(
+        messages=input_messages,
+        n=ctx.completions_per_prompt,
+        **ctx.sample_kwargs,
+    )
+    if not sampled or len(sampled) < ctx.completions_per_prompt:
+        return None
+
+    samples: list[RolloutSample] = []
+    for s in sampled:
+        tokens = list(s.full_tokens)
+        if len(tokens) < 2:
+            raise RuntimeError(
+                f"Sampler returned a completion with {len(tokens)} tokens; "
+                "need at least 2 (prompt + 1 generated)."
+            )
+        if not s.inference_logprobs:
+            raise RuntimeError(
+                "Inference logprobs required but sample has none. "
+                "Ensure the deployment returns logprobs."
+            )
+        prompt_len = s.prompt_len
+        loss_mask = [0] * prompt_len + [1] * (len(tokens) - prompt_len)
+        completion_logprobs = list(s.inference_logprobs)
+        if getattr(s, "logprobs_echoed", False):
+            logprobs = completion_logprobs
+        else:
+            logprobs = [0.0] * prompt_len + completion_logprobs
+        if len(logprobs) != len(tokens):
+            raise RuntimeError(
+                f"Sampler returned {len(completion_logprobs)} logprobs but "
+                f"{len(tokens) - prompt_len} generated tokens "
+                f"(echoed={getattr(s, 'logprobs_echoed', False)}); "
+                "the sampler must return per-token logprobs aligned with "
+                "the generated tokens."
+            )
+        samples.append(RolloutSample(
+            tokens=tokens,
+            logprobs=logprobs,
+            loss_mask=loss_mask,
+            reward=reward_fn(s.text, row),
+            routing_matrices=getattr(s, "routing_matrices", None),
+            finish_reason=s.finish_reason,
+            text=s.text,
+        ))
+    return Rollout(
+        samples=samples,
+        row_meta={
+            "ground_truth": row.get("ground_truth", ""),
+            "prompt": input_messages,
+            "completions": [s.text for s in sampled],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -338,34 +417,26 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
     cancel_on_exit: bool = False,
-    cleanup_on_exit: bool | None = None,
     *,
-    rollout_fn: RolloutFn | None = None,
+    rollout_fn: RolloutFn,
     ctx_extras: dict[str, Any] | None = None,
 ):
-    """``ctx_extras`` is attached to the ``RolloutContext`` passed to
+    """``rollout_fn`` is required: pass :func:`default_rollout_fn` for the
+    basic single-turn GRPO behavior, or override with a custom
+    ``rollout_fn(row, ctx) -> Rollout | None`` (see
+    ``examples/rl/deepmath/train_deepmath.py`` and
+    ``examples/rl/single_turn_sync_on_policy/train.py`` for the
+    single-turn renderer-backed pattern;
+    ``examples/rl/multi_turn_minimal_renderer/rollout.py`` for
+    multi-turn).
+
+    ``ctx_extras`` is attached to the ``RolloutContext`` passed to
     ``rollout_fn`` via ``setattr``.  The shipped multi-turn examples
-    (``examples/rl/multi_turn_minimal_renderer``, ``multi_turn_tool``)
     read ``ctx.renderer``, ``ctx.sample_with_prompt_tokens``, and
     ``ctx.build_env``; the user's wiring code constructs those objects
-    and passes them through ``ctx_extras={...}`` so the example
-    ``rollout_fn`` runs unmodified.
+    and passes them through ``ctx_extras={...}``.
     """
-    if cleanup_on_exit is not None:
-        import warnings
-        warnings.warn(
-            "rl_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
-            DeprecationWarning, stacklevel=2,
-        )
-        cancel_on_exit = cleanup_on_exit
-
     cfg = config
-    if cfg.policy_base_url or cfg.reference_base_url:
-        logger.warning(
-            "Config.policy_base_url / Config.reference_base_url are ignored; "
-            "the gateway routes all trainer traffic. These fields are kept for "
-            "back-compat and will be removed in a future release.",
-        )
     runner = RunnerIO(cfg.runner)
 
     # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
@@ -545,10 +616,10 @@ def main(
             temperature=cfg.temperature,
             max_seq_len=infra.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
+            logprobs=True,
         )
         if cfg.router_replay:
-            sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
-        sample_kwargs["logprobs"] = True
+            sample_kwargs.update(include_routing_matrix=True, echo=True)
 
         # -- Sample one prompt (VISIBLE -- customise this) ----------------------
 
@@ -576,118 +647,20 @@ def main(
             for k, v in ctx_extras.items():
                 setattr(ctx, k, v)
 
-        async def _sample_one_prompt_via_rollout_fn(row: dict) -> PromptGroup | None:
-            # Don't catch exceptions: deterministic integration bugs
-            # from the user's ``rollout_fn`` MUST fail loud.  Swallowing
-            # them as ``None`` would let the loop count them as
-            # ``sample_fail`` and persist broken rows as consumed.
-            rollout = await rollout_fn(row, ctx)  # type: ignore[misc]
+        async def sample_one_prompt(row: dict) -> PromptGroup | None:
+            """Drive ``rollout_fn`` and adapt the result to a PromptGroup.
+
+            Deterministic integration bugs from the rollout function MUST
+            fail loud — exceptions propagate so the loop doesn't quietly
+            persist broken rows as consumed.
+            """
+            rollout = await rollout_fn(row, ctx)
             if rollout is None:
                 return None
             return rollout_to_prompt_group(
-                rollout, with_reference=(reference is not None),
-            )
-
-        async def sample_one_prompt(row: dict) -> PromptGroup | None:
-            """Sample completions for one prompt and return a PromptGroup."""
-            if rollout_fn is not None:
-                return await _sample_one_prompt_via_rollout_fn(row)
-            messages = row.get("messages", [])
-            input_messages = prepare_sampling_messages(messages)
-            if not input_messages:
-                return None
-
-            try:
-                sampled = await sampler.sample_with_tokens(
-                    messages=input_messages,
-                    n=completions_per_prompt,
-                    **sample_kwargs,
-                )
-            except Exception as e:
-                # TODO: HTTP 425 (deployment hot-loading after weight sync)
-                # can cause transient failures here.  Currently the prompt is
-                # silently dropped (counted as sample_fails).  Consider adding
-                # a retry loop so no training data is lost during hotload.
-                logger.warning("Sampling failed: %s", e)
-                return None
-
-            if not sampled or len(sampled) < completions_per_prompt:
-                return None
-
-            rewards = [reward_fn(s.text, row) for s in sampled]
-            advantages = compute_advantages(rewards)
-
-            prompt_len = sampled[0].prompt_len
-            policy_data: List[tinker.Datum] = []
-            reference_data: List[tinker.Datum] = []
-            adv_filtered: List[float] = []
-            inf_logprobs_aligned: List[List[float]] = []
-
-            for idx, s in enumerate(sampled):
-                tokens = s.full_tokens
-                if len(tokens) < 2:
-                    continue
-                model_input_len = len(tokens) - 1
-
-                rm = None
-                if cfg.router_replay:
-                    rm = build_r3_routing_matrices(
-                        s.routing_matrices,
-                        s.prompt_len,
-                        model_input_len,
-                        completion_only=cfg.router_replay_completion_only,
-                    )
-
-                policy_datum = tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),
-                    loss_fn_inputs={
-                        "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
-                    },
-                )
-                policy_data.append(policy_datum)
-
-                if reference is not None:
-                    reference_datum = tinker.Datum(
-                        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
-                        loss_fn_inputs={
-                            "target_tokens": tinker.TensorData(
-                                data=tokens[1:], dtype="int64", shape=[model_input_len]
-                            ),
-                        },
-                    )
-                    reference_data.append(reference_datum)
-
-                adv_filtered.append(advantages[idx])
-
-                if not s.inference_logprobs:
-                    raise RuntimeError(
-                        f"Inference logprobs required but sample {idx} has none. "
-                        f"Ensure the deployment returns logprobs."
-                    )
-                response_start = max(0, prompt_len - 1)
-                echoed = getattr(s, "logprobs_echoed", False)
-                aligned = list(s.inference_logprobs) if echoed else [0.0] * response_start + list(s.inference_logprobs)
-                inf_logprobs_aligned.append(aligned)
-
-            if not policy_data:
-                return None
-
-            comp_lens = [len(s.full_tokens) - s.prompt_len for s in sampled]
-            trunc = [s.finish_reason == "length" for s in sampled]
-
-            return PromptGroup(
-                data=policy_data,
-                ref_data=reference_data,
-                advantages=adv_filtered,
-                ref_logprobs=None,
-                prompt_len=prompt_len,
-                rewards=rewards,
-                inf_logprobs=inf_logprobs_aligned,
-                completion_lens=comp_lens,
-                truncated=trunc,
-                prompt=input_messages if cfg.trajectory_dir else None,
-                completions=[s.text for s in sampled] if cfg.trajectory_dir else None,
-                row_meta={"ground_truth": row.get("ground_truth", "")} if cfg.trajectory_dir else None,
+                rollout,
+                with_reference=(reference is not None),
+                router_replay_completion_only=cfg.router_replay_completion_only,
             )
 
         # -- Training callbacks ----------------------------------------------------
@@ -968,4 +941,4 @@ if __name__ == "__main__":
             tokenizer_model="Qwen/Qwen3-8B",
         ),
     )
-    main(cfg)
+    main(cfg, rollout_fn=default_rollout_fn)

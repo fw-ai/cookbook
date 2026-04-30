@@ -1,4 +1,4 @@
-"""Unit tests for training.utils.rl.text_rollout.
+"""Unit tests for training.utils.rl.rollout.
 
 Token-native only: every turn carries ``token_ids`` and every assistant
 turn carries ``logprobs``.  Re-tokenizing text post-hoc silently
@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 import pytest
 
 from training.utils.rl.rollout import Rollout
-from training.utils.rl.rollout_service import RolloutPayload, TurnRecord
-from training.utils.rl import text_rollout as tr
+from training.utils.rl.rollout import RolloutPayload, TurnRecord
+from training.utils.rl.rollout import remote as tr
 
 
 @dataclass
@@ -262,7 +262,7 @@ class TestReward:
 
 
 # ---------------------------------------------------------------------------
-# make_text_rollout_fn end-to-end
+# make_remote_rollout_fn end-to-end
 # ---------------------------------------------------------------------------
 
 
@@ -272,7 +272,7 @@ class TestMakeTextRolloutFn:
         async def service(messages, n, sample_kwargs, row):
             return [_toy_payload(float(i)) for i in range(n)]
 
-        rollout_fn = tr.make_text_rollout_fn(service)
+        rollout_fn = tr.make_remote_rollout_fn(service)
         ctx = _FakeCtx(completions_per_prompt=3)
         row = {"messages": [{"role": "user", "content": "q"}], "id": "r0"}
 
@@ -293,7 +293,7 @@ class TestMakeTextRolloutFn:
         async def service(messages, n, sample_kwargs, row):
             raise RuntimeError("upstream down")
 
-        rollout_fn = tr.make_text_rollout_fn(service)
+        rollout_fn = tr.make_remote_rollout_fn(service)
         with pytest.raises(RuntimeError, match="upstream down"):
             await rollout_fn(
                 {"messages": [{"role": "user", "content": "q"}]}, _FakeCtx(),
@@ -319,7 +319,7 @@ class TestMakeTextRolloutFn:
             )
             return [good, bad]
 
-        rollout_fn = tr.make_text_rollout_fn(service)
+        rollout_fn = tr.make_remote_rollout_fn(service)
         rollout = await rollout_fn(
             {"messages": [{"role": "user", "content": "q"}]},
             _FakeCtx(completions_per_prompt=2),
@@ -347,7 +347,7 @@ class TestMakeTextRolloutFn:
                 for _ in range(n)
             ]
 
-        rollout_fn = tr.make_text_rollout_fn(service)
+        rollout_fn = tr.make_remote_rollout_fn(service)
         out = await rollout_fn(
             {"messages": [{"role": "user", "content": "q"}]},
             _FakeCtx(completions_per_prompt=2),
@@ -359,7 +359,7 @@ class TestMakeTextRolloutFn:
         async def service(messages, n, sample_kwargs, row):
             return []  # should not be called
 
-        rollout_fn = tr.make_text_rollout_fn(service)
+        rollout_fn = tr.make_remote_rollout_fn(service)
         out = await rollout_fn({"messages": []}, _FakeCtx())
         assert out is None
 
@@ -369,7 +369,7 @@ class TestMakeTextRolloutFn:
             async def rollout(self, messages, *, n, sample_kwargs, row):
                 return [_toy_payload(1.0) for _ in range(n)]
 
-        rollout_fn = tr.make_text_rollout_fn(S())
+        rollout_fn = tr.make_remote_rollout_fn(S())
         rollout = await rollout_fn(
             {"messages": [{"role": "user", "content": "q"}]},
             _FakeCtx(completions_per_prompt=2),
@@ -389,7 +389,7 @@ class TestMakeTextRolloutFn:
             called["messages"] = list(messages)
             return [_toy_payload(0.5) for _ in range(n)]
 
-        rollout_fn = tr.make_text_rollout_fn(service, allow_empty_messages=True)
+        rollout_fn = tr.make_remote_rollout_fn(service, allow_empty_messages=True)
         rollout = await rollout_fn({"messages": []}, _FakeCtx(completions_per_prompt=1))
         assert rollout is not None
         # The service WAS invoked with an empty messages list.
@@ -405,7 +405,7 @@ class TestMakeTextRolloutFn:
             called["invoked"] = True
             return []
 
-        rollout_fn = tr.make_text_rollout_fn(service)
+        rollout_fn = tr.make_remote_rollout_fn(service)
         rollout = await rollout_fn({"messages": []}, _FakeCtx())
         assert rollout is None
         assert called["invoked"] is False
@@ -424,7 +424,7 @@ class TestMakeTextRolloutFn:
                 payloads.append(p)
             return payloads
 
-        rollout_fn = tr.make_text_rollout_fn(service)
+        rollout_fn = tr.make_remote_rollout_fn(service)
         rollout = await rollout_fn(
             {"messages": [{"role": "user", "content": "q"}], "id": "row-extra"},
             _FakeCtx(completions_per_prompt=2),
@@ -465,7 +465,7 @@ class TestMakeTextRolloutFn:
             ctx._v[0] = 7
             return [_toy_payload(1.0) for _ in range(n)]
 
-        rollout_fn = tr.make_text_rollout_fn(service)
+        rollout_fn = tr.make_remote_rollout_fn(service)
         rollout = await rollout_fn(
             {"messages": [{"role": "user", "content": "q"}]}, ctx,
         )
@@ -504,7 +504,7 @@ class TestPlainCallableInvocation:
             captured["row_id"] = dataset_row.get("id")
             return [_toy_payload(1.0) for _ in range(count)]
 
-        rollout_fn = tr.make_text_rollout_fn(rollout)
+        rollout_fn = tr.make_remote_rollout_fn(rollout)
         out = await rollout_fn(
             {"messages": [{"role": "user", "content": "q"}], "id": "r0"},
             _FakeCtx(completions_per_prompt=2),
@@ -524,7 +524,7 @@ class TestPlainCallableInvocation:
             async def rollout(self, messages, *, n, sample_kwargs, row):
                 return [_toy_payload(0.5) for _ in range(n)]
 
-        rollout_fn = tr.make_text_rollout_fn(S())
+        rollout_fn = tr.make_remote_rollout_fn(S())
         out = await rollout_fn(
             {"messages": [{"role": "user", "content": "q"}]},
             _FakeCtx(completions_per_prompt=1),

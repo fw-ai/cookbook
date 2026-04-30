@@ -37,9 +37,11 @@ def test_dump_trajectory_writes_one_record_per_completion(tmp_path):
             rewards=[1.0, 0.0],
             completion_lens=[3, 4],
             truncated=[False, True],
-            prompt=[{"role": "user", "content": "Solve"}],
-            completions=["<answer>1</answer>", "<answer>2</answer>"],
-            row_meta={"ground_truth": "<answer>1</answer>"},
+            row_meta={
+                "ground_truth": "<answer>1</answer>",
+                "prompt": [{"role": "user", "content": "Solve"}],
+                "completions": ["<answer>1</answer>", "<answer>2</answer>"],
+            },
         )
     ]
 
@@ -85,5 +87,5 @@ def test_main_requires_deployment_tokenizer_model(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="deployment.tokenizer_model"):
-        module.main(cfg)
+        module.main(cfg, rollout_fn=module.default_rollout_fn)
 

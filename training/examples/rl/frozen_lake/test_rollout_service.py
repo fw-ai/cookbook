@@ -23,7 +23,7 @@ from typing import Any, List
 import pytest
 
 from training.examples.rl.frozen_lake.frozen_lake_rollout import FrozenLakeRolloutService
-from training.utils.rl.text_rollout import pack_payload_to_sample
+from training.utils.rl.rollout import pack_payload_to_sample
 
 
 class _StubProcessor:
@@ -151,7 +151,7 @@ def test_helper_with_allow_empty_messages_invokes_service():
     service.rollout(...) IS reached (Codex's Round-3 reproduction
     showed it was not, before this fix).
     """
-    from training.utils.rl.text_rollout import make_text_rollout_fn
+    from training.utils.rl.rollout import make_remote_rollout_fn
 
     traces = [
         {
@@ -167,7 +167,7 @@ def test_helper_with_allow_empty_messages_invokes_service():
         rollout_config=None,
         tokenizer_id="stub-tok",
     )
-    rollout_fn = make_text_rollout_fn(service, allow_empty_messages=True)
+    rollout_fn = make_remote_rollout_fn(service, allow_empty_messages=True)
 
     rollout = asyncio.run(rollout_fn(
         {"messages": [], "env_context": {"seed": 1}},
