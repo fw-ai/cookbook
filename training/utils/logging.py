@@ -33,12 +33,23 @@ def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
 
         wandb.init(entity=wb.entity, project=wb.project, name=wb.run_name, config=config)
         if wandb.run is not None:
+            # Align metric families with the step axis they naturally track.
+            # Recipes that sample and train in one loop emit both train/step
+            # and rollout/step in the same metrics dict, so WandB can plot
+            # train and rollout metrics on their own axes.
             wandb.define_metric("train/step")
+            wandb.define_metric("rollout/step")
+            wandb.define_metric("eval/step")
             wandb.define_metric("train/*", step_metric="train/step")
-            wandb.define_metric("perf/*", step_metric="train/step")
-            wandb.define_metric("rollout/*", step_metric="train/step")
+            wandb.define_metric("rollout/*", step_metric="rollout/step")
+            wandb.define_metric("perf/*", step_metric="rollout/step")
+            wandb.define_metric("multi_turn/*", step_metric="rollout/step")
+            wandb.define_metric("passrate/*", step_metric="rollout/step")
+            wandb.define_metric("eval/*", step_metric="eval/step")
             wandb.define_metric("batch/*", step_metric="train/step")
             wandb.define_metric("infra/*", step_metric="train/step")
+            wandb.define_metric("version/*", step_metric="train/step")
+            wandb.define_metric("async/*", step_metric="train/step")
             logger.info("WandB: %s", wandb.run.url)
         return True
     except ImportError:
@@ -73,12 +84,23 @@ def compute_pass_at_k(
 
 
 def wandb_log(metrics: dict[str, Any], step: int) -> None:
-    """Log metrics to WandB if available."""
+    """Log metrics to WandB if available.
+
+    Pass the metrics dict directly so WandB resolves each metric family
+    from the step metrics declared in ``setup_wandb``.  ``step`` is written
+    under both train and rollout axes when the caller did not include them,
+    which preserves single-loop recipe behavior without forcing all metrics
+    onto the same x-axis.
+    """
     try:
         import wandb
 
-        if wandb.run is not None:
-            wandb.log(metrics, step=step, commit=True)
+        if wandb.run is None:
+            return
+        out = dict(metrics)
+        out.setdefault("train/step", step)
+        out.setdefault("rollout/step", step)
+        wandb.log(out, commit=True)
     except ImportError:
         pass
 

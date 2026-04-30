@@ -110,6 +110,22 @@ class TestFwdBwdMinibatchAveraging:
         assert metrics["train/ppo_clip_frac"] == (0.0 + 0.1 + 0.3) / 3
         assert metrics["train/ppo_ratio_mean"] == (1.0 + 1.05 + 1.2) / 3
 
+    def test_uses_weights_when_minibatches_have_different_sizes(self):
+        fwd_bwds = [
+            self._fake_fwd_bwd(ppo_clip_frac=0.0, ppo_ratio_mean=1.00),
+            self._fake_fwd_bwd(ppo_clip_frac=0.5, ppo_ratio_mean=1.20),
+        ]
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=fwd_bwds,
+            optim_result=None,
+            n_accum=len(fwd_bwds),
+            timing_metrics={},
+            fwd_bwd_weights=[3, 1],
+        )
+        assert metrics["train/ppo_clip_frac"] == 0.125
+        assert metrics["train/ppo_ratio_mean"] == 1.05
+
     def test_k1_matches_single_fwd_bwd_behavior(self):
         """K=1: report the single minibatch's metrics directly (pre-PR behavior)."""
         only = self._fake_fwd_bwd(ppo_clip_frac=0.42, ppo_ratio_mean=1.07)
