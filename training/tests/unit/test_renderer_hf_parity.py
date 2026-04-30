@@ -102,12 +102,6 @@ _CASES: list[_Case] = [
         renderer="minimax_m2",
         tokenizer_model="MiniMaxAI/MiniMax-M2",
         messages=_SHORT_MSGS,
-        xfail_reason=(
-            "renderer emits an extra '\\n' after <think> in the generation "
-            "suffix — surfaced by the empirical sweep against "
-            "accounts/fireworks/models/minimax-m2p7. "
-            "See workspace_batching/renderer-verifier-findings.md."
-        ),
     ),
 ]
 

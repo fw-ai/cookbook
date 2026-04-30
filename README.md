@@ -28,21 +28,10 @@ training/           Training SDK recipes, utilities, and examples
   recipes/          Fork-and-customize training loop scripts
   utils/            Shared config, data loading, losses, metrics
   examples/         Worked examples (RL, SFT, DPO, ORPO)
-  verifier/         Renderer correctness validator + live React viewer
+  renderer/         Cookbook-local renderers + verifier (see training/renderer/README.md)
   tests/            Unit and end-to-end tests
 skills/             Agent skills and reference docs
 ```
-
-## Renderer skills
-
-- [`skills/renderer/SKILL.md`](skills/renderer/SKILL.md) — implementing
-  a new renderer (chat template, stop semantics, weight-mask
-  invariants, registration, dev loop).
-- [`skills/verifier/SKILL.md`](skills/verifier/SKILL.md) — validating
-  a renderer against the live Fireworks gateway and the upstream
-  HuggingFace chat template. The verifier ships a probe CLI, a batch
-  triage runner, and a single-file React viewer that highlights every
-  audit-table row by provenance, weight, and inspection-rule match.
 
 ## Contributing
 
