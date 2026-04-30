@@ -29,7 +29,7 @@ from typing import Any
 
 from tinker_cookbook.renderers.base import TrainOnWhat
 
-from training.verifier.probe import (
+from training.verifier.utils.probe import (
     DispatchError,
     RENDERER_SERVERLESS_DEFAULTS,
     resolve_dispatch,
@@ -38,7 +38,7 @@ from training.verifier.probe import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROMPTS_PATH = Path(__file__).parent / "default_prompts.json"
+DEFAULT_PROMPTS_PATH = Path(__file__).parent / "rules" / "default_prompts.json"
 
 # Conventional shell exit code for SIGINT-style user abort (128 + SIGINT).
 # Using a named constant keeps the magic number out of the body.

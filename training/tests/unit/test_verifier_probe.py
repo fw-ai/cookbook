@@ -1,4 +1,4 @@
-"""Smoke test for ``training.verifier.probe.run_probe``.
+"""Smoke test for ``training.verifier.utils.probe.run_probe``.
 
 Network-free: a stub Fireworks-like client returns canned token IDs and
 text. The test exercises the whole probe pipeline (render, fake API call,
@@ -27,8 +27,8 @@ from tinker_cookbook.renderers.base import (
     TrainOnWhat,
 )
 
-from training.verifier.inspect import render_inspect
-from training.verifier.probe import (
+from training.verifier.utils.inspect import render_inspect
+from training.verifier.utils.probe import (
     _PROV_NATIVE,
     _PROV_PROMPT,
     _PROV_TRAILING,

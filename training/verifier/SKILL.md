@@ -18,7 +18,7 @@ export FIREWORKS_API_KEY=fw_...
 
 ## 1. Confirm the inspection rules
 
-Open `training/verifier/inspect_rules.yaml` and read the rule list.
+Open `training/verifier/rules/inspect_rules.yaml` and read the rule list.
 This file is the single source of truth for "worth a closer look"
 combinations. The GUI tints matching tokens amber and the CLI scans
 list each match's reason.
@@ -68,7 +68,7 @@ catalogue). The runner probes them all and the GUI opens with every
 case stacked side-by-side. Good for regression sweeps after a renderer
 change.
 
-Default catalogue lives at `training/verifier/default_prompts.json`.
+Default catalogue lives at `training/verifier/rules/default_prompts.json`.
 Schema (each entry is one probe input):
 
 ```json
@@ -142,23 +142,15 @@ The page opens with all cases loaded:
 - Per-case **× delete** removes a case; **Clear all** wipes the page.
   The form values stay, so you can tweak and run again.
 
-## 4b. (Optional) Sweep serverless availability across renderers
+## 4b. Reachability check
 
-If you don't yet know which renderer to target, run a cross-renderer
-sweep. Each entry in `RENDERER_SERVERLESS_DEFAULTS` is pinged with a
-1-token completion and the result is reported as `✓` / `✗`.
-
-```bash
-PYTHONPATH=cookbook \
-  python -m training.verifier.check_renderers          # all renderers
-PYTHONPATH=cookbook \
-  python -m training.verifier.check_renderers --renderer glm5
-```
-
-Exit code is 0 only when every probed renderer is reachable. Useful as
-a first step when something looks off — the triage / interactive flow
-both call the same `_check_serverless` helper for the single renderer
-you're working with.
+The triage runner pings the dispatch target with a 1-token completion
+during pre-flight (the `ping` line in section 1 of the summary) — that
+is the canonical reachability check. If you only want to verify a
+renderer without running a full corpus, run triage with a one-case
+prompt JSON (or any 1-prompt subset of the default catalogue) and
+abort at the confirmation prompt. The pre-flight will already have
+reported `reachable ✓` or the gateway error.
 
 ## 5. Commands cheat-sheet
 
@@ -167,7 +159,7 @@ you're working with.
 export FIREWORKS_API_KEY=fw_...
 
 # 1. (Optional) Edit the rules.
-$EDITOR cookbook/training/verifier/inspect_rules.yaml
+$EDITOR cookbook/training/verifier/rules/inspect_rules.yaml
 
 # 2. Pick one of:
 
@@ -188,22 +180,34 @@ $EDITOR cookbook/training/verifier/inspect_rules.yaml
 
 ## 6. Files
 
-| Path | Purpose |
-|---|---|
-| `training/verifier/inspect_rules.yaml` | Source of truth for inspection rules. |
-| `training/verifier/inspect_rules.py` | Python equality-condition evaluator. |
-| `training/verifier/default_prompts.json` | Default batch corpus. |
-| `training/verifier/triage.py` | Batch runner with pre-flight + reachability ping. |
-| `training/verifier/check_renderers.py` | Cross-renderer serverless reachability sweep. |
-| `training/verifier/probe.py` | Core probe: render → API → align → audit table. |
-| `training/verifier/serve.py` | Dev server (`/probe`, `/inspect_rules`, `/session`). |
-| `training/verifier/viewer/index.html` | React GUI (single-file, CDN-hosted). |
-| `triage.sh`, `run.sh`, `run-bug-*.sh` | Workspace-root convenience runners (never committed). |
+Layout (everything under `cookbook/training/verifier/`):
+
+```
+training/verifier/
+├── SKILL.md                       this document
+├── cli.py                         python -m training.verifier render | inspect
+├── serve.py                       python -m training.verifier.serve
+├── triage.py                      python -m training.verifier.triage
+├── spinup_deployment.py           personal-deployment helper
+├── utils/                         the verifier engine (importable)
+│   ├── probe.py                   core probe: render → API → align → audit table
+│   ├── inspect_rules.py           YAML rule loader + equality evaluator
+│   ├── inspect.py                 pretty-printer for probe artifacts
+│   └── hf_parity.py               CPU HF chat-template parity comparison
+├── rules/                         data
+│   ├── inspect_rules.yaml         single source of truth for "worth inspecting"
+│   └── default_prompts.json       default batch corpus
+└── viewer/
+    └── index.html                 React GUI (single-file, CDN-hosted)
+```
+
+Workspace-root runners (never committed): `run.sh`, `triage.sh`,
+`run-bug-*.sh`.
 
 ## 7. Add a new case
 
 ```bash
-$EDITOR cookbook/training/verifier/default_prompts.json
+$EDITOR cookbook/training/verifier/rules/default_prompts.json
 # add: { "name": "...", "messages": [ ... ], "tools": [ ... ] }
 ./triage.sh   # picks up the change on the next run
 ```
@@ -211,7 +215,7 @@ $EDITOR cookbook/training/verifier/default_prompts.json
 ## 8. Add a new rule
 
 ```bash
-$EDITOR cookbook/training/verifier/inspect_rules.yaml
+$EDITOR cookbook/training/verifier/rules/inspect_rules.yaml
 # add a rule with id / when / reason — see existing entries for shape
 # refresh the GUI page (server re-reads the YAML per request)
 ```

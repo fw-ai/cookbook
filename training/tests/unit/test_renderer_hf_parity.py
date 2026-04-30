@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from training.verifier.hf_parity import (
+from training.verifier.utils.hf_parity import (
     HFParityResult,
     compare_renderer_to_hf,
     format_divergence,

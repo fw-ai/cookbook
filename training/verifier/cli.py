@@ -16,8 +16,8 @@ from typing import Any
 
 from tinker_cookbook.renderers.base import TrainOnWhat
 
-from training.verifier.inspect import run_inspect
-from training.verifier.probe import (
+from training.verifier.utils.inspect import run_inspect
+from training.verifier.utils.probe import (
     DispatchError,
     resolve_dispatch,
     run_probe,

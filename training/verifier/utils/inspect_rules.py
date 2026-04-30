@@ -15,7 +15,7 @@ from typing import Any, Iterable
 
 import yaml
 
-DEFAULT_RULES_PATH = Path(__file__).parent / "inspect_rules.yaml"
+DEFAULT_RULES_PATH = Path(__file__).parent.parent / "rules" / "inspect_rules.yaml"
 
 
 def load_rules(path: str | Path | None = None) -> list[dict[str, Any]]:

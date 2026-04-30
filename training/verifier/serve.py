@@ -51,13 +51,13 @@ from urllib.parse import urlparse
 
 from tinker_cookbook.renderers.base import TrainOnWhat
 
-from training.verifier.probe import (
+from training.verifier.utils.probe import (
     DispatchError,
     RENDERER_SERVERLESS_DEFAULTS,
     resolve_dispatch,
     run_probe,
 )
-from training.verifier.inspect_rules import load_rules as _load_inspect_rules
+from training.verifier.utils.inspect_rules import load_rules as _load_inspect_rules
 
 logger = logging.getLogger(__name__)
 
