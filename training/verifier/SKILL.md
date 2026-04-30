@@ -61,14 +61,13 @@ specific chat render to?").
 # open http://localhost:8765/
 ```
 
-### 2b. Batch (many prompts from a JSON catalogue)
+### 2b. Batch (many prompts from a JSON file)
 
-Provide a JSON file with multiple prompts (or use the default
-catalogue). The runner probes them all and the GUI opens with every
-case stacked side-by-side. Good for regression sweeps after a renderer
-change.
+Author your own JSON file with multiple prompts. The runner probes
+them all and the GUI opens with every case stacked side-by-side. Good
+for regression sweeps after a renderer change. **There is no default
+corpus** — pick the cases that exercise the surface you care about.
 
-Default catalogue lives at `training/verifier/rules/default_prompts.json`.
 Schema (each entry is one probe input):
 
 ```json
@@ -90,9 +89,10 @@ Optional per-case keys: `tools`, `renderer_config`.
 To run:
 
 ```bash
-./triage.sh                                          # glm5, default catalogue
-./triage.sh qwen3 Qwen/Qwen3-8B
-./triage.sh glm5 zai-org/GLM-5.1 ./my-prompts.json   # custom corpus
+./triage.sh <renderer> <tokenizer-model> <prompts.json>
+# e.g.:
+./triage.sh glm5  zai-org/GLM-5.1  ./my-prompts.json
+./triage.sh qwen3 Qwen/Qwen3-8B    ./my-prompts.json
 ```
 
 ## 3. Pre-flight (the runners do this for you)
@@ -147,10 +147,9 @@ The page opens with all cases loaded:
 The triage runner pings the dispatch target with a 1-token completion
 during pre-flight (the `ping` line in section 1 of the summary) — that
 is the canonical reachability check. If you only want to verify a
-renderer without running a full corpus, run triage with a one-case
-prompt JSON (or any 1-prompt subset of the default catalogue) and
-abort at the confirmation prompt. The pre-flight will already have
-reported `reachable ✓` or the gateway error.
+renderer without running a full corpus, point triage at a one-case
+prompt JSON and abort at the confirmation prompt. The pre-flight will
+already have reported `reachable ✓` or the gateway error.
 
 ## 5. Commands cheat-sheet
 
@@ -167,9 +166,8 @@ $EDITOR cookbook/training/verifier/rules/inspect_rules.yaml
 ./run.sh
 
 #    Batch — pre-flight + corpus + GUI auto-seeded.
-./triage.sh                                                  # default catalog
-./triage.sh qwen3 Qwen/Qwen3-8B                              # change renderer
-./triage.sh glm5 zai-org/GLM-5.1 ./my-prompts.json           # custom corpus
+./triage.sh glm5  zai-org/GLM-5.1  ./my-prompts.json
+./triage.sh qwen3 Qwen/Qwen3-8B    ./my-prompts.json
 
 #    One-shot smoke checks (advisory only):
 ./run-bug-check.sh           # MiniMax newline bug repro
@@ -195,8 +193,7 @@ training/verifier/
 │   ├── inspect.py                 pretty-printer for probe artifacts
 │   └── hf_parity.py               CPU HF chat-template parity comparison
 ├── rules/                         data
-│   ├── inspect_rules.yaml         single source of truth for "worth inspecting"
-│   └── default_prompts.json       default batch corpus
+│   └── inspect_rules.yaml         single source of truth for "worth inspecting"
 └── viewer/
     └── index.html                 React GUI (single-file, CDN-hosted)
 ```
@@ -204,12 +201,18 @@ training/verifier/
 Workspace-root runners (never committed): `run.sh`, `triage.sh`,
 `run-bug-*.sh`.
 
-## 7. Add a new case
+## 7. Author a prompt corpus
 
 ```bash
-$EDITOR cookbook/training/verifier/rules/default_prompts.json
-# add: { "name": "...", "messages": [ ... ], "tools": [ ... ] }
-./triage.sh   # picks up the change on the next run
+cat > my-prompts.json <<'EOF'
+{
+  "cases": [
+    { "name": "...", "messages": [ {"role": "user", "content": "..."} ] }
+  ]
+}
+EOF
+
+./triage.sh glm5 zai-org/GLM-5.1 ./my-prompts.json
 ```
 
 ## 8. Add a new rule

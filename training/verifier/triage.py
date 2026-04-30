@@ -2,7 +2,7 @@
 
 Workflow:
 
-  1. Load a prompt corpus (default: ``default_prompts.json``).
+  1. Load a prompt corpus from the JSON file passed via ``--prompts``.
   2. Validate the API key, then ping the dispatch target so we can show
      reachability in the pre-flight summary.
   3. Print a pre-flight — renderer + dispatch + reachability + every
@@ -37,8 +37,6 @@ from training.verifier.utils.probe import (
 )
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_PROMPTS_PATH = Path(__file__).parent / "rules" / "default_prompts.json"
 
 # Conventional shell exit code for SIGINT-style user abort (128 + SIGINT).
 # Using a named constant keeps the magic number out of the body.
@@ -229,16 +227,16 @@ def run_triage(
     *,
     renderer_name: str,
     tokenizer_model: str,
+    prompts_path: str | Path,
+    output_path: str,
     model: str | None = None,
     deployment_id: str | None = None,
-    prompts_path: str | Path | None = None,
-    output_path: str,
     api_key: str | None = None,
     base_url: str | None = None,
     max_tokens: int = 1024,
     skip_confirm: bool = False,
 ) -> int:
-    src_path = Path(prompts_path) if prompts_path else DEFAULT_PROMPTS_PATH
+    src_path = Path(prompts_path)
     prompts = _load_prompts(src_path)
 
     model_resolved, dispatch_mode = resolve_dispatch(
@@ -338,8 +336,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--deployment-id", default=None)
     p.add_argument(
         "--prompts",
-        default=None,
-        help=f"JSON prompt catalog. Default: {DEFAULT_PROMPTS_PATH}",
+        required=True,
+        help='Path to a JSON prompt corpus: {"cases": [{"name": ..., "messages": [...]}, ...]}.',
     )
     p.add_argument(
         "--output",
