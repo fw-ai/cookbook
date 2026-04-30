@@ -11,9 +11,16 @@ inspection happens in a local React GUI seeded by a Python probe.
   paths in the workspace runners).
 - A dev `FIREWORKS_API_KEY` exported in your shell. None of the runners
   carry the key any more — they error out clean if it's not set.
+- `HF_TOKEN` exported if the tokenizer you intend to load is gated /
+  private (most public ones don't need it). On first load the
+  tokenizer is fetched from HF and cached under
+  `~/.cache/huggingface/`; later loads are offline-friendly. The
+  verifier wraps tokenizer-load failures with a friendly error
+  pointing at this prereq.
 
 ```bash
 export FIREWORKS_API_KEY=fw_...
+export HF_TOKEN=hf_...        # only if the tokenizer repo is gated
 ```
 
 ## 1. Pick a renderer / tokenizer / Fireworks model

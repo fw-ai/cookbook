@@ -89,12 +89,11 @@ def _build_fireworks_client(api_key: str, base_url: str | None):
 
 
 def _build_tokenizer(tokenizer_model: str):
-    """Imported lazily — pulls a HuggingFace tokenizer (can be 100s of MB)."""
-    import transformers  # type: ignore[import-not-found]  # noqa: PLC0415
+    """Imported lazily — pulls a HuggingFace tokenizer (can be 100s of MB).
+    Forwards HF_TOKEN for gated repos; cached under ~/.cache/huggingface/."""
+    from training.verifier.utils.tokenizer import load_tokenizer  # noqa: PLC0415
 
-    return transformers.AutoTokenizer.from_pretrained(
-        tokenizer_model, trust_remote_code=True
-    )
+    return load_tokenizer(tokenizer_model)
 
 
 def _check_serverless(client, model: str) -> tuple[bool, str]:

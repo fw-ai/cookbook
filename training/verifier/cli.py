@@ -157,9 +157,9 @@ def _build_client(api_key: str | None, base_url: str | None):
 
 
 def _build_tokenizer(model: str):
-    import transformers  # type: ignore[import-not-found]
+    from training.verifier.utils.tokenizer import load_tokenizer
 
-    return transformers.AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+    return load_tokenizer(model)
 
 
 def _resolve_dispatch(args, *, renderer_name: str) -> tuple[str, str]:

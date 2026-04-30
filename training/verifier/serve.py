@@ -73,9 +73,9 @@ _SESSION_FILE: Path | None = None
 
 @functools.lru_cache(maxsize=8)
 def _tokenizer(name: str):
-    from tinker_cookbook.tokenizer_utils import get_tokenizer  # noqa: PLC0415
+    from training.verifier.utils.tokenizer import load_tokenizer  # noqa: PLC0415
 
-    return get_tokenizer(name)
+    return load_tokenizer(name)
 
 
 def _client(api_key: str | None, base_url: str | None):
