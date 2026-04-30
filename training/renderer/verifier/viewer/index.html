@@ -566,6 +566,72 @@
     }
     .btn-icon-danger:hover { color: var(--fail-fg); border-color: var(--fail-fg); }
 
+    /* Prompt comparison panel — shown only when renderer != gateway. */
+    details.prompt-compare {
+      margin: 0 0 12px;
+      border: 1px solid var(--warn-bd);
+      background: var(--warn-bg);
+    }
+    details.prompt-compare > summary {
+      color: var(--warn-fg);
+      border-bottom: 1px dashed var(--warn-bd);
+    }
+    details.prompt-compare > summary:hover { color: var(--warn-fg); }
+    details.prompt-compare .diverge-badge {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      padding: 2px 8px;
+      background: var(--fail-bg);
+      color: var(--fail-fg);
+      border: 1px solid var(--fail-bd);
+      border-radius: 3px;
+    }
+    .pc-meta {
+      padding: 12px 14px 4px !important;
+      font-size: 13px;
+      color: var(--fg-soft);
+      line-height: 1.55;
+    }
+    .pc-cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 8px 14px 14px !important;
+    }
+    @media (max-width: 900px) { .pc-cols { grid-template-columns: 1fr; } }
+    .pc-col-head {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 500;
+      color: var(--fg-dim);
+      margin-bottom: 6px;
+    }
+    .pc-stream {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 10px 12px;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--fg);
+    }
+    .pc-tok {
+      display: inline;
+      padding: 1px 2px;
+      margin: 0 1px 0 0;
+      border-radius: 2px;
+    }
+    .pc-tok.diverged {
+      background: var(--fail-bg);
+      color: var(--fail-fg);
+      font-weight: 500;
+    }
+
     /* -- 6. token stream ------------------------------------------- */
 
     .legend {
@@ -1366,6 +1432,72 @@
       );
     }
 
+    function PromptComparison({ artifact }) {
+      const sanity = artifact.sanity || {};
+      const rendererPrompt = (artifact.render || {}).prompt || {};
+      const apiPrompt = (artifact.api || {}).prompt || {};
+      const rendererTokens = rendererPrompt.tokens || [];
+      const apiTokens = apiPrompt.tokens || [];
+      const rendererDecoded = rendererPrompt.decoded || [];
+      const apiDecoded = apiPrompt.decoded || [];
+
+      // Only render this panel when there's something to show.
+      if (sanity.renderer_prompt_matches_api_prompt) return null;
+      if (apiTokens.length === 0) return null;  // older artifacts pre-feature
+
+      // First position where the two sequences disagree.
+      let divergeAt = 0;
+      const minLen = Math.min(rendererTokens.length, apiTokens.length);
+      while (divergeAt < minLen && rendererTokens[divergeAt] === apiTokens[divergeAt]) {
+        divergeAt += 1;
+      }
+
+      const renderRow = (tokens, decoded) => {
+        return tokens.map((tok, i) => {
+          const isDiverged = i >= divergeAt;
+          const dec = decoded[i] ?? "";
+          const display = dec === "\n" ? "↵\n" : dec;
+          return (
+            <span
+              key={i}
+              className={`pc-tok ${isDiverged ? "diverged" : ""}`}
+              title={`idx=${i}  tok_id=${tok}  decoded=${JSON.stringify(dec)}`}
+            >
+              {display}
+            </span>
+          );
+        });
+      };
+
+      return (
+        <details open className="prompt-compare">
+          <summary>
+            Prompt comparison &nbsp;·&nbsp;
+            <span className="diverge-badge">DIVERGES at position {divergeAt}</span>
+          </summary>
+          <div className="pc-meta">
+            Renderer prompt is <strong>{rendererTokens.length}</strong> tokens; gateway
+            returned <strong>{apiTokens.length}</strong>
+            {" ("}
+            {(rendererTokens.length - apiTokens.length) >= 0 ? "+" : ""}
+            {rendererTokens.length - apiTokens.length} vs gateway). The renderer should
+            match what the gateway feeds the model at inference; if it doesn't, every
+            SFT example carries a training-vs-inference distribution shift.
+          </div>
+          <div className="pc-cols">
+            <div className="pc-col">
+              <div className="pc-col-head">renderer ({rendererTokens.length} tokens)</div>
+              <div className="pc-stream">{renderRow(rendererTokens, rendererDecoded)}</div>
+            </div>
+            <div className="pc-col">
+              <div className="pc-col-head">gateway ({apiTokens.length} tokens)</div>
+              <div className="pc-stream">{renderRow(apiTokens, apiDecoded)}</div>
+            </div>
+          </div>
+        </details>
+      );
+    }
+
     function CaseView({ index, caseObj, onDelete, filters, rules }) {
       const { artifact } = caseObj;
       const { renderer, snippet } = caseLabel(artifact);
@@ -1381,6 +1513,7 @@
               × delete
             </button>
           </header>
+          <PromptComparison artifact={artifact} />
           <TokenStream artifact={artifact} filters={filters} rules={rules} />
           <Sanity sanity={artifact.sanity} />
           <RendererArgs artifact={artifact} />

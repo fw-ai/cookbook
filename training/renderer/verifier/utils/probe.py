@@ -605,6 +605,12 @@ def run_probe(
                 "decoded": [_decode_one(tokenizer, t) for t in full_tokens],
             },
         },
+        "api": {
+            "prompt": {
+                "tokens": api_prompt_tokens,
+                "decoded": [_decode_one(tokenizer, t) for t in api_prompt_tokens],
+            },
+        },
         "completion": {
             "text": completion_text,
             "tokens": completion_tokens,
