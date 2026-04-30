@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Optional
+from typing import Optional
 
 import transformers
 
@@ -106,32 +106,26 @@ def _dump_rollout(rollout: Rollout, version: int) -> None:
 
 
 def _build_rollout_fn(cfg: Config):
-    cached: dict[str, Any] = {}
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        cfg.deployment.tokenizer_model, trust_remote_code=True,
+    )
+    renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
+    reward_fn = _make_reward_fn()
 
     async def rollout_fn(row: dict, ctx: RolloutContext) -> Rollout | None:
-        if "renderer" not in cached:
-            tokenizer = transformers.AutoTokenizer.from_pretrained(
-                cfg.deployment.tokenizer_model, trust_remote_code=True,
-            )
-            renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
-            sampler = DeploymentSampler(
-                inference_url=ctx.inference_base_url,
-                model=ctx.model,
-                api_key=ctx.api_key,
-                tokenizer=tokenizer,
-            )
-            cached["renderer"] = renderer
-            cached["sampler"] = sampler
-            cached["sample_with_prompt_tokens"] = sampler.sample_with_prompt_tokens
-            cached["reward_fn"] = _make_reward_fn()
-
+        sampler = DeploymentSampler(
+            inference_url=ctx.inference_base_url,
+            model=ctx.model,
+            api_key=ctx.api_key,
+            tokenizer=tokenizer,
+        )
         rollout = await single_turn_renderer_rollout(
             row,
             ctx,
-            renderer=cached["renderer"],
-            sample_with_prompt_tokens=cached["sample_with_prompt_tokens"],
+            renderer=renderer,
+            sample_with_prompt_tokens=sampler.sample_with_prompt_tokens,
             message_builder=_message_builder,
-            reward_fn=cached["reward_fn"],
+            reward_fn=reward_fn,
         )
         if rollout is None:
             return None

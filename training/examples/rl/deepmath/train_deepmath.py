@@ -300,36 +300,24 @@ async def _deepmath_reward_fn(row, parsed_message, parse_success):
 
 
 def _build_deepmath_rollout_fn(args: TrainArgs):
-    """Build a renderer-backed ``rollout_fn`` for the synchronous recipe.
-
-    Replaces the legacy pattern of mutating ``rl_loop.reward_fn`` (which
-    only worked because the recipe's default sampling path baked the reward
-    function in by name).  The new pluggable ``rollout_fn`` keyword on
-    ``rl_loop.main(...)`` makes the wiring explicit.
-    """
-    cached: dict[str, object] = {}
+    """Build a renderer-backed ``rollout_fn`` for the synchronous recipe."""
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        args.tokenizer_model, trust_remote_code=True,
+    )
+    renderer = build_renderer(tokenizer, args.tokenizer_model)
 
     async def rollout_fn(row: dict, ctx: RolloutContext) -> Rollout | None:
-        if "renderer" not in cached:
-            tokenizer = transformers.AutoTokenizer.from_pretrained(
-                args.tokenizer_model, trust_remote_code=True,
-            )
-            renderer = build_renderer(tokenizer, args.tokenizer_model)
-            sampler = DeploymentSampler(
-                inference_url=ctx.inference_base_url,
-                model=ctx.model,
-                api_key=ctx.api_key,
-                tokenizer=tokenizer,
-            )
-            cached["renderer"] = renderer
-            cached["sampler"] = sampler
-            cached["sample_with_prompt_tokens"] = sampler.sample_with_prompt_tokens
-
+        sampler = DeploymentSampler(
+            inference_url=ctx.inference_base_url,
+            model=ctx.model,
+            api_key=ctx.api_key,
+            tokenizer=tokenizer,
+        )
         return await single_turn_renderer_rollout(
             row,
             ctx,
-            renderer=cached["renderer"],
-            sample_with_prompt_tokens=cached["sample_with_prompt_tokens"],
+            renderer=renderer,
+            sample_with_prompt_tokens=sampler.sample_with_prompt_tokens,
             message_builder=_deepmath_message_builder,
             reward_fn=_deepmath_reward_fn,
         )

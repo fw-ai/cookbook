@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Optional
+from typing import Optional
 
 import transformers
 
@@ -79,35 +79,23 @@ def should_accept(pg: PromptGroup) -> bool:
 
 
 def _build_rollout_fn(cfg: Config):
-    """Construct the rollout closure once: build renderer + sampler + helper.
-
-    The renderer and the pre-tokenized sampler are explicit constructor
-    arguments to ``single_turn_renderer_rollout``; we deliberately do not
-    extend ``RolloutContext`` to carry them.
-    """
-    cached: dict[str, Any] = {}
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        cfg.deployment.tokenizer_model, trust_remote_code=True,
+    )
+    renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
 
     async def rollout_fn(row: dict, ctx: RolloutContext) -> Rollout | None:
-        if "renderer" not in cached:
-            tokenizer = transformers.AutoTokenizer.from_pretrained(
-                cfg.deployment.tokenizer_model, trust_remote_code=True,
-            )
-            renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
-            sampler = DeploymentSampler(
-                inference_url=ctx.inference_base_url,
-                model=ctx.model,
-                api_key=ctx.api_key,
-                tokenizer=tokenizer,
-            )
-            cached["renderer"] = renderer
-            cached["sampler"] = sampler
-            cached["sample_with_prompt_tokens"] = sampler.sample_with_prompt_tokens
-
+        sampler = DeploymentSampler(
+            inference_url=ctx.inference_base_url,
+            model=ctx.model,
+            api_key=ctx.api_key,
+            tokenizer=tokenizer,
+        )
         return await single_turn_renderer_rollout(
             row,
             ctx,
-            renderer=cached["renderer"],
-            sample_with_prompt_tokens=cached["sample_with_prompt_tokens"],
+            renderer=renderer,
+            sample_with_prompt_tokens=sampler.sample_with_prompt_tokens,
             message_builder=_message_builder,
             reward_fn=_reward_fn_factory,
         )
