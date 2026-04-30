@@ -980,10 +980,11 @@
           <summary>Live probe — form input</summary>
           <form onSubmit={onSubmit} className="form-grid">
             <label>renderer
-              <input value={renderer} onChange={onRendererChange} list="renderers" />
-              <datalist id="renderers">
-                {Object.keys(RENDERER_TOKENIZER_DEFAULTS).map((r) => <option key={r} value={r} />)}
-              </datalist>
+              <select value={renderer} onChange={onRendererChange}>
+                {Object.keys(RENDERER_TOKENIZER_DEFAULTS).map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
             </label>
             <label>tokenizer_model
               <input value={tokenizerModel} onChange={(e) => setTokenizerModel(e.target.value)} />
