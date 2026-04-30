@@ -1,6 +1,6 @@
 """Local dev HTTP server: live UI for the renderer probe.
 
-Serves ``training/verifier/viewer/index.html`` plus a single POST
+Serves ``training/renderer/verifier/viewer/index.html`` plus a single POST
 ``/probe`` endpoint that takes the form data the React page submits and
 runs ``run_probe`` on the server. Purely stdlib — no Flask / FastAPI
 dependency. Single-threaded by design; one probe at a time is fine for
@@ -8,7 +8,7 @@ interactive use and keeps state simple.
 
 Usage::
 
-    FIREWORKS_API_KEY=... python -m training.verifier.serve --port 8765
+    FIREWORKS_API_KEY=... python -m training.renderer.verifier.serve --port 8765
     open http://localhost:8765/
 
 The viewer hits ``/probe`` with a JSON body shaped like::
@@ -51,12 +51,12 @@ from urllib.parse import urlparse
 
 from tinker_cookbook.renderers.base import TrainOnWhat
 
-from training.verifier.utils.probe import (
+from training.renderer.verifier.utils.probe import (
     DispatchError,
     resolve_dispatch,
     run_probe,
 )
-from training.verifier.utils.inspect_rules import load_rules as _load_inspect_rules
+from training.renderer.verifier.utils.inspect_rules import load_rules as _load_inspect_rules
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ RENDERER_TOKENIZER_DEFAULTS: dict[str, str | None] = {
 
 @functools.lru_cache(maxsize=8)
 def _tokenizer(name: str):
-    from training.verifier.utils.tokenizer import load_tokenizer  # noqa: PLC0415
+    from training.renderer.verifier.utils.tokenizer import load_tokenizer  # noqa: PLC0415
 
     return load_tokenizer(name)
 
@@ -351,7 +351,7 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m training.verifier.serve",
+        prog="python -m training.renderer.verifier.serve",
         description="Local dev server for the live renderer probe UI.",
     )
     p.add_argument("--host", default="127.0.0.1", help="Bind host. Default 127.0.0.1.")

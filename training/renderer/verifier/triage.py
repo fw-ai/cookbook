@@ -29,7 +29,7 @@ from typing import Any
 
 from tinker_cookbook.renderers.base import TrainOnWhat
 
-from training.verifier.utils.probe import (
+from training.renderer.verifier.utils.probe import (
     DispatchError,
     resolve_dispatch,
     run_probe,
@@ -91,7 +91,7 @@ def _build_fireworks_client(api_key: str, base_url: str | None):
 def _build_tokenizer(tokenizer_model: str):
     """Imported lazily — pulls a HuggingFace tokenizer (can be 100s of MB).
     Forwards HF_TOKEN for gated repos; cached under ~/.cache/huggingface/."""
-    from training.verifier.utils.tokenizer import load_tokenizer  # noqa: PLC0415
+    from training.renderer.verifier.utils.tokenizer import load_tokenizer  # noqa: PLC0415
 
     return load_tokenizer(tokenizer_model)
 
@@ -323,7 +323,7 @@ def run_triage(
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m training.verifier.triage",
+        prog="python -m training.renderer.verifier.triage",
         description=(
             "Batch-probe a corpus of prompts and write a session JSON "
             "consumed by `serve.py --session-file` (which auto-seeds the GUI)."

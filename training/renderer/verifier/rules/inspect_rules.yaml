@@ -3,7 +3,7 @@
 # combinations are intentional (e.g. GLM5's stop_overlap with weight=1).
 # The verifier highlights matching tokens with a warning background in
 # the GUI and lists them in CLI inspection scans. Both surfaces load
-# this same file via training.verifier.inspect_rules.
+# this same file via training.renderer.verifier.inspect_rules.
 #
 # Each rule:
 #   id      — short stable identifier (kebab-case)

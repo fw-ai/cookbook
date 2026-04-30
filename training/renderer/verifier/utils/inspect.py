@@ -8,9 +8,9 @@ input JSON can drive a richer renderer later.
 
 Usage::
 
-    python -m training.verifier inspect path/to/probe.json
-    python -m training.verifier inspect path/to/probe.json --all
-    python -m training.verifier inspect path/to/probe.json --filter trailing_hard_append
+    python -m training.renderer.verifier inspect path/to/probe.json
+    python -m training.renderer.verifier inspect path/to/probe.json --all
+    python -m training.renderer.verifier inspect path/to/probe.json --filter trailing_hard_append
 """
 
 from __future__ import annotations

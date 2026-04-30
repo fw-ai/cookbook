@@ -1,4 +1,4 @@
-"""``python -m training.verifier <subcommand>`` argument parsing.
+"""``python -m training.renderer.verifier <subcommand>`` argument parsing.
 
 The probe is the only subcommand in this PR. Spec-driven L1 / L2
 subcommands (``check``, ``corpus``) ship in follow-up PRs and will reuse
@@ -16,8 +16,8 @@ from typing import Any
 
 from tinker_cookbook.renderers.base import TrainOnWhat
 
-from training.verifier.utils.inspect import run_inspect
-from training.verifier.utils.probe import (
+from training.renderer.verifier.utils.inspect import run_inspect
+from training.renderer.verifier.utils.probe import (
     DispatchError,
     resolve_dispatch,
     run_probe,
@@ -27,7 +27,7 @@ from training.verifier.utils.probe import (
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m training.verifier",
+        prog="python -m training.renderer.verifier",
         description="Renderer verifier — Phase 0 (empirical probe).",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -60,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--deployment-id",
         default=None,
         help="Personal deployment id (the same id you passed to "
-        "training.verifier.spinup_deployment up). When set, the probe resolves "
+        "training.renderer.verifier.spinup_deployment up). When set, the probe resolves "
         "the full identifier accounts/<account>/deployments/<id> via "
         "DeploymentManager. Mutually exclusive with --model.",
     )
@@ -157,7 +157,7 @@ def _build_client(api_key: str | None, base_url: str | None):
 
 
 def _build_tokenizer(model: str):
-    from training.verifier.utils.tokenizer import load_tokenizer
+    from training.renderer.verifier.utils.tokenizer import load_tokenizer
 
     return load_tokenizer(model)
 
@@ -177,11 +177,11 @@ def _resolve_dispatch(args, *, renderer_name: str) -> tuple[str, str]:
         if "no registered" in msg:
             msg += (
                 "\n\nSpin up a personal deployment first:\n"
-                "    python -m training.verifier.spinup_deployment up \\\n"
+                "    python -m training.renderer.verifier.spinup_deployment up \\\n"
                 "        --base-model <accounts/.../models/...> \\\n"
                 "        --shape <accounts/.../deploymentShapes/...> \\\n"
                 "        --deployment-id my-probe\n"
-                "    python -m training.verifier render --deployment-id my-probe ..."
+                "    python -m training.renderer.verifier render --deployment-id my-probe ..."
             )
         raise SystemExit(msg) from exc
 
@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     train_on_what = TrainOnWhat(args.train_on_what)
 
     model, dispatch_mode = _resolve_dispatch(args, renderer_name=args.renderer)
-    logging.getLogger("training.verifier").info(
+    logging.getLogger("training.renderer.verifier").info(
         "dispatch=%s model=%s", dispatch_mode, model
     )
 

@@ -11,23 +11,23 @@ on it directly.
 Usage::
 
     # Create (or reuse) a deployment for GLM5 using a versioned deployment shape
-    python -m training.verifier.spinup_deployment up \\
+    python -m training.renderer.verifier.spinup_deployment up \\
         --base-model accounts/fireworks/models/glm-5p1 \\
         --shape accounts/fireworks/deploymentShapes/glm-5p1-b300/versions/jqami1br \\
         --deployment-id my-glm5-probe
 
     # Or pass a training shape — its pinned deployment_shape_version is used:
-    python -m training.verifier.spinup_deployment up \\
+    python -m training.renderer.verifier.spinup_deployment up \\
         --base-model accounts/fireworks/models/glm-5p1 \\
         --shape accounts/fireworks/trainingShapes/ts-glm-5p1-policy
 
     # → prints, on the last line:
     #   accounts/<account>/deployments/my-glm5-probe
     #
-    # Pass that string as --model to ``python -m training.verifier render``.
+    # Pass that string as --model to ``python -m training.renderer.verifier render``.
 
     # Tear it down when probing is done
-    python -m training.verifier.spinup_deployment down --deployment-id my-glm5-probe
+    python -m training.renderer.verifier.spinup_deployment down --deployment-id my-glm5-probe
 
 Shape resolution rules (matching the rest of the cookbook):
 
@@ -230,7 +230,7 @@ def _cmd_down(args: argparse.Namespace) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m training.verifier.spinup_deployment",
+        prog="python -m training.renderer.verifier.spinup_deployment",
         description="Minimal spinup/teardown helper for verifier probe deployments.",
     )
     parser.add_argument(

@@ -882,7 +882,7 @@
     /* Renderer + Fireworks model lists are loaded live at runtime
        (see /renderers and /models in serve.py). The viewer carries
        no static mappings — pairing renderer ↔ tokenizer ↔ model is
-       documented in training/verifier/SKILL.md. */
+       documented in training/renderer/verifier/SKILL.md. */
 
     /* ----------------------------------------------------------------- */
     /* Helpers                                                            */
@@ -1650,7 +1650,7 @@
             <div className="empty-state" style={{ marginTop: 32 }}>
               Type a few messages above and click <strong>Run probe</strong>,
               or drop a JSON artifact produced by{" "}
-              <code>python -m training.verifier render</code>. Run more probes
+              <code>python -m training.renderer.verifier render</code>. Run more probes
               and they'll stack here for side-by-side comparison.
             </div>
           ) : (
@@ -1688,7 +1688,7 @@
             the detail panel below the stream. Edit the YAML and reload to
             change which combinations are flagged. Live form posts to{" "}
             <code>/probe</code> on this server
-            (<code>python -m training.verifier.serve</code>).
+            (<code>python -m training.renderer.verifier.serve</code>).
           </div>
         </>
       );

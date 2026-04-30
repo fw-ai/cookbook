@@ -2,7 +2,7 @@
 
 The Phase 0 deliverable here is the empirical probe (``probe.py``):
 
-    python -m training.verifier render \\
+    python -m training.renderer.verifier render \\
         --renderer glm5 \\
         --tokenizer-model zai-org/GLM-5.1 \\
         --model accounts/fireworks/models/glm-5p1 \\
@@ -16,6 +16,6 @@ against the empirical provenance (hard_append vs native_generated). The
 artifact is the input human reviewers use to author the YAML spec that
 later L1/L2 layers will assert against.
 
-See ``training/verifier/README.md`` for the JSON schema and authoring
+See ``training/renderer/verifier/README.md`` for the JSON schema and authoring
 workflow.
 """

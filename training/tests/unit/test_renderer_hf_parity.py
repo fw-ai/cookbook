@@ -13,7 +13,7 @@ sweep surfaced (``renderer-verifier-findings.md``); they exist so that
 a fix flips the test green automatically and a new regression in the
 opposite direction goes red.
 
-The live empirical probe (``training/verifier/probe.py``) is the
+The live empirical probe (``training/renderer/verifier/probe.py``) is the
 complementary layer: it needs a live deployment, runs nightly, and
 emits JSON artifacts. CPU and live answer different questions:
 
@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from training.verifier.utils.hf_parity import (
+from training.renderer.verifier.utils.hf_parity import (
     HFParityResult,
     compare_renderer_to_hf,
     format_divergence,

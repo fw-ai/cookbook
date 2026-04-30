@@ -57,7 +57,7 @@ as a starting point, not a contract.
 
 ## 2. Confirm the inspection rules
 
-Open `training/verifier/rules/inspect_rules.yaml` and read the rule list.
+Open `training/renderer/verifier/rules/inspect_rules.yaml` and read the rule list.
 This file is the single source of truth for "worth a closer look"
 combinations. The GUI tints matching tokens amber and the CLI scans
 list each match's reason.
@@ -199,7 +199,7 @@ already have reported `reachable ✓` or the gateway error.
 export FIREWORKS_API_KEY=fw_...
 
 # 1. (Optional) Edit the rules.
-$EDITOR cookbook/training/verifier/rules/inspect_rules.yaml
+$EDITOR cookbook/training/renderer/verifier/rules/inspect_rules.yaml
 
 # 2. Pick one of:
 
@@ -219,14 +219,14 @@ $EDITOR cookbook/training/verifier/rules/inspect_rules.yaml
 
 ## 7. Files
 
-Layout (everything under `cookbook/training/verifier/`):
+Layout (everything under `cookbook/training/renderer/verifier/`):
 
 ```
-training/verifier/
+training/renderer/verifier/
 ├── SKILL.md                       this document
-├── cli.py                         python -m training.verifier render | inspect
-├── serve.py                       python -m training.verifier.serve
-├── triage.py                      python -m training.verifier.triage
+├── cli.py                         python -m training.renderer.verifier render | inspect
+├── serve.py                       python -m training.renderer.verifier.serve
+├── triage.py                      python -m training.renderer.verifier.triage
 ├── spinup_deployment.py           personal-deployment helper
 ├── utils/                         the verifier engine (importable)
 │   ├── probe.py                   core probe: render → API → align → audit table
@@ -259,7 +259,7 @@ EOF
 ## 9. Add a new rule
 
 ```bash
-$EDITOR cookbook/training/verifier/rules/inspect_rules.yaml
+$EDITOR cookbook/training/renderer/verifier/rules/inspect_rules.yaml
 # add a rule with id / when / reason — see existing entries for shape
 # refresh the GUI page (server re-reads the YAML per request)
 ```
