@@ -955,7 +955,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
 
             train_fns = TrainStepFns(train_step=train_step)
 
-            def should_accept(pg: PromptGroup) -> bool:
+            def dynamic_filter(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
 
             all_prompts = dataset * cfg.epochs
@@ -982,7 +982,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     ),
                     train_fns=train_fns,
                     prompt_groups_per_step=prompt_groups_per_step,
-                    dynamic_filter_fn=should_accept,
+                    dynamic_filter_fn=dynamic_filter,
                     global_step=step_offset,
                     metrics_callback=_filtered_step_callback,
                 )

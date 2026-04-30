@@ -73,7 +73,7 @@ async def _reward_fn_factory(row, parsed_message, parse_success):
     return 1.0 if pred == truth else 0.0
 
 
-def should_accept(pg: PromptGroup) -> bool:
+def dynamic_filter(pg: PromptGroup) -> bool:
     """Reject zero-variance groups (GRPO assigns zero advantage on ties)."""
     return len(set(pg.rewards)) > 1
 
@@ -118,4 +118,4 @@ if __name__ == "__main__":
         max_head_offpolicy_versions=0,
         deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
     )
-    main(cfg, rollout_fn=_build_rollout_fn(cfg), dynamic_filter_fn=should_accept)
+    main(cfg, rollout_fn=_build_rollout_fn(cfg), dynamic_filter_fn=dynamic_filter)

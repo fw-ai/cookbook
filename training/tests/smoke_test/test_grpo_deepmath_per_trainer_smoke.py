@@ -60,7 +60,7 @@ def test_grpo_deepmath_per_trainer(
     # process leaks the patched globals into later tests.
     monkeypatch.setattr(rl_mod, "reward_fn", deepmath_reward)
     # Disable zero-variance filter so a 40-row run still produces steps.
-    monkeypatch.setattr(rl_mod, "should_accept", lambda _: True)
+    monkeypatch.setattr(rl_mod, "dynamic_filter", lambda _: True)
 
     config = Config(
         log_path=tempfile.mkdtemp(prefix="grpo_deepmath_smoke_"),

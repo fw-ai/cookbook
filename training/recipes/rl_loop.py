@@ -257,7 +257,7 @@ def reward_fn(completion: str, row: dict) -> float:
 # ---------------------------------------------------------------------------
 
 
-def should_accept(pg: PromptGroup) -> bool:
+def dynamic_filter(pg: PromptGroup) -> bool:
     """Reject groups where all rewards are identical (zero-variance).
 
     Passed to ``run_rl_loop`` as a pluggable filter.  Replace with your
@@ -888,7 +888,7 @@ def main(
                 sample_fns=(sample_one_prompt(row) for row in remaining_rows),
                 train_fns=train_fns,
                 prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=should_accept,
+                dynamic_filter_fn=dynamic_filter,
                 global_step=step_offset,
                 metrics_callback=_loop_metrics_callback,
                 weight_sync_fn=_weight_sync if cfg.weight_sync.weight_sync_interval > 0 else None,

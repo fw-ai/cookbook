@@ -19,12 +19,12 @@ def test_reward_fn_requires_matching_numeric_answer():
     assert module.reward_fn("missing", {"ground_truth": "<answer>7</answer>"}) == 0.0
 
 
-def test_should_accept_requires_reward_variance():
+def test_dynamic_filter_requires_reward_variance():
     same_rewards = PromptGroup(data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 0.0])
     varied_rewards = PromptGroup(data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 1.0])
 
-    assert module.should_accept(same_rewards) is False
-    assert module.should_accept(varied_rewards) is True
+    assert module.dynamic_filter(same_rewards) is False
+    assert module.dynamic_filter(varied_rewards) is True
 
 
 def test_dump_trajectory_writes_one_record_per_completion(tmp_path):
