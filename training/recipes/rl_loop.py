@@ -307,7 +307,7 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
 class RolloutContext:
     """What a custom ``rollout_fn`` receives in the synchronous recipe.
 
-    Mirrors :class:`training.recipes.async_rl_loop.RolloutContext` so the
+    Mirrors :class:`training.advanced.async_rl.RolloutContext` so the
     same ``rollout_fn(row, ctx) -> Rollout | None`` callable can drive
     either recipe.  All fields are public (read-only by convention);
     rollout functions read these to render prompts, sample, and emit

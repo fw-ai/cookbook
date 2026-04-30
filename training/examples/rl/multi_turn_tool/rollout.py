@@ -13,7 +13,7 @@ Pipeline (the shared step handles everything up to and including
     shared step (extension-property guard, render, sample, assemble, parse)
     -> if tool_calls: env.execute(tool_call) -> tool_message  (loop)
        else:           env.step(parsed)              -> (next, reward, done)
-    (done) -> assembler.to_payload(total_reward) -> pack_payload_to_sample
+    (done) -> pack_assembled_to_sample(assembler, total_reward=...)
 
 Tool execution lives in the user-supplied env; the renderer's responsibility
 ends at parsing tool calls from assistant tokens.  ``loss_mask=1`` is

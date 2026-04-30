@@ -16,7 +16,7 @@ Pipeline per turn (sourced from the shared private step
         -> TrajectoryAssembler.add_call(InferenceCall(...))
         -> renderer.parse_response(out_tokens)
     -> env.step(parsed_message)
-    (done) -> assembler.to_payload(total_reward=...) -> pack_payload_to_sample
+    (done) -> pack_assembled_to_sample(assembler, total_reward=...)
 
 The shared step (``renderer_turn_step``) is single-sourced for the
 ``multi_turn_minimal_renderer`` and ``multi_turn_tool`` example rollouts so
