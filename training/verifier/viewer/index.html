@@ -263,10 +263,7 @@
       );
     }
 
-    function Meta({ artifact, fileName }) {
-      const r = artifact.renderer || {};
-      const d = artifact.deployment || {};
-      const sampling = d.sampling || {};
+    function Header({ artifact, fileName }) {
       return (
         <details open>
           <summary>{fileName ? `Probe: ${fileName}` : "Probe metadata"}</summary>
@@ -274,12 +271,83 @@
             <dt>schema_version</dt><dd>{artifact.schema_version}</dd>
             <dt>kind</dt><dd>{artifact.kind}</dd>
             <dt>produced_at</dt><dd>{artifact.produced_at}</dd>
-            <dt>renderer</dt><dd>{r.name} <span style={{ color: "var(--fg-muted)" }}>config={JSON.stringify(r.config || {})}</span></dd>
-            <dt>train_on_what</dt><dd>{r.train_on_what}</dd>
             <dt>tokenizer</dt><dd>{(artifact.tokenizer || {}).model || "—"}</dd>
-            <dt>deployment.model</dt><dd>{d.model}</dd>
-            <dt>sampling</dt><dd>temperature={sampling.temperature ?? "—"}, max_tokens={sampling.max_tokens ?? "—"}</dd>
           </dl>
+        </details>
+      );
+    }
+
+    function RendererArgs({ artifact }) {
+      const r = artifact.renderer || {};
+      const cfg = r.config || {};
+      const cfgKeys = Object.keys(cfg);
+      return (
+        <details open>
+          <summary>Renderer args</summary>
+          <table className="table-compact">
+            <tbody>
+              <tr><td>name</td><td><code>{r.name}</code></td></tr>
+              <tr><td>train_on_what</td><td><code>{r.train_on_what}</code></td></tr>
+              {cfgKeys.length === 0 ? (
+                <tr><td>config</td><td style={{ color: "var(--fg-muted)" }}>(default — no overrides)</td></tr>
+              ) : cfgKeys.map((k) => (
+                <tr key={k}>
+                  <td>config.{k}</td>
+                  <td><code>{JSON.stringify(cfg[k])}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      );
+    }
+
+    function DeploymentArgs({ artifact }) {
+      const d = artifact.deployment || {};
+      const sampling = d.sampling || {};
+      const flags = d.api_flags || {};
+      const extra = d.extra_completion_kwargs || {};
+      const tools = ((artifact.input || {}).tools) || [];
+
+      const modePill = ({
+        serverless: "ok",
+        deployment: "ok",
+        explicit: "warn",
+      }[d.mode]) || "";
+
+      return (
+        <details open>
+          <summary>Deployment / API args</summary>
+          <table className="table-compact">
+            <tbody>
+              <tr>
+                <td>mode</td>
+                <td>{d.mode ? <span className={`pill ${modePill}`}>{d.mode}</span> : "—"}</td>
+              </tr>
+              <tr><td>model</td><td><code>{d.model}</code></td></tr>
+              {d.deployment_id ? (
+                <tr><td>deployment_id</td><td><code>{d.deployment_id}</code></td></tr>
+              ) : null}
+              <tr><td>sampling.temperature</td><td><code>{String(sampling.temperature ?? "—")}</code></td></tr>
+              <tr><td>sampling.max_tokens</td><td><code>{String(sampling.max_tokens ?? "—")}</code></td></tr>
+              {Object.entries(flags).map(([k, v]) => (
+                <tr key={`f-${k}`}>
+                  <td>api_flags.{k}</td>
+                  <td><span className={`pill ${v === true ? "ok" : ""}`}>{String(v)}</span></td>
+                </tr>
+              ))}
+              {Object.keys(extra).length > 0 && Object.entries(extra).map(([k, v]) => (
+                <tr key={`x-${k}`}>
+                  <td>extra.{k}</td>
+                  <td><code>{JSON.stringify(v)}</code></td>
+                </tr>
+              ))}
+              <tr>
+                <td>tools</td>
+                <td>{tools.length === 0 ? <span style={{ color: "var(--fg-muted)" }}>none</span> : <code>{tools.length} declared</code>}</td>
+              </tr>
+            </tbody>
+          </table>
         </details>
       );
     }
@@ -502,7 +570,9 @@
             </div>
           ) : (
             <>
-              <Meta artifact={artifact} fileName={fileName} />
+              <Header artifact={artifact} fileName={fileName} />
+              <RendererArgs artifact={artifact} />
+              <DeploymentArgs artifact={artifact} />
               <Sanity sanity={artifact.sanity} />
               <Counts rows={artifact.audit_table || []} />
               <h2>Token stream</h2>

@@ -50,6 +50,29 @@ _PROV_TRAILING = "trailing_hard_append"
 _PROV_DIVERGED = "tokenization_diverged"
 
 
+# Per-renderer Fireworks serverless defaults. Used when neither --model nor
+# --deployment-id is passed. Empty entry → renderer has no known
+# serverless endpoint and the caller must spin up a personal deployment
+# (training/verifier/spinup_deployment.py) and pass --deployment-id.
+RENDERER_SERVERLESS_DEFAULTS: dict[str, str] = {
+    "glm5":                          "accounts/fireworks/models/glm-5p1",
+    "qwen3":                         "accounts/fireworks/models/qwen3-8b",
+    "qwen3_disable_thinking":        "accounts/fireworks/models/qwen3-8b",
+    "kimi_k25":                      "accounts/fireworks/models/kimi-k2p5",
+    "kimi_k25_disable_thinking":     "accounts/fireworks/models/kimi-k2p5",
+    "deepseekv3":                    "accounts/fireworks/models/deepseek-v3p1",
+    "deepseekv3_thinking":           "accounts/fireworks/models/deepseek-v3p1",
+    "deepseekv3_disable_thinking":   "accounts/fireworks/models/deepseek-v3p1",
+    "minimax_m2":                    "accounts/fireworks/models/minimax-m2p7",
+    "llama3":                        "accounts/fireworks/models/llama-v3p3-70b-instruct",
+}
+
+
+def serverless_default_for(renderer_name: str) -> str | None:
+    """Look up the per-renderer serverless model identifier."""
+    return RENDERER_SERVERLESS_DEFAULTS.get(renderer_name)
+
+
 class FireworksLikeClient(Protocol):
     """Minimal interface the probe expects from a Fireworks-style client.
 
@@ -275,6 +298,17 @@ def _decode_one(tokenizer: Any, tok_id: int) -> str:
         return ""
 
 
+# Fixed API flags the probe always sets so the gateway returns the data the
+# alignment step needs. Surfaced verbatim in the artifact (and the React
+# viewer) so the human reviewing the probe can see exactly what the
+# deployment was asked to do.
+PROBE_API_FLAGS: dict[str, Any] = {
+    "echo": True,
+    "raw_output": True,
+    "return_token_ids": True,
+}
+
+
 def _call_completion(
     client: FireworksLikeClient,
     *,
@@ -297,9 +331,7 @@ def _call_completion(
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "echo": True,
-        "raw_output": True,
-        "return_token_ids": True,
+        **PROBE_API_FLAGS,
     }
     if tools:
         kwargs["tools"] = tools
@@ -359,8 +391,14 @@ def run_probe(
     deployment_id: str | None = None,
     tokenizer_model: str | None = None,
     renderer_config: dict[str, Any] | None = None,
+    dispatch_mode: str = "explicit",
 ) -> dict[str, Any]:
     """Run the empirical probe end to end and return the artifact dict.
+
+    ``dispatch_mode`` ∈ {"serverless", "deployment", "explicit"} records
+    how the caller chose ``model`` (default-serverless lookup, --deployment-id
+    auto-resolution, or a literal --model override). Recorded in the
+    artifact so reviewers can see at a glance what the probe was talking to.
 
     The artifact is JSON-serialisable. The caller writes it to disk.
     """
@@ -509,12 +547,15 @@ def run_probe(
             "special_tokens": _special_token_map(tokenizer),
         },
         "deployment": {
+            "mode": dispatch_mode,
             "model": model,
             "deployment_id": deployment_id,
             "sampling": {
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             },
+            "api_flags": dict(PROBE_API_FLAGS),
+            "extra_completion_kwargs": dict(extra_completion_kwargs or {}),
         },
         "input": {
             "messages": messages,

@@ -42,39 +42,69 @@ when fixed; a fix landing makes the test green automatically.
 
 ### Live layer — empirical probe
 
-```bash
-# 1) Spin up a deployment. The default --shape is the GLM5-on-B300
-#    versioned deployment shape; --shape also accepts a training-shape
-#    resource and resolves its pinned deployment_shape_version.
-MODEL=$(python -m training.verifier.spinup_deployment up \
-    --base-model accounts/fireworks/models/glm-5p1 \
-    --shape accounts/fireworks/deploymentShapes/glm-5p1-b300/versions/jqami1br \
-    --deployment-id my-glm5-probe | tail -1)
+The render subcommand picks where to send the request based on the
+flags you pass:
 
-# 2) Probe one input
+| Flags | Where the probe sends the request |
+|---|---|
+| `--deployment-id <id>` | `accounts/<your-account>/deployments/<id>`, with `<your-account>` resolved automatically from your API key |
+| `--model <full-id>` | exactly that string (use this for one-off overrides) |
+| neither | the renderer's registered Fireworks **serverless default** (e.g. `glm5` → `accounts/fireworks/models/glm-5p1`) |
+| neither, *and* the renderer has no serverless default | error — pointed at `spinup_deployment` |
+
+`--model` and `--deployment-id` are mutually exclusive. The artifact
+records the dispatch mode (`serverless` / `deployment` / `explicit`)
+plus the resolved model identifier, so reviewers see the exact target
+in the JSON and the React viewer.
+
+#### Default flow — serverless, no deployment needed
+
+```bash
 python -m training.verifier render \
     --renderer glm5 \
     --tokenizer-model zai-org/GLM-5.1 \
-    --model "$MODEL" \
     --input training/verifier/examples/glm5_single_turn.json \
     --output probes/glm5-single-turn.json
+# → dispatch=serverless, model=accounts/fireworks/models/glm-5p1
+```
+
+Renderers with a registered serverless default in this PR: `glm5`,
+`qwen3` / `qwen3_disable_thinking`, `kimi_k25` /
+`kimi_k25_disable_thinking`, `deepseekv3` and its thinking variants,
+`minimax_m2`, `llama3`. Others (e.g. `gemma4`, `nemotron3`) require a
+personal deployment.
+
+#### Personal deployment — pair with `spinup_deployment`
+
+```bash
+# 1) Provision (or reuse) a deployment. --shape accepts either a deployment
+#    shape (versioned or unversioned) or a training shape; unversioned
+#    resolves to the latest validated, training-shape resolves to its
+#    pinned deployment_shape_version.
+python -m training.verifier.spinup_deployment up \
+    --base-model accounts/fireworks/models/glm-5p1 \
+    --shape accounts/fireworks/deploymentShapes/glm-5p1-b300/versions/jqami1br \
+    --deployment-id my-glm5-probe
+
+# 2) Probe — just pass --deployment-id; the verifier resolves the rest.
+python -m training.verifier render \
+    --renderer glm5 \
+    --tokenizer-model zai-org/GLM-5.1 \
+    --deployment-id my-glm5-probe \
+    --input training/verifier/examples/glm5_single_turn.json \
+    --output probes/glm5-personal.json
 
 # 3) Tear down when done
 python -m training.verifier.spinup_deployment down --deployment-id my-glm5-probe
 ```
 
-`--model` is the Fireworks model identifier passed to
-`chat.completions.create`. For a personal deployment the spinup helper
-prints `accounts/<acct>/deployments/<id>` on its last stdout line; pipe
-that through to the probe via `--model`.
+`spinup_deployment` and `render` are deliberately separate scripts.
+The first owns the deployment lifecycle (create / wait-ready /
+delete); the second owns probing. They share nothing beyond the
+deployment id you choose to pass.
 
-`spinup_deployment` accepts either a deployment shape or a training
-shape; for either, versioned input is used as-is and unversioned input
-resolves to the latest validated version. Training-shape input is
-resolved to the pinned `deployment_shape_version` from its profile.
-
-`--api-key` falls back to `FIREWORKS_API_KEY`. `--base-url` falls back
-to `FIREWORKS_BASE_URL`.
+`--api-key` on either script falls back to `FIREWORKS_API_KEY`.
+`--base-url` falls back to `FIREWORKS_BASE_URL`.
 
 ### Input file shape
 

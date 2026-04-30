@@ -17,7 +17,11 @@ from typing import Any
 from tinker_cookbook.renderers.base import TrainOnWhat
 
 from training.verifier.inspect import run_inspect
-from training.verifier.probe import run_probe, write_artifact
+from training.verifier.probe import (
+    run_probe,
+    serverless_default_for,
+    write_artifact,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -44,17 +48,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--model",
-        required=True,
+        default=None,
         help="Fireworks model identifier passed to chat.completions.create. "
-        "Use a deployed model id for personal deployments "
-        "(accounts/<acct>/deployedModels/<id>) or a serverless model name "
-        "(accounts/fireworks/models/glm-5p1).",
+        "Optional: if omitted and --deployment-id isn't set either, the probe "
+        "falls back to a per-renderer serverless default. Pass this when you "
+        "need to override the default (e.g. probe a different serverless model "
+        "or a hand-constructed deployment string).",
     )
     p.add_argument(
         "--deployment-id",
         default=None,
-        help="Optional deployment id, recorded in the artifact for traceability "
-        "even when --model already encodes it.",
+        help="Personal deployment id (the same id you passed to "
+        "training.verifier.spinup_deployment up). When set, the probe resolves "
+        "the full identifier accounts/<account>/deployments/<id> via "
+        "DeploymentManager. Mutually exclusive with --model.",
     )
     p.add_argument(
         "--input",
@@ -154,6 +161,56 @@ def _build_tokenizer(model: str):
     return transformers.AutoTokenizer.from_pretrained(model, trust_remote_code=True)
 
 
+def _resolve_dispatch(args, *, renderer_name: str) -> tuple[str, str]:
+    """Pick (model_identifier, dispatch_mode) per the design contract.
+
+    Precedence:
+      1. --model (and --deployment-id) mutually exclusive — error if both.
+      2. --deployment-id → resolve via DeploymentManager.account_id +
+         deployment_id → ``accounts/<account>/deployments/<id>``.
+      3. --model → use as-is, mode = "explicit".
+      4. neither → renderer's serverless default (mode = "serverless").
+      5. neither and no default registered → error out, asking the caller
+         to spin up a deployment via training.verifier.spinup_deployment.
+    """
+    if args.model and args.deployment_id:
+        raise SystemExit("--model and --deployment-id are mutually exclusive")
+
+    if args.deployment_id:
+        api_key = args.api_key or os.environ.get("FIREWORKS_API_KEY")
+        if not api_key:
+            raise SystemExit(
+                "FIREWORKS_API_KEY not set; cannot resolve --deployment-id."
+            )
+        base_url = args.base_url or os.environ.get(
+            "FIREWORKS_BASE_URL", "https://api.fireworks.ai"
+        )
+        from fireworks.training.sdk.deployment import DeploymentManager  # noqa: PLC0415
+
+        mgr = DeploymentManager(api_key=api_key, base_url=base_url)
+        return (
+            f"accounts/{mgr.account_id}/deployments/{args.deployment_id}",
+            "deployment",
+        )
+
+    if args.model:
+        return args.model, "explicit"
+
+    default = serverless_default_for(renderer_name)
+    if default is None:
+        raise SystemExit(
+            f"renderer {renderer_name!r} has no registered Fireworks serverless "
+            "default. Either pass --model explicitly or spin up a personal "
+            "deployment first:\n\n"
+            "    python -m training.verifier.spinup_deployment up \\\n"
+            "        --base-model <accounts/.../models/...> \\\n"
+            "        --shape <accounts/.../deploymentShapes/...> \\\n"
+            "        --deployment-id my-probe\n\n"
+            "    python -m training.verifier render --deployment-id my-probe ..."
+        )
+    return default, "serverless"
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = _build_parser().parse_args(argv)
@@ -170,6 +227,11 @@ def main(argv: list[str] | None = None) -> int:
 
     train_on_what = TrainOnWhat(args.train_on_what)
 
+    model, dispatch_mode = _resolve_dispatch(args, renderer_name=args.renderer)
+    logging.getLogger("training.verifier").info(
+        "dispatch=%s model=%s", dispatch_mode, model
+    )
+
     tokenizer = _build_tokenizer(args.tokenizer_model)
     client = _build_client(args.api_key, args.base_url)
 
@@ -177,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         renderer_name=args.renderer,
         tokenizer=tokenizer,
         client=client,
-        model=args.model,
+        model=model,
         messages=messages,
         tools=tools,
         max_tokens=args.max_tokens,
@@ -186,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         deployment_id=args.deployment_id,
         tokenizer_model=args.tokenizer_model,
         renderer_config=payload.get("renderer_config") or {},
+        dispatch_mode=dispatch_mode,
     )
 
     write_artifact(artifact, args.output)
