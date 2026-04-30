@@ -50,29 +50,6 @@ _PROV_TRAILING = "trailing_hard_append"
 _PROV_DIVERGED = "tokenization_diverged"
 
 
-# Per-renderer Fireworks serverless defaults. Used when neither --model nor
-# --deployment-id is passed. Empty entry → renderer has no known
-# serverless endpoint and the caller must spin up a personal deployment
-# (training/verifier/spinup_deployment.py) and pass --deployment-id.
-RENDERER_SERVERLESS_DEFAULTS: dict[str, str] = {
-    "glm5":                          "accounts/fireworks/models/glm-5p1",
-    "qwen3":                         "accounts/fireworks/models/qwen3-8b",
-    "qwen3_disable_thinking":        "accounts/fireworks/models/qwen3-8b",
-    "kimi_k25":                      "accounts/fireworks/models/kimi-k2p5",
-    "kimi_k25_disable_thinking":     "accounts/fireworks/models/kimi-k2p5",
-    "deepseekv3":                    "accounts/fireworks/models/deepseek-v3p1",
-    "deepseekv3_thinking":           "accounts/fireworks/models/deepseek-v3p1",
-    "deepseekv3_disable_thinking":   "accounts/fireworks/models/deepseek-v3p1",
-    "minimax_m2":                    "accounts/fireworks/models/minimax-m2p7",
-    "llama3":                        "accounts/fireworks/models/llama-v3p3-70b-instruct",
-}
-
-
-def serverless_default_for(renderer_name: str) -> str | None:
-    """Look up the per-renderer serverless model identifier."""
-    return RENDERER_SERVERLESS_DEFAULTS.get(renderer_name)
-
-
 class DispatchError(ValueError):
     """Raised when the probe can't pick a (model, mode) pair from inputs."""
 
@@ -87,16 +64,19 @@ def resolve_dispatch(
 ) -> tuple[str, str]:
     """Pick (model_identifier, dispatch_mode) per the verifier's contract.
 
-    Precedence (same rules in CLI and server entry points):
+    Precedence:
 
       1. ``model`` and ``deployment_id`` are mutually exclusive — raise.
       2. ``deployment_id`` → resolve via ``DeploymentManager.account_id`` →
          ``accounts/<account>/deployments/<id>``, mode = "deployment".
       3. ``model`` → use as-is, mode = "explicit".
-      4. neither → ``RENDERER_SERVERLESS_DEFAULTS[renderer_name]``, mode =
-         "serverless".
-      5. neither + no default → ``DispatchError`` pointing at
-         ``training.verifier.spinup_deployment``.
+      4. neither → ``DispatchError``. The verifier carries no static
+         renderer→model mapping; the caller picks the live Fireworks model
+         (the dev server's ``/models`` endpoint and ``SKILL.md`` document
+         what's available).
+
+    ``renderer_name`` is accepted for API symmetry with the CLI and the
+    /probe handler but doesn't influence resolution any more.
     """
     if model and deployment_id:
         raise DispatchError("`model` and `deployment_id` are mutually exclusive")
@@ -118,14 +98,13 @@ def resolve_dispatch(
     if model:
         return model, "explicit"
 
-    default = serverless_default_for(renderer_name)
-    if default is None:
-        raise DispatchError(
-            f"renderer {renderer_name!r} has no registered Fireworks serverless "
-            "default. Either pass `model` explicitly or spin up a personal "
-            "deployment via training.verifier.spinup_deployment up."
-        )
-    return default, "serverless"
+    raise DispatchError(
+        "Pass either `model` (e.g. accounts/fireworks/models/glm-5p1) or "
+        "`deployment_id`. The verifier no longer ships a renderer→model "
+        "default mapping. List available serverless models from the GUI's "
+        "model dropdown (populated by /models on the dev server) or with "
+        "`Fireworks().models.list(account_id='fireworks', filter=...)`."
+    )
 
 
 class FireworksLikeClient(Protocol):

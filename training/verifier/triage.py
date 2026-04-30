@@ -31,7 +31,6 @@ from tinker_cookbook.renderers.base import TrainOnWhat
 
 from training.verifier.utils.probe import (
     DispatchError,
-    RENDERER_SERVERLESS_DEFAULTS,
     resolve_dispatch,
     run_probe,
 )
@@ -132,14 +131,15 @@ def _print_preflight(
     print(_RULE)
 
     # 1. Renderer
-    is_registered = renderer_name in RENDERER_SERVERLESS_DEFAULTS
+    from tinker_cookbook.renderers import is_renderer_registered  # noqa: PLC0415
+
     registered_text = (
         "registered ✓"
-        if is_registered
-        else "(no registered serverless default — relying on --model/--deployment-id)"
+        if is_renderer_registered(renderer_name)
+        else "NOT REGISTERED — check spelling against the cookbook's renderer registry"
     )
     reachable, reach_msg = serverless_status
-    reach_text = f"reachable ✓" if reachable else f"UNREACHABLE — {reach_msg}"
+    reach_text = "reachable ✓" if reachable else f"UNREACHABLE — {reach_msg}"
     print()
     print("  1. RENDERER")
     print(f"     name        : {renderer_name}")

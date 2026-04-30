@@ -27,7 +27,7 @@ The viewer hits ``/probe`` with a JSON body shaped like::
     }
 
 …and gets back the same probe-artifact JSON the CLI writes (with a
-``deployment.mode`` of "serverless" / "deployment" / "explicit"), or
+``deployment.mode`` of "deployment" / "explicit"), or
 ``{"error": "...", "type": "..."}`` on failure.
 
 Tokenizers and the Fireworks client are cached at module level so
@@ -53,7 +53,6 @@ from tinker_cookbook.renderers.base import TrainOnWhat
 
 from training.verifier.utils.probe import (
     DispatchError,
-    RENDERER_SERVERLESS_DEFAULTS,
     resolve_dispatch,
     run_probe,
 )
@@ -175,12 +174,44 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
             return self._send_file(INDEX_PATH, "text/html; charset=utf-8")
         if path == "/health":
             return self._send_json({"ok": True})
-        if path == "/registered":
-            return self._send_json(
-                {
-                    "renderer_serverless_defaults": RENDERER_SERVERLESS_DEFAULTS,
-                }
+        if path == "/renderers":
+            # Live list from the tinker_cookbook custom-renderer registry.
+            # Used by the GUI to populate the renderer dropdown.
+            from tinker_cookbook.renderers import (  # noqa: PLC0415
+                get_registered_renderer_names,
             )
+            return self._send_json({"renderers": sorted(get_registered_renderer_names())})
+        if path == "/models":
+            # Live list of Fireworks models in the public account, used by
+            # the GUI to populate the model dropdown. Cheap enough to run
+            # once per page load; not cached so a refresh picks up new
+            # serverless additions.
+            try:
+                from fireworks import Fireworks  # noqa: PLC0415
+                api_key = os.environ.get("FIREWORKS_API_KEY")
+                if not api_key:
+                    return self._send_json(
+                        {"error": "FIREWORKS_API_KEY not set"}, status=503,
+                    )
+                client = Fireworks(api_key=api_key)
+                models = []
+                for m in client.models.list(account_id="fireworks"):
+                    name = getattr(m, "name", None) or getattr(m, "id", None)
+                    if not name:
+                        continue
+                    models.append({
+                        "name": name,
+                        "display_name": getattr(m, "display_name", None),
+                        "kind": getattr(m, "kind", None),
+                        "state": getattr(m, "state", None),
+                    })
+                return self._send_json({"models": models})
+            except Exception as exc:  # noqa: BLE001 — surface to the page
+                logger.exception("models listing failed")
+                return self._send_json(
+                    {"error": str(exc), "type": type(exc).__name__},
+                    status=500,
+                )
         if path == "/inspect_rules":
             # Re-read on every request so the user can edit the YAML
             # without restarting the server. Trivially cheap; it's a

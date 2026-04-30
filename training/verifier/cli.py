@@ -21,7 +21,6 @@ from training.verifier.utils.probe import (
     DispatchError,
     resolve_dispatch,
     run_probe,
-    serverless_default_for,
     write_artifact,
 )
 
@@ -51,11 +50,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model",
         default=None,
-        help="Fireworks model identifier passed to chat.completions.create. "
-        "Optional: if omitted and --deployment-id isn't set either, the probe "
-        "falls back to a per-renderer serverless default. Pass this when you "
-        "need to override the default (e.g. probe a different serverless model "
-        "or a hand-constructed deployment string).",
+        help="Fireworks model identifier passed to chat.completions.create "
+        "(e.g. accounts/fireworks/models/glm-5p1). One of --model or "
+        "--deployment-id is required. List available serverless models with "
+        "`Fireworks().models.list(account_id='fireworks')` or via the dev "
+        "server's /models endpoint.",
     )
     p.add_argument(
         "--deployment-id",

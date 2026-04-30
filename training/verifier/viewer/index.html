@@ -793,19 +793,10 @@
       "tokenization_diverged",
     ];
 
-    /* Prefilled (renderer → tokenizer) for the live form. */
-    const RENDERER_TOKENIZER_DEFAULTS = {
-      glm5: "zai-org/GLM-5.1",
-      qwen3: "Qwen/Qwen3-8B",
-      qwen3_disable_thinking: "Qwen/Qwen3-8B",
-      kimi_k25: "moonshotai/Kimi-K2.5",
-      kimi_k25_disable_thinking: "moonshotai/Kimi-K2.5",
-      deepseekv3: "deepseek-ai/DeepSeek-V3",
-      deepseekv3_thinking: "deepseek-ai/DeepSeek-V3",
-      deepseekv3_disable_thinking: "deepseek-ai/DeepSeek-V3",
-      minimax_m2: "MiniMaxAI/MiniMax-M2",
-      llama3: "meta-llama/Llama-3.3-70B-Instruct",
-    };
+    /* Renderer + Fireworks model lists are loaded live at runtime
+       (see /renderers and /models in serve.py). The viewer carries
+       no static mappings — pairing renderer ↔ tokenizer ↔ model is
+       documented in training/verifier/SKILL.md. */
 
     /* ----------------------------------------------------------------- */
     /* Helpers                                                            */
@@ -890,8 +881,8 @@
     /* ----------------------------------------------------------------- */
 
     function LiveProbeForm({ onArtifact, onError, busy, setBusy }) {
-      const [renderer, setRenderer] = useState("glm5");
-      const [tokenizerModel, setTokenizerModel] = useState(RENDERER_TOKENIZER_DEFAULTS.glm5);
+      const [renderer, setRenderer] = useState("");
+      const [tokenizerModel, setTokenizerModel] = useState("");
       const [model, setModel] = useState("");
       const [deploymentId, setDeploymentId] = useState("");
       const [maxTokens, setMaxTokens] = useState(1024);
@@ -902,13 +893,32 @@
         { role: "user",   content: "2 + 2 = ?" },
       ]);
       const [tools, setTools] = useState("");
+      const [registeredRenderers, setRegisteredRenderers] = useState([]);
+      const [availableModels, setAvailableModels] = useState([]);
+      const [modelsError, setModelsError] = useState(null);
 
-      const onRendererChange = (e) => {
-        const v = e.target.value;
-        setRenderer(v);
-        const tok = RENDERER_TOKENIZER_DEFAULTS[v];
-        if (tok) setTokenizerModel(tok);
-      };
+      // Live registry from /renderers and /models — no static mapping.
+      useEffect(() => {
+        fetch("/renderers")
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then((d) => {
+            const list = Array.isArray(d.renderers) ? d.renderers : [];
+            setRegisteredRenderers(list);
+            if (list.length > 0) setRenderer((cur) => cur || list[0]);
+          })
+          .catch((e) => console.warn("could not load /renderers:", e));
+
+        fetch("/models")
+          .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
+          .then(({ ok, body }) => {
+            if (!ok || body.error) {
+              setModelsError(body.error || "/models failed");
+              return;
+            }
+            setAvailableModels(Array.isArray(body.models) ? body.models : []);
+          })
+          .catch((e) => setModelsError(e.message));
+      }, []);
 
       const updateMessage = (i, patch) =>
         setMessages((prev) => prev.map((m, idx) => (idx === i ? { ...m, ...patch } : m)));
@@ -921,10 +931,8 @@
         if (model && deploymentId) return "ERROR: pass at most one of `model` and `deployment_id`";
         if (deploymentId) return `mode=deployment  →  accounts/<account>/deployments/${deploymentId}`;
         if (model) return `mode=explicit  →  ${model}`;
-        const def = RENDERER_TOKENIZER_DEFAULTS[renderer];
-        return `mode=serverless  →  default for renderer=${renderer}` +
-          (def ? "" : "  (NOTE: no registered serverless default — will error)");
-      }, [renderer, model, deploymentId]);
+        return "ERROR: pick a model from the dropdown or enter a deployment_id";
+      }, [model, deploymentId]);
 
       const onSubmit = useCallback(async (e) => {
         e.preventDefault();
@@ -980,20 +988,31 @@
           <summary>Live probe — form input</summary>
           <form onSubmit={onSubmit} className="form-grid">
             <label>renderer
-              <select value={renderer} onChange={onRendererChange}>
-                {Object.keys(RENDERER_TOKENIZER_DEFAULTS).map((r) => (
+              <select value={renderer} onChange={(e) => setRenderer(e.target.value)}>
+                {registeredRenderers.length === 0 && <option value="">(loading…)</option>}
+                {registeredRenderers.map((r) => (
                   <option key={r} value={r}>{r}</option>
                 ))}
               </select>
             </label>
-            <label>tokenizer_model
-              <input value={tokenizerModel} onChange={(e) => setTokenizerModel(e.target.value)} />
+            <label>tokenizer_model (HuggingFace id)
+              <input value={tokenizerModel} placeholder="e.g. zai-org/GLM-5.1" onChange={(e) => setTokenizerModel(e.target.value)} />
             </label>
-            <label>model (optional, mutually exclusive with deployment_id)
-              <input value={model} placeholder="(blank → serverless default)" onChange={(e) => setModel(e.target.value)} />
+            <label>model (Fireworks id, mutually exclusive with deployment_id)
+              <select value={model} onChange={(e) => setModel(e.target.value)}>
+                <option value="">— pick one —</option>
+                {availableModels.map((m) => (
+                  <option key={m.name} value={m.name}>{m.name}</option>
+                ))}
+              </select>
+              {modelsError && (
+                <span style={{ color: "var(--fail-fg)", fontSize: 11, fontWeight: 400 }}>
+                  /models error: {modelsError}
+                </span>
+              )}
             </label>
-            <label>deployment_id (optional)
-              <input value={deploymentId} placeholder="(blank → serverless default)" onChange={(e) => setDeploymentId(e.target.value)} />
+            <label>deployment_id (optional, mutually exclusive with model)
+              <input value={deploymentId} placeholder="e.g. my-glm5-probe" onChange={(e) => setDeploymentId(e.target.value)} />
             </label>
             <label>max_tokens
               <input type="number" min="1" step="1" value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} />

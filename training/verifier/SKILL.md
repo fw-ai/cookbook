@@ -16,7 +16,39 @@ inspection happens in a local React GUI seeded by a Python probe.
 export FIREWORKS_API_KEY=fw_...
 ```
 
-## 1. Confirm the inspection rules
+## 1. Pick a renderer / tokenizer / Fireworks model
+
+The verifier carries **no static renderer→model mapping**. Every probe
+needs you to supply both an HF tokenizer id and a Fireworks model id
+(or a `deployment_id`). Discover what's currently serverless via:
+
+```python
+from fireworks import Fireworks
+for m in Fireworks(api_key=...).models.list(account_id="fireworks"):
+    print(m.name)
+```
+
+…or just open the GUI — the dev server's `/models` endpoint feeds the
+`model` dropdown live.
+
+Reference table of common pairings (verify before each session — the
+serverless ids drift over time):
+
+| Renderer | HF tokenizer | Fireworks serverless model (typical) |
+|---|---|---|
+| `glm5` | `zai-org/GLM-5.1` | `accounts/fireworks/models/glm-5p1` |
+| `qwen3` | `Qwen/Qwen3-8B` | `accounts/fireworks/models/qwen3-8b` |
+| `qwen3_disable_thinking` | `Qwen/Qwen3-8B` | `accounts/fireworks/models/qwen3-8b` |
+| `kimi_k25` | `moonshotai/Kimi-K2.5` | `accounts/fireworks/models/kimi-k2p5` |
+| `kimi_k25_disable_thinking` | `moonshotai/Kimi-K2.5` | `accounts/fireworks/models/kimi-k2p5` |
+| `deepseekv3` | `deepseek-ai/DeepSeek-V3` | `accounts/fireworks/models/deepseek-v3p1` |
+| `minimax_m2` | `MiniMaxAI/MiniMax-M2` | `accounts/fireworks/models/minimax-m2p7` |
+| `llama3` | `meta-llama/Llama-3.3-70B-Instruct` | `accounts/fireworks/models/llama-v3p3-70b-instruct` |
+
+If the table looks stale, the live `/models` listing wins. Treat this
+as a starting point, not a contract.
+
+## 2. Confirm the inspection rules
 
 Open `training/verifier/rules/inspect_rules.yaml` and read the rule list.
 This file is the single source of truth for "worth a closer look"
@@ -46,11 +78,11 @@ The Python evaluator and the JS evaluator are pure equality matchers
 with zero hardcoded knowledge — delete the YAML and both surfaces
 flag nothing.
 
-## 2. Pick a workflow
+## 3. Pick a workflow
 
 You have two paths. They use the same underlying probe.
 
-### 2a. Interactive (one prompt at a time)
+### 3a. Interactive (one prompt at a time)
 
 Type messages in a form. Each `Run probe` appends a case below; cases
 stack with delete buttons. Good for ad-hoc questions ("what does this
@@ -61,7 +93,7 @@ specific chat render to?").
 # open http://localhost:8765/
 ```
 
-### 2b. Batch (many prompts from a JSON file)
+### 3b. Batch (many prompts from a JSON file)
 
 Author your own JSON file with multiple prompts. The runner probes
 them all and the GUI opens with every case stacked side-by-side. Good
@@ -95,18 +127,20 @@ To run:
 ./triage.sh qwen3 Qwen/Qwen3-8B    ./my-prompts.json
 ```
 
-## 3. Pre-flight (the runners do this for you)
+## 4. Pre-flight (the runners do this for you)
 
 Before any prompt-level API call, the triage runner prints and asks
 you to confirm:
 
 1. **RENDERER**
-   - `name`, `status` — `registered ✓` if the renderer is in
-     `RENDERER_SERVERLESS_DEFAULTS`; otherwise a warning that you must
-     pass `--model` or `--deployment-id`.
+   - `name`, `status` — `registered ✓` when the name is in the live
+     `tinker_cookbook` renderer registry; otherwise `NOT REGISTERED`
+     and the runner aborts.
    - `tokenizer` — the HF tokenizer that will be loaded.
-   - `dispatch` — `serverless | deployment | explicit` and the resolved
-     model identifier the gateway will see.
+   - `dispatch` — `deployment | explicit` and the resolved model
+     identifier the gateway will see. There is no `serverless` mode and
+     no static renderer→model fallback — you must pass `--model` (a
+     Fireworks model id) or `--deployment-id`.
    - `ping` — a 1-token completion against the dispatch target.
      `reachable ✓` means the API answered; otherwise the runner aborts
      with the gateway's actual error (404, auth, quota, …) so you find
@@ -119,7 +153,7 @@ you to confirm:
 Type `Y` to proceed, `N` (or Ctrl-C) to abort. Pass `--yes` / `-y` to
 skip the prompt in scripted contexts.
 
-## 4. Inspect in the GUI
+## 5. Inspect in the GUI
 
 The page opens with all cases loaded:
 
@@ -142,7 +176,7 @@ The page opens with all cases loaded:
 - Per-case **× delete** removes a case; **Clear all** wipes the page.
   The form values stay, so you can tweak and run again.
 
-## 4b. Reachability check
+## 5b. Reachability check
 
 The triage runner pings the dispatch target with a 1-token completion
 during pre-flight (the `ping` line in section 1 of the summary) — that
@@ -151,7 +185,7 @@ renderer without running a full corpus, point triage at a one-case
 prompt JSON and abort at the confirmation prompt. The pre-flight will
 already have reported `reachable ✓` or the gateway error.
 
-## 5. Commands cheat-sheet
+## 6. Commands cheat-sheet
 
 ```bash
 # 0. Set credentials once per shell.
@@ -176,7 +210,7 @@ $EDITOR cookbook/training/verifier/rules/inspect_rules.yaml
 # 3. Stop with Ctrl-C.
 ```
 
-## 6. Files
+## 7. Files
 
 Layout (everything under `cookbook/training/verifier/`):
 
@@ -201,7 +235,7 @@ training/verifier/
 Workspace-root runners (never committed): `run.sh`, `triage.sh`,
 `run-bug-*.sh`.
 
-## 7. Author a prompt corpus
+## 8. Author a prompt corpus
 
 ```bash
 cat > my-prompts.json <<'EOF'
@@ -215,7 +249,7 @@ EOF
 ./triage.sh glm5 zai-org/GLM-5.1 ./my-prompts.json
 ```
 
-## 8. Add a new rule
+## 9. Add a new rule
 
 ```bash
 $EDITOR cookbook/training/verifier/rules/inspect_rules.yaml
