@@ -1083,10 +1083,17 @@
           <summary>Live probe — form input</summary>
           <form onSubmit={onSubmit} className="form-grid">
             <label>renderer
-              <select value={renderer} onChange={(e) => setRenderer(e.target.value)}>
+              <select value={renderer} onChange={(e) => {
+                const next = e.target.value;
+                setRenderer(next);
+                const found = registeredRenderers.find((x) => x.name === next);
+                if (found && found.tokenizer_default) setTokenizerModel(found.tokenizer_default);
+              }}>
                 {registeredRenderers.length === 0 && <option value="">(loading…)</option>}
                 {registeredRenderers.map((r) => (
-                  <option key={r} value={r}>{r}</option>
+                  <option key={r.name} value={r.name}>
+                    {r.name}{r.registered ? "" : "  ·  not registered"}
+                  </option>
                 ))}
               </select>
             </label>
