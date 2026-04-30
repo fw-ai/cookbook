@@ -1,0 +1,59 @@
+{
+  "_about": "Default test corpus for `python -m training.verifier.triage`. Each case is one probe input. Edit freely or pass --prompts <file> to override.",
+  "cases": [
+    {
+      "name": "simple-math",
+      "messages": [
+        {"role": "system", "content": "Answer with a single integer and nothing else."},
+        {"role": "user", "content": "2 + 2 = ?"}
+      ]
+    },
+    {
+      "name": "no-system",
+      "messages": [
+        {"role": "user", "content": "Say hi briefly."}
+      ]
+    },
+    {
+      "name": "multi-turn",
+      "messages": [
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "What is 1 + 1?"},
+        {"role": "assistant", "content": "2"},
+        {"role": "user", "content": "And 2 + 2?"}
+      ]
+    },
+    {
+      "name": "haiku",
+      "messages": [
+        {"role": "user", "content": "Write a 3-line haiku about coffee."}
+      ]
+    },
+    {
+      "name": "list-format",
+      "messages": [
+        {"role": "system", "content": "Reply only as a numbered list."},
+        {"role": "user", "content": "Name three colors."}
+      ]
+    },
+    {
+      "name": "json-output",
+      "messages": [
+        {"role": "system", "content": "Respond only with a valid JSON object."},
+        {"role": "user", "content": "Return {\"name\": \"Alice\"}."}
+      ]
+    },
+    {
+      "name": "code-snippet",
+      "messages": [
+        {"role": "user", "content": "Write Python that prints hello."}
+      ]
+    },
+    {
+      "name": "long-context",
+      "messages": [
+        {"role": "user", "content": "Lorem ipsum dolor sit amet. Repeat the first two words back."}
+      ]
+    }
+  ]
+}

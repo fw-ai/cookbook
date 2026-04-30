@@ -57,6 +57,7 @@ from training.verifier.probe import (
     resolve_dispatch,
     run_probe,
 )
+from training.verifier.inspect_rules import load_rules as _load_inspect_rules
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,10 @@ INDEX_PATH = VIEWER_DIR / "index.html"
 
 _CLIENT_LOCK = threading.Lock()
 _CLIENT = None
+
+# When ``--session-file`` is passed, the GUI fetches /session on mount
+# and auto-seeds cases from the file (typically a triage output).
+_SESSION_FILE: Path | None = None
 
 
 @functools.lru_cache(maxsize=8)
@@ -176,6 +181,31 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
                     "renderer_serverless_defaults": RENDERER_SERVERLESS_DEFAULTS,
                 }
             )
+        if path == "/inspect_rules":
+            # Re-read on every request so the user can edit the YAML
+            # without restarting the server. Trivially cheap; it's a
+            # tiny file and only fetched once per page load.
+            try:
+                rules = _load_inspect_rules()
+            except Exception as exc:  # noqa: BLE001
+                return self._send_json(
+                    {"error": str(exc), "type": type(exc).__name__},
+                    status=500,
+                )
+            return self._send_json({"rules": rules})
+        if path == "/session":
+            # Surfaces the triage session file (if any) so the GUI can
+            # auto-seed flagged cases on mount. Re-reads each request.
+            if _SESSION_FILE is None or not _SESSION_FILE.exists():
+                return self._send_json({"kind": "probe-batch", "cases": []})
+            try:
+                with open(_SESSION_FILE, "r", encoding="utf-8") as f:
+                    return self._send_json(json.load(f))
+            except Exception as exc:  # noqa: BLE001
+                return self._send_json(
+                    {"error": str(exc), "type": type(exc).__name__},
+                    status=500,
+                )
         self.send_error(404, "Not found")
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib API
@@ -217,6 +247,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--host", default="127.0.0.1", help="Bind host. Default 127.0.0.1.")
     p.add_argument("--port", type=int, default=8765, help="Bind port. Default 8765.")
+    p.add_argument(
+        "--session-file",
+        default=None,
+        help="Path to a triage session JSON. When set, the GUI fetches "
+        "/session on mount and auto-seeds the flagged cases.",
+    )
     return p
 
 
@@ -231,6 +267,12 @@ def main(argv: list[str] | None = None) -> int:
         logger.warning(
             "FIREWORKS_API_KEY is not set; /probe will fail until you export one."
         )
+
+    if args.session_file:
+        global _SESSION_FILE
+        _SESSION_FILE = Path(args.session_file)
+        logger.info("session-file: %s (%s)", _SESSION_FILE,
+                    "exists" if _SESSION_FILE.exists() else "MISSING")
 
     server = http.server.HTTPServer((args.host, args.port), ProbeHandler)
     logger.info("verifier viewer up on http://%s:%d/", args.host, args.port)
