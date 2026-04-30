@@ -70,6 +70,62 @@ _CLIENT = None
 # and auto-seeds cases from the file (typically a triage output).
 _SESSION_FILE: Path | None = None
 
+# Force the cookbook's local renderers to register at server start.
+# Without this, tinker_cookbook's custom-renderer registry is empty
+# until something else triggers the import.
+import training.renderer  # noqa: F401, E402 — side-effect: register_renderer calls
+
+# Static catalog of (renderer name → suggested HF tokenizer id) for the
+# UI's auto-fill. Covers:
+#   - ``tinker_cookbook`` built-ins (hardcoded in ``get_renderer``'s
+#     elif ladder, NOT in ``_CUSTOM_RENDERER_REGISTRY`` — there's no
+#     iterable accessor for them).
+#   - cookbook-local renderers (registered when ``training.renderer``
+#     is imported).
+#   - Anticipated future renderers that share the cookbook's naming
+#     convention (e.g. kimi_k26, qwen3_6) so the dropdown surfaces
+#     them; selecting one before its renderer module exists yields a
+#     clear "renderer not registered" error from get_renderer().
+#
+# Why static: the Fireworks Model proto exposes ``huggingface_files``
+# (uploaded blobs) but not a canonical HF repo id, and there is no
+# registry-side metadata linking a renderer to its tokenizer. Edit
+# this dict when adding a renderer; ``skills/verifier/SKILL.md`` is
+# the user-facing version of the same map.
+RENDERER_TOKENIZER_DEFAULTS: dict[str, str | None] = {
+    # tinker_cookbook built-ins (see tinker_cookbook.renderers.get_renderer)
+    "role_colon":                  None,
+    "llama3":                      "meta-llama/Llama-3.3-70B-Instruct",
+    "qwen3":                       "Qwen/Qwen3-8B",
+    "qwen3_vl":                    "Qwen/Qwen3-VL-7B-Instruct",
+    "qwen3_vl_instruct":           "Qwen/Qwen3-VL-7B-Instruct",
+    "qwen3_disable_thinking":      "Qwen/Qwen3-8B",
+    "qwen3_instruct":              "Qwen/Qwen3-8B-Instruct-2507",
+    "qwen3_5":                     "Qwen/Qwen3.5-VL-8B-Instruct",
+    "qwen3_5_disable_thinking":    "Qwen/Qwen3.5-VL-8B-Instruct",
+    "qwen3_6":                     "Qwen/Qwen3.6-VL-8B-Instruct",
+    "qwen3_6_disable_thinking":    "Qwen/Qwen3.6-VL-8B-Instruct",
+    "deepseekv3":                  "deepseek-ai/DeepSeek-V3",
+    "deepseekv3_disable_thinking": "deepseek-ai/DeepSeek-V3",
+    "deepseekv3_thinking":         "deepseek-ai/DeepSeek-V3",
+    "kimi_k2":                     "moonshotai/Kimi-K2-Instruct",
+    "kimi_k25":                    "moonshotai/Kimi-K2.5",
+    "kimi_k25_disable_thinking":   "moonshotai/Kimi-K2.5",
+    "kimi_k26":                    "moonshotai/Kimi-K2.6",
+    "kimi_k26_disable_thinking":   "moonshotai/Kimi-K2.6",
+    "nemotron3":                   "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
+    "nemotron3_disable_thinking":  "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
+    "gpt_oss_no_sysprompt":        "openai/gpt-oss-120b",
+    "gpt_oss_low_reasoning":       "openai/gpt-oss-120b",
+    "gpt_oss_medium_reasoning":    "openai/gpt-oss-120b",
+    "gpt_oss_high_reasoning":      "openai/gpt-oss-120b",
+    # cookbook-local (training/renderer/)
+    "gemma4":      "google/gemma-4-E2B-it",
+    "glm5":        "zai-org/GLM-5.1",
+    "minimax_m2":  "MiniMaxAI/MiniMax-M2",
+    "nemotron":    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
+}
+
 
 @functools.lru_cache(maxsize=8)
 def _tokenizer(name: str):
@@ -175,12 +231,27 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
         if path == "/health":
             return self._send_json({"ok": True})
         if path == "/renderers":
-            # Live list from the tinker_cookbook custom-renderer registry.
-            # Used by the GUI to populate the renderer dropdown.
+            # Catalog of renderer names with the suggested HF tokenizer
+            # for each. Combines:
+            #   1. tinker_cookbook built-ins (hardcoded in get_renderer's
+            #      elif ladder — not in any registry we can iterate)
+            #   2. The custom registry (cookbook renderers register
+            #      themselves at module import).
+            # We surface the union so the GUI dropdown shows everything.
             from tinker_cookbook.renderers import (  # noqa: PLC0415
                 get_registered_renderer_names,
             )
-            return self._send_json({"renderers": sorted(get_registered_renderer_names())})
+            registered = set(get_registered_renderer_names())
+            names = sorted(set(RENDERER_TOKENIZER_DEFAULTS.keys()) | registered)
+            payload = [
+                {
+                    "name": name,
+                    "tokenizer_default": RENDERER_TOKENIZER_DEFAULTS.get(name),
+                    "registered": name in registered,
+                }
+                for name in names
+            ]
+            return self._send_json({"renderers": payload})
         if path == "/models":
             # Live list of *serverless-eligible* Fireworks models in the
             # public account. `supports_serverless` is an output-only bool

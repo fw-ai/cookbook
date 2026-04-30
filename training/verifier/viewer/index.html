@@ -983,14 +983,23 @@
       const [availableModels, setAvailableModels] = useState([]);
       const [modelsError, setModelsError] = useState(null);
 
-      // Live registry from /renderers and /models — no static mapping.
+      // /renderers returns [{name, tokenizer_default, registered}, ...]
+      // Build a name→tokenizer lookup so the renderer dropdown can
+      // auto-fill the tokenizer field on change.
       useEffect(() => {
         fetch("/renderers")
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
           .then((d) => {
             const list = Array.isArray(d.renderers) ? d.renderers : [];
             setRegisteredRenderers(list);
-            if (list.length > 0) setRenderer((cur) => cur || list[0]);
+            if (list.length > 0) {
+              setRenderer((cur) => {
+                const next = cur || list[0].name;
+                const found = list.find((x) => x.name === next);
+                if (found && found.tokenizer_default) setTokenizerModel((t) => t || found.tokenizer_default);
+                return next;
+              });
+            }
           })
           .catch((e) => console.warn("could not load /renderers:", e));
 
