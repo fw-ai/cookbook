@@ -33,10 +33,22 @@ def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
 
         wandb.init(entity=wb.entity, project=wb.project, name=wb.run_name, config=config)
         if wandb.run is not None:
+            # slime-aligned step axes (THUDM/slime: slime/utils/wandb_utils.py).
+            # ``train/*`` is indexed by ``train/step``; ``rollout/*``,
+            # ``perf/*``, ``multi_turn/*``, ``passrate/*`` are indexed by
+            # ``rollout/step``; ``eval/*`` by ``eval/step``.  Recipes that
+            # run a single sample-then-train loop (like the cookbook RL
+            # recipes) emit both ``train/step`` and ``rollout/step`` in
+            # the same metrics dict, so plots line up across both axes.
             wandb.define_metric("train/step")
+            wandb.define_metric("rollout/step")
+            wandb.define_metric("eval/step")
             wandb.define_metric("train/*", step_metric="train/step")
-            wandb.define_metric("perf/*", step_metric="train/step")
-            wandb.define_metric("rollout/*", step_metric="train/step")
+            wandb.define_metric("rollout/*", step_metric="rollout/step")
+            wandb.define_metric("perf/*", step_metric="rollout/step")
+            wandb.define_metric("multi_turn/*", step_metric="rollout/step")
+            wandb.define_metric("passrate/*", step_metric="rollout/step")
+            wandb.define_metric("eval/*", step_metric="eval/step")
             wandb.define_metric("batch/*", step_metric="train/step")
             wandb.define_metric("infra/*", step_metric="train/step")
             wandb.define_metric("ctx/*", step_metric="train/step")
