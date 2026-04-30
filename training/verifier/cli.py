@@ -18,6 +18,8 @@ from tinker_cookbook.renderers.base import TrainOnWhat
 
 from training.verifier.inspect import run_inspect
 from training.verifier.probe import (
+    DispatchError,
+    resolve_dispatch,
     run_probe,
     serverless_default_for,
     write_artifact,
@@ -162,53 +164,27 @@ def _build_tokenizer(model: str):
 
 
 def _resolve_dispatch(args, *, renderer_name: str) -> tuple[str, str]:
-    """Pick (model_identifier, dispatch_mode) per the design contract.
-
-    Precedence:
-      1. --model (and --deployment-id) mutually exclusive — error if both.
-      2. --deployment-id → resolve via DeploymentManager.account_id +
-         deployment_id → ``accounts/<account>/deployments/<id>``.
-      3. --model → use as-is, mode = "explicit".
-      4. neither → renderer's serverless default (mode = "serverless").
-      5. neither and no default registered → error out, asking the caller
-         to spin up a deployment via training.verifier.spinup_deployment.
-    """
-    if args.model and args.deployment_id:
-        raise SystemExit("--model and --deployment-id are mutually exclusive")
-
-    if args.deployment_id:
-        api_key = args.api_key or os.environ.get("FIREWORKS_API_KEY")
-        if not api_key:
-            raise SystemExit(
-                "FIREWORKS_API_KEY not set; cannot resolve --deployment-id."
+    """argparse adaptor for ``probe.resolve_dispatch`` — exits on error."""
+    try:
+        return resolve_dispatch(
+            renderer_name=renderer_name,
+            model=args.model,
+            deployment_id=args.deployment_id,
+            api_key=args.api_key,
+            base_url=args.base_url,
+        )
+    except DispatchError as exc:
+        msg = str(exc)
+        if "no registered" in msg:
+            msg += (
+                "\n\nSpin up a personal deployment first:\n"
+                "    python -m training.verifier.spinup_deployment up \\\n"
+                "        --base-model <accounts/.../models/...> \\\n"
+                "        --shape <accounts/.../deploymentShapes/...> \\\n"
+                "        --deployment-id my-probe\n"
+                "    python -m training.verifier render --deployment-id my-probe ..."
             )
-        base_url = args.base_url or os.environ.get(
-            "FIREWORKS_BASE_URL", "https://api.fireworks.ai"
-        )
-        from fireworks.training.sdk.deployment import DeploymentManager  # noqa: PLC0415
-
-        mgr = DeploymentManager(api_key=api_key, base_url=base_url)
-        return (
-            f"accounts/{mgr.account_id}/deployments/{args.deployment_id}",
-            "deployment",
-        )
-
-    if args.model:
-        return args.model, "explicit"
-
-    default = serverless_default_for(renderer_name)
-    if default is None:
-        raise SystemExit(
-            f"renderer {renderer_name!r} has no registered Fireworks serverless "
-            "default. Either pass --model explicitly or spin up a personal "
-            "deployment first:\n\n"
-            "    python -m training.verifier.spinup_deployment up \\\n"
-            "        --base-model <accounts/.../models/...> \\\n"
-            "        --shape <accounts/.../deploymentShapes/...> \\\n"
-            "        --deployment-id my-probe\n\n"
-            "    python -m training.verifier render --deployment-id my-probe ..."
-        )
-    return default, "serverless"
+        raise SystemExit(msg) from exc
 
 
 def main(argv: list[str] | None = None) -> int:

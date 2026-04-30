@@ -73,6 +73,61 @@ def serverless_default_for(renderer_name: str) -> str | None:
     return RENDERER_SERVERLESS_DEFAULTS.get(renderer_name)
 
 
+class DispatchError(ValueError):
+    """Raised when the probe can't pick a (model, mode) pair from inputs."""
+
+
+def resolve_dispatch(
+    *,
+    renderer_name: str,
+    model: str | None,
+    deployment_id: str | None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> tuple[str, str]:
+    """Pick (model_identifier, dispatch_mode) per the verifier's contract.
+
+    Precedence (same rules in CLI and server entry points):
+
+      1. ``model`` and ``deployment_id`` are mutually exclusive — raise.
+      2. ``deployment_id`` → resolve via ``DeploymentManager.account_id`` →
+         ``accounts/<account>/deployments/<id>``, mode = "deployment".
+      3. ``model`` → use as-is, mode = "explicit".
+      4. neither → ``RENDERER_SERVERLESS_DEFAULTS[renderer_name]``, mode =
+         "serverless".
+      5. neither + no default → ``DispatchError`` pointing at
+         ``training.verifier.spinup_deployment``.
+    """
+    if model and deployment_id:
+        raise DispatchError("`model` and `deployment_id` are mutually exclusive")
+
+    if deployment_id:
+        import os as _os
+
+        api_key = api_key or _os.environ.get("FIREWORKS_API_KEY")
+        if not api_key:
+            raise DispatchError("FIREWORKS_API_KEY not set; cannot resolve deployment_id")
+        base_url = base_url or _os.environ.get(
+            "FIREWORKS_BASE_URL", "https://api.fireworks.ai"
+        )
+        from fireworks.training.sdk.deployment import DeploymentManager  # noqa: PLC0415
+
+        mgr = DeploymentManager(api_key=api_key, base_url=base_url)
+        return f"accounts/{mgr.account_id}/deployments/{deployment_id}", "deployment"
+
+    if model:
+        return model, "explicit"
+
+    default = serverless_default_for(renderer_name)
+    if default is None:
+        raise DispatchError(
+            f"renderer {renderer_name!r} has no registered Fireworks serverless "
+            "default. Either pass `model` explicitly or spin up a personal "
+            "deployment via training.verifier.spinup_deployment up."
+        )
+    return default, "serverless"
+
+
 class FireworksLikeClient(Protocol):
     """Minimal interface the probe expects from a Fireworks-style client.
 

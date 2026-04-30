@@ -172,12 +172,27 @@ JSON, one file per probe. Top-level fields:
   - `tokenization_diverged`: the renderer's re-tokenisation of the
     completion text disagrees with the deployment's token stream.
 
-### Visual review — React viewer
+### Visual review — React viewer (live + offline)
 
-Probe artifacts are JSON-native by design but reading them as raw JSON
-gets old fast. `training/verifier/viewer/index.html` is a single-file
-React app (React 18 + Babel from CDN, no build step) that renders the
-audit table as a colour-coded token stream:
+The viewer at `training/verifier/viewer/index.html` is a single-file
+React app (React 18 + Babel from CDN, no build step). It runs in two
+modes:
+
+* **Live** (interactive) — start the dev server with
+  `python -m training.verifier.serve`, open
+  `http://127.0.0.1:8765/`, type messages in the form, click
+  **Run probe**. The server hits `/probe`, calls `run_probe`, and the
+  result renders in the audit-table view immediately. Same form
+  exposes every user-visible knob: renderer, tokenizer model, dispatch
+  (serverless / `--model` / `--deployment-id`), `max_tokens`,
+  `temperature`, `train_on_what`, tools, the conversation itself.
+  The probe-fixed API flags (`echo`, `raw_output`,
+  `return_token_ids`) are listed verbatim in the form so you can see
+  exactly what the gateway will be sent.
+* **Offline** — open `training/verifier/viewer/index.html` directly
+  (`file://...`) and load any probe JSON via the file picker.
+
+Either way, the audit table renders the same colour-coded token stream:
 
 * **Background colour** = provenance bucket
   (`prompt_hard_append` / `native_generated` / `trailing_hard_append` /

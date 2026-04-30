@@ -155,6 +155,78 @@
     .table-compact th { background: var(--bg-soft); color: var(--fg-muted); font-weight: 600; }
 
     .footer { margin-top: 24px; color: var(--fg-muted); font-size: 11px; }
+
+    /* Live probe form */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 12px;
+      align-items: start;
+    }
+    .form-grid label {
+      display: flex;
+      flex-direction: column;
+      font-size: 12px;
+      font-weight: 600;
+      gap: 2px;
+    }
+    .form-grid label.span-2 { grid-column: span 2; }
+    .form-grid input,
+    .form-grid select,
+    .form-grid textarea {
+      font: 12px ui-monospace, "SF Mono", Menlo, monospace;
+      padding: 4px 6px;
+      border: 1px solid var(--border-strong);
+      border-radius: 3px;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    .form-grid textarea { resize: vertical; min-height: 28px; }
+    .form-grid fieldset {
+      grid-column: span 2;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 10px;
+    }
+    .form-grid legend { font-size: 12px; color: var(--fg-muted); padding: 0 4px; }
+    .form-grid .span-2 { grid-column: span 2; }
+    .msg-row {
+      display: grid;
+      grid-template-columns: max-content 1fr max-content;
+      gap: 6px;
+      margin-bottom: 4px;
+      align-items: start;
+    }
+    .btn-primary {
+      background: #1976d2;
+      color: #fff;
+      border: 1px solid #1565c0;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .btn-primary:disabled { background: #90caf9; border-color: #90caf9; cursor: wait; }
+    .btn-icon {
+      background: transparent;
+      color: var(--fg-muted);
+      border: 1px solid var(--border-strong);
+      padding: 0 6px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .error-banner {
+      padding: 8px 12px;
+      background: var(--prov-diverged);
+      border: 1px solid #ef9a9a;
+      border-radius: 4px;
+      color: #b71c1c;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin-bottom: 12px;
+    }
   </style>
 </head>
 <body>
@@ -189,6 +261,21 @@
       "tokenization_diverged",
     ];
 
+    /* Prefilled (renderer → tokenizer) for the live form. The user can
+       still edit either field; this is just the convenience default. */
+    const RENDERER_TOKENIZER_DEFAULTS = {
+      glm5: "zai-org/GLM-5.1",
+      qwen3: "Qwen/Qwen3-8B",
+      qwen3_disable_thinking: "Qwen/Qwen3-8B",
+      kimi_k25: "moonshotai/Kimi-K2.5",
+      kimi_k25_disable_thinking: "moonshotai/Kimi-K2.5",
+      deepseekv3: "deepseek-ai/DeepSeek-V3",
+      deepseekv3_thinking: "deepseek-ai/DeepSeek-V3",
+      deepseekv3_disable_thinking: "deepseek-ai/DeepSeek-V3",
+      minimax_m2: "MiniMaxAI/MiniMax-M2",
+      llama3: "meta-llama/Llama-3.3-70B-Instruct",
+    };
+
     /* ----------------------------------------------------------------- */
     /* Helpers                                                            */
     /* ----------------------------------------------------------------- */
@@ -220,6 +307,187 @@
     /* ----------------------------------------------------------------- */
     /* Components                                                         */
     /* ----------------------------------------------------------------- */
+
+    function LiveProbeForm({ onArtifact, onError, busy, setBusy }) {
+      const [renderer, setRenderer] = useState("glm5");
+      const [tokenizerModel, setTokenizerModel] = useState(RENDERER_TOKENIZER_DEFAULTS.glm5);
+      const [model, setModel] = useState("");
+      const [deploymentId, setDeploymentId] = useState("");
+      const [maxTokens, setMaxTokens] = useState(1024);
+      const [temperature, setTemperature] = useState(0.0);
+      const [trainOnWhat, setTrainOnWhat] = useState("last_assistant_turn");
+      const [messages, setMessages] = useState([
+        { role: "system", content: "Answer with a single integer and nothing else." },
+        { role: "user",   content: "2 + 2 = ?" },
+      ]);
+      const [tools, setTools] = useState("");
+
+      const onRendererChange = (e) => {
+        const v = e.target.value;
+        setRenderer(v);
+        const tok = RENDERER_TOKENIZER_DEFAULTS[v];
+        if (tok) setTokenizerModel(tok);
+      };
+
+      const updateMessage = (i, patch) =>
+        setMessages((prev) => prev.map((m, idx) => (idx === i ? { ...m, ...patch } : m)));
+      const removeMessage = (i) =>
+        setMessages((prev) => prev.filter((_, idx) => idx !== i));
+      const addMessage = (role) =>
+        setMessages((prev) => [...prev, { role, content: "" }]);
+
+      const dispatchPreview = useMemo(() => {
+        if (model && deploymentId) return "ERROR: pass at most one of `model` and `deployment_id`";
+        if (deploymentId) return `mode=deployment  →  accounts/<account>/deployments/${deploymentId}`;
+        if (model) return `mode=explicit  →  ${model}`;
+        const def = RENDERER_TOKENIZER_DEFAULTS[renderer];
+        return `mode=serverless  →  default for renderer=${renderer}` +
+          (def ? "" : "  (NOTE: no registered serverless default — will error)");
+      }, [renderer, model, deploymentId]);
+
+      const onSubmit = useCallback(async (e) => {
+        e.preventDefault();
+        if (busy) return;
+
+        let toolsParsed = [];
+        if (tools.trim()) {
+          try {
+            toolsParsed = JSON.parse(tools);
+            if (!Array.isArray(toolsParsed)) throw new Error("must be a JSON array");
+          } catch (err) {
+            onError(`Tools field is not a JSON array: ${err.message}`);
+            return;
+          }
+        }
+
+        setBusy(true);
+        try {
+          const res = await fetch("/probe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              renderer,
+              tokenizer_model: tokenizerModel,
+              model: model.trim() || null,
+              deployment_id: deploymentId.trim() || null,
+              messages,
+              tools: toolsParsed,
+              max_tokens: Number(maxTokens),
+              temperature: Number(temperature),
+              train_on_what: trainOnWhat,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok || data.error) {
+            onError(data.error || `HTTP ${res.status}`);
+            return;
+          }
+          onArtifact(data, "live");
+        } catch (err) {
+          onError(`fetch failed: ${err.message}`);
+        } finally {
+          setBusy(false);
+        }
+      }, [
+        busy, renderer, tokenizerModel, model, deploymentId,
+        messages, tools, maxTokens, temperature, trainOnWhat,
+        onArtifact, onError, setBusy,
+      ]);
+
+      return (
+        <details open>
+          <summary>Live probe — form input</summary>
+          <form onSubmit={onSubmit} className="form-grid">
+            <label>renderer
+              <input value={renderer} onChange={onRendererChange} list="renderers" />
+              <datalist id="renderers">
+                {Object.keys(RENDERER_TOKENIZER_DEFAULTS).map((r) => <option key={r} value={r} />)}
+              </datalist>
+            </label>
+            <label>tokenizer_model
+              <input value={tokenizerModel} onChange={(e) => setTokenizerModel(e.target.value)} />
+            </label>
+            <label>model <span style={{ color: "var(--fg-muted)", fontWeight: "normal" }}>(optional, mutually exclusive with deployment_id)</span>
+              <input value={model} placeholder="(blank → serverless default)" onChange={(e) => setModel(e.target.value)} />
+            </label>
+            <label>deployment_id <span style={{ color: "var(--fg-muted)", fontWeight: "normal" }}>(optional)</span>
+              <input value={deploymentId} placeholder="(blank → serverless default)" onChange={(e) => setDeploymentId(e.target.value)} />
+            </label>
+            <label>max_tokens
+              <input type="number" min="1" step="1" value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} />
+            </label>
+            <label>temperature
+              <input type="number" min="0" max="2" step="0.05" value={temperature} onChange={(e) => setTemperature(e.target.value)} />
+            </label>
+            <label>train_on_what
+              <select value={trainOnWhat} onChange={(e) => setTrainOnWhat(e.target.value)}>
+                <option value="last_assistant_message">last_assistant_message</option>
+                <option value="last_assistant_turn">last_assistant_turn</option>
+                <option value="all_assistant_messages">all_assistant_messages</option>
+                <option value="all_messages">all_messages</option>
+                <option value="all_tokens">all_tokens</option>
+              </select>
+            </label>
+            <label className="span-2">tools <span style={{ color: "var(--fg-muted)", fontWeight: "normal" }}>(optional, JSON array)</span>
+              <textarea rows="2" value={tools} onChange={(e) => setTools(e.target.value)} placeholder="[]" />
+            </label>
+
+            <div className="span-2">
+              <div style={{ color: "var(--fg-muted)", marginTop: 4, marginBottom: 4 }}>
+                <strong>Dispatch preview:</strong> <code>{dispatchPreview}</code>
+              </div>
+              <div style={{
+                padding: "6px 8px",
+                background: "var(--bg-soft)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                fontSize: 11, color: "var(--fg-muted)",
+              }}>
+                The probe always sends <code>echo=true</code>, <code>raw_output=true</code>,
+                {" "}<code>return_token_ids=true</code> to the gateway. They are needed for
+                token-id ground truth and are recorded verbatim in the artifact.
+              </div>
+            </div>
+
+            <fieldset className="span-2">
+              <legend>messages</legend>
+              {messages.map((m, i) => (
+                <div key={i} className="msg-row">
+                  <select value={m.role} onChange={(e) => updateMessage(i, { role: e.target.value })}>
+                    <option value="system">system</option>
+                    <option value="user">user</option>
+                    <option value="assistant">assistant</option>
+                    <option value="tool">tool</option>
+                  </select>
+                  <textarea
+                    rows="2"
+                    value={m.content}
+                    onChange={(e) => updateMessage(i, { content: e.target.value })}
+                  />
+                  <button type="button" className="btn-icon" onClick={() => removeMessage(i)} title="remove this message">×</button>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                <button type="button" onClick={() => addMessage("user")}>+ user</button>
+                <button type="button" onClick={() => addMessage("assistant")}>+ assistant</button>
+                <button type="button" onClick={() => addMessage("system")}>+ system</button>
+                <button type="button" onClick={() => addMessage("tool")}>+ tool</button>
+              </div>
+            </fieldset>
+
+            <div className="span-2" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+              <button type="submit" disabled={busy} className="btn-primary">
+                {busy ? "Running probe…" : "Run probe"}
+              </button>
+              <span style={{ color: "var(--fg-muted)", fontSize: 12 }}>
+                Submits to <code>/probe</code> on the local server, runs <code>run_probe</code>
+                with these inputs, returns the same JSON the CLI writes.
+              </span>
+            </div>
+          </form>
+        </details>
+      );
+    }
 
     function FilePicker({ onLoad }) {
       const handleChange = useCallback((e) => {
@@ -549,6 +817,8 @@
     function App() {
       const [artifact, setArtifact] = useState(null);
       const [fileName, setFileName] = useState(null);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState(null);
       const [filters, setFilters] = useState({
         prompt_hard_append: true,
         native_generated: true,
@@ -558,15 +828,38 @@
         onlySpecial: false,
       });
 
+      const handleArtifact = useCallback((a, source) => {
+        setArtifact(a);
+        setFileName(source === "live" ? `live (${a?.renderer?.name || "?"})` : source);
+        setError(null);
+      }, []);
+      const handleError = useCallback((msg) => {
+        setError(msg);
+      }, []);
+
       return (
         <>
           <h1>Renderer Verifier — Probe Viewer</h1>
-          <FilePicker onLoad={(a, n) => { setArtifact(a); setFileName(n); }} />
+
+          <LiveProbeForm
+            onArtifact={handleArtifact}
+            onError={handleError}
+            busy={busy}
+            setBusy={setBusy}
+          />
+
+          <details>
+            <summary>Or load an existing probe JSON artifact</summary>
+            <FilePicker onLoad={(a, n) => handleArtifact(a, n)} />
+          </details>
+
+          {error && <div className="error-banner">{error}</div>}
+
           {artifact == null ? (
             <div className="empty-state">
-              Load a probe JSON artifact (produced by{" "}
-              <code>python -m training.verifier render</code>) to see the
-              colour-coded token stream.
+              Type messages in the form above and click <strong>Run probe</strong>,
+              or load a JSON artifact produced by{" "}
+              <code>python -m training.verifier render</code>.
             </div>
           ) : (
             <>
@@ -585,7 +878,8 @@
             Hover any token to see its full audit row. Background = provenance,
             left border colour = chunk_source, underline = trainable
             (renderer_claim_weight &gt; 0), magenta + bold = token id is in
-            tokenizer.special_tokens.
+            tokenizer.special_tokens. Live form posts to <code>/probe</code>
+            on this server (<code>python -m training.verifier.serve</code>).
           </div>
         </>
       );
