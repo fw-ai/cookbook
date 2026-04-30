@@ -2,7 +2,9 @@
 
 Four standalone scripts live in `training/examples/tools/`. Each does one operation; none needs an active trainer.
 
-For renderer validation, see the separate [`training/verifier/SKILL.md`](../../../training/verifier/SKILL.md) — it ships a probe CLI, a batch triage runner with a serverless reachability ping, and a single-file React viewer that highlights every audit-table row by provenance, weight, and inspection-rule matches.
+For renderer work, see the dedicated skills under `cookbook/skills/`:
+- [`renderer/SKILL.md`](../../renderer/SKILL.md) — implementing a new renderer.
+- [`verifier/SKILL.md`](../../verifier/SKILL.md) — validating a renderer against the live gateway and the upstream HF chat template.
 
 ## `promote_checkpoint.py`
 
