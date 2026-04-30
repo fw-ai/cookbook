@@ -150,6 +150,32 @@
       border: 0;
     }
 
+    .advisory {
+      margin: 18px 0 24px;
+      padding: 14px 18px;
+      background: var(--bg-soft);
+      border: 1px solid var(--border-strong);
+      border-left: 3px solid var(--accent);
+      border-radius: 5px;
+      font-size: 13.5px;
+      line-height: 1.55;
+      color: var(--fg-soft);
+    }
+    .advisory .label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 10.5px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+      font-weight: 500;
+    }
+    .advisory strong { color: var(--accent-deep); font-weight: 500; }
+    .advisory code {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+    }
+
     h2 {
       margin: 40px 0 14px;
       font-family: var(--sans);
@@ -1505,6 +1531,16 @@
             appends a new case below; cases stay until you delete them.
           </p>
           <hr className="banner-rule" />
+
+          <aside className="advisory">
+            <span className="label">Heads up</span>
+            Serverless models may render and tokenize differently from your
+            actual RL deployment — different runtimes, optimization passes,
+            sometimes different chat templates. <strong>Probe a real
+            deployment when you can</strong>: enter its id in the{" "}
+            <code>deployment_id</code> field below. Treat serverless probes
+            as approximations of how the deployed model behaves.
+          </aside>
 
           <LiveProbeForm
             onArtifact={addCase}
