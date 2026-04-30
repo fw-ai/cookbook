@@ -182,10 +182,14 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
             )
             return self._send_json({"renderers": sorted(get_registered_renderer_names())})
         if path == "/models":
-            # Live list of Fireworks models in the public account, used by
-            # the GUI to populate the model dropdown. Cheap enough to run
-            # once per page load; not cached so a refresh picks up new
-            # serverless additions.
+            # Live list of *serverless-eligible* Fireworks models in the
+            # public account. `supports_serverless` is an output-only bool
+            # on the gateway Model proto (see fireworks control_plane
+            # protos/gateway/model.proto) and ListModels supports an
+            # AIP-160 filter, so a server-side filter avoids paginating
+            # through the entire catalogue. Used by the GUI to populate
+            # the model dropdown; not cached so a page refresh picks up
+            # new serverless additions.
             try:
                 from fireworks import Fireworks  # noqa: PLC0415
                 api_key = os.environ.get("FIREWORKS_API_KEY")
@@ -195,7 +199,10 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
                     )
                 client = Fireworks(api_key=api_key)
                 models = []
-                for m in client.models.list(account_id="fireworks"):
+                for m in client.models.list(
+                    account_id="fireworks",
+                    filter="supports_serverless=true",
+                ):
                     name = getattr(m, "name", None) or getattr(m, "id", None)
                     if not name:
                         continue
