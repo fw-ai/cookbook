@@ -30,6 +30,8 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "How do I reconnect a training **client** to a running trainer?" | [`references/tools.md`](references/tools.md#reconnect_and_adjust_lrpy) |
 | "Hotload keeps failing — is this a `PER_TRAINER` / `PER_DEPLOYMENT` scope mix-up?" | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) — self-check and reach out to Fireworks support |
 | "How do I verify train vs inference logprobs?" | [`references/tools.md`](references/tools.md#verify_logprobspy) |
+| "I changed a renderer — how do I verify it matches HF / the live gateway?" | [`../../training/verifier/SKILL.md`](../../training/verifier/SKILL.md) |
+| "Why is my model emitting trailing tokens / hard-appends?" / token stream looks wrong | [`../../training/verifier/SKILL.md`](../../training/verifier/SKILL.md) |
 | "Where does checkpoint state live?" / CheckpointKind / `checkpoints.jsonl` | [`references/checkpoints.md`](references/checkpoints.md) |
 | "Continue LoRA training from a prior adapter" / `warm_start_from_adapter` | [`references/checkpoints.md`](references/checkpoints.md#warm-start-from-a-promoted-adapter-lora-only) |
 | Error: `checkpoint "<name>" not found in GCS` | [`references/checkpoints.md`](references/checkpoints.md#when-promote-fails) — validate `output_model_id` first; reach out to Fireworks support if still failing |

@@ -2,6 +2,8 @@
 
 Four standalone scripts live in `training/examples/tools/`. Each does one operation; none needs an active trainer.
 
+For renderer validation, see the separate [`training/verifier/SKILL.md`](../../../training/verifier/SKILL.md) — it ships a probe CLI, a batch triage runner with a serverless reachability ping, and a single-file React viewer that highlights every audit-table row by provenance, weight, and inspection-rule matches.
+
 ## `promote_checkpoint.py`
 
 Promote a sampler checkpoint to a deployable Fireworks model. Queries the control plane directly via `list_checkpoints(job_id)` — no `checkpoints.jsonl` needed (and none is written; that legacy registry was removed when the cookbook moved to the CP-as-source-of-truth model).

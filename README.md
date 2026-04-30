@@ -28,9 +28,20 @@ training/           Training SDK recipes, utilities, and examples
   recipes/          Fork-and-customize training loop scripts
   utils/            Shared config, data loading, losses, metrics
   examples/         Worked examples (RL, SFT, DPO, ORPO)
+  verifier/         Renderer correctness validator + live React viewer
   tests/            Unit and end-to-end tests
 skills/             Agent skills and reference docs
 ```
+
+## Verifying a renderer
+
+Use [`training/verifier/SKILL.md`](training/verifier/SKILL.md) when you
+change a renderer and want to check it against the live Fireworks
+gateway and the upstream HuggingFace chat template, or when a token
+stream from training looks wrong. The verifier ships a probe CLI, a
+batch triage runner, and a single-file React viewer that highlights
+every audit-table row with provenance, weight, and rule-flagged
+inspection reasons.
 
 ## Contributing
 
