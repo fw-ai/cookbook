@@ -19,12 +19,12 @@ def test_reward_fn_requires_matching_numeric_answer():
     assert module.reward_fn("missing", {"ground_truth": "<answer>7</answer>"}) == 0.0
 
 
-def test_dynamic_filter_requires_reward_variance():
+def test_should_accept_requires_reward_variance():
     same_rewards = PromptGroup(data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 0.0])
     varied_rewards = PromptGroup(data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 1.0])
 
-    assert module.dynamic_filter_accept(same_rewards) is False
-    assert module.dynamic_filter_accept(varied_rewards) is True
+    assert module.should_accept(same_rewards) is False
+    assert module.should_accept(varied_rewards) is True
 
 
 def test_dump_trajectory_writes_one_record_per_completion(tmp_path):
@@ -37,11 +37,9 @@ def test_dump_trajectory_writes_one_record_per_completion(tmp_path):
             rewards=[1.0, 0.0],
             completion_lens=[3, 4],
             truncated=[False, True],
-            row_meta={
-                "ground_truth": "<answer>1</answer>",
-                "prompt": [{"role": "user", "content": "Solve"}],
-                "completions": ["<answer>1</answer>", "<answer>2</answer>"],
-            },
+            prompt=[{"role": "user", "content": "Solve"}],
+            completions=["<answer>1</answer>", "<answer>2</answer>"],
+            row_meta={"ground_truth": "<answer>1</answer>"},
         )
     ]
 
@@ -87,5 +85,5 @@ def test_main_requires_deployment_tokenizer_model(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="deployment.tokenizer_model"):
-        module.main(cfg, rollout_fn=module.default_rollout_fn)
+        module.main(cfg)
 

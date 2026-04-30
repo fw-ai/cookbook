@@ -30,7 +30,7 @@ from fireworks.training.sdk import FireworksClient
 from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
 from training.utils.checkpoints import DATALOADER_BASE_NAME
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
-from training.recipes.rl_loop import Config, default_rollout_fn, main
+from training.recipes.rl_loop import Config, main
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +105,7 @@ class TestGRPOResumeE2E:
             ),
         )
 
-        phase1_metrics = main(
-            phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr,
-            rollout_fn=default_rollout_fn,
-        )
+        phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
 
         assert isinstance(phase1_metrics, dict)
         phase1_steps = phase1_metrics["steps"]
@@ -183,10 +180,7 @@ class TestGRPOResumeE2E:
             ),
         )
 
-        phase2_metrics = main(
-            phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr,
-            rollout_fn=default_rollout_fn,
-        )
+        phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
         phase2_steps = phase2_metrics["steps"]
         assert phase2_steps > phase1_steps, (
             f"Phase 2 step count ({phase2_steps}) should exceed phase 1's "

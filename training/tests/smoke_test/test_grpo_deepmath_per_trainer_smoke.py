@@ -46,7 +46,7 @@ def test_grpo_deepmath_per_trainer(
 ):
     # Late imports: module collection must not require FIREWORKS_API_KEY.
     from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
-    from training.recipes.rl_loop import Config, default_rollout_fn, main
+    from training.recipes.rl_loop import Config, main
     import training.recipes.rl_loop as rl_mod
     from training.examples.rl.deepmath.train_deepmath import deepmath_reward
 
@@ -60,7 +60,7 @@ def test_grpo_deepmath_per_trainer(
     # process leaks the patched globals into later tests.
     monkeypatch.setattr(rl_mod, "reward_fn", deepmath_reward)
     # Disable zero-variance filter so a 40-row run still produces steps.
-    monkeypatch.setattr(rl_mod, "dynamic_filter_accept", lambda _: True)
+    monkeypatch.setattr(rl_mod, "should_accept", lambda _: True)
 
     config = Config(
         log_path=tempfile.mkdtemp(prefix="grpo_deepmath_smoke_"),
@@ -92,7 +92,6 @@ def test_grpo_deepmath_per_trainer(
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
         cancel_on_exit=True,
-        rollout_fn=default_rollout_fn,
     )
 
     # No seed pinning: this is an API contract smoke (steps complete, cleanup

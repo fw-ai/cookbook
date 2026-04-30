@@ -156,14 +156,13 @@ def main() -> None:
     from training.examples.rl.deepmath.train_deepmath import deepmath_reward
 
     rl_loop.reward_fn = deepmath_reward
-    rl_loop.dynamic_filter_accept = lambda _: True  # avoid zero-variance filter on tiny runs
+    rl_loop.should_accept = lambda _: True  # avoid zero-variance filter on tiny runs
 
     metrics = rl_loop.main(
         config,
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
         cancel_on_exit=not args.keep_resources,
-        rollout_fn=rl_loop.default_rollout_fn,
     )
     logger.info("Run metrics: %s", metrics)
 

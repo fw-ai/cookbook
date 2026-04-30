@@ -120,10 +120,9 @@ def _run(cfg: rl_loop.Config, rlor_mgr, deploy_mgr, cancel_on_exit: bool) -> dic
     # Patch the reward fn into the recipe module so the same rl_loop.main path
     # used by CI fires with deepmath scoring.
     rl_loop.reward_fn = deepmath_reward
-    rl_loop.dynamic_filter_accept = lambda _: True  # avoid zero-variance filter on tiny runs
+    rl_loop.should_accept = lambda _: True  # avoid zero-variance filter on tiny runs
     return rl_loop.main(
         cfg, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr, cancel_on_exit=cancel_on_exit,
-        rollout_fn=rl_loop.default_rollout_fn,
     )
 
 

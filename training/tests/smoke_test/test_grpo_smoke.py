@@ -55,7 +55,7 @@ def test_grpo_smoke(
 ):
     """2-step GRPO on Qwen3-4B: train, weight sync, train again, cleanup."""
     from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
-    from training.recipes.rl_loop import Config, default_rollout_fn, main
+    from training.recipes.rl_loop import Config, main
     import training.recipes.rl_loop as rl_mod
 
     rlor_mgr, deploy_mgr = smoke_sdk_managers
@@ -97,7 +97,6 @@ def test_grpo_smoke(
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
             cancel_on_exit=True,
-            rollout_fn=default_rollout_fn,
         )
 
         assert isinstance(metrics, dict), f"Expected dict, got {type(metrics)}"
