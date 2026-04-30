@@ -12,7 +12,7 @@ Run::
     python -m training.examples.rl.remote_rollout.train
 
 The ``mock_service`` returns a deterministic two-completion group whose
-rewards have variance (so the GRPO ``dynamic_filter`` filter passes).
+rewards have variance (so the GRPO ``dynamic_filter_accept`` filter passes).
 Swap ``MockRolloutService`` for any class implementing the
 ``RolloutService`` protocol to drive real training.
 """
@@ -31,7 +31,7 @@ from training.utils.rl.rollout import make_remote_rollout_fn
 logger = logging.getLogger(__name__)
 
 
-def dynamic_filter(pg: PromptGroup) -> bool:
+def dynamic_filter_accept(pg: PromptGroup) -> bool:
     return len(set(pg.rewards)) > 1
 
 
@@ -52,4 +52,4 @@ if __name__ == "__main__":
 
     service = MockRolloutService(tokenizer_id=cfg.deployment.tokenizer_model)
     rollout_fn = make_remote_rollout_fn(service)
-    main(cfg, rollout_fn=rollout_fn, dynamic_filter_fn=dynamic_filter, rows=rows)
+    main(cfg, rollout_fn=rollout_fn, dynamic_filter_fn=dynamic_filter_accept, rows=rows)

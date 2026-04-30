@@ -58,7 +58,7 @@ def _grade(parsed_text: str, ground_truth: str) -> float:
     return 1.0 if predicted == truth else 0.0
 
 
-def dynamic_filter(pg: PromptGroup) -> bool:
+def dynamic_filter_accept(pg: PromptGroup) -> bool:
     """Reject zero-variance groups (GRPO assigns zero advantage on ties)."""
     return len(set(pg.rewards)) > 1
 
@@ -155,4 +155,4 @@ if __name__ == "__main__":
         max_head_offpolicy_versions=0,
         deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
     )
-    main(cfg, rollout_fn=_build_rollout_fn(cfg), dynamic_filter_fn=dynamic_filter)
+    main(cfg, rollout_fn=_build_rollout_fn(cfg), dynamic_filter_fn=dynamic_filter_accept)

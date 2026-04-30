@@ -874,7 +874,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             train_fns = TrainStepFns(train_step=train_step)
 
-            def dynamic_filter(pg: PromptGroup) -> bool:
+            def dynamic_filter_accept(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
 
             all_prompts = seed_contexts * cfg.epochs
@@ -895,7 +895,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
                 train_fns=train_fns,
                 prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=dynamic_filter,
+                dynamic_filter_fn=dynamic_filter_accept,
                 global_step=step_offset,
                 metrics_callback=_filtered_step_callback,
                 weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,

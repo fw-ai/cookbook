@@ -49,7 +49,7 @@ from training.utils.rl.rollout import make_remote_rollout_fn
 from training.utils.supervised import build_renderer
 
 
-def dynamic_filter(pg: PromptGroup) -> bool:
+def dynamic_filter_accept(pg: PromptGroup) -> bool:
     """Reject zero-variance groups (GRPO assigns zero advantage on ties)."""
     return len(set(pg.rewards)) > 1
 
@@ -101,4 +101,4 @@ if __name__ == "__main__":
     #       reward_fn=trainer_grade,
     #   )
 
-    main(cfg, rollout_fn=rollout_fn, dynamic_filter_fn=dynamic_filter)
+    main(cfg, rollout_fn=rollout_fn, dynamic_filter_fn=dynamic_filter_accept)

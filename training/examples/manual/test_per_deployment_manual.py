@@ -156,7 +156,7 @@ def main() -> None:
     from training.examples.rl.deepmath.train_deepmath import deepmath_reward
 
     rl_loop.reward_fn = deepmath_reward
-    rl_loop.dynamic_filter = lambda _: True  # avoid zero-variance filter on tiny runs
+    rl_loop.dynamic_filter_accept = lambda _: True  # avoid zero-variance filter on tiny runs
 
     metrics = rl_loop.main(
         config,

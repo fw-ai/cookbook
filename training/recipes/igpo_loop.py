@@ -232,7 +232,7 @@ def reward_fn(completion: str, row: dict) -> float:
 # ---------------------------------------------------------------------------
 
 
-def dynamic_filter(pg: PromptGroup) -> bool:
+def dynamic_filter_accept(pg: PromptGroup) -> bool:
     """Reject groups where all rewards are identical."""
     return len(set(pg.rewards)) > 1
 
@@ -803,7 +803,7 @@ def main(
                     sample_fns=(sample_one_prompt(row) for row in remaining_rows),
                     train_fns=train_fns,
                     prompt_groups_per_step=prompt_groups_per_step,
-                    dynamic_filter_fn=dynamic_filter,
+                    dynamic_filter_fn=dynamic_filter_accept,
                     global_step=step_offset,
                 )
             )
