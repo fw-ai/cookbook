@@ -267,7 +267,26 @@
       border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-soft);
     }
+    .form-grid input:disabled,
+    .form-grid select:disabled,
+    .form-grid textarea:disabled {
+      background: var(--bg-soft);
+      color: var(--fg-mute);
+      cursor: not-allowed;
+    }
     .form-grid textarea { resize: vertical; min-height: 38px; line-height: 1.5; }
+
+    /* Inline note shown next to the model field when a serverless
+       model is selected. Amber, not red — it's a reminder, not an error. */
+    .billing-note {
+      display: block;
+      margin-top: 4px;
+      font-size: 11px;
+      font-weight: 400;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--warn-fg);
+    }
 
     .form-grid fieldset {
       grid-column: span 2;
@@ -1065,8 +1084,12 @@
             <label>tokenizer_model (HuggingFace id)
               <input value={tokenizerModel} placeholder="e.g. zai-org/GLM-5.1" onChange={(e) => setTokenizerModel(e.target.value)} />
             </label>
-            <label>model (Fireworks id, mutually exclusive with deployment_id)
-              <select value={model} onChange={(e) => setModel(e.target.value)}>
+            <label>model (Fireworks serverless)
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={!!deploymentId}
+              >
                 <option value="">— pick one —</option>
                 {availableModels.map((m) => (
                   <option key={m.name} value={m.name}>{m.name}</option>
@@ -1077,9 +1100,20 @@
                   /models error: {modelsError}
                 </span>
               )}
+              {model && (
+                <span className="billing-note">
+                  ⚠ Serverless probes hit the live API and are billed at this
+                  model's standard per-token rate.
+                </span>
+              )}
             </label>
-            <label>deployment_id (optional, mutually exclusive with model)
-              <input value={deploymentId} placeholder="e.g. my-glm5-probe" onChange={(e) => setDeploymentId(e.target.value)} />
+            <label>deployment_id (your RL deployment — recommended)
+              <input
+                value={deploymentId}
+                placeholder="e.g. my-glm5-probe"
+                onChange={(e) => setDeploymentId(e.target.value)}
+                disabled={!!model}
+              />
             </label>
             <label>max_tokens
               <input type="number" min="1" step="1" value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} />
