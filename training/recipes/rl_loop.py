@@ -8,11 +8,15 @@ strategy to fit your task.
 Each optimizer step samples ``prompt_groups_per_step`` prompts concurrently,
 then runs a single training update + ``optim_step`` (1:1 ratio).
 
-RL losses can execute in two places:
-- Server-side builtin path: ``forward_backward(...)`` with a builtin kernel
-  resolved by :func:`training.utils.rl.losses.resolve_builtin_loss`.
-- Client-side custom path: ``forward_backward_custom(...)`` with a Python
-  loss closure built by :func:`training.utils.rl.losses.build_loss_fn`.
+RL losses can execute in two places, picked **explicitly** by ``cfg.loss_path``:
+- ``"builtin"``: ``forward_backward(...)`` with a server-side fused kernel,
+  configured via :func:`training.utils.rl.losses.get_builtin_kernel_config`.
+- ``"client"``: ``forward_backward_custom(...)`` with a Python loss closure
+  built by :func:`training.utils.rl.losses.build_loss_fn`.
+
+``validate_loss_path`` runs at startup and raises with an actionable message
+if the chosen path is incompatible with this run's config/profile (e.g.
+``"builtin"`` + ``kl_beta>0`` or PP>1).
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -74,11 +78,13 @@ from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
 from training.utils.rl.losses import (
+    LossPath,
     PolicyLoss,
     build_builtin_loss_datums,
     build_loss_fn,
     combine_prompt_groups,
-    resolve_builtin_loss,
+    get_builtin_kernel_config,
+    validate_loss_path,
 )
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -128,11 +134,19 @@ class Config:
     Defaults to ``GradAccNormalization.NUM_LOSS_TOKENS`` (per-token mean)."""
 
     policy_loss: PolicyLoss = "grpo"
-    """One of the registered RL policy losses (see :data:`PolicyLoss`).
+    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
 
-    If an eligible builtin kernel exists for the selected loss, training uses
-    the server-side ``forward_backward(...)`` path. Otherwise it falls back to
-    the client-side ``forward_backward_custom(...)`` path.
+    loss_path: LossPath = "client"
+    """Which forward/backward path to use:
+
+    - ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
+      kernel. Faster, but cannot apply KL (``kl_beta`` must be 0) and
+      requires PP=1.
+    - ``"client"`` -- client-side ``forward_backward_custom(...)``. Always
+      works; slower because of an extra forward pass for old-policy logprobs.
+
+    Validated at startup by :func:`validate_loss_path` -- mismatches raise,
+    they no longer silently fall back.
     """
 
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
@@ -614,31 +628,23 @@ def main(
                 pg.ref_logprobs = [ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)]
                 idx += n
 
-        # Server-side fast path: resolve the builtin kernel/config used by
-        # forward_backward(...). Returns None when this loss has no builtin
-        # implementation, when kl_beta > 0 (builtin kernels do not consume
-        # ref_logprobs, so the KL term would be silently dropped -- see
-        # resolve_builtin_loss docstring), or raises when the current profile
-        # is ineligible.
-        builtin_server_loss = resolve_builtin_loss(
-            cfg.policy_loss,
-            policy_profile,
-            kl_beta=cfg.kl_beta,
-            dapo_config=cfg.dapo,
-            gspo_config=cfg.gspo,
-            cispo_config=cfg.cispo,
-            ratio_log_cap=cfg.ratio_log_cap,
-            eps_clip=cfg.eps_clip,
-            eps_clip_high=cfg.eps_clip_high,
-        )
-        if cfg.kl_beta > 0 and builtin_server_loss is None:
+        # Validate the user's loss_path choice against this run's config and
+        # training profile. Raises (no silent fallback) if builtin was picked
+        # in a configuration that forbids it (PP > 1, kl_beta > 0, or a
+        # client-only loss).
+        validate_loss_path(cfg, policy_profile)
+        if cfg.loss_path == "builtin":
+            builtin_kernel = get_builtin_kernel_config(cfg)
             logger.info(
-                "policy_loss=%s + kl_beta=%g: routing to client-side "
-                "forward_backward_custom (server-side builtin kernels ignore "
-                "ref_logprobs, so KL would be silently dropped). Expect one "
-                "extra forward pass per step.",
+                "policy_loss=%s loss_path=builtin (server-side kernel=%s)",
+                cfg.policy_loss, builtin_kernel[0],
+            )
+        else:
+            builtin_kernel = None
+            logger.info(
+                "policy_loss=%s loss_path=client (forward_backward_custom; "
+                "extra forward pass for old-policy logprobs)",
                 cfg.policy_loss,
-                cfg.kl_beta,
             )
 
         def fwd_bwd_minibatch(
@@ -649,8 +655,8 @@ def main(
             Callers pre-compute ``old_policy_logprobs`` once per rollout batch and pass
             a slice of the flattened rollout tensors for this minibatch.
             """
-            if builtin_server_loss is not None:
-                kernel_loss, kernel_config = builtin_server_loss
+            if builtin_kernel is not None:
+                kernel_loss, kernel_config = builtin_kernel
                 rl_datums = build_builtin_loss_datums(
                     data,
                     adv,

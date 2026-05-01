@@ -76,11 +76,13 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.dro import DROConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.losses import (
+    LossPath,
     PolicyLoss,
     build_builtin_loss_datums,
     build_loss_fn,
     combine_prompt_groups,
-    resolve_builtin_loss,
+    get_builtin_kernel_config,
+    validate_loss_path,
 )
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
@@ -132,12 +134,12 @@ class FrozenLakeConfig:
     max_concurrent: int = 16
 
     policy_loss: PolicyLoss = "grpo"
-    """One of the registered RL policy losses (see :data:`PolicyLoss`).
+    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
 
-    If an eligible builtin kernel exists for the selected loss, training uses
-    the server-side ``forward_backward(...)`` path. Otherwise it falls back to
-    the client-side ``forward_backward_custom(...)`` path.
-    """
+    loss_path: LossPath = "client"
+    """``"builtin"`` for server-side fused kernel, ``"client"`` for the
+    Python loss closure. Validated at startup -- mismatches raise instead
+    of silently falling back."""
     eps_clip: float = 0.2
     """PPO clip epsilon for the off-policy ratio (GRPO/DAPO)."""
     eps_clip_high: float | None = None
@@ -764,28 +766,28 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     ]
                     idx += n
 
-            # Server-side fast path: resolve the builtin kernel/config used by
-            # forward_backward(...). Returns None when this loss has no builtin
-            # implementation or when kl_beta > 0 (builtin kernels do not
-            # consume ref_logprobs, so the KL term would be silently dropped --
-            # see resolve_builtin_loss docstring), and raises when the current
-            # profile is ineligible.
-            builtin_server_loss = resolve_builtin_loss(
-                cfg.policy_loss,
-                profile,
-                kl_beta=cfg.kl_beta,
-                ratio_log_cap=cfg.ratio_log_cap,
-            )
+            # Validate user's explicit loss_path choice; raises (no silent
+            # fallback) if builtin was picked in a configuration that forbids
+            # it (PP > 1, kl_beta > 0, or a client-only loss).
+            validate_loss_path(cfg, profile)
+            if cfg.loss_path == "builtin":
+                builtin_kernel = get_builtin_kernel_config(cfg)
+                logger.info(
+                    "policy_loss=%s loss_path=builtin (server-side kernel=%s)",
+                    cfg.policy_loss, builtin_kernel[0],
+                )
+            else:
+                builtin_kernel = None
+                logger.info(
+                    "policy_loss=%s loss_path=client", cfg.policy_loss,
+                )
 
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 prox_fwd = policy.forward(data, "cross_entropy")
                 prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-                if builtin_server_loss is not None:
-                    # Server-side builtin path: pre-pack the rollout tensors
-                    # into datums the trainer kernel understands, then call
-                    # forward_backward(...).
-                    kernel_loss, kernel_config = builtin_server_loss
+                if builtin_kernel is not None:
+                    kernel_loss, kernel_config = builtin_kernel
                     rl_datums = build_builtin_loss_datums(
                         data,
                         adv,
@@ -797,8 +799,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     return policy.forward_backward(
                         rl_datums, kernel_loss, loss_fn_config=kernel_config,
                     )
-                # Client-side custom path: execute the Python loss closure
-                # returned by build_loss_fn(...) via forward_backward_custom(...).
                 return policy.forward_backward_custom(
                     data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
                 )

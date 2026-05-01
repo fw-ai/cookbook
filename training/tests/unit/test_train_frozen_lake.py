@@ -654,9 +654,11 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     ]
     assert "fwd_bwd_call" in events
     assert events["build_loss_fn_args"].ratio_log_cap == 9.0
-    # kl_beta > 0 forces the client-side custom path (server builtin kernels
-    # do not consume ref_logprobs and would silently drop the KL penalty --
-    # see resolve_builtin_loss gate in training/utils/rl/losses.py).
+    # FrozenLakeConfig defaults to loss_path='client' (always-safe path).
+    # Builtin kernels do not consume ref_logprobs and would silently drop
+    # the KL penalty -- validate_loss_path guards against that explicitly,
+    # but the default already matches what kl_beta>0 needs.
+    assert cfg.loss_path == "client"
     assert cfg.kl_beta > 0
     assert events["fwd_bwd_call"]["loss_fn"] == "loss-fn"
     assert "loss_fn_config" not in events["fwd_bwd_call"]

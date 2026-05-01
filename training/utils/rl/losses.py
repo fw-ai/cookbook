@@ -35,6 +35,26 @@ catches drift if a new ``LossSpec`` is registered without updating this
 """
 
 
+LossPath = Literal["builtin", "client"]
+"""Which forward/backward path the recipe uses.
+
+- ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused kernel
+  (PPO, GSPO, etc.). Faster, but the kernel sees only
+  ``(target_tokens, logprobs, advantages)`` so KL penalties (``kl_beta>0``)
+  cannot be applied; pipeline parallelism > 1 is also unsupported.
+- ``"client"`` -- client-side ``forward_backward_custom(...)`` with the
+  Python loss closure. Always works, slower because of an extra forward pass
+  for old-policy logprobs.
+
+The choice is **explicit**: ``validate_loss_path`` raises with an
+actionable message if the user picked ``"builtin"`` in a configuration that
+forbids it, instead of silently falling back to client-side. This avoids
+the historical footgun where setting ``kl_beta > 0`` would magically route
+to the client path -- a behavior that broke once anyone reordered the gate
+or introduced a new builtin kernel that consumed ref logprobs.
+"""
+
+
 LOSS_REGISTRY: dict[str, LossSpec] = {
     spec.name: spec
     for spec in (
@@ -78,6 +98,7 @@ class LossArgs(Protocol):
     """
 
     policy_loss: PolicyLoss
+    loss_path: LossPath
     kl_beta: float
     eps_clip: float
     eps_clip_high: float | None
@@ -98,6 +119,9 @@ class LossConfig:
     """
 
     policy_loss: PolicyLoss = "grpo"
+    loss_path: LossPath = "client"
+    """Default ``"client"`` because it works for every loss/PP/kl_beta combo;
+    opt into ``"builtin"`` explicitly when you want the server-side fast path."""
     kl_beta: float = 0.0
     eps_clip: float = 0.2
     eps_clip_high: float | None = None
@@ -113,106 +137,77 @@ def _supported_policy_losses_text() -> str:
     return ", ".join(SUPPORTED_POLICY_LOSSES)
 
 
-def resolve_builtin_loss(
-    policy_loss: str,
-    profile: Any | None = None,
-    *,
-    kl_beta: float = 0.0,
-    dapo_config: DAPOConfig | None = None,
-    dro_config: DROConfig | None = None,
-    gspo_config: GSPOConfig | None = None,
-    cispo_config: CISPOConfig | None = None,
-    ratio_log_cap: float = 20.0,
-    eps_clip: float = 0.2,
-    eps_clip_high: float | None = None,
-) -> tuple[str, dict[str, Any]] | None:
-    """Resolve the builtin server-side loss kernel for a policy loss.
+def validate_loss_path(args: LossArgs, profile: Any | None = None) -> None:
+    """Reject loss-path / config combinations that would silently misbehave.
 
-    Returns ``None`` when *policy_loss* is registered as client-side-only, or
-    when it otherwise has no builtin kernel config. In both cases the caller
-    should fall back to ``forward_backward_custom(...)``.
+    Call this **once at recipe startup** so a misconfigured run fails before
+    rollouts begin instead of after. Replaces the historical ``resolve_builtin_loss``
+    fallback (which returned ``None`` when builtin was ineligible and let the
+    recipe quietly switch to client-side).
 
-    Also returns ``None`` when ``kl_beta > 0``. The server-side builtin path
-    packs datums with only ``target_tokens`` / ``logprobs`` / ``advantages``
-    (see :func:`build_builtin_loss_datums`) and never sends ``ref_logprobs``,
-    so the KL term ``kl_beta * (pi - pi_ref)`` would be silently dropped.
-    The caller must use ``forward_backward_custom(...)`` to apply a KL penalty.
+    No-op when ``args.loss_path == "client"`` (client path always works).
+    Raises ``ValueError`` when ``args.loss_path == "builtin"`` and any of:
 
-    Raises ``ValueError`` when the current *profile* cannot use builtin losses
-    (for example, PP > 1), instead of silently falling back.
+    - the loss is registered as client-side-only (no builtin kernel),
+    - ``args.kl_beta > 0`` (builtin datums have no ``ref_logprobs`` field, so
+      the KL term ``kl_beta * (pi - pi_ref)`` would be silently dropped --
+      see :func:`build_builtin_loss_datums`),
+    - ``profile.pipeline_parallelism > 1`` (server kernels don't support PP).
     """
-    spec = LOSS_REGISTRY.get(policy_loss)
-    if spec is None or spec.builtin_config_builder is None:
-        return None
+    if args.loss_path == "client":
+        return
 
-    if kl_beta > 0.0:
-        return None
-
+    spec = LOSS_REGISTRY.get(args.policy_loss)
+    if spec is None:
+        supported = _supported_policy_losses_text()
+        raise ValueError(
+            f"Unsupported policy_loss '{args.policy_loss}'. "
+            f"Expected one of: {supported}."
+        )
+    if spec.builtin_config_builder is None:
+        raise ValueError(
+            f"loss_path='builtin' requested but '{args.policy_loss}' is "
+            f"registered as client-side-only (no builtin kernel). "
+            f"Set loss_path='client' or pick a different policy_loss."
+        )
+    if args.kl_beta > 0.0:
+        raise ValueError(
+            f"loss_path='builtin' requested with kl_beta={args.kl_beta} > 0. "
+            f"Server-side builtin kernels receive datums without ref_logprobs "
+            f"(see build_builtin_loss_datums) so the KL term would be "
+            f"silently dropped. Set loss_path='client' or kl_beta=0."
+        )
     if profile is not None:
         pp = getattr(profile, "pipeline_parallelism", 1)
         if pp > 1:
             raise ValueError(
-                f"Pipeline parallelism (PP={pp}) is not supported with server-side "
-                f"built-in loss '{policy_loss}'. Use a training shape with PP=1, "
-                f"or use a custom policy_loss (which falls back to two-pass)."
+                f"loss_path='builtin' requested with pipeline_parallelism={pp} > 1. "
+                f"Server-side builtin kernels do not support PP. "
+                f"Set loss_path='client' or use a PP=1 training shape."
             )
 
+
+def get_builtin_kernel_config(args: LossArgs) -> tuple[str, dict[str, Any]]:
+    """Return ``(kernel_loss_name, kernel_config)`` for the builtin path.
+
+    Caller must have already passed :func:`validate_loss_path` -- this helper
+    will raise ``KeyError`` / ``AttributeError`` on a config that wasn't
+    validated, by design (loud failure beats silent misconfiguration).
+    """
+    if args.loss_path != "builtin":
+        raise ValueError(
+            f"get_builtin_kernel_config called with loss_path={args.loss_path!r}; "
+            f"only valid when loss_path='builtin'."
+        )
+    spec = LOSS_REGISTRY[args.policy_loss]
     return spec.builtin_config_builder(
-        dapo_config=dapo_config,
-        dro_config=dro_config,
-        gspo_config=gspo_config,
-        cispo_config=cispo_config,
-        ratio_log_cap=ratio_log_cap,
-        eps_clip=eps_clip,
-        eps_clip_high=eps_clip_high,
-    )
-
-
-def check_builtin_loss_eligibility(
-    policy_loss: str,
-    profile: Any | None,
-    *,
-    kl_beta: float = 0.0,
-) -> None:
-    """Reject unsupported parallelism configurations early.
-
-    Must be called before rollout generation to avoid wasted work.
-
-    Raises ``ValueError`` when:
-    - Any builtin loss is used with PP > 1 (server kernels don't support PP)
-    - GSPO + TP/CP is caught server-side only (profile doesn't expose TP/CP)
-    """
-    resolve_builtin_loss(policy_loss, profile, kl_beta=kl_beta)
-
-
-def get_builtin_loss_config(
-    policy_loss: str,
-    *,
-    kl_beta: float = 0.0,
-    dapo_config: DAPOConfig | None = None,
-    dro_config: DROConfig | None = None,
-    gspo_config: GSPOConfig | None = None,
-    cispo_config: CISPOConfig | None = None,
-    ratio_log_cap: float = 20.0,
-    eps_clip: float = 0.2,
-    eps_clip_high: float | None = None,
-) -> tuple[str, dict[str, Any]] | None:
-    """Return ``(kernel_loss_name, kernel_config)`` for a supported built-in loss.
-
-    Returns ``None`` for losses that are registered as client-side-only, or
-    that otherwise have no builtin kernel config.
-    """
-    return resolve_builtin_loss(
-        policy_loss,
-        None,
-        kl_beta=kl_beta,
-        dapo_config=dapo_config,
-        dro_config=dro_config,
-        gspo_config=gspo_config,
-        cispo_config=cispo_config,
-        ratio_log_cap=ratio_log_cap,
-        eps_clip=eps_clip,
-        eps_clip_high=eps_clip_high,
+        dapo_config=args.dapo,
+        dro_config=args.dro,
+        gspo_config=args.gspo,
+        cispo_config=args.cispo,
+        ratio_log_cap=args.ratio_log_cap,
+        eps_clip=args.eps_clip,
+        eps_clip_high=args.eps_clip_high,
     )
 
 
@@ -350,8 +345,9 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
 
     The returned callable is only used on the
     ``forward_backward_custom(...)`` path. Builtin server-side kernels are
-    resolved separately by :func:`resolve_builtin_loss`. Losses registered with
-    ``builtin_config_builder=None`` always take this client-side path.
+    resolved separately by :func:`get_builtin_kernel_config`. Losses
+    registered with ``builtin_config_builder=None`` always take this
+    client-side path.
 
     *args* implements the :class:`LossArgs` protocol -- typically the recipe
     ``Config`` dataclass itself, which exposes ``policy_loss``, ``kl_beta``,
