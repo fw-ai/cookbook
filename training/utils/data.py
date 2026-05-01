@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -13,6 +14,22 @@ import requests
 from fireworks.training.sdk.errors import request_with_retries
 
 logger = logging.getLogger(__name__)
+
+
+def replicate_rows_for_epochs(
+    rows: List[Dict[str, Any]], epochs: int,
+) -> List[Dict[str, Any]]:
+    """Duplicate ``rows`` ``epochs`` times with INDEPENDENT row dicts.
+
+    The naive ``rows * epochs`` only multiplies list references -- every
+    epoch ends up sharing the same dict instances.  Any rollout function
+    that mutates its input row in place (attaching scratch fields,
+    normalizing prompt data, caching renders) leaks that mutation into
+    every later epoch, so subsequent passes train on the already-mutated
+    row instead of the original dataset.  ``copy.deepcopy`` per row per
+    epoch gives each epoch its own independent copies.
+    """
+    return [copy.deepcopy(r) for _ in range(epochs) for r in rows]
 
 
 class RLPromptDataset:

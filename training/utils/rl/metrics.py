@@ -159,8 +159,21 @@ def compute_step_metrics(
 
     entropy_vals: list[float] = []
     for pg in prompt_groups:
-        for inf_lp in pg.inf_logprobs:
-            resp_start = max(0, pg.prompt_len - 1)
+        # Per-sample prompt boundary: heterogeneous rollouts (multi-turn,
+        # tool branches) have different prefix lengths per sample, so
+        # using the scalar ``pg.prompt_len`` would slice prompt tokens
+        # into the response window for short-prefix samples and drop
+        # response tokens for long-prefix samples -- silently corrupting
+        # the entropy metric on the rollout shapes ``prompt_lens`` was
+        # added to support.  Fall back to ``prompt_len`` when
+        # ``prompt_lens`` is missing (legacy single-turn rollouts).
+        per_sample = pg.prompt_lens if pg.prompt_lens is not None else None
+        for i, inf_lp in enumerate(pg.inf_logprobs):
+            sample_prompt_len = (
+                per_sample[i] if per_sample is not None and i < len(per_sample)
+                else pg.prompt_len
+            )
+            resp_start = max(0, sample_prompt_len - 1)
             resp_lp = inf_lp[resp_start:] if len(inf_lp) > resp_start else []
             if resp_lp:
                 entropy_vals.append(-sum(resp_lp) / len(resp_lp))
@@ -177,11 +190,15 @@ def compute_step_metrics(
         metrics["rollout/sample_fail_count"] = loop_stats["sample_fails"]
         metrics["rollout/fwd_bwd_count"] = n_accum
 
-        sample_wait_time = float(loop_stats["sample_wait_time"])
+        sample_wait_time = float(loop_stats.get("sample_wait_time", 0.0))
         metrics["perf/sample_wait_time"] = sample_wait_time
         # The ratio is defined over the same sampling window that drives
         # fwd_bwd firing: queue-wait time divided by sampling-loop wall time.
-        step_wall_time = float(loop_stats["step_wall_time"])
+        # The async path computes ``step_wall_time`` after ``train_step``
+        # returns (so it can include the train_step wall time itself), so
+        # ``loop_stats`` may not have the key when this metrics fn fires --
+        # default to 0.0 in that case and let ratio metrics no-op.
+        step_wall_time = float(loop_stats.get("step_wall_time", 0.0))
         if step_wall_time > 0:
             wait_ratio = sample_wait_time / step_wall_time
             metrics["perf/wait_time_ratio"] = wait_ratio

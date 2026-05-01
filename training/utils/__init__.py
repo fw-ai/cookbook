@@ -56,6 +56,8 @@ __all__ = [
     "WandBConfig",
     "compute_advantages",
     "compute_pass_at_k",
+    "CursorDataLoader",
+    "CursorItem",
     "create_trainer_job",
     "request_trainer_job",
     "wait_trainer_job",
@@ -68,6 +70,7 @@ __all__ = [
     "iter_preference_examples",
     "load_jsonl_dataset",
     "load_preference_dataset",
+    "replicate_rows_for_epochs",
     "log_metrics_json",
     "make_render_dataloader",
     "make_orpo_loss_fn",
@@ -116,7 +119,9 @@ from training.utils.data import (
     find_common_prefix_length,
     normalize_preference_row,
     prepare_sampling_messages,
+    replicate_rows_for_epochs,
 )
+from training.utils.dataloader import CursorDataLoader, CursorItem
 from training.utils.dataloader_cursor import RawRowCursor
 from training.utils.infra import (
     Infra,

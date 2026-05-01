@@ -218,6 +218,13 @@ class PromptGroup:
     """Raw completion texts (for trajectory logging)."""
     row_meta: dict | None = None
     """Dataset row metadata, e.g. ground_truth (for trajectory logging)."""
+    prompt_lens: List[int] | None = None
+    """Per-sample prompt boundaries.  Heterogeneous rollouts (multi-turn,
+    tool branches) have different prefix lengths per sample, so the scalar
+    ``prompt_len`` cannot represent them faithfully -- ``prompt_lens[i]``
+    is the boundary for ``data[i]``.  Left ``None`` for legacy single-turn
+    rollouts where every sample shares the same prefix; ``combine_prompt_groups``
+    then falls back to ``[prompt_len] * len(data)``."""
 
 
 def combine_prompt_groups(
@@ -238,7 +245,10 @@ def combine_prompt_groups(
         advantages.extend(pg.advantages)
         if pg.ref_logprobs is not None:
             ref_logprobs.extend(pg.ref_logprobs)
-        prompt_lens.extend([pg.prompt_len] * len(pg.data))
+        if pg.prompt_lens is not None:
+            prompt_lens.extend(pg.prompt_lens)
+        else:
+            prompt_lens.extend([pg.prompt_len] * len(pg.data))
         inf_logprobs.extend(pg.inf_logprobs)
 
     return data, advantages, ref_logprobs, prompt_lens, inf_logprobs

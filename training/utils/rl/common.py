@@ -29,12 +29,17 @@ def _get_loss_mask(
     dtype: torch.dtype,
     device: torch.device,
 ) -> torch.Tensor:
-    """Extract per-position loss mask from ``loss_fn_inputs["loss_mask"]``.
+    """Extract per-position loss mask from ``loss_fn_inputs["weights"]``.
 
     Returns a tensor of shape ``[resp_len]`` sliced from ``response_start``.
-    Falls back to all-ones (no masking) when the datum has no ``loss_mask``.
+    Falls back to ``loss_fn_inputs["loss_mask"]`` for legacy datums and
+    finally to all-ones (no masking) when neither is present.
+
+    The trainer SDK rejects any ``loss_fn_inputs`` key other than
+    ``{"target_tokens", "weights"}`` for ``forward_backward_custom``, so
+    new producers MUST write the per-token mask under ``"weights"``.
     """
-    mask_td = datum.loss_fn_inputs.get("loss_mask")
+    mask_td = datum.loss_fn_inputs.get("weights") or datum.loss_fn_inputs.get("loss_mask")
     if mask_td is not None:
         mask_vals = mask_td.data[response_start : response_start + resp_len]
         if len(mask_vals) < resp_len:

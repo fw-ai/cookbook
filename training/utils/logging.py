@@ -39,6 +39,7 @@ def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
             wandb.define_metric("rollout/*", step_metric="train/step")
             wandb.define_metric("batch/*", step_metric="train/step")
             wandb.define_metric("infra/*", step_metric="train/step")
+            wandb.define_metric("ctx/*", step_metric="train/step")
             logger.info("WandB: %s", wandb.run.url)
         return True
     except ImportError:

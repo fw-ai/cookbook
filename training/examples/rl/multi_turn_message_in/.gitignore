@@ -1,0 +1,3 @@
+# Materialized GSM8K splits — regenerate with `python prepare_data.py`.
+train.jsonl
+test.jsonl

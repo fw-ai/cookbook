@@ -41,12 +41,19 @@ logger = logging.getLogger(__name__)
 
 def validate_config(
     base_model: str,
-    dataset: str,
+    dataset: str | None,
     hotload: WeightSyncConfig | None = None,
     deploy: DeployConfig | None = None,
     output_model_id: str | None = None,
+    *,
+    require_dataset: bool = True,
 ) -> None:
-    """Pre-flight validation. Catches misconfiguration before provisioning GPUs."""
+    """Pre-flight validation. Catches misconfiguration before provisioning GPUs.
+
+    ``require_dataset=False`` skips the dataset check so async recipes that
+    accept ``rows=`` directly (no JSONL path/URL) can still run the
+    base_model and output_model_id checks.
+    """
     errors: list[str] = []
 
     if not base_model:
@@ -67,7 +74,7 @@ def validate_config(
             )
         )
 
-    if not dataset:
+    if require_dataset and not dataset:
         errors.append(
             format_sdk_error(
                 "Missing dataset",
