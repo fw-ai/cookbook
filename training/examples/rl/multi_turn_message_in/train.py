@@ -27,7 +27,7 @@ from typing import Iterator
 
 from training.examples.rl.multi_turn_message_in.rollout import make_rollout_fn
 from training.recipes.async_rl_loop import Config, main
-from training.utils import DeployConfig, WandBConfig, WeightSyncConfig
+from training.utils import DeployConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,6 +66,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--prompt-groups-per-step", type=int, default=8)
     p.add_argument("--learning-rate", type=float, default=1.7e-5)
     p.add_argument("--kl-beta", type=float, default=0.0)
+    p.add_argument("--max-head-offpolicy-versions", type=int, default=0,
+                   help="Off-policy staleness budget in optimizer-step versions (0 = strict on-policy).")
+    p.add_argument("--ppo-n-minibatches", type=int, default=1,
+                   help="Inner PPO minibatches per rollout batch (1 = legacy 1:1).")
+    p.add_argument("--filter-constant-reward", action="store_true",
+                   help="Drop prompt groups whose samples all share the same reward (zero GRPO advantage).")
     p.add_argument("--max-turns", type=int, default=2,
                    help="Max LLM calls per trajectory (AReaL default: 2)")
     p.add_argument("--log-path", default="./gsm8k_mt_logs")
@@ -96,20 +102,28 @@ def run():
         epochs=args.epochs,
         max_rows=args.max_rows,
         prompt_groups_per_step=args.prompt_groups_per_step,
+        max_head_offpolicy_versions=args.max_head_offpolicy_versions,
+        ppo_n_minibatches=args.ppo_n_minibatches,
         output_model_id=args.output_model_id,
         deployment=DeployConfig(tokenizer_model=args.tokenizer_model),
-        weight_sync=WeightSyncConfig(weight_sync_interval=1),
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
             run_name=f"gsm8k-mt-{int(time.time()) % 100000}",
         ),
     )
+    # Drop prompt groups whose rewards are constant across all samples --
+    # GRPO z-score advantage is 0 there, so the optimizer step is a no-op.
+    dynamic_filter_fn = (
+        (lambda pg: len(set(pg.rewards)) > 1)
+        if args.filter_constant_reward else None
+    )
     main(
         cfg,
         rollout_fn_factory=make_rollout_fn,
         rows=rows,
         rollout_extras={"max_turns": args.max_turns},
+        dynamic_filter_fn=dynamic_filter_fn,
     )
 
 
