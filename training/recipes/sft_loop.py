@@ -340,10 +340,10 @@ def run_eval(
 ) -> float | None:
     """Run evaluation without affecting model weights or optimizer state.
 
-    Uses forward_backward_custom with a zero-gradient loss function: the
-    training loss computes correct metrics, but the returned loss is
-    multiplied by zero so backward produces zero gradients.  This avoids
-    corrupting Adam's momentum/variance estimates.
+    Uses forward (no backward) so weights, gradient state, and Adam moments
+    are untouched. Logprobs come back from the server; the training loss
+    function is invoked client-side purely to compute metrics, and the
+    returned loss tensor is discarded.
     """
     if not eval_data:
         return None
@@ -353,31 +353,27 @@ def run_eval(
     eval_loss_sum = 0.0
     eval_resp_tokens = 0
 
-    def _make_eval_loss_fn():
-        train_loss_fn = make_batch_weighted_sft_loss_fn()
+    train_loss_fn = make_batch_weighted_sft_loss_fn()
 
-        def eval_loss_fn(
-            data: List[tinker.Datum],
-            logprobs_list: List[torch.Tensor],
-        ) -> tuple[torch.Tensor, Dict[str, float]]:
-            real_loss, metrics = train_loss_fn(data, logprobs_list)
-            return real_loss * 0.0, metrics
-
-        return eval_loss_fn
+    def _eval_batch(b: List[tinker.Datum]) -> Dict[str, float]:
+        fwd = client.forward(b, "cross_entropy")
+        logprobs_list = [
+            fwd.loss_fn_outputs[i]["logprobs"].to_torch() for i in range(len(b))
+        ]
+        _, metrics = train_loss_fn(b, logprobs_list)
+        return metrics
 
     batch: List[tinker.Datum] = []
     for item in eval_data:
         batch.append(item)
         if len(batch) >= batch_size:
-            result = client.forward_backward_custom(batch, _make_eval_loss_fn())
-            m = result.metrics
+            m = _eval_batch(batch)
             eval_loss_sum += m.get("ce_loss_sum", 0.0)
             eval_resp_tokens += int(m.get("response_tokens", 0))
             batch = []
 
     if batch:
-        result = client.forward_backward_custom(batch, _make_eval_loss_fn())
-        m = result.metrics
+        m = _eval_batch(batch)
         eval_loss_sum += m.get("ce_loss_sum", 0.0)
         eval_resp_tokens += int(m.get("response_tokens", 0))
 
