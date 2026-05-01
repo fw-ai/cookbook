@@ -1002,9 +1002,13 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
             events["train_batches"].append(list(batch))
             return SimpleNamespace(metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": 2})
 
-        def forward_backward_custom(self, batch, loss_fn):
+        def forward(self, batch, loss_fn):
             events["eval_batches"].append(list(batch))
-            return SimpleNamespace(metrics={"ce_loss_sum": 0.5, "response_tokens": 2})
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {"logprobs": SimpleNamespace(to_torch=lambda: None)} for _ in batch
+                ],
+            )
 
         def optim_step(self, _params, **kwargs):
             return SimpleNamespace(metrics={})
@@ -1033,6 +1037,11 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
         lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(
+        module,
+        "make_batch_weighted_sft_loss_fn",
+        lambda: lambda data, logprobs_list: (None, {"ce_loss_sum": 0.5, "response_tokens": 2}),
+    )
 
     def _fake_render(messages, **kwargs):
         row_idx = int(messages[0]["content"][1:])
@@ -1126,9 +1135,13 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
             events["train_batches"].append(list(batch))
             return SimpleNamespace(metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": 2})
 
-        def forward_backward_custom(self, batch, loss_fn):
+        def forward(self, batch, loss_fn):
             events["eval_batches"].append(list(batch))
-            return SimpleNamespace(metrics={"ce_loss_sum": 0.5, "response_tokens": 2})
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {"logprobs": SimpleNamespace(to_torch=lambda: None)} for _ in batch
+                ],
+            )
 
         def optim_step(self, _params, **kwargs):
             return SimpleNamespace(metrics={})
@@ -1157,6 +1170,11 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
         lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
     )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(
+        module,
+        "make_batch_weighted_sft_loss_fn",
+        lambda: lambda data, logprobs_list: (None, {"ce_loss_sum": 0.5, "response_tokens": 2}),
+    )
 
     def _fake_render(messages, **kwargs):
         row_idx = int(messages[0]["content"][1:])
