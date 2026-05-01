@@ -69,9 +69,8 @@ from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.timer import timer, flush_timing
 from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
 from training.utils.rl.losses import (
-    build_loss_fn,
+    PolicyLoss,
     combine_prompt_groups,
-    resolve_builtin_loss,
 )
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -109,7 +108,7 @@ class Config:
         GradAccNormalization.NUM_LOSS_TOKENS
     )
 
-    policy_loss: str = "grpo"
+    policy_loss: PolicyLoss = "grpo"
     tis: TISConfig = field(default_factory=TISConfig)
     eps_clip: float = 0.2
     eps_clip_high: float | None = None

@@ -71,7 +71,17 @@ from training.utils import (
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, resolve_builtin_loss
+from training.utils.rl.cispo import CISPOConfig
+from training.utils.rl.dapo import DAPOConfig
+from training.utils.rl.dro import DROConfig
+from training.utils.rl.gspo import GSPOConfig
+from training.utils.rl.losses import (
+    PolicyLoss,
+    build_builtin_loss_datums,
+    build_loss_fn,
+    combine_prompt_groups,
+    resolve_builtin_loss,
+)
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
@@ -121,15 +131,25 @@ class FrozenLakeConfig:
     prompt_groups_per_step: int = 4
     max_concurrent: int = 16
 
-    policy_loss: str = "grpo"
-    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, or ``"cispo"``.
+    policy_loss: PolicyLoss = "grpo"
+    """One of the registered RL policy losses (see :data:`PolicyLoss`).
 
     If an eligible builtin kernel exists for the selected loss, training uses
     the server-side ``forward_backward(...)`` path. Otherwise it falls back to
     the client-side ``forward_backward_custom(...)`` path.
     """
+    eps_clip: float = 0.2
+    """PPO clip epsilon for the off-policy ratio (GRPO/DAPO)."""
+    eps_clip_high: float | None = None
+    """Asymmetric upper clip bound (GRPO/DAPO)."""
     ratio_log_cap: float = 20.0
-    tis_enabled: bool = False
+    """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
+    dapo: DAPOConfig = field(default_factory=DAPOConfig)
+    dro: DROConfig = field(default_factory=DROConfig)
+    gspo: GSPOConfig = field(default_factory=GSPOConfig)
+    cispo: CISPOConfig = field(default_factory=CISPOConfig)
+    tis: TISConfig = field(default_factory=TISConfig)
+    """TIS (Train-Inference IS) weight correction config."""
 
     seed_jsonl_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "seeds.jsonl")
@@ -631,11 +651,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         # Client-side fallback: build the Python loss closure used by
         # forward_backward_custom(...) when no eligible builtin kernel exists.
-        client_loss_builder = build_loss_fn(
-            policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
-            ratio_log_cap=cfg.ratio_log_cap,
-            tis_config=TISConfig(),
-        )
+        # ``cfg`` satisfies the LossArgs Protocol via its top-level loss fields.
+        client_loss_builder = build_loss_fn(cfg)
 
         # -- Trajectory logging -----------------------------------------------
         trajectory_path = f"/tmp/frozen_lake_trajectories_{int(time.time())}.jsonl"

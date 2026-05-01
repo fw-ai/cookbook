@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Tuple, Callable
+from typing import Any, List, Literal, Protocol, Tuple, Callable
 from dataclasses import field, dataclass
 
 import tinker
@@ -16,6 +16,23 @@ from training.utils.rl.is_loss import LOSS_SPEC as IS_LOSS_SPEC
 from training.utils.rl.reinforce import LOSS_SPEC as REINFORCE_LOSS_SPEC
 from training.utils.rl.spec import LossSpec
 from training.utils.rl.tis import TISConfig
+
+
+PolicyLoss = Literal[
+    "grpo",
+    "importance_sampling",
+    "dapo",
+    "dro",
+    "gspo",
+    "cispo",
+    "reinforce",
+]
+"""Names of registered RL policy losses.
+
+Kept in lockstep with ``LOSS_REGISTRY`` keys; a startup assertion below
+catches drift if a new ``LossSpec`` is registered without updating this
+``Literal``.
+"""
 
 
 LOSS_REGISTRY: dict[str, LossSpec] = {
@@ -41,6 +58,55 @@ client-side-only by leaving ``builtin_config_builder=None``.
 """
 
 SUPPORTED_POLICY_LOSSES: tuple[str, ...] = tuple(LOSS_REGISTRY)
+
+# Drift guard: PolicyLoss Literal must list every registered loss.
+import typing as _typing  # noqa: E402
+assert set(_typing.get_args(PolicyLoss)) == set(LOSS_REGISTRY), (
+    "PolicyLoss Literal is out of sync with LOSS_REGISTRY. "
+    f"Literal={set(_typing.get_args(PolicyLoss))!r}, "
+    f"registry={set(LOSS_REGISTRY)!r}."
+)
+
+
+class LossArgs(Protocol):
+    """Loss-related fields ``build_loss_fn`` reads off the recipe Config.
+
+    Recipe ``Config`` dataclasses naturally implement this Protocol when
+    they expose the listed fields at the top level. Tests and external
+    callers can use :class:`LossConfig` (concrete dataclass below) when
+    they don't already have a Config to pass.
+    """
+
+    policy_loss: PolicyLoss
+    kl_beta: float
+    eps_clip: float
+    eps_clip_high: float | None
+    ratio_log_cap: float
+    dapo: DAPOConfig
+    dro: DROConfig
+    gspo: GSPOConfig
+    cispo: CISPOConfig
+    tis: TISConfig
+
+
+@dataclass
+class LossConfig:
+    """Concrete :class:`LossArgs` implementation with sensible defaults.
+
+    Useful when a caller (e.g. a unit test or an ad-hoc script) needs to
+    invoke :func:`build_loss_fn` without a full recipe ``Config``.
+    """
+
+    policy_loss: PolicyLoss = "grpo"
+    kl_beta: float = 0.0
+    eps_clip: float = 0.2
+    eps_clip_high: float | None = None
+    ratio_log_cap: float = 20.0
+    dapo: DAPOConfig = field(default_factory=DAPOConfig)
+    dro: DROConfig = field(default_factory=DROConfig)
+    gspo: GSPOConfig = field(default_factory=GSPOConfig)
+    cispo: CISPOConfig = field(default_factory=CISPOConfig)
+    tis: TISConfig = field(default_factory=TISConfig)
 
 
 def _supported_policy_losses_text() -> str:
@@ -279,18 +345,7 @@ ClientLossBuilder = Callable[..., Any]
 """Signature for the client-side loss builder used by ``forward_backward_custom``."""
 
 
-def build_loss_fn(
-    policy_loss: str,
-    kl_beta: float,
-    dapo_config: Any = None,
-    dro_config: Any = None,
-    gspo_config: Any = None,
-    cispo_config: Any = None,
-    tis_config: TISConfig | None = None,
-    ratio_log_cap: float = 20.0,
-    eps_clip: float = 0.2,
-    eps_clip_high: float | None = None,
-) -> ClientLossBuilder:
+def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
     """Create the client-side loss builder for one registered RL policy loss.
 
     The returned callable is only used on the
@@ -298,12 +353,14 @@ def build_loss_fn(
     resolved separately by :func:`resolve_builtin_loss`. Losses registered with
     ``builtin_config_builder=None`` always take this client-side path.
 
+    *args* implements the :class:`LossArgs` protocol -- typically the recipe
+    ``Config`` dataclass itself, which exposes ``policy_loss``, ``kl_beta``,
+    and per-loss config fields at the top level.
+
     Returns a callable:
     ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs) -> loss_fn``
     """
-    if tis_config is None:
-        tis_config = TISConfig()
-    spec = LOSS_REGISTRY.get(policy_loss)
+    spec = LOSS_REGISTRY.get(args.policy_loss)
 
     def build(
         advantages: List[float],
@@ -315,7 +372,7 @@ def build_loss_fn(
         if spec is None:
             supported = _supported_policy_losses_text()
             raise ValueError(
-                f"Unsupported policy_loss '{policy_loss}'. "
+                f"Unsupported policy_loss '{args.policy_loss}'. "
                 f"Expected one of: {supported}."
             )
         return spec.client_loss_factory(
@@ -324,15 +381,15 @@ def build_loss_fn(
             prompt_lens=prompt_lens,
             inf_logprobs=inf_logprobs,
             prox_logprobs=prox_logprobs,
-            kl_beta=kl_beta,
-            dapo_config=dapo_config,
-            dro_config=dro_config,
-            gspo_config=gspo_config,
-            cispo_config=cispo_config,
-            tis_config=tis_config,
-            ratio_log_cap=ratio_log_cap,
-            eps_clip=eps_clip,
-            eps_clip_high=eps_clip_high,
+            kl_beta=args.kl_beta,
+            dapo_config=args.dapo,
+            dro_config=args.dro,
+            gspo_config=args.gspo,
+            cispo_config=args.cispo,
+            tis_config=args.tis,
+            ratio_log_cap=args.ratio_log_cap,
+            eps_clip=args.eps_clip,
+            eps_clip_high=args.eps_clip_high,
         )
 
     return build

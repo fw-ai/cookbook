@@ -16,6 +16,7 @@ from training.utils.rl.common import _normalize_prompt_lens
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.losses import (
     LOSS_REGISTRY,
+    LossConfig,
     build_builtin_loss_datums,
     build_loss_fn,
     get_builtin_loss_config,
@@ -48,12 +49,14 @@ class TestNormalizePromptLens:
 
 class TestLossBuilder:
     def test_rejects_unknown_policy_loss(self):
-        builder = build_loss_fn(policy_loss="unknown", kl_beta=0.01)
+        # ``LossConfig`` is typed against the ``PolicyLoss`` Literal; cast to
+        # build a deliberately-invalid bundle for the negative-path test.
+        builder = build_loss_fn(LossConfig(policy_loss="unknown", kl_beta=0.01))  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="Unsupported policy_loss"):
             builder([1.0], [_zeros(4)], [2], [_zeros(4)], [_zeros(4)])
 
     def test_grpo_requires_inference_logprobs(self):
-        builder = build_loss_fn(policy_loss="grpo", kl_beta=0.01)
+        builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.01))
         loss_fn = builder([1.0], [_zeros(4)], [2], [[]], [_zeros(4)])
 
         with pytest.raises(ValueError, match="GRPO requires inference logprobs"):
@@ -77,7 +80,7 @@ class TestLossBuilder:
 
         assert resolve_builtin_loss("client_only_test") is None
 
-        builder = build_loss_fn(policy_loss="client_only_test", kl_beta=0.01)
+        builder = build_loss_fn(LossConfig(policy_loss="client_only_test", kl_beta=0.01))  # type: ignore[arg-type]
         loss_fn = builder([1.0], [_zeros(4)], [2], [_zeros(4)], [_zeros(4)])
 
         assert loss_fn == "client-only-loss"
