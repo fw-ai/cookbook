@@ -178,6 +178,46 @@ def test_setup_infra_requires_deploy_mgr_when_inference_needed(patch_sdk):
         )
 
 
+def test_setup_infra_rejects_reference_job_when_reference_not_needed(patch_sdk):
+    rlor, deploy = _make_mgrs()
+    cfg = _make_cfg(reference_job_id="ref-job")
+    with pytest.raises(ValueError, match="reference_job_id requires needs_reference=True"):
+        setup_infra(
+            rlor_mgr=rlor, deploy_mgr=deploy,
+            base_model=cfg.base_model,
+            infra_cfg=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            needs_reference=False, needs_inference=True,
+            role_prefix="grpo", api_key="key",
+        )
+
+
+def test_setup_infra_rejects_reference_shape_when_reference_not_needed(patch_sdk):
+    rlor, deploy = _make_mgrs()
+    cfg = _make_cfg(ref_training_shape_id="shape-ref")
+    with pytest.raises(ValueError, match="infra.ref_training_shape_id requires needs_reference=True"):
+        setup_infra(
+            rlor_mgr=rlor, deploy_mgr=deploy,
+            base_model=cfg.base_model,
+            infra_cfg=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            needs_reference=False, needs_inference=True,
+            role_prefix="grpo", api_key="key",
+        )
+
+
 # ---------------------------------------------------------------------------
 # RL — full-param + KL: separate reference trainer
 # ---------------------------------------------------------------------------

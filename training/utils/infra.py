@@ -995,6 +995,10 @@ def setup_infra(
     """
     if needs_inference and deploy_mgr is None:
         raise ValueError("deploy_mgr is required when needs_inference=True")
+    if not needs_reference and reference_job_id:
+        raise ValueError("reference_job_id requires needs_reference=True")
+    if not needs_reference and infra_cfg.ref_training_shape_id:
+        raise ValueError("infra.ref_training_shape_id requires needs_reference=True")
 
     emit: StatusCallback = on_status or (lambda _: None)
     boot_start = time.time()
@@ -1532,5 +1536,4 @@ def _make_boot_metrics(boot_start: float, deploy_mgr: DeploymentManager | None) 
     if deploy_mgr is not None and deploy_mgr.boot_time_s is not None:
         metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
     return metrics
-
 
