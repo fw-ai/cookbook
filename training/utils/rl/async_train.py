@@ -303,6 +303,10 @@ async def run_async_rl_loop(
         buffer.append((resolution.pg, resolution.min_submit_version, state.request))
 
     _refill()
+    # End time of the previous train_step (or loop start) -- the gap to the
+    # next ``step_start`` is the trainer's wait-for-batch time, surfaced as
+    # ``perf/wait_time_ratio`` in metrics.
+    last_step_end = time.monotonic()
 
     while _has_outstanding_work():
         if not _can_make_batch():
@@ -371,13 +375,13 @@ async def run_async_rl_loop(
             "sample_fails": staleness.sample_fails,
             "stale_drops": 0,
             "resolved_rows": resolved_rows,
-            "sample_wait_time": 0.0,
+            "sample_wait_time": step_start - last_step_end,
         }
 
         global_step, _step_metrics = await asyncio.to_thread(
             train_fns.train_step, global_step, batch, extra_metrics,
         )
-        extra_metrics["step_wall_time"] = time.monotonic() - step_start
+        last_step_end = time.monotonic()
 
         if weight_sync_fn is not None and global_step % weight_sync_interval == 0:
             await asyncio.to_thread(weight_sync_fn, global_step)

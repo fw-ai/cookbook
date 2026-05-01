@@ -147,6 +147,7 @@ def run_loss_loop(
     total_kl = 0.0
     total_inf_diff = 0.0
     total_inf_kld = 0.0
+    total_ppo_kl = 0.0
     inf_num_samples = 0
     num_tokens = 0
     tis_metrics_agg: Dict[str, float] = {}
@@ -204,6 +205,11 @@ def run_loss_loop(
         inf_log_diff = pi_detached - resp_inf
         total_inf_diff += inf_log_diff.abs().mean().item()
         total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
+        # Intra-step drift: current policy vs. step-start ``old_policy_logprobs``
+        # snapshot.  ``ppo_kl`` is ~0 when ppo_n_minibatches=1 (no inner-loop
+        # drift); >0 means the PPO ratio is doing real work.
+        ppo_log_diff = pi_detached - resp_prox
+        total_ppo_kl += (torch.exp(ppo_log_diff) - ppo_log_diff - 1.0).mean().item()
         inf_num_samples += 1
 
         tis_weight, bm = compute_tis_weight(resp_prox, resp_inf, tis_config)
@@ -237,6 +243,7 @@ def run_loss_loop(
     if inf_num_samples > 0:
         base_metrics["inference_diff"] = total_inf_diff / inf_num_samples
         base_metrics["inference_kld"] = total_inf_kld / inf_num_samples
+        base_metrics["ppo_kl"] = total_ppo_kl / inf_num_samples
     for k, v in tis_metrics_agg.items():
         base_metrics[k] = v / n_samples
 
