@@ -28,7 +28,6 @@ This package layers the supporting types and helpers:
   :func:`precompute_chat_suffix`).
 * :mod:`.message` — message-in multi-turn assembly that preserves prior
   assistant tokens with TITO-style incremental tokenization.
-* :mod:`.concurrency` — narrow rollout request gates used by samplers/engines.
 * :mod:`.trace` — native rollout trajectory analysis for visualization and
   diagnostics without a live verifier probe.
 """
@@ -43,11 +42,6 @@ from training.utils.rl.rollout.assembler import (
 from training.utils.rl.rollout.group_assembler import (
     GroupAssembler,
     PendingGroup,
-)
-from training.utils.rl.rollout.concurrency import (
-    DEFAULT_REQUEST_GATE_CONCURRENCY,
-    FixedRequestGate,
-    RequestGate,
 )
 from training.utils.rl.rollout.message import (
     MessageTrajectoryAssembler,
@@ -88,8 +82,6 @@ from training.utils.rl.rollout.types import (
 
 __all__ = [
     "InferenceCall",
-    "DEFAULT_REQUEST_GATE_CONCURRENCY",
-    "FixedRequestGate",
     "GroupAssembler",
     "MessageTrajectoryAssembler",
     "MessageTrajectoryError",
@@ -108,7 +100,6 @@ __all__ = [
     "TrajectoryToken",
     "TurnRecord",
     "TokenizationError",
-    "RequestGate",
     "analyze_flat_sample",
     "analyze_token_turn_traces",
     "analyze_turns",

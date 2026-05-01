@@ -12,12 +12,13 @@ def build_deployment_sampler(setup: RolloutSetup) -> DeploymentSampler:
 
     The training recipe assembles the setup once at startup and hands it
     to the rollout factory; the factory uses this helper to materialize
-    a sampler bound to the inference deployment.
+    a sampler bound to the inference deployment.  Concurrency is
+    enforced by the framework scheduler via ``cfg.sample_max_concurrency``
+    (one slot per ``rollout_fn`` call), not at the HTTP layer.
     """
     return DeploymentSampler(
         inference_url=setup.inference_base_url,
         model=setup.model,
         api_key=setup.api_key,
         tokenizer=setup.tokenizer,
-        concurrency_controller=setup.request_gate,
     )

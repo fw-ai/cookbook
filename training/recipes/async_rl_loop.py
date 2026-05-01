@@ -33,7 +33,6 @@ from training.utils.client import GradAccNormalization
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
-    ConcurrencyConfig,
     DeployConfig,
     InfraConfig,
     ResourceCleanup,
@@ -64,19 +63,13 @@ from training.utils.rl.losses import (
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
-from training.utils.rl.rollout import (
-    DEFAULT_REQUEST_GATE_CONCURRENCY,
-    FixedRequestGate,
-    RequestGate,
-    RolloutSample,
-)
+from training.utils.rl.rollout import RolloutSample
 from training.utils.timer import elapsed_timer, flush_timing, timer
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "Config",
-    "RequestGate",
     "RolloutFn",
     "RolloutFnFactory",
     "RolloutSetup",
@@ -134,15 +127,10 @@ class Config:
     ratio_log_cap: float = 20.0
     tis: TISConfig = field(default_factory=TISConfig)
 
-    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
-
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
-
-    provision_inference: bool = True
-    """Provision and hotload a Fireworks inference deployment for rollouts."""
 
     init_from_checkpoint: str | None = None
     """Resume from a prior checkpoint.  Bare name resumes from this trainer's
@@ -165,9 +153,11 @@ class RolloutSetup:
 
     The factory closes over whatever fields it needs and returns the
     per-sample ``rollout_fn``.  Carries the inference endpoint, the
-    tokenizer, sampling kwargs, an optional concurrency gate, and an
-    ``extras`` dict for any caller-supplied state (replaces the old
-    ``ctx_extras`` setattr injection).
+    tokenizer, sampling kwargs, and an ``extras`` dict for any
+    caller-supplied state (replaces the old ``ctx_extras`` setattr
+    injection).  Concurrency is enforced by the framework scheduler:
+    ``cfg.sample_max_concurrency`` caps the number of in-flight
+    ``rollout_fn`` invocations.  No HTTP-level gate is wired in.
     """
 
     tokenizer: Any
@@ -176,7 +166,6 @@ class RolloutSetup:
     inference_base_url: str
     api_key: str
     model: str
-    request_gate: RequestGate | None
     completions_per_prompt: int
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -233,10 +222,8 @@ def main(
 
     if rows is None and not cfg.dataset:
         raise ValueError("Provide either cfg.dataset or rows= to main().")
-    if cfg.provision_inference and not cfg.deployment.tokenizer_model:
-        raise ValueError(
-            "deployment.tokenizer_model is required when provision_inference=True."
-        )
+    if not cfg.deployment.tokenizer_model:
+        raise ValueError("deployment.tokenizer_model is required.")
     validate_config(
         cfg.base_model,
         cfg.dataset or None,
@@ -260,8 +247,7 @@ def main(
             "completions_per_prompt": cfg.completions_per_prompt,
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
-            "provision_inference": cfg.provision_inference,
-            "tokenizer_id": cfg.deployment.tokenizer_model or "",
+            "tokenizer_id": cfg.deployment.tokenizer_model,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
             "kl_beta": cfg.kl_beta,
@@ -283,21 +269,23 @@ def main(
     with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
         infra = setup_infra(
             rlor_mgr=rlor_mgr,
-            deploy_mgr=deploy_mgr if cfg.provision_inference else None,
+            deploy_mgr=deploy_mgr,
             base_model=cfg.base_model,
             infra_cfg=cfg.infra,
-            deploy_cfg=cfg.deployment if cfg.provision_inference else None,
+            deploy_cfg=cfg.deployment,
             lora_rank=cfg.lora_rank,
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             policy_job_id=cfg.policy_job_id,
             needs_reference=(cfg.kl_beta > 0),
-            needs_inference=cfg.provision_inference,
+            needs_inference=True,
             role_prefix="rl-async",
             api_key=api_key,
             cleanup=cleanup if cancel_on_exit else None,
         )
         policy_job_id = infra.policy_job_id
+        assert infra.inference_model is not None  # needs_inference=True invariant
+        inference_model = infra.inference_model
         for closeable in infra.closeables:
             stack.callback(closeable.close)
 
@@ -306,26 +294,18 @@ def main(
         policy = infra.policy
         reference = infra.reference
 
-        tokenizer = None
-        if cfg.deployment.tokenizer_model:
-            tokenizer = transformers.AutoTokenizer.from_pretrained(
-                cfg.deployment.tokenizer_model, trust_remote_code=True,
-            )
-        request_gate = None
-        weight_syncer = None
-        if cfg.provision_inference:
-            request_gate = FixedRequestGate(
-                cfg.sample_max_concurrency or DEFAULT_REQUEST_GATE_CONCURRENCY
-            )
-            weight_syncer = WeightSyncer(
-                policy_client=policy,
-                deploy_mgr=deploy_mgr,
-                deployment_id=infra.deployment_id,
-                base_model=cfg.base_model,
-                hotload_timeout=cfg.weight_sync.weight_sync_timeout,
-                first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
-                lora_rank=cfg.lora_rank,
-            )
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            cfg.deployment.tokenizer_model, trust_remote_code=True,
+        )
+        weight_syncer = WeightSyncer(
+            policy_client=policy,
+            deploy_mgr=deploy_mgr,
+            deployment_id=infra.deployment_id,
+            base_model=cfg.base_model,
+            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
+            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
+            lora_rank=cfg.lora_rank,
+        )
 
         ckpt = TrainingCheckpoints(
             policy,
@@ -343,7 +323,7 @@ def main(
             logger.info("Resuming from step %d", step_offset)
             wandb_log({"train/step": step_offset}, step_offset)
 
-        if cfg.weight_sync.weight_sync_before_training and weight_syncer is not None:
+        if cfg.weight_sync.weight_sync_before_training:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
@@ -393,30 +373,28 @@ def main(
 
         rollout_setup = RolloutSetup(
             tokenizer=tokenizer,
-            tokenizer_id=cfg.deployment.tokenizer_model or "",
+            tokenizer_id=cfg.deployment.tokenizer_model,
             sample_kwargs=sample_kwargs,
-            inference_base_url=deploy_mgr.inference_url if cfg.provision_inference else "",
+            inference_base_url=deploy_mgr.inference_url,
             api_key=api_key,
-            model=infra.inference_model or "",
-            request_gate=request_gate,
+            model=inference_model,
             completions_per_prompt=cfg.completions_per_prompt,
             extras=dict(rollout_extras or {}),
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
 
         ctx_metadata: dict[str, Any] = {
-            "provision_inference": cfg.provision_inference,
             "completions_per_prompt": cfg.completions_per_prompt,
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
-            "sample_max_concurrency": cfg.sample_max_concurrency or DEFAULT_REQUEST_GATE_CONCURRENCY,
+            "sample_max_concurrency": cfg.sample_max_concurrency,
             "weight_sync_interval": cfg.weight_sync.weight_sync_interval,
             "max_completion_tokens": cfg.max_completion_tokens,
             "temperature": cfg.temperature,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
-            "tokenizer_id": cfg.deployment.tokenizer_model or "",
-            "model": infra.inference_model or "",
+            "tokenizer_id": cfg.deployment.tokenizer_model,
+            "model": inference_model,
         }
 
         def make_row_requests():
@@ -521,9 +499,8 @@ def main(
 
         def _weight_sync(step: int) -> None:
             nonlocal current_version
-            if weight_syncer is not None:
-                with timer("weight_sync"):
-                    weight_syncer.save_and_hotload(f"step-{step}")
+            with timer("weight_sync"):
+                weight_syncer.save_and_hotload(f"step-{step}")
             current_version = step
 
         global_step, final_stats = asyncio.run(
@@ -537,7 +514,7 @@ def main(
                 min_group_size=cfg.min_group_size,
                 weight_sync_fn=_weight_sync,
                 weight_sync_interval=cfg.weight_sync.weight_sync_interval,
-                max_concurrent=cfg.sample_max_concurrency or DEFAULT_REQUEST_GATE_CONCURRENCY,
+                max_concurrent=cfg.sample_max_concurrency,
                 dynamic_filter_fn=dynamic_filter_fn,
                 global_step=step_offset,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
