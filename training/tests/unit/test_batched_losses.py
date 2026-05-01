@@ -14,15 +14,14 @@ from training.utils.losses import (
 )
 from training.utils.rl.common import _normalize_prompt_lens
 from training.utils.rl.gspo import GSPOConfig
+from training.utils.rl.client_losses import CLIENT_LOSSES
 from training.utils.rl.losses import (
-    LOSS_REGISTRY,
     LossConfig,
     build_builtin_loss_datums,
     build_loss_fn,
-    get_builtin_kernel_config,
+    get_builtin_loss_config,
     validate_loss_path,
 )
-from training.utils.rl.spec import LossSpec
 from training.utils.supervised import build_datum_from_token_mask
 
 
@@ -65,18 +64,15 @@ class TestLossBuilder:
     def test_client_only_loss_registration_uses_custom_path(self, monkeypatch):
         events: dict[str, object] = {}
 
-        def fake_client_loss_factory(**kwargs):
-            events["kwargs"] = kwargs
+        def fake_factory(args, advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs):
+            events["call"] = {
+                "advantages": advantages,
+                "prompt_lens": prompt_lens,
+                "kl_beta": args.kl_beta,
+            }
             return "client-only-loss"
 
-        monkeypatch.setitem(
-            LOSS_REGISTRY,
-            "client_only_test",
-            LossSpec(
-                name="client_only_test",
-                client_loss_factory=fake_client_loss_factory,
-            ),
-        )
+        monkeypatch.setitem(CLIENT_LOSSES, "client_only_test", fake_factory)
 
         # A client-only loss must reject loss_path='builtin' loudly.
         with pytest.raises(ValueError, match="client-side-only"):
@@ -88,14 +84,14 @@ class TestLossBuilder:
         loss_fn = builder([1.0], [_zeros(4)], [2], [_zeros(4)], [_zeros(4)])
 
         assert loss_fn == "client-only-loss"
-        assert events["kwargs"]["advantages"] == [1.0]
-        assert events["kwargs"]["prompt_lens"] == [2]
-        assert events["kwargs"]["kl_beta"] == pytest.approx(0.01)
+        assert events["call"]["advantages"] == [1.0]
+        assert events["call"]["prompt_lens"] == [2]
+        assert events["call"]["kl_beta"] == pytest.approx(0.01)
 
 
 class TestBuiltinLossConfig:
     def test_grpo_preserves_zero_upper_clip_bound(self):
-        kernel, config = get_builtin_kernel_config(
+        kernel, config = get_builtin_loss_config(
             LossConfig(policy_loss="grpo", loss_path="builtin",
                        eps_clip=0.2, eps_clip_high=0.0),
         )
@@ -105,7 +101,7 @@ class TestBuiltinLossConfig:
         assert config["clip_high_threshold"] == pytest.approx(1.0)
 
     def test_gspo_preserves_zero_clip_bounds(self):
-        kernel, config = get_builtin_kernel_config(
+        kernel, config = get_builtin_loss_config(
             LossConfig(
                 policy_loss="gspo", loss_path="builtin",
                 gspo=GSPOConfig(clip_ratio_low=0.0, clip_ratio_high=0.0),
@@ -117,7 +113,7 @@ class TestBuiltinLossConfig:
         assert config["clip_high_threshold"] == pytest.approx(1.0)
 
     def test_importance_sampling_uses_ratio_log_cap(self):
-        kernel, config = get_builtin_kernel_config(
+        kernel, config = get_builtin_loss_config(
             LossConfig(policy_loss="importance_sampling", loss_path="builtin",
                        ratio_log_cap=7.5),
         )
@@ -125,9 +121,9 @@ class TestBuiltinLossConfig:
         assert kernel == "importance_sampling"
         assert config["ratio_log_cap"] == pytest.approx(7.5)
 
-    def test_get_builtin_kernel_config_rejects_client_path(self):
+    def test_get_builtin_loss_config_rejects_client_path(self):
         with pytest.raises(ValueError, match="loss_path='client'"):
-            get_builtin_kernel_config(
+            get_builtin_loss_config(
                 LossConfig(policy_loss="grpo", loss_path="client"),
             )
 

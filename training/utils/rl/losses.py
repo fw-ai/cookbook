@@ -1,4 +1,16 @@
-"""RL loss dispatch, builtin resolution, and rollout data types."""
+"""RL loss dispatch, path selection, and rollout data types.
+
+Two parallel registries live in sibling files and are wired in here:
+
+- :mod:`training.utils.rl.client_losses` -- :data:`CLIENT_LOSSES`, the
+  Python loss closures that run inside ``forward_backward_custom(...)``.
+- :mod:`training.utils.rl.builtin_losses` -- :data:`BUILTIN_LOSSES`, the
+  server-side fused losses dispatched via ``forward_backward(...)``.
+
+Per-loss math files (``grpo.py``, ``dapo.py``, ...) hold only the
+``XConfig`` dataclass and ``make_x_loss_fn`` builder; they are intentionally
+unaware of the registries and the path-selection logic.
+"""
 
 from __future__ import annotations
 
@@ -7,14 +19,12 @@ from dataclasses import field, dataclass
 
 import tinker
 
-from training.utils.rl.cispo import CISPOConfig, LOSS_SPEC as CISPO_LOSS_SPEC
-from training.utils.rl.dapo import DAPOConfig, LOSS_SPEC as DAPO_LOSS_SPEC
-from training.utils.rl.dro import DROConfig, LOSS_SPEC as DRO_LOSS_SPEC
-from training.utils.rl.gspo import GSPOConfig, LOSS_SPEC as GSPO_LOSS_SPEC
-from training.utils.rl.grpo import LOSS_SPEC as GRPO_LOSS_SPEC
-from training.utils.rl.is_loss import LOSS_SPEC as IS_LOSS_SPEC
-from training.utils.rl.reinforce import LOSS_SPEC as REINFORCE_LOSS_SPEC
-from training.utils.rl.spec import LossSpec
+from training.utils.rl.builtin_losses import BUILTIN_LOSSES
+from training.utils.rl.cispo import CISPOConfig
+from training.utils.rl.client_losses import CLIENT_LOSSES
+from training.utils.rl.dapo import DAPOConfig
+from training.utils.rl.dro import DROConfig
+from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.tis import TISConfig
 
 
@@ -29,62 +39,46 @@ PolicyLoss = Literal[
 ]
 """Names of registered RL policy losses.
 
-Kept in lockstep with ``LOSS_REGISTRY`` keys; a startup assertion below
-catches drift if a new ``LossSpec`` is registered without updating this
-``Literal``.
+Kept in lockstep with :data:`CLIENT_LOSSES` keys (and a strict subset of
+:data:`BUILTIN_LOSSES` keys); a startup assertion below catches drift if a
+new client loss is added without updating this ``Literal``.
 """
 
 
 LossPath = Literal["builtin", "client"]
 """Which forward/backward path the recipe uses.
 
-- ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused kernel
-  (PPO, GSPO, etc.). Faster, but the kernel sees only
+- ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
+  loss. Faster, but the loss sees only
   ``(target_tokens, logprobs, advantages)`` so KL penalties (``kl_beta>0``)
   cannot be applied; pipeline parallelism > 1 is also unsupported.
 - ``"client"`` -- client-side ``forward_backward_custom(...)`` with the
-  Python loss closure. Always works, slower because of an extra forward pass
-  for old-policy logprobs.
+  Python loss closure. Always works, slower because of an extra forward
+  pass for old-policy logprobs.
 
 The choice is **explicit**: ``validate_loss_path`` raises with an
 actionable message if the user picked ``"builtin"`` in a configuration that
 forbids it, instead of silently falling back to client-side. This avoids
 the historical footgun where setting ``kl_beta > 0`` would magically route
 to the client path -- a behavior that broke once anyone reordered the gate
-or introduced a new builtin kernel that consumed ref logprobs.
+or introduced a new builtin loss that consumed ref logprobs.
 """
 
 
-LOSS_REGISTRY: dict[str, LossSpec] = {
-    spec.name: spec
-    for spec in (
-        GRPO_LOSS_SPEC,
-        IS_LOSS_SPEC,
-        DAPO_LOSS_SPEC,
-        DRO_LOSS_SPEC,
-        GSPO_LOSS_SPEC,
-        CISPO_LOSS_SPEC,
-        REINFORCE_LOSS_SPEC,
-    )
-}
-"""Single source of truth for both RL execution paths.
+SUPPORTED_POLICY_LOSSES: tuple[str, ...] = tuple(CLIENT_LOSSES)
 
-Each :class:`~training.utils.rl.spec.LossSpec` can provide:
-- ``builtin_config_builder`` for the server-side ``forward_backward(...)`` path
-- ``client_loss_factory`` for the client-side ``forward_backward_custom(...)`` path
-
-Losses may support both paths, or may be intentionally registered as
-client-side-only by leaving ``builtin_config_builder=None``.
-"""
-
-SUPPORTED_POLICY_LOSSES: tuple[str, ...] = tuple(LOSS_REGISTRY)
-
-# Drift guard: PolicyLoss Literal must list every registered loss.
+# Drift guard: PolicyLoss Literal must list every client-registered loss,
+# and every builtin must also be in CLIENT_LOSSES (a builtin without a
+# client fallback is a footgun -- there's no way to apply KL or run on PP>1).
 import typing as _typing  # noqa: E402
-assert set(_typing.get_args(PolicyLoss)) == set(LOSS_REGISTRY), (
-    "PolicyLoss Literal is out of sync with LOSS_REGISTRY. "
+assert set(_typing.get_args(PolicyLoss)) == set(CLIENT_LOSSES), (
+    "PolicyLoss Literal is out of sync with CLIENT_LOSSES. "
     f"Literal={set(_typing.get_args(PolicyLoss))!r}, "
-    f"registry={set(LOSS_REGISTRY)!r}."
+    f"client={set(CLIENT_LOSSES)!r}."
+)
+assert set(BUILTIN_LOSSES).issubset(CLIENT_LOSSES), (
+    "Every builtin loss must also have a client-side fallback; "
+    f"orphaned builtins: {set(BUILTIN_LOSSES) - set(CLIENT_LOSSES)!r}."
 )
 
 
@@ -157,17 +151,16 @@ def validate_loss_path(args: LossArgs, profile: Any | None = None) -> None:
     if args.loss_path == "client":
         return
 
-    spec = LOSS_REGISTRY.get(args.policy_loss)
-    if spec is None:
+    if args.policy_loss not in CLIENT_LOSSES:
         supported = _supported_policy_losses_text()
         raise ValueError(
             f"Unsupported policy_loss '{args.policy_loss}'. "
             f"Expected one of: {supported}."
         )
-    if spec.builtin_config_builder is None:
+    if args.policy_loss not in BUILTIN_LOSSES:
         raise ValueError(
             f"loss_path='builtin' requested but '{args.policy_loss}' is "
-            f"registered as client-side-only (no builtin kernel). "
+            f"registered as client-side-only (no builtin loss). "
             f"Set loss_path='client' or pick a different policy_loss."
         )
     if args.kl_beta > 0.0:
@@ -187,28 +180,20 @@ def validate_loss_path(args: LossArgs, profile: Any | None = None) -> None:
             )
 
 
-def get_builtin_kernel_config(args: LossArgs) -> tuple[str, dict[str, Any]]:
-    """Return ``(kernel_loss_name, kernel_config)`` for the builtin path.
+def get_builtin_loss_config(args: LossArgs) -> tuple[str, dict[str, Any]]:
+    """Return ``(loss_name, loss_config_dict)`` for the builtin path.
 
     Caller must have already passed :func:`validate_loss_path` -- this helper
-    will raise ``KeyError`` / ``AttributeError`` on a config that wasn't
-    validated, by design (loud failure beats silent misconfiguration).
+    will raise ``KeyError`` on a config that wasn't validated, by design
+    (loud failure beats silent misconfiguration).
     """
     if args.loss_path != "builtin":
         raise ValueError(
-            f"get_builtin_kernel_config called with loss_path={args.loss_path!r}; "
+            f"get_builtin_loss_config called with loss_path={args.loss_path!r}; "
             f"only valid when loss_path='builtin'."
         )
-    spec = LOSS_REGISTRY[args.policy_loss]
-    return spec.builtin_config_builder(
-        dapo_config=args.dapo,
-        dro_config=args.dro,
-        gspo_config=args.gspo,
-        cispo_config=args.cispo,
-        ratio_log_cap=args.ratio_log_cap,
-        eps_clip=args.eps_clip,
-        eps_clip_high=args.eps_clip_high,
-    )
+    builder = BUILTIN_LOSSES[args.policy_loss]
+    return builder(args)
 
 
 @dataclass
@@ -356,7 +341,7 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
     Returns a callable:
     ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs) -> loss_fn``
     """
-    spec = LOSS_REGISTRY.get(args.policy_loss)
+    factory = CLIENT_LOSSES.get(args.policy_loss)
 
     def build(
         advantages: List[float],
@@ -365,27 +350,14 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
         inf_logprobs: List[List[float]],
         prox_logprobs: List[List[float]],
     ) -> Any:
-        if spec is None:
+        if factory is None:
             supported = _supported_policy_losses_text()
             raise ValueError(
                 f"Unsupported policy_loss '{args.policy_loss}'. "
                 f"Expected one of: {supported}."
             )
-        return spec.client_loss_factory(
-            advantages=advantages,
-            ref_logprobs=ref_logprobs,
-            prompt_lens=prompt_lens,
-            inf_logprobs=inf_logprobs,
-            prox_logprobs=prox_logprobs,
-            kl_beta=args.kl_beta,
-            dapo_config=args.dapo,
-            dro_config=args.dro,
-            gspo_config=args.gspo,
-            cispo_config=args.cispo,
-            tis_config=args.tis,
-            ratio_log_cap=args.ratio_log_cap,
-            eps_clip=args.eps_clip,
-            eps_clip_high=args.eps_clip_high,
+        return factory(
+            args, advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
         )
 
     return build

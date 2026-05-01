@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Tuple, Union
 import torch
 import tinker
 
-from training.utils.rl.spec import LossSpec
 from training.utils.rl.tis import TISConfig
 
 
@@ -61,36 +60,3 @@ def make_is_loss_fn(
     return loss_fn
 
 
-def _builtin_config(*, ratio_log_cap: float = 20.0, **_kw: Any) -> tuple[str, dict[str, Any]]:
-    return "importance_sampling", {
-        "ratio_log_cap": ratio_log_cap,
-    }
-
-
-def _client_loss_factory(
-    *,
-    advantages: List[float],
-    ref_logprobs: List[List[float]],
-    prompt_lens: List[int],
-    inf_logprobs: List[List[float]],
-    prox_logprobs: List[List[float]],
-    tis_config: TISConfig,
-    ratio_log_cap: float = 20.0,
-    **_kw: Any,
-) -> Any:
-    return make_is_loss_fn(
-        advantages,
-        ref_logprobs,
-        inf_logprobs,
-        prompt_lens,
-        prox_logprobs,
-        ratio_log_cap=ratio_log_cap,
-        tis_config=tis_config,
-    )
-
-
-LOSS_SPEC = LossSpec(
-    name="importance_sampling",
-    client_loss_factory=_client_loss_factory,
-    builtin_config_builder=_builtin_config,
-)

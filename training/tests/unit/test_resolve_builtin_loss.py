@@ -13,7 +13,7 @@ import pytest
 
 from training.utils.rl.losses import (
     LossConfig,
-    get_builtin_kernel_config,
+    get_builtin_loss_config,
     validate_loss_path,
 )
 
@@ -51,7 +51,7 @@ def test_validate_loss_path_pp_eq_1_is_eligible():
     cfg = LossConfig(policy_loss="grpo", loss_path="builtin", kl_beta=0.0)
     validate_loss_path(cfg, _profile(pp=1))
 
-    kernel, kernel_config = get_builtin_kernel_config(cfg)
+    kernel, kernel_config = get_builtin_loss_config(cfg)
     assert isinstance(kernel, str)
     assert isinstance(kernel_config, dict)
 

@@ -19,7 +19,6 @@ import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-from training.utils.rl.spec import LossSpec
 from training.utils.rl.tis import TISConfig
 
 
@@ -77,39 +76,3 @@ def make_dro_loss_fn(
     return loss_fn
 
 
-def _builtin_config(
-    *, dro_config: DROConfig | None = None, **_kw: Any,
-) -> tuple[str, dict[str, Any]]:
-    cfg = dro_config or DROConfig()
-    return "dro", {
-        "beta": cfg.beta,
-    }
-
-
-def _client_loss_factory(
-    *,
-    advantages: List[float],
-    ref_logprobs: List[List[float]],
-    prompt_lens: List[int],
-    inf_logprobs: List[List[float]],
-    prox_logprobs: List[List[float]],
-    dro_config: DROConfig | None,
-    tis_config: TISConfig,
-    **_kw: Any,
-) -> Any:
-    return make_dro_loss_fn(
-        advantages,
-        ref_logprobs,
-        inf_logprobs,
-        prompt_lens,
-        prox_logprobs,
-        dro_config,
-        tis_config=tis_config,
-    )
-
-
-LOSS_SPEC = LossSpec(
-    name="dro",
-    client_loss_factory=_client_loss_factory,
-    builtin_config_builder=_builtin_config,
-)

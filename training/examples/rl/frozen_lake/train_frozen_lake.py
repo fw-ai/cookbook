@@ -81,7 +81,7 @@ from training.utils.rl.losses import (
     build_builtin_loss_datums,
     build_loss_fn,
     combine_prompt_groups,
-    get_builtin_kernel_config,
+    get_builtin_loss_config,
     validate_loss_path,
 )
 from training.utils.rl.tis import TISConfig
@@ -771,13 +771,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             # it (PP > 1, kl_beta > 0, or a client-only loss).
             validate_loss_path(cfg, profile)
             if cfg.loss_path == "builtin":
-                builtin_kernel = get_builtin_kernel_config(cfg)
+                builtin_loss = get_builtin_loss_config(cfg)
                 logger.info(
-                    "policy_loss=%s loss_path=builtin (server-side kernel=%s)",
-                    cfg.policy_loss, builtin_kernel[0],
+                    "policy_loss=%s loss_path=builtin (server-side loss=%s)",
+                    cfg.policy_loss, builtin_loss[0],
                 )
             else:
-                builtin_kernel = None
+                builtin_loss = None
                 logger.info(
                     "policy_loss=%s loss_path=client", cfg.policy_loss,
                 )
@@ -786,8 +786,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 prox_fwd = policy.forward(data, "cross_entropy")
                 prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-                if builtin_kernel is not None:
-                    kernel_loss, kernel_config = builtin_kernel
+                if builtin_loss is not None:
+                    loss_name, loss_cfg = builtin_loss
                     rl_datums = build_builtin_loss_datums(
                         data,
                         adv,
@@ -797,7 +797,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         policy_loss=cfg.policy_loss,
                     )
                     return policy.forward_backward(
-                        rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                        rl_datums, loss_name, loss_fn_config=loss_cfg,
                     )
                 return policy.forward_backward_custom(
                     data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),

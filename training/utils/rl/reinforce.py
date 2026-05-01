@@ -12,7 +12,6 @@ import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-from training.utils.rl.spec import LossSpec
 from training.utils.rl.tis import SAFETY_CLAMP, TISConfig
 
 
@@ -94,30 +93,3 @@ def make_reinforce_loss_fn(
     return loss_fn
 
 
-def _client_loss_factory(
-    *,
-    advantages: List[float],
-    ref_logprobs: List[List[float]],
-    prompt_lens: List[int],
-    inf_logprobs: List[List[float]],
-    prox_logprobs: List[List[float]],
-    kl_beta: float,
-    tis_config: TISConfig,
-    **_kw: Any,
-) -> Any:
-    return make_reinforce_loss_fn(
-        advantages,
-        ref_logprobs,
-        prompt_lens,
-        inf_logprobs=inf_logprobs,
-        prox_logprobs=prox_logprobs,
-        kl_beta=kl_beta,
-        tis_config=tis_config,
-    )
-
-
-LOSS_SPEC = LossSpec(
-    name="reinforce",
-    client_loss_factory=_client_loss_factory,
-    builtin_config_builder=None,
-)
