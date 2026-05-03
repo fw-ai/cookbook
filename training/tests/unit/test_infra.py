@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import training.utils.infra as infra_module
 from training.utils.config import DeployConfig, InfraConfig
 from training.utils.infra import create_trainer_job, setup_deployment, _fetch_job_failure_reason
 
@@ -233,6 +234,49 @@ class _FakeRlorMgr:
             job_name=f"accounts/{self.account_id}/rlorTrainerJobs/{job_id}",
             base_url="http://localhost:8080",
         )
+
+
+def test_trainer_replica_count_posts_backend_field_until_sdk_supports_it(monkeypatch):
+    monkeypatch.setattr(infra_module, "_TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT", False)
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"name": "accounts/test-account/rlorTrainerJobs/job-hsdp"}
+
+    class FakeMgr(_FakeRlorMgr):
+        def create(self, config):
+            raise AssertionError("trainer_replica_count should use direct POST fallback")
+
+        def _post(self, path, json, timeout):
+            captured["path"] = path
+            captured["json"] = json
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+    profile = SimpleNamespace(
+        training_shape_version="accounts/fireworks/trainingShapes/qwen/versions/v1",
+        max_supported_context_length=4096,
+    )
+
+    endpoint = create_trainer_job(
+        FakeMgr(),
+        base_model="accounts/fireworks/models/qwen",
+        infra=InfraConfig(trainer_replica_count=2, skip_validations=True),
+        profile=profile,
+        display_name="hsdp-policy",
+    )
+
+    assert endpoint.job_id == "job-hsdp"
+    assert captured["timeout"] == 60
+    assert "trainingShape=accounts%2Ffireworks%2FtrainingShapes%2Fqwen%2Fversions%2Fv1" in captured["path"]
+    assert "skipValidations=true" in captured["path"]
+    assert captured["json"]["trainerReplicaCount"] == 2
+    assert captured["json"]["serviceMode"] is True
+    assert captured["json"]["trainingConfig"]["baseModel"] == "accounts/fireworks/models/qwen"
 
 
 class TestCreateTrainerJobErrorMessages:

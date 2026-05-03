@@ -86,6 +86,24 @@ flows request a validated forward-only reference shape. Explicit
 `training_shape_id`, `ref_training_shape_id`, and deployment-shape
 overrides still take precedence.
 
+To launch trainers with replicated HSDP, set the run-level replica count on
+`InfraConfig`; it is not part of the validated training shape:
+
+```python
+config = rl_loop.Config(
+    base_model="accounts/fireworks/models/qwen3-8b",
+    infra=InfraConfig(
+        training_shape_id="accounts/fireworks/trainingShapes/your-shape",
+        trainer_replica_count=2,
+    ),
+    deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
+)
+```
+
+The example entrypoints expose the same setting as `--trainer-replicas 2`.
+It applies to trainer jobs the recipe creates for that run; pre-created
+`policy_job_id` / `reference_job_id` values are reused as-is.
+
 **LoRA RL** -- for LoRA GRPO with KL regularisation (`kl_beta > 0`), set `lora_rank`:
 
 | Field | What to set |

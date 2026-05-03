@@ -28,6 +28,7 @@ import time
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.parse import urlencode
 
@@ -72,6 +73,9 @@ _TRAINER_JOB_CONFIG_SUPPORTS_SKIP_VALIDATIONS = (
 )
 _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF = (
     "training_shape_ref" in inspect.signature(TrainerJobConfig).parameters
+)
+_TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT = (
+    "trainer_replica_count" in inspect.signature(TrainerJobConfig).parameters
 )
 
 _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
@@ -325,6 +329,11 @@ def request_trainer_job(
         extra_trainer_args["skip_validations"] = infra.skip_validations
     if profile is not None and _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF:
         extra_trainer_args["training_shape_ref"] = profile.training_shape_version
+    if infra.trainer_replica_count is not None:
+        if infra.trainer_replica_count < 0:
+            raise ValueError("trainer_replica_count must be non-negative")
+        if _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT:
+            extra_trainer_args["trainer_replica_count"] = infra.trainer_replica_count
 
     if profile is not None:
         config = TrainerJobConfig(
@@ -376,7 +385,17 @@ def request_trainer_job(
     _emit(f"creating {trainer_role} trainer '{display_name}'")
 
     try:
-        created_job = rlor_mgr.create(config)
+        if (
+            infra.trainer_replica_count is not None
+            and not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT
+        ):
+            created_job = _create_trainer_job_with_replica_count(
+                rlor_mgr,
+                config,
+                infra.trainer_replica_count,
+            )
+        else:
+            created_job = rlor_mgr.create(config)
     except Exception as e:
         error_msg = (
             f"Failed to create {trainer_role} trainer job '{display_name}' "
@@ -874,6 +893,109 @@ def _reuse_or_resume_job(
         logger.info("Job %s is %s, resuming...", job_id, state)
         return rlor_mgr.resume_and_wait(job_id)
     return rlor_mgr.wait_for_existing(job_id)
+
+
+def _flatten_extra_args(extra_args: list[str] | None) -> list[str] | None:
+    if not extra_args:
+        return None
+    flat: list[str] = []
+    for arg in extra_args:
+        flat.extend(arg.split()) if " " in arg else flat.append(arg)
+    return flat
+
+
+def _create_trainer_job_with_replica_count(
+    rlor_mgr: TrainerJobManager,
+    config: TrainerJobConfig,
+    trainer_replica_count: int,
+) -> Any:
+    """Create a trainer with trainerReplicaCount before SDK support lands.
+
+    Older ``fireworks.training.sdk`` versions do not expose the backend's
+    ``trainer_replica_count`` field yet. Keep the cookbook surface usable by
+    mirroring the SDK's create payload and adding the new field. Once the SDK
+    exposes this on ``TrainerJobConfig``, ``request_trainer_job`` uses the
+    normal ``rlor_mgr.create`` path instead.
+    """
+    config.validate()
+
+    if config.training_shape_ref:
+        validate_shape_ref = getattr(rlor_mgr, "_validate_shape_ref", None)
+        if callable(validate_shape_ref):
+            validate_shape_ref(config.training_shape_ref)
+
+    path = f"/v1/accounts/{rlor_mgr.account_id}/rlorTrainerJobs"
+    query_params: list[tuple[str, str]] = []
+    if config.hot_load_deployment_id:
+        query_params.append(("deploymentId", config.hot_load_deployment_id))
+
+    is_shape_path = bool(config.training_shape_ref)
+    if is_shape_path:
+        query_params.append(("trainingShape", config.training_shape_ref))
+        if config.skip_validations:
+            query_params.append(("skipValidations", "true"))
+    else:
+        query_params.append(("skipValidations", "true"))
+
+    if query_params:
+        path = f"{path}?{urlencode(query_params)}"
+
+    training_config: dict[str, Any] = {
+        "baseModel": config.base_model,
+        "loraRank": config.lora_rank,
+        "learningRate": config.learning_rate,
+        "gradientAccumulationSteps": config.gradient_accumulation_steps,
+    }
+
+    payload: dict[str, Any] = {
+        "serviceMode": True,
+        "keepAlive": False,
+        "dataset": "",
+        "trainingConfig": training_config,
+        "trainerReplicaCount": trainer_replica_count,
+    }
+
+    if not is_shape_path:
+        if config.max_context_length is not None:
+            training_config["maxContextLength"] = config.max_context_length
+        payload["nodeCount"] = config.node_count if config.node_count is not None else 1
+        if config.custom_image_tag:
+            training_config["customImageTag"] = config.custom_image_tag
+        if config.accelerator_type:
+            training_config["acceleratorType"] = config.accelerator_type
+        if config.accelerator_count:
+            training_config["acceleratorCount"] = config.accelerator_count
+
+    if config.display_name:
+        payload["displayName"] = config.display_name
+    if config.hot_load_deployment_id:
+        payload["hotLoadDeploymentId"] = config.hot_load_deployment_id
+    if config.region:
+        training_config["region"] = config.region
+    flat_extra_args = _flatten_extra_args(config.extra_args)
+    if flat_extra_args:
+        training_config["extraArgs"] = flat_extra_args
+    if config.forward_only:
+        payload["forwardOnly"] = True
+    if config.purpose:
+        payload["purpose"] = config.purpose
+    if config.managed_by:
+        payload["managedBy"] = config.managed_by
+
+    logger.info(
+        "Creating RLOR job with trainerReplicaCount=%d: POST %s (model=%s)",
+        trainer_replica_count,
+        path,
+        config.base_model,
+    )
+    resp = rlor_mgr._post(path, json=payload, timeout=60)
+    resp.raise_for_status()
+    job = resp.json()
+    job_name = job.get("name", "")
+    job_id = job_name.split("/")[-1] if "/" in job_name else job_name
+    if CreatedTrainerJob is not Any:
+        return CreatedTrainerJob(job_name=job_name, job_id=job_id)
+    return SimpleNamespace(job_name=job_name, job_id=job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1532,5 +1654,3 @@ def _make_boot_metrics(boot_start: float, deploy_mgr: DeploymentManager | None) 
     if deploy_mgr is not None and deploy_mgr.boot_time_s is not None:
         metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
     return metrics
-
-

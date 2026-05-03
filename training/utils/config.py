@@ -62,7 +62,8 @@ class InfraConfig:
 
     * **Shape path** (``training_shape_id`` set): the backend owns all
       shape-derived fields (accelerator, image tag, node count).
-      Setting infra overrides raises ``ValueError``.
+      Setting shape-owned infra overrides raises ``ValueError``; run-level
+      controls such as ``trainer_replica_count`` remain valid.
     * **Manual path** (``training_shape_id`` is ``None``): all fields
       are sent as-is; the server skips shape validation.
     """
@@ -87,6 +88,13 @@ class InfraConfig:
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
+    trainer_replica_count: int | None = None
+    """Data-parallel trainer replica count for service-mode HSDP launches.
+
+    Leave unset for the backend default. Values greater than 1 request
+    replicated HSDP for this trainer launch; this is intentionally a run-level
+    knob, not part of the validated training shape.
+    """
     purpose: str | None = None
     """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
     managed_by: str | None = None
@@ -202,4 +210,3 @@ class WandBConfig:
     entity: str | None = None
     project: str | None = None
     run_name: str | None = None
-

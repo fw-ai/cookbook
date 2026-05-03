@@ -72,6 +72,14 @@ def parse_args():
     # Infrastructure
     parser.add_argument("--training-shape-id", "--training-shape", type=str, default="")
     parser.add_argument("--ref-training-shape-id", type=str, default="")
+    parser.add_argument(
+        "--trainer-replicas",
+        "--trainer-replica-count",
+        dest="trainer_replica_count",
+        type=int,
+        default=None,
+        help="Run-level data-parallel trainer replicas for HSDP launches",
+    )
     parser.add_argument("--region", type=str, default="US_VIRGINIA_1")
     parser.add_argument("--custom-image-tag", type=str, default="")
     parser.add_argument("--purpose", type=str, default=None)
@@ -120,6 +128,7 @@ def main():
         infra=InfraConfig(
             training_shape_id=args.training_shape_id or None,
             ref_training_shape_id=args.ref_training_shape_id or None,
+            trainer_replica_count=args.trainer_replica_count,
             region=args.region,
             custom_image_tag=args.custom_image_tag or None,
             purpose=args.purpose or None,

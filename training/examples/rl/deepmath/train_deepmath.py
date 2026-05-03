@@ -65,6 +65,8 @@ class TrainArgs:
     region: str = "US_OHIO_1"
     deployment_region: str | None = None
     deployment_replica_count: int | None = None
+    trainer_replica_count: int | None = None
+    """Run-level data-parallel trainer replicas for HSDP launches."""
     max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8
@@ -112,6 +114,13 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--region")
     parser.add_argument("--deployment-region")
     parser.add_argument("--deployment-replica-count", type=int)
+    parser.add_argument(
+        "--trainer-replicas",
+        "--trainer-replica-count",
+        dest="trainer_replica_count",
+        type=int,
+        help="Run-level data-parallel trainer replicas for HSDP launches",
+    )
 
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--epochs", type=int)
@@ -309,6 +318,7 @@ def main():
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             ref_training_shape_id=args.ref_training_shape,
+            trainer_replica_count=args.trainer_replica_count,
             region=args.region,
         ),
         deployment=DeployConfig(
