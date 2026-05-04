@@ -14,11 +14,10 @@ joins them by row id via :class:`GroupAssembler`, applies the optional
 dynamic filter on the assembled :class:`PromptGroup`, and feeds the
 trainer when a batch fills.
 
-Off-policy gating is per dataset row: one row = ``completions_per_prompt``
-samples consumed against the staleness budget.  The accountable "version"
-of a group is the oldest submit version among its samples (samples within
-a row may straddle a weight-sync boundary; the older side dominates the
-staleness reading).
+Submission is row-atomic; the gate accounts in samples, with one row
+consuming ``completions_per_prompt`` sample slots against the staleness
+budget.  Because rows are submitted whole, every sample in a row carries
+the same submit version, so the group's accountable version is unambiguous.
 """
 
 from __future__ import annotations

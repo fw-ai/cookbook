@@ -100,16 +100,22 @@ def make_rollout_fn(setup: RolloutSetup) -> RolloutFn:
 
 ## The off-policy gate (sample-level)
 
-The runner gates rollout submission so a sample is admitted iff:
+Bookkeeping is in samples (LLM calls), the same unit the deployment's
+`max_batch_size` gates on, but admission is **row-atomic**: the runner
+submits whole rows (`cpp` samples each) so every row in the assembler has
+the same submit version.  A row is admitted iff *both* caps have at least
+`cpp` sample slots free:
 
 ```
-samples_in_flight + samples_accepted < (max_head_offpolicy_versions + version + 1) * batch_size_samples
-                                  AND
-samples_in_flight < max_concurrency_rollout_sample   (when set)
+staleness_slots  = (max_head_offpolicy_versions + version + 1) * batch_size_samples
+                   - (samples_in_flight + samples_accepted)
+concurrency_slots = max_concurrency_rollout_sample - samples_in_flight   (∞ if unset)
+
+admit one row iff min(staleness_slots, concurrency_slots) >= completions_per_prompt
 ```
 
-All bookkeeping is in samples (LLM calls), the same unit the deployment's
-`max_batch_size` gates on.
+In the runner this is `slots = capacity() // completions_per_prompt`; that
+many rows are submitted in the current admission tick.
 
 | Knob | Unit | Meaning |
 |---|---|---|
@@ -262,8 +268,9 @@ masked (`-logprob` averaged over `loss_mask>0`).
 
 Two minimal examples ship under `training/examples/rl/`:
 
-- `single_turn_token_in/` — pre-tokenized rows; `rollout_fn` calls the
-  `/v1/completions` token-in/token-out path once per row.
+- `single_turn_token_in/` — pre-tokenized rows; `rollout_fn` makes one
+  `/v1/completions` token-in/token-out call per invocation (the recipe
+  invokes it `completions_per_prompt` times per dataset row).
 - `multi_turn_message_in/` — OpenAI-style messages; `rollout_fn` runs a retry
   loop using `MessageTrajectoryAssembler` to keep prior assistant tokens
   exact across turns.  Ports AReaL's `examples/multi_turn_math/` to this recipe.

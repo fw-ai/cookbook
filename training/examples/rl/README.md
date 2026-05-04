@@ -11,7 +11,9 @@ checkpoints are all handled by `recipes.async_rl_loop.main`.
 
 Two minimal rollouts for the async recipe (`training/recipes/async_rl_loop.py`):
 
-- `single_turn_token_in/` — pre-tokenized rows; one `/v1/completions` call per row.
+- `single_turn_token_in/` — pre-tokenized rows; one `/v1/completions` call per
+  `rollout_fn` invocation (recipe invokes `rollout_fn` `completions_per_prompt`
+  times per row).
 - `multi_turn_message_in/` — OpenAI-style messages; ports AReaL's
   `examples/multi_turn_math/` retry loop.
 

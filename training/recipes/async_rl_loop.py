@@ -495,8 +495,10 @@ def main(
             on the ``train/step`` axis (one point per inner PPO step);
             per-batch ``rollout/*`` / ``perf/*`` / ``async/*`` / ``version/*``
             land on ``rollout/step`` (one point per outer rollout batch).
-            ``current_version`` and checkpoint identities stay in optim-step
-            units so the off-policy budget and resume math are unchanged.
+            ``ctx.current_version`` and checkpoint identities remain
+            optimizer-step labels (resume math is in optim steps); the
+            off-policy budget is accounted in weight-sync versions inside
+            ``_StalenessController`` and is independent of those labels.
             """
             train_start = time.monotonic()
             num_minibatches = max(1, cfg.ppo_n_minibatches)
