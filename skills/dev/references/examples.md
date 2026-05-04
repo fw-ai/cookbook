@@ -11,7 +11,7 @@ When the user wants "something that just runs", point them at `training/examples
 | Tool-use RL (Frozen Lake) | `training/examples/rl/frozen_lake/` |
 | Async RL single-turn (token-in rollout) | `training/examples/rl/single_turn_token_in/` |
 | Async RL multi-turn (message-in rollout) | `training/examples/rl/multi_turn_message_in/` |
-| Multi-hop QA IGPO | `training/examples/multihop_qa/` |
+| Multi-hop QA async RL (+ optional IGPO) | `training/examples/multihop_qa/` |
 | Manual hotload-scope tests (PER_TRAINER re-attach, PER_DEPLOYMENT) | `training/examples/manual/` |
 
 ## What to read

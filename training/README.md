@@ -156,7 +156,7 @@ examples/rl/deepmath/                   GRPO on DeepMath (rl_loop)
 examples/rl/frozen_lake/                Frozen Lake tool-use RL (custom loop)
 examples/rl/single_turn_token_in/       Async RL single-turn, token-in rollout
 examples/rl/multi_turn_message_in/      Async RL multi-turn, message-in rollout
-examples/multihop_qa/                   Multi-hop QA with IGPO
+examples/multihop_qa/                   Multi-hop QA async RL (+ optional IGPO turn-level scoring)
 examples/manual/                        Manual hotload-scope tests (PER_TRAINER / PER_DEPLOYMENT)
 examples/tools/                         Standalone utility scripts
 tests/                                  Unit and end-to-end tests
