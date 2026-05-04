@@ -202,13 +202,8 @@ def run_loss_loop(
             device=resp_pi.device,
         )
 
-        # Multi-turn rollouts have masked bridge / user-feedback / tool-result
-        # tokens inside the response window.  Averaging drift metrics over the
-        # full slice contaminates them with positions the loss never weights;
-        # for ``TISConfig.level == "sequence"`` the geometric mean is then
-        # broadcast back onto active tokens, mixing masked-position log-ratios
-        # into the per-sample weight that multiplies the actual loss.  Filter
-        # to active (loss_mask > 0) positions before averaging.
+        # Filter to loss_mask>0 positions: masked bridge/tool tokens otherwise
+        # contaminate sequence-level TIS weight (matches slime/AReaL behavior).
         active_pi = pi_detached[active]
         active_inf = resp_inf[active]
         active_prox = resp_prox[active]
@@ -216,19 +211,13 @@ def run_loss_loop(
         inf_log_diff = active_pi - active_inf
         total_inf_diff += inf_log_diff.abs().mean().item()
         total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
-        # Intra-step drift: current policy vs. step-start ``old_policy_logprobs``
-        # snapshot.  ``ppo_kl`` is ~0 when ppo_n_minibatches=1 (no inner-loop
-        # drift); >0 means the PPO ratio is doing real work.
         ppo_log_diff = active_pi - active_prox
         total_ppo_kl += (torch.exp(ppo_log_diff) - ppo_log_diff - 1.0).mean().item()
         inf_num_samples += 1
 
-        # TIS weight: compute on active-only logprobs, then expand back to the
-        # full response shape with 1.0 at masked positions.  For losses that
-        # multiply by ``ctx.resp_mask`` (grpo/gspo/dapo/is/cispo) the masked
-        # entries zero out anyway; for ``dro`` (which doesn't), 1.0 is the
-        # identity weight so masked-token contributions are not rescaled.
         tis_weight_active, bm = compute_tis_weight(active_prox, active_inf, tis_config)
+        # Identity (1.0) at masked positions: zeroes under ``resp_mask`` for
+        # masked-multiplied losses, no-op weight for ``dro``.
         tis_weight = torch.ones(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
         tis_weight[active] = tis_weight_active.to(resp_pi.dtype)
         for k, v in bm.items():

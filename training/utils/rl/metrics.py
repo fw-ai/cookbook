@@ -213,41 +213,18 @@ def compute_step_metrics(
         metrics["rollout/sample_fail_count"] = loop_stats["sample_fails"]
         metrics["rollout/fwd_bwd_count"] = n_accum
 
-        # ``trainer_wait_for_sampler_time`` is the gap between the
-        # *previous* ``train_step``'s end and the *current*
-        # ``train_step``'s start.  It includes ``weight_sync`` wall time
-        # (the recipe sets ``last_step_end`` before invoking
-        # ``weight_sync_fn``), so on hotload-heavy runs a chunk of this
-        # is "trainer doing weight sync" rather than "trainer idle on
-        # sampler".  Compare against ``perf/weight_sync_time`` (logged
-        # one step later via the Timer singleton's flush) to back out
-        # the genuine starvation portion.
+        # Gap between successive train_steps; folds in weight_sync wall time
+        # (``last_step_end`` is set before ``weight_sync_fn`` runs), so subtract
+        # ``perf/weight_sync_time`` to back out the pure-starvation portion.
         trainer_wait_for_sampler_time = float(loop_stats.get("trainer_wait_for_sampler_time", 0.0))
         metrics["perf/trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
-        # Symmetric counterpart: rollout side waiting for the trainer to
-        # advance the off-policy version budget.  In a healthy async
-        # pipeline (concurrency cap binds *strictly before* staleness),
-        # this is 0.  When ``max_concurrency_rollout_sample`` is sized
-        # to exactly equal the steady-state staleness budget
-        # (``prompt_groups_per_step * (max_head_offpolicy_versions+1)``
-        # LLM calls), both caps go to zero simultaneously every step;
-        # ``_StalenessController.is_staleness_bound`` no longer falsely
-        # attributes that wall time as trainer-induced wait, so this
-        # metric drops to ~0.  If you see it large, either staleness
-        # really is binding (rollouts faster than train+sync) or the
-        # caps are mis-sized.
+        # Should be ~0 in healthy async (concurrency cap binds before staleness);
+        # large values mean the staleness budget is throttling the rollout side.
         metrics["perf/sampler_wait_for_trainer_time"] = float(
             loop_stats.get("sampler_wait_for_trainer_time", 0.0)
         )
-        # ``wait_time_ratio = trainer_wait_for_sampler_time / step_wall_time``.
-        # ``step_wall_time = wait + train_wall``, so it covers the full
-        # outer-batch cycle (queue wait + ref_forward + old_policy_forward
-        # + K * (fwd_bwd + optim_step)).  weight_sync wall time is folded
-        # into ``wait`` (see comment above) — for an apples-to-apples
-        # "starvation ratio" subtract ``perf/weight_sync_time``.  When
-        # rollouts are structurally slower than train+sync, this ratio is
-        # high *even with perfect overlap* (Amdahl); 90%+ at slow rollouts
-        # is geometry, not a pipeline bug.
+        # = wait / (wait + train_wall).  When rollouts are structurally slower
+        # than train+sync the ratio is Amdahl-bound -- not a pipeline bug.
         step_wall_time = float(loop_stats.get("step_wall_time", 0.0))
         if step_wall_time > 0:
             wait_ratio = trainer_wait_for_sampler_time / step_wall_time

@@ -301,11 +301,8 @@ def build_builtin_loss_datums(
             )
             resp_prox = torch.tensor(prox_lp[response_start:response_start + resp_len], dtype=torch.float32)
             resp_inf = torch.tensor(inf_lp[response_start:response_start + resp_len], dtype=torch.float32)
-            # Same active-only filter as the client-side path (common.py): compute
-            # the TIS weight on loss-mask>0 positions to keep ``level="sequence"``
-            # from mixing masked bridge/user-feedback log-ratios into the per-
-            # sample weight.  Inactive positions get 1.0 and zero out via
-            # ``loss_mask`` below.
+            # Active-only filter mirrors common.py: keep masked bridge tokens
+            # out of the sequence-level TIS weight.
             active = loss_mask > 0.5
             tis_weight_active, _ = compute_tis_weight(
                 resp_prox[active], resp_inf[active], tis_config,

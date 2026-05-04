@@ -111,18 +111,10 @@ class Config:
     max_head_offpolicy_versions: int = 0
     """Staleness budget in optimizer-step versions.  ``0`` = strict on-policy."""
     max_concurrency_rollout_sample: int | None = None
-    """Cap concurrent **LLM calls** in flight against the inference deployment.
-
-    Same unit as ``deployment.max_batch_size`` -- exceed that and the
-    server queue overflows (HTTP 583/299 cascades).  The async gate is
-    sample-level: ``_StalenessController`` tracks ``running_samples``
-    and treats one prompt submission as ``completions_per_prompt``
-    samples, so this knob caps LLM calls directly with no internal
-    rescale.
-
-    Must be ``>= completions_per_prompt`` (one prompt's worth) or the
-    gate stalls.  ``None`` leaves concurrency unbounded; the off-policy
-    staleness budget alone then gates submission."""
+    """Cap concurrent LLM calls in flight (same unit as
+    ``deployment.max_batch_size``; exceeding that triggers HTTP 583/299).
+    Must be ``>= completions_per_prompt`` or the gate stalls.  ``None``
+    leaves concurrency unbounded; staleness alone then gates submission."""
     min_group_size: int = 1
     """Minimum surviving samples per row to emit a PromptGroup."""
     grad_accumulation_normalization: GradAccNormalization | str | None = (
@@ -451,11 +443,6 @@ def main(
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
 
-        # The gate operates in samples (LLM calls) directly, matching
-        # ``deployment.max_batch_size``.  The recipe-side ``// cpp`` division
-        # and the ``>= cpp`` validation that the prior row-level form required
-        # are both gone -- the loop floor-divides ``capacity() // cpp`` once
-        # at the only place per-prompt submission granularity matters.
         ctx_metadata: dict[str, Any] = {
             "completions_per_prompt": cfg.completions_per_prompt,
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
@@ -472,10 +459,6 @@ def main(
         }
 
         def make_row_requests():
-            # ``row_loader`` walks the dataset, so the ``row`` it yields is
-            # genuinely a dataset row.  We hand it to ``rollout_fn`` as a
-            # ``sample_prompt`` -- the same dict, just renamed once it crosses
-            # the dataset/sampling seam.
             for item in row_loader:
                 row = item.value
                 idx = item.index
@@ -685,10 +668,6 @@ def main(
             with elapsed_timer("weight_sync") as span:
                 weight_syncer.save_and_hotload(f"step-{step}")
             current_version = step
-            # Debug: surface hotload wall time at the moment it fires, so
-            # the human log lets you correlate with the next batch-ready
-            # log line (where weight_sync_time would otherwise show up
-            # off-by-one via flush_timing on the *next* train_step).
             logger.info("[step %d] weight_sync (%.1fs)", step, span.elapsed)
 
         global_step, final_stats = asyncio.run(
