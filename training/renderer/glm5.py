@@ -7,10 +7,12 @@ tokenizer and chat template).
 Token-level layout follows ``tokenizer.apply_chat_template`` byte-for-byte
 (verified by the unit tests in ``test_glm5_renderer.py``), modulo a synthetic
 terminal role sentinel used only for supervised examples that end on an
-assistant message. The registered renderer uses GLM preserved-thinking
-semantics by default; opt-in
-``strip_thinking_from_history=True`` matches the template's standard
-``clear_thinking`` behavior.
+assistant message. Historical assistant ``<think>`` blocks are always
+stripped, matching the shipped chat template's default ``clear_thinking``
+behavior (the same rendering every standard inference stack feeds the
+model). Multi-turn ``ALL_ASSISTANT_MESSAGES`` SFT is handled by
+disaggregating per user turn — see
+:class:`training.renderer._disaggregate_mixin.DisaggregateMultiTurnMixin`.
 
 Role tag layout (as the shipped Jinja template emits them):
 
@@ -35,18 +37,10 @@ Assistant turn layout:
 
       <|assistant|></think>{content}
 
-- **Historical assistant turn** (any turn before the last user message) when
-  ``strip_thinking_from_history=False`` (the default) and reasoning content is
-  provided::
-
-      <|assistant|><think>{reasoning}</think>{content}
-
-- **Historical assistant turn** when ``strip_thinking_from_history=True``::
+- **Historical assistant turn** (any turn before the last user message;
+  matches the shipped template's ``clear_thinking`` default)::
 
       <|assistant|></think>{content}
-
-  This opt-in strip-history mode matches the shipped template's default
-  ``clear_thinking`` behavior.
 
 Other invariants:
 
@@ -83,7 +77,6 @@ from __future__ import annotations
 
 import json
 import re
-import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -101,6 +94,8 @@ from tinker_cookbook.renderers.base import (
     UnparsedToolCall,
     parse_think_blocks,
 )
+
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 _BOS_TEXT = "[gMASK]<sop>"
@@ -238,20 +233,20 @@ def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
     return "".join(reasoning_parts), "".join(text_parts)
 
 
-class GLM5Renderer(Renderer):
-    """Renderer for ZhipuAI GLM-5.1 instruct models."""
+class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
+    """Renderer for ZhipuAI GLM-5.1 instruct models.
 
-    def __init__(
-        self,
-        tokenizer: Tokenizer,
-        strip_thinking_from_history: bool = False,
-    ) -> None:
+    Thinking is always stripped from historical assistant turns (matching
+    the shipped chat template's default ``clear_thinking`` behavior, i.e.
+    what every standard inference stack feeds the model). Multi-turn
+    ``ALL_ASSISTANT_MESSAGES`` SFT is handled by
+    :class:`DisaggregateMultiTurnMixin`, which splits the conversation
+    per user turn so each datum's prompt context byte-equals what
+    ``apply_chat_template`` produces for the same prefix.
+    """
+
+    def __init__(self, tokenizer: Tokenizer) -> None:
         super().__init__(tokenizer)
-        self.strip_thinking_from_history = strip_thinking_from_history
-
-    @property
-    def has_extension_property(self) -> bool:
-        return not self.strip_thinking_from_history
 
     @property
     def _bos_tokens(self) -> list[int]:
@@ -480,71 +475,6 @@ class GLM5Renderer(Renderer):
         model_input_chunks = [chunk for chunk, _ in model_input_chunks_weights]
         return tinker.ModelInput(chunks=model_input_chunks), weights_tensor
 
-    def build_supervised_examples(
-        self,
-        messages: list[Message],
-        train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_TURN,
-    ):
-        """Build extension-safe supervised examples for multi-turn GLM data.
-
-        The registered GLM renderer preserves historical thinking by default,
-        so it can train all assistant messages in one datum. If callers opt
-        into strip-history mode, split by user turns and train each assistant
-        suffix in the same position it would occupy during generation.
-        """
-        if self.has_extension_property:
-            return [
-                self.build_supervised_example(
-                    messages,
-                    train_on_what=train_on_what,
-                )
-            ]
-
-        if train_on_what in (
-            TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-            TrainOnWhat.LAST_ASSISTANT_TURN,
-        ):
-            return [
-                self.build_supervised_example(
-                    messages,
-                    train_on_what=train_on_what,
-                )
-            ]
-
-        user_message_idxs = [
-            idx for idx, message in enumerate(messages) if message["role"] == "user"
-        ]
-
-        if train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES:
-            warnings.warn(
-                "WARNING: Using train_on_what=ALL_MESSAGES/ALL_TOKENS/"
-                "ALL_USER_AND_SYSTEM_MESSAGES/CUSTOMIZED with a renderer that "
-                "does not satisfy the extension property "
-                "(has_extension_property=False). The same train_on_what mode is "
-                "applied to each user-turn prefix.",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        supervised_examples = []
-        for user_message_idx in [*user_message_idxs[1:], len(messages)]:
-            current_messages = messages[:user_message_idx]
-            if train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES:
-                supervised_examples.append(
-                    self.build_supervised_example(
-                        current_messages,
-                        train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
-                    )
-                )
-            else:
-                supervised_examples.append(
-                    self.build_supervised_example(
-                        current_messages,
-                        train_on_what=train_on_what,
-                    )
-                )
-        return supervised_examples
-
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
         role = message["role"]
         if role == "assistant":
@@ -597,17 +527,12 @@ class GLM5Renderer(Renderer):
         #
         # 1. Historical turn with strip_thinking=True:
         #    always ``</think>`` (drops any reasoning).
-        # 2. Historical turn with strip_thinking=False AND reasoning
-        #    exists: ``<think>{reasoning}</think>`` (keep it).
-        # 3. Historical turn with strip_thinking=False AND no reasoning:
-        #    ``</think>`` — the template leaves ``reasoning_content``
-        #    undefined so it falls to the else branch.
-        # 4. Terminal turn with reasoning: ``<think>{reasoning}</think>``.
-        # 5. Terminal turn without reasoning (thinking-mode default):
+        # 2. Historical turn (always stripped to match HF
+        #    ``apply_chat_template`` default): ``</think>``.
+        # 3. Terminal turn with reasoning: ``<think>{reasoning}</think>``.
+        # 4. Terminal turn without reasoning (thinking-mode default):
         #    ``<think></think>``.
-        if before_last_user and self.strip_thinking_from_history:
-            think_block = "</think>"
-        elif before_last_user and not reasoning:
+        if before_last_user:
             think_block = "</think>"
         elif reasoning:
             think_block = f"<think>{reasoning.strip()}</think>"
