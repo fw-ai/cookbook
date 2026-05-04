@@ -120,12 +120,16 @@ def patch_sdk(monkeypatch):
 
     def fake_request_trainer(_rlor, *, display_name, forward_only=False, **kwargs):
         job_id = "ref-job" if "reference" in display_name else "policy-job"
-        trainer_calls.append({
-            "display_name": display_name,
-            "forward_only": forward_only,
-            "lora_rank": kwargs.get("lora_rank"),
-            "job_id_arg": kwargs.get("job_id"),
-        })
+        trainer_infra = kwargs.get("infra")
+        trainer_calls.append(
+            {
+                "display_name": display_name,
+                "forward_only": forward_only,
+                "lora_rank": kwargs.get("lora_rank"),
+                "job_id_arg": kwargs.get("job_id"),
+                "trainer_replica_count": getattr(trainer_infra, "trainer_replica_count", None),
+            }
+        )
         return _trainer_handle(job_id)
 
     def fake_wait_trainer(_rlor, created, *, display_name="", forward_only=False, **kwargs):
@@ -348,6 +352,32 @@ def test_setup_infra_dpo_full_param_provisions_separate_reference(patch_sdk):
     assert ref_call["lora_rank"] == 0
     ref_inst = next(c for c in _FakeClient.instances if c.job_id == "ref-job")
     assert ref_inst.lora_rank == 0
+
+
+def test_setup_infra_trainer_replicas_apply_to_policy_not_reference(patch_sdk):
+    rlor, _ = _make_mgrs()
+    cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
+    cfg.infra.trainer_replica_count = 2
+
+    setup_infra(
+        rlor_mgr=rlor, deploy_mgr=None,
+        base_model=cfg.base_model,
+        infra_cfg=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
+        needs_reference=True, needs_inference=False,
+        role_prefix="dpo", api_key="key",
+    )
+
+    policy_call = next(c for c in patch_sdk.trainer_calls if c["display_name"] == "dpo-policy")
+    ref_call = next(c for c in patch_sdk.trainer_calls if c["display_name"] == "dpo-reference")
+    assert policy_call["trainer_replica_count"] == 2
+    assert ref_call["trainer_replica_count"] is None
 
 
 def test_setup_infra_dpo_lora_propagates_lora_rank_to_reference(patch_sdk):

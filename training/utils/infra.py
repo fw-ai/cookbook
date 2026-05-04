@@ -1395,7 +1395,10 @@ def _request_trainers(
         on_status("provisioning reference trainer")
         # Reference trainer runs forward-only: strip --full-oom-check, which
         # triggers a backward warmup that OOMs on smaller reference shapes.
-        ref_infra = _strip_args(infra, {"--full-oom-check"})
+        ref_infra = dataclasses.replace(
+            _strip_args(infra, {"--full-oom-check"}),
+            trainer_replica_count=None,
+        )
         # Propagate lora_rank so the gateway infers the correct trainer_mode:
         #   lora_rank > 0  -> LORA_TRAINER (matches LoRA-capable ref shape)
         #   lora_rank == 0 -> FORWARD_ONLY (full-param base-weight forward)
