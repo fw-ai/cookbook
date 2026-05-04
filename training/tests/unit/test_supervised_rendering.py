@@ -692,6 +692,13 @@ def test_resolve_renderer_name_prefers_gemma4() -> None:
     assert resolve_renderer_name("google/gemma-4-27b-it") == "gemma4"
 
 
+def test_resolve_renderer_name_prefers_deepseek_v4() -> None:
+    """DeepSeek-V4 tokenizers should resolve to the custom deepseek_v4 renderer."""
+    assert resolve_renderer_name("deepseek-ai/DeepSeek-V4-Flash") == "deepseek_v4"
+    assert resolve_renderer_name("deepseek-ai/deepseek_v4") == "deepseek_v4"
+    assert resolve_renderer_name("custom/DeepSeekV4-finetune") == "deepseek_v4"
+
+
 def test_build_renderer_resolves_minimax_m2(monkeypatch) -> None:
     """build_renderer should resolve minimax_m2 and dispatch to get_renderer."""
     calls: list[tuple[str, object]] = []
@@ -846,7 +853,8 @@ def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
     fake_tokenizer = object()
     fake_renderer = object()
     monkeypatch.setattr(
-        sup.transformers.AutoTokenizer, "from_pretrained",
+        sup.transformers.AutoTokenizer,
+        "from_pretrained",
         lambda model, **kwargs: fake_tokenizer,
     )
     monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: fake_renderer)
@@ -884,7 +892,10 @@ def test_populate_render_worker_state_uses_trust_remote_code(monkeypatch):
     monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: object())
 
     populate_render_worker_state(
-        {}, tokenizer_model="m", renderer_name="r", max_seq_len=1,
+        {},
+        tokenizer_model="m",
+        renderer_name="r",
+        max_seq_len=1,
     )
     assert captured["model"] == "m"
     assert captured["kwargs"].get("trust_remote_code") is True

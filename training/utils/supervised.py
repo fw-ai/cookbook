@@ -36,6 +36,7 @@ from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.renderer.nemotron as _nemotron_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,16 @@ def resolve_renderer_name(
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
         return "gemma4"
+    # DeepSeek-V4 ships a custom non-Jinja encoder (see encoding_dsv4.py upstream)
+    # with thinking blocks and DSML tool calls. Match the V4 family explicitly so
+    # we don't accidentally claim V3 (which routes through tinker_cookbook's
+    # built-in deepseekv3_thinking renderer via get_recommended_renderer_name).
+    if (
+        "deepseek-v4" in normalized_model_name
+        or "deepseek_v4" in normalized_model_name
+        or "deepseekv4" in normalized_model_name
+    ):
+        return "deepseek_v4"
     # ZhipuAI GLM-5.1 chat template (`[gMASK]<sop>`, `<|user|>`,
     # `<|assistant|>`, `<think>...</think>`, `<|endoftext|>`). Validated
     # end-to-end via SFT training. Other GLM versions are out of scope;
@@ -148,7 +159,8 @@ def populate_render_worker_state(
     for HF tokenizer load -- required by Kimi / Qwen image processors.
     """
     tokenizer = transformers.AutoTokenizer.from_pretrained(
-        tokenizer_model, trust_remote_code=True,
+        tokenizer_model,
+        trust_remote_code=True,
     )
     state.update(
         tokenizer=tokenizer,
