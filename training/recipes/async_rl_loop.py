@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """Async RL recipe with per-sample rollouts and recipe-owned training.
 
+EXPERIMENTAL -- under active development.  API surface (``Config`` field
+names, ``RolloutSetup`` shape, gate semantics) may change without a
+backward-compat shim.  The recipe is intentionally minimal-surface: the
+only thing most users need to write is the rollout function; everything
+else (gate, advantage, ref forward, weight sync, KL/TIS, PPO inner loop,
+checkpoints) is handled by ``main()``.  See
+``skills/dev/references/rl/async-rl.md`` for the full contract.
+
 Users write ``rollout_fn(sample_prompt) -> RolloutSample | None`` -- one
 trajectory per call.  ``sample_prompt`` is the dataset row's dict re-named
 once it crosses the dataset/sampling seam.  The recipe fans each dataset
 row out to ``completions_per_prompt`` parallel calls and assembles the
-resulting samples into a PromptGroup inside the loop (see
-``training.utils.rl.async_train.run_async_rl_loop`` and
-``training.utils.rl.rollout.GroupAssembler``).
+resulting samples into a PromptGroup inside the loop.
 
 Rollout dependencies (tokenizer, sampler, request gate, etc.) flow
 through :class:`RolloutSetup`.  The user supplies a
 ``rollout_fn_factory(setup) -> rollout_fn`` callable that closes over
-the setup; this matches AReaL's workflow construction pattern and
-removes the ad-hoc ``ctx_extras`` setattr injection that the previous
-``RolloutContext`` design required.
+the setup; this matches AReaL's workflow construction pattern.
 """
 
 from __future__ import annotations
@@ -245,6 +249,12 @@ def main(
     ``cancel_on_exit=True`` tears down provisioned remote resources on exit.
     """
     cfg = config
+
+    logger.warning(
+        "async_rl_loop is EXPERIMENTAL and under active development; "
+        "the Config / RolloutSetup API may change without backward-compat "
+        "shims.  See skills/dev/references/rl/async-rl.md.",
+    )
 
     def _signal_handler(signum, _):
         name = signal.Signals(signum).name

@@ -1,9 +1,32 @@
 # RL: async recipe (`async_rl_loop.py`)
 
+> ⚠️ **EXPERIMENTAL — under active development.** API surface and config
+> field names may change without backward-compat shims.  Pin to a specific
+> commit if you depend on the current shape.  The recipe also emits a
+> runtime `WARNING` at `main()` start.
+
 The async recipe overlaps rollout sampling with training: while the trainer runs
 `fwd_bwd + optim_step` on batch *N*, the sampler is producing batch *N+1* against
 the previous policy version.  This is distinct from the synchronous
 `rl_loop.py`, which trains and samples in lockstep.
+
+## What you customize (and what you don't)
+
+The recipe is intentionally minimal-surface: **the only thing most users need
+to write is the rollout function**.  Everything else — gate, advantage
+computation, reference-model forwards, weight sync, KL/TIS metrics, PPO inner
+loop, checkpoint plumbing — is handled by `recipes/async_rl_loop.py::main`.
+
+| You write | The recipe handles |
+|---|---|
+| `rollout_fn_factory(setup) -> rollout_fn` (one trajectory per call) | Async fan-out / GroupAssembler / off-policy gate |
+| (optional) `dynamic_filter_fn(pg)` for batch-level filtering | Reference model forwards, KL, TIS, drift metrics |
+| Dataset rows (or pass `rows=` to `main()`) | Weight sync cadence, checkpoint save/promote, WandB axes |
+| `Config(...)` knobs (LR, gate sizes, deployment shape) | PPO inner minibatching, gradient accumulation, advantage z-score |
+
+This is the design intent — extend the rollout, not the loop.  If you find
+yourself forking the recipe, file an issue first; it usually means a knob
+should exist on `Config`.
 
 | | `rl_loop.py` (sync) | `async_rl_loop.py` (async) |
 |---|---|---|

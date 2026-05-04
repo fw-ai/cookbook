@@ -1,10 +1,13 @@
 # RL rollout primitives
 
+> ⚠️ **EXPERIMENTAL — the async RL recipe these primitives serve is under
+> active development.** API may change without backward-compat shims.
+
 Token-native rollout API for the async RL recipe (`training/recipes/async_rl_loop.py`).
 
 For the user-facing contract (`rollout_fn(sample_prompt) -> RolloutSample`,
 `RolloutSetup`, `rollout_fn_factory`, off-policy gate sizing), see
-[`skills/dev/references/rl/async-rl.md`](../../../skills/dev/references/rl/async-rl.md).
+[`/skills/dev/references/rl/async-rl.md`](/skills/dev/references/rl/async-rl.md).
 
 ## Layout
 
