@@ -17,13 +17,13 @@ They are the canonical wiring of `FiretitanTrainingClient` + `DeploymentManager`
 
 ## What to fill in on `Config`
 
-Always required on `Config` + `InfraConfig`:
+Always required on `Config`:
 
 - `base_model` — `accounts/fireworks/models/<name>`
 - `dataset` — path to JSONL
 - `tokenizer_model` — HF model name
 - `log_path` — directory for `dataloader.json` and logs
-- `infra.training_shape_id` — **required**; do not set manual `accelerator_type` / `node_count` (see [`shapes.md`](shapes.md))
+- `infra.training_shape_id` — optional override. Leave unset to auto-select a validated shape; do not set manual `accelerator_type` / `node_count` (see [`shapes.md`](shapes.md)).
 
 RL-specific (in `rl_loop.py`'s `Config`): reward function, rollout batch sizes, deployment config (shape is auto-filled from the profile).
 

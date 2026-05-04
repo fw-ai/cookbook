@@ -15,7 +15,7 @@ uv venv --python 3.12 && source .venv/bin/activate
 uv pip install --pre -e .
 ```
 
-`--pre` is required — the SDK (`fireworks-ai[training]`) is a prerelease. All dependencies (including `tinker-cookbook`) are pulled in automatically via `pyproject.toml`.
+`--pre` is required because the Training SDK dependency is pinned to a prerelease-compatible `fireworks-ai[training]` range. All dependencies are pulled in automatically via `pyproject.toml`.
 
 ## Credentials
 

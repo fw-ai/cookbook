@@ -1,10 +1,12 @@
 # Training and deployment shapes — always use a profile
 
-Shapes are the required entry point for both trainer and deployment. Never hand-set `accelerator_type`, `accelerator_count`, `node_count`, or `custom_image_tag` when a shape is in use — the backend will reject or silently ignore them.
+Shapes are the required entry point for both trainer and deployment. The cookbook can auto-select a validated training shape for the base model, LoRA mode, role, and context length. Set `cfg.infra.training_shape_id` only when you need to override that choice. Never hand-set `accelerator_type`, `accelerator_count`, `node_count`, or `custom_image_tag` when a shape is in use — the backend will reject or silently ignore them.
 
 ## Training shape
 
-Set `cfg.infra.training_shape_id`:
+Default: leave `cfg.infra.training_shape_id` unset and let `setup_infra` call `auto_select_training_shape(...)`.
+
+Override: set the bare training-shape resource:
 
 ```python
 cfg.infra.training_shape_id = "accounts/fireworks/trainingShapes/ts-qwen3-8b-policy"
@@ -20,7 +22,7 @@ profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
 # profile.accelerator_type, profile.node_count, ...  (read, do not copy to cfg)
 ```
 
-See `training/recipes/sft_loop.py` (search `resolve_training_profile`) and `training/recipes/rl_loop.py` (same — called once per policy, once per reference).
+See `training/utils/infra.py` (`_resolve_policy_shape`) and the recipe call sites in `training/recipes/sft_loop.py`, `training/recipes/dpo_loop.py`, `training/recipes/orpo_loop.py`, and `training/recipes/rl_loop.py`.
 
 ## Deployment shape
 
@@ -35,13 +37,13 @@ That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123
 
 ## Reference-model shape (RL / DPO)
 
-For **full-parameter** training with a frozen reference, set `cfg.infra.ref_training_shape_id` explicitly — there is no implicit fallback. It can share the same shape as the policy; the control plane appends `--forward-only` automatically.
+For **full-parameter** training with a frozen reference, leave `cfg.infra.ref_training_shape_id` unset to auto-select a validated forward-only reference shape, or set it explicitly to override. It can share the same shape as the policy; the control plane appends `--forward-only` automatically.
 
 For **LoRA** (`lora_rank > 0`), two valid options:
 - **Shared session (recommended, saves GPUs)**: leave `ref_training_shape_id` unset. `setup_infra` uses `policy.create_base_reference()` on the policy trainer for reference logprobs — no separate trainer, no extra GPUs.
 - **Separate LoRA-capable ref trainer**: set `ref_training_shape_id` to a `LORA_TRAINER` shape (typically the same as the policy shape). `setup_infra` provisions a forward-only LoRA ref trainer (its own GPUs) and forwards `lora_rank` to both the trainer request and the ref client so the gateway infers `trainer_mode=LORA_TRAINER` and matches the shape. CP's V2 DPO auto-resolver picks this path by default for LoRA DPO.
 
-The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 else <explicit shape>`.
+The CI pattern for the saves-GPUs LoRA variant is `ref_shape = ""` when `lora_rank > 0`.
 
 ## When to skip validation
 

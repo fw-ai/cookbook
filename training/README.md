@@ -152,7 +152,7 @@ examples/rl/frozen_lake/ Worked example: Frozen Lake with tool-use RL
 examples/orpo/ifeval/    Worked example: IFEval with ORPO
 examples/sft/            Worked example: SFT getting started
 examples/dpo/            Worked example: DPO
-examples/snippets/       Standalone utility scripts
+examples/tools/          Standalone utility scripts
 tests/                   Unit and end-to-end tests
 ```
 
@@ -174,7 +174,5 @@ pytest -q tests/unit tests/test_smoke_imports.py examples/rl/frozen_lake/test_ma
 python tests/coverage_summary.py coverage.json
 ```
 
-See [issues/training-script-coverage-baseline.md](./issues/training-script-coverage-baseline.md)
-for the current baseline and
-[issues/training-script-coverage-roadmap.md](./issues/training-script-coverage-roadmap.md)
-for the expansion plan.
+Use `training/tests/coverage_summary.py` to inspect the current recipe and
+example coverage baseline from `coverage.json`.

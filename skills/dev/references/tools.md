@@ -82,7 +82,7 @@ python training/examples/tools/list_checkpoints.py --job-id <job-id> --promotabl
 python training/examples/tools/list_checkpoints.py --job-id <job-id> --json              # machine-readable
 ```
 
-Requires `fireworks-ai[training] >= 1.0.0a62`. On older SDKs the method doesn't exist and the script will fail on import.
+Requires an installed `fireworks-ai[training]` version that satisfies `training/pyproject.toml` (currently `>=1.1.0a64,<2`). On older SDKs the method doesn't exist and the script will fail on import.
 
 ## `verify_logprobs.py`
 
