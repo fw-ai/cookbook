@@ -1,7 +1,7 @@
 """IGPO utilities: Information Gain-based Policy Optimization.
 
-Shared utilities for IGPO training across single-turn (igpo_loop recipe)
-and multi-turn agentic (FrozenLake-style) settings.
+Shared utilities for IGPO training across async RL and multi-turn agentic
+settings.
 
 ``IGPOTurnScorer`` is the customer-facing callback class for interleaved
 IG scoring during multi-turn rollouts.  It has no eval-protocol dependency
@@ -383,6 +383,48 @@ def make_igpo_loss_fn(
         return total_loss, metrics
 
     return loss_fn
+
+
+def make_igpo_async_loss_fn(
+    prompt_groups: List[Any],
+    *,
+    ref_logprobs: List[List[float]],
+    prompt_lens: List[int],
+    inf_logprobs: List[List[float]],
+    old_policy_logprobs: List[List[float]],
+    kl_beta: float = 0.001,
+    eps_clip: float = 0.2,
+    start: int = 0,
+    end: int | None = None,
+):
+    """Build an IGPO loss for an ``async_rl_loop`` minibatch.
+
+    ``prepare_prompt_groups_fn`` should store flattened per-token advantages
+    under ``PromptGroup.row_meta["per_token_advantages"]``.  This helper
+    slices that flattened list to match the current PPO minibatch and returns
+    the standard IGPO ``forward_backward_custom`` loss closure.
+    """
+    all_per_token_advantages: List[List[float]] = []
+    for pg in prompt_groups:
+        row_meta = pg.row_meta or {}
+        per_token = row_meta.get("per_token_advantages")
+        if per_token:
+            all_per_token_advantages.extend(per_token)
+            continue
+        for i, datum in enumerate(pg.data):
+            n_lp = len(datum.loss_fn_inputs["target_tokens"].data)
+            all_per_token_advantages.append([pg.advantages[i]] * n_lp)
+
+    stop = len(all_per_token_advantages) if end is None else end
+    return make_igpo_loss_fn(
+        per_token_advantages=all_per_token_advantages[start:stop],
+        ref_logprobs=ref_logprobs,
+        prompt_lens=prompt_lens,
+        inf_logprobs=inf_logprobs,
+        prox_logprobs=old_policy_logprobs,
+        kl_beta=kl_beta,
+        eps_clip=eps_clip,
+    )
 
 
 # ---------------------------------------------------------------------------

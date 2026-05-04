@@ -63,7 +63,7 @@ Priority inside `TrainingCheckpoints.resume` (highest first):
 - `warm_start_from_adapter` and `init_from_checkpoint` are mutually exclusive.
 - Requires `lora_rank > 0`. Full-parameter continue-training uses `base_model` instead.
 
-Supported in all recipe loops: `sft_loop`, `dpo_loop`, `orpo_loop`, `rl_loop`, `async_rl_loop`, `igpo_loop`.
+Supported in all recipe loops: `sft_loop`, `dpo_loop`, `orpo_loop`, `rl_loop`, `async_rl_loop`.
 
 ## Cross-run resume
 
@@ -71,7 +71,7 @@ Auto-resume (priority 2) is **scoped to one trainer job**. If you re-run with th
 
 To resume across separate `main()` invocations, either:
 
-- Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL/IGPO). The second run reattaches and the CP rows are visible.
+- Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL). The second run reattaches and the CP rows are visible.
 - Or use `init_from_checkpoint=f"{prior_job_id}:step-N"` for explicit cross-job DCP load. This resets the step counter to 0 — fine for warm-start scenarios, not for "continue training and skip to step N".
 
 ---

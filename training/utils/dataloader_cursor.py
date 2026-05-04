@@ -1,4 +1,4 @@
-"""Cumulative raw-row cursor shared across SFT/DPO/RL/IGPO recipes."""
+"""Cumulative raw-row cursor shared across SFT/DPO/RL recipes."""
 
 from __future__ import annotations
 

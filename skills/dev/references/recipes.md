@@ -7,9 +7,8 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | SFT | `training/recipes/sft_loop.py` |
 | DPO | `training/recipes/dpo_loop.py` |
 | ORPO | `training/recipes/orpo_loop.py` |
-| Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
 | Generic RL loop (GRPO scaffold) | `training/recipes/rl_loop.py` |
-| Async RL loop (rollout/train overlap, PPO inner minibatches) | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
+| Async RL loop (rollout/train overlap, PPO inner minibatches, custom per-token losses such as IGPO) | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
 
 ## "Reference loop" means these files
 
@@ -29,7 +28,7 @@ RL-specific (in `rl_loop.py`'s `Config`): reward function, rollout batch sizes, 
 
 ## Resume
 
-Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL/IGPO), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`checkpoints.md`](checkpoints.md) for the full priority order and constraints.
+Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`checkpoints.md`](checkpoints.md) for the full priority order and constraints.
 
 ## Init from another job
 

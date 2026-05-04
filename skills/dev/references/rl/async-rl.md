@@ -32,12 +32,55 @@ loop, checkpoint plumbing — is handled by `recipes/async_rl_loop.py::main`.
 |---|---|
 | `rollout_fn_factory(setup) -> rollout_fn` (one trajectory per call) | Async fan-out / GroupAssembler / off-policy gate |
 | (optional) `dynamic_filter_fn(pg)` for batch-level filtering | Reference model forwards, KL, TIS, drift metrics |
+| (advanced) `prepare_prompt_groups_fn` + `client_loss_fn_builder` for per-token custom losses such as IGPO | Infra, async gate, checkpoints, weight sync, PPO minibatches |
 | Dataset rows (or pass `rows=` to `main()`) | Weight sync cadence, checkpoint save/promote, WandB axes |
 | `Config(...)` knobs (LR, gate sizes, deployment shape) | PPO inner minibatching, gradient accumulation, advantage z-score |
 
 This is the design intent — extend the rollout, not the loop.  If you find
 yourself forking the recipe, file an issue first; it usually means a knob
 should exist on `Config`.
+
+## Advanced train-step hooks
+
+Use hooks only when the algorithm needs batch-level work after rollouts land.
+IGPO is the motivating case: score each completed trajectory for information
+gain, write per-token advantages into `PromptGroup.row_meta`, then build a
+custom `forward_backward_custom` loss from those per-token advantages.
+
+```python
+def prepare_prompt_groups_fn(groups, ctx) -> dict[str, float]:
+    # Mutate groups in place, e.g. groups[i].row_meta["per_token_advantages"] = ...
+    return {"igpo/mean_ig": mean_ig}
+
+def client_loss_fn_builder(
+    groups, data, advantages, ref_logprobs, prompt_lens,
+    inf_logprobs, old_policy_logprobs, ctx,
+):
+    # For PPO minibatches, ctx.minibatch_start / ctx.minibatch_end identify
+    # the slice of the flattened rollout batch represented by `data`.
+    return make_igpo_async_loss_fn(
+        groups,
+        ref_logprobs=ref_logprobs,
+        prompt_lens=prompt_lens,
+        inf_logprobs=inf_logprobs,
+        old_policy_logprobs=old_policy_logprobs,
+        kl_beta=ctx.config.kl_beta,
+        eps_clip=ctx.config.eps_clip,
+        start=ctx.minibatch_start,
+        end=ctx.minibatch_end,
+    )
+
+main(
+    cfg,
+    rollout_fn_factory=make_rollout_fn,
+    prepare_prompt_groups_fn=prepare_prompt_groups_fn,
+    client_loss_fn_builder=client_loss_fn_builder,
+)
+```
+
+Do not add a separate recipe loop for these algorithms. Keep rollout-specific
+logic in examples/utilities and reuse `async_rl_loop.py` for trainer lifecycle,
+checkpointing, and gate semantics.
 
 | | `rl_loop.py` (sync) | `async_rl_loop.py` (async) |
 |---|---|---|

@@ -31,6 +31,7 @@ __all__ = [
     "compute_turn_advantages",
     "expand_turn_advantages",
     "expand_turn_advantages_from_spans",
+    "make_igpo_async_loss_fn",
     "make_igpo_loss_fn",
     "score_prefix",
     # Async loop + rollout contract
@@ -84,6 +85,7 @@ from training.utils.rl.igpo import (
     compute_turn_advantages,
     expand_turn_advantages,
     expand_turn_advantages_from_spans,
+    make_igpo_async_loss_fn,
     make_igpo_loss_fn,
     score_prefix,
 )

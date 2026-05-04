@@ -6,7 +6,8 @@ names, ``RolloutSetup`` shape, gate semantics) may change without a
 backward-compat shim.  The recipe is intentionally minimal-surface: the
 only thing most users need to write is the rollout function; everything
 else (gate, advantage, ref forward, weight sync, KL/TIS, PPO inner loop,
-checkpoints) is handled by ``main()``.  See
+checkpoints) is handled by ``main()``. Advanced hooks cover algorithms
+such as IGPO that need batch-level scoring or a per-token custom loss. See
 ``skills/dev/references/rl/async-rl.md`` for the full contract.
 
 Acknowledgements -- prior art referenced while designing this loop:
@@ -87,6 +88,7 @@ __all__ = [
     "RolloutFn",
     "RolloutFnFactory",
     "RolloutSetup",
+    "TrainStepContext",
     "main",
 ]
 
@@ -184,6 +186,47 @@ RolloutFn = Callable[[dict], Awaitable[RolloutSample | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
 
 
+@dataclass
+class TrainStepContext:
+    """Mutable train-step context passed to advanced async-RL hooks.
+
+    Most users should only provide ``rollout_fn_factory``.  Hooks exist for
+    algorithms such as IGPO that need to score a completed prompt group and
+    use a per-token custom loss while keeping async rollout/checkpoint/infra
+    plumbing in this recipe.
+    """
+
+    policy: Any
+    reference: Any | None
+    tokenizer: Any
+    config: Config
+    rollout_setup: RolloutSetup
+    extras: dict[str, Any] = field(default_factory=dict)
+    step: int = 0
+    rollout_id: int = 0
+    minibatch_start: int = 0
+    minibatch_end: int = 0
+
+
+PreparePromptGroupsFn = Callable[
+    [list[PromptGroup], TrainStepContext],
+    dict[str, float] | None,
+]
+ClientLossFnBuilder = Callable[
+    [
+        list[PromptGroup],
+        list[tinker.Datum],
+        list[float],
+        list[list[float]],
+        list[int],
+        list[list[float]],
+        list[list[float]],
+        TrainStepContext,
+    ],
+    Callable,
+]
+
+
 def _save_checkpoint(
     ckpt: TrainingCheckpoints,
     *,
@@ -211,6 +254,8 @@ def main(
     rows: list[dict] | None = None,
     cancel_on_exit: bool = False,
     rollout_extras: dict[str, Any] | None = None,
+    prepare_prompt_groups_fn: PreparePromptGroupsFn | None = None,
+    client_loss_fn_builder: ClientLossFnBuilder | None = None,
 ) -> None:
     """Run the async RL loop with a user-supplied rollout factory.
 
@@ -422,6 +467,14 @@ def main(
             extras=dict(rollout_extras or {}),
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
+        train_ctx = TrainStepContext(
+            policy=policy,
+            reference=reference,
+            tokenizer=tokenizer,
+            config=cfg,
+            rollout_setup=rollout_setup,
+            extras={},
+        )
 
         ctx_metadata: dict[str, Any] = {
             "completions_per_prompt": cfg.completions_per_prompt,
@@ -513,6 +566,18 @@ def main(
                 "[rollout %d] ref_forward (%.1fs)", rollout_id, span.elapsed,
             )
 
+            prepare_metrics: dict[str, float] = {}
+            if prepare_prompt_groups_fn is not None:
+                train_ctx.step = step
+                train_ctx.rollout_id = rollout_id
+                with elapsed_timer("prepare_prompt_groups") as span:
+                    maybe_metrics = prepare_prompt_groups_fn(prompt_groups, train_ctx)
+                prepare_metrics.update(maybe_metrics or {})
+                logger.info(
+                    "[rollout %d] prepare_prompt_groups (%.1fs)",
+                    rollout_id, span.elapsed,
+                )
+
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
             with elapsed_timer("old_policy_forward") as span:
                 old_policy_fwd = policy.forward(data, "cross_entropy")
@@ -536,14 +601,37 @@ def main(
                     break
 
                 with elapsed_timer("fwd_bwd") as span:
-                    fwd_bwd_result = fwd_bwd_minibatch(
-                        data[mb_start:mb_end],
-                        adv[mb_start:mb_end],
-                        ref_lp[mb_start:mb_end],
-                        prompt_lens[mb_start:mb_end],
-                        inf_lp[mb_start:mb_end],
-                        old_policy_logprobs[mb_start:mb_end],
-                    )
+                    mb_data = data[mb_start:mb_end]
+                    mb_adv = adv[mb_start:mb_end]
+                    mb_ref_lp = ref_lp[mb_start:mb_end]
+                    mb_prompt_lens = prompt_lens[mb_start:mb_end]
+                    mb_inf_lp = inf_lp[mb_start:mb_end]
+                    mb_old_policy_logprobs = old_policy_logprobs[mb_start:mb_end]
+                    if client_loss_fn_builder is None:
+                        fwd_bwd_result = fwd_bwd_minibatch(
+                            mb_data,
+                            mb_adv,
+                            mb_ref_lp,
+                            mb_prompt_lens,
+                            mb_inf_lp,
+                            mb_old_policy_logprobs,
+                        )
+                    else:
+                        train_ctx.step = step
+                        train_ctx.rollout_id = rollout_id
+                        train_ctx.minibatch_start = mb_start
+                        train_ctx.minibatch_end = mb_end
+                        loss_fn = client_loss_fn_builder(
+                            prompt_groups,
+                            mb_data,
+                            mb_adv,
+                            mb_ref_lp,
+                            mb_prompt_lens,
+                            mb_inf_lp,
+                            mb_old_policy_logprobs,
+                            train_ctx,
+                        )
+                        fwd_bwd_result = policy.forward_backward_custom(mb_data, loss_fn)
                     fwd_bwd_results.append(fwd_bwd_result)
                 logger.info(
                     "[rollout %d step %d] fwd_bwd (mb %d/%d) (%.1fs)",
@@ -588,6 +676,7 @@ def main(
                 loop_stats=loop_stats,
                 completions_per_prompt=cfg.completions_per_prompt,
             )
+            metrics.update(prepare_metrics)
             # Capture the per-rollout-mean KL for the human summary line
             # before the train/* stripping below removes it.
             mean_kl = metrics.get("train/mean_kl", 0.0)
