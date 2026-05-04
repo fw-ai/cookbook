@@ -107,7 +107,17 @@ def test_glm5_renderer_matches_fireworks_serverless_prompt_token_ids(
         tokenizer_model,
         trust_remote_code=True,
     )
-    renderer = GLM5Renderer(tokenizer)
+    # Mirror the serverless render mode: when the case asks for
+    # ``reasoning_history=preserved``, build a non-stripping renderer so
+    # token sequences line up (registered default strips history thinking
+    # to match HF ``apply_chat_template`` with ``clear_thinking`` unset).
+    preserves_history = (
+        case.get("request_kwargs", {}).get("reasoning_history") == "preserved"
+    )
+    renderer = GLM5Renderer(
+        tokenizer,
+        strip_thinking_from_history=not preserves_history,
+    )
 
     server_ids = _serverless_prompt_token_ids(
         client,

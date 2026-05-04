@@ -84,22 +84,24 @@ def tokenizer():
 
 @pytest.fixture(scope="module")
 def renderer(tokenizer):
-    """Strip-history renderer used for HF default ``clear_thinking`` parity."""
-    return GLM5Renderer(tokenizer, strip_thinking_from_history=True)
+    """Registered-default strip-history renderer (matches HF
+    ``apply_chat_template`` with ``clear_thinking`` unset)."""
+    return GLM5Renderer(tokenizer)
 
 
 @pytest.fixture(scope="module")
 def renderer_keep_thinking(tokenizer):
-    """Registered-default preserve-thinking renderer."""
-    return GLM5Renderer(tokenizer)
+    """Opt-in preserve-thinking renderer (caller must also pass
+    ``clear_thinking=False`` at inference for parity)."""
+    return GLM5Renderer(tokenizer, strip_thinking_from_history=False)
 
 
-def test_registered_glm5_default_preserves_thinking(tokenizer):
+def test_registered_glm5_default_strips_thinking_from_history(tokenizer):
     default_renderer = get_renderer("glm5", tokenizer)
 
     assert isinstance(default_renderer, GLM5Renderer)
-    assert default_renderer.strip_thinking_from_history is False
-    assert default_renderer.has_extension_property is True
+    assert default_renderer.strip_thinking_from_history is True
+    assert default_renderer.has_extension_property is False
 
 
 def _hf_tokens(tokenizer, messages, add_generation_prompt: bool, **kwargs) -> list[int]:
@@ -913,6 +915,89 @@ def test_build_supervised_examples_all_assistant_splits_by_user_turn(
     assert "A3" in trained_examples[2]
     assert "A1" not in trained_examples[2]
     assert "A2" not in trained_examples[2]
+
+
+def test_build_supervised_examples_disaggregate_matches_hf_default(tokenizer, renderer):
+    """Each per-turn split must match HF ``apply_chat_template`` rendering of
+    the matching prefix with ``clear_thinking`` left unset (the HF default,
+    i.e. strip historical reasoning). This guards against training-inference
+    OOD: if a customer fine-tunes via cookbook then deploys behind any
+    standard HF inference stack, the model must see prompt contexts shaped
+    exactly like the per-turn datums it was trained on.
+    """
+    messages_with_reasoning = [
+        {"role": "user", "content": "Q1"},
+        {
+            "role": "assistant",
+            "reasoning_content": "THINK_A",
+            "content": "A1",
+        },
+        {"role": "user", "content": "Q2"},
+        {
+            "role": "assistant",
+            "reasoning_content": "THINK_B",
+            "content": "A2",
+        },
+        {"role": "user", "content": "Q3"},
+        {
+            "role": "assistant",
+            "reasoning_content": "THINK_C",
+            "content": "A3",
+        },
+    ]
+    # Renderer messages keep the structured ``thinking`` part on each turn so
+    # the disaggregate path has reasoning to either preserve (current turn) or
+    # strip (history); supervised examples drop the trailing role sentinel.
+    renderer_messages = [
+        {"role": "user", "content": "Q1"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "THINK_A"},
+                {"type": "text", "text": "A1"},
+            ],
+        },
+        {"role": "user", "content": "Q2"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "THINK_B"},
+                {"type": "text", "text": "A2"},
+            ],
+        },
+        {"role": "user", "content": "Q3"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "THINK_C"},
+                {"type": "text", "text": "A3"},
+            ],
+        },
+    ]
+
+    examples = renderer.build_supervised_examples(
+        renderer_messages,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+
+    user_idxs = [i for i, m in enumerate(messages_with_reasoning) if m["role"] == "user"]
+    assert len(examples) == len(user_idxs), (
+        f"Expected {len(user_idxs)} per-turn datums, got {len(examples)}"
+    )
+
+    # Each datum corresponds to messages[: next_user_idx]; the last datum
+    # consumes everything through the final assistant turn.
+    prefix_ends = user_idxs[1:] + [len(messages_with_reasoning)]
+    for i, (example, end) in enumerate(zip(examples, prefix_ends)):
+        ours = list(example[0].to_ints())
+        prefix = messages_with_reasoning[:end]
+        # HF default rendering with no clear_thinking kwarg: strip historical
+        # reasoning, preserve last-turn reasoning (this is what every standard
+        # inference stack feeds the model). Compare without
+        # add_generation_prompt because the example renders the full assistant
+        # turn rather than a generation-only prompt.
+        hf = _hf_tokens(tokenizer, prefix, add_generation_prompt=False)
+        _assert_supervised_parity_with_role_stop(ours, hf, tokenizer, prefix)
 
 
 def test_build_supervised_examples_warns_on_non_assistant_mode(tokenizer, renderer):

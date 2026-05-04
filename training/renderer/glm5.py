@@ -7,10 +7,12 @@ tokenizer and chat template).
 Token-level layout follows ``tokenizer.apply_chat_template`` byte-for-byte
 (verified by the unit tests in ``test_glm5_renderer.py``), modulo a synthetic
 terminal role sentinel used only for supervised examples that end on an
-assistant message. The registered renderer uses GLM preserved-thinking
-semantics by default; opt-in
-``strip_thinking_from_history=True`` matches the template's standard
-``clear_thinking`` behavior.
+assistant message. The registered renderer defaults to
+``strip_thinking_from_history=True``, matching the shipped chat template's
+default behavior (``clear_thinking`` is unset, which the Jinja treats as
+"strip historical reasoning"); opt-in ``strip_thinking_from_history=False``
+preserves historical reasoning and is intended for callers who also pass
+``clear_thinking=False`` to ``apply_chat_template`` at inference time.
 
 Role tag layout (as the shipped Jinja template emits them):
 
@@ -35,18 +37,20 @@ Assistant turn layout:
 
       <|assistant|></think>{content}
 
-- **Historical assistant turn** (any turn before the last user message) when
-  ``strip_thinking_from_history=False`` (the default) and reasoning content is
-  provided::
-
-      <|assistant|><think>{reasoning}</think>{content}
-
-- **Historical assistant turn** when ``strip_thinking_from_history=True``::
+- **Historical assistant turn** when ``strip_thinking_from_history=True``
+  (the default — matches the shipped template's ``clear_thinking`` behavior
+  when no kwarg is passed to ``apply_chat_template``)::
 
       <|assistant|></think>{content}
 
-  This opt-in strip-history mode matches the shipped template's default
-  ``clear_thinking`` behavior.
+- **Historical assistant turn** when ``strip_thinking_from_history=False``
+  (opt-in) and reasoning content is provided::
+
+      <|assistant|><think>{reasoning}</think>{content}
+
+  Use this only if your inference path also passes ``clear_thinking=False``
+  to ``apply_chat_template``; otherwise training tokens diverge from
+  inference rendering.
 
 Other invariants:
 
@@ -244,7 +248,7 @@ class GLM5Renderer(Renderer):
     def __init__(
         self,
         tokenizer: Tokenizer,
-        strip_thinking_from_history: bool = False,
+        strip_thinking_from_history: bool = True,
     ) -> None:
         super().__init__(tokenizer)
         self.strip_thinking_from_history = strip_thinking_from_history
