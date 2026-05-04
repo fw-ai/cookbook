@@ -118,18 +118,83 @@ spans `K` optim steps.
 
 **Sizing rule of thumb.**  For sustained overlap you need `O >= R - 1`.  AReaL's
 GSM8K example uses `R=1` with `O=2`; we typically run `R=4` with `O=4` (one
-margin step over the minimum).  See WandB `perf/wait_time_ratio` and
-`perf/overlap_ratio` to confirm the rollout side never starves.
+margin step over the minimum).  See `## Metrics` below for tuning from a live
+run.
 
-**Diagnosing waits.**
+## Metrics: tuning staleness and the trainer/sampler GPU split
 
-- `perf/trainer_wait_for_sampler_time > 0` → the trainer is waiting on rollouts;
-  rollouts are the bottleneck (raise replicas or `C_s`, or accept the wait as
-  Amdahl-bound).
-- `perf/sampler_wait_for_trainer_time > 0` → the rollout side is throttled by
-  the staleness budget; raise `O` or accept that the trainer is the bottleneck.
-- Healthy async has the first metric > 0 and the second `~0`: concurrency cap
-  binds before staleness.
+The async loop should be **sampler-bound**: the trainer finishes its step + sync
+just before the rollout buffer fills, so it spends its idle time waiting on the
+sampler — and that wait is *minimized*.  The four core wall-time metrics tell
+you where you sit on that frontier and what to change.
+
+| Metric | Means | Healthy value |
+|---|---|---|
+| `perf/trainer_wait_for_sampler_time` | Trainer idle, waiting for the next batch to assemble | **Small but >0** (sampler-bound, minimal slack) |
+| `perf/sampler_wait_for_trainer_time` | Sampler blocked on the staleness gate, waiting for a weight sync to release budget | **≈0** |
+| `perf/wait_time_ratio` | `(trainer_wait + sampler_wait) / step_time` | < ~0.1 |
+| `perf/overlap_ratio` | Fraction of step wall-time the two sides ran concurrently | → 1.0 |
+
+The two wait metrics are mutually exclusive in steady state: if the gate is
+tuned correctly, exactly one of the sides waits per step, never both.  The two
+ratios are derived — read them first to triage, then drop into the wait pair to
+decide what to change.
+
+### Reading a run
+
+1. **`sampler_wait_for_trainer_time` >> 0** → samplers are blocked on the
+   staleness budget.  The trainer is the slow side; admit more off-policyness
+   or reduce trainer load.
+   - First lever: raise `max_head_offpolicy_versions` by 1 (`O += 1`).  Cheap
+     and reversible; KL/PPO-clip will absorb modest extra drift.
+   - If `O` is already at the AReaL-style sizing rule (`O ≥ R−1`) and the wait
+     persists: the trainer step itself is too long.  Add training replicas /
+     pipeline-parallel ranks, or lower `ppo_n_minibatches`.
+2. **`trainer_wait_for_sampler_time` >> 0 and `sampler_wait` ≈ 0** → the
+   intended sampler-bound regime.  Check whether the wait is *minimized*:
+   - If the wait is small and `wait_time_ratio < ~0.1`, you're done.
+   - If the wait is large, the sampler is the slow side.  Raise inference
+     replicas (`replica_count` / TP), raise `max_concurrency_rollout_sample`
+     toward the deployment's `max_batch_size`, or shrink the per-sample work
+     (lower `max_completion_tokens`, tighter retry budget in the rollout).
+3. **Both waits >0** → the gate is mis-sized; one side is starving the other
+   on alternating steps.  Usually `R = C_s / (B_p·cpp)` is high but `O` is too
+   low: each batch admits fast, but no off-policy slack means the next batch
+   stalls until the sync.  Bump `O` until `sampler_wait` collapses to ~0.
+4. **Both waits ≈ 0, low `overlap_ratio`** → step times are dominated by
+   non-overlapped phases (weight sync, checkpoint save).  Re-check
+   `weight_sync_interval=1` is in effect; long syncs (>~5% of step) often mean
+   the deployment shape is mis-configured (e.g., missing `devShmSize`, full
+   base hotload triggering on every sync).
+
+### Choosing the trainer/sampler GPU split
+
+Same metrics, in aggregate:
+
+- **Sampler-bound run, large `trainer_wait_for_sampler`** → shift GPUs from
+  trainer to inference: more replicas, larger TP, or a larger
+  `max_concurrency_rollout_sample`.
+- **Trainer-bound run, large `sampler_wait_for_trainer` after maxing out `O`**
+  → shift GPUs from inference to trainer: more training replicas, raise
+  pipeline parallelism, or accept lower `ppo_n_minibatches`.
+
+Goal: tune until `sampler_wait_for_trainer_time ≈ 0` *and*
+`trainer_wait_for_sampler_time` is small.  That's the sampler-bound,
+minimal-slack regime — the trainer is the marginal-cost resource and is fully
+utilized; the sampler always has work queued just-in-time.
+
+### Other useful metrics
+
+- `train/ppo_kl` — intra-step KL between the current policy and the
+  `old_policy_logprobs` snapshot.  Large with `ppo_n_minibatches > 1` means
+  the inner loop is genuinely doing work; a near-zero value means
+  `ppo_n_minibatches=1` would have the same effect at lower cost.
+- `train/inference_kld`, `train/inference_diff` — drift between the policy
+  used to sample and the policy at training time.  Should track `O`: at `O=0`
+  these are ~0; at `O=4` they grow but should remain bounded.  Spikes that
+  don't decay across steps often indicate `weight_sync_fn` is silently failing.
+- `rollout/entropy` — averaged over `loss_mask>0` only.  Sudden collapse is
+  the usual mode-collapse signal.
 
 ## Configuration cheatsheet
 

@@ -100,8 +100,7 @@ class Config:
     log_path: str
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str | None = None
-    """JSONL dataset path or URL.  Optional -- ``main(..., rows=...)`` also
-    accepts rows directly for users building their dataset in Python."""
+    """JSONL path/URL; optional when passing ``rows=`` to ``main()``."""
 
     learning_rate: float = 1e-5
     kl_beta: float = 0.001
@@ -117,15 +116,11 @@ class Config:
 
     prompt_groups_per_step: int = 1
     max_head_offpolicy_versions: int = 0
-    """Staleness budget in weight-sync (policy) versions: a sample is allowed
-    to land at most this many weight-sync boundaries past its submit version.
-    Each weight-sync (one per outer rollout batch) bumps the version by 1
-    regardless of ``ppo_n_minibatches``.  ``0`` = strict on-policy."""
+    """Staleness budget in weight-sync versions; ``0`` = strict on-policy.
+    See ``skills/dev/references/rl/async-rl.md`` (gate semantics)."""
     max_concurrency_rollout_sample: int | None = None
-    """Cap concurrent LLM calls in flight (same unit as
-    ``deployment.max_batch_size``; exceeding that triggers HTTP 583/299).
-    Must be ``>= completions_per_prompt`` or the gate stalls.  ``None``
-    leaves concurrency unbounded; staleness alone then gates submission."""
+    """In-flight LLM-call cap (same unit as ``deployment.max_batch_size``);
+    must be ``>= completions_per_prompt`` or the gate stalls."""
     min_group_size: int = 1
     """Minimum surviving samples per row to emit a PromptGroup."""
     grad_accumulation_normalization: GradAccNormalization | str | None = (
@@ -134,14 +129,7 @@ class Config:
 
     policy_loss: PolicyLoss = "grpo"
     """One of the registered RL policy losses (see :data:`PolicyLoss`).
-
-    This recipe is **client-side only** -- the loss closure runs in
-    Python via ``forward_backward_custom``.  There is no ``loss_path``
-    knob: the server-side ``"builtin"`` path forbids ``kl_beta>0`` and
-    ``pipeline_parallelism>1``, both of which the async loop relies on,
-    so wiring it up would only invite misconfiguration.  Use
-    ``recipes/rl_loop.py`` if you need the builtin fast path.
-    """
+    Client-side only -- ``loss_path`` is not exposed, see skill doc."""
 
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     dro: DROConfig = field(default_factory=DROConfig)
@@ -151,22 +139,11 @@ class Config:
     eps_clip_high: float | None = None
     ratio_log_cap: float = 20.0
     ppo_n_minibatches: int = 1
-    """Number of inner PPO minibatches per rollout batch.
-
-    Each rollout batch snapshots ``old_policy_logprobs`` followed by
-    ``ppo_n_minibatches`` × (``forward_backward`` + ``optim_step``). When
-    >1, the policy drifts across inner steps, so ``old_policy_logprobs``
-    anchors the PPO ratio and the clip does real work. ``1`` reproduces
-    the legacy 1:1 behavior."""
+    """Inner PPO steps per rollout batch sharing one ``old_policy_logprobs``
+    snapshot; ``1`` reproduces the legacy 1:1 behavior."""
     synchronous_training: bool = False
-    """Force fully-synchronous (no rollout/train overlap) execution.
-
-    When True, the loop drains all in-flight rollout tasks before each
-    ``train_step`` and explicitly marks the rollout side blocked-on-
-    trainer for the duration of ``train_step + weight_sync``.  Useful as
-    a baseline for measuring async overlap savings: ``perf/sampler_wait_for_trainer_time``
-    will then approximate the per-step train+sync wall time, instead of
-    the ~0 it should be in healthy async mode."""
+    """Drain rollouts before each train step (no overlap); baseline knob
+    for measuring async savings."""
     tis: TISConfig = field(default_factory=TISConfig)
 
     infra: InfraConfig = field(default_factory=InfraConfig)
@@ -175,31 +152,22 @@ class Config:
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
 
     init_from_checkpoint: str | None = None
-    """Resume from a prior checkpoint.  Bare name resumes from this trainer's
-    own history.  ``"job_id:checkpoint_name"`` resumes across trainer jobs.
-    The recipe maintains a single ``checkpoint.json`` -- LoRA adapter
-    warm-start is intentionally not exposed here; use the sync ``rl_loop``
-    recipe if you need that path."""
+    """Resume from prior checkpoint; bare name = this job, ``"job:name"``
+    = cross-job."""
     save_final_checkpoint: bool = True
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
-    """When set on a clean final save, promote the latest checkpoint to this
-    model id (4-segment ``accounts/<acct>/models/<id>`` form)."""
+    """Promote the final checkpoint to this 4-segment model id on clean exit."""
     policy_job_id: str | None = None
     """Reuse an existing policy trainer job (e.g. when resuming)."""
 
 
 @dataclass
 class RolloutSetup:
-    """Dependencies the recipe assembles once and hands to the rollout factory.
+    """Dependencies the recipe hands the rollout factory once at startup.
 
-    The factory closes over whatever fields it needs and returns the
-    per-sample ``rollout_fn``.  Carries the inference endpoint, the
-    tokenizer, sampling kwargs, and an ``extras`` dict for any
-    caller-supplied state.  Concurrency is enforced by the async runner
-    in sample (LLM-call) units: ``cfg.max_concurrency_rollout_sample``
-    flows through directly as the runner's ``max_concurrent`` cap, which
-    is the same unit that maps to deployment ``max_batch_size``.
+    Inference endpoint, tokenizer, sampling kwargs, plus an ``extras`` dict
+    for caller state.  See ``skills/dev/references/rl/async-rl.md``.
     """
 
     tokenizer: Any
