@@ -5,10 +5,21 @@
 > commit if you depend on the current shape.  The recipe also emits a
 > runtime `WARNING` at `main()` start.
 
-The async recipe overlaps rollout sampling with training: while the trainer runs
-`fwd_bwd + optim_step` on batch *N*, the sampler is producing batch *N+1* against
-the previous policy version.  This is distinct from the synchronous
-`rl_loop.py`, which trains and samples in lockstep.
+The async recipe runs rollout sampling and training as concurrent tasks behind a
+gate that bounds how stale a sample may be when it lands at the trainer.  It
+covers the full spectrum:
+
+- **Strict on-policy** (`max_head_offpolicy_versions=0`): the gate admits at
+  most one outer batch worth of samples per policy version; samples that would
+  arrive after the next weight sync are held until the sync.  No off-policy
+  drift, but rollouts and training serialize at each batch boundary.
+- **Off-policy with bounded staleness** (`max_head_offpolicy_versions > 0`):
+  samples may land up to `O` weight-sync versions past their submit version,
+  which lets rollout sampling overlap with training in steady state.
+
+`rl_loop.py` is the older synchronous recipe (always strict on-policy, drains
+rollouts before each step).  The async recipe is a strict superset of that
+behavior and is the recommended starting point for new RL work.
 
 ## What you customize (and what you don't)
 
@@ -30,16 +41,16 @@ should exist on `Config`.
 
 | | `rl_loop.py` (sync) | `async_rl_loop.py` (async) |
 |---|---|---|
-| Sampler/trainer overlap | None — drains rollouts before each step | Overlapped via an off-policy budget |
+| Sampler/trainer overlap | None — drains rollouts before each step | Always concurrent; off-policy budget controls how much overlap |
 | Rollout API | `make_rollout_fn(rl_cfg, deploy_mgr) -> rollout_fn` | `rollout_fn_factory(setup) -> rollout_fn` |
 | Per-call signature | `rollout_fn(prompt, n)` returns N samples | `rollout_fn(sample_prompt) -> RolloutSample \| None` (one trajectory per call) |
 | Concurrency | `ConcurrencyConfig` (adaptive AIMD) | Sample-level cap on the async runner (`max_concurrency_rollout_sample`) |
-| Off-policy | Strict on-policy | Configurable budget in weight-sync versions |
+| On-/off-policy | Strict on-policy only | `max_head_offpolicy_versions=0` for strict on-policy, `>0` for off-policy with bounded staleness |
 | PPO inner steps | One `fwd_bwd + optim_step` per rollout | `ppo_n_minibatches` × inner steps per rollout |
 
-Use the async recipe when (a) you need the rollout/train overlap to fit in your
-GPU budget, or (b) you want PPO inner-loop minibatching.  Use the sync recipe
-otherwise — it's simpler and avoids the off-policy reasoning below.
+Prefer the async recipe for new work — its `O=0` mode is equivalent to the sync
+recipe, and raising `O` later is a single-knob change.  The sync recipe stays
+for users who already depend on it.
 
 ## The rollout API
 
@@ -116,56 +127,60 @@ relative to one batch).
 pins).  It is **not** an optimizer-step counter — with `K>1` the same version
 spans `K` optim steps.
 
-**Sizing rule of thumb.**  For sustained overlap you need `O >= R - 1`.  AReaL's
-GSM8K example uses `R=1` with `O=2`; we typically run `R=4` with `O=4` (one
-margin step over the minimum).  See `## Metrics` below for tuning from a live
-run.
+**Sizing rule of thumb.**  For sustained overlap you need `O >= R - 1`.  At
+`O = 0` the loop runs strict on-policy regardless of `R`; raising `O` opens the
+overlap window.  AReaL's GSM8K example uses `R=1` with `O=2`.  See
+`## Metrics` below for tuning from a live run.
 
 ## Metrics: tuning staleness and the trainer/sampler GPU split
 
-The async loop should be **sampler-bound**: the trainer finishes its step + sync
-just before the rollout buffer fills, so it spends its idle time waiting on the
-sampler — and that wait is *minimized*.  The four core wall-time metrics tell
-you where you sit on that frontier and what to change.
+The target regime is **sampler-bound with minimal trainer wait**: the trainer
+finishes its step + sync just before the next batch is ready, so it idles only
+briefly waiting on the sampler.  The four core wall-time metrics tell you
+where you sit on that frontier and what to change.
 
 | Metric | Means | Healthy value |
 |---|---|---|
 | `perf/trainer_wait_for_sampler_time` | Trainer idle, waiting for the next batch to assemble | **Small but >0** (sampler-bound, minimal slack) |
-| `perf/sampler_wait_for_trainer_time` | Sampler blocked on the staleness gate, waiting for a weight sync to release budget | **≈0** |
-| `perf/wait_time_ratio` | `(trainer_wait + sampler_wait) / step_time` | < ~0.1 |
-| `perf/overlap_ratio` | Fraction of step wall-time the two sides ran concurrently | → 1.0 |
+| `perf/sampler_wait_for_trainer_time` | Sampler blocked on the staleness gate, waiting for a weight sync to release budget | **≈0** for off-policy; expected `>0` at `O=0` |
+| `perf/wait_time_ratio` | `(trainer_wait + sampler_wait) / step_time` | < ~0.1 in the off-policy regime |
+| `perf/overlap_ratio` | Fraction of step wall-time the two sides ran concurrently | → 1.0 in the off-policy regime |
 
-The two wait metrics are mutually exclusive in steady state: if the gate is
-tuned correctly, exactly one of the sides waits per step, never both.  The two
-ratios are derived — read them first to triage, then drop into the wait pair to
-decide what to change.
+In off-policy steady state the two wait metrics are mutually exclusive: exactly
+one side waits per step.  Read the two ratios first to triage, then drop into
+the wait pair to decide what to change.
 
-### Reading a run
+> At `max_head_offpolicy_versions=0` (strict on-policy), `sampler_wait_for_trainer_time`
+> is structurally non-zero because the gate refuses to admit the next batch
+> until the current weight sync.  That is correct behavior, not a bug.  The
+> goal in that mode is just to keep the *trainer* fully utilized; the sampler
+> wait is the cost of strict on-policy.
+
+### Reading a run (off-policy regime, `O > 0`)
 
 1. **`sampler_wait_for_trainer_time` >> 0** → samplers are blocked on the
    staleness budget.  The trainer is the slow side; admit more off-policyness
    or reduce trainer load.
    - First lever: raise `max_head_offpolicy_versions` by 1 (`O += 1`).  Cheap
      and reversible; KL/PPO-clip will absorb modest extra drift.
-   - If `O` is already at the AReaL-style sizing rule (`O ≥ R−1`) and the wait
-     persists: the trainer step itself is too long.  Add training replicas /
+   - If `O` is already at the sizing rule (`O ≥ R−1`) and the wait persists,
+     the trainer step itself is too long.  Add training replicas /
      pipeline-parallel ranks, or lower `ppo_n_minibatches`.
 2. **`trainer_wait_for_sampler_time` >> 0 and `sampler_wait` ≈ 0** → the
    intended sampler-bound regime.  Check whether the wait is *minimized*:
    - If the wait is small and `wait_time_ratio < ~0.1`, you're done.
    - If the wait is large, the sampler is the slow side.  Raise inference
-     replicas (`replica_count` / TP), raise `max_concurrency_rollout_sample`
-     toward the deployment's `max_batch_size`, or shrink the per-sample work
-     (lower `max_completion_tokens`, tighter retry budget in the rollout).
+     replicas, raise `max_concurrency_rollout_sample` toward the deployment's
+     `max_batch_size`, or shrink the per-sample work (lower
+     `max_completion_tokens`, tighter retry budget in the rollout).
 3. **Both waits >0** → the gate is mis-sized; one side is starving the other
    on alternating steps.  Usually `R = C_s / (B_p·cpp)` is high but `O` is too
    low: each batch admits fast, but no off-policy slack means the next batch
    stalls until the sync.  Bump `O` until `sampler_wait` collapses to ~0.
 4. **Both waits ≈ 0, low `overlap_ratio`** → step times are dominated by
    non-overlapped phases (weight sync, checkpoint save).  Re-check
-   `weight_sync_interval=1` is in effect; long syncs (>~5% of step) often mean
-   the deployment shape is mis-configured (e.g., missing `devShmSize`, full
-   base hotload triggering on every sync).
+   `weight_sync_interval=1` is in effect; if the sync itself is the long pole,
+   investigate the deployment configuration separately.
 
 ### Choosing the trainer/sampler GPU split
 
@@ -178,10 +193,12 @@ Same metrics, in aggregate:
   → shift GPUs from inference to trainer: more training replicas, raise
   pipeline parallelism, or accept lower `ppo_n_minibatches`.
 
-Goal: tune until `sampler_wait_for_trainer_time ≈ 0` *and*
-`trainer_wait_for_sampler_time` is small.  That's the sampler-bound,
-minimal-slack regime — the trainer is the marginal-cost resource and is fully
-utilized; the sampler always has work queued just-in-time.
+In the off-policy regime, tune until `sampler_wait_for_trainer_time ≈ 0` *and*
+`trainer_wait_for_sampler_time` is small — the trainer is the marginal-cost
+resource and is fully utilized; the sampler always has work queued
+just-in-time.  In strict on-policy (`O=0`), only the second condition is
+achievable; `sampler_wait_for_trainer_time` is bounded below by the train +
+sync wall time.
 
 ### Other useful metrics
 
