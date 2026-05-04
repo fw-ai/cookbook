@@ -72,11 +72,20 @@ _PARITY_CASES = [
         "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
         "Nemotron3SplitRenderer",
     ),
-    (
-        "gpt_oss_high_reasoning",
-        "openai/gpt-oss-120b",
-        "GptOssSplitRenderer",
-    ),
+]
+
+
+# gpt-oss does NOT belong on _PARITY_CASES: its cookbook ``render_message``
+# does not strip historical thinking, so the renderer's output IS
+# extension-safe. The correct fix for the dispatcher routing is to
+# declare ``has_extension_property=True`` (handled by
+# ``GptOssExtensionRenderer``), not to disaggregate. Verified separately
+# below.
+_GPT_OSS_EXTENSION_CASES = [
+    ("gpt_oss_no_sysprompt", "openai/gpt-oss-120b", "GptOssExtensionRenderer"),
+    ("gpt_oss_low_reasoning", "openai/gpt-oss-120b", "GptOssExtensionRenderer"),
+    ("gpt_oss_medium_reasoning", "openai/gpt-oss-120b", "GptOssExtensionRenderer"),
+    ("gpt_oss_high_reasoning", "openai/gpt-oss-120b", "GptOssExtensionRenderer"),
 ]
 
 
@@ -216,45 +225,18 @@ def test_disaggregate_produces_n_examples(
 # ─────────────────────────────────────────────────────────────────────────
 
 
-# Renderers known to NOT strip historical thinking despite HF
-# ``apply_chat_template`` doing so — disagreement between our cookbook
-# implementation and the shipped Jinja template, separate from the
-# disaggregate dispatch fix this PR is making. Listing them here as
-# xfails so the assertion lives in tree as a regression check that fires
-# the day the upstream renderer is corrected.
-_KNOWN_BROKEN_HISTORY_STRIP: set[str] = {
-    # gpt_oss.py: render_message emits the analysis channel for any
-    # assistant message with thinking_content, with no
-    # before_last_user/is_last guard, so historical analysis leaks into
-    # the rendered prompt. HF Jinja correctly strips it.
-    "gpt_oss_high_reasoning",
-}
-
-
 @pytest.mark.parametrize(
     "name,model_id,split_classname",
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
 def test_disaggregate_strips_history_thinking(
-    name: str, model_id: str, split_classname: str, request: pytest.FixtureRequest
+    name: str, model_id: str, split_classname: str
 ):
     """The headline correctness invariant: in datum ``i``, the *current*
     assistant turn's reasoning_content survives rendering, while reasoning
     from any *earlier* assistant turn is stripped (matches what HF
     apply_chat_template emits at inference)."""
-    if name in _KNOWN_BROKEN_HISTORY_STRIP:
-        request.node.add_marker(
-            pytest.mark.xfail(
-                reason=(
-                    f"Upstream tinker_cookbook renderer for {name!r} does "
-                    "not strip thinking from history (independent bug from "
-                    "the disaggregate dispatch fix in this PR). Tracked as "
-                    "follow-up."
-                ),
-                strict=True,
-            )
-        )
     tok, renderer = _resolve_renderer(name, model_id, split_classname)
 
     messages = _multi_turn_messages_with_reasoning(n=3)
@@ -443,3 +425,60 @@ def test_non_assistant_split_mode_warns_and_splits(
     )
     user_idxs = [i for i, m in enumerate(messages) if m["role"] == "user"]
     assert len(examples) == len(user_idxs)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# gpt-oss: extension-safe (no disaggregate), separate sanity checks
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name,model_id,split_classname",
+    _GPT_OSS_EXTENSION_CASES,
+    ids=[case[0] for case in _GPT_OSS_EXTENSION_CASES],
+)
+def test_gpt_oss_extension_override_registered(
+    name: str, model_id: str, split_classname: str
+):
+    """Each registered gpt-oss reasoning-effort name resolves to the local
+    ``GptOssExtensionRenderer`` and reports
+    ``has_extension_property=True`` so the dispatcher fast-paths to
+    singular instead of routing to the (would-be missing) plural path."""
+    _tok, renderer = _resolve_renderer(name, model_id, split_classname)
+    assert renderer.has_extension_property is True, (
+        f"{name!r}: gpt-oss cookbook render_message preserves historical "
+        "thinking, so its output is extension-safe; has_extension_property "
+        "must be True so the SFT dispatcher does not incorrectly route to "
+        "the plural disaggregate path"
+    )
+
+
+@pytest.mark.parametrize(
+    "name,model_id,split_classname",
+    _GPT_OSS_EXTENSION_CASES,
+    ids=[case[0] for case in _GPT_OSS_EXTENSION_CASES],
+)
+def test_gpt_oss_multi_turn_produces_single_datum(
+    name: str, model_id: str, split_classname: str
+):
+    """Multi-turn ALL_ASSISTANT_MESSAGES on gpt-oss must NOT disaggregate.
+    With ``has_extension_property=True`` the dispatcher fast-paths to
+    singular, matching the renderer's actual extension semantics and
+    avoiding the N²/2 token blow-up."""
+    tok, renderer = _resolve_renderer(name, model_id, split_classname)
+
+    messages = _multi_turn_messages(n=3)
+    # Singular: build_supervised_example directly produces 1 datum.
+    model_input, weights = renderer.build_supervised_example(
+        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
+    )
+    token_ids = list(model_input.to_ints())
+    trained = _trained_text(tok, token_ids, weights.tolist())
+    # All three answers must appear in the trained slice — singular
+    # rendering with ALL_ASSISTANT_MESSAGES weights every assistant turn.
+    for expected in ("A1", "A2", "A3"):
+        assert expected in trained, (
+            f"{name!r}: ALL_ASSISTANT_MESSAGES single datum should train "
+            f"all answers; {expected!r} missing from trained slice "
+            f"({trained!r})"
+        )
