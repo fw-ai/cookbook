@@ -1,5 +1,11 @@
 """Per-sample async RL training loop.
 
+Acknowledgements -- prior art referenced while designing this loop:
+
+* AReaL  (https://github.com/inclusionAI/AReaL)
+* slime  (https://github.com/THUDM/slime)
+* Miles  (https://github.com/radixark/miles)
+
 The user supplies ``rollout_fn(sample_prompt) -> RolloutSample | None`` --
 one trajectory per call.  ``sample_prompt`` is a dataset row's dict
 re-named once it crosses into the sampling layer.  The loop fans each

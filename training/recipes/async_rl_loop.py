@@ -9,6 +9,12 @@ else (gate, advantage, ref forward, weight sync, KL/TIS, PPO inner loop,
 checkpoints) is handled by ``main()``.  See
 ``skills/dev/references/rl/async-rl.md`` for the full contract.
 
+Acknowledgements -- prior art referenced while designing this loop:
+
+* AReaL  (https://github.com/inclusionAI/AReaL)
+* slime  (https://github.com/THUDM/slime)
+* Miles  (https://github.com/radixark/miles)
+
 Users write ``rollout_fn(sample_prompt) -> RolloutSample | None`` -- one
 trajectory per call.  ``sample_prompt`` is the dataset row's dict re-named
 once it crosses the dataset/sampling seam.  The recipe fans each dataset
