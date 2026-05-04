@@ -9,6 +9,7 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | ORPO | `training/recipes/orpo_loop.py` |
 | Importance-weighted GRPO | `training/recipes/igpo_loop.py` |
 | Generic RL loop (GRPO scaffold) | `training/recipes/rl_loop.py` |
+| Async RL loop (rollout/train overlap, PPO inner minibatches) | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
 
 ## "Reference loop" means these files
 
@@ -51,6 +52,7 @@ RL has its own skill folder. Open [`rl/`](rl/) when working with `rl_loop.py`:
 - [`rl/dynamic-filter.md`](rl/dynamic-filter.md) — `should_accept`, why zero-variance groups get dropped
 - [`rl/custom-loss.md`](rl/custom-loss.md) — interface + reference implementation + RL `Config` fields
 - [`rl/hotload.md`](rl/hotload.md) — weight-sync cadence, `weight_sync_timeout`, on-policy vs off-policy, base/delta chain
-- [`rl/concurrency.md`](rl/concurrency.md) — rollout concurrency control; adaptive is the default and the recommendation
+- [`rl/concurrency.md`](rl/concurrency.md) — rollout concurrency control for the **sync** `rl_loop.py` (adaptive is the default)
+- [`rl/async-rl.md`](rl/async-rl.md) — `async_rl_loop.py` overlap recipe: sample-level cap, off-policy budget, PPO inner minibatches
 
 SFT / DPO / ORPO users do not need these.

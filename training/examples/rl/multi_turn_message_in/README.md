@@ -4,6 +4,9 @@ A multi-turn math agent that ports
 [AReaL's `examples/multi_turn_math/`](https://github.com/inclusionAI/AReaL/tree/main/examples/multi_turn_math)
 to the cookbook's async RL recipe.
 
+For the recipe API and gate sizing, see
+[`skills/dev/references/rl/async-rl.md`](../../../../skills/dev/references/rl/async-rl.md).
+
 The model is asked a GSM8K problem and must put its final answer in
 `\boxed{...}`.  If the boxed answer is wrong (verified by `math_verify`),
 the rollout appends a fixed user-feedback message and lets the model retry
