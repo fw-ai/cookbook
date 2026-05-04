@@ -426,24 +426,17 @@ class TestMaxConcurrent:
         assert peak_in_flight[0] <= 2
 
     def test_caps_in_flight_at_sample_level_with_cpp_gt_1(self):
-        """cpp=4, max_concurrent=8 admits at most 2 rows (= 8 samples) at a time.
+        """cpp=4, max_concurrent=8: never more than 8 samples in flight.
 
         Pins the unit semantic for max_concurrent: it counts samples
-        (LLM calls), not rows.  A weaker assertion (e.g. <= 8) would also
-        pass the old row-level implementation if it just happened to
-        fan out under capacity, so we additionally pin 2-row admission
-        via the version offset never exceeding 1 within a step (rows
-        admitted at the same version draw the same offset).
+        (LLM calls), not rows.  Each row submits cpp=4 sample tasks
+        atomically, so under an 8-sample cap at most 2 rows are admitted.
         """
         peak_samples = [0]
-        admitted_per_version: dict[int, int] = {}
 
         async def slow_factory(_sub):
             await asyncio.sleep(0.005)
             return _sample()
-
-        def weight_sync(_step):
-            pass
 
         def train_step(step, groups, extra):
             peak_samples[0] = max(peak_samples[0], extra["async/in_flight"])
@@ -461,10 +454,9 @@ class TestMaxConcurrent:
             max_head_offpolicy_versions=10,
             completions_per_prompt=4,
             max_concurrent=8,
-            weight_sync_fn=weight_sync,
+            weight_sync_fn=lambda _step: None,
             advantage_fn=_passthrough_advantages,
         ))
-        # 4 samples per row x at most 2 admitted rows = 8 samples in flight.
         assert peak_samples[0] <= 8
 
     def test_rejects_max_concurrent_below_cpp(self):
