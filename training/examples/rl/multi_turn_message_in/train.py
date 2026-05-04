@@ -67,7 +67,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--learning-rate", type=float, default=1.7e-5)
     p.add_argument("--kl-beta", type=float, default=0.0)
     p.add_argument("--max-head-offpolicy-versions", type=int, default=0,
-                   help="Off-policy staleness budget in optimizer-step versions (0 = strict on-policy).")
+                   help="Off-policy staleness budget in weight-sync (policy) versions; "
+                        "one weight-sync per outer rollout batch, regardless of ppo-n-minibatches "
+                        "(0 = strict on-policy).")
     p.add_argument("--ppo-n-minibatches", type=int, default=1,
                    help="Inner PPO minibatches per rollout batch (1 = legacy 1:1).")
     p.add_argument("--filter-constant-reward", action="store_true",

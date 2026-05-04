@@ -398,8 +398,8 @@ class TestVersionTracking:
 
 class TestMaxConcurrent:
     def test_caps_in_flight_even_with_budget(self):
-        """max_concurrent caps in-flight ROWS; sample tasks within a row
-        run in parallel without separate budget."""
+        """max_concurrent counts in-flight SAMPLES; with cpp=1 the row
+        and sample bookkeeping coincide."""
         peak_in_flight = [0]
 
         def train_step(step, groups, extra):
@@ -423,9 +423,62 @@ class TestMaxConcurrent:
             max_concurrent=2,
             **_DEFAULTS,
         ))
-        # in_flight is sample tasks; with cpp=1 and max_concurrent=2 rows,
-        # peak sample tasks <= 2.
         assert peak_in_flight[0] <= 2
+
+    def test_caps_in_flight_at_sample_level_with_cpp_gt_1(self):
+        """cpp=4, max_concurrent=8 admits at most 2 rows (= 8 samples) at a time.
+
+        Pins the unit semantic for max_concurrent: it counts samples
+        (LLM calls), not rows.  A weaker assertion (e.g. <= 8) would also
+        pass the old row-level implementation if it just happened to
+        fan out under capacity, so we additionally pin 2-row admission
+        via the version offset never exceeding 1 within a step (rows
+        admitted at the same version draw the same offset).
+        """
+        peak_samples = [0]
+        admitted_per_version: dict[int, int] = {}
+
+        async def slow_factory(_sub):
+            await asyncio.sleep(0.005)
+            return _sample()
+
+        def weight_sync(_step):
+            pass
+
+        def train_step(step, groups, extra):
+            peak_samples[0] = max(peak_samples[0], extra["async/in_flight"])
+            return step + 1, {}
+
+        rows = (
+            RowRequest(row_id=i, sample_factory=slow_factory)
+            for i in range(6)
+        )
+
+        _run(run_async_rl_loop(
+            rows=rows,
+            train_fns=TrainStepFns(train_step=train_step),
+            prompt_groups_per_step=2,
+            max_head_offpolicy_versions=10,
+            completions_per_prompt=4,
+            max_concurrent=8,
+            weight_sync_fn=weight_sync,
+            advantage_fn=_passthrough_advantages,
+        ))
+        # 4 samples per row x at most 2 admitted rows = 8 samples in flight.
+        assert peak_samples[0] <= 8
+
+    def test_rejects_max_concurrent_below_cpp(self):
+        """max_concurrent < cpp would deadlock the gate (can't admit a row)."""
+        with pytest.raises(ValueError, match="max_concurrent"):
+            _run(run_async_rl_loop(
+                rows=iter([]),
+                train_fns=TrainStepFns(train_step=_noop_train_step),
+                prompt_groups_per_step=1,
+                max_head_offpolicy_versions=2,
+                completions_per_prompt=4,
+                max_concurrent=3,
+                advantage_fn=_passthrough_advantages,
+            ))
 
 
 class TestTaskExceptions:

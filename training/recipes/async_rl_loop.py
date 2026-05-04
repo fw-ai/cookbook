@@ -80,10 +80,8 @@ __all__ = [
     "main",
 ]
 
-# Sync trainer weights to inference after every rollout batch.  Configurable
-# in principle (``WeightSyncConfig.weight_sync_interval``), but raising it
-# trades rollout staleness for sync wall-time -- almost never worth it in
-# fully-async RL, so the recipe pins it to 1.
+# Pinned: raising sync interval trades rollout staleness for sync wall-time,
+# almost never worth it in fully-async RL.
 _WEIGHT_SYNC_INTERVAL = 1
 
 
@@ -109,7 +107,10 @@ class Config:
 
     prompt_groups_per_step: int = 1
     max_head_offpolicy_versions: int = 0
-    """Staleness budget in optimizer-step versions.  ``0`` = strict on-policy."""
+    """Staleness budget in weight-sync (policy) versions: a sample is allowed
+    to land at most this many weight-sync boundaries past its submit version.
+    Each weight-sync (one per outer rollout batch) bumps the version by 1
+    regardless of ``ppo_n_minibatches``.  ``0`` = strict on-policy."""
     max_concurrency_rollout_sample: int | None = None
     """Cap concurrent LLM calls in flight (same unit as
     ``deployment.max_batch_size``; exceeding that triggers HTTP 583/299).
@@ -185,12 +186,10 @@ class RolloutSetup:
     The factory closes over whatever fields it needs and returns the
     per-sample ``rollout_fn``.  Carries the inference endpoint, the
     tokenizer, sampling kwargs, and an ``extras`` dict for any
-    caller-supplied state (replaces the old ``ctx_extras`` setattr
-    injection).  Concurrency is enforced by the framework scheduler:
-    ``cfg.max_concurrency_rollout_sample`` caps the number of in-flight LLM calls
-    (the unit that maps to deployment ``max_batch_size``); the recipe
-    divides by ``completions_per_prompt`` to get the row-level cap the
-    async runner gates on.  No HTTP-level gate is wired in.
+    caller-supplied state.  Concurrency is enforced by the async runner
+    in sample (LLM-call) units: ``cfg.max_concurrency_rollout_sample``
+    flows through directly as the runner's ``max_concurrent`` cap, which
+    is the same unit that maps to deployment ``max_batch_size``.
     """
 
     tokenizer: Any
@@ -293,10 +292,7 @@ def main(
             "lr": cfg.learning_rate,
         },
     )
-    # slime-style dual axis: train/* graphs per inner PPO minibatch on
-    # train/step; rollout/* and friends graph per outer rollout batch on
-    # rollout/step.  setup_wandb routes everything to train/step by default
-    # (single-axis recipes), so override the rollout-side globs here.
+    # Dual axis: train/* per inner PPO minibatch, rollout/* per outer batch.
     try:
         import wandb as _wandb  # noqa: WPS433 (deliberate local import)
 
@@ -581,15 +577,8 @@ def main(
                     span.elapsed,
                 )
 
-                # slime-style: emit per-minibatch ``train/*`` keyed on
-                # ``train/step``.  Each inner step's loss/grad/clip values
-                # are genuinely distinct (different data slice) -- preserving
-                # them as separate points instead of averaging matches the
-                # slime convention and keeps the per-rollout aggregate clean.
-                # No explicit ``step=`` -- wandb routes via the declared
-                # ``step_metric`` and auto-advances its internal counter, so
-                # the per-mb log and the end-of-rollout log don't collide on
-                # a shared monotonic step.
+                # Per-minibatch train/* on train/step axis (each inner step
+                # is genuinely distinct data, not an average).
                 mb_metrics = compute_minibatch_metrics(fwd_bwd_result, optim_result)
                 if mb_metrics:
                     mb_metrics["train/step"] = step
@@ -616,11 +605,7 @@ def main(
             # Capture the per-rollout-mean KL for the human summary line
             # before the train/* stripping below removes it.
             mean_kl = metrics.get("train/mean_kl", 0.0)
-            # slime-style: ``train/*`` already logged per-minibatch above on
-            # the ``train/step`` axis.  Strip them here so the rollout-axis
-            # log only carries rollout/perf/async/version metrics.  The
-            # values were just averages across minibatches anyway -- the
-            # per-mb points are strictly more informative.
+            # train/* already logged per-minibatch above; strip the averages.
             metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
             metrics["rollout/step"] = rollout_id
             metrics["train/step"] = step  # monotonic fallback for the wandb global step

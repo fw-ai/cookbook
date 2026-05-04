@@ -116,11 +116,8 @@ def make_remote_rollout_fn(
         if not messages and not allow_empty_messages:
             return None
 
-        # ``_call_service`` and ``pack_payload_to_sample`` both forward the
-        # original dataset-row dict to user-supplied services / reward fns
-        # under the service-side ``row=`` keyword.  Keep that name on the
-        # service boundary; only the rollout_fn closure parameter follows
-        # the recipe-side ``sample_prompt`` convention.
+        # The service-side keyword stays ``row=`` (user-supplied services
+        # and reward fns expect that name); only the closure param renames.
         payloads = await _call_service(
             service,
             messages,

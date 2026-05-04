@@ -346,17 +346,9 @@ def extract_completion(
         token_logprobs = []
     raw_logprobs_list: List[Any] = list(token_logprobs)
 
-    # Filter ``token_ids`` and ``token_logprobs`` IN LOCKSTEP when the
-    # provider emits a null placeholder.  Earlier the helper dropped
-    # ``None`` entries from ``token_ids`` only and then tail-trimmed
-    # any length mismatch — that silently shifted every remaining
-    # logprob onto the wrong token (corrupting PPO/GRPO ratio + KL
-    # for the affected completion).  Pairing the two lists by index
-    # before filtering keeps logprobs aligned to the surviving
-    # tokens; if the upstream logprobs list is shorter than the
-    # token list we fall back to "filter token_ids only" rather than
-    # synthesizing fake alignment, and the post-filter length check
-    # then fires (which is the loud-failure direction).
+    # Filter token_ids/token_logprobs in lockstep so a None placeholder
+    # in tokens drops its paired logprob; otherwise the remaining logprobs
+    # would shift onto the wrong tokens and corrupt the PPO/GRPO ratio.
     output_tokens: List[int] = []
     output_logprobs: List[float] = []
     if len(raw_logprobs_list) == len(raw_token_ids):
@@ -370,8 +362,6 @@ def extract_completion(
         output_logprobs = [
             float(lp) if lp is not None else 0.0 for lp in raw_logprobs_list
         ]
-        # Defensive align: some providers truncate or pad the logprob
-        # list by one even when there are no null placeholders.
         if len(output_logprobs) > len(output_tokens):
             output_logprobs = output_logprobs[: len(output_tokens)]
 

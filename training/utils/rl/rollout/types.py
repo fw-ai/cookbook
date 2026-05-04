@@ -132,22 +132,8 @@ def rollout_to_prompt_group(
     rewards = [s.reward for s in rollout.samples]
     advantages = list(advantage_fn(list(rewards)))
 
-    # Validate the computed advantages instead of pre-rejecting
-    # singleton groups by sample count.  REINFORCE-style async RL is
-    # a legitimate single-sample objective (``completions_per_prompt=1``);
-    # users who run it supply a custom ``advantage_fn`` such as
-    # ``lambda r: r`` (raw reward as advantage) for which N=1 is
-    # well-defined.  An earlier ``len(samples) < 2`` precheck silently
-    # dropped every such rollout and made the recipe make no training
-    # progress despite advertising REINFORCE support.
-    #
-    # The protection that precheck was meant to provide is still
-    # necessary: the default GRPO-style ``compute_advantages``
-    # z-score-normalizes by ``torch.std(rewards)``, which is NaN on
-    # a length-1 tensor; that NaN would flow into the loss kernel
-    # and poison the training step.  Validating ``advantages`` after
-    # the fn runs preserves that protection (NaN/inf outputs trigger
-    # a drop) WITHOUT presuming what advantage_fn the caller picked.
+    # Drop on non-finite advantages (e.g., GRPO z-score on a length-1 group).
+    # Don't precheck on sample count -- REINFORCE (cpp=1, lambda r: r) is valid.
     if any(not math.isfinite(a) for a in advantages):
         logger.warning(
             "rollout_to_prompt_group: dropping rollout (N=%d) -- "
@@ -227,15 +213,8 @@ def rollout_to_prompt_group(
         completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
         truncated.append(s.finish_reason == "length")
 
-    # ``prompt_len`` is a single scalar on PromptGroup for back-compat
-    # with consumers that don't yet read ``prompt_lens``; we populate it
-    # with the first sample's prompt boundary.  The authoritative
-    # per-sample list is ``prompt_lens``, and ``combine_prompt_groups``
-    # prefers it when set so heterogeneous rollouts (multi-turn / tool
-    # branches whose samples have different prefix lengths) slice each
-    # sample at its own prompt boundary.
-    # ``_validate`` already rejects empty samples, so per_sample_prompt_lens
-    # is guaranteed non-empty here.
+    # ``prompt_len`` is the legacy scalar (back-compat); ``prompt_lens``
+    # is the authoritative per-sample list for heterogeneous rollouts.
     return PromptGroup(
         data=policy_data,
         ref_data=reference_data,

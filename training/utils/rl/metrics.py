@@ -25,18 +25,28 @@ def median(values: Sequence[int]) -> float:
 
 
 def datum_target_len(datum: tinker.Datum) -> int:
-    """Best-effort extraction of target-token length from a training datum."""
-    try:
-        target = datum.loss_fn_inputs.get("target_tokens")
-        shape = getattr(target, "shape", None)
-        if isinstance(shape, (list, tuple)) and shape:
-            return int(shape[0])
-        data = getattr(target, "data", None)
-        if data is not None:
-            return len(data)
-    except Exception:
-        pass
+    """Length of the target-token tensor on a training datum (0 if missing)."""
+    target = datum.loss_fn_inputs.get("target_tokens")
+    shape = getattr(target, "shape", None)
+    if isinstance(shape, (list, tuple)) and shape:
+        return int(shape[0])
+    data = getattr(target, "data", None)
+    if data is not None:
+        return len(data)
     return 0
+
+
+def datum_loss_mask(datum: tinker.Datum) -> list[float] | None:
+    """Per-position loss mask for a datum (length == target_tokens), or None.
+
+    The adapter writes the mask under ``"weights"`` (legacy datums use
+    ``"loss_mask"``).  Returned values are floats; callers compare against
+    a positive threshold to find active positions.
+    """
+    td = datum.loss_fn_inputs.get("weights") or datum.loss_fn_inputs.get("loss_mask")
+    if td is None:
+        return None
+    return list(getattr(td, "data", []) or [])
 
 
 def total_target_tokens(prompt_groups: Sequence[PromptGroup]) -> int:
@@ -142,12 +152,8 @@ def compute_step_metrics(
             if k not in _SKIP_REMOTE_KEYS:
                 metrics[f"train/{k}"] = v
 
-    # Average fwd_bwd metrics across inner minibatches. With ppo_n_minibatches=1
-    # this reduces to the pre-PR behavior (one result, mean == that result). With
-    # K>1 the last minibatch alone is misleading — early minibatches haven't
-    # drifted yet so their ppo_clip_frac is ~0, while later ones clip more; the
-    # headline claim of this PR is that clipping fires, which the mean reports
-    # honestly rather than only showing the most-clipped minibatch.
+    # Mean across inner minibatches (last-only would hide that early
+    # minibatches don't clip yet while later ones do).
     if fwd_bwd_results:
         accum: dict[str, float] = {}
         for result in fwd_bwd_results:
@@ -180,16 +186,11 @@ def compute_step_metrics(
     if all_truncated:
         metrics["rollout/truncated_ratio"] = sum(all_truncated) / len(all_truncated)
 
+    # Entropy is a mean of -logprob over loss_mask>0 positions only.
+    # Multi-turn rollouts emit loss_mask=0 / logprobs=0.0 on bridge/user/tool
+    # tokens; including them biases entropy toward 0.
     entropy_vals: list[float] = []
     for pg in prompt_groups:
-        # Per-sample prompt boundary: heterogeneous rollouts (multi-turn,
-        # tool branches) have different prefix lengths per sample, so
-        # using the scalar ``pg.prompt_len`` would slice prompt tokens
-        # into the response window for short-prefix samples and drop
-        # response tokens for long-prefix samples -- silently corrupting
-        # the entropy metric on the rollout shapes ``prompt_lens`` was
-        # added to support.  Fall back to ``prompt_len`` when
-        # ``prompt_lens`` is missing (legacy single-turn rollouts).
         per_sample = pg.prompt_lens if pg.prompt_lens is not None else None
         for i, inf_lp in enumerate(pg.inf_logprobs):
             sample_prompt_len = (
@@ -198,8 +199,16 @@ def compute_step_metrics(
             )
             resp_start = max(0, sample_prompt_len - 1)
             resp_lp = inf_lp[resp_start:] if len(inf_lp) > resp_start else []
-            if resp_lp:
-                entropy_vals.append(-sum(resp_lp) / len(resp_lp))
+            if not resp_lp:
+                continue
+            mask = datum_loss_mask(pg.data[i]) if i < len(pg.data) else None
+            if mask is not None:
+                resp_mask = mask[resp_start : resp_start + len(resp_lp)]
+                active = [lp for lp, m in zip(resp_lp, resp_mask) if m > 0.5]
+            else:
+                active = list(resp_lp)
+            if active:
+                entropy_vals.append(-sum(active) / len(active))
     if entropy_vals:
         metrics["rollout/entropy"] = sum(entropy_vals) / len(entropy_vals)
 

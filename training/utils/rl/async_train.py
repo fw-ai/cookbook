@@ -84,10 +84,7 @@ class _StalenessController:
     sample_fails: int = 0
     filter_drops: int = 0
     rejected_count: int = 0
-    # Cumulative wall-clock the rollout side was blocked on the off-policy
-    # version budget.  Mirrors trainer-side ``trainer_wait_for_sampler_time``
-    # for symmetric idle accounting; healthy async (concurrency cap binds
-    # before staleness) keeps this at 0.
+    # Wall-clock blocked on the staleness budget; ~0 in healthy async runs.
     sampler_wait_for_trainer_total: float = 0.0
     _sampler_wait_for_trainer_start: float | None = field(default=None, repr=False)
 
@@ -192,8 +189,10 @@ async def run_async_rl_loop(
         completions_per_prompt: Number of samples drawn per row.
         prompt_groups_per_step: Number of accepted rows that form one
             optimizer step.
-        max_head_offpolicy_versions: Off-policy budget.  ``0`` is strict
-            on-policy.
+        max_head_offpolicy_versions: Off-policy budget in weight-sync
+            (policy) versions; the gate's version increments once per
+            ``weight_sync_fn`` call, not per optimizer step. ``0`` is
+            strict on-policy.
         advantage_fn: Group-level advantage computation.  Default is
             GRPO z-score normalization.  Output is validated for
             non-finite values; a row producing NaN/inf advantages is
