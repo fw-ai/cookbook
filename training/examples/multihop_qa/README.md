@@ -48,10 +48,10 @@ Follow the setup instructions in [../../README.md](../../README.md).
 
 ```bash
 # Hard-only HotpotQA (recommended — matches paper difficulty)
-python prepare_data.py --max-rows 2000 --difficulty hard
+python examples/multihop_qa/prepare_data.py --max-rows 2000 --difficulty hard
 
 # Or combine with harder datasets (MuSiQue + 2WikiMultiHopQA)
-python prepare_data.py --dataset all --max-rows 3000 --difficulty hard
+python examples/multihop_qa/prepare_data.py --dataset all --max-rows 3000 --difficulty hard
 ```
 
 This downloads multi-hop QA data and writes `dataset.jsonl`. The `--difficulty hard`
@@ -66,13 +66,13 @@ export TRAINING_SHAPE="your-training-shape-id"
 export OUTPUT_MODEL_ID="your-output-model-id"
 
 # IGPO (with information gain reward)
-python train_multihop_qa_igpo.py \
+python examples/multihop_qa/train_multihop_qa_igpo.py \
     --training-shape "$TRAINING_SHAPE" \
     --output-model-id "$OUTPUT_MODEL_ID" \
     --ig-weight 1.0
 
 # GRPO baseline (no IG, environment reward only)
-python train_multihop_qa_igpo.py \
+python examples/multihop_qa/train_multihop_qa_igpo.py \
     --training-shape "$TRAINING_SHAPE" \
     --output-model-id "$OUTPUT_MODEL_ID" \
     --ig-weight 0.0

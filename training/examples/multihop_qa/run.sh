@@ -7,14 +7,14 @@ set -euo pipefail
 #   Follow the setup instructions in ../../README.md.
 #   export FIREWORKS_API_KEY=...
 #
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Step 1: Prepare dataset (downloads HotpotQA hard questions from HuggingFace)
-python prepare_data.py --max-rows 2000 --difficulty hard
+python "$SCRIPT_DIR/prepare_data.py" --max-rows 2000 --difficulty hard
 #
 # Step 2: Train with IGPO
 #   Replace TRAINING_SHAPE with your training shape ID.
 #   Replace OUTPUT_MODEL_ID with your desired output model.
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 python "$SCRIPT_DIR/train_multihop_qa_igpo.py" \
     --base-model "accounts/fireworks/models/qwen3-8b" \

@@ -4,7 +4,14 @@ Shapes are the required entry point for both trainer and deployment. Never hand-
 
 ## Training shape
 
-Set `cfg.infra.training_shape_id`:
+By default, recipes auto-select the smallest validated training shape that can
+fit the configured model and context length:
+
+```python
+cfg.infra.training_shape_id = None
+```
+
+Set `cfg.infra.training_shape_id` only when you need an explicit override:
 
 ```python
 cfg.infra.training_shape_id = "accounts/fireworks/trainingShapes/ts-qwen3-8b-policy"
@@ -13,14 +20,14 @@ cfg.infra.training_shape_id = "accounts/fireworks/trainingShapes/ts-qwen3-8b-pol
 The recipe then does:
 
 ```python
-profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+profile = rlor_mgr.resolve_training_profile(resolved_training_shape_id)
 # profile.training_shape_version
 # profile.deployment_shape_version
 # profile.max_supported_context_length
 # profile.accelerator_type, profile.node_count, ...  (read, do not copy to cfg)
 ```
 
-See `training/recipes/sft_loop.py` (search `resolve_training_profile`) and `training/recipes/rl_loop.py` (same — called once per policy, once per reference).
+See `training/recipes/sft_loop.py` (search `auto_select_training_shape`) and `training/utils/infra.py` for the shared RL / DPO infra path.
 
 ## Deployment shape
 
@@ -35,7 +42,7 @@ That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123
 
 ## Reference-model shape (RL / DPO)
 
-For **full-parameter** training with a frozen reference, set `cfg.infra.ref_training_shape_id` explicitly — there is no implicit fallback. It can share the same shape as the policy; the control plane appends `--forward-only` automatically.
+For **full-parameter** training with a frozen reference, leave `ref_training_shape_id` unset to auto-select a compatible validated shape. Set it explicitly only when you need an override; it can share the same shape as the policy, and the control plane appends `--forward-only` automatically.
 
 For **LoRA** (`lora_rank > 0`), two valid options:
 - **Shared session (recommended, saves GPUs)**: leave `ref_training_shape_id` unset. `setup_infra` uses `policy.create_base_reference()` on the policy trainer for reference logprobs — no separate trainer, no extra GPUs.
