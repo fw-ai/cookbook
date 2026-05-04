@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 import training.examples.rl.frozen_lake.train_frozen_lake as train_module
+from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
 from training.examples.rl.frozen_lake.masking import (
     build_training_loss_mask,
     build_ui_token_mask,
@@ -16,6 +17,7 @@ from training.examples.rl.frozen_lake.masking import (
 )
 from training.examples.rl.frozen_lake.train_frozen_lake import (
     FrozenLakeConfig,
+    evaluation_row_to_rollout_sample,
     evaluation_row_to_training_data,
     load_seed_contexts,
     parse_args,
@@ -142,6 +144,80 @@ def test_evaluation_row_to_training_data_builds_weighted_episode():
     assert datums[0].loss_fn_inputs["weights"].data == loss_mask
     assert datums[0].loss_fn_inputs["loss_mask"].data == loss_mask
     assert ui_mask == [0, 0, 0, 1, 1, 0, 0, 0, 2, 2, 2]
+
+
+def test_evaluation_row_to_rollout_sample_builds_token_native_sample():
+    row = EvaluationRow(input_metadata=InputMetadata(row_id="rollout"))
+    row.execution_metadata.extra = {
+        "token_turn_traces": [
+            {
+                "prompt_ids": [1, 2, 3],
+                "completion_ids": [10, 11],
+                "completion_logprobs": [-0.1, -0.2],
+            },
+            {
+                "prompt_ids": [1, 2, 3, 10, 11, 20, 21, 22],
+                "completion_ids": [30, 31, 32],
+                "completion_logprobs": [-0.3, -0.4, -0.5],
+            },
+        ],
+        "model_request_traces": [{"assistant_turn_len": 2}, {}],
+        "step_rewards": [0.0, 1.0],
+    }
+
+    sample = evaluation_row_to_rollout_sample(row)
+
+    assert sample is not None
+    assert sample.tokens == [1, 2, 3, 10, 11, 20, 21, 22, 30, 31, 32]
+    assert sample.loss_mask == [0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1]
+    assert sample.logprobs == [0.0, 0.0, 0.0, -0.1, -0.2, 0.0, 0.0, 0.0, -0.3, -0.4, -0.5]
+    assert sample.reward == 1.0
+
+
+def test_rollout_sample_adapter_matches_legacy_training_data():
+    row = EvaluationRow(input_metadata=InputMetadata(row_id="parity"))
+    row.execution_metadata.extra = {
+        "token_turn_traces": [
+            {
+                "prompt_ids": [1, 2, 3],
+                "completion_ids": [10, 11],
+                "completion_logprobs": [-0.1, -0.2],
+            },
+            {
+                "prompt_ids": [1, 2, 3, 10, 11, 20, 21, 22],
+                "completion_ids": [30, 31, 32],
+                "completion_logprobs": [-0.3, -0.4, -0.5],
+            },
+        ],
+        "model_request_traces": [{"assistant_turn_len": 2}, {}],
+        "step_rewards": [0.0, 1.0],
+    }
+
+    legacy_datums, _prompt_len, legacy_inf_logprobs, legacy_rewards = (
+        evaluation_row_to_training_data(row)
+    )
+    sample = evaluation_row_to_rollout_sample(row)
+    assert sample is not None
+    contrasting_sample = sample.__class__(
+        tokens=list(sample.tokens),
+        logprobs=list(sample.logprobs),
+        loss_mask=list(sample.loss_mask),
+        reward=0.0,
+    )
+
+    prompt_group = rollout_to_prompt_group(Rollout(samples=[sample, contrasting_sample]))
+
+    assert prompt_group is not None
+    assert (
+        prompt_group.data[0].loss_fn_inputs["target_tokens"].data
+        == legacy_datums[0].loss_fn_inputs["target_tokens"].data
+    )
+    assert (
+        prompt_group.data[0].loss_fn_inputs["weights"].data
+        == legacy_datums[0].loss_fn_inputs["weights"].data
+    )
+    assert prompt_group.inf_logprobs[0] == legacy_inf_logprobs[0]
+    assert prompt_group.rewards[0] == legacy_rewards[0]
 
 
 def test_evaluation_row_to_training_data_handles_multimodal_row_messages():
@@ -282,9 +358,9 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
             events["rollout_processor_call"] = (rows, rollout_config)
             return []
 
-    async def fake_run_rl_loop(**kwargs):
-        events["run_rl_loop_kwargs"] = kwargs
-        return 0
+    async def fake_run_async_rl_loop(**kwargs):
+        events["run_async_rl_loop_kwargs"] = kwargs
+        return 0, {"resolved_rows": 0}
 
     def fake_create_trainer_job(*args, **kwargs):
         events["trainer_jobs"].append(kwargs)
@@ -312,7 +388,7 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     monkeypatch.setattr(train_module, "WeightSyncer", FakeWeightSyncer)
     monkeypatch.setattr(train_module, "FrozenLakeToolRolloutProcessor", FakeRolloutProcessor)
     monkeypatch.setattr(train_module, "build_loss_fn", lambda args: ("loss-builder", args))
-    monkeypatch.setattr(train_module, "run_rl_loop", fake_run_rl_loop)
+    monkeypatch.setattr(train_module, "run_async_rl_loop", fake_run_async_rl_loop)
     monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: SimpleNamespace(status_code=200))
 
     train_module.main()
@@ -326,10 +402,12 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     assert events["weight_syncer_init"]["deployment_id"] == "dep-123"
     assert events["rollout_processor_init"]["observation_mode"] == "image"
     assert events["rollout_processor_init"]["allow_plaintext_action_fallback"] is True
-    assert events["run_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
-    assert "train_fns" in events["run_rl_loop_kwargs"]
-    assert events["run_rl_loop_kwargs"]["weight_sync_interval"] == 1
-    assert events["run_rl_loop_kwargs"]["weight_sync_fn"] is not None
+    assert events["run_async_rl_loop_kwargs"]["prompt_groups_per_step"] == 4
+    assert events["run_async_rl_loop_kwargs"]["completions_per_prompt"] == 2
+    assert events["run_async_rl_loop_kwargs"]["max_concurrent"] == 8
+    assert "train_fns" in events["run_async_rl_loop_kwargs"]
+    assert events["run_async_rl_loop_kwargs"]["weight_sync_interval"] == 1
+    assert events["run_async_rl_loop_kwargs"]["weight_sync_fn"] is not None
     assert events["deleted_jobs"] == ["policy-job"]
     assert events["deleted_deployments"] == []
     assert events["wandb_finished"] == 1
@@ -360,6 +438,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         max_concurrent=8,
         max_steps=5,
         max_seeds=1,
+        epochs=1,
         kl_beta=0.1,
         ratio_log_cap=9.0,
         training_shape="ts-qwen3-4b-smoke-v1",
@@ -523,7 +602,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             events["rollout_processor_init"] = kwargs
 
         def __call__(self, rows, rollout_config):
-            events["rollout_processor_call"] = {"row_ids": [row.input_metadata.row_id for row in rows], "steps": rollout_config.steps}
+            row_id = rows[0].input_metadata.row_id
+            events.setdefault("rollout_processor_calls", []).append(
+                {"row_ids": [row.input_metadata.row_id for row in rows], "steps": rollout_config.steps}
+            )
 
             async def _finish(row, reward):
                 row.execution_metadata.extra = {
@@ -540,31 +622,8 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                 row.messages = []
                 return row
 
-            return [_finish(rows[0], 1.0), _finish(rows[1], 0.0)]
-
-    async def fake_run_rl_loop(**kwargs):
-        events["run_rl_loop_kwargs"] = kwargs
-        sample_iter = iter(kwargs["sample_fns"])
-        pg = await next(sample_iter)
-        assert pg is not None
-        assert kwargs["dynamic_filter_fn"](pg) is True
-        step, metrics = kwargs["train_fns"].train_step(
-            0,
-            [pg],
-            {
-                "valid_prompt_groups": 1,
-                "total_sampled": 1,
-                "filter_drops": 0,
-                "sample_fails": 0,
-                "trainer_wait_for_sampler_time": 0.1,
-                "step_wall_time": 0.2,
-            },
-        )
-        if kwargs.get("weight_sync_fn") is not None:
-            kwargs["weight_sync_fn"](step)
-        kwargs["metrics_callback"]({"train/step": step, "rollout/sample_fail_count": 0})
-        events["finish_metrics"] = metrics
-        return step
+            reward = 1.0 if row_id.endswith("_0") else 0.0
+            return [_finish(rows[0], reward)]
 
     def fake_create_trainer_job(*args, **kwargs):
         events["trainer_jobs"].append(kwargs)
@@ -624,7 +683,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     })
     monkeypatch.setattr(train_module, "flush_timing", lambda: {"perf/step_time": 1.0})
     monkeypatch.setattr(train_module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
-    monkeypatch.setattr(train_module, "run_rl_loop", fake_run_rl_loop)
     _OrigInfraConfig = train_module.InfraConfig
     monkeypatch.setattr(
         train_module, "InfraConfig",
@@ -645,7 +703,10 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "frozen-lake-policy",
         "frozen-lake-reference",
     ]
-    assert events["rollout_processor_call"]["row_ids"] == ["seed_101_0", "seed_101_1"]
+    assert [call["row_ids"] for call in events["rollout_processor_calls"]] == [
+        ["seed_101_0_0"],
+        ["seed_101_0_1"],
+    ]
     assert events["weight_sync_saves"] == [("step-0-base", "base"), ("step-1", "base")]
     assert events["weight_sync_dcp"] == []
     assert events["final_save"] == ("step-1", None)

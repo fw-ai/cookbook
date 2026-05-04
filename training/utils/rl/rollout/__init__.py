@@ -33,6 +33,8 @@ This package layers the supporting types and helpers:
   assistant tokens with TITO-style incremental tokenization.
 * :mod:`.trace` — native rollout trajectory analysis for visualization and
   diagnostics without a live verifier probe.
+* :mod:`.eval_protocol` — adapter from ``@evaluation_test`` metadata to the
+  per-sample rollout function contract.
 """
 
 from training.utils.rl.rollout.assembler import (
@@ -41,6 +43,13 @@ from training.utils.rl.rollout.assembler import (
     TrajectoryAssembler,
     extract_completion,
     precompute_chat_suffix,
+)
+from training.utils.rl.rollout.eval_protocol import (
+    default_completion_params_factory,
+    default_eval_row_factory,
+    get_eval_protocol_params,
+    load_eval_protocol_input_rows,
+    make_eval_protocol_rollout_fn_factory,
 )
 from training.utils.rl.rollout.group_assembler import (
     GroupAssembler,
@@ -106,8 +115,13 @@ __all__ = [
     "analyze_flat_sample",
     "analyze_token_turn_traces",
     "analyze_turns",
+    "default_completion_params_factory",
+    "default_eval_row_factory",
     "extract_completion",
+    "get_eval_protocol_params",
     "get_tito_tokenizer",
+    "load_eval_protocol_input_rows",
+    "make_eval_protocol_rollout_fn_factory",
     "make_remote_rollout_fn",
     "model_input_to_token_ids",
     "pack_payload_to_sample",
