@@ -1,15 +1,18 @@
 """Per-sample async RL training loop.
 
-The user supplies a ``rollout_fn(row) -> RolloutSample | None`` -- one
-trajectory per call.  The loop fans each row out to
-``completions_per_prompt`` parallel samples, joins them by row id via
-:class:`GroupAssembler`, applies the optional dynamic filter on the
-assembled :class:`PromptGroup`, and feeds the trainer when a batch fills.
+The user supplies ``rollout_fn(sample_prompt) -> RolloutSample | None`` --
+one trajectory per call.  ``sample_prompt`` is a dataset row's dict
+re-named once it crosses into the sampling layer.  The loop fans each
+dataset row out to ``completions_per_prompt`` parallel sample calls,
+joins them by row id via :class:`GroupAssembler`, applies the optional
+dynamic filter on the assembled :class:`PromptGroup`, and feeds the
+trainer when a batch fills.
 
-Off-policy gating is per row: one row = one slot.  The accountable
-"version" of a group is the oldest submit version among its samples
-(samples within a row may straddle a weight-sync boundary; the older
-side dominates the staleness reading).
+Off-policy gating is per dataset row: one row = ``completions_per_prompt``
+samples consumed against the staleness budget.  The accountable "version"
+of a group is the oldest submit version among its samples (samples within
+a row may straddle a weight-sync boundary; the older side dominates the
+staleness reading).
 """
 
 from __future__ import annotations
@@ -63,48 +66,101 @@ class RowRequest:
 
 @dataclass
 class _StalenessController:
-    """Row-granularity capacity gate.
+    """Sample-level (LLM-call) capacity gate.
 
-    One row consumes one slot regardless of how many samples it fans
-    out into, so the staleness math is identical to the previous
-    group-level controller; only the unit name changes.
+    All capacity bookkeeping is in **samples** (≈ HTTP requests to the
+    inference deployment).  One row consumes ``completions_per_prompt``
+    samples on submit, and one row resolution releases the same amount
+    (re-credited to ``accepted_samples`` on accept, fully freed on reject).
+
+    Unifying on the sample axis matches the deployment's natural unit
+    (``max_batch_size``) and removes the implicit ``// completions_per_prompt``
+    division that the previous form required at the recipe seam.  All gate
+    state and arithmetic is in samples; the loop translates submission
+    intent (one prompt = ``completions_per_prompt`` samples) to gate units
+    at the call site.
+
+    ``prompt_groups_per_step`` enters only as
+    ``batch_size_samples = prompt_groups_per_step * completions_per_prompt``.
     """
 
-    batch_size: int
-    max_staleness: int
-    max_concurrent: int | None
+    batch_size_samples: int            # = prompt_groups_per_step * completions_per_prompt
+    completions_per_prompt: int        # samples per prompt
+    max_staleness: int                 # versions
+    max_concurrent_samples: int | None
     version: int = 0
-    accepted: int = 0
-    running: int = 0
+    accepted_samples: int = 0
+    running_samples: int = 0
     sample_fails: int = 0
     filter_drops: int = 0
-    rejected: int = 0
+    rejected_count: int = 0
+    # Cumulative wall-clock time the rollout pipeline was provably
+    # blocked by the off-policy version budget (i.e. waiting for the
+    # trainer's next ``advance_version`` to free staleness slots).
+    # Mirrors the trainer-side ``trainer_wait_for_sampler_time`` so the two sides'
+    # idle-on-each-other accounting is symmetric.  For a healthy async
+    # pipeline (concurrency cap < staleness budget), this stays 0.
+    sampler_wait_for_trainer_total: float = 0.0
+    _sampler_wait_for_trainer_start: float | None = field(default=None, repr=False)
+
+    def staleness_capacity(self) -> int:
+        # Budget = (max_off_versions + 1) batches × samples per batch per
+        # version completed, minus samples already accepted into the buffer
+        # or still running.
+        return (
+            (self.max_staleness + self.version + 1) * self.batch_size_samples
+            - (self.accepted_samples + self.running_samples)
+        )
+
+    def concurrency_capacity(self) -> int | None:
+        if self.max_concurrent_samples is None:
+            return None
+        return self.max_concurrent_samples - self.running_samples
 
     def capacity(self) -> int:
-        concurrency = (
-            self.max_concurrent - self.running
-            if self.max_concurrent is not None
-            else None
-        )
-        # Budget = (max_off_versions + 1) batches per version completed,
-        # minus rows already accepted into the buffer or still running.
-        staleness = (
-            (self.max_staleness + self.version + 1) * self.batch_size
-            - (self.accepted + self.running)
-        )
-        cap = staleness if concurrency is None else min(concurrency, staleness)
+        """Available admissions in samples (binding min of staleness ∧ concurrency)."""
+        s = self.staleness_capacity()
+        c = self.concurrency_capacity()
+        cap = s if c is None else min(c, s)
         return max(0, cap)
 
+    def is_staleness_bound(self) -> bool:
+        """True iff staleness is the binding constraint preventing one more prompt.
+
+        Used to attribute idle time: a prompt's worth of staleness budget
+        (cpp samples) is unavailable but concurrency could still admit one
+        = waiting for the trainer to advance the version.  When both
+        budgets fall below cpp samples, advancing the version alone would
+        not free a slot -- the rollout pipeline is concurrency-bound, not
+        trainer-bound.  Returning True there would over-attribute deployment-
+        saturation wall time as ``sampler_wait_for_trainer``.
+        """
+        cpp = self.completions_per_prompt
+        if self.staleness_capacity() >= cpp:
+            return False
+        if self.max_concurrent_samples is None:
+            return True
+        return self.concurrency_capacity() >= cpp
+
+    def mark_sampler_wait_for_trainer_start(self, now: float) -> None:
+        if self._sampler_wait_for_trainer_start is None:
+            self._sampler_wait_for_trainer_start = now
+
+    def mark_sampler_wait_for_trainer_end(self, now: float) -> None:
+        if self._sampler_wait_for_trainer_start is not None:
+            self.sampler_wait_for_trainer_total += now - self._sampler_wait_for_trainer_start
+            self._sampler_wait_for_trainer_start = None
+
     def submit(self) -> None:
-        self.running += 1
+        self.running_samples += self.completions_per_prompt
 
     def accept(self) -> None:
-        self.running -= 1
-        self.accepted += 1
+        self.running_samples -= self.completions_per_prompt
+        self.accepted_samples += self.completions_per_prompt
 
     def reject(self, reason: str) -> None:
-        self.running -= 1
-        self.rejected += 1
+        self.running_samples -= self.completions_per_prompt
+        self.rejected_count += 1
         if reason == "none":
             self.sample_fails += 1
         elif reason == "filter":
@@ -113,8 +169,9 @@ class _StalenessController:
     def advance_version(self) -> None:
         self.version += 1
 
-    def resolved_rows(self, offset: int) -> int:
-        return offset + self.accepted + self.rejected
+    def resolved_count(self, offset: int) -> int:
+        # Resolved prompts since start = accepted (in prompts) + rejected.
+        return offset + (self.accepted_samples // self.completions_per_prompt) + self.rejected_count
 
 
 @dataclass
@@ -143,6 +200,7 @@ async def run_async_rl_loop(
     resolved_rows_offset: int = 0,
     resolved_rows_fn: Callable[[], int] | None = None,
     return_final_stats: bool = False,
+    synchronous_training: bool = False,
 ) -> int | tuple[int, dict[str, Any]]:
     """Run the per-sample async RL loop.
 
@@ -171,8 +229,12 @@ async def run_async_rl_loop(
             optimizer steps.  Must bump the deployment version; the
             loop increments its internal version counter on return.
         weight_sync_interval: Fire ``weight_sync_fn`` every N steps.
-        max_concurrent: Hard cap on rows in flight.  ``None`` lets the
-            gate alone bound concurrency.
+        max_concurrent: Hard cap on **samples (LLM calls)** in flight --
+            this is the same unit the deployment's ``max_batch_size``
+            gates on, so the recipe-side cap and the deployment cap are
+            directly comparable.  Must be ``>= completions_per_prompt``
+            (one row's worth) or the gate deadlocks.  ``None`` lets the
+            staleness budget alone bound concurrency.
         dynamic_filter_fn: Post-assembly filter on :class:`PromptGroup`.
             ``False`` drops the row from the trainer buffer (without
             charging the gate beyond the row slot already consumed).
@@ -192,8 +254,14 @@ async def run_async_rl_loop(
         raise ValueError("max_head_offpolicy_versions must be >= 0")
     if weight_sync_interval < 1:
         raise ValueError("weight_sync_interval must be >= 1")
-    if max_concurrent is not None and max_concurrent < 1:
-        raise ValueError("max_concurrent, if set, must be >= 1")
+    if max_concurrent is not None and max_concurrent < completions_per_prompt:
+        # Sample-level cap: must fit at least one row's worth (cpp samples).
+        # Anything smaller would deadlock the gate.
+        raise ValueError(
+            f"max_concurrent (samples) = {max_concurrent} must be "
+            f">= completions_per_prompt ({completions_per_prompt}); "
+            "smaller values would cap row concurrency at <1 (deadlock)."
+        )
     if min_group_size < 1:
         raise ValueError("min_group_size must be >= 1")
     if min_group_size > completions_per_prompt:
@@ -215,9 +283,10 @@ async def run_async_rl_loop(
         )
 
     staleness = _StalenessController(
-        batch_size=prompt_groups_per_step,
+        batch_size_samples=prompt_groups_per_step * completions_per_prompt,
+        completions_per_prompt=completions_per_prompt,
         max_staleness=max_head_offpolicy_versions,
-        max_concurrent=max_concurrent,
+        max_concurrent_samples=max_concurrent,
     )
     assembler = GroupAssembler(
         completions_per_prompt=completions_per_prompt,
@@ -264,9 +333,26 @@ async def run_async_rl_loop(
 
     def _refill() -> None:
         nonlocal iterator_exhausted
+        now = time.monotonic()
         if iterator_exhausted:
+            # No more rows to submit -- not waiting on the trainer either,
+            # just draining.  Close any open wait window.
+            staleness.mark_sampler_wait_for_trainer_end(now)
             return
-        slots = staleness.capacity()
+        # ``capacity()`` returns the binding sample-level admit budget.
+        # Each prompt submission consumes ``completions_per_prompt`` samples,
+        # so floor-divide here to recover how many prompts we can admit.
+        slots = staleness.capacity() // completions_per_prompt
+        if slots == 0:
+            # Cannot fit one more prompt's worth of samples.  ``is_staleness_bound``
+            # distinguishes the trainer-induced subset from ordinary deployment
+            # backpressure.
+            if staleness.is_staleness_bound():
+                staleness.mark_sampler_wait_for_trainer_start(now)
+            return
+        # We can submit -- if a wait window was open, the trainer has
+        # since freed budget; close it now.
+        staleness.mark_sampler_wait_for_trainer_end(now)
         for _ in range(slots):
             try:
                 request = next(rows_iter)
@@ -307,6 +393,10 @@ async def run_async_rl_loop(
     # next ``step_start`` is the trainer's wait-for-batch time, surfaced as
     # ``perf/wait_time_ratio`` in metrics.
     last_step_end = time.monotonic()
+    # Cumulative ``sampler_wait_for_trainer_total`` snapshot at the previous step
+    # boundary, used to compute the per-step delta (``sampler_wait_for_trainer_time``)
+    # symmetric to ``trainer_wait_for_sampler_time``.
+    prev_sampler_wait_for_trainer_total = staleness.sampler_wait_for_trainer_total
 
     while _has_outstanding_work():
         if not _can_make_batch():
@@ -358,7 +448,71 @@ async def run_async_rl_loop(
         resolved_rows = (
             resolved_rows_fn()
             if resolved_rows_fn is not None
-            else staleness.resolved_rows(resolved_rows_offset)
+            else staleness.resolved_count(resolved_rows_offset)
+        )
+
+        # Synchronous-mode blocker: drain every remaining in-flight rollout
+        # task before invoking ``train_step``.  This kills the async overlap
+        # (rollouts cannot run in parallel with training) and folds any
+        # straggler completions back into the buffer/staleness counters
+        # naturally.  The wait-window is then opened explicitly so that
+        # ``perf/sampler_wait_for_trainer_time`` reflects the train+sync wall time
+        # instead of leaning on staleness saturation to detect the block.
+        if synchronous_training and in_flight:
+            while in_flight:
+                done, _ = await asyncio.wait(
+                    set(in_flight), return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    row_id, _sub = in_flight.pop(task)
+                    exc = task.exception()
+                    if exc is not None:
+                        for other in in_flight:
+                            other.cancel()
+                        in_flight.clear()
+                        raise exc
+                    sample = task.result()
+                    if sample is None:
+                        resolution = assembler.note_dropped(row_id)
+                    else:
+                        resolution = assembler.add_sample(row_id, sample)
+                    if resolution is not None:
+                        _on_row_resolved(row_id, resolution)
+        if synchronous_training:
+            staleness.mark_sampler_wait_for_trainer_start(time.monotonic())
+
+        # Per-step delta of "rollouts blocked on trainer to advance
+        # version".  Should stay 0 in healthy async operation where the
+        # concurrency cap binds before the staleness budget.  Non-zero
+        # = the version budget saturated and rollouts idled waiting
+        # for the previous train_step (+ weight_sync) to release slots.
+        # In synchronous_training mode this captures the previous step's
+        # train+sync wall time as the wait.
+        sampler_wait_for_trainer_time = staleness.sampler_wait_for_trainer_total - prev_sampler_wait_for_trainer_total
+        prev_sampler_wait_for_trainer_total = staleness.sampler_wait_for_trainer_total
+        trainer_wait_for_sampler_time = step_start - last_step_end
+        # Debug: surface the gating attribution at the step boundary so we
+        # can reason about why the two wait metrics may both be large.  The
+        # capacity numbers here are *post-batch-pop* and *sample-level* --
+        # they reflect the state the loop is about to drive after train_step
+        # returns, in the same unit as ``deployment.max_batch_size`` so you
+        # can directly judge deployment-capacity utilization.
+        cc = staleness.concurrency_capacity()
+        logger.info(
+            "[batch-ready v=%d] in_flight=%d running=%d accepted=%d buffer=%d "
+            "staleness_cap=%d concurrency_cap=%s "
+            "wait_for_sampler=%.1fs wait_for_trainer=%.1fs "
+            "(staleness_bound=%s)",
+            staleness.version,
+            len(in_flight),
+            staleness.running_samples,
+            staleness.accepted_samples,
+            len(buffer),
+            staleness.staleness_capacity(),
+            "unbounded" if cc is None else cc,
+            trainer_wait_for_sampler_time,
+            sampler_wait_for_trainer_time,
+            staleness.is_staleness_bound(),
         )
         extra_metrics: dict[str, Any] = {
             "async/version_offset_mean": sum(offsets) / len(offsets),
@@ -370,12 +524,21 @@ async def run_async_rl_loop(
             "async/stale_drops": 0,
             "all_raw_rewards": [r for pg in batch for r in pg.rewards],
             "valid_prompt_groups": len(batch),
-            "total_sampled": staleness.accepted + staleness.rejected,
+            "total_sampled": staleness.accepted_samples + staleness.rejected_count * completions_per_prompt,
             "filter_drops": staleness.filter_drops,
             "sample_fails": staleness.sample_fails,
             "stale_drops": 0,
             "resolved_rows": resolved_rows,
-            "sample_wait_time": step_start - last_step_end,
+            "trainer_wait_for_sampler_time": trainer_wait_for_sampler_time,
+            "sampler_wait_for_trainer_time": sampler_wait_for_trainer_time,
+            # Sample-level gating telemetry (matches deployment.max_batch_size
+            # unit -- direct utilization read).
+            "async/running_samples": staleness.running_samples,
+            "async/accepted_samples": staleness.accepted_samples,
+            "async/staleness_capacity_at_step": staleness.staleness_capacity(),
+            "async/concurrency_capacity_at_step": (
+                -1 if cc is None else cc
+            ),
         }
 
         global_step, _step_metrics = await asyncio.to_thread(
@@ -404,13 +567,20 @@ async def run_async_rl_loop(
     in_flight.clear()
     rows_state.clear()
 
-    resolved_rows_this_run = staleness.accepted + staleness.rejected
+    # Close any wait window left open at shutdown (e.g. iterator drained
+    # while staleness was saturated) so the cumulative total reflects
+    # all measured idle-on-trainer time.
+    staleness.mark_sampler_wait_for_trainer_end(time.monotonic())
+
+    accepted_prompts = staleness.accepted_samples // completions_per_prompt
+    resolved_this_run = accepted_prompts + staleness.rejected_count
     final_stats = {
         "sample_fails": staleness.sample_fails,
         "filter_drops": staleness.filter_drops,
         "stale_drops": 0,
-        "total_accepted": staleness.accepted,
-        "resolved_rows": _resolved_rows(resolved_rows_this_run),
+        "total_accepted": accepted_prompts,
+        "resolved_rows": _resolved_rows(resolved_this_run),
+        "sampler_wait_for_trainer_time_total": staleness.sampler_wait_for_trainer_total,
     }
     if return_final_stats:
         return global_step, final_stats

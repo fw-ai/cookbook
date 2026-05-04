@@ -1,7 +1,7 @@
 """Flat, mask-native rollout sample contract.
 
-The user's ``rollout_fn(row)`` hands back one :class:`RolloutSample`
-per call -- one trajectory.  Each sample is three parallel lists
+The user's ``rollout_fn(sample_prompt)`` hands back one
+:class:`RolloutSample` per call -- one trajectory.  Each sample is three parallel lists
 (``tokens``, ``logprobs``, ``loss_mask``) plus a scalar reward.  Multi-turn
 rollouts flatten into the same shape: turn boundaries are implicit in
 ``loss_mask`` transitions (0 on prompts / env feedback / tool responses,

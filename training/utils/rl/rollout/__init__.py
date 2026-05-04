@@ -2,11 +2,14 @@
 
 The trainer's user-facing contract is per-sample (matches AReaL/slime)::
 
-    async def rollout_fn(row) -> RolloutSample | None: ...
+    async def rollout_fn(sample_prompt) -> RolloutSample | None: ...
 
-The recipe fans each row out to ``completions_per_prompt`` parallel
-calls and joins them by row id via :class:`GroupAssembler` before
-handing the assembled :class:`PromptGroup` to the trainer.
+``sample_prompt`` is a dataset row's dict, renamed at the recipe seam
+to mark that it is now per-sample input rather than dataset-cursor
+state.  The recipe fans each dataset row out to
+``completions_per_prompt`` parallel calls and joins them by row id via
+:class:`GroupAssembler` before handing the assembled
+:class:`PromptGroup` to the trainer.
 
 This package layers the supporting types and helpers:
 

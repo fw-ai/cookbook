@@ -13,8 +13,10 @@ def build_deployment_sampler(setup: RolloutSetup) -> DeploymentSampler:
     The training recipe assembles the setup once at startup and hands it
     to the rollout factory; the factory uses this helper to materialize
     a sampler bound to the inference deployment.  Concurrency is
-    enforced by the framework scheduler via ``cfg.sample_max_concurrency``
-    (one slot per ``rollout_fn`` call), not at the HTTP layer.
+    enforced by the framework scheduler via ``cfg.max_concurrency_rollout_sample``
+    (caps in-flight LLM calls against the deployment's max_batch_size;
+    the recipe divides by ``completions_per_prompt`` to derive the row-
+    level cap), not at the HTTP layer.
     """
     return DeploymentSampler(
         inference_url=setup.inference_base_url,

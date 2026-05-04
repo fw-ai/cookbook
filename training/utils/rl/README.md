@@ -3,16 +3,21 @@
 The rollout surface is token-native.  A user supplies:
 
 ```python
-async def rollout_fn(row, ctx) -> Rollout | None: ...
+async def rollout_fn(sample_prompt) -> RolloutSample | None: ...
 ```
 
-and returns `RolloutSample` objects with aligned `tokens`, `logprobs`, and
-`loss_mask`.  Prompt, user, tool, and environment tokens have `loss_mask=0`;
-assistant-generated tokens have `loss_mask=1`.
+returning one trajectory per call as a `RolloutSample` with aligned
+`tokens`, `logprobs`, and `loss_mask`.  Prompt, user, tool, and environment
+tokens have `loss_mask=0`; assistant-generated tokens have `loss_mask=1`.
+The framework fans each dataset row out to `completions_per_prompt`
+parallel `rollout_fn` calls and joins them into a `PromptGroup` via
+`GroupAssembler`.
 
-The default `RolloutContext` carries the common Fireworks deployment fields
-used by the examples. Users can subclass it or pass `ctx_extras` for custom
-rollout engines.
+Per-rollout context (sampler, tokenizer, sample kwargs, custom state) is
+assembled once at startup as a `RolloutSetup` and closed over by the
+user-supplied `rollout_fn_factory(setup) -> rollout_fn`; there is no
+per-call `ctx` argument.  Custom rollout engines pass extra state via
+`RolloutSetup.extras`.
 
 ## Layout
 

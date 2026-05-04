@@ -1,9 +1,11 @@
 """Generic packer: :class:`RolloutService` output -> :class:`RolloutSample`.
 
-The recipe needs a per-sample ``rollout_fn(row) -> RolloutSample | None``.
-The most common integration pattern is "some remote service produces
-completion data; the trainer accepts token-level data verbatim".  This
-helper collapses the common case to one call::
+The recipe needs ``rollout_fn(sample_prompt) -> RolloutSample | None``,
+called once per sample (each dataset row fans out to
+``completions_per_prompt`` calls).  The most common integration pattern
+is "some remote service produces completion data; the trainer accepts
+token-level data verbatim".  This helper collapses the common case to
+one call::
 
     rollout_fn = make_remote_rollout_fn(service, sample_kwargs=...)
 
@@ -101,25 +103,30 @@ def make_remote_rollout_fn(
         on misaligned token IDs.
     allow_empty_messages
         When ``False`` (default), the rollout returns ``None`` whenever
-        ``row[messages_key]`` is empty or missing -- the right guard for
-        chat-style services.  When ``True``, empty messages are forwarded
-        through (e.g. env-driven domains where the env emits the seed
-        observation inside the service).
+        ``sample_prompt[messages_key]`` is empty or missing -- the right
+        guard for chat-style services.  When ``True``, empty messages
+        are forwarded through (e.g. env-driven domains where the env
+        emits the seed observation inside the service).
     """
 
     sk = dict(sample_kwargs or {})
 
-    async def rollout_fn(row: dict) -> RolloutSample | None:
-        messages = row.get(messages_key) or []
+    async def rollout_fn(sample_prompt: dict) -> RolloutSample | None:
+        messages = sample_prompt.get(messages_key) or []
         if not messages and not allow_empty_messages:
             return None
 
+        # ``_call_service`` and ``pack_payload_to_sample`` both forward the
+        # original dataset-row dict to user-supplied services / reward fns
+        # under the service-side ``row=`` keyword.  Keep that name on the
+        # service boundary; only the rollout_fn closure parameter follows
+        # the recipe-side ``sample_prompt`` convention.
         payloads = await _call_service(
             service,
             messages,
             n=1,
             sample_kwargs=dict(sk),
-            row=row,
+            row=sample_prompt,
         )
 
         if not payloads:
@@ -135,7 +142,7 @@ def make_remote_rollout_fn(
                 payloads[0],
                 tokenizer_id=tokenizer_id,
                 reward_fn=reward_fn,
-                row=row,
+                row=sample_prompt,
             )
         except _PackError as exc:
             logger.warning("dropping payload: %s", exc)

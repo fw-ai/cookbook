@@ -75,6 +75,29 @@ def add_train_perf_metrics(metrics: dict[str, Any], *, total_model_tokens: int) 
         metrics["perf/weight_sync_ratio"] = weight_sync_time / step_time
 
 
+def compute_minibatch_metrics(
+    fwd_bwd_result: Any,
+    optim_result: Any,
+) -> dict[str, Any]:
+    """Per-minibatch ``train/*`` metrics for one ``fwd_bwd + optim_step``.
+
+    Recipes that log on a per-PPO-minibatch axis (slime convention: each
+    inner step is its own data point on ``train/step``) call this once
+    per minibatch instead of letting :func:`compute_step_metrics`
+    average across the inner loop.
+    """
+    metrics: dict[str, Any] = {}
+    if fwd_bwd_result is not None and getattr(fwd_bwd_result, "metrics", None):
+        for k, v in fwd_bwd_result.metrics.items():
+            if k not in _SKIP_REMOTE_KEYS:
+                metrics[f"train/{k}"] = v
+    if optim_result is not None and getattr(optim_result, "metrics", None):
+        for k, v in optim_result.metrics.items():
+            if k not in _SKIP_REMOTE_KEYS:
+                metrics[f"train/{k}"] = v
+    return metrics
+
+
 def build_loop_metrics(
     *,
     train_step: int,
@@ -190,17 +213,44 @@ def compute_step_metrics(
         metrics["rollout/sample_fail_count"] = loop_stats["sample_fails"]
         metrics["rollout/fwd_bwd_count"] = n_accum
 
-        sample_wait_time = float(loop_stats.get("sample_wait_time", 0.0))
-        metrics["perf/sample_wait_time"] = sample_wait_time
-        # The ratio is defined over the same sampling window that drives
-        # fwd_bwd firing: queue-wait time divided by sampling-loop wall time.
-        # The async path computes ``step_wall_time`` after ``train_step``
-        # returns (so it can include the train_step wall time itself), so
-        # ``loop_stats`` may not have the key when this metrics fn fires --
-        # default to 0.0 in that case and let ratio metrics no-op.
+        # ``trainer_wait_for_sampler_time`` is the gap between the
+        # *previous* ``train_step``'s end and the *current*
+        # ``train_step``'s start.  It includes ``weight_sync`` wall time
+        # (the recipe sets ``last_step_end`` before invoking
+        # ``weight_sync_fn``), so on hotload-heavy runs a chunk of this
+        # is "trainer doing weight sync" rather than "trainer idle on
+        # sampler".  Compare against ``perf/weight_sync_time`` (logged
+        # one step later via the Timer singleton's flush) to back out
+        # the genuine starvation portion.
+        trainer_wait_for_sampler_time = float(loop_stats.get("trainer_wait_for_sampler_time", 0.0))
+        metrics["perf/trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
+        # Symmetric counterpart: rollout side waiting for the trainer to
+        # advance the off-policy version budget.  In a healthy async
+        # pipeline (concurrency cap binds *strictly before* staleness),
+        # this is 0.  When ``max_concurrency_rollout_sample`` is sized
+        # to exactly equal the steady-state staleness budget
+        # (``prompt_groups_per_step * (max_head_offpolicy_versions+1)``
+        # LLM calls), both caps go to zero simultaneously every step;
+        # ``_StalenessController.is_staleness_bound`` no longer falsely
+        # attributes that wall time as trainer-induced wait, so this
+        # metric drops to ~0.  If you see it large, either staleness
+        # really is binding (rollouts faster than train+sync) or the
+        # caps are mis-sized.
+        metrics["perf/sampler_wait_for_trainer_time"] = float(
+            loop_stats.get("sampler_wait_for_trainer_time", 0.0)
+        )
+        # ``wait_time_ratio = trainer_wait_for_sampler_time / step_wall_time``.
+        # ``step_wall_time = wait + train_wall``, so it covers the full
+        # outer-batch cycle (queue wait + ref_forward + old_policy_forward
+        # + K * (fwd_bwd + optim_step)).  weight_sync wall time is folded
+        # into ``wait`` (see comment above) — for an apples-to-apples
+        # "starvation ratio" subtract ``perf/weight_sync_time``.  When
+        # rollouts are structurally slower than train+sync, this ratio is
+        # high *even with perfect overlap* (Amdahl); 90%+ at slow rollouts
+        # is geometry, not a pipeline bug.
         step_wall_time = float(loop_stats.get("step_wall_time", 0.0))
         if step_wall_time > 0:
-            wait_ratio = sample_wait_time / step_wall_time
+            wait_ratio = trainer_wait_for_sampler_time / step_wall_time
             metrics["perf/wait_time_ratio"] = wait_ratio
             metrics["perf/overlap_ratio"] = 1.0 - wait_ratio
 

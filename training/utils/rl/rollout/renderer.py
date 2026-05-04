@@ -12,17 +12,21 @@ This module exposes the renderer-backed single-turn helper and the
   renderer's ``build_generation_prompt(...)`` into ``list[int]``.  Multimodal
   chunks are rejected with :class:`MultimodalRenderingNotSupported`.
 
-Multi-turn flows are shown as concrete ``async def rollout_fn(row, ctx)``
-examples under ``cookbook/training/examples/rl/``.  Keep environment/tool
-policy in user code; this helper only covers single-turn renderer packing.
+Multi-turn flows are shown as concrete ``async def
+rollout_fn(sample_prompt) -> RolloutSample | None`` examples under
+``cookbook/training/examples/rl/``.  Per-rollout context (sampler,
+tokenizer, sample kwargs, custom state) is closed over via
+:class:`RolloutSetup` at factory time -- the framework no longer threads
+a ``ctx`` argument through.  Keep environment/tool policy in user code;
+this helper only covers single-turn renderer packing.
 
 Boundary
 --------
 
-The renderer is consumed inside the rollout; it is not the trainer's data
-contract.  The trainer remains slime-style: ``rollout_fn(row, ctx) -> Rollout
-| None``.  This module is renderer-name-agnostic and never re-renders chat
-templates client-side.
+The renderer is consumed inside the rollout; it is not the trainer's
+data contract.  The trainer's contract is per-sample:
+``rollout_fn(sample_prompt) -> RolloutSample | None``.  This module is
+renderer-name-agnostic and never re-renders chat templates client-side.
 
 Parse-failure / truncation handling
 -----------------------------------

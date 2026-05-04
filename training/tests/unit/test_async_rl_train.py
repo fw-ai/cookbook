@@ -167,10 +167,13 @@ class TestArgValidation:
 
 class TestStalenessController:
     def test_capacity_matches_areal_formula(self):
+        # cpp=1 collapses sample-level math to batch/group units, so the
+        # values below double as a reference for the AReaL row-level form.
         ctl = _StalenessController(
-            batch_size=4,
+            batch_size_samples=4,
+            completions_per_prompt=1,
             max_staleness=1,
-            max_concurrent=3,
+            max_concurrent_samples=3,
         )
         assert ctl.capacity() == 3
 
@@ -187,16 +190,17 @@ class TestStalenessController:
 
     def test_reject_frees_running_capacity_without_charging_accepted(self):
         ctl = _StalenessController(
-            batch_size=2,
+            batch_size_samples=2,
+            completions_per_prompt=1,
             max_staleness=0,
-            max_concurrent=2,
+            max_concurrent_samples=2,
         )
         ctl.submit()
         ctl.submit()
         assert ctl.capacity() == 0
 
         ctl.reject("none")
-        assert ctl.accepted == 0
+        assert ctl.accepted_samples == 0
         assert ctl.sample_fails == 1
         assert ctl.capacity() == 1
 

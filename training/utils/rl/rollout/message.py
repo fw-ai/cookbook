@@ -148,7 +148,11 @@ class TITOTokenizer:
             ],
         }
         return self._tokenize_rendered_suffix(
-            [{"role": "system", "content": "dummy system"}, dummy_assistant],
+            [
+                {"role": "system", "content": "dummy system"},
+                {"role": "user", "content": "dummy user"},
+                dummy_assistant,
+            ],
             appended_messages,
             tools=tools,
         )
@@ -160,7 +164,10 @@ class TITOTokenizer:
         tools: Optional[List[dict[str, Any]]] = None,
     ) -> List[int]:
         return self._tokenize_rendered_suffix(
-            [{"role": "system", "content": "dummy system"}],
+            [
+                {"role": "system", "content": "dummy system"},
+                {"role": "user", "content": "dummy user"},
+            ],
             [appended_message],
             tools=tools,
         )

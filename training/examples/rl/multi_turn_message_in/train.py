@@ -27,7 +27,7 @@ from typing import Iterator
 
 from training.examples.rl.multi_turn_message_in.rollout import make_rollout_fn
 from training.recipes.async_rl_loop import Config, main
-from training.utils import DeployConfig, WandBConfig
+from training.utils import DeployConfig, InfraConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +77,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--log-path", default="./gsm8k_mt_logs")
     p.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
     p.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "gsm8k-mt"))
+    p.add_argument("--training-shape-id", default=None,
+                   help="Full training shape resource name (accounts/.../trainingShapes/...).")
+    p.add_argument("--lora-rank", type=int, default=0,
+                   help="LoRA rank (0 = full-parameter training).")
+    p.add_argument("--synchronous-training", action="store_true",
+                   help="Force fully-synchronous mode (no rollout/train overlap). "
+                        "Drains in-flight rollouts before each train_step and "
+                        "marks the rollout side blocked-on-trainer; "
+                        "perf/sampler_wait_for_trainer_time then reflects train+sync wall time.")
+    p.add_argument("--max-concurrency-rollout-sample", type=int, default=None,
+                   help="Cap in-flight LLM calls against the inference deployment "
+                        "(maps to deployment max_batch_size; e.g. 64 for a 64-slot "
+                        "shape with completions_per_prompt=8 = 8 rows in flight). "
+                        "Must be >= completions_per_prompt.  Default unbounded.")
+    p.add_argument("--wandb-run-name", default=None,
+                   help="Override the WandB run name.")
+    p.add_argument("--replica-count", type=int, default=None,
+                   help="Pin the inference deployment to a fixed replica count "
+                        "(default 1). Higher values fan out rollout sampling.")
     return p.parse_args()
 
 
@@ -101,15 +120,22 @@ def run():
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=args.max_rows,
+        lora_rank=args.lora_rank,
         prompt_groups_per_step=args.prompt_groups_per_step,
         max_head_offpolicy_versions=args.max_head_offpolicy_versions,
         ppo_n_minibatches=args.ppo_n_minibatches,
+        max_concurrency_rollout_sample=args.max_concurrency_rollout_sample,
+        synchronous_training=args.synchronous_training,
         output_model_id=args.output_model_id,
-        deployment=DeployConfig(tokenizer_model=args.tokenizer_model),
+        infra=InfraConfig(training_shape_id=args.training_shape_id),
+        deployment=DeployConfig(
+            tokenizer_model=args.tokenizer_model,
+            replica_count=args.replica_count,
+        ),
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            run_name=f"gsm8k-mt-{int(time.time()) % 100000}",
+            run_name=args.wandb_run_name or f"gsm8k-mt-{int(time.time()) % 100000}",
         ),
     )
     # Drop prompt groups whose rewards are constant across all samples --

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Async RL recipe with per-sample rollouts and recipe-owned training.
 
-Users write ``rollout_fn(row) -> RolloutSample | None`` -- one trajectory
-per call.  The recipe fans each row out to ``completions_per_prompt``
-parallel calls and assembles the resulting samples into a PromptGroup
-inside the loop (see ``training.utils.rl.async_train.run_async_rl_loop``
-and ``training.utils.rl.rollout.GroupAssembler``).
+Users write ``rollout_fn(sample_prompt) -> RolloutSample | None`` -- one
+trajectory per call.  ``sample_prompt`` is the dataset row's dict re-named
+once it crosses the dataset/sampling seam.  The recipe fans each dataset
+row out to ``completions_per_prompt`` parallel calls and assembles the
+resulting samples into a PromptGroup inside the loop (see
+``training.utils.rl.async_train.run_async_rl_loop`` and
+``training.utils.rl.rollout.GroupAssembler``).
 
 Rollout dependencies (tokenizer, sampler, request gate, etc.) flow
 through :class:`RolloutSetup`.  The user supplies a
@@ -62,7 +64,7 @@ from training.utils.rl.losses import (
     combine_prompt_groups,
     validate_loss_path,
 )
-from training.utils.rl.metrics import compute_step_metrics
+from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
 from training.utils.rl.rollout import RolloutSample
@@ -108,7 +110,19 @@ class Config:
     prompt_groups_per_step: int = 1
     max_head_offpolicy_versions: int = 0
     """Staleness budget in optimizer-step versions.  ``0`` = strict on-policy."""
-    sample_max_concurrency: int | None = None
+    max_concurrency_rollout_sample: int | None = None
+    """Cap concurrent **LLM calls** in flight against the inference deployment.
+
+    Same unit as ``deployment.max_batch_size`` -- exceed that and the
+    server queue overflows (HTTP 583/299 cascades).  The async gate is
+    sample-level: ``_StalenessController`` tracks ``running_samples``
+    and treats one prompt submission as ``completions_per_prompt``
+    samples, so this knob caps LLM calls directly with no internal
+    rescale.
+
+    Must be ``>= completions_per_prompt`` (one prompt's worth) or the
+    gate stalls.  ``None`` leaves concurrency unbounded; the off-policy
+    staleness budget alone then gates submission."""
     min_group_size: int = 1
     """Minimum surviving samples per row to emit a PromptGroup."""
     grad_accumulation_normalization: GradAccNormalization | str | None = (
@@ -141,6 +155,15 @@ class Config:
     >1, the policy drifts across inner steps, so ``old_policy_logprobs``
     anchors the PPO ratio and the clip does real work. ``1`` reproduces
     the legacy 1:1 behavior."""
+    synchronous_training: bool = False
+    """Force fully-synchronous (no rollout/train overlap) execution.
+
+    When True, the loop drains all in-flight rollout tasks before each
+    ``train_step`` and explicitly marks the rollout side blocked-on-
+    trainer for the duration of ``train_step + weight_sync``.  Useful as
+    a baseline for measuring async overlap savings: ``perf/sampler_wait_for_trainer_time``
+    will then approximate the per-step train+sync wall time, instead of
+    the ~0 it should be in healthy async mode."""
     tis: TISConfig = field(default_factory=TISConfig)
 
     infra: InfraConfig = field(default_factory=InfraConfig)
@@ -172,8 +195,10 @@ class RolloutSetup:
     tokenizer, sampling kwargs, and an ``extras`` dict for any
     caller-supplied state (replaces the old ``ctx_extras`` setattr
     injection).  Concurrency is enforced by the framework scheduler:
-    ``cfg.sample_max_concurrency`` caps the number of in-flight
-    ``rollout_fn`` invocations.  No HTTP-level gate is wired in.
+    ``cfg.max_concurrency_rollout_sample`` caps the number of in-flight LLM calls
+    (the unit that maps to deployment ``max_batch_size``); the recipe
+    divides by ``completions_per_prompt`` to get the row-level cap the
+    async runner gates on.  No HTTP-level gate is wired in.
     """
 
     tokenizer: Any
@@ -222,8 +247,9 @@ def main(
 
     ``rollout_fn_factory(setup) -> rollout_fn`` is called once at startup
     with the assembled :class:`RolloutSetup`.  The returned
-    ``rollout_fn(row) -> RolloutSample | None`` is invoked
-    ``completions_per_prompt`` times per dataset row.
+    ``rollout_fn(sample_prompt) -> RolloutSample | None`` is invoked
+    ``completions_per_prompt`` times per dataset row (each invocation is
+    one sample draw against the inference deployment).
 
     ``cancel_on_exit=True`` tears down provisioned remote resources on exit.
     """
@@ -275,6 +301,24 @@ def main(
             "lr": cfg.learning_rate,
         },
     )
+    # slime-style dual axis: train/* graphs per inner PPO minibatch on
+    # train/step; rollout/* and friends graph per outer rollout batch on
+    # rollout/step.  setup_wandb routes everything to train/step by default
+    # (single-axis recipes), so override the rollout-side globs here.
+    try:
+        import wandb as _wandb  # noqa: WPS433 (deliberate local import)
+
+        if _wandb.run is not None:
+            _wandb.define_metric("rollout/step")
+            _wandb.define_metric("rollout/*", step_metric="rollout/step")
+            _wandb.define_metric("perf/*", step_metric="rollout/step")
+            _wandb.define_metric("infra/*", step_metric="rollout/step")
+            _wandb.define_metric("ctx/*", step_metric="rollout/step")
+            _wandb.define_metric("batch/*", step_metric="rollout/step")
+            _wandb.define_metric("async/*", step_metric="rollout/step")
+            _wandb.define_metric("version/*", step_metric="rollout/step")
+    except ImportError:
+        pass
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -310,7 +354,7 @@ def main(
         for closeable in infra.closeables:
             stack.callback(closeable.close)
 
-        wandb_log(infra.boot_metrics, step=0)
+        wandb_log({**infra.boot_metrics, "rollout/step": 0})
 
         policy = infra.policy
         reference = infra.reference
@@ -342,7 +386,10 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         if step_offset:
             logger.info("Resuming from step %d", step_offset)
-            wandb_log({"train/step": step_offset}, step_offset)
+            rollout_offset = step_offset // max(1, cfg.ppo_n_minibatches)
+            wandb_log(
+                {"train/step": step_offset, "rollout/step": rollout_offset},
+            )
 
         if cfg.weight_sync.weight_sync_before_training:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
@@ -404,12 +451,17 @@ def main(
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
 
+        # The gate operates in samples (LLM calls) directly, matching
+        # ``deployment.max_batch_size``.  The recipe-side ``// cpp`` division
+        # and the ``>= cpp`` validation that the prior row-level form required
+        # are both gone -- the loop floor-divides ``capacity() // cpp`` once
+        # at the only place per-prompt submission granularity matters.
         ctx_metadata: dict[str, Any] = {
             "completions_per_prompt": cfg.completions_per_prompt,
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
             "ppo_n_minibatches": cfg.ppo_n_minibatches,
-            "sample_max_concurrency": cfg.sample_max_concurrency,
+            "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
             "weight_sync_interval": _WEIGHT_SYNC_INTERVAL,
             "max_completion_tokens": cfg.max_completion_tokens,
             "temperature": cfg.temperature,
@@ -420,12 +472,16 @@ def main(
         }
 
         def make_row_requests():
+            # ``row_loader`` walks the dataset, so the ``row`` it yields is
+            # genuinely a dataset row.  We hand it to ``rollout_fn`` as a
+            # ``sample_prompt`` -- the same dict, just renamed once it crosses
+            # the dataset/sampling seam.
             for item in row_loader:
                 row = item.value
                 idx = item.index
 
-                def factory(_sub_index: int, row=row):
-                    return rollout_fn(row)
+                def factory(_sub_index: int, sample_prompt=row):
+                    return rollout_fn(sample_prompt)
 
                 yield RowRequest(
                     row_id=idx,
@@ -471,11 +527,26 @@ def main(
             DCP checkpoints fire only at rollout boundaries (cadence in
             rollout batches, not optim steps) so resume accounting is
             independent of the minibatch count.
+
+            Slime-aligned dual-axis logging: per-minibatch ``train/*`` lands
+            on the ``train/step`` axis (one point per inner PPO step);
+            per-batch ``rollout/*`` / ``perf/*`` / ``async/*`` / ``version/*``
+            land on ``rollout/step`` (one point per outer rollout batch).
+            ``current_version`` and checkpoint identities stay in optim-step
+            units so the off-policy budget and resume math are unchanged.
             """
             train_start = time.monotonic()
+            num_minibatches = max(1, cfg.ppo_n_minibatches)
+            # 1-indexed outer-batch counter.  ``step`` here is the optim-step
+            # count carried over from prior batches, which is always a
+            # multiple of num_minibatches at batch boundaries.
+            rollout_id = step // num_minibatches + 1
+
             with elapsed_timer("ref_forward") as span:
                 ref_forward(prompt_groups)
-            logger.info("[step %d] ref_forward (%.1fs)", step + 1, span.elapsed)
+            logger.info(
+                "[rollout %d] ref_forward (%.1fs)", rollout_id, span.elapsed,
+            )
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
             with elapsed_timer("old_policy_forward") as span:
@@ -484,10 +555,12 @@ def main(
                     old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
                     for i in range(len(data))
                 ]
-            logger.info("[step %d] old_policy_forward (%.1fs)", step + 1, span.elapsed)
+            logger.info(
+                "[rollout %d] old_policy_forward (%.1fs)",
+                rollout_id, span.elapsed,
+            )
 
             n = len(data)
-            num_minibatches = max(1, cfg.ppo_n_minibatches)
             minibatch_size = max(1, math.ceil(n / num_minibatches))
             fwd_bwd_results: list = []
             optim_result: Any = None
@@ -498,17 +571,19 @@ def main(
                     break
 
                 with elapsed_timer("fwd_bwd") as span:
-                    fwd_bwd_results.append(fwd_bwd_minibatch(
+                    fwd_bwd_result = fwd_bwd_minibatch(
                         data[mb_start:mb_end],
                         adv[mb_start:mb_end],
                         ref_lp[mb_start:mb_end],
                         prompt_lens[mb_start:mb_end],
                         inf_lp[mb_start:mb_end],
                         old_policy_logprobs[mb_start:mb_end],
-                    ))
+                    )
+                    fwd_bwd_results.append(fwd_bwd_result)
                 logger.info(
-                    "[step %d] fwd_bwd (mb %d/%d) (%.1fs)",
-                    step + 1, minibatch_idx + 1, num_minibatches, span.elapsed,
+                    "[rollout %d step %d] fwd_bwd (mb %d/%d) (%.1fs)",
+                    rollout_id, step + 1, minibatch_idx + 1, num_minibatches,
+                    span.elapsed,
                 )
 
                 with elapsed_timer("optim_step") as span:
@@ -518,16 +593,33 @@ def main(
                     )
                 step += 1
                 logger.info(
-                    "[step %d] optim_step (mb %d/%d) (%.1fs)",
-                    step, minibatch_idx + 1, num_minibatches, span.elapsed,
+                    "[rollout %d step %d] optim_step (mb %d/%d) (%.1fs)",
+                    rollout_id, step, minibatch_idx + 1, num_minibatches,
+                    span.elapsed,
                 )
+
+                # slime-style: emit per-minibatch ``train/*`` keyed on
+                # ``train/step``.  Each inner step's loss/grad/clip values
+                # are genuinely distinct (different data slice) -- preserving
+                # them as separate points instead of averaging matches the
+                # slime convention and keeps the per-rollout aggregate clean.
+                # No explicit ``step=`` -- wandb routes via the declared
+                # ``step_metric`` and auto-advances its internal counter, so
+                # the per-mb log and the end-of-rollout log don't collide on
+                # a shared monotonic step.
+                mb_metrics = compute_minibatch_metrics(fwd_bwd_result, optim_result)
+                if mb_metrics:
+                    mb_metrics["train/step"] = step
+                    mb_metrics["train/minibatch_idx"] = minibatch_idx + 1
+                    mb_metrics["train/num_minibatches"] = num_minibatches
+                    wandb_log(mb_metrics)
 
             # ``step_wall_time`` covers the full step (queue wait + all K
             # minibatches), so ``perf/wait_time_ratio`` = wait / (wait + train).
             if loop_stats is not None:
                 train_wall = time.monotonic() - train_start
                 loop_stats["step_wall_time"] = (
-                    loop_stats.get("sample_wait_time", 0.0) + train_wall
+                    loop_stats.get("trainer_wait_for_sampler_time", 0.0) + train_wall
                 )
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
@@ -538,7 +630,17 @@ def main(
                 loop_stats=loop_stats,
                 completions_per_prompt=cfg.completions_per_prompt,
             )
-            metrics["train/step"] = step
+            # Capture the per-rollout-mean KL for the human summary line
+            # before the train/* stripping below removes it.
+            mean_kl = metrics.get("train/mean_kl", 0.0)
+            # slime-style: ``train/*`` already logged per-minibatch above on
+            # the ``train/step`` axis.  Strip them here so the rollout-axis
+            # log only carries rollout/perf/async/version metrics.  The
+            # values were just averages across minibatches anyway -- the
+            # per-mb points are strictly more informative.
+            metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
+            metrics["rollout/step"] = rollout_id
+            metrics["train/step"] = step  # monotonic fallback for the wandb global step
             metrics["ctx/current_version"] = current_version
             for k, v in ctx_metadata.items():
                 if isinstance(v, bool):
@@ -547,13 +649,14 @@ def main(
                     metrics[f"ctx/{k}"] = v
 
             logger.info(
-                "Step %d | Reward %.3f | Acc %.1f%% | KL %.4f",
+                "Rollout %d (step %d) | Reward %.3f | Acc %.1f%% | KL %.4f",
+                rollout_id,
                 step,
                 metrics.get("rollout/reward", 0.0),
                 metrics.get("rollout/accuracy", 0.0) * 100,
-                metrics.get("train/mean_kl", 0.0),
+                mean_kl,
             )
-            wandb_log(metrics, step)
+            wandb_log(metrics)
             # DCP cadence is in rollout batches, not optim steps, so
             # ppo_n_minibatches doesn't change save frequency.
             rollouts_completed = (step - step_offset) // num_minibatches
@@ -579,9 +682,14 @@ def main(
 
         def _weight_sync(step: int) -> None:
             nonlocal current_version
-            with timer("weight_sync"):
+            with elapsed_timer("weight_sync") as span:
                 weight_syncer.save_and_hotload(f"step-{step}")
             current_version = step
+            # Debug: surface hotload wall time at the moment it fires, so
+            # the human log lets you correlate with the next batch-ready
+            # log line (where weight_sync_time would otherwise show up
+            # off-by-one via flush_timing on the *next* train_step).
+            logger.info("[step %d] weight_sync (%.1fs)", step, span.elapsed)
 
         global_step, final_stats = asyncio.run(
             run_async_rl_loop(
@@ -594,8 +702,9 @@ def main(
                 min_group_size=cfg.min_group_size,
                 weight_sync_fn=_weight_sync,
                 weight_sync_interval=_WEIGHT_SYNC_INTERVAL,
-                max_concurrent=cfg.sample_max_concurrency,
+                max_concurrent=cfg.max_concurrency_rollout_sample,
                 dynamic_filter_fn=dynamic_filter_fn,
+                synchronous_training=cfg.synchronous_training,
                 global_step=step_offset,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
                 return_final_stats=True,

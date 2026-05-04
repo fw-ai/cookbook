@@ -49,9 +49,9 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
     if max_turns < 1:
         raise ValueError(f"max_turns must be >= 1, got {max_turns}")
 
-    async def rollout_fn(row: dict) -> RolloutSample | None:
-        messages = list(row.get("messages") or [])
-        answer = row.get("answer")
+    async def rollout_fn(sample_prompt: dict) -> RolloutSample | None:
+        messages = list(sample_prompt.get("messages") or [])
+        answer = sample_prompt.get("answer")
         if not messages or answer is None:
             return None
 

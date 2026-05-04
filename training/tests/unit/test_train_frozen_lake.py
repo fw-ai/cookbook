@@ -556,7 +556,7 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
                 "total_sampled": 1,
                 "filter_drops": 0,
                 "sample_fails": 0,
-                "sample_wait_time": 0.1,
+                "trainer_wait_for_sampler_time": 0.1,
                 "step_wall_time": 0.2,
             },
         )

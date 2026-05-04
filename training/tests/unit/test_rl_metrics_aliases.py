@@ -36,7 +36,7 @@ class TestBuildLoopMetrics:
         assert "rollout/tokens_completed" not in loop_metrics
         assert "rollout/sample_fail_ratio" not in loop_metrics
         assert "rollout/raw_reward" not in loop_metrics
-        assert "perf/sample_wait_time" not in loop_metrics
+        assert "perf/trainer_wait_for_sampler_time" not in loop_metrics
         assert "perf/wait_time_ratio" not in loop_metrics
         assert "perf/overlap_ratio" not in loop_metrics
         assert "perf/step_wall_time" not in loop_metrics
@@ -59,7 +59,7 @@ class TestComputeStepMetrics:
                 "total_sampled": 7,
                 "filter_drops": 1,
                 "sample_fails": 2,
-                "sample_wait_time": 3.0,
+                "trainer_wait_for_sampler_time": 3.0,
                 "step_wall_time": 4.0,
                 "all_raw_rewards": [1.0, 0.0],
             },
@@ -70,7 +70,7 @@ class TestComputeStepMetrics:
         assert metrics["rollout/samples_completed"] == 1
         assert metrics["rollout/filter_reject_ratio"] == 1 / 7
         assert metrics["rollout/sample_fail_count"] == 2
-        assert metrics["perf/sample_wait_time"] == 3.0
+        assert metrics["perf/trainer_wait_for_sampler_time"] == 3.0
         assert metrics["perf/wait_time_ratio"] == 0.75
         assert metrics["perf/overlap_ratio"] == 0.25
         assert metrics["perf/step_wall_time"] == 4.0
