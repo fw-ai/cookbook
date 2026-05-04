@@ -10,6 +10,8 @@ Each recipe is a single Python file you can fork and customize.
 | Recipe | File | Description |
 | --- | --- | --- |
 | GRPO / IS / DAPO / DRO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"importance_sampling"`, `"dapo"`, `"dro"`, `"gspo"`, or `"cispo"`. |
+| Async RL (any of the above losses) | `recipes/async_rl_loop.py` | Gate-native async RL: rollout/train overlap with bounded off-policy staleness. Strict superset of `rl_loop.py`; recommended for new RL work. |
+| IGPO (multi-turn turn-level Information Gain) | `recipes/igpo_loop.py` | GRPO + per-turn IG rewards for agent trajectories (Wang et al., ICLR 2026). |
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
 | SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
@@ -145,15 +147,23 @@ For detailed guides, configuration reference, and examples, see the official doc
 ## Directory layout
 
 ```
-recipes/                 Training loop scripts (fork these)
-utils/                   Shared config, data loading, loss functions, metrics
-examples/rl/deepmath/    Worked example: math reasoning with GRPO
-examples/rl/frozen_lake/ Worked example: Frozen Lake with tool-use RL
-examples/orpo/ifeval/    Worked example: IFEval with ORPO
-examples/sft/            Worked example: SFT getting started
-examples/dpo/            Worked example: DPO
-examples/tools/          Standalone utility scripts
-tests/                   Unit and end-to-end tests
+recipes/                              Training loop scripts (fork these)
+utils/                                Shared config, data loading, loss functions, metrics
+examples/sft/                         Worked example: SFT getting started
+examples/dpo/                         Worked example: DPO
+examples/orpo/ifeval/                 Worked example: IFEval with ORPO
+examples/rl/deepmath/                 GRPO on DeepMath (rl_loop)
+examples/rl/frozen_lake/              Frozen Lake tool-use RL (custom loop)
+examples/rl/single_turn_async/        Async RL single-turn, renderer-backed
+examples/rl/gsm8k_async/              Async RL on GSM8K, renderer-backed
+examples/rl/multi_turn_minimal/       Async RL multi-turn, token-native (no renderer)
+examples/rl/multi_turn_minimal_renderer/  Async RL multi-turn, renderer-backed
+examples/rl/multi_turn_tool/          Async RL multi-turn with tool calls
+examples/rl/remote_rollout/           Async RL with a RolloutService
+examples/rl/ep_remote_grader/         Async RL with eval_protocol grading
+examples/multihop_qa/                 Multi-hop QA with IGPO (igpo_loop)
+examples/tools/                       Standalone utility scripts
+tests/                                Unit and end-to-end tests
 ```
 
 ## Tests

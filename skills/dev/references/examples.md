@@ -9,12 +9,14 @@ When the user wants "something that just runs", point them at `training/examples
 | ORPO | `training/examples/orpo/` |
 | GRPO on DeepMath | `training/examples/rl/deepmath/` |
 | Tool-use RL (Frozen Lake) | `training/examples/rl/frozen_lake/` |
-| Async single-turn RL | `training/examples/rl/single_turn_async/` |
+| Async single-turn RL (renderer-backed) | `training/examples/rl/single_turn_async/` |
+| Async single-turn RL on GSM8K | `training/examples/rl/gsm8k_async/` |
+| Multi-turn RL (token-native, no renderer) | `training/examples/rl/multi_turn_minimal/` |
 | Multi-turn renderer RL | `training/examples/rl/multi_turn_minimal_renderer/` |
 | Multi-turn tool RL | `training/examples/rl/multi_turn_tool/` |
 | Remote rollout service RL | `training/examples/rl/remote_rollout/` |
-| Multi-hop QA RL | `training/examples/multihop_qa/` |
-| Generic RL wiring | `training/examples/rl/` |
+| Eval-protocol remote grader RL | `training/examples/rl/ep_remote_grader/` |
+| Multi-hop QA IGPO | `training/examples/multihop_qa/` |
 
 ## What to read
 

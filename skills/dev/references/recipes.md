@@ -7,7 +7,7 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | SFT | `training/recipes/sft_loop.py` |
 | DPO | `training/recipes/dpo_loop.py` |
 | ORPO | `training/recipes/orpo_loop.py` |
-| Importance-weighted GRPO | `training/recipes/igpo_loop.py` |
+| Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
 | Generic RL loop (GRPO scaffold) | `training/recipes/rl_loop.py` |
 | Async RL loop (rollout/train overlap, PPO inner minibatches) | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
 
