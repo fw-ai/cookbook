@@ -129,7 +129,8 @@ spans `K` optim steps.
 
 **Sizing rule of thumb.**  For sustained overlap you need `O >= R - 1`.  At
 `O = 0` the loop runs strict on-policy regardless of `R`; raising `O` opens the
-overlap window.  AReaL's GSM8K example uses `R=1` with `O=2`.  See
+overlap window.  AReaL's GSM8K example uses `R=1` with `O=2`; we've tested
+`R=4` with `O=4` (one margin step over the minimum) and found it healthy.  See
 `## Metrics` below for tuning from a live run.
 
 ## Metrics: tuning staleness and the trainer/sampler GPU split
