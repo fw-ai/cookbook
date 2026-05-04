@@ -49,3 +49,27 @@ def test_to_deployment_config_sets_fixed_replica_count():
     assert isinstance(deployment_config, DeploymentConfig)
     assert deployment_config.min_replica_count == 3
     assert deployment_config.max_replica_count == 3
+
+
+def test_apply_trainer_replica_count_omits_backend_default():
+    infra = config_module.InfraConfig()
+
+    config_module.apply_trainer_replica_count(infra, 1)
+
+    assert infra.trainer_replica_count is None
+
+
+def test_apply_trainer_replica_count_sets_hsdp_replica_value():
+    infra = config_module.InfraConfig()
+
+    config_module.apply_trainer_replica_count(infra, 2)
+
+    assert infra.trainer_replica_count == 2
+
+
+def test_apply_trainer_replica_count_preserves_explicit_infra_value():
+    infra = config_module.InfraConfig(trainer_replica_count=2)
+
+    config_module.apply_trainer_replica_count(infra, 1)
+
+    assert infra.trainer_replica_count == 2

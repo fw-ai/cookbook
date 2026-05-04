@@ -56,6 +56,7 @@ from training.utils import (
     RunStatus,
     WandBConfig,
     ReconnectableClient,
+    apply_trainer_replica_count,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -102,6 +103,8 @@ class Config:
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
+    trainer_replica_count: int | None = 1
+    """Run-level data-parallel trainer replicas. Set >1 for replicated HSDP."""
     job_id: str | None = None
     output_model_id: str | None = None
 
@@ -214,6 +217,7 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    apply_trainer_replica_count(cfg.infra, cfg.trainer_replica_count)
 
     if cfg.grad_accum > 1:
         logger.warning(

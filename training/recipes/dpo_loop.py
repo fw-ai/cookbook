@@ -62,6 +62,7 @@ from training.utils import (
     RunnerConfig,
     RunnerIO,
     WandBConfig,
+    apply_trainer_replica_count,
     log_metrics_json,
     make_batch_dpo_loss_fn,
     make_render_dataloader,
@@ -108,6 +109,8 @@ class Config:
     max_pairs: int | None = None
     """Cap on *valid rendered pairs* after schema/length filtering."""
     lora_rank: int = 0
+    trainer_replica_count: int | None = 1
+    """Run-level data-parallel trainer replicas. Set >1 for replicated HSDP."""
 
     ref_cache_concurrency: int = 16
     """Max concurrent reference forward passes during cache warm-up."""
@@ -552,6 +555,7 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    apply_trainer_replica_count(cfg.infra, cfg.trainer_replica_count)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "

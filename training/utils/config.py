@@ -103,6 +103,19 @@ class InfraConfig:
     """Skip server-side shape validation. Requires superuser API key."""
 
 
+def apply_trainer_replica_count(
+    infra: InfraConfig,
+    trainer_replica_count: int | None,
+) -> None:
+    """Apply a non-default recipe-level trainer replica count unless infra set one."""
+    if trainer_replica_count is not None and trainer_replica_count < 0:
+        raise ValueError("trainer_replica_count must be non-negative")
+    if trainer_replica_count is None or trainer_replica_count <= 1:
+        return
+    if infra.trainer_replica_count is None:
+        infra.trainer_replica_count = trainer_replica_count
+
+
 class WeightSyncScope(Enum):
     """How trainer weights are synced to the inference deployment.
 
