@@ -1,2 +1,0 @@
-# Materialized HotpotQA / MuSiQue / 2WikiMultiHopQA splits — regenerate with `python prepare_data.py`.
-dataset.jsonl
