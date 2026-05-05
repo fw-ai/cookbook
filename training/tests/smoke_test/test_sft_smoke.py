@@ -10,15 +10,33 @@ import pytest
 
 
 def _make_chat_dataset(path: str, num_examples: int = 4) -> None:
+    """Write a tiny SFT dataset that exercises both single-turn and multi-turn rows.
+
+    The first row is single-turn (1 user message). All subsequent rows are
+    multi-turn (>=2 user messages) so the smoke test runs the
+    ``build_supervised_examples`` dispatcher path used by non-extension
+    renderers (Qwen3-family, Kimi K2.5/K2.6, DeepSeek-thinking) on
+    multi-turn data. Without a multi-turn row, the dispatcher's
+    ``users > 1`` guard short-circuits and the smoke test never validates
+    that the active renderer can split a conversation into multiple
+    supervised examples — see the qwen3p5-27b SFT failure that this guard
+    would have caught.
+    """
     with open(path, "w") as f:
         for i in range(num_examples):
-            row = {
-                "messages": [
+            if i == 0:
+                messages = [
                     {"role": "user", "content": f"What is {i} plus {i}?"},
                     {"role": "assistant", "content": f"The answer is {i + i}."},
                 ]
-            }
-            f.write(json.dumps(row) + "\n")
+            else:
+                messages = [
+                    {"role": "user", "content": f"What is {i} plus {i}?"},
+                    {"role": "assistant", "content": f"The answer is {i + i}."},
+                    {"role": "user", "content": f"And what about {i} plus {i + 1}?"},
+                    {"role": "assistant", "content": f"The answer is {i + i + 1}."},
+                ]
+            f.write(json.dumps({"messages": messages}) + "\n")
 
 
 @pytest.mark.e2e

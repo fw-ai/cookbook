@@ -30,6 +30,7 @@ from tinker_cookbook.renderers import (
     TrainOnWhat,
     get_renderer,
 )
+from tinker_cookbook.renderers.base import Renderer as _BaseRenderer
 
 from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
@@ -797,25 +798,73 @@ def _requires_renderer_supervised_examples(
     return sum(1 for message in messages if message["role"] == "user") > 1
 
 
+def _renderer_has_own_split(renderer: Renderer) -> bool:
+    """Renderer overrides ``build_supervised_examples`` from the upstream base.
+
+    Used to decide between calling the renderer's plural method and the
+    per-user-turn fallback. We treat both ``None`` (no method at all) and the
+    upstream base-class method (which raises ``NotImplementedError`` for
+    non-extension renderers) as "no override".
+    """
+    method = getattr(type(renderer), "build_supervised_examples", None)
+    if method is None:
+        return False
+    base_method = getattr(_BaseRenderer, "build_supervised_examples", None)
+    return method is not base_method
+
+
+def _split_messages_at_user_turns(messages: list[Message]) -> list[list[Message]]:
+    """Yield message prefixes ending after each non-final user turn's responses."""
+    user_idxs = [idx for idx, message in enumerate(messages) if message["role"] == "user"]
+    if not user_idxs:
+        return [list(messages)]
+    cut_points = [*user_idxs[1:], len(messages)]
+    return [list(messages[:cut]) for cut in cut_points]
+
+
+def _build_examples_per_user_turn(
+    renderer: Renderer,
+    messages: list[Message],
+    train_on_what: TrainOnWhat,
+) -> list[tuple[Any, Any]]:
+    """Per-user-turn fallback for renderers without ``build_supervised_examples``.
+
+    Splits the conversation at user boundaries and renders each prefix as its
+    own ``build_supervised_example``. For ``ALL_ASSISTANT_MESSAGES`` this
+    matches the GLM-5.1 dispatcher's semantics (each assistant suffix is
+    trained at the same position the renderer would produce at generation
+    time), which is the safe default for thinking-history-stripped renderers
+    (Qwen3, Qwen3.5, Qwen3-VL, Kimi K2.5/K2.6, DeepSeek V3-thinking) when
+    ``has_extension_property=False``.
+    """
+    per_turn_train_on_what = (
+        TrainOnWhat.LAST_ASSISTANT_TURN
+        if train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+        else train_on_what
+    )
+    return [
+        renderer.build_supervised_example(
+            prefix,
+            train_on_what=per_turn_train_on_what,
+        )
+        for prefix in _split_messages_at_user_turns(messages)
+    ]
+
+
 def _build_renderer_supervised_examples(
     renderer: Renderer,
     messages: list[Message],
     train_on_what: TrainOnWhat,
 ) -> list[tuple[Any, Any]]:
     if _requires_renderer_supervised_examples(renderer, messages, train_on_what):
-        build_supervised_examples = getattr(renderer, "build_supervised_examples", None)
-        if build_supervised_examples is None:
-            raise TypeError(
-                f"{type(renderer).__name__} has has_extension_property=False and "
-                f"cannot safely render train_on_what={train_on_what.value!r} without "
-                "build_supervised_examples."
+        if _renderer_has_own_split(renderer):
+            return list(
+                renderer.build_supervised_examples(
+                    messages,
+                    train_on_what=train_on_what,
+                )
             )
-        return list(
-            build_supervised_examples(
-                messages,
-                train_on_what=train_on_what,
-            )
-        )
+        return _build_examples_per_user_turn(renderer, messages, train_on_what)
 
     return [
         renderer.build_supervised_example(

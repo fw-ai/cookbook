@@ -261,6 +261,11 @@ def test_render_messages_to_datums_uses_renderer_split_for_weighted_rows():
 
 
 def test_render_messages_to_datums_fails_fast_without_split_implementation():
+    """A renderer that explicitly overrides build_supervised_examples to raise
+    must not be silently rescued by the per-user-turn fallback — its own
+    NotImplementedError surfaces so authors see exactly which renderer needs
+    work."""
+
     class UnimplementedSplitRenderer:
         has_extension_property = False
 
@@ -281,6 +286,99 @@ def test_render_messages_to_datums_fails_fast_without_split_implementation():
             renderer=UnimplementedSplitRenderer(),
             train_on_what="all_assistant_messages",
         )
+
+
+def test_render_messages_to_datums_falls_back_per_user_turn_when_no_override():
+    """Multi-turn SFT on a non-extension renderer that does NOT override the
+    plural ``build_supervised_examples`` method (the upstream
+    ``tinker_cookbook`` default) must fall back to one
+    ``build_supervised_example`` call per user-turn prefix instead of raising
+    ``NotImplementedError``.
+
+    Regression test: Qwen3 / Qwen3.5 / Qwen3-VL / Kimi K2.5 / Kimi K2.6 /
+    DeepSeek-V3-thinking renderers have ``has_extension_property=False`` and
+    inherit the base ``build_supervised_examples`` that raises
+    NotImplementedError. Multi-turn SFT rows used to fail at runtime with
+    ``NotImplementedError: build_supervised_examples has not been implemented
+    for this renderer.`` even though each assistant turn is trivially
+    renderable as its own example.
+    """
+    from tinker_cookbook.renderers.base import Renderer as _BaseRenderer
+
+    calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+    class NonExtensionRenderer:
+        """Stand-in for a tinker_cookbook renderer with strip_thinking_from_history=True."""
+
+        has_extension_property = False
+        build_supervised_examples = _BaseRenderer.build_supervised_examples
+
+        def build_supervised_example(self, messages, train_on_what):
+            calls.append(([dict(m) for m in messages], train_on_what))
+            n = len(messages)
+            tokens = list(range(10, 10 + n + 1))
+            weights = [1.0] * len(tokens)
+            return (
+                torch.tensor(tokens, dtype=torch.int64),
+                torch.tensor(weights, dtype=torch.float32),
+            )
+
+    rendered = render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+            {"role": "assistant", "content": "a3"},
+        ],
+        renderer=NonExtensionRenderer(),
+        train_on_what="all_assistant_messages",
+    )
+
+    assert len(rendered) == 3
+    prefixes = [[m["role"] for m in messages] for messages, _ in calls]
+    assert prefixes == [
+        ["user", "assistant"],
+        ["user", "assistant", "user", "assistant"],
+        ["user", "assistant", "user", "assistant", "user", "assistant"],
+    ]
+    train_on_what_modes = [tow for _, tow in calls]
+    assert train_on_what_modes == [TrainOnWhat.LAST_ASSISTANT_TURN] * 3
+
+
+def test_render_messages_to_datums_per_turn_fallback_passes_through_other_modes():
+    """Non-ALL_ASSISTANT_MESSAGES modes (e.g. CUSTOMIZED weighted rows) must
+    pass through unchanged so the renderer honors the caller's train_on_what
+    on each user-turn prefix instead of being silently coerced to
+    LAST_ASSISTANT_TURN."""
+    from tinker_cookbook.renderers.base import Renderer as _BaseRenderer
+
+    calls: list[TrainOnWhat] = []
+
+    class NonExtensionRenderer:
+        has_extension_property = False
+        build_supervised_examples = _BaseRenderer.build_supervised_examples
+
+        def build_supervised_example(self, messages, train_on_what):
+            calls.append(train_on_what)
+            return (
+                torch.tensor([10, 11], dtype=torch.int64),
+                torch.tensor([0.0, 1.0], dtype=torch.float32),
+            )
+
+    render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1", "weight": 0},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
+        renderer=NonExtensionRenderer(),
+        train_on_what="all_assistant_messages",
+    )
+
+    assert calls == [TrainOnWhat.CUSTOMIZED, TrainOnWhat.CUSTOMIZED]
 
 
 def test_normalize_messages_supports_openai_tool_call_shape():
