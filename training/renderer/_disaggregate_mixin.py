@@ -1,5 +1,5 @@
-"""Mixin: disaggregate multi-turn ALL_ASSISTANT_MESSAGES SFT data into
-per-user-turn supervised examples.
+"""Mixin: disaggregate multi-turn SFT data into per-user-turn supervised
+examples, with non-trainable assistants filtered out.
 
 Background
 ----------
@@ -33,17 +33,58 @@ prefix, so training tokens stay aligned with what the model sees at
 inference. Training cost grows ~N²/2 in conversation length, in
 exchange for inference parity.
 
+Non-trainable round filter
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the prefix's terminal assistant turn is marked non-trainable
+(``trainable=False`` or ``weight=0``), the entire datum is skipped —
+the user explicitly told us not to train this answer, so emitting a
+datum that would weight it (under ``LAST_ASSISTANT_TURN``) would
+violate the user's intent. The non-trainable assistant remains in the
+prefix as context for any *later* trainable round. This matches the
+V1 SFT trainer's ``_split_at_thinking_boundaries`` filter (it skips
+yielding a round whose terminal assistant has ``weight != 1``).
+
+Booleanization of ``weight`` follows
+``training/utils/supervised.py::_resolve_trainable``: ``trainable``
+wins if present, otherwise ``bool(weight)``, otherwise the assistant
+is trainable by default. Inlined here to avoid a circular import (the
+``utils.supervised`` module already imports from
+``training.renderer.*``).
+
 This mirrors the upstream Kimi K2 implementation
-(``tinker_cookbook/renderers/kimi_k2.py:335``) and the local GLM5
-implementation it was modelled after.
+(``tinker_cookbook/renderers/kimi_k2.py:335``) and adds the
+non-trainable-round filter.
 """
 
 from __future__ import annotations
 
 import warnings
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from tinker_cookbook.renderers.base import TrainOnWhat
+
+
+def _is_trainable_assistant(message: Mapping[str, Any]) -> bool:
+    """Mirror of ``_resolve_trainable`` for assistant messages, inlined to
+    avoid a circular import. ``trainable`` field wins if present;
+    otherwise ``bool(weight)``; otherwise True (assistant default)."""
+    trainable = message.get("trainable")
+    if trainable is not None:
+        return bool(trainable)
+    weight = message.get("weight")
+    if weight is not None:
+        return bool(weight)
+    return True
+
+
+def _terminal_assistant(prefix: Sequence[Any]) -> Mapping[str, Any] | None:
+    """Walk the prefix backward and return the last assistant message,
+    or ``None`` if the prefix has none."""
+    for msg in reversed(prefix):
+        if isinstance(msg, Mapping) and msg.get("role") == "assistant":
+            return msg
+    return None
 
 
 class DisaggregateMultiTurnMixin:
@@ -100,6 +141,15 @@ class DisaggregateMultiTurnMixin:
         examples = []
         for next_user_idx in [*user_message_idxs[1:], len(messages)]:
             prefix = messages[:next_user_idx]
+            terminal = _terminal_assistant(prefix)
+            # Skip rounds whose terminal assistant the user marked
+            # non-trainable. A LAST_ASSISTANT_TURN render of this prefix
+            # would weight that assistant's tokens and train them anyway,
+            # contradicting the user's intent. The non-trainable assistant
+            # is preserved in the prefix of LATER trainable rounds as
+            # context.
+            if terminal is not None and not _is_trainable_assistant(terminal):
+                continue
             mode = (
                 TrainOnWhat.LAST_ASSISTANT_TURN
                 if train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES

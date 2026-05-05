@@ -416,3 +416,99 @@ def test_non_assistant_split_mode_warns_and_splits(
     )
     user_idxs = [i for i, m in enumerate(messages) if m["role"] == "user"]
     assert len(examples) == len(user_idxs)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 8. Non-trainable round filter
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "name,model_id,split_classname",
+    _PARITY_CASES,
+    ids=[case[0] for case in _PARITY_CASES],
+)
+def test_disaggregate_skips_non_trainable_round(
+    name: str, model_id: str, split_classname: str
+):
+    """A round whose terminal assistant is marked non-trainable
+    (``weight=0`` or ``trainable=False``) must NOT generate a datum.
+    The non-trainable assistant remains in the prefix of any later
+    trainable round as context. Mirrors V1
+    ``_split_at_thinking_boundaries``'s skip behavior."""
+    tok, renderer = _resolve_renderer(name, model_id, split_classname)
+
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "Q2"},
+        {"role": "assistant", "content": "A2", "weight": 0},  # ← skip me
+        {"role": "user", "content": "Q3"},
+        {"role": "assistant", "content": "A3"},
+    ]
+    examples = renderer.build_supervised_examples(
+        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
+    )
+
+    # 3 user turns → 3 candidate rounds, but the middle one's terminal
+    # assistant (A2) is non-trainable → 2 datums.
+    assert len(examples) == 2, (
+        f"{name!r}: expected 2 datums (A1 round, A3 round) — middle A2 "
+        f"round skipped because weight=0; got {len(examples)}"
+    )
+
+    # Datum 0 trains A1, not A2 / A3.
+    trained0 = _trained_text(tok, list(examples[0][0].to_ints()), examples[0][1].tolist())
+    assert "A1" in trained0
+    assert "A2" not in trained0
+    assert "A3" not in trained0
+
+    # Datum 1 trains A3 only. A2 is in the prefix as context (decoded
+    # tokens contain A2) but its tokens are weight=0 (not in trained slice).
+    decoded1 = _decoded(tok, list(examples[1][0].to_ints()))
+    trained1 = _trained_text(tok, list(examples[1][0].to_ints()), examples[1][1].tolist())
+    assert "A2" in decoded1, (
+        f"{name!r}: non-trainable A2 should still appear in datum 1's "
+        f"prompt context as conversation history; got: {decoded1!r}"
+    )
+    assert "A2" not in trained1, (
+        f"{name!r}: non-trainable A2 must not appear in trained tokens; "
+        f"got trained slice: {trained1!r}"
+    )
+    assert "A3" in trained1
+
+
+@pytest.mark.parametrize(
+    "name,model_id,split_classname",
+    _PARITY_CASES,
+    ids=[case[0] for case in _PARITY_CASES],
+)
+def test_disaggregate_skips_first_round_with_weight_zero(
+    name: str, model_id: str, split_classname: str
+):
+    """Skip filter applies to the *first* round too — not just middle ones.
+    A first-turn assistant with weight=0 leaves no datum at all unless a
+    later trainable round exists."""
+    tok, renderer = _resolve_renderer(name, model_id, split_classname)
+
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "A1", "weight": 0},  # ← skip first round
+        {"role": "user", "content": "Q2"},
+        {"role": "assistant", "content": "A2"},
+    ]
+    examples = renderer.build_supervised_examples(
+        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
+    )
+    assert len(examples) == 1, (
+        f"{name!r}: first-round terminal A1 weight=0 → skip; A2 round → 1 "
+        f"datum. Got {len(examples)}"
+    )
+    decoded = _decoded(tok, list(examples[0][0].to_ints()))
+    trained = _trained_text(
+        tok, list(examples[0][0].to_ints()), examples[0][1].tolist()
+    )
+    # A1 still in prefix as context, just not trained.
+    assert "A1" in decoded
+    assert "A1" not in trained
+    assert "A2" in trained
