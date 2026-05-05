@@ -286,6 +286,7 @@ def request_trainer_job(
     extra_args: list[str] | None = None,
     job_id: str | None = None,
     forward_only: bool = False,
+    keep_alive: bool = False,
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
 ) -> TrainerHandle:
@@ -338,6 +339,7 @@ def request_trainer_job(
             region=infra.region,
             extra_args=extra_args or infra.extra_args,
             forward_only=forward_only,
+            keep_alive=keep_alive,
             **extra_trainer_args,
         )
         if not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF:
@@ -359,6 +361,7 @@ def request_trainer_job(
             accelerator_type=infra.accelerator_type,
             accelerator_count=infra.accelerator_count,
             forward_only=forward_only,
+            keep_alive=keep_alive,
         )
         if not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF:
             config.training_shape_ref = None
@@ -960,6 +963,7 @@ def setup_infra(
     needs_inference: bool = False,
     role_prefix: str,
     api_key: str,
+    keep_alive: bool = False,
     cleanup: ResourceCleanup | None = None,
     on_status: StatusCallback | None = None,
 ) -> Infra:
@@ -1052,7 +1056,8 @@ def setup_infra(
         lora_rank=lora_rank, max_seq_len=resolved_max_seq_len,
         learning_rate=learning_rate,
         policy_job_id=policy_job_id, reference_job_id=reference_job_id,
-        role_prefix=role_prefix, cleanup=cleanup, on_status=emit,
+        role_prefix=role_prefix, keep_alive=keep_alive,
+        cleanup=cleanup, on_status=emit,
     )
 
     dep_info: DeploymentInfo | _ReattachHandle | None = None
@@ -1248,6 +1253,7 @@ def _request_trainers(
     reference_job_id: str | None,
     role_prefix: str,
     hot_load_deployment_id: str | None,
+    keep_alive: bool,
     cleanup: ResourceCleanup | None,
     on_status: Callable[[str], None],
 ) -> tuple[Any, Any | None]:
@@ -1263,6 +1269,7 @@ def _request_trainers(
         display_name=f"{role_prefix}-policy",
         forward_only=False,
         hot_load_deployment_id=hot_load_deployment_id,
+        keep_alive=keep_alive,
         job_id=policy_job_id,
         cleanup=cleanup,
         on_status=on_status,
@@ -1291,6 +1298,7 @@ def _request_trainers(
             display_name=f"{role_prefix}-reference",
             forward_only=True,
             hot_load_deployment_id=hot_load_deployment_id,
+            keep_alive=keep_alive,
             job_id=reference_job_id,
             cleanup=cleanup,
             on_status=on_status,
