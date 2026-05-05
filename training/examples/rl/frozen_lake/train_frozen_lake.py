@@ -686,6 +686,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         )
         resume_info = ckpt.resume()
         step_offset = resume_info.step if resume_info else 0
+        prior_rows_consumed = resume_info.data_consumed if resume_info else 0
         if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
@@ -752,7 +753,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             completion_params={"model": inference_model},
             steps=cfg.max_steps,
         )
-        eval3_input_rows = load_eval_protocol_input_rows(frozen_lake_evaluator)
+        eval3_input_rows = load_eval_protocol_input_rows(frozen_lake_evaluator)[prior_rows_consumed:]
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         # Client-side fallback: build the Python loss closure used by
@@ -962,7 +963,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             _wandb_step = [step_offset]
 
             def make_row_requests():
-                for row_idx, eval_row in enumerate(eval3_input_rows):
+                for row_idx, eval_row in enumerate(eval3_input_rows, start=prior_rows_consumed):
                     dataset_info = eval_row.input_metadata.dataset_info or {}
                     env_context_dict = dict(dataset_info.get("environment_context") or {})
 
@@ -1000,7 +1001,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 max_concurrent=max_concurrent_samples,
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
-                resolved_rows_offset=resume_info.data_consumed if resume_info else 0,
+                resolved_rows_offset=prior_rows_consumed,
                 return_final_stats=True,
             ))
 

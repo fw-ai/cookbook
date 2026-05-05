@@ -413,6 +413,173 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
     assert events["wandb_finished"] == 1
 
 
+def test_main_skips_consumed_eval3_rows_on_resume(monkeypatch, tmp_path):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    events: dict[str, object] = {
+        "trainer_jobs": [],
+        "deleted_jobs": [],
+        "deleted_deployments": [],
+        "weight_sync_saves": [],
+        "wandb_finished": 0,
+    }
+
+    cfg = train_module.FrozenLakeConfig(
+        log_path=str(tmp_path / "frozen_lake_logs"),
+        base_model="accounts/test/models/qwen3-4b",
+        tokenizer_model="Qwen/Qwen3-4B",
+        completions_per_prompt=2,
+        prompt_groups_per_step=4,
+        max_concurrent=8,
+        max_steps=5,
+        max_seeds=3,
+        epochs=1,
+        kl_beta=0.0,
+        training_shape="ts-qwen3-4b-smoke-v1",
+        deployment_id="dep-123",
+    )
+
+    class FakeTrainerJobManager:
+        def __init__(self, *, api_key, base_url):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return SimpleNamespace(
+                deployment_shape="shape/versions/7",
+                deployment_shape_version="shape/versions/7",
+                pipeline_parallelism=1,
+                max_supported_context_length=256,
+            )
+
+        def cancel(self, job_id):
+            events["deleted_jobs"].append(job_id)
+
+        def delete(self, job_id):
+            self.cancel(job_id)
+
+        def get(self, _job_id):
+            return None
+
+    class FakeDeploymentManager:
+        inference_url = "https://deployments.unit.test"
+
+        def __init__(self, *, api_key, base_url, hotload_api_url, inference_url=None):
+            pass
+
+        def delete(self, deployment_id):
+            events["deleted_deployments"].append(deployment_id)
+
+        def get(self, _deployment_id):
+            return None
+
+    class FakeClient:
+        def __init__(self, _mgr, job_id, *_args, **_kwargs):
+            self.job_id = job_id
+            self.inner = object()
+
+    class FakeWeightSyncer:
+        def __init__(self, **kwargs):
+            pass
+
+        def save_and_hotload(self, name, checkpoint_type="base"):
+            events["weight_sync_saves"].append((name, checkpoint_type))
+
+    class FakeTrainingCheckpoints:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def resume(self):
+            return SimpleNamespace(step=7, data_consumed=1)
+
+        def save(self, *args, **kwargs):
+            events.setdefault("checkpoint_saves", []).append((args, kwargs))
+
+    class FakeRolloutProcessor:
+        def __init__(self, **kwargs):
+            pass
+
+        def __call__(self, rows, rollout_config):
+            return []
+
+    async def fake_run_async_rl_loop(**kwargs):
+        row_requests = list(kwargs["rows"])
+        events["row_request_ids"] = [request.row_id for request in row_requests]
+        events["row_request_seeds"] = [
+            request.row_meta["seed"] for request in row_requests
+        ]
+        events["run_async_rl_loop_kwargs"] = {
+            key: value for key, value in kwargs.items() if key != "rows"
+        }
+        return kwargs["global_step"], {"resolved_rows": kwargs["resolved_rows_offset"]}
+
+    def fake_create_trainer_job(*args, **kwargs):
+        events["trainer_jobs"].append(kwargs)
+        return SimpleNamespace(job_id="policy-job")
+
+    monkeypatch.setattr(train_module, "parse_args", lambda: cfg)
+    monkeypatch.setattr(train_module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        train_module,
+        "wandb_finish",
+        lambda: events.__setitem__("wandb_finished", 1),
+    )
+    monkeypatch.setattr(train_module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        train_module,
+        "load_seed_contexts",
+        lambda *args, **kwargs: [
+            {"seed": 101, "map_name": "4x4", "use_random_map": True},
+            {"seed": 202, "map_name": "4x4", "use_random_map": True},
+            {"seed": 303, "map_name": "4x4", "use_random_map": True},
+        ],
+    )
+    monkeypatch.setattr(train_module, "TrainerJobManager", FakeTrainerJobManager)
+    monkeypatch.setattr(train_module, "DeploymentManager", FakeDeploymentManager)
+    monkeypatch.setattr(
+        train_module,
+        "setup_deployment",
+        lambda *args, **kwargs: SimpleNamespace(
+            inference_model="accounts/test/models/deployed",
+        ),
+    )
+    monkeypatch.setattr(train_module, "create_trainer_job", fake_create_trainer_job)
+    monkeypatch.setattr(train_module, "ReconnectableClient", FakeClient)
+    monkeypatch.setattr(train_module, "WeightSyncer", FakeWeightSyncer)
+    monkeypatch.setattr(
+        train_module,
+        "FrozenLakeToolRolloutProcessor",
+        FakeRolloutProcessor,
+    )
+    monkeypatch.setattr(
+        train_module,
+        "build_loss_fn",
+        lambda args: ("loss-builder", args),
+    )
+    monkeypatch.setattr(train_module, "run_async_rl_loop", fake_run_async_rl_loop)
+    monkeypatch.setattr(
+        "training.utils.checkpoints.TrainingCheckpoints",
+        FakeTrainingCheckpoints,
+    )
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(status_code=200),
+    )
+
+    train_module.main()
+
+    assert events["row_request_ids"] == [1, 2]
+    assert events["row_request_seeds"] == [202, 303]
+    assert events["run_async_rl_loop_kwargs"]["global_step"] == 7
+    assert events["run_async_rl_loop_kwargs"]["resolved_rows_offset"] == 1
+    assert events["weight_sync_saves"] == [("resume-7-base", "base")]
+    assert events.get("checkpoint_saves", []) == []
+    assert events["deleted_jobs"] == ["policy-job"]
+    assert events["deleted_deployments"] == []
+    assert events["wandb_finished"] == 1
+
+
 def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
