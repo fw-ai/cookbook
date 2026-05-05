@@ -35,7 +35,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from eval_protocol.models import EvaluationRow, InputMetadata
-from eval_protocol.pytest.types import RolloutProcessorConfig
+from eval_protocol.pytest import evaluation_test
 
 from training.examples.rl.frozen_lake.frozen_lake_rollout import (
     DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
@@ -64,13 +64,18 @@ from training.utils import (
     log_metrics_json,
     setup_deployment,
     create_trainer_job,
-    compute_advantages,
     build_datum_from_token_mask,
     validate_config,
     auto_select_training_shape,
 )
 from training.utils.rl import PromptGroup
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.async_train import RowRequest, run_async_rl_loop
+from training.utils.rl.rollout import (
+    RolloutSample,
+    load_eval_protocol_input_rows,
+    make_eval_protocol_rollout_fn_factory,
+)
+from training.utils.rl.train import TrainStepFns
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.dro import DROConfig
@@ -323,6 +328,90 @@ def evaluation_row_to_training_data(
     episode_reward = 1.0 if step_rewards and float(step_rewards[-1]) > 0 else 0.0
 
     return [datum], first_prompt_len, [inf_logprobs], [episode_reward]
+
+
+def evaluation_row_to_rollout_sample(row: EvaluationRow) -> RolloutSample | None:
+    """Convert a completed FrozenLake EvaluationRow into one RolloutSample."""
+    extra = row.execution_metadata.extra or {}
+    token_turn_traces = extra.get("token_turn_traces") or []
+    step_rewards = extra.get("step_rewards") or []
+
+    if not token_turn_traces:
+        return None
+
+    last_trace = token_turn_traces[-1]
+    last_prompt_ids = [int(x) for x in (last_trace.get("prompt_ids") or [])]
+    last_completion_ids = [int(x) for x in (last_trace.get("completion_ids") or [])]
+    full_tokens = last_prompt_ids + last_completion_ids
+    if len(full_tokens) < 2:
+        return None
+
+    model_request_traces = extra.get("model_request_traces") or []
+    spans = compute_model_output_spans(token_turn_traces, model_request_traces)
+    ui_token_mask = build_ui_token_mask(spans, len(full_tokens))
+    loss_mask = [1 if int(m) > 0 else 0 for m in ui_token_mask]
+
+    # RolloutSample.logprobs are token-aligned. Non-generated tokens keep 0.0;
+    # generated token logprobs are copied from each turn's completion payload.
+    token_logprobs = [0.0] * len(full_tokens)
+    for trace in token_turn_traces:
+        turn_prompt_len = len(trace.get("prompt_ids") or [])
+        turn_completion_logprobs = trace.get("completion_logprobs") or []
+        for i, lp in enumerate(turn_completion_logprobs):
+            pos = turn_prompt_len + i
+            if pos < len(token_logprobs):
+                token_logprobs[pos] = float(lp)
+
+    episode_reward = 1.0 if step_rewards and float(step_rewards[-1]) > 0 else 0.0
+    return RolloutSample(
+        tokens=full_tokens,
+        logprobs=token_logprobs,
+        loss_mask=loss_mask,
+        reward=episode_reward,
+        finish_reason=str(row.execution_metadata.finish_reason or "stop"),
+    )
+
+
+def frozen_lake_eval_row_factory(row: Dict[str, Any]) -> EvaluationRow:
+    """Build one per-sample EvaluationRow from an eval3 input row."""
+    base_row = row.get("evaluation_row")
+    rollout_idx = int(row.get("rollout_idx", 0))
+    if not isinstance(base_row, EvaluationRow):
+        raise TypeError("FrozenLake row must include an 'evaluation_row' EvaluationRow.")
+
+    eval_row = base_row.model_copy(deep=True)
+    base_row_id = eval_row.input_metadata.row_id or "row"
+    eval_row.input_metadata.row_id = f"{base_row_id}_{rollout_idx}"
+    return eval_row
+
+
+def make_frozen_lake_eval3_evaluator(
+    *,
+    input_rows: List[EvaluationRow],
+    rollout_processor: FrozenLakeToolRolloutProcessor,
+    completion_params: Dict[str, Any],
+    steps: int,
+):
+    """Create the eval3 expression that managed RFT can adapt into rollout_fn.
+
+    FrozenLake's scalar reward and token trace are produced by the rollout
+    processor, so the pointwise evaluator body is intentionally identity.
+    """
+
+    def frozen_lake_eval(row):
+        return row
+
+    # eval-protocol validates annotations by object identity, while this module
+    # uses postponed annotations. Set the runtime annotations explicitly.
+    frozen_lake_eval.__annotations__ = {"row": EvaluationRow, "return": EvaluationRow}
+
+    return evaluation_test(
+        input_rows=[input_rows],
+        completion_params=[completion_params],
+        rollout_processor=rollout_processor,
+        mcp_config_path="",
+        steps=steps,
+    )(frozen_lake_eval)
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +686,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         )
         resume_info = ckpt.resume()
         step_offset = resume_info.step if resume_info else 0
+        prior_rows_consumed = resume_info.data_consumed if resume_info else 0
         if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
@@ -643,12 +733,27 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             observation_mode=cfg.observation_mode,
             allow_plaintext_action_fallback=cfg.allow_plaintext_action_fallback,
         )
-        rollout_config = RolloutProcessorConfig(
+        all_prompts = seed_contexts * cfg.epochs
+        frozen_lake_input_rows = [
+            EvaluationRow(
+                input_metadata=InputMetadata(
+                    row_id=f"seed_{env_context.get('seed', row_idx)}_{row_idx}",
+                    dataset_info={
+                        "environment_context": dict(env_context),
+                        "user_prompt_template": cfg.user_prompt_template,
+                        "visual_prompt_template": cfg.visual_prompt_template,
+                    },
+                ),
+            )
+            for row_idx, env_context in enumerate(all_prompts)
+        ]
+        frozen_lake_evaluator = make_frozen_lake_eval3_evaluator(
+            input_rows=frozen_lake_input_rows,
+            rollout_processor=rollout_processor,
             completion_params={"model": inference_model},
-            mcp_config_path="",
             steps=cfg.max_steps,
-            semaphore=asyncio.Semaphore(cfg.max_concurrent),
         )
+        eval3_input_rows = load_eval_protocol_input_rows(frozen_lake_evaluator)[prior_rows_consumed:]
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         # Client-side fallback: build the Python loss closure used by
@@ -661,93 +766,48 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         trajectory_log = open(trajectory_path, "a")
         logger.info("Logging trajectories to %s", trajectory_path)
         try:
-            # -- Sample one prompt group ----------------------------------------
+            # -- Per-sample rollout function ------------------------------------
 
-            async def sample_one_prompt(env_context: Dict[str, Any]) -> PromptGroup | None:
-                """Run completions_per_prompt rollouts for one seed, return PromptGroup."""
-                rows: List[EvaluationRow] = []
-                for rollout_idx in range(completions_per_prompt):
-                    rows.append(EvaluationRow(
-                        input_metadata=InputMetadata(
-                            row_id=f"seed_{env_context.get('seed', 0)}_{rollout_idx}",
-                            dataset_info={
-                                "environment_context": dict(env_context),
-                                "user_prompt_template": cfg.user_prompt_template,
-                                "visual_prompt_template": cfg.visual_prompt_template,
-                            },
-                        ),
-                    ))
+            def convert_and_log_sample(result: EvaluationRow) -> RolloutSample | None:
+                extra = result.execution_metadata.extra or {}
+                dataset_info = result.input_metadata.dataset_info or {}
+                env_context = dict(dataset_info.get("environment_context") or {})
+                rollout_idx = str(result.input_metadata.row_id or "").rsplit("_", 1)[-1]
+                if extra.get("rollout_error"):
+                    logger.warning(
+                        "Rollout error for seed %s sample %s: %s",
+                        env_context.get("seed"),
+                        rollout_idx,
+                        extra["rollout_error"],
+                    )
+                    return None
 
-                tasks = rollout_processor(rows, rollout_config)
-                completed_rows: List[EvaluationRow] = []
-                for task in tasks:
-                    try:
-                        result = await task
-                        extra = result.execution_metadata.extra or {}
-                        if extra.get("rollout_error"):
-                            logger.warning(
-                                "Rollout error for seed %s: %s",
-                                env_context.get("seed"), extra["rollout_error"],
-                            )
-                            continue
-                        completed_rows.append(result)
-                    except Exception as e:
-                        logger.warning("Rollout task failed for seed %s: %s", env_context.get("seed"), e)
+                sample = evaluation_row_to_rollout_sample(result)
+                if sample is None:
+                    return None
 
                 if trajectory_log:
-                    for row in completed_rows:
-                        extra = row.execution_metadata.extra or {}
-                        entry = {
-                            "seed": env_context.get("seed"),
-                            "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in (row.messages or [])],
-                            "step_rewards": extra.get("step_rewards", []),
-                            "reward": 1.0 if extra.get("step_rewards") and float(extra["step_rewards"][-1]) > 0 else 0.0,
-                            "rollout_error": extra.get("rollout_error"),
-                        }
-                        trajectory_log.write(json.dumps(entry) + "\n")
-                        trajectory_log.flush()
+                    entry = {
+                        "seed": env_context.get("seed"),
+                        "rollout_idx": rollout_idx,
+                        "messages": [
+                            m.model_dump() if hasattr(m, "model_dump") else m
+                            for m in (result.messages or [])
+                        ],
+                        "step_rewards": extra.get("step_rewards", []),
+                        "reward": sample.reward,
+                        "rollout_error": extra.get("rollout_error"),
+                    }
+                    trajectory_log.write(json.dumps(entry) + "\n")
+                    trajectory_log.flush()
 
-                if len(completed_rows) < 2:
-                    return None
+                return sample
 
-                all_datums: List[tinker.Datum] = []
-                all_ref_datums: List[tinker.Datum] = []
-                all_rewards: List[float] = []
-                all_inf_logprobs: List[List[float]] = []
-                first_prompt_len = 0
-
-                for row in completed_rows:
-                    datums, prompt_len, inf_lps, rewards = evaluation_row_to_training_data(row)
-                    if not datums:
-                        continue
-                    all_datums.extend(datums)
-                    all_rewards.extend(rewards)
-                    all_inf_logprobs.extend(inf_lps)
-                    if first_prompt_len == 0:
-                        first_prompt_len = prompt_len
-
-                    if use_reference:
-                        for d in datums:
-                            ref_datum = tinker.Datum(
-                                model_input=d.model_input,
-                                loss_fn_inputs=d.loss_fn_inputs,
-                            )
-                            all_ref_datums.append(ref_datum)
-
-                if not all_datums or len(all_rewards) < 2:
-                    return None
-
-                advantages = compute_advantages(all_rewards)
-
-                return PromptGroup(
-                    data=all_datums,
-                    ref_data=all_ref_datums,
-                    advantages=advantages,
-                    ref_logprobs=[],
-                    prompt_len=first_prompt_len,
-                    rewards=all_rewards,
-                    inf_logprobs=all_inf_logprobs,
-                )
+            frozen_lake_rollout_fn = make_eval_protocol_rollout_fn_factory(
+                frozen_lake_evaluator,
+                row_factory=frozen_lake_eval_row_factory,
+                sample_converter=convert_and_log_sample,
+            )(None)
 
             # -- Training callbacks ---------------------------------------------
 
@@ -881,29 +941,68 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             def should_accept(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
 
-            all_prompts = seed_contexts * cfg.epochs
+            max_concurrent_samples = cfg.max_concurrent if cfg.max_concurrent > 0 else None
+            min_group_size = 2 if completions_per_prompt > 1 else 1
+            async_weight_sync_interval = (
+                max(1, weight_sync_cfg.weight_sync_interval)
+                if weight_sync_cfg.weight_sync_interval > 0
+                else 1
+            )
+            max_head_offpolicy_versions = (
+                max(0, async_weight_sync_interval - 1)
+                if weight_sync_cfg.weight_sync_interval > 0
+                else max(0, (len(eval3_input_rows) + prompt_groups_per_step - 1) // prompt_groups_per_step)
+            )
             logger.info(
                 "Training: %d seeds x %d epochs = %d prompt groups, "
-                "%d completions/prompt, %d groups/step",
-                len(seed_contexts), cfg.epochs, len(all_prompts),
-                completions_per_prompt, prompt_groups_per_step,
+                "%d completions/prompt, %d groups/step, max_concurrent_samples=%s",
+                len(seed_contexts), cfg.epochs, len(eval3_input_rows),
+                completions_per_prompt, prompt_groups_per_step, max_concurrent_samples,
             )
 
             _wandb_step = [step_offset]
 
-            def _filtered_step_callback(loop_metrics: dict) -> None:
-                _wandb_step[0] += 1
-                wandb_log(loop_metrics, step=_wandb_step[0])
+            def make_row_requests():
+                for row_idx, eval_row in enumerate(eval3_input_rows, start=prior_rows_consumed):
+                    dataset_info = eval_row.input_metadata.dataset_info or {}
+                    env_context_dict = dict(dataset_info.get("environment_context") or {})
 
-            global_step = asyncio.run(run_rl_loop(
-                sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
+                    def factory(
+                        rollout_idx: int,
+                        *,
+                        row_idx: int = row_idx,
+                        eval_row: EvaluationRow = eval_row,
+                    ):
+                        return frozen_lake_rollout_fn({
+                            "row_id": row_idx,
+                            "rollout_idx": rollout_idx,
+                            "evaluation_row": eval_row,
+                        })
+
+                    yield RowRequest(
+                        row_id=row_idx,
+                        sample_factory=factory,
+                        row_meta={
+                            "seed": env_context_dict.get("seed"),
+                            "environment_context": env_context_dict,
+                        },
+                    )
+
+            global_step, final_stats = asyncio.run(run_async_rl_loop(
+                rows=make_row_requests(),
                 train_fns=train_fns,
+                completions_per_prompt=completions_per_prompt,
                 prompt_groups_per_step=prompt_groups_per_step,
+                max_head_offpolicy_versions=max_head_offpolicy_versions,
+                with_reference=use_reference,
+                min_group_size=min_group_size,
+                weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
+                weight_sync_interval=async_weight_sync_interval,
+                max_concurrent=max_concurrent_samples,
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
-                metrics_callback=_filtered_step_callback,
-                weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
-                weight_sync_interval=weight_sync_cfg.weight_sync_interval,
+                resolved_rows_offset=prior_rows_consumed,
+                return_final_stats=True,
             ))
 
             # -- Final checkpoint -----------------------------------------------
@@ -911,7 +1010,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             if global_step > step_offset:
                 try:
                     cp_name = f"step-{global_step}"
-                    _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
+                    _data_consumed = int(final_stats["resolved_rows"])
                     ckpt.save(
                         cp_name,
                         resumable=True,
