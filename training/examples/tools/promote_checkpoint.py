@@ -56,7 +56,7 @@ _COOKBOOK_ROOT = os.path.abspath(
 if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
-from fireworks.training.sdk import FireworksClient, TrainerJobManager
+from fireworks.training.sdk import FireworksClient, TrainerJobManager, validate_output_model_id
 from training.utils.checkpoints import _logical_name, _short_name
 
 logging.basicConfig(
@@ -214,6 +214,17 @@ def main() -> None:
     logger.info("Checkpoint:      %s", resolved.full_name)
     logger.info("Base model:      %s", cfg.base_model)
     logger.info("Output model ID: %s", output_model_id)
+
+    # Pre-validate the output model ID before calling promote_checkpoint.
+    # A server-side rejection after the sampler blob has been staged
+    # leaves the blob orphaned, so catch the bad ID locally first.
+    id_errors = validate_output_model_id(output_model_id)
+    if id_errors:
+        logger.error("Invalid output_model_id %r:", output_model_id)
+        for err in id_errors:
+            logger.error("  - %s", err)
+        sys.exit(2)
+
     if cfg.hot_load_deployment_id:
         logger.warning(
             "--hot-load-deployment-id is only needed for deployments that "
