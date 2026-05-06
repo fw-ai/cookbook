@@ -1436,6 +1436,20 @@ def _get_alive_deployment(
     return existing
 
 
+def _deployment_hot_load_trainer_job(
+    deploy_mgr: DeploymentManager, dep_id: str,
+) -> str | None:
+    """Best-effort read of a deployment's attached hot-load trainer job."""
+    try:
+        data = deploy_mgr._get_deployment(dep_id)  # SDK wrapper does not expose this field.
+    except Exception as e:
+        logger.warning("Could not read deployment %s hot-load trainer: %s", dep_id, e)
+        return None
+    if not data:
+        return None
+    return data.get("hotLoadTrainerJob") or data.get("hot_load_trainer_job")
+
+
 def _register_deployment_cleanup(
     cleanup: ResourceCleanup | None, dep_id: str,
 ) -> None:
@@ -1488,6 +1502,16 @@ def _provision_trainer_owned(
     existing = _get_alive_deployment(deploy_mgr, deploy_cfg.deployment_id)
     if existing is not None:
         dep_id = deploy_cfg.deployment_id
+        current_trainer = _deployment_hot_load_trainer_job(deploy_mgr, dep_id)
+        if current_trainer == trainer_job_name:
+            logger.info(
+                "Deployment %s is already attached to trainer %s; waiting for readiness without re-attach",
+                dep_id,
+                trainer_job_name,
+            )
+            _register_deployment_cleanup(cleanup, dep_id)
+            return existing, dep_id
+
         prev_identity = _read_replica_identity(deploy_mgr, dep_id, base_model)
         deploy_mgr.update(
             dep_id,
