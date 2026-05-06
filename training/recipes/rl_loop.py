@@ -57,7 +57,6 @@ from training.utils import (
     WeightSyncConfig,
     RawRowCursor,
     RLPromptDataset,
-    apply_trainer_replica_count,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -120,9 +119,6 @@ class Config:
     ``max_supported_context_length``.  Must be set manually on the
     manual path (no training shape)."""
     lora_rank: int = 0
-    trainer_replica_count: int | None = 1
-    """Run-level data-parallel trainer replicas. Set >1 for replicated HSDP."""
-
     prompt_groups_per_step: int = 1
     """Number of prompt groups per optimizer step.
 
@@ -347,7 +343,6 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
-    apply_trainer_replica_count(cfg.infra, cfg.trainer_replica_count)
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
