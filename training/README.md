@@ -43,13 +43,14 @@ uv pip install --pre -e .
 
 ### 2. Set your credentials
 
-Create a `.env` file in the `training/` directory (picked up automatically via `python-dotenv`):
+Copy `training/.env.example` to `training/.env` and fill it in (picked up automatically via `python-dotenv`):
 
 ```bash
-FIREWORKS_API_KEY="your-api-key"
+cp training/.env.example training/.env
+# edit training/.env and set FIREWORKS_API_KEY
 ```
 
-Or export it directly:
+The example file lists every variable the cookbook reads, including optional ones (`FIREWORKS_BASE_URL`, `WANDB_API_KEY`, `WANDB_MODE`). Or export directly instead of using a file:
 
 ```bash
 export FIREWORKS_API_KEY="..."
