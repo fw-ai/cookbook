@@ -588,9 +588,9 @@ def main(
                 loop_stats=loop_stats,
                 completions_per_prompt=cfg.completions_per_prompt,
             )
-            # Capture the per-rollout-mean KL for the human summary line
+            # Capture the per-rollout reference KL for the human summary line
             # before the train/* stripping below removes it.
-            mean_kl = metrics.get("train/mean_kl", 0.0)
+            ref_kl = metrics.get("train/ref_kl", 0.0)
             # train/* already logged per-minibatch above; strip the averages.
             metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
             metrics["rollout/step"] = rollout_id
@@ -603,12 +603,12 @@ def main(
                     metrics[f"ctx/{k}"] = v
 
             logger.info(
-                "Rollout %d (step %d) | Reward %.3f | Acc %.1f%% | KL %.4f",
+                "Rollout %d (step %d) | Reward %.3f | Acc %.1f%% | RefKL %.4f",
                 rollout_id,
                 step,
                 metrics.get("rollout/reward", 0.0),
                 metrics.get("rollout/accuracy", 0.0) * 100,
-                mean_kl,
+                ref_kl,
             )
             wandb_log(metrics)
             # DCP cadence is in rollout batches, not optim steps, so

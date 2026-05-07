@@ -912,19 +912,19 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
 
                 avg_reward = metrics.get("rollout/reward", 0.0)
-                avg_kl = metrics.get("train/mean_kl", 0.0)
+                avg_ref_kl = metrics.get("train/ref_kl", 0.0)
                 mean_loss = metrics.get("train/mean_loss", 0.0)
                 adv_loss = metrics.get("train/mean_adv_loss", 0.0)
                 kl_pen = metrics.get("train/mean_kl_penalty", 0.0)
                 mask_r = metrics.get("train/mask_ratio", 0.0)
                 inf_kld = metrics.get("train/inference_kld", 0.0)
                 logger.info(
-                    "Step %d | Reward: %.3f | KL: %.4f | Loss: %.4f "
+                    "Step %d | Reward: %.3f | RefKL: %.4f | Loss: %.4f "
                     "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
-                    step, avg_reward, avg_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
+                    step, avg_reward, avg_ref_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
                 )
                 reward_history.append(avg_reward)
-                log_metrics_json(step, reward=avg_reward, kl=avg_kl)
+                log_metrics_json(step, reward=avg_reward, ref_kl=avg_ref_kl)
                 _wandb_step[0] = max(_wandb_step[0] + 1, step)
                 wandb_log(metrics, _wandb_step[0])
                 return step, metrics

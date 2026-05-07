@@ -769,15 +769,15 @@ def main(
             )
             avg_reward = metrics.get("rollout/reward", 0.0)
             avg_acc = metrics.get("rollout/accuracy", 0.0)
-            avg_kl = metrics.get("train/mean_kl", 0.0)
+            avg_ref_kl = metrics.get("train/ref_kl", 0.0)
             logger.info(
-                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
+                "Step %d | Reward: %.3f | Acc: %.1f%% | RefKL: %.4f",
                 step,
                 avg_reward,
                 avg_acc * 100,
-                avg_kl,
+                avg_ref_kl,
             )
-            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
+            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, ref_kl=avg_ref_kl)
             wandb_log(metrics, step)
 
             total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
