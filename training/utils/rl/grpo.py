@@ -58,7 +58,7 @@ def make_grpo_loss_fn(
             "ratio_mean": ratio_mean,
             "resp_len": float(len(ctx.resp_pi)),
             "adv_term": (-ctx.adv * ctx.resp_pi * ctx.resp_mask).sum().item(),
-            "kl_term": (kl_beta * ctx.resp_pi * ctx.resp_mask).sum().item(),
+            "kl_term": (kl_penalty * ctx.resp_mask).sum().item(),
         }
 
     def loss_fn(

@@ -53,11 +53,12 @@ def make_reinforce_loss_fn(
         per_token_loss = per_token_loss * ctx.resp_mask
 
         active = ctx.resp_mask > 0.5
+        kl_term = kl_beta * (ctx.pi_detached - ctx.resp_ref) * ctx.resp_mask
         return per_token_loss, {
             "resp_len": float(len(ctx.resp_pi)),
             "ratio_mean": ratio.detach()[active].mean().item(),
             "adv_term": (-ctx.adv * ratio.detach() * ctx.resp_mask).sum().item(),
-            "kl_term": (kl_beta * ctx.pi_detached * ctx.resp_mask).sum().item(),
+            "kl_term": kl_term.sum().item(),
         }
 
     def loss_fn(

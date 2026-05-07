@@ -13,6 +13,7 @@ from training.utils.losses import (
     make_sft_loss_fn,
 )
 from training.utils.rl.common import _normalize_prompt_lens
+from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.client_losses import CLIENT_LOSSES
 from training.utils.rl.losses import (
@@ -22,6 +23,7 @@ from training.utils.rl.losses import (
     get_builtin_loss_config,
     validate_loss_path,
 )
+from training.utils.rl.reinforce import make_reinforce_loss_fn
 from training.utils.supervised import build_datum_from_token_mask
 
 
@@ -87,6 +89,50 @@ class TestLossBuilder:
         assert events["call"]["advantages"] == [1.0]
         assert events["call"]["prompt_lens"] == [2]
         assert events["call"]["kl_beta"] == pytest.approx(0.01)
+
+
+class TestPolicyReferenceKLMetrics:
+    def test_grpo_mean_kl_penalty_matches_policy_reference_gap(self) -> None:
+        """GRPO reports the beta-scaled policy/reference penalty."""
+        kl_beta = 0.5
+        policy_logprobs = torch.tensor([-0.1, -0.2, -0.3], requires_grad=True)
+        ref_logprobs = [[-0.4, -0.5, -0.6]]
+        inf_logprobs = [[-0.1, -0.2, -0.3]]
+        prox_logprobs = [[-0.1, -0.2, -0.3]]
+
+        loss_fn = make_grpo_loss_fn(
+            advantages=[1.0],
+            ref_logprobs=ref_logprobs,
+            prompt_len=1,
+            inf_logprobs=inf_logprobs,
+            prox_logprobs=prox_logprobs,
+            kl_beta=kl_beta,
+        )
+        _, metrics = loss_fn([], [policy_logprobs])
+
+        assert metrics["mean_kl"] == pytest.approx(0.3)
+        assert metrics["mean_kl_penalty"] == pytest.approx(kl_beta * 0.3)
+
+    def test_reinforce_mean_kl_penalty_matches_policy_reference_gap(self) -> None:
+        """REINFORCE reports the beta-scaled policy/reference penalty."""
+        kl_beta = 0.25
+        policy_logprobs = torch.tensor([-0.1, -0.2, -0.3], requires_grad=True)
+        ref_logprobs = [[-0.5, -0.6, -0.7]]
+        inf_logprobs = [[-0.1, -0.2, -0.3]]
+        prox_logprobs = [[-0.1, -0.2, -0.3]]
+
+        loss_fn = make_reinforce_loss_fn(
+            advantages=[1.0],
+            ref_logprobs=ref_logprobs,
+            prompt_lens=1,
+            inf_logprobs=inf_logprobs,
+            prox_logprobs=prox_logprobs,
+            kl_beta=kl_beta,
+        )
+        _, metrics = loss_fn([], [policy_logprobs])
+
+        assert metrics["mean_kl"] == pytest.approx(0.4)
+        assert metrics["mean_kl_penalty"] == pytest.approx(kl_beta * 0.4)
 
 
 class TestBuiltinLossConfig:
