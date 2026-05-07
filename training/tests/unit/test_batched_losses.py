@@ -14,6 +14,7 @@ from training.utils.losses import (
 )
 from training.utils.rl.common import _normalize_prompt_lens
 from training.utils.rl.gspo import GSPOConfig
+from training.utils.rl.igpo import make_igpo_loss_fn
 from training.utils.rl.client_losses import CLIENT_LOSSES
 from training.utils.rl.losses import (
     LossConfig,
@@ -261,6 +262,27 @@ class TestPolicyReferenceKL:
 
         with pytest.raises(ValueError, match="requires reference logprobs"):
             loss_fn([self._datum()], [torch.zeros(4, requires_grad=True)])
+
+    def test_igpo_kl_beta_backpropagates_reference_penalty(self):
+        loss_fn = make_igpo_loss_fn(
+            per_token_advantages=[[0.0, 0.0, 0.0, 0.0]],
+            ref_logprobs=[[-2.0, -2.0, -2.0, -2.0]],
+            prompt_lens=[2],
+            inf_logprobs=[[0.0, 0.0, 0.0, 0.0]],
+            prox_logprobs=[[0.0, 0.0, 0.0, 0.0]],
+            kl_beta=0.5,
+        )
+        logprobs = torch.zeros(4, requires_grad=True)
+
+        loss, metrics = loss_fn([self._datum()], [logprobs])
+        loss.backward()
+
+        assert logprobs.grad is not None
+        assert logprobs.grad[1:].abs().sum() > 0
+        assert metrics["kl_loss"] > 0
+        assert metrics["mean_kl"] == pytest.approx(metrics["kl_loss"])
+        assert metrics["kl_penalty"] == pytest.approx(0.5 * metrics["kl_loss"])
+        assert metrics["kl_coef"] == pytest.approx(0.5)
 
 
 class TestBatchDPOLoss:
