@@ -76,6 +76,40 @@ def validate_inference_logprobs_for_sample(
         )
 
 
+def validate_reference_logprobs_for_sample(
+    policy_loss: str,
+    sample_idx: int,
+    ref_lp: List[float],
+    required: int,
+) -> None:
+    """Ensure one sample has reference logprobs when KL regularization is enabled."""
+    policy_label = _format_policy_loss_label(policy_loss)
+    if not ref_lp:
+        raise ValueError(
+            f"{policy_label} requires reference logprobs for sample {sample_idx} when kl_beta > 0 "
+            f"but got empty list. Ensure the run provisions a reference forward path."
+        )
+
+    if len(ref_lp) < required:
+        raise ValueError(
+            f"{policy_label} requires at least {required} reference logprobs "
+            f"for sample {sample_idx} when kl_beta > 0, got {len(ref_lp)}."
+        )
+
+
+def policy_reference_kl_loss(
+    policy_logprobs: torch.Tensor,
+    reference_logprobs: torch.Tensor,
+) -> torch.Tensor:
+    """k3-style per-token policy/reference KL estimate.
+
+    Matches the SDK-style GRPO penalty ``exp(ref - policy) - (ref - policy) - 1``.
+    The returned tensor keeps gradients through ``policy_logprobs``.
+    """
+    log_ratio = reference_logprobs - policy_logprobs
+    return torch.exp(log_ratio) - log_ratio - 1.0
+
+
 @dataclass
 class SampleContext:
     """Pre-computed tensors for a single sample in the RL loss loop.
@@ -135,6 +169,7 @@ def run_loss_loop(
     logprobs_list: List[torch.Tensor],
     policy_loss: str,
     policy_fn: PolicyFn,
+    require_ref_logprobs: bool = False,
 ) -> LossLoopResult:
     """Shared loss loop: tensor setup, TIS weight, inference metrics, KL.
 
@@ -144,7 +179,9 @@ def run_loss_loop(
     from training.utils.rl.tis import compute_tis_weight
 
     total_loss = torch.tensor(0.0, requires_grad=True)
-    total_kl = 0.0
+    total_ref_kl = 0.0
+    total_ref_logprob_diff = 0.0
+    ref_num_tokens = 0
     total_inf_diff = 0.0
     total_inf_kld = 0.0
     total_ppo_kl = 0.0
@@ -175,7 +212,16 @@ def run_loss_loop(
         if active_count == 0:
             continue
 
-        ref_lp = ref_logprobs[i] if ref_logprobs else []
+        ref_lp = ref_logprobs[i] if i < len(ref_logprobs) else []
+        has_ref_logprobs = len(ref_lp) >= response_start + resp_len
+        if require_ref_logprobs:
+            validate_reference_logprobs_for_sample(
+                policy_loss,
+                i,
+                ref_lp,
+                response_start + resp_len,
+            )
+            has_ref_logprobs = True
         resp_ref = torch.tensor(
             [ref_lp[response_start + j] if (response_start + j) < len(ref_lp) else 0.0 for j in range(resp_len)],
             dtype=resp_pi.dtype,
@@ -238,15 +284,23 @@ def run_loss_loop(
         per_token_loss, extra = policy_fn(ctx)
 
         total_loss = total_loss + per_token_loss.sum()
-        total_kl += ((pi_detached - resp_ref) * resp_mask).sum().item()
+        if has_ref_logprobs:
+            ref_kl = policy_reference_kl_loss(pi_detached, resp_ref)
+            total_ref_kl += (ref_kl * resp_mask).sum().item()
+            total_ref_logprob_diff += ((pi_detached - resp_ref) * resp_mask).sum().item()
+            ref_num_tokens += active_count
         num_tokens += active_count
         for k, v in extra.items():
             extra_sums[k] = extra_sums.get(k, 0.0) + v
 
     n_samples = max(inf_num_samples, 1)
-    base_metrics: Dict[str, float] = {
-        "mean_kl": total_kl / num_tokens if num_tokens > 0 else 0.0,
-    }
+    base_metrics: Dict[str, float] = {}
+    if ref_num_tokens > 0:
+        kl_loss = total_ref_kl / ref_num_tokens
+        base_metrics["kl_loss"] = kl_loss
+        # Legacy alias kept for dashboards that already chart train/mean_kl.
+        base_metrics["mean_kl"] = kl_loss
+        base_metrics["mean_logprob_diff"] = total_ref_logprob_diff / ref_num_tokens
     if inf_num_samples > 0:
         base_metrics["inference_diff"] = total_inf_diff / inf_num_samples
         base_metrics["inference_kld"] = total_inf_kld / inf_num_samples

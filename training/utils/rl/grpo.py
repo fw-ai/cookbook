@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple, Union
 import torch
 import tinker
 
-from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
+from training.utils.rl.common import _normalize_prompt_lens, policy_reference_kl_loss, run_loss_loop
 from training.utils.rl.tis import SAFETY_CLAMP, TISConfig
 
 
@@ -50,7 +50,8 @@ def make_grpo_loss_fn(
 
         surr1 = -ratio * ctx.adv
         surr2 = -clipped_ratio * ctx.adv
-        kl_penalty = kl_beta * (ctx.pi_detached - ctx.resp_ref)
+        kl_loss = policy_reference_kl_loss(ctx.resp_pi, ctx.resp_ref)
+        kl_penalty = kl_beta * kl_loss
         per_token_loss = (torch.maximum(surr1, surr2) * ctx.tis_weight + kl_penalty) * ctx.resp_mask
 
         return per_token_loss, {
@@ -58,7 +59,7 @@ def make_grpo_loss_fn(
             "ratio_mean": ratio_mean,
             "resp_len": float(len(ctx.resp_pi)),
             "adv_term": (-ctx.adv * ctx.resp_pi * ctx.resp_mask).sum().item(),
-            "kl_term": (kl_beta * ctx.resp_pi * ctx.resp_mask).sum().item(),
+            "kl_penalty": (kl_penalty.detach() * ctx.resp_mask).sum().item(),
         }
 
     def loss_fn(
@@ -68,6 +69,7 @@ def make_grpo_loss_fn(
         result = run_loss_loop(
             advantages, ref_logprobs, inf_logprobs, prompt_lens,
             prox_logprobs, tis_config, data, logprobs_list, "grpo", policy_fn,
+            require_ref_logprobs=kl_beta > 0.0,
         )
         ns = result.n_samples
         nt = result.num_tokens
@@ -80,7 +82,10 @@ def make_grpo_loss_fn(
         metrics["total_resp_tokens"] = total_resp
         metrics["mask_ratio"] = nt / total_resp if total_resp > 0 else 0.0
         metrics["mean_adv_loss"] = result.extra_sums.get("adv_term", 0.0) / nt if nt > 0 else 0.0
-        metrics["mean_kl_penalty"] = result.extra_sums.get("kl_term", 0.0) / nt if nt > 0 else 0.0
+        metrics["kl_penalty"] = result.extra_sums.get("kl_penalty", 0.0) / nt if nt > 0 else 0.0
+        metrics["kl_coef"] = kl_beta
+        # Legacy alias kept for dashboards that already chart train/mean_kl_penalty.
+        metrics["mean_kl_penalty"] = metrics["kl_penalty"]
         metrics["mean_loss"] = result.total_loss.item() / nt if nt > 0 else 0.0
         return result.total_loss, metrics
 

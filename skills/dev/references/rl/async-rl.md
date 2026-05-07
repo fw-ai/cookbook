@@ -210,9 +210,16 @@ sync wall time.
 ### Other useful metrics
 
 - `train/ppo_kl` — intra-step KL between the current policy and the
-  `old_policy_logprobs` snapshot.  Large with `ppo_n_minibatches > 1` means
-  the inner loop is genuinely doing work; a near-zero value means
-  `ppo_n_minibatches=1` would have the same effect at lower cost.
+  `old_policy_logprobs` snapshot.  This is not policy/reference KL. Large
+  with `ppo_n_minibatches > 1` means the inner loop is genuinely doing work;
+  a near-zero value means `ppo_n_minibatches=1` would have the same effect at
+  lower cost.
+- `train/kl_loss`, `train/kl_penalty`, `train/kl_coef` — policy/reference KL
+  diagnostics for KL-regularized losses. `kl_loss` is the unscaled k3-style
+  estimate `exp(ref - policy) - (ref - policy) - 1`; `kl_penalty` is
+  `kl_coef * kl_loss`. `train/mean_kl` is a legacy alias for `train/kl_loss`.
+- `train/mean_logprob_diff` — signed `policy_logprob - reference_logprob`
+  diagnostic. It is useful for debugging but is not a KL.
 - `train/inference_kld`, `train/inference_diff` — drift between the policy
   used to sample and the policy at training time.  Should track `O`: at `O=0`
   these are ~0; at `O=4` they grow but should remain bounded.  Spikes that

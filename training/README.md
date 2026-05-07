@@ -118,6 +118,23 @@ addition to the LoRA policy trainer. Auto-selection picks an
 appropriate validated reference shape unless `ref_training_shape_id`
 is set explicitly.
 
+**RL KL metrics** -- `train/ppo_kl` is not policy-vs-reference KL. In
+the cookbook client-side losses it is the k3-style drift between the
+current policy and the proximal `old_policy_logprobs` snapshot used for
+PPO ratios. Policy-vs-reference KL is logged as:
+
+| Metric | Meaning |
+| --- | --- |
+| `train/kl_loss` | Unscaled k3-style policy/reference KL, `exp(ref - policy) - (ref - policy) - 1`, averaged over active response tokens |
+| `train/kl_penalty` | `kl_beta * kl_loss` contribution to the loss for KL-regularized losses |
+| `train/kl_coef` | KL coefficient (`kl_beta`) |
+| `train/mean_kl` | Legacy alias for `train/kl_loss` |
+| `train/mean_logprob_diff` | Signed legacy diagnostic, `policy_logprob - reference_logprob`; not a KL |
+
+Related drift metrics such as `train/inference_kld` and
+`train/inference_diff` compare training-time policy logprobs with the
+inference deployment that sampled the rollout; they are not reference KL.
+
 **DPO / ORPO** -- also requires:
 
 | Field | What to set |

@@ -272,14 +272,21 @@ def make_igpo_loss_fn(
     When ``prox_logprobs`` is ``None``, the forward-pass logprobs are used as
     the proximity baseline (ratio=1, clipping is a no-op).
     """
-    from training.utils.rl.common import _get_loss_mask
+    from training.utils.rl.common import (
+        _get_loss_mask,
+        policy_reference_kl_loss,
+        validate_reference_logprobs_for_sample,
+    )
 
     def loss_fn(
         data: List[tinker.Datum],
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         total_loss = torch.tensor(0.0, requires_grad=True)
-        total_kl = 0.0
+        total_ref_kl = 0.0
+        total_ref_logprob_diff = 0.0
+        ref_num_tokens = 0
+        total_kl_penalty = 0.0
         num_tokens = 0
         total_resp_tokens = 0
 
@@ -301,7 +308,16 @@ def make_igpo_loss_fn(
             if active_count == 0:
                 continue
 
-            ref_lp = ref_logprobs[i] if ref_logprobs and i < len(ref_logprobs) else []
+            ref_lp = ref_logprobs[i] if i < len(ref_logprobs) else []
+            has_ref_logprobs = len(ref_lp) >= response_start + resp_len
+            if kl_beta > 0.0:
+                validate_reference_logprobs_for_sample(
+                    "igpo",
+                    i,
+                    ref_lp,
+                    response_start + resp_len,
+                )
+                has_ref_logprobs = True
             resp_ref = torch.tensor(
                 [
                     ref_lp[response_start + j]
@@ -364,22 +380,35 @@ def make_igpo_loss_fn(
 
             surr1 = -ratio * resp_adv
             surr2 = -clipped * resp_adv
-            kl_penalty = kl_beta * (resp_pi.detach() - resp_ref)
+            kl_loss = policy_reference_kl_loss(resp_pi, resp_ref)
+            kl_penalty = kl_beta * kl_loss
             per_token_loss = (
                 torch.maximum(surr1, surr2) * tis_weight + kl_penalty
             ) * resp_mask
 
             total_loss = total_loss + per_token_loss.sum()
-            total_kl += ((resp_pi.detach() - resp_ref) * resp_mask).sum().item()
+            if has_ref_logprobs:
+                kl_loss_detached = policy_reference_kl_loss(resp_pi.detach(), resp_ref)
+                total_ref_kl += (kl_loss_detached * resp_mask).sum().item()
+                total_ref_logprob_diff += ((resp_pi.detach() - resp_ref) * resp_mask).sum().item()
+                total_kl_penalty += (kl_penalty.detach() * resp_mask).sum().item()
+                ref_num_tokens += active_count
             num_tokens += active_count
             total_resp_tokens += resp_len
 
         metrics = {
-            "mean_kl": total_kl / num_tokens if num_tokens > 0 else 0.0,
             "active_tokens": num_tokens,
             "total_resp_tokens": total_resp_tokens,
             "mask_ratio": num_tokens / total_resp_tokens if total_resp_tokens > 0 else 0.0,
+            "kl_coef": kl_beta,
         }
+        if ref_num_tokens > 0:
+            kl_loss_mean = total_ref_kl / ref_num_tokens
+            metrics["kl_loss"] = kl_loss_mean
+            # Legacy alias kept for dashboards that already chart train/mean_kl.
+            metrics["mean_kl"] = kl_loss_mean
+            metrics["mean_logprob_diff"] = total_ref_logprob_diff / ref_num_tokens
+            metrics["kl_penalty"] = total_kl_penalty / ref_num_tokens
         return total_loss, metrics
 
     return loss_fn

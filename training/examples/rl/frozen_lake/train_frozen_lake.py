@@ -912,10 +912,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
 
                 avg_reward = metrics.get("rollout/reward", 0.0)
-                avg_kl = metrics.get("train/mean_kl", 0.0)
+                avg_kl = metrics.get("train/kl_loss", metrics.get("train/mean_kl", 0.0))
                 mean_loss = metrics.get("train/mean_loss", 0.0)
                 adv_loss = metrics.get("train/mean_adv_loss", 0.0)
-                kl_pen = metrics.get("train/mean_kl_penalty", 0.0)
+                kl_pen = metrics.get("train/kl_penalty", metrics.get("train/mean_kl_penalty", 0.0))
                 mask_r = metrics.get("train/mask_ratio", 0.0)
                 inf_kld = metrics.get("train/inference_kld", 0.0)
                 logger.info(

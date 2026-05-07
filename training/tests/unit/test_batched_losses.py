@@ -152,7 +152,7 @@ class TestKLBetaRoutesToClientSide:
     ``loss_fn_inputs`` are exactly ``{target_tokens, logprobs, advantages}``
     -- no ``ref_logprobs`` field is ever sent to the trainer. So when a
     caller sets ``kl_beta > 0`` expecting a KL penalty, the builtin PPO
-    kernel silently drops the ``kl_beta * (pi - pi_ref)`` term.
+    kernel silently drops the policy/reference KL term.
 
     Fix: ``loss_path`` is now an **explicit** user choice. Picking
     ``"builtin"`` with ``kl_beta > 0`` raises in :func:`validate_loss_path`
@@ -217,6 +217,50 @@ class TestKLBetaRoutesToClientSide:
         validate_loss_path(
             LossConfig(policy_loss="grpo", loss_path="client", kl_beta=0.01),
         )
+
+
+class TestPolicyReferenceKL:
+    @staticmethod
+    def _datum():
+        return build_datum_from_token_mask(
+            token_ids=[10, 11, 12, 13],
+            token_mask=[0, 1, 1, 1],
+        ).datum
+
+    def test_grpo_kl_beta_backpropagates_reference_penalty(self):
+        builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.5))
+        loss_fn = builder(
+            advantages=[0.0],
+            ref_logprobs=[[-2.0, -2.0, -2.0, -2.0]],
+            prompt_lens=[2],
+            inf_logprobs=[[0.0, 0.0, 0.0, 0.0]],
+            prox_logprobs=[[0.0, 0.0, 0.0, 0.0]],
+        )
+        logprobs = torch.zeros(4, requires_grad=True)
+
+        loss, metrics = loss_fn([self._datum()], [logprobs])
+        loss.backward()
+
+        assert logprobs.grad is not None
+        assert logprobs.grad[1:].abs().sum() > 0
+        assert metrics["kl_loss"] > 0
+        assert metrics["mean_kl"] == pytest.approx(metrics["kl_loss"])
+        assert metrics["kl_penalty"] == pytest.approx(0.5 * metrics["kl_loss"])
+        assert metrics["mean_kl_penalty"] == pytest.approx(metrics["kl_penalty"])
+        assert metrics["kl_coef"] == pytest.approx(0.5)
+
+    def test_grpo_kl_beta_requires_reference_logprobs(self):
+        builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.5))
+        loss_fn = builder(
+            advantages=[0.0],
+            ref_logprobs=[],
+            prompt_lens=[2],
+            inf_logprobs=[[0.0, 0.0, 0.0, 0.0]],
+            prox_logprobs=[[0.0, 0.0, 0.0, 0.0]],
+        )
+
+        with pytest.raises(ValueError, match="requires reference logprobs"):
+            loss_fn([self._datum()], [torch.zeros(4, requires_grad=True)])
 
 
 class TestBatchDPOLoss:

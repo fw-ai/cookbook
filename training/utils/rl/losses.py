@@ -144,8 +144,8 @@ def validate_loss_path(args: LossArgs, profile: Any | None = None) -> None:
 
     - the loss is registered as client-side-only (no builtin kernel),
     - ``args.kl_beta > 0`` (builtin datums have no ``ref_logprobs`` field, so
-      the KL term ``kl_beta * (pi - pi_ref)`` would be silently dropped --
-      see :func:`build_builtin_loss_datums`),
+      the policy/reference KL term would be silently dropped -- see
+      :func:`build_builtin_loss_datums`),
     - ``profile.pipeline_parallelism > 1`` (server kernels don't support PP).
     """
     if args.loss_path == "client":

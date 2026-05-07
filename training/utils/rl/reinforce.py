@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple, Union
 import torch
 import tinker
 
-from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
+from training.utils.rl.common import _normalize_prompt_lens, policy_reference_kl_loss, run_loss_loop
 from training.utils.rl.tis import SAFETY_CLAMP, TISConfig
 
 
@@ -49,15 +49,16 @@ def make_reinforce_loss_fn(
         ratio = torch.exp(log_ratio)
         per_token_loss = -ratio * ctx.adv
         if kl_beta > 0.0:
-            per_token_loss = per_token_loss + kl_beta * (ctx.pi_detached - ctx.resp_ref)
+            per_token_loss = per_token_loss + kl_beta * policy_reference_kl_loss(ctx.resp_pi, ctx.resp_ref)
         per_token_loss = per_token_loss * ctx.resp_mask
+        kl_penalty = kl_beta * policy_reference_kl_loss(ctx.resp_pi, ctx.resp_ref)
 
         active = ctx.resp_mask > 0.5
         return per_token_loss, {
             "resp_len": float(len(ctx.resp_pi)),
             "ratio_mean": ratio.detach()[active].mean().item(),
             "adv_term": (-ctx.adv * ratio.detach() * ctx.resp_mask).sum().item(),
-            "kl_term": (kl_beta * ctx.pi_detached * ctx.resp_mask).sum().item(),
+            "kl_penalty": (kl_penalty.detach() * ctx.resp_mask).sum().item(),
         }
 
     def loss_fn(
@@ -75,6 +76,7 @@ def make_reinforce_loss_fn(
             logprobs_list,
             "reinforce",
             policy_fn,
+            require_ref_logprobs=kl_beta > 0.0,
         )
         nt = result.num_tokens
         total_resp = int(result.extra_sums.get("resp_len", 0.0))
@@ -86,7 +88,10 @@ def make_reinforce_loss_fn(
         metrics["mask_ratio"] = nt / total_resp if total_resp > 0 else 0.0
         metrics["is_ratio_mean"] = result.extra_sums.get("ratio_mean", 0.0) / ns if ns > 0 else 0.0
         metrics["mean_adv_loss"] = result.extra_sums.get("adv_term", 0.0) / nt if nt > 0 else 0.0
-        metrics["mean_kl_penalty"] = result.extra_sums.get("kl_term", 0.0) / nt if nt > 0 else 0.0
+        metrics["kl_penalty"] = result.extra_sums.get("kl_penalty", 0.0) / nt if nt > 0 else 0.0
+        metrics["kl_coef"] = kl_beta
+        # Legacy alias kept for dashboards that already chart train/mean_kl_penalty.
+        metrics["mean_kl_penalty"] = metrics["kl_penalty"]
         metrics["mean_loss"] = result.total_loss.item() / nt if nt > 0 else 0.0
         return result.total_loss, metrics
 
