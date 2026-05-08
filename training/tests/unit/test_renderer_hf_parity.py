@@ -91,6 +91,46 @@ _CASES: list[_Case] = [
         messages=_SHORT_MSGS,
         apply_chat_template_kwargs={"enable_thinking": False},
     ),
+    # Qwen3.6 aliases the qwen3_5 renderer family
+    # (see training/renderer/_qwen3_split.py). Validate parity against the
+    # 3.6 tokenizer's `apply_chat_template` for default invocation
+    # (no `preserve_thinking` kwarg → byte-identical to Qwen3.5).
+    _Case(
+        case_id="qwen3_6-thinking-single-turn",
+        renderer="qwen3_6",
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        messages=_SHORT_MSGS,
+    ),
+    _Case(
+        case_id="qwen3_6-thinking-multi-turn",
+        renderer="qwen3_6",
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        messages=_MULTI_TURN_MSGS,
+    ),
+    _Case(
+        case_id="qwen3_6-disable-thinking",
+        renderer="qwen3_6_disable_thinking",
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        messages=_SHORT_MSGS,
+        apply_chat_template_kwargs={"enable_thinking": False},
+    ),
+    # Qwen3.6 preserve-thinking against an assistant message that has
+    # NO reasoning content. The official Qwen3.6 chat template's
+    # preserve_thinking=true branch emits an empty
+    # `<think>\n\n</think>\n\n` wrapper for every historical assistant
+    # regardless of reasoning content (the "empty thinking blocks spam
+    # context" pattern documented at
+    # https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates).
+    # `Qwen3_6PreserveThinkingSplitRenderer._assistant_header_suffix`
+    # deliberately mirrors that behavior to preserve byte-level
+    # train-inference parity with the stock HF chat template.
+    _Case(
+        case_id="qwen3_6-preserve-thinking-multi-turn",
+        renderer="qwen3_6_preserve_thinking",
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        messages=_MULTI_TURN_MSGS,
+        apply_chat_template_kwargs={"preserve_thinking": True},
+    ),
     _Case(
         case_id="kimi_k25-single-turn",
         renderer="kimi_k25",

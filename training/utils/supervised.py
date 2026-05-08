@@ -88,6 +88,14 @@ def resolve_renderer_name(
         return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
+    # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
+    # adds an opt-in `preserve_thinking` flag (renders historical thinking
+    # for ALL assistant turns when true). Default invocation produces output
+    # byte-identical to Qwen3.5's template, so the qwen3_5 renderer family
+    # is correct for non-interleave-thinking workflows on Qwen3.6 checkpoints.
+    # Same alias pattern as the kimi-k25 → Kimi-K2.6 case above.
+    if "qwen3.6" in normalized_model_name or "qwen3_6" in normalized_model_name:
+        return "qwen3_6"
     if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name:
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
@@ -197,6 +205,7 @@ def _renderer_uses_images(renderer_name: str) -> bool:
         for marker in (
             "_vl",
             "qwen3_5",
+            "qwen3_6",
             "kimi_k25",
         )
     )

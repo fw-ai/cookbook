@@ -686,6 +686,13 @@ def test_resolve_renderer_name_prefers_qwen3_5() -> None:
     assert resolve_renderer_name("Qwen/Qwen3.5-397B-A17B") == "qwen3_5"
 
 
+def test_resolve_renderer_name_prefers_qwen3_6() -> None:
+    """Qwen3.6 models should resolve to the qwen3_6 renderer (alias of qwen3_5)."""
+    assert resolve_renderer_name("Qwen/Qwen3.6-27B") == "qwen3_6"
+    assert resolve_renderer_name("Qwen/Qwen3.6-9B") == "qwen3_6"
+    assert resolve_renderer_name("custom/qwen3_6-finetune") == "qwen3_6"
+
+
 def test_resolve_renderer_name_prefers_gemma4() -> None:
     """Gemma 4 models should resolve to the gemma4 renderer."""
     assert resolve_renderer_name("google/gemma-4-12b-it") == "gemma4"
