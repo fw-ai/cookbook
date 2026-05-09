@@ -91,11 +91,16 @@ def resolve_renderer_name(
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
     # adds an opt-in `preserve_thinking` flag (renders historical thinking
     # for ALL assistant turns when true). Default invocation produces output
-    # byte-identical to Qwen3.5's template, so the qwen3_5 renderer family
-    # is correct for non-interleave-thinking workflows on Qwen3.6 checkpoints.
-    # Same alias pattern as the kimi-k25 → Kimi-K2.6 case above.
-    if "qwen3.6" in normalized_model_name or "qwen3_6" in normalized_model_name:
-        return "qwen3_6"
+    # byte-identical to Qwen3.5's template, so resolve Qwen3.6 to the broadly
+    # supported qwen3_5 renderer. Advanced interleave-thinking workflows can
+    # still opt in explicitly with renderer_name="qwen3_6_preserve_thinking".
+    if (
+        "qwen3.6" in normalized_model_name
+        or "qwen3_6" in normalized_model_name
+        or "qwen3-6" in normalized_model_name
+        or "qwen3p6" in normalized_model_name
+    ):
+        return "qwen3_5"
     if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name:
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
