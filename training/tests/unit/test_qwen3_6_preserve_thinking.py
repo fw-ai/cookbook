@@ -196,6 +196,8 @@ def test_qwen3_6_tool_call_scalar_args_use_json_spelling() -> None:
 
     from training.renderer._qwen3_split import (
         Qwen3_5SplitRenderer,
+        Qwen3_6DisableThinkingSplitRenderer,
+        Qwen3_6PreserveThinkingSplitRenderer,
         Qwen3_6SplitRenderer,
     )
 
@@ -215,17 +217,26 @@ def test_qwen3_6_tool_call_scalar_args_use_json_spelling() -> None:
     )
 
     qwen3_5 = Qwen3_5SplitRenderer.__new__(Qwen3_5SplitRenderer)
-    qwen3_6 = Qwen3_6SplitRenderer.__new__(Qwen3_6SplitRenderer)
+    qwen3_6_renderers = [
+        Qwen3_6SplitRenderer.__new__(Qwen3_6SplitRenderer),
+        Qwen3_6DisableThinkingSplitRenderer.__new__(
+            Qwen3_6DisableThinkingSplitRenderer
+        ),
+        Qwen3_6PreserveThinkingSplitRenderer.__new__(
+            Qwen3_6PreserveThinkingSplitRenderer
+        ),
+    ]
 
     rendered_35 = qwen3_5._format_tool_call_xml(tool_call)
-    rendered_36 = qwen3_6._format_tool_call_xml(tool_call)
-
     assert "<parameter=enabled>\nTrue\n</parameter>" in rendered_35
     assert "<parameter=unset>\nNone\n</parameter>" in rendered_35
-    assert "<parameter=enabled>\ntrue\n</parameter>" in rendered_36
-    assert "<parameter=unset>\nnull\n</parameter>" in rendered_36
-    assert "<parameter=note>\nalready a string\n</parameter>" in rendered_36
-    assert "<parameter=items>\n[1, 2]\n</parameter>" in rendered_36
+
+    for renderer in qwen3_6_renderers:
+        rendered_36 = renderer._format_tool_call_xml(tool_call)
+        assert "<parameter=enabled>\ntrue\n</parameter>" in rendered_36
+        assert "<parameter=unset>\nnull\n</parameter>" in rendered_36
+        assert "<parameter=note>\nalready a string\n</parameter>" in rendered_36
+        assert "<parameter=items>\n[1, 2]\n</parameter>" in rendered_36
 
 
 # --------------------------------------------------------------------------

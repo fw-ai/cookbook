@@ -89,8 +89,8 @@ class Qwen3_5DisableThinkingSplitRenderer(
 #                                        inference time.
 #
 #   `qwen3_6_disable_thinking`   — empty think block in generation prompt
-#                                    (`enable_thinking=false`). Alias of
-#                                    Qwen3.5 disable-thinking renderer.
+#                                    (`enable_thinking=false`) with Qwen3.6's
+#                                    tool-argument formatting.
 #                                    Use for non-thinking SFT (text2sql,
 #                                    structured output, format compliance);
 #                                    customers must also pass
@@ -98,7 +98,7 @@ class Qwen3_5DisableThinkingSplitRenderer(
 #                                    time to keep train↔inference parity.
 
 
-class Qwen3_6SplitRenderer(Qwen3_5SplitRenderer):
+class Qwen3_6ToolCallFormattingMixin:
     def _format_tool_call_xml(self, tool_call):
         """Match Qwen3.6's tool-argument serialization.
 
@@ -119,11 +119,19 @@ class Qwen3_6SplitRenderer(Qwen3_5SplitRenderer):
         return "\n".join(lines)
 
 
-class Qwen3_6DisableThinkingSplitRenderer(Qwen3_5DisableThinkingSplitRenderer):
+class Qwen3_6SplitRenderer(Qwen3_6ToolCallFormattingMixin, Qwen3_5SplitRenderer):
     pass
 
 
-class Qwen3_6PreserveThinkingSplitRenderer(Qwen3_5SplitRenderer):
+class Qwen3_6DisableThinkingSplitRenderer(
+    Qwen3_6ToolCallFormattingMixin, Qwen3_5DisableThinkingSplitRenderer
+):
+    pass
+
+
+class Qwen3_6PreserveThinkingSplitRenderer(
+    Qwen3_6ToolCallFormattingMixin, Qwen3_5SplitRenderer
+):
     """Qwen3.6 with interleave thinking — historical assistant `<think>`
     blocks preserved across turns.
 
