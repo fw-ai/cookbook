@@ -22,6 +22,8 @@ Both tests skip cleanly if HF Hub is unreachable.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -188,6 +190,44 @@ def _build_renderer_tokens(renderer_name: str, tokenizer) -> list[int]:
     return [int(t) for t in model_input.to_ints()]
 
 
+def test_qwen3_6_tool_call_scalar_args_use_json_spelling() -> None:
+    """Qwen3.6 differs from Qwen3.5 for non-string scalar tool arguments."""
+    from tinker_cookbook.renderers.base import ToolCall
+
+    from training.renderer._qwen3_split import (
+        Qwen3_5SplitRenderer,
+        Qwen3_6SplitRenderer,
+    )
+
+    tool_call = ToolCall(
+        function=ToolCall.FunctionBody(
+            name="set_flags",
+            arguments=json.dumps(
+                {
+                    "enabled": True,
+                    "limit": 3,
+                    "note": "already a string",
+                    "unset": None,
+                    "items": [1, 2],
+                }
+            ),
+        )
+    )
+
+    qwen3_5 = Qwen3_5SplitRenderer.__new__(Qwen3_5SplitRenderer)
+    qwen3_6 = Qwen3_6SplitRenderer.__new__(Qwen3_6SplitRenderer)
+
+    rendered_35 = qwen3_5._format_tool_call_xml(tool_call)
+    rendered_36 = qwen3_6._format_tool_call_xml(tool_call)
+
+    assert "<parameter=enabled>\nTrue\n</parameter>" in rendered_35
+    assert "<parameter=unset>\nNone\n</parameter>" in rendered_35
+    assert "<parameter=enabled>\ntrue\n</parameter>" in rendered_36
+    assert "<parameter=unset>\nnull\n</parameter>" in rendered_36
+    assert "<parameter=note>\nalready a string\n</parameter>" in rendered_36
+    assert "<parameter=items>\n[1, 2]\n</parameter>" in rendered_36
+
+
 # --------------------------------------------------------------------------
 # Test 1 — Behavioral: kwarg flips historical-thinking presence
 # --------------------------------------------------------------------------
@@ -195,7 +235,7 @@ def _build_renderer_tokens(renderer_name: str, tokenizer) -> list[int]:
 
 @pytest.mark.timeout(180)
 def test_default_renderer_drops_historical_thinking() -> None:
-    """`qwen3_6` (alias of qwen3_5, strip_thinking_from_history=True)
+    """`qwen3_6` (default strip_thinking_from_history=True)
     must drop the reasoning from historical assistant turns.
 
     The historical reasoning string must NOT appear in the rendered

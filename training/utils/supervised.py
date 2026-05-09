@@ -88,19 +88,18 @@ def resolve_renderer_name(
         return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
-    # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
-    # adds an opt-in `preserve_thinking` flag (renders historical thinking
-    # for ALL assistant turns when true). Default invocation produces output
-    # byte-identical to Qwen3.5's template, so resolve Qwen3.6 to the broadly
-    # supported qwen3_5 renderer. Advanced interleave-thinking workflows can
-    # still opt in explicitly with renderer_name="qwen3_6_preserve_thinking".
+    # Qwen3.6 is close to Qwen3.5, but its HF chat template adds
+    # `preserve_thinking` and serializes non-string tool arguments with JSON
+    # semantics. Route to the local qwen3_6 renderer family so those template
+    # differences stay explicit while keeping qwen3_6_preserve_thinking
+    # available as an opt-in variant.
     if (
         "qwen3.6" in normalized_model_name
         or "qwen3_6" in normalized_model_name
         or "qwen3-6" in normalized_model_name
         or "qwen3p6" in normalized_model_name
     ):
-        return "qwen3_5"
+        return "qwen3_6"
     if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name:
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:

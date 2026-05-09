@@ -91,10 +91,9 @@ _CASES: list[_Case] = [
         messages=_SHORT_MSGS,
         apply_chat_template_kwargs={"enable_thinking": False},
     ),
-    # Qwen3.6 aliases the qwen3_5 renderer family
-    # (see training/renderer/_qwen3_split.py). Validate parity against the
-    # 3.6 tokenizer's `apply_chat_template` for default invocation
-    # (no `preserve_thinking` kwarg → byte-identical to Qwen3.5).
+    # Qwen3.6 is close to Qwen3.5 but has its own template differences
+    # (preserve_thinking and scalar tool-argument JSON semantics). Validate
+    # parity against the 3.6 tokenizer's `apply_chat_template`.
     _Case(
         case_id="qwen3_6-thinking-single-turn",
         renderer="qwen3_6",

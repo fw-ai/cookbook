@@ -16,6 +16,8 @@ override before any caller resolves a renderer via ``get_renderer``.
 
 from __future__ import annotations
 
+import json
+
 from tinker_cookbook.renderers import register_renderer
 from tinker_cookbook.renderers.qwen3 import (
     Qwen3DisableThinkingRenderer,
@@ -62,19 +64,17 @@ class Qwen3_5DisableThinkingSplitRenderer(
 
 
 # Qwen3.6 ships with the same vocab, special tokens, and tokenizer as
-# Qwen3.5. The chat template adds one new opt-in feature:
-# `preserve_thinking`. Default invocation (`preserve_thinking`
-# undefined or false) produces output byte-identical to Qwen3.5's
-# template, so the Qwen3.5 renderer family is correct for the default
-# non-interleave-thinking case on Qwen3.6 models.
+# Qwen3.5. The chat template is close to Qwen3.5's template, but differs in
+# two places: the opt-in `preserve_thinking` flag and JSON serialization for
+# non-string scalar tool-call arguments.
 #
 # Three Qwen3.6 renderer variants:
 #
-#   `qwen3_6`                    — default; alias of Qwen3.5 renderer
+#   `qwen3_6`                    — default; Qwen3.5 behavior with Qwen3.6's
+#                                    tool-argument formatting
 #                                    (`strip_thinking_from_history=True`).
-#                                    Matches HF apply_chat_template default
-#                                    args. Use for normal SFT/DPO/RL where
-#                                    historical thinking should be stripped.
+#                                    Use for normal SFT/DPO/RL where historical
+#                                    thinking should be stripped.
 #
 #   `qwen3_6_preserve_thinking`  — interleave thinking enabled
 #                                    (`strip_thinking_from_history=False`).
@@ -99,7 +99,24 @@ class Qwen3_5DisableThinkingSplitRenderer(
 
 
 class Qwen3_6SplitRenderer(Qwen3_5SplitRenderer):
-    pass
+    def _format_tool_call_xml(self, tool_call):
+        """Match Qwen3.6's tool-argument serialization.
+
+        Qwen3.5 stringifies scalar non-container values with Jinja's
+        ``string`` filter. Qwen3.6 uses ``tojson`` for every non-string value,
+        which changes booleans/None from Python spellings (``True``/``None``)
+        to JSON spellings (``true``/``null``).
+        """
+        args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+        lines = [f"<tool_call>\n<function={tool_call.function.name}>"]
+        for param_name, param_value in args.items():
+            if isinstance(param_value, str):
+                value_str = param_value
+            else:
+                value_str = json.dumps(param_value)
+            lines.append(f"<parameter={param_name}>\n{value_str}\n</parameter>")
+        lines.append("</function>\n</tool_call>")
+        return "\n".join(lines)
 
 
 class Qwen3_6DisableThinkingSplitRenderer(Qwen3_5DisableThinkingSplitRenderer):
