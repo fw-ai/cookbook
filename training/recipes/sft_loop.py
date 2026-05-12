@@ -76,6 +76,7 @@ def _init_render_worker(
     renderer_name: str,
     train_on_what_str: str,
     max_seq_len: int,
+    tokenizer_revision: str = "",
     _worker_id: int | None = None,
 ) -> None:
     """DataLoader ``worker_init_fn`` for SFT chat-row rendering.
@@ -86,6 +87,7 @@ def _init_render_worker(
     populate_render_worker_state(
         _worker_state,
         tokenizer_model=tokenizer_model,
+        tokenizer_revision=tokenizer_revision,
         renderer_name=renderer_name,
         max_seq_len=max_seq_len,
         train_on_what=parse_train_on_what(train_on_what_str),
@@ -231,6 +233,7 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
+    tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     renderer_name: str = ""
     train_on_what: str = "all_assistant_messages"
 
@@ -560,8 +563,11 @@ def main(
             else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
         init_args = (
-            cfg.tokenizer_model, cfg.renderer_name,
-            cfg.train_on_what, cfg.max_seq_len,
+            cfg.tokenizer_model,
+            cfg.renderer_name,
+            cfg.train_on_what,
+            cfg.max_seq_len,
+            cfg.tokenizer_revision,
         )
         _init_render_worker(*init_args)
         worker_init_fn = functools.partial(_init_render_worker, *init_args)

@@ -660,7 +660,10 @@ def main(
 
         max_seq_len = infra.max_seq_len
         init_args = (
-            cfg.tokenizer_model, cfg.renderer_name, max_seq_len, cfg.tokenizer_revision,
+            cfg.tokenizer_model,
+            cfg.renderer_name,
+            max_seq_len,
+            cfg.tokenizer_revision,
         )
         _init_pair_worker(*init_args)
         worker_init_fn = functools.partial(_init_pair_worker, *init_args)

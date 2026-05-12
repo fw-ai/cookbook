@@ -38,7 +38,6 @@ from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
 import tinker
-import transformers
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
@@ -63,6 +62,7 @@ from training.utils import (
     validate_config,
     log_metrics_json,
     compute_advantages,
+    load_deployment_tokenizer,
     read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
@@ -418,11 +418,7 @@ def main(
         policy_job_id = infra.policy_job_id
         reference_job_id = infra.reference_job_id or infra.policy_job_id
 
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.deployment.tokenizer_model,
-            revision=cfg.deployment.tokenizer_revision or None,
-            trust_remote_code=True,
-        )
+        tokenizer = load_deployment_tokenizer(cfg.deployment)
         # Adaptive concurrency — window adjusts based on server-side prefill queue.
         # For fixed (no rate limiting), use FixedConcurrencyController instead.
         initial_window = cfg.concurrency.initial_window or (8 * infra.deployment_gpu_count)
