@@ -150,6 +150,7 @@ def populate_render_worker_state(
     state: dict,
     *,
     tokenizer_model: str,
+    tokenizer_revision: str | None = None,
     renderer_name: str,
     max_seq_len: int,
     **extras: Any,
@@ -168,6 +169,7 @@ def populate_render_worker_state(
     """
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         tokenizer_model,
+        revision=tokenizer_revision or None,
         trust_remote_code=True,
     )
     state.update(

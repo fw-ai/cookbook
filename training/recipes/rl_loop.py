@@ -419,7 +419,9 @@ def main(
         reference_job_id = infra.reference_job_id or infra.policy_job_id
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.deployment.tokenizer_model, trust_remote_code=True,
+            cfg.deployment.tokenizer_model,
+            revision=cfg.deployment.tokenizer_revision or None,
+            trust_remote_code=True,
         )
         # Adaptive concurrency — window adjusts based on server-side prefill queue.
         # For fixed (no rate limiting), use FixedConcurrencyController instead.

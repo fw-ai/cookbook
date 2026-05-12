@@ -52,6 +52,25 @@ def _setup_pair_worker(monkeypatch, max_seq_len: int = 8) -> None:
 
 
 class TestRenderPairWorker:
+    def test_init_pair_worker_forwards_tokenizer_revision(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_populate_render_worker_state(state, **kwargs):
+            captured["state"] = state
+            captured["kwargs"] = kwargs
+
+        monkeypatch.setattr(
+            module, "populate_render_worker_state", fake_populate_render_worker_state
+        )
+
+        module._init_pair_worker("moonshotai/Kimi-K2.6", "kimi_k25", 4096, "2755962")
+
+        assert captured["state"] is module._pair_worker_state
+        assert captured["kwargs"]["tokenizer_model"] == "moonshotai/Kimi-K2.6"
+        assert captured["kwargs"]["tokenizer_revision"] == "2755962"
+        assert captured["kwargs"]["renderer_name"] == "kimi_k25"
+        assert captured["kwargs"]["max_seq_len"] == 4096
+
     def test_returns_none_when_schema_unrecognized(self, monkeypatch):
         _setup_pair_worker(monkeypatch)
         assert module._render_pair_worker({"unknown": "schema"}) is None

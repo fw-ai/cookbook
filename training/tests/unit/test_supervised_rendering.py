@@ -883,7 +883,7 @@ def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
     assert state["custom_extra"] == "hello"
 
 
-def test_populate_render_worker_state_uses_trust_remote_code(monkeypatch):
+def test_populate_render_worker_state_uses_trust_remote_code_and_revision(monkeypatch):
     """trust_remote_code=True is required for Kimi / Qwen image processors."""
     from training.utils import supervised as sup
 
@@ -901,8 +901,10 @@ def test_populate_render_worker_state_uses_trust_remote_code(monkeypatch):
     populate_render_worker_state(
         {},
         tokenizer_model="m",
+        tokenizer_revision="abc123",
         renderer_name="r",
         max_seq_len=1,
     )
     assert captured["model"] == "m"
     assert captured["kwargs"].get("trust_remote_code") is True
+    assert captured["kwargs"].get("revision") == "abc123"

@@ -152,6 +152,8 @@ class DeployConfig:
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).
     Required for client-side tokenization (GRPO)."""
+    tokenizer_revision: str | None = None
+    """Optional HuggingFace revision for client-side tokenization."""
     sample_timeout: int = 600
     """HTTP read timeout in seconds for sampling completions (default 10 min).
     Increase for R3 + long completions where responses can be very large."""
