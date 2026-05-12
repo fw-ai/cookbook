@@ -54,6 +54,7 @@ from training.utils import (
     wandb_finish,
     validate_config,
     log_metrics_json,
+    load_deployment_tokenizer,
     setup_deployment,
     create_trainer_job,
     read_api_extra_headers_env,
@@ -393,12 +394,8 @@ def main(
             if reference_ep else None
         )
 
-        import transformers
-
         inference_model = dep_info.inference_model if dep_info else cfg.base_model
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.deployment.tokenizer_model, trust_remote_code=True
-        )
+        tokenizer = load_deployment_tokenizer(cfg.deployment)
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
             model=inference_model,

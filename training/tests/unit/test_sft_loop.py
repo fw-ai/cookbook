@@ -80,6 +80,28 @@ def _test_datum(test_id: str):
     )
 
 
+def test_init_render_worker_forwards_tokenizer_revision(monkeypatch):
+    captured: dict = {}
+
+    def fake_populate_render_worker_state(state, **kwargs):
+        captured["state"] = state
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(
+        module, "populate_render_worker_state", fake_populate_render_worker_state
+    )
+
+    module._init_render_worker(
+        "moonshotai/Kimi-K2.6", "kimi_k25", "all_assistant_messages", 4096, "2755962"
+    )
+
+    assert captured["state"] is module._worker_state
+    assert captured["kwargs"]["tokenizer_model"] == "moonshotai/Kimi-K2.6"
+    assert captured["kwargs"]["tokenizer_revision"] == "2755962"
+    assert captured["kwargs"]["renderer_name"] == "kimi_k25"
+    assert captured["kwargs"]["max_seq_len"] == 4096
+
+
 def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
     """warm_start_from_adapter and init_from_checkpoint are mutually exclusive."""
     dataset_path = _write_dataset(

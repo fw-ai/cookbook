@@ -860,9 +860,7 @@ def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
     fake_tokenizer = object()
     fake_renderer = object()
     monkeypatch.setattr(
-        sup.transformers.AutoTokenizer,
-        "from_pretrained",
-        lambda model, **kwargs: fake_tokenizer,
+        sup, "load_tokenizer", lambda model, revision=None: fake_tokenizer
     )
     monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: fake_renderer)
 
@@ -883,26 +881,24 @@ def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
     assert state["custom_extra"] == "hello"
 
 
-def test_populate_render_worker_state_uses_trust_remote_code(monkeypatch):
-    """trust_remote_code=True is required for Kimi / Qwen image processors."""
+def test_populate_render_worker_state_forwards_tokenizer_revision(monkeypatch):
     from training.utils import supervised as sup
 
     captured: dict = {}
 
-    def fake_from_pretrained(model, **kwargs):
-        captured.update(model=model, kwargs=kwargs)
+    def fake_load_tokenizer(model, revision=None):
+        captured.update(model=model, revision=revision)
         return object()
 
-    monkeypatch.setattr(
-        sup.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
-    )
+    monkeypatch.setattr(sup, "load_tokenizer", fake_load_tokenizer)
     monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: object())
 
     populate_render_worker_state(
         {},
         tokenizer_model="m",
+        tokenizer_revision="abc123",
         renderer_name="r",
         max_seq_len=1,
     )
     assert captured["model"] == "m"
-    assert captured["kwargs"].get("trust_remote_code") is True
+    assert captured["revision"] == "abc123"

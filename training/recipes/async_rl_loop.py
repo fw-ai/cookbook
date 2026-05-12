@@ -40,7 +40,6 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 import tinker
-import transformers
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils.client import GradAccNormalization
@@ -52,6 +51,7 @@ from training.utils import (
     ResourceCleanup,
     WandBConfig,
     WeightSyncConfig,
+    load_deployment_tokenizer,
     load_jsonl_dataset,
     read_api_extra_headers_env,
     setup_wandb,
@@ -331,9 +331,7 @@ def main(
         policy = infra.policy
         reference = infra.reference
 
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.deployment.tokenizer_model, trust_remote_code=True,
-        )
+        tokenizer = load_deployment_tokenizer(cfg.deployment)
         weight_syncer = WeightSyncer(
             policy_client=policy,
             deploy_mgr=deploy_mgr,

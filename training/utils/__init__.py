@@ -69,7 +69,9 @@ __all__ = [
     "find_common_prefix_length",
     "iter_preference_examples",
     "load_jsonl_dataset",
+    "load_deployment_tokenizer",
     "load_preference_dataset",
+    "load_tokenizer",
     "replicate_rows_for_epochs",
     "log_metrics_json",
     "make_render_dataloader",
@@ -155,6 +157,7 @@ from training.utils.config import (
 from training.utils.training_shapes import (
     auto_select_training_shape,
 )
+from training.utils.tokenizers import load_deployment_tokenizer, load_tokenizer
 from training.utils.losses import (
     make_sft_loss_fn,
     make_orpo_loss_fn,

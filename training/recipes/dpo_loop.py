@@ -96,6 +96,7 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for client-side tokenization
+    tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     renderer_name: str = ""
 
     beta: float = 0.1
@@ -151,6 +152,7 @@ def _init_pair_worker(
     tokenizer_model: str,
     renderer_name: str,
     max_seq_len: int,
+    tokenizer_revision: str = "",
     _worker_id: int | None = None,
 ) -> None:
     """DataLoader ``worker_init_fn`` for DPO preference-pair rendering.
@@ -161,6 +163,7 @@ def _init_pair_worker(
     populate_render_worker_state(
         _pair_worker_state,
         tokenizer_model=tokenizer_model,
+        tokenizer_revision=tokenizer_revision,
         renderer_name=renderer_name,
         max_seq_len=max_seq_len,
     )
@@ -657,7 +660,10 @@ def main(
 
         max_seq_len = infra.max_seq_len
         init_args = (
-            cfg.tokenizer_model, cfg.renderer_name, max_seq_len,
+            cfg.tokenizer_model,
+            cfg.renderer_name,
+            max_seq_len,
+            cfg.tokenizer_revision,
         )
         _init_pair_worker(*init_args)
         worker_init_fn = functools.partial(_init_pair_worker, *init_args)

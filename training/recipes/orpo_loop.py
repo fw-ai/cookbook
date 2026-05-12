@@ -22,6 +22,7 @@ Config args:
     base_model       Fireworks model ID (default: qwen3-235b-a22b-instruct-2507)
     dataset          Path to preference JSONL file
     tokenizer_model  HuggingFace model name for client-side tokenization
+    tokenizer_revision Optional HuggingFace revision for client-side tokenization
     orpo_lambda      Weight for odds-ratio loss term (default: 1.0)
     learning_rate    Adam learning rate (default: 1e-5)
     epochs           Number of passes over the dataset (default: 1)
@@ -64,6 +65,7 @@ from training.utils import (
     create_trainer_job,
     read_api_extra_headers_env,
     load_preference_dataset,
+    load_tokenizer,
     build_renderer,
     auto_select_training_shape,
     render_preference_pair,
@@ -88,6 +90,7 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
     dataset: str = ""
     tokenizer_model: str = ""
+    tokenizer_revision: str = ""
     renderer_name: str = ""
 
     orpo_lambda: float = 1.0
@@ -308,11 +311,7 @@ def main(
 
         # -- Data ----------------------------------------------------------------
 
-        import transformers
-
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.tokenizer_model, trust_remote_code=True
-        )
+        tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision)
         renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
         logger.info(
             "Using renderer=%s for preference tokenization",
