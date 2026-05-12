@@ -675,6 +675,8 @@ def main(
                 client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs),
             )
 
+        last_dcp_save_step: int | None = None
+
         def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
@@ -689,6 +691,8 @@ def main(
             batches, not optim steps) so resume accounting is independent of
             the minibatch count.
             """
+            nonlocal last_dcp_save_step
+
             if not prompt_groups:
                 raise ValueError("train_step requires at least one prompt group")
 
@@ -751,6 +755,7 @@ def main(
                     promotable=False,
                     data_consumed=cursor.value,
                 )
+                last_dcp_save_step = step
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
             metrics = compute_step_metrics(
@@ -842,11 +847,17 @@ def main(
         if cfg.save_final_checkpoint and global_step > step_offset:
             try:
                 cp_name = f"step-{global_step}"
+                save_resumable_final = last_dcp_save_step != global_step
+                if not save_resumable_final:
+                    logger.info(
+                        "[step %d] final checkpoint: reusing existing DCP checkpoint and saving promotable sampler snapshot",
+                        global_step,
+                    )
                 ckpt.save(
                     cp_name,
-                    resumable=True,
+                    resumable=save_resumable_final,
                     promotable=True,
-                    data_consumed=cursor.value,
+                    data_consumed=cursor.value if save_resumable_final else None,
                 )
 
                 if getattr(cfg, "output_model_id", None):
