@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Unit tests for the DeepMath reward function."""
 
-import os
 import json
+import os
+import threading
+import time
 
 from train_deepmath import (
     extract_boxed,
     deepmath_reward,
     extract_answer_from_completion,
+    math_verify,
 )
 
 
@@ -88,6 +91,42 @@ def test_reward_with_real_dataset():
     assert passed >= 15, f"Too many failures: only {passed}/{len(rows)} matched"
 
 
+def test_math_verify_thread_safe_timeout():
+    """math_verify wrapper must NOT use signal.SIGALRM (which breaks asyncio).
+
+    Verifies two properties:
+      1. Works correctly from a non-main thread (SIGALRM-based timeout would raise
+         ValueError there).
+      2. Returns False without blocking forever if the comparison is too slow,
+         without raising into surrounding code.
+    """
+    from sympy import Symbol
+
+    # Property 1: call from a worker thread (signal.alarm() would raise here).
+    result = []
+
+    def _worker():
+        result.append(math_verify(Symbol("x") + 1, Symbol("x") + 1))
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join(2.0)
+    assert not t.is_alive(), "math_verify wrapper hung in worker thread"
+    assert result == [True], f"expected [True], got {result}"
+
+    # Property 2: a very short timeout returns False (slow comparison cut off)
+    # without raising.
+    class Slow:
+        def __eq__(self, other):
+            time.sleep(2)
+            return True
+
+    fast_result = math_verify(Slow(), Slow(), timeout=0.05)
+    assert fast_result is False, f"slow comparison should return False, got {fast_result}"
+
+    print("  [PASS] test_math_verify_thread_safe_timeout")
+
+
 def main():
     print("Running reward function unit tests...")
     test_extract_boxed()
@@ -96,6 +135,7 @@ def main():
     test_reward_numeric()
     test_reward_latex_fractions()
     test_reward_symbolic()
+    test_math_verify_thread_safe_timeout()
     test_reward_with_real_dataset()
     print("\nAll tests passed!")
 

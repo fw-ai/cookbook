@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import cast
@@ -21,7 +22,26 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from math_verify import parse as math_parse, verify as math_verify
+from math_verify import parse as math_parse, verify as _math_verify_raw
+
+
+def math_verify(gold, target, timeout: float = 5.0) -> bool:
+    # math_verify's built-in timeout uses signal.SIGALRM, which is hostile to
+    # asyncio: the alarm fires into arbitrary GC/event-loop code and wedges
+    # rollouts. Disable it (timeout_seconds=0) and run on a daemon thread so
+    # we can move on if sympy is slow.
+    result = [False]
+
+    def _run():
+        try:
+            result[0] = bool(_math_verify_raw(gold, target, timeout_seconds=0))
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    return result[0]
 
 import training.recipes.rl_loop as rl_loop
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
