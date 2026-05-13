@@ -49,6 +49,9 @@ from training.utils import (
     DeployConfig,
     InfraConfig,
     ResourceCleanup,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
     WandBConfig,
     WeightSyncConfig,
     load_deployment_tokenizer,
@@ -74,7 +77,7 @@ from training.utils.rl.losses import (
     combine_prompt_groups,
     validate_loss_path,
 )
-from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics
+from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics, total_target_tokens
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
 from training.utils.rl.rollout import RolloutSample
@@ -84,6 +87,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "Config",
+    "ResourceCallback",
     "RolloutFn",
     "RolloutFnFactory",
     "RolloutSetup",
@@ -150,6 +154,10 @@ class Config:
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
+    runner: RunnerConfig = field(default_factory=RunnerConfig)
+    """Optional orchestration outputs (status / metadata / metrics / output
+    model). When unset the recipe still runs; the orchestration layer just
+    won't receive progress updates. See ``training.utils.runner``."""
 
     init_from_checkpoint: str | None = None
     """Resume from prior checkpoint; bare name = this job, ``"job:name"``
@@ -183,6 +191,75 @@ class RolloutSetup:
 RolloutFn = Callable[[dict], Awaitable[RolloutSample | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
 
+ResourceCallback = Callable[..., None]
+"""Callback invoked once training resources (deployment, policy trainer,
+optionally reference trainer) have been provisioned.
+
+The callback receives keyword arguments so the recipe can add future
+identifiers without forcing every caller to update their signature.
+Current keyword arguments:
+
+* ``deployment_id`` -- inference deployment ID (``None`` if no inference)
+* ``policy_job_id`` -- policy trainer job ID
+* ``reference_job_id`` -- reference trainer job ID (``None`` when not used)
+
+Exceptions raised inside the callback are logged and swallowed -- a
+broken orchestration writer must never abort training.
+"""
+
+
+def _emit_resources_ready(infra, on_resources_ready: ResourceCallback | None) -> None:
+    """Notify the orchestration layer that training resources are ready.
+
+    Called immediately after :func:`setup_infra` returns so cold-start
+    fallback can recover ``deployment_id`` / ``policy_job_id`` /
+    ``reference_job_id`` from the orchestrator's ``resources.json``
+    before training starts (FIR2-1599).
+
+    Callback failures are logged but never propagated -- a broken
+    orchestration writer must not be able to take down training.
+    """
+    if on_resources_ready is None:
+        return
+    try:
+        on_resources_ready(
+            deployment_id=infra.deployment_id,
+            policy_job_id=infra.policy_job_id,
+            reference_job_id=infra.reference_job_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - artifact writer must not abort training
+        logger.warning(
+            "on_resources_ready callback raised %r; ignoring",
+            exc,
+            exc_info=True,
+        )
+
+
+def _estimate_total_steps(
+    *,
+    step_offset: int,
+    total_items: int,
+    prior_rows_consumed: int,
+    prompt_groups_per_step: int,
+    ppo_n_minibatches: int,
+) -> int:
+    """Estimate the total number of optimizer steps for status reporting.
+
+    Mirrors the formula from the FIR2-1599 plan:
+
+        remaining_rows = total_items - prior_rows_consumed
+        rollout_batches = ceil(remaining_rows / prompt_groups_per_step)
+        total_steps = step_offset + rollout_batches * max(1, ppo_n_minibatches)
+
+    The result is a best-effort upper bound; dynamic filtering / dropped
+    rows can reduce the realised count, so callers should clamp the
+    progress fraction at 100% (the loop does this by writing
+    ``step=max(global_step, total_steps_estimate)`` on completion).
+    """
+    remaining = max(0, total_items - prior_rows_consumed)
+    rollout_batches = math.ceil(remaining / max(1, prompt_groups_per_step))
+    return step_offset + rollout_batches * max(1, ppo_n_minibatches)
+
 
 def _save_checkpoint(
     ckpt: TrainingCheckpoints,
@@ -211,6 +288,7 @@ def main(
     rows: list[dict] | None = None,
     cancel_on_exit: bool = False,
     rollout_extras: dict[str, Any] | None = None,
+    on_resources_ready: ResourceCallback | None = None,
 ) -> None:
     """Run the async RL loop with a user-supplied rollout factory.
 
@@ -221,8 +299,17 @@ def main(
     one sample draw against the inference deployment).
 
     ``cancel_on_exit=True`` tears down provisioned remote resources on exit.
+
+    ``on_resources_ready`` (FIR2-1599) is invoked exactly once,
+    immediately after :func:`setup_infra` returns, with keyword arguments
+    ``deployment_id`` / ``policy_job_id`` / ``reference_job_id``. The
+    orchestration layer uses this hook to persist a ``resources.json``
+    snapshot so cold-start fallback can recover resource IDs from GCS
+    before training completes. Errors raised by the callback are logged
+    and swallowed.
     """
     cfg = config
+    runner = RunnerIO(cfg.runner)
 
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
@@ -303,7 +390,9 @@ def main(
         api_key=api_key, base_url=base_url, additional_headers=additional_headers,
     )
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
+    runner.write_status(RunStatus.PENDING, message="provisioning")
+
+    with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
         infra = setup_infra(
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
@@ -320,11 +409,22 @@ def main(
             api_key=api_key,
             cleanup=cleanup if cancel_on_exit else None,
         )
+        # FIR2-1599: notify the orchestrator that training resources are
+        # ready BEFORE running any further setup. Cold-start fallback
+        # needs ``resources.json`` to be on disk by the time the trainer
+        # / deployment IDs are usable.
+        _emit_resources_ready(infra, on_resources_ready)
+
         policy_job_id = infra.policy_job_id
         assert infra.inference_model is not None  # needs_inference=True invariant
         inference_model = infra.inference_model
         for closeable in infra.closeables:
             stack.callback(closeable.close)
+
+        # Surface accelerator info + an early metadata snapshot so
+        # billing has something to consume before the first optim step.
+        runner.set_accelerator_info(profile=infra.policy_profile)
+        runner.write_metadata()
 
         wandb_log({**infra.boot_metrics, "rollout/step": 0})
 
@@ -379,6 +479,14 @@ def main(
             epochs=cfg.epochs,
             shuffle=cfg.shuffle,
             seed=cfg.seed,
+        )
+
+        total_steps_estimate = _estimate_total_steps(
+            step_offset=step_offset,
+            total_items=row_loader.total_items,
+            prior_rows_consumed=prior_rows_consumed,
+            prompt_groups_per_step=cfg.prompt_groups_per_step,
+            ppo_n_minibatches=cfg.ppo_n_minibatches,
         )
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
@@ -609,6 +717,24 @@ def main(
                 ref_kl,
             )
             wandb_log(metrics)
+            # FIR2-1599: stream per-step status, metrics, and metadata to
+            # the orchestration layer. ``total_target_tokens`` sums the
+            # adapter loss-mask lengths across all rollout samples in
+            # the batch so billing metadata accumulates the actual
+            # number of tokens trained on at this step (not the raw
+            # rollout length, and not zero).
+            runner.append_metrics(
+                step,
+                metrics,
+                tokens=total_target_tokens(prompt_groups),
+            )
+            runner.write_status(
+                RunStatus.RUNNING,
+                step=step,
+                total_steps=total_steps_estimate,
+                message="training",
+            )
+            runner.write_metadata()
             # DCP cadence is in rollout batches, not optim steps, so
             # ppo_n_minibatches doesn't change save frequency.
             rollouts_completed = (step - step_offset) // num_minibatches
@@ -639,6 +765,14 @@ def main(
             current_version = step
             logger.info("[step %d] weight_sync (%.1fs)", step, span.elapsed)
 
+        runner.start_training()
+        runner.write_status(
+            RunStatus.RUNNING,
+            step=step_offset,
+            total_steps=total_steps_estimate,
+            message="training",
+        )
+
         global_step, final_stats = asyncio.run(
             run_async_rl_loop(
                 rows=make_row_requests(),
@@ -664,6 +798,7 @@ def main(
         resume_row_cursor = int(final_stats["resolved_rows"])
         has_trained_steps = global_step > step_offset
         has_advanced_dataset = resume_row_cursor > prior_rows_consumed
+        promoted_checkpoint: str | None = None
         if cfg.save_final_checkpoint and (has_trained_steps or has_advanced_dataset):
             cp_name = f"step-{global_step}"
             ckpt.save(
@@ -674,6 +809,26 @@ def main(
             )
             if cfg.output_model_id and has_trained_steps:
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
+                promoted_checkpoint = cp_name
+
+        if promoted_checkpoint is not None and cfg.output_model_id:
+            runner.write_output_model(
+                model_id=cfg.output_model_id,
+                checkpoint=promoted_checkpoint,
+                job_id=policy_job_id,
+            )
+
+        # ``total_steps`` clamps progress at 100% when dynamic filtering
+        # / dropped rows shorten the realised step count below the
+        # original estimate (FIR2-1599 plan).
+        final_step = max(global_step, total_steps_estimate)
+        runner.write_status(
+            RunStatus.COMPLETED,
+            step=final_step,
+            total_steps=final_step,
+            message="done",
+        )
+        runner.write_metadata()
 
         logger.info(
             "Async RL training complete: %d steps (%d new in this run)",
