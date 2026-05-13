@@ -49,6 +49,9 @@ from training.utils import (
     DeployConfig,
     InfraConfig,
     ResourceCleanup,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
     WandBConfig,
     WeightSyncConfig,
     load_deployment_tokenizer,
@@ -74,7 +77,11 @@ from training.utils.rl.losses import (
     combine_prompt_groups,
     validate_loss_path,
 )
-from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics
+from training.utils.rl.metrics import (
+    compute_minibatch_metrics,
+    compute_step_metrics,
+    total_target_tokens,
+)
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
 from training.utils.rl.rollout import RolloutSample
@@ -160,6 +167,8 @@ class Config:
     """Promote the final checkpoint to this 4-segment model id on clean exit."""
     policy_job_id: str | None = None
     """Reuse an existing policy trainer job (e.g. when resuming)."""
+    runner: RunnerConfig = field(default_factory=RunnerConfig)
+    """Managed runtime artifact outputs (status, metadata, metrics, model info)."""
 
 
 @dataclass
@@ -182,6 +191,34 @@ class RolloutSetup:
 
 RolloutFn = Callable[[dict], Awaitable[RolloutSample | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
+ResourcesReadyCallback = Callable[..., None]
+
+
+def _estimate_total_steps(
+    *,
+    total_items: int,
+    prior_rows_consumed: int,
+    prompt_groups_per_step: int,
+    ppo_n_minibatches: int,
+    step_offset: int,
+) -> int:
+    remaining_rows = max(0, total_items - prior_rows_consumed)
+    estimated_rollout_batches = math.ceil(
+        remaining_rows / max(1, prompt_groups_per_step),
+    )
+    return step_offset + estimated_rollout_batches * max(1, ppo_n_minibatches)
+
+
+def _notify_resources_ready(
+    callback: ResourcesReadyCallback | None,
+    **resources: Any,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(**resources)
+    except Exception:
+        logger.warning("on_resources_ready callback failed", exc_info=True)
 
 
 def _save_checkpoint(
@@ -211,6 +248,8 @@ def main(
     rows: list[dict] | None = None,
     cancel_on_exit: bool = False,
     rollout_extras: dict[str, Any] | None = None,
+    runner_config: RunnerConfig | None = None,
+    on_resources_ready: ResourcesReadyCallback | None = None,
 ) -> None:
     """Run the async RL loop with a user-supplied rollout factory.
 
@@ -303,7 +342,10 @@ def main(
         api_key=api_key, base_url=base_url, additional_headers=additional_headers,
     )
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
+    runner = RunnerIO(runner_config or cfg.runner)
+    runner.write_status(RunStatus.PENDING, message="provisioning")
+
+    with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
         infra = setup_infra(
             rlor_mgr=rlor_mgr,
             deploy_mgr=deploy_mgr,
@@ -323,6 +365,15 @@ def main(
         policy_job_id = infra.policy_job_id
         assert infra.inference_model is not None  # needs_inference=True invariant
         inference_model = infra.inference_model
+        _notify_resources_ready(
+            on_resources_ready,
+            deployment_id=infra.deployment_id,
+            policy_job_id=infra.policy_job_id,
+            reference_job_id=infra.reference_job_id,
+        )
+        runner.set_accelerator_info(profile=infra.policy_profile)
+        runner.write_status(RunStatus.RUNNING, message="provisioned")
+        runner.write_metadata()
         for closeable in infra.closeables:
             stack.callback(closeable.close)
 
@@ -379,6 +430,19 @@ def main(
             epochs=cfg.epochs,
             shuffle=cfg.shuffle,
             seed=cfg.seed,
+        )
+        estimated_total_steps = _estimate_total_steps(
+            total_items=row_loader.total_items,
+            prior_rows_consumed=prior_rows_consumed,
+            prompt_groups_per_step=cfg.prompt_groups_per_step,
+            ppo_n_minibatches=cfg.ppo_n_minibatches,
+            step_offset=step_offset,
+        )
+        runner.write_status(
+            RunStatus.RUNNING,
+            step=step_offset,
+            total_steps=estimated_total_steps,
+            message="training",
         )
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
@@ -609,6 +673,18 @@ def main(
                 ref_kl,
             )
             wandb_log(metrics)
+            runner.append_metrics(
+                step,
+                metrics,
+                tokens=total_target_tokens(prompt_groups),
+            )
+            runner.write_status(
+                RunStatus.RUNNING,
+                step=step,
+                total_steps=estimated_total_steps,
+                message="training",
+            )
+            runner.write_metadata()
             # DCP cadence is in rollout batches, not optim steps, so
             # ppo_n_minibatches doesn't change save frequency.
             rollouts_completed = (step - step_offset) // num_minibatches
@@ -639,6 +715,7 @@ def main(
             current_version = step
             logger.info("[step %d] weight_sync (%.1fs)", step, span.elapsed)
 
+        runner.start_training()
         global_step, final_stats = asyncio.run(
             run_async_rl_loop(
                 rows=make_row_requests(),
@@ -679,6 +756,14 @@ def main(
             "Async RL training complete: %d steps (%d new in this run)",
             global_step, global_step - step_offset,
         )
+        completed_steps = max(global_step, estimated_total_steps)
+        runner.write_status(
+            RunStatus.COMPLETED,
+            step=completed_steps,
+            total_steps=completed_steps,
+            message="done",
+        )
+        runner.write_metadata()
         wandb_finish()
         return {
             "steps": global_step,
