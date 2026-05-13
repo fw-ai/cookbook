@@ -77,7 +77,7 @@ from training.utils.rl.losses import (
     combine_prompt_groups,
     validate_loss_path,
 )
-from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics
+from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics, total_target_tokens
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
 from training.utils.rl.rollout import RolloutSample
@@ -718,12 +718,16 @@ def main(
             )
             wandb_log(metrics)
             # FIR2-1599: stream per-step status, metrics, and metadata to
-            # the orchestration layer. ``write_metadata`` accumulates
-            # tokens internally via ``append_metrics(tokens=...)``; we
-            # don't track per-step token counts here (the async loop's
-            # token accounting is rollout-shape-dependent) so we just
-            # touch metadata to keep accelerator-seconds fresh.
-            runner.append_metrics(step, metrics)
+            # the orchestration layer. ``total_target_tokens`` sums the
+            # adapter loss-mask lengths across all rollout samples in
+            # the batch so billing metadata accumulates the actual
+            # number of tokens trained on at this step (not the raw
+            # rollout length, and not zero).
+            runner.append_metrics(
+                step,
+                metrics,
+                tokens=total_target_tokens(prompt_groups),
+            )
             runner.write_status(
                 RunStatus.RUNNING,
                 step=step,
