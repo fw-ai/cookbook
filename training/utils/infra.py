@@ -1474,6 +1474,7 @@ def _provision_deployment_owned(
     existing = _get_alive_deployment(deploy_mgr, deploy_cfg.deployment_id)
     if existing is not None:
         logger.info("Re-using deployment %s (PER_DEPLOYMENT)", deploy_cfg.deployment_id)
+        _register_deployment_cleanup(cleanup, deploy_cfg.deployment_id)
         return existing, deploy_cfg.deployment_id
 
     local = dataclasses.replace(deploy_cfg)
@@ -1508,6 +1509,7 @@ def _provision_trainer_owned(
                 dep_id,
                 trainer_job_name,
             )
+            _register_deployment_cleanup(cleanup, dep_id)
             return existing, dep_id
 
         prev_identity = _read_replica_identity(deploy_mgr, dep_id, base_model)
@@ -1521,6 +1523,7 @@ def _provision_trainer_owned(
             "settling in parallel with trainer waits",
             dep_id, trainer_job_name, prev_identity,
         )
+        _register_deployment_cleanup(cleanup, dep_id)
         timeout_s = getattr(deploy_cfg, "reattach_settle_timeout_s", None) or 600
         return _ReattachHandle(
             dep_info=existing,
