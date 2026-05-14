@@ -90,8 +90,9 @@ def test_extract_answer_from_completion_supports_multiple_formats(monkeypatch, c
 
 def test_deepmath_reward_supports_exact_and_numeric_fallback(monkeypatch):
     module = _load_module(monkeypatch)
-    monkeypatch.setattr(module, "math_parse", lambda _text: None)
-    monkeypatch.setattr(module, "math_verify", lambda _lhs, _rhs: False)
+    # Disable the symbolic (out-of-process) path so we exercise only the
+    # string-exact and numeric fallbacks.
+    monkeypatch.setattr(module, "math_verify", lambda _pred, _gt: False)
 
     assert module.deepmath_reward(r"Result \boxed{2}", {"ground_truth": "2"}) == 1.0
     assert module.deepmath_reward(r"Result \boxed{2.0}", {"ground_truth": "2"}) == 1.0

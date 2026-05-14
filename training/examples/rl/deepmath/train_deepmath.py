@@ -7,8 +7,10 @@ Run prepare_data.py first, then: python train_deepmath.py
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import subprocess
 import sys
 import logging
 import threading
@@ -22,26 +24,87 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from math_verify import parse as math_parse, verify as _math_verify_raw
+
+class _MathVerifyService:
+    """Runs math_verify symbolic comparison in a killable subprocess.
+
+    math_verify cannot be bounded safely in-process: its built-in timeout uses
+    ``signal.SIGALRM`` (the alarm fires into arbitrary asyncio event-loop code
+    and wedges rollouts), and disabling it leaves sympy's hyperexpand/lerchphi
+    expansions unbounded. A worker *thread* running such an expansion can't be
+    interrupted, so it leaks — enough leaked threads starve the GIL and stall
+    the trainer. A subprocess can simply be killed, which also unblocks our
+    reader thread (the pipe closes on kill), so nothing leaks.
+    """
+
+    _WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_mathverify_worker.py")
+
+    def __init__(self, worker_path: str | None = None):
+        self._worker_path = worker_path or self._WORKER
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+
+    def _ensure(self) -> None:
+        if self._proc is None or self._proc.poll() is not None:
+            self._proc = subprocess.Popen(
+                [sys.executable, self._worker_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+
+    def _kill(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+                self._proc.wait()
+            except Exception:
+                pass
+            self._proc = None
+
+    def verify(self, pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
+        with self._lock:
+            try:
+                self._ensure()
+                assert self._proc is not None and self._proc.stdin and self._proc.stdout
+                self._proc.stdin.write(json.dumps([pred_str, gt_str]) + "\n")
+                self._proc.stdin.flush()
+
+                result = [False]
+                done = threading.Event()
+
+                def _read() -> None:
+                    # If the worker wedges and we kill it, readline() unblocks
+                    # on EOF — so this thread never leaks.
+                    try:
+                        line = self._proc.stdout.readline()  # type: ignore[union-attr]
+                        result[0] = bool(json.loads(line)) if line.strip() else False
+                    except Exception:
+                        result[0] = False
+                    finally:
+                        done.set()
+
+                reader = threading.Thread(target=_read, daemon=True)
+                reader.start()
+                if done.wait(timeout):
+                    return result[0]
+                # Worker is stuck on a pathological sympy expansion — kill it
+                # (also unblocks the reader). It respawns on the next call.
+                self._kill()
+                return False
+            except Exception:
+                self._kill()
+                return False
 
 
-def math_verify(gold, target, timeout: float = 5.0) -> bool:
-    # math_verify's built-in timeout uses signal.SIGALRM, which is hostile to
-    # asyncio: the alarm fires into arbitrary GC/event-loop code and wedges
-    # rollouts. Disable it (timeout_seconds=0) and run on a daemon thread so
-    # we can move on if sympy is slow.
-    result = [False]
+_math_verify_service = _MathVerifyService()
 
-    def _run():
-        try:
-            result[0] = bool(_math_verify_raw(gold, target, timeout_seconds=0))
-        except Exception:
-            pass
 
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout)
-    return result[0]
+def math_verify(pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
+    """Symbolic equality check via the out-of-process math_verify worker."""
+    return _math_verify_service.verify(pred_str, gt_str, timeout=timeout)
+
 
 import training.recipes.rl_loop as rl_loop
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
@@ -85,8 +148,6 @@ class TrainArgs:
     region: str = "US_OHIO_1"
     deployment_region: str | None = None
     deployment_replica_count: int | None = None
-    trainer_replica_count: int | None = None
-    """Run-level data-parallel trainer replicas for HSDP launches."""
     max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8
@@ -95,10 +156,6 @@ class TrainArgs:
     temperature: float = 1.0
     max_completion_tokens: int = 30 * 1024
     prompt_groups_per_step: int = 32
-    lora_rank: int = 0
-    """LoRA rank (0 = full-param).  When > 0, auto_select_training_shape
-    picks a LoRA training shape and the reference model reuses the policy
-    trainer (no extra GPUs)."""
     router_replay: bool = False
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files."""
@@ -134,13 +191,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--region")
     parser.add_argument("--deployment-region")
     parser.add_argument("--deployment-replica-count", type=int)
-    parser.add_argument(
-        "--trainer-replicas",
-        "--trainer-replica-count",
-        dest="trainer_replica_count",
-        type=int,
-        help="Run-level data-parallel trainer replicas for HSDP launches",
-    )
 
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--epochs", type=int)
@@ -151,8 +201,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--max-completion-tokens", type=int)
 
     parser.add_argument("--prompt-groups-per-step", type=int)
-    parser.add_argument("--lora-rank", type=int,
-                        help="LoRA rank (0 = full-param, e.g. 64 or 128 for LoRA)")
 
     parser.add_argument("--trajectory-dir",
                         help="Directory to save per-step trajectory JSONL files")
@@ -271,9 +319,7 @@ def deepmath_reward(completion: str, row: dict) -> float:
     try:
         pred_boxed = f"\\boxed{{{predicted}}}"
         gt_boxed = f"\\boxed{{{ground_truth}}}"
-        pred_parsed = math_parse(pred_boxed)
-        gt_parsed = math_parse(gt_boxed)
-        if pred_parsed and gt_parsed and math_verify(pred_parsed, gt_parsed):
+        if math_verify(pred_boxed, gt_boxed):
             return 1.0
     except Exception:
         pass
@@ -326,7 +372,6 @@ def main():
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=args.max_rows,
-        lora_rank=args.lora_rank,
         prompt_groups_per_step=args.prompt_groups_per_step,
         trajectory_dir=args.trajectory_dir,
         tis=TISConfig(cap=2.0),
@@ -338,7 +383,6 @@ def main():
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             ref_training_shape_id=args.ref_training_shape,
-            trainer_replica_count=args.trainer_replica_count,
             region=args.region,
         ),
         deployment=DeployConfig(
@@ -389,7 +433,7 @@ def main():
         config,
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
-        cancel_on_exit=not args.skip_cleanup,
+        cleanup_on_exit=not args.skip_cleanup,
     )
 
     logger.info("Training complete. Final metrics: %s", metrics)
