@@ -26,6 +26,7 @@ from training.utils.config import (
     DeployConfig,
     InfraConfig,
     WeightSyncConfig,
+    WeightSyncScope,
 )
 from training.utils.infra import ResourceCleanup
 from training.utils.infra import Infra, setup_infra
@@ -895,3 +896,131 @@ def test_reattach_patch_issued_before_trainer_ready(monkeypatch):
     # Settle and trainer wait both ran (in parallel).
     assert "settle_start" in events
     assert "wait_done:grpo-policy" in events
+
+
+# ---------------------------------------------------------------------------
+# FIR2-1601 plan §9: existing deployments must not be registered for
+# *destructive* cleanup. Current infra registers them for non-destructive
+# ``scale_to_zero`` (so ``cancel_on_exit=True`` still tears down billable
+# capacity) — these tests pin that contract so a future change can't either
+# (a) silently switch to ``"delete"`` (would destructively remove a caller-
+#     owned deployment), or
+# (b) silently drop the cleanup registration entirely (would leave reused
+#     deployments running at full size after ``cancel_on_exit=True`` runs,
+#     a billing-leak regression).
+# ---------------------------------------------------------------------------
+
+
+def test_existing_deployment_reattach_registers_scale_to_zero_not_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PER_TRAINER reattach of a caller-owned deployment uses scale_to_zero only.
+
+    The plan's non-destructive guarantee is encoded by ``ResourceCleanup``:
+    ``cleanup.deployment(dep_id, action="scale_to_zero")`` calls
+    ``deploy_mgr.scale_to_zero(did)`` on scope exit, never ``delete(did)``.
+    This regression test asserts the registration uses the non-destructive
+    action so a future refactor can't silently turn ``cancel_on_exit=True``
+    into ``cancel_on_exit=delete-customer-deployment``.
+    """
+    _FakeClient.instances = []
+
+    def fake_request_trainer(_rlor, *, display_name, **_kwargs) -> SimpleNamespace:
+        return _trainer_handle("policy-job")
+
+    def fake_wait_trainer(_rlor, created, **_kwargs) -> SimpleNamespace:
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *_a, **_kw: None)
+    monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *_a, **_kw: None)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+
+    rlor, deploy = _make_mgrs(profile=_profile())
+    deploy.get.return_value = SimpleNamespace(
+        state="READY", inference_model=None, deployment_id="dep-existing",
+    )
+    cfg = _make_cfg(lora_rank=0, deployment_id="dep-existing")
+    cleanup = ResourceCleanup(rlor, deploy)
+
+    setup_infra(
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra_cfg=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
+        needs_reference=False, needs_inference=True,
+        role_prefix="grpo", api_key="key",
+        cleanup=cleanup,
+    )
+
+    # Reused deployment is registered exactly once with the non-destructive
+    # scale_to_zero action — never with "delete".
+    assert cleanup._deployments == [("dep-existing", "scale_to_zero")]
+    actions = [action for _did, action in cleanup._deployments]
+    assert "delete" not in actions, (
+        "Existing/reused deployments must not be registered for destructive "
+        "deletion (FIR2-1601 plan §9)."
+    )
+
+
+def test_existing_deployment_per_deployment_scope_registers_scale_to_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PER_DEPLOYMENT reuse path also stays on the non-destructive cleanup action."""
+    _FakeClient.instances = []
+
+    def fake_request_trainer(_rlor, *, display_name, **_kwargs) -> SimpleNamespace:
+        return _trainer_handle("policy-job")
+
+    def fake_wait_trainer(_rlor, created, **_kwargs) -> SimpleNamespace:
+        return _trainer_ep(getattr(created, "job_id", "policy-job"))
+
+    monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
+    monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
+    monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
+    monkeypatch.setattr(
+        infra_setup_mod, "auto_select_training_shape",
+        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
+    )
+
+    rlor, deploy = _make_mgrs(profile=_profile())
+    deploy.get.return_value = SimpleNamespace(
+        state="READY", inference_model=None, deployment_id="dep-existing",
+    )
+    cfg = _make_cfg(lora_rank=0, deployment_id="dep-existing")
+    cfg.deployment.weight_sync_scope = WeightSyncScope.PER_DEPLOYMENT
+    cleanup = ResourceCleanup(rlor, deploy)
+
+    setup_infra(
+        rlor_mgr=rlor, deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra_cfg=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
+        needs_reference=False, needs_inference=True,
+        role_prefix="grpo", api_key="key",
+        cleanup=cleanup,
+    )
+
+    assert cleanup._deployments == [("dep-existing", "scale_to_zero")]
+    actions = [action for _did, action in cleanup._deployments]
+    assert "delete" not in actions, (
+        "PER_DEPLOYMENT scope must keep using scale_to_zero for caller-owned "
+        "deployments (FIR2-1601 plan §9)."
+    )
