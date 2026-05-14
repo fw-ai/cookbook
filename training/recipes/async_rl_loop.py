@@ -168,6 +168,8 @@ class Config:
     """Promote the final checkpoint to this 4-segment model id on clean exit."""
     policy_job_id: str | None = None
     """Reuse an existing policy trainer job (e.g. when resuming)."""
+    reference_job_id: str | None = None
+    """Reuse an existing reference trainer job (e.g. when resuming)."""
 
 
 @dataclass
@@ -289,7 +291,7 @@ def main(
     cancel_on_exit: bool = False,
     rollout_extras: dict[str, Any] | None = None,
     on_resources_ready: ResourceCallback | None = None,
-) -> None:
+) -> dict[str, Any]:
     """Run the async RL loop with a user-supplied rollout factory.
 
     ``rollout_fn_factory(setup) -> rollout_fn`` is called once at startup
@@ -403,6 +405,7 @@ def main(
             max_seq_len=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
             needs_reference=(cfg.kl_beta > 0),
             needs_inference=True,
             role_prefix="rl-async",
@@ -837,6 +840,7 @@ def main(
         wandb_finish()
         return {
             "steps": global_step,
+            "deployment_id": infra.deployment_id,
             "policy_job_id": policy_job_id,
             "reference_job_id": infra.reference_job_id,
         }

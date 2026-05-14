@@ -310,8 +310,17 @@ class _StubCleanup:
         return False
 
 
-def _stub_infra(*, with_reference: bool = False) -> SimpleNamespace:
+def _stub_infra(
+    *,
+    with_reference: bool = False,
+    deployment_id: str | None = "deployment-1",
+    policy_job_id: str = "policy-job-1",
+    reference_job_id: str | None = None,
+) -> SimpleNamespace:
     """Return a fake ``Infra`` covering the attributes ``main`` reads."""
+    resolved_reference_job_id = reference_job_id
+    if with_reference and resolved_reference_job_id is None:
+        resolved_reference_job_id = "ref-job-1"
     return SimpleNamespace(
         policy=_StubPolicy(),
         reference=None,
@@ -319,15 +328,15 @@ def _stub_infra(*, with_reference: bool = False) -> SimpleNamespace:
             accelerator_type="NVIDIA_H100_80GB",
             accelerator_count=8,
         ),
-        policy_job_id="policy-job-1",
-        reference_job_id="ref-job-1" if with_reference else None,
+        policy_job_id=policy_job_id,
+        reference_job_id=resolved_reference_job_id,
         inference_model="accounts/test/models/inf",
         boot_metrics={},
         closeables=[],
         max_seq_len=4096,
         training_shape_id="ts-1",
         ref_training_shape_id=None,
-        deployment_id="deployment-1",
+        deployment_id=deployment_id,
         deployment_shape=None,
         deployment_gpu_count=8,
     )
@@ -408,6 +417,11 @@ def _async_config(tmp_path: Path) -> async_rl_loop.Config:
         deployment=DeployConfig(tokenizer_model="unit-tokenizer"),
         runner=_runner_cfg(tmp_path),
     )
+
+
+async def _no_training_async_loop(**_kwargs: object) -> tuple[int, dict[str, int]]:
+    """Stub ``run_async_rl_loop`` that completes without a training step."""
+    return 0, {"resolved_rows": 0}
 
 
 def _read_json(path: Path) -> dict:
@@ -590,3 +604,151 @@ class TestAsyncRunArtifactWrites:
                 "reference_job_id": "ref-job-1",
             }
         ]
+
+
+class TestAsyncRunResourceReuse:
+    """FIR2-1601: async cold-start resume IDs are threaded through ``main``."""
+
+    def test_reference_job_id_is_passed_to_setup_infra(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Existing policy/reference trainer IDs reach ``setup_infra``."""
+        setup_calls: list[dict] = []
+
+        def fake_setup_infra(**kwargs: object) -> SimpleNamespace:
+            setup_calls.append(dict(kwargs))
+            return _stub_infra(
+                with_reference=True,
+                policy_job_id="policy-existing",
+                reference_job_id="ref-existing",
+            )
+
+        _patch_async_loop_deps(
+            monkeypatch,
+            setup_infra_fn=fake_setup_infra,
+            run_async_rl_loop_fn=_no_training_async_loop,
+        )
+
+        cfg = _async_config(tmp_path)
+        cfg.kl_beta = 0.1
+        cfg.policy_job_id = "policy-existing"
+        cfg.reference_job_id = "ref-existing"
+
+        async_rl_loop.main(
+            cfg,
+            rollout_fn_factory=lambda _setup: lambda _row: None,
+            rows=[{"id": "row-1"}],
+        )
+
+        assert setup_calls
+        assert setup_calls[0]["policy_job_id"] == "policy-existing"
+        assert setup_calls[0]["reference_job_id"] == "ref-existing"
+        assert setup_calls[0]["needs_reference"] is True
+
+    def test_default_reference_job_id_none_remains_compatible(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Default configs still construct and pass ``reference_job_id=None``."""
+        setup_calls: list[dict] = []
+        callback_payloads: list[dict] = []
+
+        def fake_setup_infra(**kwargs: object) -> SimpleNamespace:
+            setup_calls.append(dict(kwargs))
+            return _stub_infra(reference_job_id=None)
+
+        _patch_async_loop_deps(
+            monkeypatch,
+            setup_infra_fn=fake_setup_infra,
+            run_async_rl_loop_fn=_no_training_async_loop,
+        )
+
+        cfg = _async_config(tmp_path)
+        result = async_rl_loop.main(
+            cfg,
+            rollout_fn_factory=lambda _setup: lambda _row: None,
+            rows=[{"id": "row-1"}],
+            on_resources_ready=lambda **resources: callback_payloads.append(dict(resources)),
+        )
+
+        assert cfg.reference_job_id is None
+        assert setup_calls[0]["reference_job_id"] is None
+        assert setup_calls[0]["needs_reference"] is False
+        assert callback_payloads == [
+            {
+                "deployment_id": "deployment-1",
+                "policy_job_id": "policy-job-1",
+                "reference_job_id": None,
+            }
+        ]
+        assert result["reference_job_id"] is None
+
+    def test_deployment_id_reuse_reaches_infra_and_resource_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Existing deployment IDs reach infra and are exposed in snapshots."""
+        setup_calls: list[dict] = []
+        callback_payloads: list[dict] = []
+
+        def fake_setup_infra(**kwargs: object) -> SimpleNamespace:
+            setup_calls.append(dict(kwargs))
+            return _stub_infra(
+                deployment_id="dep-existing",
+                policy_job_id="policy-existing",
+                reference_job_id="ref-existing",
+            )
+
+        _patch_async_loop_deps(
+            monkeypatch,
+            setup_infra_fn=fake_setup_infra,
+            run_async_rl_loop_fn=_no_training_async_loop,
+        )
+
+        cfg = _async_config(tmp_path)
+        cfg.kl_beta = 0.1
+        cfg.policy_job_id = "policy-existing"
+        cfg.reference_job_id = "ref-existing"
+        cfg.deployment = DeployConfig(
+            deployment_id="dep-existing",
+            tokenizer_model="unit-tokenizer",
+        )
+
+        result = async_rl_loop.main(
+            cfg,
+            rollout_fn_factory=lambda _setup: lambda _row: None,
+            rows=[{"id": "row-1"}],
+            on_resources_ready=lambda **resources: callback_payloads.append(dict(resources)),
+        )
+
+        assert setup_calls[0]["deploy_cfg"].deployment_id == "dep-existing"
+        assert callback_payloads == [
+            {
+                "deployment_id": "dep-existing",
+                "policy_job_id": "policy-existing",
+                "reference_job_id": "ref-existing",
+            }
+        ]
+        assert result["deployment_id"] == "dep-existing"
+        assert result["policy_job_id"] == "policy-existing"
+        assert result["reference_job_id"] == "ref-existing"
+
+    def test_main_return_value_includes_resource_ids(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The final convenience snapshot includes deployment/policy/reference IDs."""
+        _patch_async_loop_deps(
+            monkeypatch,
+            setup_infra_fn=lambda **_kwargs: _stub_infra(with_reference=True),
+            run_async_rl_loop_fn=_no_training_async_loop,
+        )
+
+        cfg = _async_config(tmp_path)
+        cfg.kl_beta = 0.1
+        result = async_rl_loop.main(
+            cfg,
+            rollout_fn_factory=lambda _setup: lambda _row: None,
+            rows=[{"id": "row-1"}],
+        )
+
+        assert result["deployment_id"] == "deployment-1"
+        assert result["policy_job_id"] == "policy-job-1"
+        assert result["reference_job_id"] == "ref-job-1"

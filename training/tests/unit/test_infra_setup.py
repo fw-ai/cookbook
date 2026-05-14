@@ -26,6 +26,7 @@ from training.utils.config import (
     DeployConfig,
     InfraConfig,
     WeightSyncConfig,
+    WeightSyncScope,
 )
 from training.utils.infra import ResourceCleanup
 from training.utils.infra import Infra, setup_infra
@@ -895,3 +896,78 @@ def test_reattach_patch_issued_before_trainer_ready(monkeypatch):
     # Settle and trainer wait both ran (in parallel).
     assert "settle_start" in events
     assert "wait_done:grpo-policy" in events
+
+
+def test_existing_deployment_reattach_not_registered_for_cleanup(patch_sdk):
+    """A caller-provided deployment ID is reattached but not destructively cleaned."""
+    rlor, deploy = _make_mgrs(profile=_profile())
+    deploy.get.return_value = SimpleNamespace(
+        state="READY",
+        inference_model=None,
+        deployment_id="dep-existing",
+    )
+    deploy._get_deployment.return_value = {"hotLoadTrainerJob": "jobs/old-policy"}
+    cfg = _make_cfg(lora_rank=0, deployment_id="dep-existing")
+    cleanup = ResourceCleanup(rlor, deploy)
+
+    infra = setup_infra(
+        rlor_mgr=rlor,
+        deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra_cfg=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
+        needs_reference=False,
+        needs_inference=True,
+        role_prefix="grpo",
+        api_key="key",
+        cleanup=cleanup,
+    )
+
+    assert infra.deployment_id == "dep-existing"
+    deploy.update.assert_called_once_with(
+        "dep-existing",
+        body={"hotLoadTrainerJob": "jobs/policy-job"},
+        update_mask="hot_load_trainer_job",
+    )
+    assert cleanup._deployments == []
+
+
+def test_existing_deployment_owned_scope_not_registered_for_cleanup(patch_sdk):
+    """PER_DEPLOYMENT reuse also leaves the caller-owned deployment alive."""
+    rlor, deploy = _make_mgrs(profile=_profile())
+    deploy.get.return_value = SimpleNamespace(
+        state="READY",
+        inference_model=None,
+        deployment_id="dep-existing",
+    )
+    cfg = _make_cfg(lora_rank=0, deployment_id="dep-existing")
+    cfg.deployment.weight_sync_scope = WeightSyncScope.PER_DEPLOYMENT
+    cleanup = ResourceCleanup(rlor, deploy)
+
+    infra = setup_infra(
+        rlor_mgr=rlor,
+        deploy_mgr=deploy,
+        base_model=cfg.base_model,
+        infra_cfg=cfg.infra,
+        deploy_cfg=cfg.deployment,
+        lora_rank=cfg.lora_rank,
+        max_seq_len=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        step_timeout=cfg.step_timeout,
+        policy_job_id=cfg.policy_job_id,
+        reference_job_id=cfg.reference_job_id,
+        needs_reference=False,
+        needs_inference=True,
+        role_prefix="grpo",
+        api_key="key",
+        cleanup=cleanup,
+    )
+
+    assert infra.deployment_id == "dep-existing"
+    assert cleanup._deployments == []
