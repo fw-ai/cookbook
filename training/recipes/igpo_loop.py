@@ -74,7 +74,10 @@ from training.utils.rl.losses import (
     combine_prompt_groups,
 )
 from training.utils.rl.metrics import compute_step_metrics
-from training.utils.rl.router_replay import build_r3_routing_matrices
+from training.utils.rl.router_replay import (
+    build_r3_routing_matrices,
+    describe_r3_routing_alignment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -493,10 +496,42 @@ def main(
 
                 rm = None
                 if cfg.router_replay:
+                    alignment = describe_r3_routing_alignment(
+                        s.routing_matrices,
+                        prompt_len=s.prompt_len,
+                        model_input_len=model_input_len,
+                        completion_only=cfg.router_replay_completion_only,
+                    )
                     rm = build_r3_routing_matrices(
                         s.routing_matrices, s.prompt_len, model_input_len,
                         completion_only=cfg.router_replay_completion_only,
                     )
+                    if (
+                        alignment.kind != "full"
+                        or alignment.aligned_len != model_input_len
+                        or alignment.aligned_non_empty != alignment.aligned_len
+                    ):
+                        logger.warning(
+                            "R3 sample alignment: sample=%d kind=%s prompt_len=%d "
+                            "full_tokens=%d model_input_len=%d completion_len=%d "
+                            "routing_matrices=%d inference_logprobs=%s logprobs_echoed=%s "
+                            "finish_reason=%s completion_only_expected=%d aligned_len=%d "
+                            "source_non_empty=%d aligned_non_empty=%d",
+                            idx,
+                            alignment.kind,
+                            s.prompt_len,
+                            len(tokens),
+                            model_input_len,
+                            len(tokens) - s.prompt_len,
+                            alignment.source_len,
+                            None if s.inference_logprobs is None else len(s.inference_logprobs),
+                            getattr(s, "logprobs_echoed", None),
+                            s.finish_reason,
+                            alignment.completion_only_expected,
+                            alignment.aligned_len,
+                            alignment.source_non_empty,
+                            alignment.aligned_non_empty,
+                        )
 
                 policy_data.append(tinker.Datum(
                     model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),
