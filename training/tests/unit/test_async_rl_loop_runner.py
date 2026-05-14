@@ -590,3 +590,240 @@ class TestAsyncRunArtifactWrites:
                 "reference_job_id": "ref-job-1",
             }
         ]
+
+
+# ---------------------------------------------------------------------------
+# FIR2-1601: resource-ID resume hooks (deployment / policy / reference)
+#
+# The managed cold-start fallback relies on three pieces of state:
+#   * ``DeployConfig.deployment_id`` so the inference deployment is
+#     reattached instead of provisioned from scratch.
+#   * ``Config.policy_job_id`` so the policy trainer is reattached.
+#   * ``Config.reference_job_id`` so the reference (KL) trainer is
+#     reattached when ``kl_beta > 0``.
+#
+# These tests cover the FIR2-1601 acceptance criteria literally:
+#   * ``reference_job_id`` is forwarded to ``setup_infra``.
+#   * ``DeployConfig.deployment_id`` reuse path is preserved.
+#   * The default-config path (``reference_job_id=None``,
+#     ``deployment_id=None``) keeps existing cookbook examples
+#     compatible with no caller changes.
+#   * The on_resources_ready callback and the ``main()`` return value
+#     both expose all three IDs so the orchestrator has both an early
+#     snapshot hook and a final snapshot for resources.json updates.
+# ---------------------------------------------------------------------------
+
+
+class TestSetupInfraReceivesResumeIds:
+    """FIR2-1601: cookbook recipe forwards reuse IDs to ``setup_infra``."""
+
+    def _capture_setup_infra_kwargs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        cfg: async_rl_loop.Config,
+        rows: list[dict],
+        infra: SimpleNamespace | None = None,
+    ) -> dict[str, object]:
+        """Drive ``async_rl_loop.main`` through the test stubs and return
+        the kwargs the recipe handed to ``setup_infra`` (so the test can
+        assert IDs were forwarded verbatim)."""
+        captured: dict[str, object] = {}
+
+        def fake_setup_infra(**kwargs):
+            captured.update(kwargs)
+            return infra if infra is not None else _stub_infra()
+
+        async def fake_run_async_rl_loop(**_kwargs):
+            return 0, {"resolved_rows": 0}
+
+        _patch_async_loop_deps(
+            monkeypatch,
+            setup_infra_fn=fake_setup_infra,
+            run_async_rl_loop_fn=fake_run_async_rl_loop,
+        )
+
+        async_rl_loop.main(
+            cfg,
+            rollout_fn_factory=lambda _setup: lambda _row: None,
+            rows=rows,
+        )
+        return captured
+
+    def test_reference_job_id_forwarded_to_setup_infra(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``cfg.reference_job_id`` reaches ``setup_infra(reference_job_id=...)``.
+
+        Acceptance criterion: ``Config.reference_job_id`` mirrors the
+        sync ``rl_loop.Config.reference_job_id`` and must be passed
+        through so cold-start fallback can reattach the same KL trainer.
+        Uses ``kl_beta=0.5`` so the recipe takes the reference-trainer
+        code path (``needs_reference=True``).
+        """
+        cfg = _async_config(tmp_path)
+        cfg.kl_beta = 0.5  # ensure the reference-trainer path is exercised
+        cfg.policy_job_id = "policy-existing"
+        cfg.reference_job_id = "ref-existing"
+
+        captured = self._capture_setup_infra_kwargs(
+            monkeypatch,
+            cfg=cfg,
+            rows=[{"id": "row-1"}],
+        )
+
+        assert captured["policy_job_id"] == "policy-existing"
+        assert captured["reference_job_id"] == "ref-existing"
+        assert captured["needs_reference"] is True
+
+    def test_default_reference_job_id_is_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Default config -> ``setup_infra`` receives ``reference_job_id=None``.
+
+        Acceptance criterion: existing cookbook examples continue to
+        run with ``Config()`` defaults; nothing in the public surface
+        forces callers to pass a ``reference_job_id``.
+        """
+        cfg = _async_config(tmp_path)
+        # _async_config() leaves both reuse fields at their defaults so this
+        # asserts the default contract directly.
+        assert cfg.reference_job_id is None
+        assert cfg.policy_job_id is None
+
+        captured = self._capture_setup_infra_kwargs(
+            monkeypatch,
+            cfg=cfg,
+            rows=[{"id": "row-1"}],
+        )
+
+        assert captured["reference_job_id"] is None
+        assert captured["policy_job_id"] is None
+        # kl_beta=0 in the default test config -> no reference trainer.
+        assert captured["needs_reference"] is False
+
+    def test_deployment_id_reuse_path_reaches_setup_infra(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``DeployConfig.deployment_id`` is forwarded via ``deploy_cfg``.
+
+        Acceptance criterion: when the orchestrator hands the recipe an
+        existing deployment ID, that ID must reach
+        ``setup_infra(deploy_cfg=...)`` so the underlying provisioner
+        can reattach instead of POSTing a new deployment.
+        """
+        cfg = _async_config(tmp_path)
+        cfg.deployment = DeployConfig(
+            tokenizer_model="unit-tokenizer",
+            deployment_id="dep-existing",
+        )
+
+        infra_with_existing_dep = _stub_infra()
+        infra_with_existing_dep.deployment_id = "dep-existing"
+        captured = self._capture_setup_infra_kwargs(
+            monkeypatch,
+            cfg=cfg,
+            rows=[{"id": "row-1"}],
+            infra=infra_with_existing_dep,
+        )
+
+        assert captured["deploy_cfg"] is cfg.deployment
+        assert captured["deploy_cfg"].deployment_id == "dep-existing"
+
+
+class TestAsyncMainReturnsResourceSnapshot:
+    """FIR2-1601: ``main()`` returns a final snapshot of all three IDs.
+
+    The snapshot is informational -- the orchestrator's authoritative
+    early hook is still ``on_resources_ready`` -- but managed callers
+    that drive ``main()`` directly can use the return value as a final
+    confirmation of the resources actually used by the run.
+    """
+
+    def test_main_return_value_includes_all_three_ids(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Return dict carries deployment / policy / reference IDs."""
+
+        def fake_setup_infra(**_kwargs):
+            return _stub_infra(with_reference=True)
+
+        async def fake_run_async_rl_loop(**_kwargs):
+            return 0, {"resolved_rows": 0}
+
+        _patch_async_loop_deps(
+            monkeypatch,
+            setup_infra_fn=fake_setup_infra,
+            run_async_rl_loop_fn=fake_run_async_rl_loop,
+        )
+
+        cfg = _async_config(tmp_path)
+        cfg.kl_beta = 0.5  # exercise the reference-trainer code path
+
+        result = async_rl_loop.main(
+            cfg,
+            rollout_fn_factory=lambda _setup: lambda _row: None,
+            rows=[{"id": "row-1"}],
+        )
+
+        assert isinstance(result, dict)
+        assert result["deployment_id"] == "deployment-1"
+        assert result["policy_job_id"] == "policy-job-1"
+        assert result["reference_job_id"] == "ref-job-1"
+        # ``steps`` is the legacy field this snapshot keeps populated.
+        assert result["steps"] == 0
+
+    def test_main_return_value_when_reference_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No-reference runs return ``reference_job_id=None`` (not absent).
+
+        Stable shape: callers that record the snapshot can rely on the
+        key being present even when no reference trainer was used.
+        """
+
+        def fake_setup_infra(**_kwargs):
+            return _stub_infra()  # reference_job_id=None
+
+        async def fake_run_async_rl_loop(**_kwargs):
+            return 0, {"resolved_rows": 0}
+
+        _patch_async_loop_deps(
+            monkeypatch,
+            setup_infra_fn=fake_setup_infra,
+            run_async_rl_loop_fn=fake_run_async_rl_loop,
+        )
+
+        result = async_rl_loop.main(
+            _async_config(tmp_path),
+            rollout_fn_factory=lambda _setup: lambda _row: None,
+            rows=[{"id": "row-1"}],
+        )
+
+        assert result["reference_job_id"] is None
+        assert "deployment_id" in result
+        assert "policy_job_id" in result
+
+
+class TestConfigSupportsReferenceJobId:
+    """``Config.reference_job_id`` is a public, optional, default-None field."""
+
+    def test_default_reference_job_id_is_none(self) -> None:
+        """Default ``Config`` keeps ``reference_job_id`` unset for backward compat."""
+        cfg = async_rl_loop.Config(log_path="gs://logs")
+        assert cfg.reference_job_id is None
+
+    def test_reference_job_id_accepts_string(self) -> None:
+        """``Config(reference_job_id="ref-123")`` constructs cleanly."""
+        cfg = async_rl_loop.Config(log_path="gs://logs", reference_job_id="ref-123")
+        assert cfg.reference_job_id == "ref-123"
+
+    def test_reference_job_id_independent_of_policy_job_id(self) -> None:
+        """The two reuse IDs can be set independently."""
+        cfg = async_rl_loop.Config(
+            log_path="gs://logs",
+            policy_job_id="pol-1",
+            reference_job_id="ref-1",
+        )
+        assert cfg.policy_job_id == "pol-1"
+        assert cfg.reference_job_id == "ref-1"
