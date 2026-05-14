@@ -7,10 +7,13 @@ Run prepare_data.py first, then: python train_deepmath.py
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import subprocess
 import sys
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import cast
@@ -21,7 +24,88 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from math_verify import parse as math_parse, verify as math_verify
+
+class _MathVerifyService:
+    """Runs math_verify symbolic comparison in a killable subprocess.
+
+    math_verify cannot be bounded safely in-process: its built-in timeout uses
+    ``signal.SIGALRM`` (the alarm fires into arbitrary asyncio event-loop code
+    and wedges rollouts), and disabling it leaves sympy's hyperexpand/lerchphi
+    expansions unbounded. A worker *thread* running such an expansion can't be
+    interrupted, so it leaks — enough leaked threads starve the GIL and stall
+    the trainer. A subprocess can simply be killed, which also unblocks our
+    reader thread (the pipe closes on kill), so nothing leaks.
+    """
+
+    _WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_mathverify_worker.py")
+
+    def __init__(self, worker_path: str | None = None):
+        self._worker_path = worker_path or self._WORKER
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+
+    def _ensure(self) -> None:
+        if self._proc is None or self._proc.poll() is not None:
+            self._proc = subprocess.Popen(
+                [sys.executable, self._worker_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+
+    def _kill(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+                self._proc.wait()
+            except Exception:
+                pass
+            self._proc = None
+
+    def verify(self, pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
+        with self._lock:
+            try:
+                self._ensure()
+                proc = self._proc
+                assert proc is not None and proc.stdin and proc.stdout
+                proc.stdin.write(json.dumps([pred_str, gt_str]) + "\n")
+                proc.stdin.flush()
+
+                result = [False]
+                done = threading.Event()
+
+                def _read() -> None:
+                    # If the worker wedges and we kill it, readline() unblocks
+                    # on EOF — so this thread never leaks.
+                    try:
+                        line = proc.stdout.readline()  # type: ignore[union-attr]
+                        result[0] = bool(json.loads(line)) if line.strip() else False
+                    except Exception:
+                        result[0] = False
+                    finally:
+                        done.set()
+
+                reader = threading.Thread(target=_read, daemon=True)
+                reader.start()
+                if done.wait(timeout):
+                    return result[0]
+                # Worker is stuck on a pathological sympy expansion — kill it
+                # (also unblocks the reader). It respawns on the next call.
+                self._kill()
+                return False
+            except Exception:
+                self._kill()
+                return False
+
+
+_math_verify_service = _MathVerifyService()
+
+
+def math_verify(pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
+    """Symbolic equality check via the out-of-process math_verify worker."""
+    return _math_verify_service.verify(pred_str, gt_str, timeout=timeout)
+
 
 import training.recipes.rl_loop as rl_loop
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
@@ -251,9 +335,7 @@ def deepmath_reward(completion: str, row: dict) -> float:
     try:
         pred_boxed = f"\\boxed{{{predicted}}}"
         gt_boxed = f"\\boxed{{{ground_truth}}}"
-        pred_parsed = math_parse(pred_boxed)
-        gt_parsed = math_parse(gt_boxed)
-        if pred_parsed and gt_parsed and math_verify(pred_parsed, gt_parsed):
+        if math_verify(pred_boxed, gt_boxed):
             return 1.0
     except Exception:
         pass
