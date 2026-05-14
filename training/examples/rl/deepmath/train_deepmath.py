@@ -67,9 +67,10 @@ class _MathVerifyService:
         with self._lock:
             try:
                 self._ensure()
-                assert self._proc is not None and self._proc.stdin and self._proc.stdout
-                self._proc.stdin.write(json.dumps([pred_str, gt_str]) + "\n")
-                self._proc.stdin.flush()
+                proc = self._proc
+                assert proc is not None and proc.stdin and proc.stdout
+                proc.stdin.write(json.dumps([pred_str, gt_str]) + "\n")
+                proc.stdin.flush()
 
                 result = [False]
                 done = threading.Event()
@@ -78,7 +79,7 @@ class _MathVerifyService:
                     # If the worker wedges and we kill it, readline() unblocks
                     # on EOF — so this thread never leaks.
                     try:
-                        line = self._proc.stdout.readline()  # type: ignore[union-attr]
+                        line = proc.stdout.readline()  # type: ignore[union-attr]
                         result[0] = bool(json.loads(line)) if line.strip() else False
                     except Exception:
                         result[0] = False
@@ -148,6 +149,8 @@ class TrainArgs:
     region: str = "US_OHIO_1"
     deployment_region: str | None = None
     deployment_replica_count: int | None = None
+    trainer_replica_count: int | None = None
+    """Run-level data-parallel trainer replicas for HSDP launches."""
     max_rows: int = 1500
     epochs: int = 3
     completions_per_prompt: int = 8
@@ -156,6 +159,10 @@ class TrainArgs:
     temperature: float = 1.0
     max_completion_tokens: int = 30 * 1024
     prompt_groups_per_step: int = 32
+    lora_rank: int = 0
+    """LoRA rank (0 = full-param).  When > 0, auto_select_training_shape
+    picks a LoRA training shape and the reference model reuses the policy
+    trainer (no extra GPUs)."""
     router_replay: bool = False
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files."""
@@ -191,6 +198,13 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--region")
     parser.add_argument("--deployment-region")
     parser.add_argument("--deployment-replica-count", type=int)
+    parser.add_argument(
+        "--trainer-replicas",
+        "--trainer-replica-count",
+        dest="trainer_replica_count",
+        type=int,
+        help="Run-level data-parallel trainer replicas for HSDP launches",
+    )
 
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--epochs", type=int)
@@ -201,6 +215,8 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--max-completion-tokens", type=int)
 
     parser.add_argument("--prompt-groups-per-step", type=int)
+    parser.add_argument("--lora-rank", type=int,
+                        help="LoRA rank (0 = full-param, e.g. 64 or 128 for LoRA)")
 
     parser.add_argument("--trajectory-dir",
                         help="Directory to save per-step trajectory JSONL files")
@@ -372,6 +388,7 @@ def main():
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=args.max_rows,
+        lora_rank=args.lora_rank,
         prompt_groups_per_step=args.prompt_groups_per_step,
         trajectory_dir=args.trajectory_dir,
         tis=TISConfig(cap=2.0),
@@ -383,6 +400,7 @@ def main():
         infra=InfraConfig(
             training_shape_id=args.training_shape,
             ref_training_shape_id=args.ref_training_shape,
+            trainer_replica_count=args.trainer_replica_count,
             region=args.region,
         ),
         deployment=DeployConfig(
@@ -433,7 +451,7 @@ def main():
         config,
         rlor_mgr=rlor_mgr,
         deploy_mgr=deploy_mgr,
-        cleanup_on_exit=not args.skip_cleanup,
+        cancel_on_exit=not args.skip_cleanup,
     )
 
     logger.info("Training complete. Final metrics: %s", metrics)
