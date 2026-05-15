@@ -23,25 +23,27 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import json
+import logging
 import os
 import time
-import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.parse import urlencode
 
-from fireworks.training.sdk.client import (
-    FiretitanServiceClient,
-    FiretitanTrainingClient,
-)
+import httpx
 from fireworks.training.sdk import (
     TrainerJobConfig,
     TrainerJobManager,
     TrainerServiceEndpoint,
     TrainingShapeProfile,
 )
+from fireworks.training.sdk.client import (
+    FiretitanServiceClient,
+    FiretitanTrainingClient,
+)
+
 try:
     from fireworks.training.sdk import CreatedTrainerJob
 except ImportError:
@@ -51,9 +53,10 @@ from fireworks.training.sdk.deployment import (
     DeploymentInfo,
     DeploymentManager,
 )
-from training.utils.config import InfraConfig, DeployConfig, WeightSyncScope
+
+from training.utils.client import DEFAULT_TIMEOUT_S, ReconnectableClient
+from training.utils.config import DeployConfig, InfraConfig, WeightSyncScope
 from training.utils.training_shapes import auto_select_training_shape
-from training.utils.client import ReconnectableClient, DEFAULT_TIMEOUT_S
 
 TrainerHandle = CreatedTrainerJob | TrainerServiceEndpoint
 """Return type of :func:`request_trainer_job`.
@@ -335,12 +338,6 @@ def request_trainer_job(
         if _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT:
             extra_trainer_args["trainer_replica_count"] = infra.trainer_replica_count
 
-    # `grad_accum` is deprecated as a server-side knob. The Tinker/RLOR path
-    # does not honor a backward-time /G divide — cross-microbatch normalization
-    # happens at optim_step via OptimStepRequest.grad_accumulation_normalization,
-    # and the caller expresses GA as control flow (N forward_backward calls
-    # per optim_step). Forwarding grad_accum>1 to the server would request the
-    # naive Unsloth-style bug (https://unsloth.ai/blog/gradient). Always send 1.
     if grad_accum != 1:
         logger.warning(
             "grad_accum=%d is deprecated and ignored: the Tinker/RLOR engine "
@@ -1461,8 +1458,8 @@ def _deployment_hot_load_trainer_job(
     """Best-effort read of a deployment's attached hot-load trainer job."""
     try:
         data = deploy_mgr._get_deployment(dep_id)  # SDK wrapper does not expose this field.
-    except Exception as e:
-        logger.warning("Could not read deployment %s hot-load trainer: %s", dep_id, e)
+    except httpx.HTTPError as exc:
+        logger.warning("Could not read deployment %s hot-load trainer: %s", dep_id, exc)
         return None
     if not data:
         return None

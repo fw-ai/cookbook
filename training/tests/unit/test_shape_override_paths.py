@@ -11,6 +11,7 @@ Two paths tested:
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -77,14 +78,12 @@ class TestShapePath:
             base_model=BASE_MODEL,
             infra=InfraConfig(region="US_VIRGINIA_1"),
             profile=PROFILE,
-            grad_accum=2,  # deprecated; should be ignored and overridden to 1
+            grad_accum=2,
         )
         c = mgr.captured
 
         assert c.training_shape_ref == PROFILE.training_shape_version
         assert c.base_model == BASE_MODEL
-        # grad_accum is deprecated: server-side gradient_accumulation_steps is
-        # always sent as 1 regardless of what the caller passed. See infra.py.
         assert c.gradient_accumulation_steps == 1
         assert c.region == "US_VIRGINIA_1"
 
@@ -234,8 +233,6 @@ class TestGradAccumDeprecated:
         )
 
     def test_nonone_grad_accum_emits_warning(self, caplog):
-        import logging
-
         mgr = _CapturingMgr()
         with caplog.at_level(logging.WARNING, logger="training.utils.infra"):
             infra_module.create_trainer_job(
