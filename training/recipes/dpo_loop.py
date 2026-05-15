@@ -46,22 +46,22 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import tinker
+from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from tqdm import tqdm
 
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
-    AppendOnlyPickleLog,
     DEFAULT_ADAM,
     DEFAULT_RENDER_WORKERS,
+    AppendOnlyPickleLog,
     DeployConfig,
     InfraConfig,
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
     ResourceCleanup,
-    RunStatus,
     RunnerConfig,
     RunnerIO,
+    RunStatus,
     WandBConfig,
     log_metrics_json,
     make_batch_dpo_loss_fn,
@@ -73,6 +73,7 @@ from training.utils import (
     resolve_renderer_name,
     setup_wandb,
     validate_config,
+    validate_grad_accum_for_trainer_job,
     wandb_finish,
     wandb_log,
 )
@@ -566,11 +567,7 @@ def main(
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
 
-    if cfg.grad_accum > 1:
-        logger.warning(
-            "grad_accum is deprecated and ignored. "
-            "Increase batch_size instead for larger effective batches."
-        )
+    validate_grad_accum_for_trainer_job(cfg.grad_accum)
 
     setup_wandb(cfg.wandb, {
         "beta": cfg.beta,

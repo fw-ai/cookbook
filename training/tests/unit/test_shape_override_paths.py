@@ -15,13 +15,13 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-
-import training.utils.infra as infra_module
-from training.utils.config import InfraConfig
 from fireworks.training.sdk import (
     TrainerJobConfig,
     TrainingShapeProfile,
 )
+
+import training.utils.infra as infra_module
+from training.utils.config import InfraConfig
 
 BASE_MODEL = "accounts/fireworks/models/qwen3-1p7b"
 
@@ -83,7 +83,7 @@ class TestShapePath:
 
         assert c.training_shape_ref == PROFILE.training_shape_version
         assert c.base_model == BASE_MODEL
-        assert c.gradient_accumulation_steps == 1
+        assert c.gradient_accumulation_steps is None
         assert c.region == "US_VIRGINIA_1"
 
         assert c.accelerator_type is None
@@ -213,14 +213,14 @@ class TestGradAccumDeprecated:
 
     def test_unset_grad_accum_is_silent(self, caplog):
         with caplog.at_level(logging.WARNING, logger="training.utils.infra"):
-            infra_module._validate_grad_accum_for_trainer_job(None)
+            infra_module.validate_grad_accum_for_trainer_job(None)
         assert not any("grad_accum" in rec.message for rec in caplog.records)
 
     def test_explicit_one_grad_accum_warns(self, caplog):
         with caplog.at_level(logging.WARNING, logger="training.utils.infra"):
-            infra_module._validate_grad_accum_for_trainer_job(1)
+            infra_module.validate_grad_accum_for_trainer_job(1)
         assert any("grad_accum=1 is deprecated" in rec.message for rec in caplog.records)
 
     def test_nonone_grad_accum_raises(self):
         with pytest.raises(ValueError):
-            infra_module._validate_grad_accum_for_trainer_job(8)
+            infra_module.validate_grad_accum_for_trainer_job(8)

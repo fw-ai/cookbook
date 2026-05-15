@@ -7,13 +7,14 @@ Run prepare_data.py first, then: python train_ifeval_orpo.py
 from __future__ import annotations
 
 import argparse
-import os
 import logging
+import os
 from datetime import datetime
+
 from dotenv import load_dotenv
+from fireworks.training.sdk import TrainerJobManager
 
 import training.recipes.orpo_loop as orpo_loop
-from fireworks.training.sdk import TrainerJobManager
 from training.utils import InfraConfig, WandBConfig
 
 logging.basicConfig(
@@ -43,7 +44,7 @@ def parse_args():
     parser.add_argument("--region", default="US_VIRGINIA_1")
     parser.add_argument("--max-pairs", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--grad-accum", type=int, default=1, help="Deprecated. Must be 1.")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--orpo-lambda", type=float, default=1.0)
     parser.add_argument("--lora-rank", type=int, default=0)

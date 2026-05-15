@@ -14,52 +14,52 @@ Usage:
 
 from __future__ import annotations
 
-import os
-import signal
-import logging
-import random
 import functools
-from itertools import islice
+import logging
+import os
+import random
+import signal
 from contextlib import ExitStack
+from dataclasses import dataclass, field
+from itertools import islice
 from typing import Any, Dict, List
-from dataclasses import field, dataclass
 
-import torch
 import tinker
-
+import torch
 from dotenv import load_dotenv
-
 from fireworks.training.sdk import TrainerJobManager
+
 from training.utils import (
     DEFAULT_ADAM,
     DEFAULT_RENDER_WORKERS,
     InfraConfig,
     JsonlRenderDataset,
     RawRowCursor,
+    ReconnectableClient,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
-    ReconnectableClient,
-    make_render_dataloader,
-    wandb_log,
-    setup_wandb,
-    wandb_finish,
-    validate_config,
-    log_metrics_json,
+    auto_select_training_shape,
     create_trainer_job,
-    read_api_extra_headers_env,
+    log_metrics_json,
+    make_render_dataloader,
     parse_train_on_what,
     populate_render_worker_state,
-    auto_select_training_shape,
+    read_api_extra_headers_env,
     render_messages_to_datums,
     resolve_renderer_name,
+    setup_wandb,
+    validate_config,
+    validate_grad_accum_for_trainer_job,
+    wandb_finish,
+    wandb_log,
 )
-from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.losses import make_batch_weighted_sft_loss_fn
-from training.utils.timer import timer, flush_timing
+from training.utils.timer import flush_timing, timer
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -432,11 +432,7 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
-    if cfg.grad_accum > 1:
-        logger.warning(
-            "grad_accum is deprecated and ignored. "
-            "Increase batch_size instead for larger effective batches."
-        )
+    validate_grad_accum_for_trainer_job(cfg.grad_accum)
 
     setup_wandb(
         cfg.wandb,

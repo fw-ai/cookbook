@@ -8,14 +8,14 @@ are set automatically and RunnerIO handles all file-based coordination.
 from __future__ import annotations
 
 import argparse
-import os
 import logging
+import os
 import signal
 
 from dotenv import load_dotenv
+from fireworks.training.sdk import TrainerJobManager
 
 import training.recipes.dpo_loop as dpo_loop
-from fireworks.training.sdk import TrainerJobManager
 from training.utils import InfraConfig, WandBConfig, WeightSyncConfig
 
 logging.basicConfig(
@@ -52,7 +52,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--grad-accum", type=int, default=1,
-                        help="(deprecated, ignored -- use --batch-size instead)")
+                        help="Deprecated. Must be 1; use --batch-size instead.")
     parser.add_argument("--learning-rate", "--lr", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--max-seq-len", type=int, default=0,
