@@ -20,6 +20,5 @@ python3.12 train_sft.py \
     --max-examples 50 \
     --epochs 3 \
     --batch-size 4 \
-    --grad-accum 4 \
     --learning-rate 1e-5 \
     --output-model-id sft-vl-qwen3-8b-$(date +%Y%m%d%H%M)

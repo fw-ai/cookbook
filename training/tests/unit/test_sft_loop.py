@@ -521,7 +521,6 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         max_seq_len=32,
         epochs=1,
         batch_size=1,
-        grad_accum=1,
         log_path=str(tmp_path / "sft_logs"),
         render_workers=1,
     )
@@ -544,7 +543,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
 
 
 def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
-    """With grad_accum removed, each batch gets its own forward_backward + optim_step."""
+    """Each batch gets its own forward_backward + optim_step."""
     dataset_path = _write_dataset(
         tmp_path,
         [

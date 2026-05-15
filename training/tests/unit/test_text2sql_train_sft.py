@@ -37,8 +37,6 @@ def test_parse_args_reads_overrides(monkeypatch):
             "2",
             "--batch-size",
             "4",
-            "--grad-accum",
-            "3",
             "--learning-rate",
             "2e-5",
             "--lora-rank",
@@ -57,7 +55,6 @@ def test_parse_args_reads_overrides(monkeypatch):
     assert args.max_examples == 16
     assert args.epochs == 2
     assert args.batch_size == 4
-    assert args.grad_accum == 3
     assert args.learning_rate == 2e-5
     assert args.lora_rank == 8
 
@@ -78,5 +75,3 @@ def test_main_raises_when_dataset_is_missing(monkeypatch):
 
     with pytest.raises(FileNotFoundError, match="text2sql_dataset.jsonl|Dataset not found"):
         module.main()
-
-

@@ -23,25 +23,27 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import json
+import logging
 import os
 import time
-import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.parse import urlencode
 
-from fireworks.training.sdk.client import (
-    FiretitanServiceClient,
-    FiretitanTrainingClient,
-)
+import httpx
 from fireworks.training.sdk import (
     TrainerJobConfig,
     TrainerJobManager,
     TrainerServiceEndpoint,
     TrainingShapeProfile,
 )
+from fireworks.training.sdk.client import (
+    FiretitanServiceClient,
+    FiretitanTrainingClient,
+)
+
 try:
     from fireworks.training.sdk import CreatedTrainerJob
 except ImportError:
@@ -51,9 +53,10 @@ from fireworks.training.sdk.deployment import (
     DeploymentInfo,
     DeploymentManager,
 )
-from training.utils.config import InfraConfig, DeployConfig, WeightSyncScope
+
+from training.utils.client import DEFAULT_TIMEOUT_S, ReconnectableClient
+from training.utils.config import DeployConfig, InfraConfig, WeightSyncScope
 from training.utils.training_shapes import auto_select_training_shape
-from training.utils.client import ReconnectableClient, DEFAULT_TIMEOUT_S
 
 TrainerHandle = CreatedTrainerJob | TrainerServiceEndpoint
 """Return type of :func:`request_trainer_job`.
@@ -284,7 +287,6 @@ def request_trainer_job(
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
-    grad_accum: int = 1,
     display_name: str = "trainer",
     hot_load_deployment_id: str | None = None,
     extra_args: list[str] | None = None,
@@ -341,7 +343,6 @@ def request_trainer_job(
             lora_rank=lora_rank,
             max_context_length=max_seq_len or profile.max_supported_context_length,
             learning_rate=learning_rate,
-            gradient_accumulation_steps=grad_accum,
             display_name=display_name,
             hot_load_deployment_id=hot_load_deployment_id,
             region=infra.region,
@@ -358,7 +359,6 @@ def request_trainer_job(
             lora_rank=lora_rank,
             max_context_length=max_seq_len,
             learning_rate=learning_rate,
-            gradient_accumulation_steps=grad_accum,
             node_count=infra.node_count,
             display_name=display_name,
             hot_load_deployment_id=hot_load_deployment_id,
@@ -489,7 +489,6 @@ def create_trainer_job(
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
-    grad_accum: int = 1,
     display_name: str = "trainer",
     hot_load_deployment_id: str | None = None,
     extra_args: list[str] | None = None,
@@ -520,7 +519,6 @@ def create_trainer_job(
         lora_rank=lora_rank,
         max_seq_len=max_seq_len,
         learning_rate=learning_rate,
-        grad_accum=grad_accum,
         display_name=display_name,
         hot_load_deployment_id=hot_load_deployment_id,
         extra_args=extra_args,
@@ -944,7 +942,6 @@ def _create_trainer_job_with_replica_count(
         "baseModel": config.base_model,
         "loraRank": config.lora_rank,
         "learningRate": config.learning_rate,
-        "gradientAccumulationSteps": config.gradient_accumulation_steps,
     }
 
     payload: dict[str, Any] = {
@@ -1442,8 +1439,8 @@ def _deployment_hot_load_trainer_job(
     """Best-effort read of a deployment's attached hot-load trainer job."""
     try:
         data = deploy_mgr._get_deployment(dep_id)  # SDK wrapper does not expose this field.
-    except Exception as e:
-        logger.warning("Could not read deployment %s hot-load trainer: %s", dep_id, e)
+    except Exception as exc:
+        logger.warning("Could not read deployment %s hot-load trainer: %s", dep_id, exc)
         return None
     if not data:
         return None

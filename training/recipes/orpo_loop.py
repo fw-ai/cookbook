@@ -35,45 +35,45 @@ Infrastructure defaults target Qwen3-235B on 2 nodes with CP=16, EP=8.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
-import time
-import signal
 import random
-import logging
+import signal
+import time
 from contextlib import ExitStack
-from dataclasses import field, dataclass
-import torch
+from dataclasses import dataclass, field
 
 import tinker
-
+import torch
 from fireworks.training.sdk import TrainerJobManager
+
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    ReconnectableClient,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
-    ReconnectableClient,
-    wandb_log,
-    setup_wandb,
-    wandb_finish,
-    log_metrics_json,
-    make_batch_orpo_loss_fn,
+    auto_select_training_shape,
+    build_renderer,
     create_trainer_job,
-    read_api_extra_headers_env,
     load_preference_dataset,
     load_tokenizer,
-    build_renderer,
-    auto_select_training_shape,
+    log_metrics_json,
+    make_batch_orpo_loss_fn,
+    read_api_extra_headers_env,
     render_preference_pair,
     resolve_renderer_name,
+    setup_wandb,
     validate_config,
+    wandb_finish,
+    wandb_log,
 )
-from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.client import DEFAULT_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +100,6 @@ class Config:
     """Number of preference pairs per optimizer step."""
     seed: int = 0
     """Seed for deterministic per-epoch shuffling of preference pairs."""
-    grad_accum: int = 1
-    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
@@ -217,12 +215,6 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
-    if cfg.grad_accum > 1:
-        logger.warning(
-            "grad_accum is deprecated and ignored. "
-            "Increase batch_size instead for larger effective batches."
-        )
-
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
