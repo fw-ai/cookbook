@@ -77,13 +77,15 @@ class TestShapePath:
             base_model=BASE_MODEL,
             infra=InfraConfig(region="US_VIRGINIA_1"),
             profile=PROFILE,
-            grad_accum=2,
+            grad_accum=2,  # deprecated; should be ignored and overridden to 1
         )
         c = mgr.captured
 
         assert c.training_shape_ref == PROFILE.training_shape_version
         assert c.base_model == BASE_MODEL
-        assert c.gradient_accumulation_steps == 2
+        # grad_accum is deprecated: server-side gradient_accumulation_steps is
+        # always sent as 1 regardless of what the caller passed. See infra.py.
+        assert c.gradient_accumulation_steps == 1
         assert c.region == "US_VIRGINIA_1"
 
         assert c.accelerator_type is None
@@ -195,3 +197,52 @@ def test_infra_fields_forwarded_to_config():
         infra=InfraConfig(purpose="PURPOSE_PILOT"), profile=PROFILE,
     )
     assert mgr.captured.purpose == "PURPOSE_PILOT"
+
+
+# ---------------------------------------------------------------------------
+# grad_accum deprecation
+# ---------------------------------------------------------------------------
+
+
+class TestGradAccumDeprecated:
+    """The cookbook must NOT forward a server-side gradient_accumulation_steps>1.
+
+    The Tinker/RLOR engine does not honor that knob; setting it would request
+    the naive Unsloth-style /G divide. Express GA as client-side control flow
+    (multiple forward_backward calls per optim_step) and pass
+    grad_accumulation_normalization on the optim_step request.
+    """
+
+    def test_default_grad_accum_is_one(self):
+        mgr = _CapturingMgr()
+        infra_module.create_trainer_job(
+            mgr, base_model=BASE_MODEL,
+            infra=InfraConfig(region="US_VIRGINIA_1"), profile=PROFILE,
+        )
+        assert mgr.captured.gradient_accumulation_steps == 1
+
+    def test_nonone_grad_accum_overridden_to_one(self):
+        mgr = _CapturingMgr()
+        infra_module.create_trainer_job(
+            mgr, base_model=BASE_MODEL,
+            infra=InfraConfig(region="US_VIRGINIA_1"), profile=PROFILE,
+            grad_accum=8,
+        )
+        assert mgr.captured.gradient_accumulation_steps == 1, (
+            "grad_accum is deprecated; server-side gradient_accumulation_steps "
+            "must always be sent as 1."
+        )
+
+    def test_nonone_grad_accum_emits_warning(self, caplog):
+        import logging
+
+        mgr = _CapturingMgr()
+        with caplog.at_level(logging.WARNING, logger="training.utils.infra"):
+            infra_module.create_trainer_job(
+                mgr, base_model=BASE_MODEL,
+                infra=InfraConfig(region="US_VIRGINIA_1"), profile=PROFILE,
+                grad_accum=4,
+            )
+        assert any(
+            "grad_accum=4 is deprecated" in rec.message for rec in caplog.records
+        ), "Expected deprecation warning when grad_accum != 1"
