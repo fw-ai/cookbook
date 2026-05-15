@@ -217,6 +217,154 @@ class TestKLBetaRoutesToClientSide:
         validate_loss_path(
             LossConfig(policy_loss="grpo", loss_path="client", kl_beta=0.01),
         )
+class TestBuiltinLossDatumsKlPerToken:
+    """Verify ``kl_per_token_advantages`` plumbing through ``build_builtin_loss_datums``.
+
+    Used by the distillation recipe to inject per-response-token reverse-KL
+    contributions into the server-side per-token advantage tensor.
+    """
+
+    def _datum(self) -> Any:
+        # 5 tokens; mask makes positions 2,3,4 the response (response_start=2).
+        return build_datum_from_token_mask(
+            token_ids=[10, 11, 12, 13, 14],
+            token_mask=[0, 0, 1, 1, 1],
+        ).datum
+
+    def _baseline_args(self) -> dict:
+        return dict(
+            data=[self._datum()],
+            advantages=[2.0],
+            prox_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
+            inf_logprobs=[[-0.1, -0.2, -0.3, -0.4]],  # prox==inf -> tis_weight==1
+            prompt_lens=[3],  # response_start = max(0, 3-1) = 2 ; n_tokens = 4
+            policy_loss="importance_sampling",
+        )
+
+    def _per_token_adv(self, datum) -> list[float]:
+        return list(datum.loss_fn_inputs["advantages"].data)
+
+    def test_none_kl_preserves_existing_behavior(self):
+        """With kl_per_token_advantages=None, output matches the historical path."""
+        baseline = build_builtin_loss_datums(**self._baseline_args())[0]
+        explicit = build_builtin_loss_datums(
+            **self._baseline_args(),
+            kl_per_token_advantages=None,
+        )[0]
+        assert self._per_token_adv(baseline) == self._per_token_adv(explicit)
+
+    def test_kl_added_only_at_response_positions(self):
+        """KL contribution lands at response positions only; prompt prefix stays 0."""
+        # response_start=2, n_tokens=4 -> resp_len=2 -> two KL entries.
+        out = build_builtin_loss_datums(
+            **self._baseline_args(),
+            kl_per_token_advantages=[[0.5, -0.5]],
+        )[0]
+        adv = self._per_token_adv(out)
+        # Prompt-prefix positions get 0 (mask is 0 there, but also adv*0=0).
+        assert adv[0] == 0.0
+        assert adv[1] == 0.0
+        # Response positions: (adv_val + kl[r]) * tis * mask = (2 + 0.5)*1*1 = 2.5; (2-0.5)*1*1 = 1.5
+        assert adv[2] == pytest.approx(2.5)
+        assert adv[3] == pytest.approx(1.5)
+
+    def test_kl_zero_equivalent_to_none(self):
+        """Per-token KL of all zeros must equal kl=None case."""
+        none_out = build_builtin_loss_datums(**self._baseline_args())[0]
+        zero_out = build_builtin_loss_datums(
+            **self._baseline_args(),
+            kl_per_token_advantages=[[0.0, 0.0]],
+        )[0]
+        assert self._per_token_adv(none_out) == self._per_token_adv(zero_out)
+
+    def test_kl_overrides_zero_advantage_for_pure_distillation(self):
+        """With adv=0 (pure distillation), KL alone drives the per-token advantage."""
+        args = self._baseline_args()
+        args["advantages"] = [0.0]
+        out = build_builtin_loss_datums(
+            **args,
+            kl_per_token_advantages=[[1.5, -2.0]],
+        )[0]
+        adv = self._per_token_adv(out)
+        # (0 + 1.5) * 1 * 1 = 1.5; (0 - 2.0) * 1 * 1 = -2.0
+        assert adv[2] == pytest.approx(1.5)
+        assert adv[3] == pytest.approx(-2.0)
+
+    def test_kl_respects_loss_mask(self):
+        """A 0-mask response position zeros out the combined advantage,
+        not just the scalar piece."""
+        # 5 source tokens -> 4 target tokens after shift; loss_mask aligns to targets.
+        # token_mask=[ignored_first, 1, 0, 1, 1] -> loss_mask=[1, 0, 1, 1].
+        # prompt_lens=3 -> response_start=2 -> response slice of loss_mask is [1, 1].
+        # We want a masked response position, so reshape: use prompt_lens=2 so
+        # response_start=1, slice is [0, 1, 1] -> response idx 0 is masked.
+        datum = build_datum_from_token_mask(
+            token_ids=[10, 11, 12, 13, 14],
+            token_mask=[0, 1, 0, 1, 1],
+            include_loss_mask=True,
+        ).datum
+        out = build_builtin_loss_datums(
+            data=[datum],
+            advantages=[2.0],
+            prox_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
+            inf_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
+            prompt_lens=[2],
+            policy_loss="importance_sampling",
+            kl_per_token_advantages=[[0.5, -0.5, 0.1]],
+        )[0]
+        adv = self._per_token_adv(out)
+        # response_start=1, resp_len=3, loss_mask slice = [0, 1, 1]
+        # position 1 (response idx 0, mask=0): (2 + 0.5) * 1 * 0 = 0
+        # position 2 (response idx 1, mask=1): (2 - 0.5) * 1 * 1 = 1.5
+        # position 3 (response idx 2, mask=1): (2 + 0.1) * 1 * 1 = 2.1
+        assert adv[1] == pytest.approx(0.0)
+        assert adv[2] == pytest.approx(1.5)
+        assert adv[3] == pytest.approx(2.1)
+
+    def test_multiple_rollouts_indexed_correctly(self):
+        """KL list[i] must apply to rollout i, not the wrong one."""
+        # Rollout 1: 4 input tokens -> 3 target tokens. prompt_lens=2
+        #   -> response_start=1, resp_len=2.
+        # Rollout 2: 5 input tokens -> 4 target tokens. prompt_lens=3
+        #   -> response_start=2, resp_len=2.
+        d1 = build_datum_from_token_mask(
+            token_ids=[10, 11, 12, 13],
+            token_mask=[0, 1, 1, 1],
+        ).datum
+        d2 = build_datum_from_token_mask(
+            token_ids=[20, 21, 22, 23, 24],
+            token_mask=[0, 0, 1, 1, 1],
+        ).datum
+
+        out = build_builtin_loss_datums(
+            data=[d1, d2],
+            advantages=[1.0, 3.0],
+            prox_logprobs=[[-0.1, -0.2, -0.3], [-0.1, -0.2, -0.3, -0.4]],
+            inf_logprobs=[[-0.1, -0.2, -0.3], [-0.1, -0.2, -0.3, -0.4]],
+            prompt_lens=[2, 3],
+            policy_loss="importance_sampling",
+            kl_per_token_advantages=[[0.1, 0.2], [10.0, 20.0]],
+        )
+        adv1 = list(out[0].loss_fn_inputs["advantages"].data)
+        adv2 = list(out[1].loss_fn_inputs["advantages"].data)
+
+        # Rollout 1: response_start=1, response positions 1..2
+        assert adv1[1] == pytest.approx(1.1)  # 1 + 0.1
+        assert adv1[2] == pytest.approx(1.2)  # 1 + 0.2
+        # Rollout 2: response_start=2, response positions 2..3
+        assert adv2[2] == pytest.approx(13.0)  # 3 + 10
+        assert adv2[3] == pytest.approx(23.0)  # 3 + 20
+
+    def test_short_kl_list_pads_with_zero(self):
+        """KL shorter than resp_len: missing trailing entries default to 0
+        (so the scalar advantage still drives those positions)."""
+        out = build_builtin_loss_datums(
+            **self._baseline_args(),
+            kl_per_token_advantages=[[0.5]],  # only one entry, resp_len=2
+        )[0]
+        adv = self._per_token_adv(out)
+        assert adv[2] == pytest.approx(2.5)  # adv + KL
+        assert adv[3] == pytest.approx(2.0)  # adv only (KL defaults to 0)
 
 
 class TestBatchDPOLoss:

@@ -225,6 +225,17 @@ class PromptGroup:
     is the boundary for ``data[i]``.  Left ``None`` for legacy single-turn
     rollouts where every sample shares the same prefix; ``combine_prompt_groups``
     then falls back to ``[prompt_len] * len(data)``."""
+    kl_per_token_advantages: List[List[float]] | None = None
+    """Per-response-token additive offset to advantages, one list per rollout.
+
+    Each inner list has length ``resp_len = n_tokens - response_start`` --
+    response positions only, not the prompt prefix. When set, each value is
+    added to the corresponding response-position entry of the per-token
+    advantage tensor inside :func:`build_builtin_loss_datums`, so the
+    server-side loss kernel sees a single combined per-token advantage.
+
+    Used by the distillation recipe to fold reverse-KL-to-teacher into
+    per-token credit assignment. ``None`` for standard RL recipes."""
 
 
 def combine_prompt_groups(
@@ -262,6 +273,7 @@ def build_builtin_loss_datums(
     prompt_lens: List[int],
     tis_config: TISConfig | None = None,
     policy_loss: str = "rl_loss",
+    kl_per_token_advantages: List[List[float]] | None = None,
 ) -> List[tinker.Datum]:
     """Build datums with per-token sampling_logprobs and advantages for server-side built-in loss.
 
@@ -271,6 +283,14 @@ def build_builtin_loss_datums(
 
     Uses ``compute_tis_weight`` for behavioral TIS correction and
     ``_get_loss_mask`` for multi-turn tool-call masking.
+
+    When ``kl_per_token_advantages`` is provided (one list per sample, each of
+    length ``resp_len``), each response-position entry is added to the scalar
+    ``adv_val`` before TIS/mask folding -- i.e. the effective per-token
+    advantage at response position ``r`` becomes
+    ``(adv_val + kl[r]) * tis_weight[r] * loss_mask[r]``. Used by the
+    distillation recipe to inject per-token reverse-KL-to-teacher into the
+    server-side advantage tensor.
     """
     import torch
     from training.utils.rl.common import _get_loss_mask, validate_inference_logprobs_for_sample
@@ -314,8 +334,12 @@ def build_builtin_loss_datums(
 
         per_token_adv = [0.0] * response_start
         adv_val = advantages[adv_idx] if adv_idx < len(advantages) else 0.0
+        kl_seq: List[float] | None = None
+        if kl_per_token_advantages is not None and adv_idx < len(kl_per_token_advantages):
+            kl_seq = kl_per_token_advantages[adv_idx]
         for r in range(resp_len):
-            per_token_adv.append(float(adv_val * tis_weight[r].item() * loss_mask[r].item()))
+            effective_adv = adv_val + (kl_seq[r] if kl_seq is not None and r < len(kl_seq) else 0.0)
+            per_token_adv.append(float(effective_adv * tis_weight[r].item() * loss_mask[r].item()))
 
         slp_padded = prox_lp[:n_tokens] if len(prox_lp) >= n_tokens else prox_lp + [0.0] * (n_tokens - len(prox_lp))
         new_datum = tinker.Datum(
