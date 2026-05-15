@@ -56,7 +56,6 @@ def test_dpo_smoke(
             learning_rate=1e-5,
             epochs=1,
             batch_size=1,
-            grad_accum=1,
             max_pairs=4,
             infra=smoke_dpo_infra,
             deployment=DeployConfig(),

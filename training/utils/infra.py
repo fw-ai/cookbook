@@ -81,23 +81,6 @@ _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT = (
     "trainer_replica_count" in inspect.signature(TrainerJobConfig).parameters
 )
 
-def validate_grad_accum_for_trainer_job(grad_accum: int | None) -> None:
-    if grad_accum is not None and grad_accum != 1:
-        raise ValueError(
-            "grad_accum must be 1. Server-side gradient accumulation is deprecated "
-            "on the Tinker/RLOR path. Express gradient accumulation as client-side "
-            "control flow (multiple forward_backward calls per optim_step) and "
-            "pass grad_accumulation_normalization on the optim_step request."
-        )
-    if grad_accum == 1:
-        logger.warning(
-            "grad_accum=1 is deprecated and ignored. Express gradient accumulation "
-            "as client-side control flow (multiple forward_backward calls per "
-            "optim_step) and pass grad_accumulation_normalization on the optim_step "
-            "request."
-        )
-
-
 _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_H200", "US_VIRGINIA_1"),
     ("NVIDIA_B200", "US_OHIO_1"),
@@ -304,7 +287,6 @@ def request_trainer_job(
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
-    grad_accum: int | None = None,
     display_name: str = "trainer",
     hot_load_deployment_id: str | None = None,
     extra_args: list[str] | None = None,
@@ -354,8 +336,6 @@ def request_trainer_job(
             raise ValueError("trainer_replica_count must be non-negative")
         if _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT:
             extra_trainer_args["trainer_replica_count"] = infra.trainer_replica_count
-
-    validate_grad_accum_for_trainer_job(grad_accum)
 
     if profile is not None:
         config = TrainerJobConfig(
@@ -509,7 +489,6 @@ def create_trainer_job(
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
-    grad_accum: int | None = None,
     display_name: str = "trainer",
     hot_load_deployment_id: str | None = None,
     extra_args: list[str] | None = None,
@@ -540,7 +519,6 @@ def create_trainer_job(
         lora_rank=lora_rank,
         max_seq_len=max_seq_len,
         learning_rate=learning_rate,
-        grad_accum=grad_accum,
         display_name=display_name,
         hot_load_deployment_id=hot_load_deployment_id,
         extra_args=extra_args,

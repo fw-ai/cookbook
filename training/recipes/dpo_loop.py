@@ -73,7 +73,6 @@ from training.utils import (
     resolve_renderer_name,
     setup_wandb,
     validate_config,
-    validate_grad_accum_for_trainer_job,
     wandb_finish,
     wandb_log,
 )
@@ -105,8 +104,6 @@ class Config:
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step."""
-    grad_accum: int = 1
-    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     """Cap on *valid rendered pairs* after schema/length filtering."""
@@ -566,8 +563,6 @@ def main(
             "Config.tokenizer_model is required for client-side tokenization. "
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
-
-    validate_grad_accum_for_trainer_job(cfg.grad_accum)
 
     setup_wandb(cfg.wandb, {
         "beta": cfg.beta,

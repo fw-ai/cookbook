@@ -44,7 +44,6 @@ def parse_args():
     parser.add_argument("--region", default="US_VIRGINIA_1")
     parser.add_argument("--max-pairs", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--grad-accum", type=int, default=1, help="Deprecated. Must be 1.")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--orpo-lambda", type=float, default=1.0)
     parser.add_argument("--lora-rank", type=int, default=0)
@@ -90,7 +89,6 @@ def main():
         orpo_lambda=args.orpo_lambda,
         learning_rate=args.learning_rate,
         epochs=args.epochs,
-        grad_accum=args.grad_accum,
         max_pairs=args.max_pairs,
         lora_rank=args.lora_rank,
         job_id=args.job_id,
@@ -107,10 +105,9 @@ def main():
     )
 
     logger.info(
-        "max_pairs=%s | epochs=%d | grad_accum=%d | lr=%g | orpo_lambda=%g",
+        "max_pairs=%s | epochs=%d | lr=%g | orpo_lambda=%g",
         args.max_pairs,
         args.epochs,
-        args.grad_accum,
         args.learning_rate,
         args.orpo_lambda,
     )

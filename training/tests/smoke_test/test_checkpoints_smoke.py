@@ -148,7 +148,6 @@ class TestCheckpointsSmoke:
             learning_rate=1e-4,
             epochs=1,
             batch_size=2,
-            grad_accum=1,
             max_examples=_NUM_TRAINING_EXAMPLES,
             lora_rank=8,
             dcp_save_interval=_DCP_SAVE_INTERVAL,

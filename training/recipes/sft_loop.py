@@ -52,7 +52,6 @@ from training.utils import (
     resolve_renderer_name,
     setup_wandb,
     validate_config,
-    validate_grad_accum_for_trainer_job,
     wandb_finish,
     wandb_log,
 )
@@ -240,8 +239,6 @@ class Config:
     learning_rate: float = 1e-4
     epochs: int = 3
     batch_size: int = 32
-    grad_accum: int = 1
-    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_examples: int | None = None
     lora_rank: int = 0
@@ -432,8 +429,6 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
-    validate_grad_accum_for_trainer_job(cfg.grad_accum)
-
     setup_wandb(
         cfg.wandb,
         {

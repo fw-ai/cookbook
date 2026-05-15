@@ -69,7 +69,6 @@ from training.utils import (
     resolve_renderer_name,
     setup_wandb,
     validate_config,
-    validate_grad_accum_for_trainer_job,
     wandb_finish,
     wandb_log,
 )
@@ -101,8 +100,6 @@ class Config:
     """Number of preference pairs per optimizer step."""
     seed: int = 0
     """Seed for deterministic per-epoch shuffling of preference pairs."""
-    grad_accum: int = 1
-    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
@@ -218,8 +215,6 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
-    validate_grad_accum_for_trainer_job(cfg.grad_accum)
-
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "

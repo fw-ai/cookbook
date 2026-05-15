@@ -105,7 +105,6 @@ __all__ = [
     "timer",
     "auto_select_training_shape",
     "validate_config",
-    "validate_grad_accum_for_trainer_job",
     "validate_preflight",
     "wandb_finish",
     "wandb_log",
@@ -151,7 +150,6 @@ from training.utils.infra import (
     setup_infra,
     setup_or_reattach_deployment,
     setup_training_client,
-    validate_grad_accum_for_trainer_job,
     wait_deployment,
     wait_trainer_job,
 )

@@ -144,7 +144,7 @@ def compute_step_metrics(
     metrics = dict(timing_metrics)
 
     total_model_tokens = total_target_tokens(prompt_groups)
-    metrics["train/effective_grad_accum_steps"] = n_accum
+    metrics["train/effective_accumulation_steps"] = n_accum
     add_train_perf_metrics(metrics, total_model_tokens=total_model_tokens)
 
     if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:

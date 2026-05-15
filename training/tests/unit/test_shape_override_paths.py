@@ -11,7 +11,6 @@ Two paths tested:
 
 from __future__ import annotations
 
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -195,32 +194,3 @@ def test_infra_fields_forwarded_to_config():
         infra=InfraConfig(purpose="PURPOSE_PILOT"), profile=PROFILE,
     )
     assert mgr.captured.purpose == "PURPOSE_PILOT"
-
-
-# ---------------------------------------------------------------------------
-# grad_accum deprecation
-# ---------------------------------------------------------------------------
-
-
-class TestGradAccumDeprecated:
-    """The cookbook must NOT forward a server-side gradient_accumulation_steps>1.
-
-    The Tinker/RLOR engine does not honor that knob; setting it would request
-    the naive Unsloth-style /G divide. Express GA as client-side control flow
-    (multiple forward_backward calls per optim_step) and pass
-    grad_accumulation_normalization on the optim_step request.
-    """
-
-    def test_unset_grad_accum_is_silent(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="training.utils.infra"):
-            infra_module.validate_grad_accum_for_trainer_job(None)
-        assert not any("grad_accum" in rec.message for rec in caplog.records)
-
-    def test_explicit_one_grad_accum_warns(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="training.utils.infra"):
-            infra_module.validate_grad_accum_for_trainer_job(1)
-        assert any("grad_accum=1 is deprecated" in rec.message for rec in caplog.records)
-
-    def test_nonone_grad_accum_raises(self):
-        with pytest.raises(ValueError):
-            infra_module.validate_grad_accum_for_trainer_job(8)
