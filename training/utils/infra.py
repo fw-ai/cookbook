@@ -81,6 +81,23 @@ _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT = (
     "trainer_replica_count" in inspect.signature(TrainerJobConfig).parameters
 )
 
+def _validate_grad_accum_for_trainer_job(grad_accum: int | None) -> None:
+    if grad_accum is not None and grad_accum != 1:
+        raise ValueError(
+            "grad_accum must be 1. Server-side gradient accumulation is deprecated "
+            "on the Tinker/RLOR path. Express gradient accumulation as client-side "
+            "control flow (multiple forward_backward calls per optim_step) and "
+            "pass grad_accumulation_normalization on the optim_step request."
+        )
+    if grad_accum == 1:
+        logger.warning(
+            "grad_accum=1 is deprecated and ignored. Express gradient accumulation "
+            "as client-side control flow (multiple forward_backward calls per "
+            "optim_step) and pass grad_accumulation_normalization on the optim_step "
+            "request."
+        )
+
+
 _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_H200", "US_VIRGINIA_1"),
     ("NVIDIA_B200", "US_OHIO_1"),
@@ -287,7 +304,7 @@ def request_trainer_job(
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
-    grad_accum: int = 1,
+    grad_accum: int | None = None,
     display_name: str = "trainer",
     hot_load_deployment_id: str | None = None,
     extra_args: list[str] | None = None,
@@ -338,15 +355,19 @@ def request_trainer_job(
         if _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT:
             extra_trainer_args["trainer_replica_count"] = infra.trainer_replica_count
 
-    if grad_accum != 1:
+    if grad_accum is not None and grad_accum != 1:
+        raise ValueError(
+            "grad_accum must be 1. Server-side gradient accumulation is deprecated "
+            "on the Tinker/RLOR path. Express gradient accumulation as client-side "
+            "control flow (multiple forward_backward calls per optim_step) and "
+            "pass grad_accumulation_normalization on the optim_step request."
+        )
+    if grad_accum == 1:
         logger.warning(
-            "grad_accum=%d is deprecated and ignored: the Tinker/RLOR engine "
-            "does not honor server-side gradient_accumulation_steps. Express "
-            "gradient accumulation as client-side control flow (multiple "
-            "forward_backward calls per optim_step) and pass "
-            "grad_accumulation_normalization on the optim_step request. "
-            "Sending gradientAccumulationSteps=1 to the backend.",
-            grad_accum,
+            "grad_accum=1 is deprecated and ignored. Express gradient accumulation "
+            "as client-side control flow (multiple forward_backward calls per "
+            "optim_step) and pass grad_accumulation_normalization on the optim_step "
+            "request."
         )
 
     if profile is not None:
@@ -355,7 +376,6 @@ def request_trainer_job(
             lora_rank=lora_rank,
             max_context_length=max_seq_len or profile.max_supported_context_length,
             learning_rate=learning_rate,
-            gradient_accumulation_steps=1,
             display_name=display_name,
             hot_load_deployment_id=hot_load_deployment_id,
             region=infra.region,
@@ -372,7 +392,6 @@ def request_trainer_job(
             lora_rank=lora_rank,
             max_context_length=max_seq_len,
             learning_rate=learning_rate,
-            gradient_accumulation_steps=1,
             node_count=infra.node_count,
             display_name=display_name,
             hot_load_deployment_id=hot_load_deployment_id,
@@ -503,7 +522,7 @@ def create_trainer_job(
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
-    grad_accum: int = 1,
+    grad_accum: int | None = None,
     display_name: str = "trainer",
     hot_load_deployment_id: str | None = None,
     extra_args: list[str] | None = None,
@@ -954,13 +973,10 @@ def _create_trainer_job_with_replica_count(
     if query_params:
         path = f"{path}?{urlencode(query_params)}"
 
-    # See request_trainer_job: never forward >1. The Tinker/RLOR engine ignores
-    # this field, and a backward-time /G divide would be the Unsloth-bug shape.
     training_config: dict[str, Any] = {
         "baseModel": config.base_model,
         "loraRank": config.lora_rank,
         "learningRate": config.learning_rate,
-        "gradientAccumulationSteps": 1,
     }
 
     payload: dict[str, Any] = {

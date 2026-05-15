@@ -78,7 +78,6 @@ class TestShapePath:
             base_model=BASE_MODEL,
             infra=InfraConfig(region="US_VIRGINIA_1"),
             profile=PROFILE,
-            grad_accum=2,
         )
         c = mgr.captured
 
@@ -212,34 +211,16 @@ class TestGradAccumDeprecated:
     grad_accumulation_normalization on the optim_step request.
     """
 
-    def test_default_grad_accum_is_one(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr, base_model=BASE_MODEL,
-            infra=InfraConfig(region="US_VIRGINIA_1"), profile=PROFILE,
-        )
-        assert mgr.captured.gradient_accumulation_steps == 1
-
-    def test_nonone_grad_accum_overridden_to_one(self):
-        mgr = _CapturingMgr()
-        infra_module.create_trainer_job(
-            mgr, base_model=BASE_MODEL,
-            infra=InfraConfig(region="US_VIRGINIA_1"), profile=PROFILE,
-            grad_accum=8,
-        )
-        assert mgr.captured.gradient_accumulation_steps == 1, (
-            "grad_accum is deprecated; server-side gradient_accumulation_steps "
-            "must always be sent as 1."
-        )
-
-    def test_nonone_grad_accum_emits_warning(self, caplog):
-        mgr = _CapturingMgr()
+    def test_unset_grad_accum_is_silent(self, caplog):
         with caplog.at_level(logging.WARNING, logger="training.utils.infra"):
-            infra_module.create_trainer_job(
-                mgr, base_model=BASE_MODEL,
-                infra=InfraConfig(region="US_VIRGINIA_1"), profile=PROFILE,
-                grad_accum=4,
-            )
-        assert any(
-            "grad_accum=4 is deprecated" in rec.message for rec in caplog.records
-        ), "Expected deprecation warning when grad_accum != 1"
+            infra_module._validate_grad_accum_for_trainer_job(None)
+        assert not any("grad_accum" in rec.message for rec in caplog.records)
+
+    def test_explicit_one_grad_accum_warns(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="training.utils.infra"):
+            infra_module._validate_grad_accum_for_trainer_job(1)
+        assert any("grad_accum=1 is deprecated" in rec.message for rec in caplog.records)
+
+    def test_nonone_grad_accum_raises(self):
+        with pytest.raises(ValueError):
+            infra_module._validate_grad_accum_for_trainer_job(8)
