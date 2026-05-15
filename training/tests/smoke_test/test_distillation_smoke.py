@@ -25,12 +25,17 @@ import time
 
 import httpx
 import pytest
+from dotenv import load_dotenv
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     force=True,
 )
+
+# training/.env (same as recipes): cwd under pytest may be repo root, not training/.
+_TRAINING_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+load_dotenv(os.path.join(_TRAINING_DIR, ".env"))
 
 _DEEPMATH_DATASET = os.path.abspath(
     os.path.join(
