@@ -1439,7 +1439,7 @@ def _deployment_hot_load_trainer_job(
     """Best-effort read of a deployment's attached hot-load trainer job."""
     try:
         data = deploy_mgr._get_deployment(dep_id)  # SDK wrapper does not expose this field.
-    except httpx.HTTPError as exc:
+    except Exception as exc:
         logger.warning("Could not read deployment %s hot-load trainer: %s", dep_id, exc)
         return None
     if not data:
