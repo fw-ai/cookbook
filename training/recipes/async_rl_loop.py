@@ -30,6 +30,7 @@ the setup; this matches AReaL's workflow construction pattern.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 import os
@@ -84,6 +85,8 @@ from training.utils.rl.rollout import RolloutSample
 from training.utils.timer import elapsed_timer, flush_timing, timer
 
 logger = logging.getLogger(__name__)
+
+_HOTLOAD_PATH_COMPAT_ATTR = "_fireworks_async_rl_hotload_path_compat"
 
 __all__ = [
     "Config",
@@ -213,6 +216,36 @@ Current keyword arguments:
 Exceptions raised inside the callback are logged and swallowed -- a
 broken orchestration writer must never abort training.
 """
+
+
+def _install_hotload_path_compat(deploy_mgr: DeploymentManager) -> None:
+    """Drop the SDK's redundant hotload path kwarg for the current server API.
+
+    The deployment hotload endpoint addresses snapshots by identity under the
+    deployment's configured hot_load_bucket_url. Some SDK builds also send the
+    full GCS path, but the current text-completion hotload schema forbids it.
+    """
+    if getattr(deploy_mgr, _HOTLOAD_PATH_COMPAT_ATTR, False):
+        return
+
+    for method_name in ("hotload", "hotload_and_wait"):
+        method = getattr(deploy_mgr, method_name, None)
+        if callable(method):
+            setattr(deploy_mgr, method_name, _strip_hotload_path_kwarg(method, method_name))
+
+    setattr(deploy_mgr, _HOTLOAD_PATH_COMPAT_ATTR, True)
+
+
+def _strip_hotload_path_kwarg(method: Callable[..., Any], method_name: str) -> Callable[..., Any]:
+    @functools.wraps(method)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        if "path" in kwargs:
+            kwargs = dict(kwargs)
+            path = kwargs.pop("path")
+            logger.debug("Dropping unsupported hotload path kwarg for %s: %s", method_name, path)
+        return method(*args, **kwargs)
+
+    return wrapped
 
 
 def _emit_resources_ready(infra, on_resources_ready: ResourceCallback | None) -> None:
@@ -396,6 +429,7 @@ def main(
     deploy_mgr = DeploymentManager(
         api_key=api_key, base_url=base_url, additional_headers=additional_headers,
     )
+    _install_hotload_path_compat(deploy_mgr)
 
     runner.write_status(RunStatus.PENDING, message="provisioning")
 

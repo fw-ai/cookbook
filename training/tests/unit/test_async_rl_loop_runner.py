@@ -233,6 +233,51 @@ class TestResourceCallbackSignature:
         assert seen == [{"deployment_id", "policy_job_id", "reference_job_id"}]
 
 
+class TestHotloadPathCompat:
+    """Compatibility for SDK builds that send unsupported hotload ``path``."""
+
+    def test_strips_path_from_hotload_methods(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        class Manager:
+            def hotload(self, **kwargs: object) -> None:
+                calls.append(("hotload", dict(kwargs)))
+
+            def hotload_and_wait(self, **kwargs: object) -> bool:
+                calls.append(("hotload_and_wait", dict(kwargs)))
+                return True
+
+        mgr = Manager()
+        async_rl_loop._install_hotload_path_compat(mgr)
+
+        mgr.hotload(identity="step-1", path="gs://bucket/step-1")
+        assert mgr.hotload_and_wait(
+            deployment_id="dep-1",
+            identity="step-2",
+            path="gs://bucket/step-2",
+        )
+
+        assert calls == [
+            ("hotload", {"identity": "step-1"}),
+            ("hotload_and_wait", {"deployment_id": "dep-1", "identity": "step-2"}),
+        ]
+
+    def test_install_is_idempotent(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        class Manager:
+            def hotload(self, **kwargs: object) -> None:
+                calls.append(dict(kwargs))
+
+        mgr = Manager()
+        async_rl_loop._install_hotload_path_compat(mgr)
+        async_rl_loop._install_hotload_path_compat(mgr)
+
+        mgr.hotload(identity="step-1", path="gs://bucket/step-1")
+
+        assert calls == [{"identity": "step-1"}]
+
+
 # ---------------------------------------------------------------------------
 # End-to-end ``async_rl_loop.main`` exercise (with fake deps)
 #
