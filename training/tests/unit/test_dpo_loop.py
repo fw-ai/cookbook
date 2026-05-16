@@ -382,6 +382,7 @@ class TestTrainLoop:
                 adam_params={"lr": 1e-4},
                 cfg=cfg,
                 step_offset=0,
+                cursor=_new_cursor(max_rows=4),
                 ckpt=ckpt,
             )
         )
