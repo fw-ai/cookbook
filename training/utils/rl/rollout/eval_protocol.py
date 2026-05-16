@@ -144,6 +144,7 @@ def make_eval_protocol_rollout_fn_factory(
                             "eval-protocol evaluator must return EvaluationRow "
                             f"or None, got {type(result).__name__}."
                         )
+                _ensure_token_turn_traces(result, setup)
                 return sample_converter(result)
             except Exception:
                 if not swallow_exceptions:
@@ -195,6 +196,97 @@ def _normalize_litellm_api_base(inference_base_url: str) -> str:
     if base.endswith("/v1"):
         return base
     return f"{base}/v1"
+
+
+def _ensure_token_turn_traces(row: EvaluationRow, setup: Any) -> None:
+    extra = row.execution_metadata.extra or {}
+    if extra.get("token_turn_traces"):
+        return
+
+    tokenizer = getattr(setup, "tokenizer", None) if setup is not None else None
+    if tokenizer is None:
+        return
+
+    messages = list(row.messages or [])
+    assistant_idx = None
+    for idx in range(len(messages) - 1, -1, -1):
+        if getattr(messages[idx], "role", None) == "assistant":
+            assistant_idx = idx
+            break
+    if assistant_idx is None:
+        return
+
+    assistant = messages[assistant_idx]
+    completion_text = getattr(assistant, "content", None) or ""
+    if not completion_text:
+        return
+
+    prompt_text = _messages_to_trace_text(messages[:assistant_idx])
+    prompt_ids = _tokenize_text(tokenizer, prompt_text)
+    completion_ids = _tokenize_text(tokenizer, completion_text)
+    if not completion_ids:
+        return
+
+    extra["token_turn_traces"] = [
+        {
+            "prompt_ids": prompt_ids,
+            "completion_ids": completion_ids,
+            "completion_logprobs": _extract_message_logprobs(assistant, len(completion_ids)),
+        }
+    ]
+    row.execution_metadata.extra = extra
+
+
+def _messages_to_trace_text(messages: Sequence[Any]) -> str:
+    parts: list[str] = []
+    for message in messages:
+        role = getattr(message, "role", "") or ""
+        content = getattr(message, "content", "") or ""
+        parts.append(f"{role}: {content}")
+    return "\n".join(parts)
+
+
+def _tokenize_text(tokenizer: Any, text: str) -> list[int]:
+    if not text:
+        return []
+    try:
+        return [int(token) for token in tokenizer.encode(text, add_special_tokens=False)]
+    except TypeError:
+        return [int(token) for token in tokenizer.encode(text)]
+
+
+def _extract_message_logprobs(message: Any, expected_len: int) -> list[float]:
+    raw = getattr(message, "logprobs", None)
+    values = _flatten_logprob_values(raw)
+    if len(values) < expected_len:
+        values.extend([0.0] * (expected_len - len(values)))
+    return values[:expected_len]
+
+
+def _flatten_logprob_values(raw: Any) -> list[float]:
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        if isinstance(raw.get("content"), list):
+            values: list[float] = []
+            for item in raw["content"]:
+                if isinstance(item, dict) and item.get("logprob") is not None:
+                    values.append(float(item["logprob"]))
+            return values
+        if raw.get("logprob") is not None:
+            return [float(raw["logprob"])]
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        values = []
+        for item in raw:
+            if isinstance(item, dict) and item.get("logprob") is not None:
+                values.append(float(item["logprob"]))
+            elif item is not None:
+                try:
+                    values.append(float(item))
+                except (TypeError, ValueError):
+                    pass
+        return values
+    return []
 
 
 async def _run_single_row_rollout(
