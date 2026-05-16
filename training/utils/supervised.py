@@ -839,9 +839,47 @@ def render_messages_to_datums(
     train_on_what: str | TrainOnWhat = TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     max_seq_len: int | None = None,
     include_loss_mask: bool = False,
+    tools: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[RenderedSupervisedDatum]:
-    """Render a chat row, splitting multi-target rows when required."""
-    normalized_messages = normalize_messages(messages)
+    """Render a chat row, splitting multi-target rows when required.
+
+    When ``tools`` is provided (top-level OpenAI function-calling array
+    with ``{"type": "function", "function": {...}}`` items) and the
+    renderer exposes ``create_conversation_prefix_with_tools``, the tool
+    definitions are encoded as a ``tool_declare``-role message and
+    prepended to the conversation. An existing leading system message's
+    content is preserved as the system prompt passed to the renderer.
+    Renderers without tool support silently drop the field.
+    """
+    normalized_messages = list(normalize_messages(messages))
+
+    if tools:
+        prefix_builder = getattr(renderer, "create_conversation_prefix_with_tools", None)
+        if prefix_builder is not None:
+            tool_specs = [
+                t["function"]
+                for t in tools
+                if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)
+            ]
+            if tool_specs:
+                system_prompt = ""
+                if normalized_messages and normalized_messages[0].get("role") == "system":
+                    sys_content = normalized_messages.pop(0).get("content")
+                    if isinstance(sys_content, str):
+                        system_prompt = sys_content
+                    elif isinstance(sys_content, list):
+                        system_prompt = "\n".join(
+                            part.get("text", "")
+                            for part in sys_content
+                            if isinstance(part, Mapping) and part.get("type") == "text"
+                        )
+                prefix = prefix_builder(tool_specs, system_prompt=system_prompt)
+                prefix_messages = list(prefix)
+                if any("trainable" in m for m in normalized_messages):
+                    for prefix_msg in prefix_messages:
+                        prefix_msg.setdefault("trainable", False)
+                normalized_messages = prefix_messages + normalized_messages
+
     effective_train_on_what = parse_train_on_what(train_on_what)
     if any("trainable" in m for m in normalized_messages):
         effective_train_on_what = TrainOnWhat.CUSTOMIZED

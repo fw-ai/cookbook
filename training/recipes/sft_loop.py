@@ -103,10 +103,12 @@ def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
     messages = row.get("messages", [])
     if not messages:
         return None
+    tools = row.get("tools")
     rendered_examples = render_messages_to_datums(
         messages,
         renderer=_worker_state["renderer"],
         train_on_what=_worker_state["train_on_what"],
+        tools=tools,
     )
     if not isinstance(rendered_examples, list):
         rendered_examples = [rendered_examples]
