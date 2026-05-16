@@ -36,6 +36,7 @@ import training.renderer.nemotron as _nemotron_renderer  # noqa: F401 — trigge
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 from training.utils.tokenizers import load_tokenizer
 
 
@@ -120,6 +121,19 @@ def resolve_renderer_name(
         or "glm5" in normalized_model_name
     ):
         return "glm5"
+    # Mistral / Ministral Tekken-style chat (`[SYSTEM_PROMPT]`, `[INST]…[/INST]`,
+    # `[TOOL_CALLS]…[ARGS]…`, `[TOOL_RESULTS]…[/TOOL_RESULTS]`). Covers
+    # Ministral 3 / 8B, Mistral 7B Instruct v0.3+, Mistral Small 3 Instruct, and
+    # any other ``mistralai/...`` checkpoint that ships the same template.
+    # Validated end-to-end via SFT training on Ministral-3-3B-Instruct-2512.
+    if (
+        normalized_model_name.startswith("mistralai/")
+        or "ministral-" in normalized_model_name
+        or "mistral-7b-instruct-v0.3" in normalized_model_name
+        or "mistral-7b-instruct-v0.4" in normalized_model_name
+        or "mistral-small" in normalized_model_name
+    ):
+        return "mistral"
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
