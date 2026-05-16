@@ -14,6 +14,9 @@ Two minimal rollouts for the async recipe (`training/recipes/async_rl_loop.py`):
 - `single_turn_token_in/` — pre-tokenized rows; one `/v1/completions` call per
   `rollout_fn` invocation (recipe invokes `rollout_fn` `completions_per_prompt`
   times per row).
+- `agent_lightning_protocol/` — protocol-level Agent Lightning alignment;
+  a triplet provider returns token/logprob/reward records and the cookbook
+  adapter converts them into `RolloutSample`.
 - `multi_turn_message_in/` — OpenAI-style messages; ports AReaL's
   `examples/multi_turn_math/` retry loop.
 
