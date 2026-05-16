@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from fireworks.training.sdk import TrainerJobManager
 
 import training.recipes.dpo_loop as dpo_loop
-from training.utils import InfraConfig, WandBConfig, WeightSyncConfig
+from training.utils import InfraConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,7 +64,12 @@ def parse_args():
     parser.add_argument("--beta", type=float, default=0.1)
     parser.add_argument("--ref-cache-concurrency", type=int, default=8)
     parser.add_argument("--ref-cache-batch-size", type=int, default=512)
-    parser.add_argument("--weight-sync-interval", type=int, default=0)
+    parser.add_argument(
+        "--weight-sync-interval",
+        type=int,
+        default=0,
+        help="Deprecated and ignored by DPO; kept for CLI compatibility.",
+    )
     parser.add_argument("--dcp-save-interval", type=int, default=0)
 
     # Infrastructure
@@ -122,6 +127,7 @@ def main():
         init_from_checkpoint=args.init_from_checkpoint,
         ref_cache_concurrency=args.ref_cache_concurrency,
         ref_cache_batch_size=args.ref_cache_batch_size,
+        dcp_save_interval=args.dcp_save_interval,
         infra=InfraConfig(
             training_shape_id=args.training_shape_id or None,
             ref_training_shape_id=args.ref_training_shape_id or None,
@@ -129,10 +135,6 @@ def main():
             region=args.region,
             custom_image_tag=args.custom_image_tag or None,
             purpose=args.purpose or None,
-        ),
-        weight_sync=WeightSyncConfig(
-            weight_sync_interval=args.weight_sync_interval,
-            dcp_save_interval=args.dcp_save_interval,
         ),
         wandb=WandBConfig(
             project=args.wandb_project,
