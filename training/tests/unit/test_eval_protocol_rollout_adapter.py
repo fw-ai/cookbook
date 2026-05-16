@@ -80,7 +80,13 @@ def test_eval_protocol_adapter_invokes_processor_one_row_and_scores():
     rollout_fn = make_eval_protocol_rollout_fn_factory(
         evaluator,
         sample_converter=_sample_from_row,
-    )(SimpleNamespace(model="runtime-model", sample_kwargs={"top_p": 0.9}))
+    )(
+        SimpleNamespace(
+            model="runtime-model",
+            sample_kwargs={"top_p": 0.9},
+            inference_base_url="https://inference.unit.test",
+        )
+    )
 
     sample = _run(rollout_fn(input_row))
 
@@ -93,6 +99,7 @@ def test_eval_protocol_adapter_invokes_processor_one_row_and_scores():
                 "model": "runtime-model",
                 "temperature": 0.7,
                 "top_p": 0.9,
+                "api_base": "https://inference.unit.test/v1",
             },
             "steps": 7,
             "semaphore_value": 1,

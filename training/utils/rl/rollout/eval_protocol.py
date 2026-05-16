@@ -170,10 +170,20 @@ def default_completion_params_factory(setup: Any, params: EPParameters) -> dict[
     setup_sample_kwargs = getattr(setup, "sample_kwargs", None) if setup is not None else None
     if isinstance(setup_sample_kwargs, dict):
         completion_params.update(setup_sample_kwargs)
+    setup_inference_base_url = getattr(setup, "inference_base_url", None) if setup is not None else None
+    if setup_inference_base_url and "api_base" not in completion_params:
+        completion_params["api_base"] = _normalize_litellm_api_base(str(setup_inference_base_url))
     setup_model = getattr(setup, "model", None) if setup is not None else None
     if setup_model:
         completion_params["model"] = setup_model
     return completion_params
+
+
+def _normalize_litellm_api_base(inference_base_url: str) -> str:
+    base = inference_base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return base
+    return f"{base}/v1"
 
 
 async def _run_single_row_rollout(
