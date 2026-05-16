@@ -114,7 +114,7 @@ def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
         rendered.datum
         for rendered in rendered_examples
         if 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]
-        and any(w != 0 for w in rendered.token_weights)
+        and any(w > 0 for w in rendered.token_weights)
     ]
     if not datums:
         return None
