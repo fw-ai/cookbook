@@ -30,6 +30,11 @@ ProcessorFactory = Callable[[Any, EPParameters], Any]
 
 logger = logging.getLogger(__name__)
 
+_LITELLM_EXCLUDED_SAMPLE_KWARGS = {
+    "http_timeout",
+    "max_seq_len",
+}
+
 
 def get_eval_protocol_params(evaluator: Any) -> EPParameters:
     """Return ``EPParameters`` attached by ``@evaluation_test``.
@@ -169,7 +174,13 @@ def default_completion_params_factory(setup: Any, params: EPParameters) -> dict[
     completion_params = _first_completion_params(params.completion_params)
     setup_sample_kwargs = getattr(setup, "sample_kwargs", None) if setup is not None else None
     if isinstance(setup_sample_kwargs, dict):
-        completion_params.update(setup_sample_kwargs)
+        completion_params.update(
+            {
+                key: value
+                for key, value in setup_sample_kwargs.items()
+                if key not in _LITELLM_EXCLUDED_SAMPLE_KWARGS
+            }
+        )
     setup_inference_base_url = getattr(setup, "inference_base_url", None) if setup is not None else None
     if setup_inference_base_url and "api_base" not in completion_params:
         completion_params["api_base"] = _normalize_litellm_api_base(str(setup_inference_base_url))

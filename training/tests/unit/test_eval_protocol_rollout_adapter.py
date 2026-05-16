@@ -83,7 +83,11 @@ def test_eval_protocol_adapter_invokes_processor_one_row_and_scores():
     )(
         SimpleNamespace(
             model="runtime-model",
-            sample_kwargs={"top_p": 0.9},
+            sample_kwargs={
+                "top_p": 0.9,
+                "http_timeout": 30,
+                "max_seq_len": 2048,
+            },
             inference_base_url="https://inference.unit.test",
         )
     )
