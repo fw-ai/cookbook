@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # dataset on a 16 vCPU / 58 GiB orchestrator pod.
 DEFAULT_RENDER_WORKERS = 4
 DEFAULT_PREFETCH_FACTOR = 2
+JSONL_ROW_INDEX_KEY = "_fireworks_jsonl_row_index"
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,8 @@ class JsonlRenderDataset(torch_data.Dataset):
     ``render_fn`` may return ``None`` for rows that should be dropped
     (empty messages, over-length sequences, ...). The companion
     :func:`make_render_dataloader` wires up a collate that filters Nones.
+    ``row_index_key`` opt-in attaches the original 0-based JSONL row
+    index for callers that need source-file diagnostics.
     """
 
     def __init__(
@@ -79,6 +82,7 @@ class JsonlRenderDataset(torch_data.Dataset):
         *,
         max_examples: int | None = None,
         indices: List[int] | None = None,
+        row_index_key: str | None = None,
     ):
         self._path = path
         self._render_fn = render_fn
@@ -88,6 +92,7 @@ class JsonlRenderDataset(torch_data.Dataset):
             if indices is not None
             else list(range(len(self._offsets)))
         )
+        self._row_index_key = row_index_key
 
     def __len__(self) -> int:
         return len(self._index_map)
@@ -97,7 +102,10 @@ class JsonlRenderDataset(torch_data.Dataset):
         with open(self._path) as f:
             f.seek(offset)
             line = f.readline()
-        return self._render_fn(json.loads(line))
+        row = json.loads(line)
+        if self._row_index_key is not None:
+            row[self._row_index_key] = self._index_map[i]
+        return self._render_fn(row)
 
     def with_indices(self, indices: List[int]) -> "JsonlRenderDataset":
         """Return a view of this dataset restricted to ``indices``.
@@ -111,6 +119,7 @@ class JsonlRenderDataset(torch_data.Dataset):
         view._render_fn = self._render_fn
         view._offsets = self._offsets
         view._index_map = list(indices)
+        view._row_index_key = self._row_index_key
         return view
 
     @property
