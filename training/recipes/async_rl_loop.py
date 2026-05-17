@@ -188,6 +188,13 @@ class RolloutSetup:
     extras: dict[str, Any] = field(default_factory=dict)
 
 
+def _rollout_inference_base_url(inference_url: str) -> str:
+    base = inference_url.rstrip("/")
+    if base.endswith("/inference") or ".direct.fireworks.ai" in base:
+        return base
+    return f"{base}/inference"
+
+
 RolloutFn = Callable[[dict], Awaitable[RolloutSample | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
 
@@ -521,7 +528,7 @@ def main(
             tokenizer=tokenizer,
             tokenizer_id=cfg.deployment.tokenizer_model,
             sample_kwargs=sample_kwargs,
-            inference_base_url=deploy_mgr.inference_url,
+            inference_base_url=_rollout_inference_base_url(deploy_mgr.inference_url),
             api_key=api_key,
             model=inference_model,
             completions_per_prompt=cfg.completions_per_prompt,

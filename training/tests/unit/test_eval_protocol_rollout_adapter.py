@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from eval_protocol.models import EvaluationRow, InputMetadata
+from eval_protocol.models import EvaluationRow, InputMetadata, Message
 from eval_protocol.pytest import evaluation_test
 
 from training.utils.rl.rollout import (
@@ -23,6 +23,11 @@ def _sample_from_row(row: EvaluationRow) -> RolloutSample:
         loss_mask=[0, 1, 1],
         reward=reward,
     )
+
+
+class _FakeTokenizer:
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        return [ord(char) for char in text]
 
 
 def test_load_eval_protocol_input_rows_from_decorated_evaluator():
@@ -80,7 +85,17 @@ def test_eval_protocol_adapter_invokes_processor_one_row_and_scores():
     rollout_fn = make_eval_protocol_rollout_fn_factory(
         evaluator,
         sample_converter=_sample_from_row,
-    )(SimpleNamespace(model="runtime-model", sample_kwargs={"top_p": 0.9}))
+    )(
+        SimpleNamespace(
+            model="runtime-model",
+            sample_kwargs={
+                "top_p": 0.9,
+                "http_timeout": 30,
+                "max_seq_len": 2048,
+            },
+            inference_base_url="https://inference.unit.test",
+        )
+    )
 
     sample = _run(rollout_fn(input_row))
 
@@ -93,12 +108,57 @@ def test_eval_protocol_adapter_invokes_processor_one_row_and_scores():
                 "model": "runtime-model",
                 "temperature": 0.7,
                 "top_p": 0.9,
+                "api_base": "https://inference.unit.test/v1",
             },
             "steps": 7,
             "semaphore_value": 1,
             "kwargs": {"custom": "value"},
         },
     ]
+
+
+def test_eval_protocol_adapter_synthesizes_token_trace_when_processor_omits_it():
+    class FakeProcessor:
+        def __call__(self, rows, _config):
+            async def finish():
+                row = rows[0]
+                row.messages = [
+                    Message(role="user", content="hi"),
+                    Message(role="assistant", content="ok"),
+                ]
+                row.execution_metadata.extra = {"reward": 0.5}
+                return row
+
+            return [finish()]
+
+    input_row = EvaluationRow(input_metadata=InputMetadata(row_id="row-1"))
+
+    @evaluation_test(input_rows=[[input_row]], rollout_processor=FakeProcessor())
+    def evaluator(row: EvaluationRow) -> EvaluationRow:
+        return row
+
+    rollout_fn = make_eval_protocol_rollout_fn_factory(
+        evaluator,
+        sample_converter=lambda row: RolloutSample(
+            tokens=row.execution_metadata.extra["token_turn_traces"][0]["prompt_ids"]
+            + row.execution_metadata.extra["token_turn_traces"][0]["completion_ids"],
+            logprobs=[0.0]
+            * (
+                len(row.execution_metadata.extra["token_turn_traces"][0]["prompt_ids"])
+                + len(row.execution_metadata.extra["token_turn_traces"][0]["completion_ids"])
+            ),
+            loss_mask=[0] * len(row.execution_metadata.extra["token_turn_traces"][0]["prompt_ids"])
+            + [1] * len(row.execution_metadata.extra["token_turn_traces"][0]["completion_ids"]),
+            reward=row.execution_metadata.extra["reward"],
+        ),
+    )(SimpleNamespace(model="runtime-model", tokenizer=_FakeTokenizer()))
+
+    sample = _run(rollout_fn(input_row))
+
+    assert sample.reward == 0.5
+    assert sample.loss_mask[-2:] == [1, 1]
+    assert sample.tokens[-2:] == [ord("o"), ord("k")]
+    assert len(sample.tokens) == len(sample.logprobs) == len(sample.loss_mask)
 
 
 def test_eval_protocol_adapter_accepts_custom_row_factory():
