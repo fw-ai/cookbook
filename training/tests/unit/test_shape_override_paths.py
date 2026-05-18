@@ -19,8 +19,8 @@ from fireworks.training.sdk import (
     TrainingShapeProfile,
 )
 
-import training.utils.infra as infra_module
-from training.utils.config import InfraConfig
+import fireworks_training_infra.infra as infra_module
+from fireworks_training_infra import InfraConfig
 
 BASE_MODEL = "accounts/fireworks/models/qwen3-1p7b"
 

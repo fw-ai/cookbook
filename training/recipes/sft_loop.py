@@ -56,7 +56,7 @@ from training.utils import (
     wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
-from training.utils.client import DEFAULT_TIMEOUT_S
+from fireworks_training_infra import DEFAULT_TIMEOUT_S
 from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.timer import flush_timing, timer
 
@@ -285,7 +285,7 @@ class Config:
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
-    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
+    0 = use DEFAULT_TIMEOUT_S from fireworks_training_infra."""
 
     trainer_job_id: str | None = None
     """Pre-created RLOR trainer job ID. When set, skips trainer creation."""

@@ -36,9 +36,7 @@ def test_recipe_imports(module: str):
 UTIL_MODULES = [
     "training.utils",
     "training.utils.config",
-    "training.utils.client",
     "training.utils.data",
-    "training.utils.infra",
     "training.utils.losses",
     "training.utils.logging",
     "training.utils.checkpoints",
@@ -58,6 +56,12 @@ UTIL_MODULES = [
     "training.utils.rl.router_replay",
     "training.utils.rl.train",
     "training.utils.runner",
+    # Standalone fireworks-training-infra package (extracted from cookbook).
+    "fireworks_training_infra",
+    "fireworks_training_infra.infra",
+    "fireworks_training_infra.client",
+    "fireworks_training_infra.config",
+    "fireworks_training_infra.training_shapes",
 ]
 
 

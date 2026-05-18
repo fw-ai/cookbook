@@ -9,7 +9,7 @@ import pytest
 
 from fireworks.training.sdk.deployment import DeploymentManager
 from fireworks.training.sdk.trainer import TrainerJobManager
-from training.utils.config import InfraConfig
+from fireworks_training_infra import InfraConfig
 
 logger = logging.getLogger(__name__)
 

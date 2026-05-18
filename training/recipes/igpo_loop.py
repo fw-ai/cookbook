@@ -61,7 +61,7 @@ from training.utils import (
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
-from training.utils.client import DEFAULT_TIMEOUT_S
+from fireworks_training_infra import DEFAULT_TIMEOUT_S
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
@@ -136,7 +136,7 @@ class Config:
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
-    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
+    0 = use DEFAULT_TIMEOUT_S from fireworks_training_infra."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)

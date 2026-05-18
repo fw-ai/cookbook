@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from training.utils.infra import ResourceCleanup
+from fireworks_training_infra import ResourceCleanup
 
 
 class TestResourceCleanup:

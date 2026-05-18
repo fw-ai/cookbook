@@ -54,9 +54,9 @@ from fireworks.training.sdk.deployment import (
     DeploymentManager,
 )
 
-from training.utils.client import DEFAULT_TIMEOUT_S, ReconnectableClient
-from training.utils.config import DeployConfig, InfraConfig, WeightSyncScope
-from training.utils.training_shapes import auto_select_training_shape
+from fireworks_training_infra.client import DEFAULT_TIMEOUT_S, ReconnectableClient
+from fireworks_training_infra.config import DeployConfig, InfraConfig, WeightSyncScope
+from fireworks_training_infra.training_shapes import auto_select_training_shape
 
 TrainerHandle = CreatedTrainerJob | TrainerServiceEndpoint
 """Return type of :func:`request_trainer_job`.

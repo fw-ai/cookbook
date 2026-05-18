@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fireworks-training-infra"
+version = "0.1.0"
+description = "Provisioning helpers for Fireworks training jobs and inference deployments (extracted from fireworks-training-cookbook)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fireworks-ai[training]>=1.2.0a70,<2",
+    "httpx",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fireworks_training_infra*"]

@@ -3,7 +3,7 @@ from __future__ import annotations
 from fireworks.training.sdk.client import GradAccNormalization
 import pytest
 
-from training.utils.client import ReconnectableClient
+from fireworks_training_infra import ReconnectableClient
 
 
 class _FakeFuture:

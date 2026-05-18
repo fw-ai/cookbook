@@ -204,7 +204,7 @@ class Config:
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
-    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
+    0 = use DEFAULT_TIMEOUT_S from fireworks_training_infra."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)

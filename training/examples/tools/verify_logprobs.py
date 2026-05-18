@@ -56,7 +56,7 @@ from training.utils import (
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
-from training.utils.infra import ResourceCleanup
+from fireworks_training_infra import ResourceCleanup
 
 logging.basicConfig(
     level=logging.INFO,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import training.utils.config as config_module
+import fireworks_training_infra.config as config_module
 from fireworks.training.sdk.deployment import DeploymentConfig
 
 

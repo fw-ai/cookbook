@@ -73,7 +73,7 @@ from training.utils import (
     wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
-from training.utils.client import DEFAULT_TIMEOUT_S
+from fireworks_training_infra import DEFAULT_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ class Config:
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
-    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
+    0 = use DEFAULT_TIMEOUT_S from fireworks_training_infra."""
 
     init_from_checkpoint: str | None = None
     warm_start_from_adapter: str | None = None

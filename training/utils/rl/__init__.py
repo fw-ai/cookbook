@@ -70,7 +70,7 @@ from training.utils.rl.train import (
     run_rl_loop,
 )
 from training.utils.rl.losses import PromptGroup
-from training.utils.infra import Infra, setup_infra
+from fireworks_training_infra import Infra, setup_infra
 from training.utils.rl.metrics import (
     build_loop_metrics,
     total_target_tokens,

@@ -42,7 +42,7 @@ from typing import Any, Awaitable, Callable
 import tinker
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
-from training.utils.client import GradAccNormalization
+from fireworks_training_infra import GradAccNormalization
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,

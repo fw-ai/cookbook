@@ -4,9 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import training.utils.infra as infra_module
-from training.utils.config import DeployConfig, InfraConfig
-from training.utils.infra import create_trainer_job, setup_deployment, _fetch_job_failure_reason
+import fireworks_training_infra.infra as infra_module
+from fireworks_training_infra import DeployConfig, InfraConfig
+from fireworks_training_infra.infra import (
+    _fetch_job_failure_reason,
+    create_trainer_job,
+    setup_deployment,
+)
 
 
 def test_deploy_config_omits_region_for_shape_backed_deployments():

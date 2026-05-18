@@ -34,7 +34,8 @@ except ImportError:
                 "  Example: accounts/pyroworks/models/my-model",
             )
         ]
-from training.utils.config import DeployConfig, WeightSyncConfig
+from fireworks_training_infra import DeployConfig
+from training.utils.config import WeightSyncConfig
 
 logger = logging.getLogger(__name__)
 

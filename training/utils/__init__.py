@@ -110,18 +110,20 @@ __all__ = [
     "wandb_log",
 ]
 
-from training.utils.client import ReconnectableClient
+from fireworks_training_infra import (
+    DeployConfig,
+    InfraConfig,
+    ReconnectableClient,
+    WeightSyncScope,
+)
 from training.utils.config import (
     DEFAULT_ADAM,
     ConcurrencyConfig,
-    DeployConfig,
     EvalFn,
-    InfraConfig,
     RewardFn,
     StepCallback,
     WandBConfig,
     WeightSyncConfig,
-    WeightSyncScope,
 )
 from training.utils.data import (
     RLPromptDataset,
@@ -138,7 +140,7 @@ from training.utils.data import (
 )
 from training.utils.dataloader import CursorDataLoader, CursorItem
 from training.utils.dataloader_cursor import RawRowCursor
-from training.utils.infra import (
+from fireworks_training_infra import (
     Infra,
     ResourceCleanup,
     create_trainer_job,
@@ -194,7 +196,5 @@ from training.utils.supervised import (
 )
 from training.utils.timer import flush_timing, timed, timer
 from training.utils.tokenizers import load_deployment_tokenizer, load_tokenizer
-from training.utils.training_shapes import (
-    auto_select_training_shape,
-)
+from fireworks_training_infra import auto_select_training_shape
 from training.utils.validation import validate_config, validate_preflight

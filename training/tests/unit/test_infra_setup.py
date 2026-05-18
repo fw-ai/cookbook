@@ -20,15 +20,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import training.utils.infra as infra_setup_mod
-from training.utils.config import (
-    ConcurrencyConfig,
+import fireworks_training_infra.infra as infra_setup_mod
+from fireworks_training_infra import (
     DeployConfig,
+    Infra,
     InfraConfig,
-    WeightSyncConfig,
+    ResourceCleanup,
+    setup_infra,
 )
-from training.utils.infra import ResourceCleanup
-from training.utils.infra import Infra, setup_infra
+from training.utils.config import ConcurrencyConfig, WeightSyncConfig
 
 
 # ---------------------------------------------------------------------------
