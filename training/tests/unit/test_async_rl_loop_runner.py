@@ -467,7 +467,7 @@ class TestAsyncRunArtifactWrites:
         assert status["message"] == "done"
         assert status["details"][0]["percent"] == 100
         assert "training_started" in events
-        assert rollout_setup_urls == ["https://inference.unit.test/inference"]
+        assert rollout_setup_urls == ["https://inference.unit.test"]
 
     def test_failed_status_written_when_async_loop_raises(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

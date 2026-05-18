@@ -193,9 +193,16 @@ def default_completion_params_factory(setup: Any, params: EPParameters) -> dict[
 
 def _normalize_litellm_api_base(inference_base_url: str) -> str:
     base = inference_base_url.rstrip("/")
+    is_direct_route = ".direct.fireworks.ai" in base
+    if base.endswith("/inference/v1") or (is_direct_route and base.endswith("/v1")):
+        return base
+    if base.endswith("/inference"):
+        return f"{base}/v1"
     if base.endswith("/v1"):
         return base
-    return f"{base}/v1"
+    if is_direct_route:
+        return f"{base}/v1"
+    return f"{base}/inference/v1"
 
 
 def _ensure_token_turn_traces(row: EvaluationRow, setup: Any) -> None:

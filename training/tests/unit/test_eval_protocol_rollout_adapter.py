@@ -6,6 +6,8 @@ from eval_protocol.pytest import evaluation_test
 
 from training.utils.rl.rollout import (
     RolloutSample,
+    default_completion_params_factory,
+    get_eval_protocol_params,
     load_eval_protocol_input_rows,
     make_eval_protocol_rollout_fn_factory,
 )
@@ -108,13 +110,33 @@ def test_eval_protocol_adapter_invokes_processor_one_row_and_scores():
                 "model": "runtime-model",
                 "temperature": 0.7,
                 "top_p": 0.9,
-                "api_base": "https://inference.unit.test/v1",
+                "api_base": "https://inference.unit.test/inference/v1",
             },
             "steps": 7,
             "semaphore_value": 1,
             "kwargs": {"custom": "value"},
         },
     ]
+
+
+def test_eval_protocol_adapter_preserves_direct_route_api_base():
+    @evaluation_test(
+        input_rows=[[EvaluationRow(input_metadata=InputMetadata(row_id="row-1"))]],
+        completion_params=[{}],
+        rollout_processor=object(),
+    )
+    def evaluator(row: EvaluationRow) -> EvaluationRow:
+        return row
+
+    params = default_completion_params_factory(
+        SimpleNamespace(
+            model="runtime-model",
+            inference_base_url="https://deployment.us-east-1.direct.fireworks.ai",
+        ),
+        get_eval_protocol_params(evaluator),
+    )
+
+    assert params["api_base"] == "https://deployment.us-east-1.direct.fireworks.ai/v1"
 
 
 def test_eval_protocol_adapter_synthesizes_token_trace_when_processor_omits_it():
