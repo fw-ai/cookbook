@@ -356,6 +356,43 @@ class TestTrainLoop:
             for pair in batch:
                 assert "ref_chosen" in pair and "ref_rejected" in pair
 
+    def test_periodic_dcp_checkpoint_uses_top_level_interval(self, tmp_path, monkeypatch):
+        """DPO saves resumable checkpoints from Config.dcp_save_interval."""
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        class FakeCheckpoints:
+            def __init__(self):
+                self.saves = []
+
+            def save(self, name, **kwargs):
+                self.saves.append((name, kwargs))
+
+        ds = _make_pair_dataset(tmp_path, n=4)
+        cfg = module.Config(
+            log_path=str(tmp_path), beta=0.2, epochs=1, batch_size=2,
+            dcp_save_interval=1, render_workers=0,
+        )
+        ckpt = FakeCheckpoints()
+
+        step = asyncio.run(
+            module._train_loop(
+                ds, None,
+                _FakeReference(), _FakePolicy(),
+                adam_params={"lr": 1e-4},
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=4),
+                ckpt=ckpt,
+            )
+        )
+
+        assert step == 2
+        assert ckpt.saves == [
+            ("step-1", {"resumable": True, "promotable": False, "data_consumed": 2}),
+            ("step-2", {"resumable": True, "promotable": False, "data_consumed": 4}),
+        ]
+
     def test_multi_epoch_uses_ref_cache_log(self, tmp_path, monkeypatch):
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
