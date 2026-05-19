@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from fireworks.training.sdk import TrainerJobManager
 
 import training.recipes.sft_loop as sft_loop
-from training.utils import InfraConfig, WandBConfig
+from training.utils import InfraConfig, LRScheduleConfig, TwoPointLinearConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +48,26 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument(
+        "--lr-schedule",
+        choices=["constant", "cosine", "generalized_cosine", "linear", "two_point_linear"],
+        default="constant",
+        help="Learning-rate schedule after warmup",
+    )
+    parser.add_argument("--warmup-steps", type=int, default=0,
+                        help="Linear LR warmup steps before applying the schedule")
+    parser.add_argument("--min-lr-ratio", type=float, default=0.0,
+                        help="Minimum LR as a fraction of --learning-rate for decay schedules")
+    parser.add_argument("--cosine-power", type=float, default=1.0,
+                        help="Exponent for --lr-schedule generalized_cosine")
+    parser.add_argument("--two-point-linear-x1", type=float, default=0.33,
+                        help="First control-point position for two_point_linear")
+    parser.add_argument("--two-point-linear-y1", type=float, default=0.5,
+                        help="First control-point LR multiplier for two_point_linear")
+    parser.add_argument("--two-point-linear-x2", type=float, default=0.66,
+                        help="Second control-point position for two_point_linear")
+    parser.add_argument("--two-point-linear-y2", type=float, default=0.1,
+                        help="Second control-point LR multiplier for two_point_linear")
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
     parser.add_argument("--no-checkpoint", action="store_true",
@@ -92,6 +112,18 @@ def main():
         tokenizer_model=args.tokenizer_model,
         renderer_name=args.renderer_name,
         learning_rate=args.learning_rate,
+        lr_schedule=LRScheduleConfig(
+            kind=args.lr_schedule,
+            warmup_steps=args.warmup_steps,
+            min_lr_ratio=args.min_lr_ratio,
+            cosine_power=args.cosine_power,
+            two_point_linear=TwoPointLinearConfig(
+                x1=args.two_point_linear_x1,
+                y1=args.two_point_linear_y1,
+                x2=args.two_point_linear_x2,
+                y2=args.two_point_linear_y2,
+            ),
+        ),
         epochs=args.epochs,
         batch_size=args.batch_size,
         max_examples=args.max_examples,

@@ -74,6 +74,40 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | --- | --- |
 | `tokenizer_model` | HuggingFace model name matching your base model (e.g. `"Qwen/Qwen3-8B"`) |
 
+Optional SFT / DPO / ORPO LR scheduling fields:
+
+| Field | What to set |
+| --- | --- |
+| `lr_schedule.kind` | `"constant"` (default), `"cosine"`, `"generalized_cosine"`, `"linear"`, or `"two_point_linear"` |
+| `lr_schedule.warmup_steps` | Linear warmup optimizer steps before the schedule |
+| `lr_schedule.min_lr_ratio` | Final LR as a fraction of `learning_rate` for decay schedules |
+| `lr_schedule.cosine_power` | Exponent for generalized cosine decay (`1.0` is standard cosine) |
+| `lr_schedule.two_point_linear` | Interior control points for two-point linear decay |
+
+```python
+cfg = Config(
+    learning_rate=1e-5,
+    lr_schedule=LRScheduleConfig(
+        kind="generalized_cosine",
+        warmup_steps=100,
+        min_lr_ratio=0.0,
+        cosine_power=1.0,
+    ),
+    ...
+)
+```
+
+`LRScheduleConfig` and `TwoPointLinearConfig` live in `training.utils` and
+are shared by the SFT, DPO, and ORPO recipes. DPO and ORPO default to the
+same constant LR behavior as before unless `lr_schedule` is set.
+
+The decay families are included to cover the warmup + decay schedule shapes
+studied by Naganuma et al. (2026), ["What do near-optimal learning rate
+schedules look like?"](https://arxiv.org/abs/2603.10301). Their results show
+that standard cosine is a useful baseline, while generalized cosine and
+two-control-point decays can be better search families for language-model
+training. Retune `learning_rate` when changing the schedule shape.
+
 **RL** (`recipes/rl_loop.py`) -- also requires:
 
 | Field | What to set |

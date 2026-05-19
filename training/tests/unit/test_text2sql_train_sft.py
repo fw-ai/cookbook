@@ -39,6 +39,14 @@ def test_parse_args_reads_overrides(monkeypatch):
             "4",
             "--learning-rate",
             "2e-5",
+            "--lr-schedule",
+            "generalized_cosine",
+            "--warmup-steps",
+            "3",
+            "--min-lr-ratio",
+            "0.1",
+            "--cosine-power",
+            "0.5",
             "--lora-rank",
             "8",
             "--output-model-id",
@@ -56,6 +64,10 @@ def test_parse_args_reads_overrides(monkeypatch):
     assert args.epochs == 2
     assert args.batch_size == 4
     assert args.learning_rate == 2e-5
+    assert args.lr_schedule == "generalized_cosine"
+    assert args.warmup_steps == 3
+    assert args.min_lr_ratio == 0.1
+    assert args.cosine_power == 0.5
     assert args.lora_rank == 8
 
 

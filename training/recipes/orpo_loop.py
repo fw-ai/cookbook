@@ -36,7 +36,6 @@ Infrastructure defaults target Qwen3-235B on 2 nodes with CP=16, EP=8.
 from __future__ import annotations
 
 import logging
-import math
 import os
 import random
 import signal
@@ -51,6 +50,7 @@ from fireworks.training.sdk import TrainerJobManager
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    LRScheduleConfig,
     ReconnectableClient,
     ResourceCleanup,
     RunnerConfig,
@@ -59,6 +59,7 @@ from training.utils import (
     WandBConfig,
     auto_select_training_shape,
     build_renderer,
+    compute_learning_rate,
     create_trainer_job,
     load_preference_dataset,
     load_tokenizer,
@@ -69,6 +70,7 @@ from training.utils import (
     resolve_renderer_name,
     setup_wandb,
     validate_config,
+    validate_lr_schedule_config,
     wandb_finish,
     wandb_log,
 )
@@ -106,15 +108,8 @@ class Config:
     job_id: str | None = None
     output_model_id: str | None = None
 
-    warmup_ratio: float = 0.0
-    """Fraction of total steps used for linear LR warmup (0.0 = no warmup)."""
-
-    min_lr_ratio: float = 0.0
-    """Minimum LR as a fraction of ``learning_rate``. Cosine/linear decay
-    anneals to ``learning_rate * min_lr_ratio``."""
-
-    lr_schedule: str = "constant"
-    """LR schedule after warmup: ``"constant"``, ``"cosine"``, or ``"linear"``."""
+    lr_schedule: LRScheduleConfig = field(default_factory=LRScheduleConfig)
+    """Shared learning-rate schedule config used by SFT, DPO, and ORPO."""
 
     grad_accumulation_normalization: str | None = None
     """Server-side gradient normalization mode passed to optim_step.
@@ -157,39 +152,6 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# LR schedule
-# ---------------------------------------------------------------------------
-
-
-def _compute_lr(
-    step: int,
-    total_steps: int,
-    peak_lr: float,
-    warmup_ratio: float,
-    min_lr_ratio: float,
-    schedule: str,
-) -> float:
-    """Linear warmup then cosine/linear/constant decay."""
-    min_lr = peak_lr * min_lr_ratio
-    warmup_steps = int(total_steps * warmup_ratio)
-
-    if step < warmup_steps:
-        return min_lr + (peak_lr - min_lr) * step / max(warmup_steps, 1)
-
-    if schedule == "constant":
-        return peak_lr
-
-    decay_step = step - warmup_steps
-    decay_total = max(total_steps - warmup_steps, 1)
-    if schedule == "cosine":
-        return min_lr + 0.5 * (peak_lr - min_lr) * (1 + math.cos(math.pi * decay_step / decay_total))
-    if schedule == "linear":
-        return peak_lr - (peak_lr - min_lr) * decay_step / decay_total
-
-    raise ValueError(f"Unknown lr_schedule: {schedule!r}. Use 'constant', 'cosine', or 'linear'.")
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -215,6 +177,8 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    validate_lr_schedule_config(cfg.lr_schedule)
+
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -226,6 +190,14 @@ def main(
         {
             "orpo_lambda": cfg.orpo_lambda,
             "lr": cfg.learning_rate,
+            "lr_schedule": cfg.lr_schedule.kind,
+            "lr_schedule/warmup_steps": cfg.lr_schedule.warmup_steps,
+            "lr_schedule/min_lr_ratio": cfg.lr_schedule.min_lr_ratio,
+            "lr_schedule/cosine_power": cfg.lr_schedule.cosine_power,
+            "lr_schedule/two_point_linear/x1": cfg.lr_schedule.two_point_linear.x1,
+            "lr_schedule/two_point_linear/y1": cfg.lr_schedule.two_point_linear.y1,
+            "lr_schedule/two_point_linear/x2": cfg.lr_schedule.two_point_linear.x2,
+            "lr_schedule/two_point_linear/y2": cfg.lr_schedule.two_point_linear.y2,
             "epochs": cfg.epochs,
         },
     )
@@ -364,16 +336,16 @@ def main(
         step = step_offset
         total_steps = ((len(pair_cache) + cfg.batch_size - 1) // cfg.batch_size) * cfg.epochs
 
-        has_lr_schedule = cfg.warmup_ratio > 0 or cfg.lr_schedule != "constant"
+        has_lr_schedule = (
+            cfg.lr_schedule.warmup_steps > 0 or cfg.lr_schedule.kind != "constant"
+        )
         if has_lr_schedule:
             logger.info(
-                "LR schedule: %s | warmup_ratio=%.2f (%d steps) | "
-                "peak_lr=%g | min_lr=%g",
-                cfg.lr_schedule,
-                cfg.warmup_ratio,
-                int(total_steps * cfg.warmup_ratio),
+                "LR schedule: %s | warmup_steps=%d | peak_lr=%g | min_lr=%g",
+                cfg.lr_schedule.kind,
+                cfg.lr_schedule.warmup_steps,
                 cfg.learning_rate,
-                cfg.learning_rate * cfg.min_lr_ratio,
+                cfg.learning_rate * cfg.lr_schedule.min_lr_ratio,
             )
 
         def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
@@ -387,9 +359,8 @@ def main(
                 response_starts.append(pair["response_start"])
                 step_tokens += len(pair["chosen_tokens"]) + len(pair["rejected_tokens"])
 
-            current_lr = _compute_lr(
-                step, total_steps, cfg.learning_rate,
-                cfg.warmup_ratio, cfg.min_lr_ratio, cfg.lr_schedule,
+            current_lr = compute_learning_rate(
+                step + 1, total_steps, cfg.learning_rate, cfg.lr_schedule,
             )
             adam_params = tinker.AdamParams(learning_rate=current_lr, **DEFAULT_ADAM)
 

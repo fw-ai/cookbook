@@ -34,6 +34,7 @@ from training.utils import (
     DEFAULT_RENDER_WORKERS,
     InfraConfig,
     JsonlRenderDataset,
+    LRScheduleConfig,
     RawRowCursor,
     ReconnectableClient,
     ResourceCleanup,
@@ -42,6 +43,7 @@ from training.utils import (
     RunStatus,
     WandBConfig,
     auto_select_training_shape,
+    compute_learning_rate,
     create_trainer_job,
     log_metrics_json,
     make_render_dataloader,
@@ -52,6 +54,7 @@ from training.utils import (
     resolve_renderer_name,
     setup_wandb,
     validate_config,
+    validate_lr_schedule_config,
     wandb_finish,
     wandb_log,
 )
@@ -240,6 +243,7 @@ class Config:
     train_on_what: str = "all_assistant_messages"
 
     learning_rate: float = 1e-4
+    lr_schedule: LRScheduleConfig = field(default_factory=LRScheduleConfig)
     epochs: int = 3
     batch_size: int = 32
     max_seq_len: int | None = None
@@ -269,10 +273,6 @@ class Config:
 
     weight_decay: float | None = None
     """Override Adam weight decay (default 0.01 via DEFAULT_ADAM)."""
-
-    warmup_steps: int = 0
-    """Linear LR warmup from 0 → learning_rate over the first N optimizer
-    steps. 0 disables warmup (lr is constant)."""
 
     seed: int = 0
     """Shuffle seed for the training dataset.
@@ -432,10 +432,20 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    validate_lr_schedule_config(cfg.lr_schedule)
+
     setup_wandb(
         cfg.wandb,
         {
             "lr": cfg.learning_rate,
+            "lr_schedule": cfg.lr_schedule.kind,
+            "lr_schedule/warmup_steps": cfg.lr_schedule.warmup_steps,
+            "lr_schedule/min_lr_ratio": cfg.lr_schedule.min_lr_ratio,
+            "lr_schedule/cosine_power": cfg.lr_schedule.cosine_power,
+            "lr_schedule/two_point_linear/x1": cfg.lr_schedule.two_point_linear.x1,
+            "lr_schedule/two_point_linear/y1": cfg.lr_schedule.two_point_linear.y1,
+            "lr_schedule/two_point_linear/x2": cfg.lr_schedule.two_point_linear.x2,
+            "lr_schedule/two_point_linear/y2": cfg.lr_schedule.two_point_linear.y2,
             "epochs": cfg.epochs,
             "batch_size": cfg.batch_size,
         },
@@ -617,15 +627,6 @@ def main(
         if cfg.weight_decay is not None:
             adam_kwargs["weight_decay"] = cfg.weight_decay
 
-        def _current_lr(optim_step_idx: int) -> float:
-            # 1-indexed optim step; linear warmup from 0 → cfg.learning_rate
-            # over cfg.warmup_steps, constant afterwards.
-            if cfg.warmup_steps > 0 and optim_step_idx <= cfg.warmup_steps:
-                return cfg.learning_rate * (optim_step_idx / cfg.warmup_steps)
-            return cfg.learning_rate
-
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
-
         # -- Training loop (batch-indexed) -------------------------------------
 
         completed_epochs = cursor.value // training_count if training_count else 0
@@ -635,6 +636,17 @@ def main(
         total_steps_estimate = step + (
             (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
         )
+        has_lr_schedule = (
+            cfg.lr_schedule.warmup_steps > 0 or cfg.lr_schedule.kind != "constant"
+        )
+        if has_lr_schedule:
+            logger.info(
+                "LR schedule: %s | warmup_steps=%d | peak_lr=%g | min_lr=%g",
+                cfg.lr_schedule.kind,
+                cfg.lr_schedule.warmup_steps,
+                cfg.learning_rate,
+                cfg.learning_rate * cfg.lr_schedule.min_lr_ratio,
+            )
 
         def _run_train_step(
             batch: list[tinker.Datum],
@@ -657,8 +669,13 @@ def main(
                     response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch)
 
             with timer("optim_step"):
-                # Rebuild AdamParams each step so warmup can scale lr.
-                step_lr = _current_lr(step + 1)
+                # Rebuild AdamParams each step so the LR schedule can update.
+                step_lr = compute_learning_rate(
+                    step + 1,
+                    total_steps_estimate,
+                    cfg.learning_rate,
+                    cfg.lr_schedule,
+                )
                 step_adam = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
                 optim_result = client.optim_step(step_adam)
             step += 1
@@ -674,6 +691,7 @@ def main(
                     )
 
             step_metrics: Dict[str, Any] = flush_timing()
+            step_metrics["train/lr"] = step_lr
 
             if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
                 for k, v in optim_result.metrics.items():
@@ -691,8 +709,14 @@ def main(
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
-                    step, total_steps_estimate, avg_loss, ppl, step_metrics["train/tokens_per_sec"], step_total_tokens,
+                    "Step %d/%d | lr=%.2e | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
+                    step,
+                    total_steps_estimate,
+                    step_lr,
+                    avg_loss,
+                    ppl,
+                    step_metrics["train/tokens_per_sec"],
+                    step_total_tokens,
                 )
                 log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
                 step_metrics.update({

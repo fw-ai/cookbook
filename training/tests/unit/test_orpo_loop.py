@@ -44,6 +44,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
         "metrics_logs": [],
         "wandb_logs": [],
         "promotions": [],
+        "lrs": [],
     }
 
     class FakeMgr:
@@ -136,8 +137,9 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
                 }
             )
 
-        def optim_step(self, _params, **kwargs):
+        def optim_step(self, params, **kwargs):
             events["optim_steps"] += 1
+            events["lrs"].append(params.learning_rate)
             return SimpleNamespace()
 
         def save_state(self, name):
@@ -204,6 +206,11 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-4B",
         max_seq_len=None,
+        learning_rate=1e-4,
+        lr_schedule=module.LRScheduleConfig(
+            kind="generalized_cosine",
+            cosine_power=2.0,
+        ),
         epochs=1,
         batch_size=1,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1"),
@@ -220,6 +227,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
         [{"id": "chosen-1"}, {"id": "rejected-1"}],
     ]
     assert events["optim_steps"] == 2
+    assert events["lrs"] == pytest.approx([1e-4, 0.0])
     assert events["save_weights"] == [("step-2", "base")]
     assert events["promotions"] == [
         ("job-orpo", "step-2-session", "promoted-orpo-model"),

@@ -21,4 +21,8 @@ python train_sft.py \
     --epochs 3 \
     --batch-size 32 \
     --learning-rate 1e-5 \
+    --lr-schedule generalized_cosine \
+    --cosine-power 1.0 \
+    --warmup-steps 2 \
+    --min-lr-ratio 0.0 \
     --output-model-id sft-text-qwen3-8b-$(date +%Y%m%d%H%M)
