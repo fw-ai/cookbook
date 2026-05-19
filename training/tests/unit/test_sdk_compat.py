@@ -49,3 +49,15 @@ def test_to_deployment_config_sets_fixed_replica_count():
     assert isinstance(deployment_config, DeploymentConfig)
     assert deployment_config.min_replica_count == 3
     assert deployment_config.max_replica_count == 3
+
+
+def test_to_deployment_config_sets_purpose_annotation():
+    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(purpose="PURPOSE_PILOT"),
+    )
+
+    assert deployment_config.annotations == {"internal/purpose": "pilot"}
+    assert deployment_config.for_training is True

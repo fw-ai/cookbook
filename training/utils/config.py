@@ -175,6 +175,11 @@ class DeployConfig:
         if not accel and not self.deployment_shape:
             accel = infra.accelerator_type
         replica_count = 1 if self.replica_count is None else self.replica_count
+        annotations = None
+        if infra.purpose:
+            annotations = {
+                "internal/purpose": infra.purpose.removeprefix("PURPOSE_").lower(),
+            }
         return DeploymentConfig(
             deployment_id=self.deployment_id,
             base_model=base_model,
@@ -189,6 +194,8 @@ class DeployConfig:
             accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
+            annotations=annotations,
+            for_training=True,
         )
 
 

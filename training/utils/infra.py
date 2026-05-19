@@ -49,7 +49,6 @@ try:
 except ImportError:
     CreatedTrainerJob = Any
 from fireworks.training.sdk.deployment import (
-    DeploymentConfig,
     DeploymentInfo,
     DeploymentManager,
 )
@@ -562,8 +561,6 @@ def request_deployment(
         dep_config.region = _infer_region_from_deployment_shape(
             deploy_mgr, dep_config.deployment_shape
         )
-    if dep_config.region is None:
-        return _create_deployment_via_cookbook(deploy_mgr, dep_config, purpose=infra.purpose)
     return deploy_mgr.create_or_get(dep_config)
 
 
@@ -822,49 +819,6 @@ def get_deployment_gpu_count(
         return replica_count
 
 
-def _create_deployment_via_cookbook(
-    deploy_mgr: DeploymentManager,
-    config: DeploymentConfig,
-    purpose: str | None = None,
-) -> DeploymentInfo:
-    """Create a deployment while leaving placement selection to the control plane."""
-    path = f"/v1/accounts/{deploy_mgr.account_id}/deployments?deploymentId={config.deployment_id}"
-    if config.skip_shape_validation:
-        path += "&skipShapeValidation=true"
-    if config.disable_speculative_decoding:
-        path += "&disableSpeculativeDecoding=true"
-
-    body: dict[str, Any] = {
-        "baseModel": config.base_model,
-        "minReplicaCount": config.min_replica_count,
-        "maxReplicaCount": config.max_replica_count,
-        "enableHotLoad": True,
-        "forTraining": True,
-    }
-    if config.hot_load_bucket_type:
-        body["hotLoadBucketType"] = config.hot_load_bucket_type
-    if config.deployment_shape:
-        body["deploymentShape"] = config.deployment_shape
-    if config.accelerator_type:
-        body["acceleratorType"] = config.accelerator_type
-    if config.extra_args:
-        flat: list[str] = []
-        for arg in config.extra_args:
-            flat.extend(arg.split()) if " " in arg else flat.append(arg)
-        body["extraArgs"] = flat
-    if config.extra_values:
-        body["extraValues"] = config.extra_values
-    if purpose:
-        body["annotations"] = {
-            "internal/purpose": purpose.removeprefix("PURPOSE_").lower(),
-        }
-
-    logger.info("Creating deployment: %s", config.deployment_id)
-    resp = deploy_mgr._post(path, json=body, timeout=60)
-    resp.raise_for_status()
-    return deploy_mgr._parse_deployment_info(config.deployment_id, resp.json())
-
-
 def setup_training_client(
     endpoint: TrainerServiceEndpoint,
     base_model: str,
@@ -1115,6 +1069,8 @@ def setup_infra(
     """
     if needs_inference and deploy_mgr is None:
         raise ValueError("deploy_mgr is required when needs_inference=True")
+    if needs_inference and deploy_cfg is None:
+        raise ValueError("deploy_cfg is required when needs_inference=True")
 
     emit: StatusCallback = on_status or (lambda _: None)
     boot_start = time.time()
@@ -1154,10 +1110,9 @@ def setup_infra(
     # Build a local deploy_cfg copy with deployment_shape filled in; never mutates caller's object.
     local_deploy_cfg: DeployConfig | None = None
     if deploy_cfg is not None:
-        local_deploy_cfg = (
-            dataclasses.replace(deploy_cfg, deployment_shape=resolved_deploy_shape)
-            if resolved_deploy_shape and not deploy_cfg.deployment_shape
-            else deploy_cfg
+        local_deploy_cfg = dataclasses.replace(
+            deploy_cfg,
+            deployment_shape=deploy_cfg.deployment_shape or resolved_deploy_shape,
         )
 
     weight_sync_scope = (
