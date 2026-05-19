@@ -37,6 +37,7 @@ __all__ = [
     "DEFAULT_ADAM",
     "DEFAULT_PREFETCH_FACTOR",
     "DEFAULT_RENDER_WORKERS",
+    "JSONL_ROW_INDEX_KEY",
     "DeployConfig",
     "EvalFn",
     "WeightSyncConfig",
@@ -173,6 +174,7 @@ from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 from training.utils.streaming import (
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,
+    JSONL_ROW_INDEX_KEY,
     AppendOnlyPickleLog,
     JsonlRenderDataset,
     make_render_dataloader,
