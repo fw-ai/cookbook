@@ -433,6 +433,7 @@ class TestAsyncRunArtifactWrites:
         dropped).
         """
         events: list[str] = []
+        rollout_setup_urls: list[str] = []
 
         def fake_setup_infra(**_kwargs):
             events.append("setup_infra_done")
@@ -455,7 +456,9 @@ class TestAsyncRunArtifactWrites:
 
         async_rl_loop.main(
             _async_config(tmp_path),
-            rollout_fn_factory=lambda _setup: lambda _row: None,
+            rollout_fn_factory=lambda setup: (
+                rollout_setup_urls.append(setup.inference_base_url) or (lambda _row: None)
+            ),
             rows=[{"id": "row-1"}],
         )
 
@@ -464,6 +467,7 @@ class TestAsyncRunArtifactWrites:
         assert status["message"] == "done"
         assert status["details"][0]["percent"] == 100
         assert "training_started" in events
+        assert rollout_setup_urls == ["https://inference.unit.test"]
 
     def test_failed_status_written_when_async_loop_raises(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
