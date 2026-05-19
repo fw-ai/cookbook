@@ -74,7 +74,6 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.runner_state import start_running, write_completed, write_running_step
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +97,7 @@ class Config:
     learning_rate: float = 1e-5
     epochs: int = 1
     batch_size: int = 4
-    """Number of preference pairs per optimizer step. For managed (V2) jobs
-    this is set from ``BaseTrainingConfig.batch_size_samples`` via the
-    cookbook orchestrator."""
+    """Number of preference pairs per optimizer step."""
     seed: int = 0
     """Seed for deterministic per-epoch shuffling of preference pairs."""
     max_seq_len: int | None = None
@@ -442,16 +439,13 @@ def main(
                 "train/epoch": epoch + 1,
             }
             wandb_log(step_metrics, step)
-            write_running_step(
-                runner,
-                step=step,
-                total_steps=total_steps,
-                metrics=step_metrics,
-                tokens=step_tokens,
-            )
+            runner.append_metrics(step, step_metrics, tokens=step_tokens)
+            runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
+            runner.write_metadata()
             return time.monotonic()
 
-        start_running(runner, total_steps=total_steps)
+        runner.start_training()
+        runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 
         for epoch in range(cfg.epochs):
             # Seed before each epoch so identical configs reproduce the same
@@ -488,7 +482,8 @@ def main(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
                 )
 
-        write_completed(runner, step=step, total_steps=total_steps)
+        runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
+        runner.write_metadata()
         logger.info(
             "Training complete: %d optimizer steps (%d new)", step, step - step_offset
         )

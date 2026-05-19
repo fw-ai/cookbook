@@ -10,39 +10,18 @@ Dataset format (JSONL, OpenAI chat format):
 Usage:
     export FIREWORKS_API_KEY=...
     python -m recipes.sft_loop
-
-
-Maximize GPU Utilization
-===========================================================================
-
-The cookbook overlaps GPU/server work along two dimensions:
-
-1. Intra-step overlap (always on). Each training step submits both
-   forward_backward and optim_step as futures, then awaits them together. 
-   This hides the round-trip between fwdbwd and optim within a single step.
-
-2. Inter-step pipelining (Config.pipeline_depth >= 2). Keep N (fwdbwd, optim)
-   pairs in flight on the server's continuous-batching coalescer, so step
-   N+1's server-side prep overlaps with step N's GPU compute. Increase this
-   number (i.e. set to 4) to improve throughput.
-
 """
 
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import os
 import random
 import signal
-import tempfile
-import time
-from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from itertools import islice
-from pathlib import Path
 from typing import Any, Dict, List
 
 import tinker
@@ -50,12 +29,10 @@ import torch
 from dotenv import load_dotenv
 from fireworks.training.sdk import TrainerJobManager
 
-from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
     DEFAULT_RENDER_WORKERS,
     InfraConfig,
-    JSONL_ROW_INDEX_KEY,
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
@@ -81,7 +58,6 @@ from training.utils import (
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.losses import make_batch_weighted_sft_loss_fn
-from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
 load_dotenv()
@@ -93,196 +69,6 @@ logger = logging.getLogger(__name__)
 # auto carve-out, which run in-process with the same render_fn.
 _worker_state: dict = {}
 
-RENDER_SAMPLE_LIMIT_ENV = "FIRETITAN_SFT_RENDER_SAMPLES_LIMIT"
-DEFAULT_RENDER_SAMPLE_LIMIT = 20
-
-
-def _parse_render_samples_limit(value: str) -> int | None:
-    normalized = value.strip().lower()
-    if normalized in {"all", "full", "unlimited", "-1"}:
-        return None
-    limit = int(normalized)
-    if limit < 0:
-        return None
-    return limit
-
-
-def _resolve_render_samples_limit(config_limit: int | None) -> int | None:
-    env_limit = os.environ.get(RENDER_SAMPLE_LIMIT_ENV)
-    if env_limit is not None:
-        try:
-            return _parse_render_samples_limit(env_limit)
-        except ValueError:
-            logger.warning(
-                "Invalid %s=%r; using default render sample limit %d",
-                RENDER_SAMPLE_LIMIT_ENV,
-                env_limit,
-                DEFAULT_RENDER_SAMPLE_LIMIT,
-            )
-            return DEFAULT_RENDER_SAMPLE_LIMIT
-    if config_limit is None:
-        return DEFAULT_RENDER_SAMPLE_LIMIT
-    if config_limit < 0:
-        return None
-    return int(config_limit)
-
-
-def _decode_tokens(token_ids: list[int]) -> list[str]:
-    tokenizer = _worker_state.get("tokenizer")
-    if tokenizer is None:
-        return ["" for _ in token_ids]
-    decoded: list[str] = []
-    for token_id in token_ids:
-        try:
-            text = tokenizer.decode([int(token_id)], skip_special_tokens=False)
-        except TypeError:
-            text = tokenizer.decode([int(token_id)])
-        except Exception:  # noqa: BLE001 - diagnostic artifact must not break rendering
-            text = ""
-        decoded.append(str(text))
-    return decoded
-
-
-def _render_sample_worker_path() -> str:
-    local_dir = _worker_state.get("render_samples_local_dir") or ""
-    worker_id = _worker_state.get("worker_id")
-    worker_label = "main" if worker_id is None else str(worker_id)
-    return os.path.join(local_dir, f"render_samples.worker-{worker_label}.jsonl")
-
-
-def _remaining_render_sample_capacity() -> int | None:
-    limit = _worker_state.get("render_samples_limit")
-    if limit is None:
-        return None
-    written = int(_worker_state.get("render_samples_written", 0))
-    return max(0, int(limit) - written)
-
-
-def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
-    local_dir = _worker_state.get("render_samples_local_dir") or ""
-    if not local_dir:
-        return
-    remaining = _remaining_render_sample_capacity()
-    if remaining == 0:
-        return
-
-    selected = rendered_examples if remaining is None else rendered_examples[:remaining]
-    if not selected:
-        return
-
-    row_index = row.get(JSONL_ROW_INDEX_KEY)
-    try:
-        row_index_int = int(row_index) if row_index is not None else None
-    except (TypeError, ValueError):
-        row_index_int = None
-
-    path = _render_sample_worker_path()
-    try:
-        with open(path, "a", encoding="utf-8") as handle:
-            for split_index, rendered in enumerate(selected):
-                token_ids = [int(x) for x in rendered.token_ids]
-                token_weights = [float(x) for x in rendered.token_weights]
-                datum = rendered.datum
-                target_tokens = [int(x) for x in datum.loss_fn_inputs["target_tokens"].data]
-                training_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
-                record = {
-                    # source_jsonl_row_index is 0-based; source_jsonl_line_number
-                    # is 1-based to match editor / CLI line-number conventions.
-                    "source_jsonl_row_index": row_index_int,
-                    "source_jsonl_line_number": row_index_int + 1 if row_index_int is not None else None,
-                    "split_index": split_index,
-                    "worker_id": _worker_state.get("worker_id"),
-                    "renderer": _worker_state.get("resolved_renderer_name", ""),
-                    "train_on_what": _worker_state.get("train_on_what_str", ""),
-                    "token_ids": token_ids,
-                    "decoded_tokens": _decode_tokens(token_ids),
-                    "token_weights": token_weights,
-                    "training_target_token_ids": target_tokens,
-                    "training_loss_weights": training_weights,
-                }
-                handle.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
-                _worker_state["render_samples_written"] = int(
-                    _worker_state.get("render_samples_written", 0)
-                ) + 1
-    except Exception:  # noqa: BLE001 - best-effort debug artifact
-        if not _worker_state.get("render_samples_error_logged"):
-            logger.warning("Failed to write SFT render sample", exc_info=True)
-            _worker_state["render_samples_error_logged"] = True
-
-
-def _round_robin_render_sample_lines(files: list[Path]) -> list[str]:
-    handles = []
-    try:
-        for path in files:
-            handles.append(path.open(encoding="utf-8"))
-        lines: list[str] = []
-        while handles:
-            next_handles = []
-            for handle in handles:
-                line = handle.readline()
-                if line:
-                    lines.append(line)
-                    next_handles.append(handle)
-                else:
-                    handle.close()
-            handles = next_handles
-        return lines
-    finally:
-        for handle in handles:
-            if not handle.closed:
-                handle.close()
-
-
-def _finalize_render_samples(
-    local_dir: str,
-    output_path: str,
-    render_samples_limit: int | None,
-) -> None:
-    if not local_dir or not output_path:
-        return
-    try:
-        files = sorted(Path(local_dir).glob("render_samples.worker-*.jsonl"))
-        all_lines = _round_robin_render_sample_lines(files)
-        content_parts = all_lines
-        truncated_count = 0
-        if render_samples_limit is not None:
-            content_parts = all_lines[:render_samples_limit]
-            truncated_count = max(0, len(all_lines) - render_samples_limit)
-        if not content_parts:
-            logger.info("No SFT render samples were captured; skipping %s", output_path)
-            return
-        content = "".join(content_parts)
-        content_bytes = content.encode("utf-8")
-        fileio.write_bytes(output_path, content_bytes)
-        logger.info(
-            "Uploaded %d SFT render sample records (%d bytes) to %s",
-            len(content_parts),
-            len(content_bytes),
-            output_path,
-        )
-        if truncated_count:
-            logger.info(
-                "Skipped %d extra SFT render sample records after global limit=%d",
-                truncated_count,
-                render_samples_limit,
-            )
-    except Exception:  # noqa: BLE001 - diagnostic artifact must not fail the job
-        logger.warning("Failed to finalize SFT render samples to %s", output_path, exc_info=True)
-
-
-def _configure_render_sample_state(
-    render_samples_local_dir: str = "",
-    render_samples_limit: int | None = 0,
-    _worker_id: int | None = None,
-) -> None:
-    _worker_state.update(
-        worker_id=_worker_id,
-        render_samples_local_dir=render_samples_local_dir,
-        render_samples_limit=render_samples_limit,
-        render_samples_written=0,
-        render_samples_error_logged=False,
-    )
-
 
 def _init_render_worker(
     tokenizer_model: str,
@@ -290,8 +76,6 @@ def _init_render_worker(
     train_on_what_str: str,
     max_seq_len: int,
     tokenizer_revision: str = "",
-    render_samples_local_dir: str = "",
-    render_samples_limit: int | None = 0,
     _worker_id: int | None = None,
 ) -> None:
     """DataLoader ``worker_init_fn`` for SFT chat-row rendering.
@@ -306,15 +90,6 @@ def _init_render_worker(
         renderer_name=renderer_name,
         max_seq_len=max_seq_len,
         train_on_what=parse_train_on_what(train_on_what_str),
-    )
-    _worker_state.update(
-        resolved_renderer_name=resolve_renderer_name(tokenizer_model, renderer_name),
-        train_on_what_str=train_on_what_str,
-    )
-    _configure_render_sample_state(
-        render_samples_local_dir=render_samples_local_dir,
-        render_samples_limit=render_samples_limit,
-        _worker_id=_worker_id,
     )
 
 
@@ -337,14 +112,12 @@ def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
     )
     if not isinstance(rendered_examples, list):
         rendered_examples = [rendered_examples]
-    valid_rendered_examples = [
-        rendered
+    datums = [
+        rendered.datum
         for rendered in rendered_examples
         if 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]
         and any(w > 0 for w in rendered.token_weights)
     ]
-    _write_render_samples(row, valid_rendered_examples)
-    datums = [rendered.datum for rendered in valid_rendered_examples]
     if not datums:
         return None
     if len(datums) == 1:
@@ -409,20 +182,13 @@ def _prepare_datasets(
     still does its own per-epoch shuffling.
     """
     training_ds = JsonlRenderDataset(
-        cfg.dataset,
-        _render_one_worker,
-        max_examples=cfg.max_examples,
-        row_index_key=JSONL_ROW_INDEX_KEY,
+        cfg.dataset, _render_one_worker, max_examples=cfg.max_examples,
     )
     if len(training_ds) == 0:
         raise RuntimeError(f"No examples found in {cfg.dataset}")
 
     if cfg.evaluation_dataset:
-        eval_ds = JsonlRenderDataset(
-            cfg.evaluation_dataset,
-            _render_one_worker,
-            row_index_key=JSONL_ROW_INDEX_KEY,
-        )
+        eval_ds = JsonlRenderDataset(cfg.evaluation_dataset, _render_one_worker)
         eval_data = _render_eagerly(eval_ds, len(eval_ds))
         logger.info(
             "Loaded %d eval examples from %s",
@@ -466,14 +232,6 @@ class Config:
     log_path: str
     """Directory for checkpoints and logs. Required, no default."""
 
-    render_samples_file: str = ""
-    """Optional JSONL path for rendered token/mask diagnostic samples."""
-
-    render_samples_limit: int | None = None
-    """Global rendered datum sample cap. ``None`` means default; negative
-    values mean full dump. Can be overridden by
-    FIRETITAN_SFT_RENDER_SAMPLES_LIMIT."""
-
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
@@ -484,9 +242,6 @@ class Config:
     learning_rate: float = 1e-4
     epochs: int = 3
     batch_size: int = 32
-    """Number of training samples per optimizer step. For managed (V2) jobs
-    this is set from ``BaseTrainingConfig.batch_size_samples`` via the
-    cookbook orchestrator."""
     max_seq_len: int | None = None
     max_examples: int | None = None
     lora_rank: int = 0
@@ -531,11 +286,6 @@ class Config:
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
-
-    pipeline_depth: int = 1
-    """Number of (forward_backward, optim_step) pairs in flight at once
-    (inter-step pipelining). Intra-step fb/optim overlap is always on.
-    Increase this number (i.e. set to 4) to improve throughput."""
 
     trainer_job_id: str | None = None
     """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
@@ -806,49 +556,17 @@ def main(
             if cfg.render_workers is not None
             else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
-        base_init_args = (
+        init_args = (
             cfg.tokenizer_model,
             cfg.renderer_name,
             cfg.train_on_what,
             cfg.max_seq_len,
             cfg.tokenizer_revision,
         )
-        _init_render_worker(*base_init_args)
-
-        training_dataset, eval_data = _prepare_datasets(cfg)
-
-        render_samples_local_dir = ""
-        render_samples_limit = _resolve_render_samples_limit(cfg.render_samples_limit)
-        if cfg.render_samples_file and render_samples_limit != 0:
-            render_samples_local_dir = stack.enter_context(
-                tempfile.TemporaryDirectory(prefix="sft-render-samples-")
-            )
-            stack.callback(
-                _finalize_render_samples,
-                render_samples_local_dir,
-                cfg.render_samples_file,
-                render_samples_limit,
-            )
-            limit_label = "full dataset" if render_samples_limit is None else str(render_samples_limit)
-            logger.info(
-                "Capturing SFT render samples to %s (global limit=%s)",
-                cfg.render_samples_file,
-                limit_label,
-            )
-        elif cfg.render_samples_file:
-            logger.info("SFT render samples disabled by limit=0 for %s", cfg.render_samples_file)
-
-        init_args = (
-            *base_init_args,
-            render_samples_local_dir,
-            render_samples_limit,
-        )
-        _configure_render_sample_state(
-            render_samples_local_dir=render_samples_local_dir,
-            render_samples_limit=render_samples_limit,
-        )
+        _init_render_worker(*init_args)
         worker_init_fn = functools.partial(_init_render_worker, *init_args)
 
+        training_dataset, eval_data = _prepare_datasets(cfg)
         training_count = len(training_dataset)
         effective_batch_size = max(1, min(cfg.batch_size, training_count))
         if effective_batch_size < cfg.batch_size:
@@ -906,6 +624,8 @@ def main(
                 return cfg.learning_rate * (optim_step_idx / cfg.warmup_steps)
             return cfg.learning_rate
 
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
+
         # -- Training loop (batch-indexed) -------------------------------------
 
         completed_epochs = cursor.value // training_count if training_count else 0
@@ -916,169 +636,132 @@ def main(
             (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
         )
 
-        # Always-on intra-step async + optional inter-step pipelining
-        in_flight: deque = deque()
-        pipe_started = time.time()
-        pipe_total_tokens = 0
-        # Track previous fb/opt completion times in pipeline mode   .
-        last_t_fb_done: float | None = None
-        last_t_opt_done: float | None = None
-        last_optim_time: float | None = None
+        def _run_train_step(
+            batch: list[tinker.Datum],
+            step: int,
+        ) -> int:
 
-        def _pipe_submit(batch: list[tinker.Datum], step: int) -> int:
-            """Submit one fwd_bwd + optim_step pair (non-blocking). Returns updated step."""
-            tokens = sum(
-                len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens")
+            # Count total tokens for throughput tracking
+            step_total_tokens = sum(
+                len(chunk.tokens)
+                for d in batch
+                for chunk in d.model_input.chunks
+                if hasattr(chunk, "tokens")
             )
+
+            with timer("fwd_bwd"):
+                result = client.forward_backward(batch)
+                loss_sum = result.metrics.get("loss:sum", 0.0)
+                response_tokens = result.metrics.get("response_tokens")
+                if response_tokens is None:
+                    response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch)
+
+            with timer("optim_step"):
+                # Rebuild AdamParams each step so warmup can scale lr.
+                step_lr = _current_lr(step + 1)
+                step_adam = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
+                optim_result = client.optim_step(step_adam)
             step += 1
-            adam = tinker.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
-            inner = client.inner
-            t_submit = time.time()
-            in_flight.append((
-                step, tokens, t_submit,
-                inner.forward_backward(batch, loss_fn="cross_entropy"),
-                inner.optim_step(adam),
-            ))
-            return step
 
-        def _pipe_collect() -> None:
-            """Pop the oldest pair, emit per-step metrics + checkpoint."""
-            nonlocal pipe_total_tokens, last_t_fb_done, last_t_opt_done, last_optim_time
-            s, tokens, t_submit, fb_fut, opt_fut = in_flight.popleft()
-            result = fb_fut.result(timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S)
-            t_fb_done = time.time()
-            loss_sum = result.metrics.get("loss:sum", 0.0)
-            response_tokens = result.metrics.get("response_tokens")
-            optim_result = opt_fut.result(timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S)
-            t_opt_done = time.time()
-
-            pipe_total_tokens += tokens
-            tps = pipe_total_tokens / max(1e-9, time.time() - pipe_started)
-
-            if cfg.dcp_save_interval > 0 and s % cfg.dcp_save_interval == 0:
+            if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 with timer("dcp_save"):
-                    logger.info("Saving DCP checkpoint at step %d", s)
-                    ckpt.save(f"step-{s}", resumable=True, promotable=False, data_consumed=cursor.value)
+                    logger.info("Saving DCP checkpoint at step %d", step)
+                    ckpt.save(
+                        f"step-{step}",
+                        resumable=True,
+                        promotable=False,
+                        data_consumed=cursor.value,
+                    )
 
-            # Metrics logging
             step_metrics: Dict[str, Any] = flush_timing()
-            # Real per-step fb_compute and optim_compute (pipeline-agnostic).
-            #   gap_fb  = t_fb_done_N - t_fb_done_(N-1)  = optim_(N-1) + fb_N
-            #   gap_opt = t_opt_done_N - t_opt_done_(N-1) = fb_N + optim_N
-            if last_t_fb_done is None or last_t_opt_done is None:
-                fb_time = t_fb_done - t_submit
-                opt_time = t_opt_done - t_fb_done
-            else:
-                gap_fb = t_fb_done - last_t_fb_done
-                gap_opt = t_opt_done - last_t_opt_done
-                fb_time = max(0.0, gap_fb - (last_optim_time or 0.0))
-                opt_time = max(0.0, gap_opt - fb_time)
-            last_t_fb_done = t_fb_done
-            last_t_opt_done = t_opt_done
-            last_optim_time = opt_time
-            step_metrics["perf/fwd_bwd_time"] = fb_time
-            step_metrics["perf/optim_step_time"] = opt_time
+
             if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
                 for k, v in optim_result.metrics.items():
                     step_metrics[f"train/{k}"] = v
 
-            step_metrics["train/total_tokens"] = tokens
-            step_metrics["train/tokens_per_sec"] = tps
+            # Compute tokens/sec
+            fwd_bwd_time = step_metrics.get("perf/fwd_bwd_time", 0.0)
+            step_wall_time = fwd_bwd_time + step_metrics.get("perf/optim_step_time", 0.0)
+            if step_wall_time > 0:
+                step_metrics["train/tokens_per_sec"] = step_total_tokens / step_wall_time
+                step_metrics["train/tokens_per_sec_fwd_bwd"] = step_total_tokens / fwd_bwd_time if fwd_bwd_time > 0 else 0.0
+            step_metrics["train/total_tokens"] = step_total_tokens
 
-            if response_tokens and response_tokens > 0:
+            if response_tokens > 0:
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d | depth: %d",
-                    s, total_steps_estimate, avg_loss, ppl, tps, tokens, cfg.pipeline_depth,
+                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
+                    step, total_steps_estimate, avg_loss, ppl, step_metrics["train/tokens_per_sec"], step_total_tokens,
                 )
-                log_metrics_json(s, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tps)
+                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
                 step_metrics.update({
-                    "train/step": s, "train/ce_loss": avg_loss,
-                    "train/loss": avg_loss, "train/ppl": ppl,
+                    "train/step": step,
+                    "train/ce_loss": avg_loss,
+                    "train/loss": avg_loss,  # alias for frontend compatibility
+                    "train/ppl": ppl,
                 })
-                wandb_log(step_metrics, s)
+                wandb_log(step_metrics, step)
 
-            write_running_step(
-                runner,
-                step=s,
-                total_steps=total_steps_estimate,
-                metrics=step_metrics,
-                tokens=tokens,
+            runner.append_metrics(step, step_metrics, tokens=step_total_tokens)
+            runner.write_status(
+                RunStatus.RUNNING, step=step, total_steps=total_steps_estimate, message="training",
             )
+            runner.write_metadata()
 
-        def _pipe_drain_safe() -> None:
-            """Drain remaining in-flight ops for cleanup (e.g. in ``finally``)."""
-            while in_flight:
-                try:
-                    _pipe_collect()
-                except Exception as e:
-                    logger.warning("pipeline drain: %s", e)
+            return step
 
-        start_running(runner, total_steps=total_steps_estimate)
+        runner.start_training()
+        runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
-        try:
-            for epoch in range(completed_epochs, cfg.epochs):
-                loader_generator.manual_seed(cfg.seed + epoch)
-                batch_iter = iter(loader)
-                epoch_start_batch = start_batch if epoch == completed_epochs else 0
-                if epoch_start_batch > 0:
-                    batch_iter = islice(batch_iter, epoch_start_batch, None)
+        for epoch in range(completed_epochs, cfg.epochs):
+            loader_generator.manual_seed(cfg.seed + epoch)
+            batch_iter = iter(loader)
+            epoch_start_batch = start_batch if epoch == completed_epochs else 0
+            if epoch_start_batch > 0:
+                batch_iter = islice(batch_iter, epoch_start_batch, None)
 
-                epoch_valid_examples = 0
-                for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
-                    raw_batch_size = min(
-                        effective_batch_size,
-                        training_count - raw_batch_idx * effective_batch_size,
+            epoch_valid_examples = 0
+            for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
+                raw_batch_size = min(
+                    effective_batch_size,
+                    training_count - raw_batch_idx * effective_batch_size,
+                )
+                cursor.record(raw_batch_size)
+                batch = _flatten_rendered_batch(batch)
+                if not batch:
+                    continue  # entire batch was filtered (None render); skip
+                epoch_valid_examples += len(batch)
+                step = _run_train_step(batch, step)
+
+            if epoch == 0 and completed_epochs == 0 and start_batch == 0:
+                filtered_count = training_count - epoch_valid_examples
+                if filtered_count > 0:
+                    logger.info(
+                        "Seq-length / format filter: %d/%d raw rows filtered",
+                        filtered_count,
+                        training_count,
                     )
-                    cursor.record(raw_batch_size)
-                    batch = _flatten_rendered_batch(batch)
-                    if not batch:
-                        continue  # entire batch was filtered (None render); skip
-                    epoch_valid_examples += len(batch)
-                    step = _pipe_submit(batch, step)
-                    if len(in_flight) >= cfg.pipeline_depth:  # collect once queue is full
-                        _pipe_collect()
+                if epoch_valid_examples == 0:
+                    raise RuntimeError("No valid training examples after tokenization")
 
-                # Drain in-flight ops so eval sees fully-applied gradients.
-                while in_flight:
-                    _pipe_collect()
-
-                # Reset pipe timing baselines so the next epoch's first step
-                # doesn't fold the eval / data-loader-setup gap into perf/fwd_bwd_time.
-                last_t_fb_done = last_t_opt_done = last_optim_time = None
-
-                if epoch == 0 and completed_epochs == 0 and start_batch == 0:
-                    filtered_count = training_count - epoch_valid_examples
-                    if filtered_count > 0:
-                        logger.info(
-                            "Seq-length / format filter: %d/%d raw rows filtered",
-                            filtered_count,
-                            training_count,
+            # Run eval after each epoch
+            if eval_data:
+                try:
+                    eval_loss = run_eval(
+                        eval_data=eval_data,
+                        client=client,
+                        batch_size=cfg.batch_size,
+                        step=step,
+                        epoch=epoch,
+                    )
+                    if eval_loss is not None:
+                        runner.append_metrics(
+                            step,
+                            {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
                         )
-                    if epoch_valid_examples == 0:
-                        raise RuntimeError("No valid training examples after tokenization")
-
-                # Run eval after each epoch
-                if eval_data:
-                    try:
-                        eval_loss = run_eval(
-                            eval_data=eval_data,
-                            client=client,
-                            batch_size=cfg.batch_size,
-                            step=step,
-                            epoch=epoch,
-                        )
-                        if eval_loss is not None:
-                            runner.append_metrics(
-                                step,
-                                {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
-                            )
-                    except Exception as e:
-                        logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
-        finally:
-            # Drain in-flight ops on exit (incl. SIGTERM) to avoid leaking partial batches.
-            _pipe_drain_safe()
+                except Exception as e:
+                    logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
 
         # -- Final checkpoint --------------------------------------------------
 
@@ -1098,7 +781,10 @@ def main(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
                 )
 
-        write_completed(runner, step=step, total_steps=step)
+        runner.write_status(
+            RunStatus.COMPLETED, step=step, total_steps=step, message="done",
+        )
+        runner.write_metadata()
         logger.info("Training complete: %d optimizer steps", step)
         wandb_finish()
         return {"steps": step, "job_id": job_id}

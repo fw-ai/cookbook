@@ -78,7 +78,6 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import setup_infra
-from training.utils.runner_state import write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
 logger = logging.getLogger(__name__)
@@ -104,9 +103,7 @@ class Config:
     learning_rate: float = 1e-5
     epochs: int = 1
     batch_size: int = 4
-    """Number of preference pairs per optimizer step. For managed (V2) jobs
-    this is set from ``BaseTrainingConfig.batch_size_samples`` via the
-    cookbook orchestrator."""
+    """Number of preference pairs per optimizer step."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     """Cap on *valid rendered pairs* after schema/length filtering."""
@@ -399,13 +396,9 @@ async def _train_loop(
             "train/total_tokens": total_tokens,
         })
         wandb_log(step_metrics, step)
-        write_running_step(
-            runner,
-            step=step,
-            total_steps=total_steps,
-            metrics=step_metrics,
-            tokens=total_tokens,
-        )
+        runner.append_metrics(step, step_metrics, tokens=total_tokens)
+        runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
+        runner.write_metadata()
 
     # -- Epoch 0: stream render → ref forward → training -----------------------
 
@@ -742,7 +735,8 @@ def main(
                 )
 
         total_steps = step
-        write_completed(runner, step=step, total_steps=total_steps)
+        runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
+        runner.write_metadata()
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()
         return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}

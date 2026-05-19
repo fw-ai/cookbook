@@ -11,43 +11,6 @@ import training.recipes.sft_loop as module
 from training.utils.checkpoints import TrainingCheckpoints
 
 
-class _FakeFuture:
-    """Minimal future-like wrapper for FakeClient.inner return values."""
-
-    def __init__(self, value: object):
-        self._value = value
-
-    def result(self, timeout: float | None = None) -> object:
-        return self._value
-
-
-class _FakeInner:
-    """Stand-in for ``tinker.client.inner`` (futures API).
-
-    Wraps a parent FakeClient: forward_backward() / optim_step() delegate
-    to the parent's sync implementation and the result is wrapped in a
-    future, so the test's existing event-tracking still fires.
-    """
-
-    def __init__(self, parent: object):
-        self._parent = parent
-
-    def forward_backward(self, *args, **kwargs) -> _FakeFuture:
-        return _FakeFuture(self._parent.forward_backward(*args, **kwargs))
-
-    def optim_step(self, *args, **kwargs) -> _FakeFuture:
-        return _FakeFuture(self._parent.optim_step(*args, **kwargs))
-
-
-class _FakeInnerMixin:
-    """Adds a ``.inner`` property to FakeClient classes for the cookbook's
-    pipelined fwd_bwd + optim_step path (see ``recipes/sft_loop.py``)."""
-
-    @property
-    def inner(self):
-        return _FakeInner(self)
-
-
 def _patch_resume(monkeypatch, resume_info):
     """Replace TrainingCheckpoints.resume on the class for unit tests.
 
@@ -139,158 +102,6 @@ def test_init_render_worker_forwards_tokenizer_revision(monkeypatch):
     assert captured["kwargs"]["max_seq_len"] == 4096
 
 
-def test_configure_render_sample_state_does_not_repopulate_renderer(tmp_path, monkeypatch):
-    calls = {"populate": 0}
-    tokenizer = object()
-
-    def fake_populate_render_worker_state(state, **kwargs):
-        calls["populate"] += 1
-        state.update(
-            tokenizer=tokenizer,
-            renderer=object(),
-            max_seq_len=kwargs["max_seq_len"],
-            train_on_what=kwargs["train_on_what"],
-        )
-
-    monkeypatch.setattr(
-        module, "populate_render_worker_state", fake_populate_render_worker_state
-    )
-    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-
-    module._worker_state.clear()
-    module._init_render_worker("model", "renderer", "all_assistant_messages", 128)
-    module._configure_render_sample_state(str(tmp_path), 3)
-
-    assert calls["populate"] == 1
-    assert module._worker_state["tokenizer"] is tokenizer
-    assert module._worker_state["resolved_renderer_name"] == "unit-renderer"
-    assert module._worker_state["render_samples_local_dir"] == str(tmp_path)
-    assert module._worker_state["render_samples_limit"] == 3
-    assert module._worker_state["render_samples_written"] == 0
-
-
-def test_resolve_render_samples_limit(monkeypatch):
-    monkeypatch.delenv(module.RENDER_SAMPLE_LIMIT_ENV, raising=False)
-
-    assert module._resolve_render_samples_limit(None) == module.DEFAULT_RENDER_SAMPLE_LIMIT
-    assert module._resolve_render_samples_limit(7) == 7
-    assert module._resolve_render_samples_limit(-1) is None
-
-    monkeypatch.setenv(module.RENDER_SAMPLE_LIMIT_ENV, "0")
-    assert module._resolve_render_samples_limit(None) == 0
-
-    monkeypatch.setenv(module.RENDER_SAMPLE_LIMIT_ENV, "full")
-    assert module._resolve_render_samples_limit(3) is None
-
-    monkeypatch.setenv(module.RENDER_SAMPLE_LIMIT_ENV, "not-an-int")
-    assert module._resolve_render_samples_limit(3) == module.DEFAULT_RENDER_SAMPLE_LIMIT
-
-
-def test_write_render_samples_captures_token_debug_payload(tmp_path):
-    class FakeTokenizer:
-        def decode(self, token_ids, skip_special_tokens=False):
-            return f"tok-{token_ids[0]}"
-
-    module._worker_state.clear()
-    module._worker_state.update(
-        tokenizer=FakeTokenizer(),
-        render_samples_local_dir=str(tmp_path),
-        render_samples_limit=1,
-        render_samples_written=0,
-        worker_id=2,
-        resolved_renderer_name="unit-renderer",
-        train_on_what_str="all_assistant_messages",
-    )
-    datum = SimpleNamespace(
-        loss_fn_inputs={
-            "target_tokens": SimpleNamespace(data=[11, 12]),
-            "weights": SimpleNamespace(data=[0.0, 1.0]),
-        }
-    )
-    rendered = SimpleNamespace(
-        token_ids=[10, 11, 12],
-        token_weights=[0.0, 0.0, 1.0],
-        datum=datum,
-    )
-    extra_rendered = SimpleNamespace(token_ids=[13], token_weights=[1.0], datum=datum)
-
-    module._write_render_samples(
-        {module.JSONL_ROW_INDEX_KEY: 4},
-        [rendered, extra_rendered],
-    )
-
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "render_samples.worker-2.jsonl").read_text().splitlines()
-    ]
-    assert records == [
-        {
-            "source_jsonl_row_index": 4,
-            "source_jsonl_line_number": 5,
-            "split_index": 0,
-            "worker_id": 2,
-            "renderer": "unit-renderer",
-            "train_on_what": "all_assistant_messages",
-            "token_ids": [10, 11, 12],
-            "decoded_tokens": ["tok-10", "tok-11", "tok-12"],
-            "token_weights": [0.0, 0.0, 1.0],
-            "training_target_token_ids": [11, 12],
-            "training_loss_weights": [0.0, 1.0],
-        }
-    ]
-    assert module._worker_state["render_samples_written"] == 1
-
-
-def test_finalize_render_samples_uploads_worker_jsonl(tmp_path, monkeypatch):
-    (tmp_path / "render_samples.worker-0.jsonl").write_text('{"worker":0}\n')
-    (tmp_path / "render_samples.worker-1.jsonl").write_text('{"worker":1}\n')
-    uploaded: dict[str, bytes] = {}
-    monkeypatch.setattr(
-        module.fileio,
-        "write_bytes",
-        lambda path, data: uploaded.setdefault(path, data),
-    )
-
-    module._finalize_render_samples(
-        str(tmp_path),
-        "gs://bucket/job/render_samples.jsonl",
-        render_samples_limit=None,
-    )
-
-    assert uploaded == {
-        "gs://bucket/job/render_samples.jsonl": b'{"worker":0}\n{"worker":1}\n',
-    }
-
-
-def test_finalize_render_samples_enforces_global_limit_round_robin(tmp_path, monkeypatch):
-    (tmp_path / "render_samples.worker-0.jsonl").write_text(
-        '{"worker":0,"seq":0}\n{"worker":0,"seq":1}\n'
-    )
-    (tmp_path / "render_samples.worker-1.jsonl").write_text(
-        '{"worker":1,"seq":0}\n{"worker":1,"seq":1}\n'
-    )
-    uploaded: dict[str, bytes] = {}
-    monkeypatch.setattr(
-        module.fileio,
-        "write_bytes",
-        lambda path, data: uploaded.setdefault(path, data),
-    )
-
-    module._finalize_render_samples(
-        str(tmp_path),
-        "gs://bucket/job/render_samples.jsonl",
-        render_samples_limit=3,
-    )
-
-    assert uploaded == {
-        "gs://bucket/job/render_samples.jsonl": (
-            b'{"worker":0,"seq":0}\n'
-            b'{"worker":1,"seq":0}\n'
-            b'{"worker":0,"seq":1}\n'
-        ),
-    }
-
-
 def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
     """warm_start_from_adapter and init_from_checkpoint are mutually exclusive."""
     dataset_path = _write_dataset(
@@ -373,7 +184,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -435,7 +246,7 @@ def test_main_reduces_batch_size_when_examples_fewer_than_batch_size(tmp_path, m
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -539,7 +350,7 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -660,7 +471,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -763,7 +574,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -867,7 +678,7 @@ def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         def __init__(self, *args, **kwargs):
             self.job_id = kwargs.get("job_id", "job-sft")
 
@@ -980,7 +791,7 @@ def test_main_resume_uses_raw_row_cursor_when_filtering_shrinks_batches(tmp_path
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         def __init__(self, *args, **kwargs):
             self.job_id = kwargs.get("job_id", "job-sft")
 
@@ -1070,7 +881,7 @@ def test_completed_status_reports_actual_steps_when_filtering_drops_raw_batches(
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -1205,7 +1016,7 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -1338,7 +1149,7 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient(_FakeInnerMixin):
+    class FakeClient:
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):

@@ -73,7 +73,6 @@ from training.utils.rl.losses import (
     PolicyLoss,
     combine_prompt_groups,
 )
-from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 
@@ -768,13 +767,9 @@ def main(
             step_tokens = sum(
                 len(d.loss_fn_inputs["target_tokens"].data) for pg in prompt_groups for d in pg.data
             )
-            write_running_step(
-                runner,
-                step=step,
-                total_steps=total_rl_steps,
-                metrics=metrics,
-                tokens=step_tokens,
-            )
+            runner.append_metrics(step, metrics, tokens=step_tokens)
+            runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_rl_steps, message="training")
+            runner.write_metadata()
 
             return step, metrics
 
@@ -791,7 +786,8 @@ def main(
         remaining_rows = all_rows[cursor.value:]
 
         total_rl_steps = len(rl_dataset) - step_offset
-        start_running(runner, total_steps=total_rl_steps)
+        runner.start_training()
+        runner.write_status(RunStatus.RUNNING, total_steps=total_rl_steps, message="training")
 
         with runner:
             global_step = asyncio.run(
@@ -820,7 +816,8 @@ def main(
             except Exception as e:
                 logger.warning("Final checkpoint failed: %s", e)
 
-            write_completed(runner, step=global_step, total_steps=total_rl_steps)
+            runner.write_status(RunStatus.COMPLETED, step=global_step, total_steps=total_rl_steps, message="done")
+            runner.write_metadata()
             logger.info("IGPO training complete: %d steps", global_step)
             wandb_finish()
             scoring_executor.shutdown(wait=False)
