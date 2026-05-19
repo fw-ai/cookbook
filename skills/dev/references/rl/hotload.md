@@ -18,9 +18,8 @@ DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
 
 1. Create the trainer via `TrainerJobManager.create_and_wait(...)`.
 2. Create the deployment via `DeploymentManager.create_or_get(DeploymentConfig(hot_load_trainer_job=<trainer_job>, ...))`.
-   The deployment copies the trainer's bucket URL at creation. Cookbook-created serving deployments are training
-   deployments (`forTraining=true` in the CreateDeployment payload), which is required for private Fireworks-owned
-   deployment shape versions pinned by training shapes.
+   The deployment copies the trainer's bucket URL at creation. The Training SDK marks cookbook-created serving
+   deployments as training deployments, which is required for deployment shape versions pinned by training shapes.
 3. The **trainer owns** the checkpoints. Promote reads them from the trainer's bucket without any deployment ID.
 4. On resume, the deployment is re-attached to the new trainer (PATCH `hotLoadTrainerJob`), which briefly restarts the serving pod.
 
