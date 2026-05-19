@@ -80,6 +80,7 @@ def test_setup_deployment_omits_placement_for_shape_backed_create():
     assert captured["shape_timeout"] == 30
     assert captured["timeout"] == 60
     assert captured["json"]["deploymentShape"] == "accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2"
+    assert captured["json"]["forTraining"] is True
     assert "placement" not in captured["json"]
 
 
