@@ -78,6 +78,12 @@ def test_validate_lr_schedule_config_accepts_all_supported_kinds():
         validate_lr_schedule_config(LRScheduleConfig(kind=kind))
 
 
+def test_validate_lr_schedule_config_ignores_irrelevant_cosine_power():
+    validate_lr_schedule_config(LRScheduleConfig(kind="constant", cosine_power=0.0))
+    validate_lr_schedule_config(LRScheduleConfig(kind="linear", cosine_power=-1.0))
+    validate_lr_schedule_config(LRScheduleConfig(kind="cosine", cosine_power=0.0))
+
+
 @pytest.mark.parametrize(
     "recipe_module_name",
     (

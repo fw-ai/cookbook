@@ -66,7 +66,7 @@ def validate_lr_schedule_config(schedule: LRScheduleConfig) -> None:
     if schedule.kind not in LR_SCHEDULE_KINDS:
         allowed = ", ".join(sorted(LR_SCHEDULE_KINDS))
         raise ValueError(f"Unknown lr_schedule: {schedule.kind!r}. Use one of: {allowed}.")
-    if schedule.cosine_power <= 0:
+    if schedule.kind == "generalized_cosine" and schedule.cosine_power <= 0:
         raise ValueError("cosine_power must be > 0")
 
     if schedule.kind == "two_point_linear":

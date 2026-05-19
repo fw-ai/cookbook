@@ -693,7 +693,12 @@ def test_main_applies_cosine_lr_schedule_per_optimizer_step(tmp_path, monkeypatc
         def close(self):
             pass
 
-    raw_batches = [[_test_datum(f"step-{i}")] for i in range(1, 5)]
+    raw_batches = [
+        [_test_datum("step-1")],
+        [],  # filtered raw batch; should not stretch the LR decay horizon
+        [_test_datum("step-2")],
+        [_test_datum("step-3")],
+    ]
 
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "wandb_finish", lambda: None)
@@ -730,8 +735,8 @@ def test_main_applies_cosine_lr_schedule_per_optimizer_step(tmp_path, monkeypatc
 
     result = module.main(cfg, rlor_mgr=FakeMgr())
 
-    assert result["steps"] == 4
-    assert events["lrs"] == pytest.approx([1e-4, 7.75e-5, 3.25e-5, 1e-5])
+    assert result["steps"] == 3
+    assert events["lrs"] == pytest.approx([1e-4, 5.5e-5, 1e-5])
     assert events["deleted_jobs"] == ["job-sft"]
 
 

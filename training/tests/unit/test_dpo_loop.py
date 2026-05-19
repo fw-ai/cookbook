@@ -405,7 +405,17 @@ class TestTrainLoop:
                 return super().optim_step(params, **kwargs)
 
         policy = RecordingPolicy()
-        ds = _make_pair_dataset(tmp_path, n=3)
+        path = tmp_path / "pairs_with_drop.jsonl"
+        with open(path, "w") as f:
+            for i in range(4):
+                f.write(json.dumps({"i": i}) + "\n")
+
+        def render_some_none(row: dict) -> dict | None:
+            if row["i"] == 1:
+                return None
+            return _make_pair(row["i"])
+
+        ds = JsonlRenderDataset(str(path), render_some_none)
         cfg = module.Config(
             log_path=str(tmp_path),
             beta=0.2,
@@ -425,7 +435,7 @@ class TestTrainLoop:
                 _FakeReference(), policy,
                 cfg=cfg,
                 step_offset=0,
-                cursor=_new_cursor(max_rows=3),
+                cursor=_new_cursor(max_rows=4),
             )
         )
 

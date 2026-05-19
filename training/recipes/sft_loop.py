@@ -608,6 +608,22 @@ def main(
             f" + {len(eval_data)} eval examples" if eval_data else "",
         )
 
+        has_lr_schedule = (
+            cfg.lr_schedule.warmup_steps > 0 or cfg.lr_schedule.kind != "constant"
+        )
+        exact_total_steps: int | None = None
+        if has_lr_schedule:
+            # The LR decay horizon must be based on post-filter optimizer steps,
+            # not raw rows. Shuffling means empty/non-empty filtered batches can
+            # differ by epoch, so count each epoch with the same seeds used for
+            # training.
+            exact_total_steps = 0
+            for schedule_epoch in range(cfg.epochs):
+                loader_generator.manual_seed(cfg.seed + schedule_epoch)
+                for rendered_batch in loader:
+                    if _flatten_rendered_batch(rendered_batch):
+                        exact_total_steps += 1
+
         # -- Resume ---------------------------------------------------------------
 
         resume_info = ckpt.resume(
@@ -633,11 +649,13 @@ def main(
         rows_into_current_epoch = cursor.value % training_count if training_count else 0
         start_batch = rows_into_current_epoch // effective_batch_size
         remaining_raw_rows = max(0, total_raw_rows - cursor.value)
-        total_steps_estimate = step + (
+        rough_total_steps_estimate = step + (
             (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
         )
-        has_lr_schedule = (
-            cfg.lr_schedule.warmup_steps > 0 or cfg.lr_schedule.kind != "constant"
+        total_steps_estimate = (
+            max(step, exact_total_steps)
+            if exact_total_steps is not None
+            else rough_total_steps_estimate
         )
         if has_lr_schedule:
             logger.info(

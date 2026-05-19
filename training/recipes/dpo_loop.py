@@ -327,7 +327,36 @@ async def _train_loop(
         if cfg.max_pairs is not None
         else len(pair_dataset)
     )
-    total_steps = ((rough_pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
+    has_lr_schedule = (
+        cfg.lr_schedule.warmup_steps > 0 or cfg.lr_schedule.kind != "constant"
+    )
+    if has_lr_schedule:
+        rendered_pairs_for_schedule = 0
+        count_loader = make_render_dataloader(
+            pair_dataset,
+            batch_size=batch_size,
+            num_workers=cfg.render_workers,
+            shuffle=False,
+            worker_init_fn=worker_init_fn,
+        )
+        for batch in count_loader:
+            if not batch:
+                continue
+            if cfg.max_pairs is not None:
+                remaining = cfg.max_pairs - rendered_pairs_for_schedule
+                if remaining <= 0:
+                    break
+                rendered_pairs_for_schedule += min(len(batch), remaining)
+                if rendered_pairs_for_schedule >= cfg.max_pairs:
+                    break
+            else:
+                rendered_pairs_for_schedule += len(batch)
+        total_steps = (
+            (rendered_pairs_for_schedule + batch_size - 1) // batch_size
+        ) * cfg.epochs
+        total_steps = max(step, total_steps)
+    else:
+        total_steps = ((rough_pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
     total_raw_rows = len(pair_dataset)
     total_raw_batches = (total_raw_rows + batch_size - 1) // batch_size
     progress_interval = max(1, total_raw_batches // 20) if total_raw_batches else 1
