@@ -839,6 +839,7 @@ def _create_deployment_via_cookbook(
         "minReplicaCount": config.min_replica_count,
         "maxReplicaCount": config.max_replica_count,
         "enableHotLoad": True,
+        "forTraining": True,
     }
     if config.hot_load_bucket_type:
         body["hotLoadBucketType"] = config.hot_load_bucket_type
