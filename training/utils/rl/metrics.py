@@ -248,6 +248,8 @@ def compute_step_metrics(
 
         raw_rewards = loop_stats["all_raw_rewards"]
         if raw_rewards:
+            metrics["rollout/raw_samples_completed"] = len(raw_rewards)
             metrics["rollout/raw_reward"] = sum(raw_rewards) / len(raw_rewards)
+            metrics["rollout/raw_accuracy"] = sum(1 for r in raw_rewards if r > 0.5) / len(raw_rewards)
 
     return metrics

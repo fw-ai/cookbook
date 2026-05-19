@@ -346,6 +346,8 @@ async def run_async_rl_loop(
     def _has_outstanding_work() -> bool:
         return bool(in_flight) or _can_make_batch() or not iterator_exhausted
 
+    filtered_rewards_since_step: list[float] = []
+
     def _on_row_resolved(row_id: Hashable, resolution: RowResolution) -> None:
         """Drive row-level outcome bookkeeping when the GroupAssembler
         settles a row (returned ``RowResolution``)."""
@@ -357,6 +359,7 @@ async def run_async_rl_loop(
             _resolve(state.request, "none")
             return
         if dynamic_filter_fn is not None and not dynamic_filter_fn(resolution.pg):
+            filtered_rewards_since_step.extend(resolution.pg.rewards)
             staleness.reject("filter")
             _resolve(state.request, "filter")
             return
@@ -467,6 +470,9 @@ async def run_async_rl_loop(
             sampler_wait_for_trainer_time,
             staleness.is_staleness_bound(),
         )
+        raw_rewards = filtered_rewards_since_step + [r for pg in batch for r in pg.rewards]
+        filtered_rewards_since_step = []
+
         extra_metrics: dict[str, Any] = {
             "async/version_offset_mean": sum(offsets) / len(offsets),
             "async/version_offset_max": max(offsets),
@@ -475,7 +481,7 @@ async def run_async_rl_loop(
             "async/sample_fails": staleness.sample_fails,
             "async/filter_drops": staleness.filter_drops,
             "async/stale_drops": 0,
-            "all_raw_rewards": [r for pg in batch for r in pg.rewards],
+            "all_raw_rewards": raw_rewards,
             "valid_prompt_groups": len(batch),
             "total_sampled": staleness.accepted_samples + staleness.rejected_count * completions_per_prompt,
             "filter_drops": staleness.filter_drops,
