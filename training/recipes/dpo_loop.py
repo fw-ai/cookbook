@@ -339,18 +339,24 @@ async def _train_loop(
             shuffle=False,
             worker_init_fn=worker_init_fn,
         )
-        for batch in count_loader:
-            if not batch:
-                continue
-            if cfg.max_pairs is not None:
-                remaining = cfg.max_pairs - rendered_pairs_for_schedule
-                if remaining <= 0:
-                    break
-                rendered_pairs_for_schedule += min(len(batch), remaining)
-                if rendered_pairs_for_schedule >= cfg.max_pairs:
-                    break
-            else:
-                rendered_pairs_for_schedule += len(batch)
+        count_iter = iter(count_loader)
+        try:
+            for batch in count_iter:
+                if not batch:
+                    continue
+                if cfg.max_pairs is not None:
+                    remaining = cfg.max_pairs - rendered_pairs_for_schedule
+                    if remaining <= 0:
+                        break
+                    rendered_pairs_for_schedule += min(len(batch), remaining)
+                    if rendered_pairs_for_schedule >= cfg.max_pairs:
+                        break
+                else:
+                    rendered_pairs_for_schedule += len(batch)
+        finally:
+            shutdown_workers = getattr(count_iter, "_shutdown_workers", None)
+            if shutdown_workers is not None:
+                shutdown_workers()
         total_steps = (
             (rendered_pairs_for_schedule + batch_size - 1) // batch_size
         ) * cfg.epochs

@@ -611,18 +611,6 @@ def main(
         has_lr_schedule = (
             cfg.lr_schedule.warmup_steps > 0 or cfg.lr_schedule.kind != "constant"
         )
-        exact_total_steps: int | None = None
-        if has_lr_schedule:
-            # The LR decay horizon must be based on post-filter optimizer steps,
-            # not raw rows. Shuffling means empty/non-empty filtered batches can
-            # differ by epoch, so count each epoch with the same seeds used for
-            # training.
-            exact_total_steps = 0
-            for schedule_epoch in range(cfg.epochs):
-                loader_generator.manual_seed(cfg.seed + schedule_epoch)
-                for rendered_batch in loader:
-                    if _flatten_rendered_batch(rendered_batch):
-                        exact_total_steps += 1
 
         # -- Resume ---------------------------------------------------------------
 
@@ -652,11 +640,7 @@ def main(
         rough_total_steps_estimate = step + (
             (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
         )
-        total_steps_estimate = (
-            max(step, exact_total_steps)
-            if exact_total_steps is not None
-            else rough_total_steps_estimate
-        )
+        filtered_batch_steps = 0
         if has_lr_schedule:
             logger.info(
                 "LR schedule: %s | warmup_steps=%d | peak_lr=%g | min_lr=%g",
@@ -669,6 +653,7 @@ def main(
         def _run_train_step(
             batch: list[tinker.Datum],
             step: int,
+            total_steps_for_lr: int,
         ) -> int:
 
             # Count total tokens for throughput tracking
@@ -690,7 +675,7 @@ def main(
                 # Rebuild AdamParams each step so the LR schedule can update.
                 step_lr = compute_learning_rate(
                     step + 1,
-                    total_steps_estimate,
+                    total_steps_for_lr,
                     cfg.learning_rate,
                     cfg.lr_schedule,
                 )
@@ -729,7 +714,7 @@ def main(
                 logger.info(
                     "Step %d/%d | lr=%.2e | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
                     step,
-                    total_steps_estimate,
+                    total_steps_for_lr,
                     step_lr,
                     avg_loss,
                     ppl,
@@ -747,14 +732,31 @@ def main(
 
             runner.append_metrics(step, step_metrics, tokens=step_total_tokens)
             runner.write_status(
-                RunStatus.RUNNING, step=step, total_steps=total_steps_estimate, message="training",
+                RunStatus.RUNNING, step=step, total_steps=total_steps_for_lr, message="training",
             )
             runner.write_metadata()
 
             return step
 
         runner.start_training()
-        runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
+        runner.write_status(RunStatus.RUNNING, total_steps=rough_total_steps_estimate, message="training")
+
+        def _next_nonempty_batch(
+            enumerated_batches,
+        ) -> tuple[list[tinker.Datum], int] | None:
+            nonlocal filtered_batch_steps
+            for raw_batch_idx, raw_batch in enumerated_batches:
+                raw_batch_size = min(
+                    effective_batch_size,
+                    training_count - raw_batch_idx * effective_batch_size,
+                )
+                cursor.record(raw_batch_size)
+                batch = _flatten_rendered_batch(raw_batch)
+                if not batch:
+                    filtered_batch_steps += 1
+                    continue
+                return batch, len(batch)
+            return None
 
         for epoch in range(completed_epochs, cfg.epochs):
             loader_generator.manual_seed(cfg.seed + epoch)
@@ -764,17 +766,20 @@ def main(
                 batch_iter = islice(batch_iter, epoch_start_batch, None)
 
             epoch_valid_examples = 0
-            for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
-                raw_batch_size = min(
-                    effective_batch_size,
-                    training_count - raw_batch_idx * effective_batch_size,
+            enumerated_batches = enumerate(batch_iter, start=epoch_start_batch)
+            pending = _next_nonempty_batch(enumerated_batches)
+            while pending is not None:
+                batch, valid_count = pending
+                next_pending = _next_nonempty_batch(enumerated_batches)
+                is_final_training_step = next_pending is None and epoch == cfg.epochs - 1
+                total_steps_for_lr = (
+                    step + 1
+                    if is_final_training_step
+                    else max(step + 1, rough_total_steps_estimate - filtered_batch_steps)
                 )
-                cursor.record(raw_batch_size)
-                batch = _flatten_rendered_batch(batch)
-                if not batch:
-                    continue  # entire batch was filtered (None render); skip
-                epoch_valid_examples += len(batch)
-                step = _run_train_step(batch, step)
+                epoch_valid_examples += valid_count
+                step = _run_train_step(batch, step, total_steps_for_lr)
+                pending = next_pending
 
             if epoch == 0 and completed_epochs == 0 and start_batch == 0:
                 filtered_count = training_count - epoch_valid_examples
