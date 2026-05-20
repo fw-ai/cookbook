@@ -236,6 +236,13 @@ class _FakeRlorMgr:
             base_url="http://localhost:8080",
         )
 
+    def resume_and_wait(self, job_id):
+        return SimpleNamespace(
+            job_id=job_id,
+            job_name=f"accounts/{self.account_id}/rlorTrainerJobs/{job_id}",
+            base_url="http://localhost:8080",
+        )
+
 
 def test_trainer_replica_count_posts_backend_field_until_sdk_supports_it(monkeypatch):
     monkeypatch.setattr(infra_module, "_TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT", False)
@@ -278,6 +285,59 @@ def test_trainer_replica_count_posts_backend_field_until_sdk_supports_it(monkeyp
     assert captured["json"]["trainerReplicaCount"] == 2
     assert captured["json"]["serviceMode"] is True
     assert captured["json"]["trainingConfig"]["baseModel"] == "accounts/fireworks/models/qwen"
+
+
+def test_requested_trainer_job_id_creates_with_stable_id_when_absent():
+    captured = {}
+
+    class NotFound(Exception):
+        response = SimpleNamespace(status_code=404)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"name": "accounts/test-account/rlorTrainerJobs/sft-job"}
+
+    class FakeMgr(_FakeRlorMgr):
+        def get(self, job_id):
+            captured["get_job_id"] = job_id
+            raise NotFound()
+
+        def create(self, config):
+            raise AssertionError("requested_trainer_job_id should use direct POST fallback")
+
+        def _post(self, path, json, timeout):
+            captured["path"] = path
+            captured["json"] = json
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+    endpoint = create_trainer_job(
+        FakeMgr(),
+        base_model="accounts/fireworks/models/qwen",
+        infra=InfraConfig(requested_trainer_job_id="sft-job"),
+        display_name="sft-policy",
+    )
+
+    assert endpoint.job_id == "sft-job"
+    assert captured["get_job_id"] == "sft-job"
+    assert "rlorTrainerJobId=sft-job" in captured["path"]
+    assert captured["json"]["serviceMode"] is True
+
+
+def test_requested_trainer_job_id_resumes_existing_job():
+    mgr = _FakeRlorMgr(get_result={"state": "JOB_STATE_FAILED"})
+
+    endpoint = create_trainer_job(
+        mgr,
+        base_model="accounts/fireworks/models/qwen",
+        infra=InfraConfig(requested_trainer_job_id="sft-job"),
+        display_name="sft-policy",
+    )
+
+    assert endpoint.job_id == "sft-job"
 
 
 class TestCreateTrainerJobErrorMessages:
