@@ -232,7 +232,7 @@ typing_extensions==4.12.2
 tzdata==2024.1
 unstructured==0.14.8
 unstructured-client==0.25.9
-urllib3==2.2.3
+urllib3==2.7.0
 uvicorn==0.30.6
 uvloop==0.20.0
 watchfiles==0.24.0
