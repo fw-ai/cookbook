@@ -99,6 +99,8 @@ class InfraConfig:
     """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
     managed_by: str | None = None
     """Internal. Populated automatically by the Fireworks platform when needed."""
+    requested_trainer_job_id: str | None = None
+    """Internal. Create or resume the service-mode trainer with this stable ID."""
     skip_validations: bool = False
     """Skip server-side shape validation. Requires superuser API key."""
 

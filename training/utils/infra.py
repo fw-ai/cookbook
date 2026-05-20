@@ -326,6 +326,20 @@ def request_trainer_job(
         _emit(f"reusing existing {trainer_role} trainer {job_id}")
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
+    requested_job_id = infra.requested_trainer_job_id
+    if requested_job_id:
+        try:
+            _emit(f"reusing existing {trainer_role} trainer {requested_job_id}")
+            return _reuse_or_resume_job(rlor_mgr, requested_job_id)
+        except Exception as e:
+            if not _is_http_not_found(e):
+                raise
+            logger.info(
+                "Requested %s trainer %s does not exist; creating it with that ID",
+                trainer_role,
+                requested_job_id,
+            )
+
     extra_trainer_args: dict[str, Any] = {}
     if _TRAINER_JOB_CONFIG_SUPPORTS_SKIP_VALIDATIONS:
         extra_trainer_args["skip_validations"] = infra.skip_validations
@@ -386,13 +400,21 @@ def request_trainer_job(
 
     try:
         if (
-            infra.trainer_replica_count is not None
-            and not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT
+            requested_job_id
+            or (
+                infra.trainer_replica_count is not None
+                and not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT
+            )
         ):
-            created_job = _create_trainer_job_with_replica_count(
+            created_job = _create_trainer_job_with_backend_fields(
                 rlor_mgr,
                 config,
-                infra.trainer_replica_count,
+                trainer_replica_count=(
+                    infra.trainer_replica_count
+                    if not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT
+                    else None
+                ),
+                requested_job_id=requested_job_id,
             )
         else:
             created_job = rlor_mgr.create(config)
@@ -894,6 +916,11 @@ def _reuse_or_resume_job(
     return rlor_mgr.wait_for_existing(job_id)
 
 
+def _is_http_not_found(err: Exception) -> bool:
+    response = getattr(err, "response", None)
+    return response is not None and getattr(response, "status_code", None) == 404
+
+
 def _flatten_extra_args(extra_args: list[str] | None) -> list[str] | None:
     if not extra_args:
         return None
@@ -903,18 +930,20 @@ def _flatten_extra_args(extra_args: list[str] | None) -> list[str] | None:
     return flat
 
 
-def _create_trainer_job_with_replica_count(
+def _create_trainer_job_with_backend_fields(
     rlor_mgr: TrainerJobManager,
     config: TrainerJobConfig,
-    trainer_replica_count: int,
+    *,
+    trainer_replica_count: int | None = None,
+    requested_job_id: str | None = None,
 ) -> Any:
-    """Create a trainer with trainerReplicaCount before SDK support lands.
+    """Create a trainer with backend fields before SDK support lands.
 
     Older ``fireworks.training.sdk`` versions do not expose the backend's
-    ``trainer_replica_count`` field yet. Keep the cookbook surface usable by
-    mirroring the SDK's create payload and adding the new field. Once the SDK
-    exposes this on ``TrainerJobConfig``, ``request_trainer_job`` uses the
-    normal ``rlor_mgr.create`` path instead.
+    ``trainer_replica_count`` field or requested trainer IDs. Keep the cookbook
+    surface usable by mirroring the SDK's create payload and adding the missing
+    fields. Once the SDK exposes a field, callers can use the normal
+    ``rlor_mgr.create`` path for that field.
     """
     config.validate()
 
@@ -927,6 +956,8 @@ def _create_trainer_job_with_replica_count(
     query_params: list[tuple[str, str]] = []
     if config.hot_load_deployment_id:
         query_params.append(("deploymentId", config.hot_load_deployment_id))
+    if requested_job_id:
+        query_params.append(("rlorTrainerJobId", requested_job_id))
 
     is_shape_path = bool(config.training_shape_ref)
     if is_shape_path:
@@ -950,8 +981,9 @@ def _create_trainer_job_with_replica_count(
         "keepAlive": False,
         "dataset": "",
         "trainingConfig": training_config,
-        "trainerReplicaCount": trainer_replica_count,
     }
+    if trainer_replica_count is not None:
+        payload["trainerReplicaCount"] = trainer_replica_count
 
     if not is_shape_path:
         if config.max_context_length is not None:
@@ -981,10 +1013,11 @@ def _create_trainer_job_with_replica_count(
         payload["managedBy"] = config.managed_by
 
     logger.info(
-        "Creating RLOR job with trainerReplicaCount=%d: POST %s (model=%s)",
-        trainer_replica_count,
+        "Creating RLOR job with backend fields: POST %s (model=%s, trainerReplicaCount=%s, requestedJobId=%s)",
         path,
         config.base_model,
+        trainer_replica_count,
+        requested_job_id,
     )
     resp = rlor_mgr._post(path, json=payload, timeout=60)
     resp.raise_for_status()
