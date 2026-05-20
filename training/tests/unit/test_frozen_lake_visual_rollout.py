@@ -214,6 +214,11 @@ async def test_visual_rollout_preserves_prior_completion_tokens(monkeypatch):
     _FakeImageClient.requested_prompt_ids = []
     _FakeImageClient.requested_image_counts = []
     _FakeImageClient.requested_prompt_texts = []
+    tool_prefill_id = 99
+    monkeypatch.setattr(
+        "training.examples.rl.frozen_lake.frozen_lake_rollout._build_kimi_toolcall_generation_prefill_token_ids",
+        lambda tokenizer_name_or_path: [tool_prefill_id],
+    )
     monkeypatch.setattr(
         "training.examples.rl.frozen_lake.frozen_lake_rollout.FireworksV1ImageCompletionsClient",
         _FakeImageClient,
@@ -247,13 +252,13 @@ async def test_visual_rollout_preserves_prior_completion_tokens(monkeypatch):
 
     assert len(token_turn_traces) == 2
     assert token_turn_traces[0]["prompt_ids"] == [10, 11, 12]
-    assert token_turn_traces[0]["completion_ids"] == [163595, 101, 90]
-    assert token_turn_traces[1]["prompt_ids"] == [10, 11, 12, 163595, 101, 90, 91, 92]
-    assert token_turn_traces[1]["completion_ids"] == [163595, 102, 90]
+    assert token_turn_traces[0]["completion_ids"] == [tool_prefill_id, 101, 90]
+    assert token_turn_traces[1]["prompt_ids"] == [10, 11, 12, tool_prefill_id, 101, 90, 91, 92]
+    assert token_turn_traces[1]["completion_ids"] == [tool_prefill_id, 102, 90]
 
     assert _FakeImageClient.requested_prompt_ids == [
-        [10, 11, 12, 163595],
-        [10, 11, 12, 163595, 101, 90, 91, 92, 163595],
+        [10, 11, 12, tool_prefill_id],
+        [10, 11, 12, tool_prefill_id, 101, 90, 91, 92, tool_prefill_id],
     ]
     assert _FakeImageClient.requested_prompt_texts == [
         "prompt:initial<|tool_calls_section_begin|>",

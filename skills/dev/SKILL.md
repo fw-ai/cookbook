@@ -1,6 +1,6 @@
 ---
 name: fireworks-training
-description: Train models on Fireworks via the cookbook. Covers greenfield work (pick a recipe, fork it, resolve training + deployment shape from a profile) and user-level recovery (promote a checkpoint, list promotable checkpoints on a trainer, self-check a trainer-first vs legacy deployment-first mix-up). The cookbook is the reference implementation of `fireworks.training.sdk`; fork a recipe or run an example instead of reimplementing. Trigger when the user wants to start, resume, promote, or do a first-line diagnosis on a training run; for deeper recovery the skill routes users to Fireworks support.
+description: Train models on Fireworks via the cookbook. Covers greenfield work (pick a recipe, fork it, resolve training + deployment shape from a profile) and user-level recovery (promote a checkpoint, list promotable checkpoints on a trainer, self-check a `WeightSyncScope.PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up). The cookbook is the reference implementation of `fireworks.training.sdk`; fork a recipe or run an example instead of reimplementing. Trigger when the user wants to start, resume, promote, or do a first-line diagnosis on a training run; for deeper recovery the skill routes users to Fireworks support.
 ---
 
 # Fireworks training
@@ -25,16 +25,31 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "Custom loss for RL" | [`references/rl/custom-loss.md`](references/rl/custom-loss.md) |
 | "RL hotload / weight sync cadence, on-policy vs off-policy, `weight_sync_timeout`" | [`references/rl/hotload.md`](references/rl/hotload.md) |
 | "Concurrency control for RL rollouts — adaptive vs fixed?" | [`references/rl/concurrency.md`](references/rl/concurrency.md) |
+| "Async RL — overlap rollout with training, off-policy budget, PPO inner minibatches, `rollout_fn(sample_prompt)`" | [`references/rl/async-rl.md`](references/rl/async-rl.md) |
+| "Why is `perf/wait_time_ratio` high?" / `perf/sampler_wait_for_trainer_time` / `perf/trainer_wait_for_sampler_time` | [`references/rl/async-rl.md`](references/rl/async-rl.md#diagnosing-waits) |
+| "How do I size `max_head_offpolicy_versions` and `max_concurrency_rollout_sample`?" | [`references/rl/async-rl.md`](references/rl/async-rl.md#the-off-policy-gate-sample-level) |
 | "How do I promote a checkpoint?" | [`references/tools.md`](references/tools.md#promote_checkpointpy) |
 | "Which checkpoints does the server know about / are promotable?" | [`references/tools.md`](references/tools.md#listing-checkpoints-fireworksclientlist_checkpoints) — `FireworksClient.list_checkpoints(job_id)` |
 | "How do I reconnect a training **client** to a running trainer?" | [`references/tools.md`](references/tools.md#reconnect_and_adjust_lrpy) |
-| "Hotload keeps failing — is this a trainer-first / deployment-first mix-up?" | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) — self-check and reach out to Fireworks support |
+| "Hotload keeps failing — is this a `PER_TRAINER` / `PER_DEPLOYMENT` scope mix-up?" | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) — self-check and reach out to Fireworks support |
 | "How do I verify train vs inference logprobs?" | [`references/tools.md`](references/tools.md#verify_logprobspy) |
+| "I'm adding a new renderer — what's the contract?" | [`../renderer/SKILL.md`](../renderer/SKILL.md) |
+| "I changed a renderer — how do I verify it matches HF / the live gateway?" | [`../verifier/SKILL.md`](../verifier/SKILL.md) |
+| "Why is my model emitting trailing tokens / hard-appends?" / token stream looks wrong | [`../verifier/SKILL.md`](../verifier/SKILL.md) |
 | "Where does checkpoint state live?" / CheckpointKind / `checkpoints.jsonl` | [`references/checkpoints.md`](references/checkpoints.md) |
+| "Continue LoRA training from a prior adapter" / `warm_start_from_adapter` | [`references/checkpoints.md`](references/checkpoints.md#warm-start-from-a-promoted-adapter-lora-only) |
 | Error: `checkpoint "<name>" not found in GCS` | [`references/checkpoints.md`](references/checkpoints.md#when-promote-fails) — validate `output_model_id` first; reach out to Fireworks support if still failing |
 | Error: `Hotload failed for snapshot ...` | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) |
+| Error: `hotload flow mismatch: trainer wants deployment-first ... but deployment ... is trainer-first` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — the server still emits the old "trainer-first / deployment-first" wording; it maps to `PER_TRAINER` / `PER_DEPLOYMENT` bucket scope. Scopes crossed at `CreateRlorTrainerJob`; pick one scope. |
+| Error: `hotload flow mismatch: trainer T is deployment-first-keyed for deployment D` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — trainer is keyed to a different deployment's bucket (`PER_DEPLOYMENT`); use a `PER_TRAINER`-scope trainer |
+| Error: `hot_load_bucket_url %q conflicts with hot_load_trainer_job %s; set exactly one` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — create-time: drop whichever field is wrong |
+| Error: `hot_load_bucket_url %q conflicts with hot_load_trainer_job %s; update hot_load_trainer_job instead, or clear it first` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — update-time: clear bucket URL first, then PATCH trainer job |
+| Error: `invalid FW_HOSTED hot_load_bucket_url` / `must use gs:// scheme` / `path must start with rl-checkpoints/` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — structural validation on FW_HOSTED URL at create/update |
+| Error: `configured FW_HOSTED hot_load bucket is not reachable` / `control plane lacks permission` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — account's `ModelBucket` misprovisioned; reach out to Fireworks support |
+| Error: `cannot cancel job in state: JOB_STATE_DELETED` | [`references/rl/hotload.md`](references/rl/hotload.md#trainer-deletion-and-retention) — trainer is tombstoned during the retention window; no action needed |
+| `list_checkpoints` / `promote_checkpoint` returns NOT_FOUND > 30 days after delete | [`references/rl/hotload.md`](references/rl/hotload.md#trainer-deletion-and-retention) — past retention, expected |
 | HTTP 400 on `output_model_id` | [`references/tools.md`](references/tools.md#promote_checkpointpy) — validate before calling |
-| "Is this trainer-first or deployment-first?" | [`references/rl/hotload.md`](references/rl/hotload.md#trainer-first-vs-deployment-first-two-creation-orders) |
+| "Is this a `PER_TRAINER` or `PER_DEPLOYMENT` bucket scope?" | [`references/rl/hotload.md`](references/rl/hotload.md#weight-sync-scope-per_trainer-vs-per_deployment) |
 | Manual `accelerator_type` / `node_count` set on `Config` | [`references/shapes.md`](references/shapes.md) — drop them, the profile owns infra |
 
 ---
@@ -47,7 +62,7 @@ The requirement lives in the cookbook's `training/pyproject.toml` — look for t
 
 ```bash
 grep 'fireworks-ai\[training\]' cookbook/training/pyproject.toml
-# e.g. "fireworks-ai[training]>=1.0.0a62,<2"
+# e.g. "fireworks-ai[training]>=1.2.0a70,<2"
 
 pip show fireworks-ai | grep -i version
 ```
@@ -56,8 +71,8 @@ If the installed version doesn't satisfy the pin, upgrade first and retry. Only 
 
 ## Non-negotiables
 
-1. **Shape first.** `cfg.infra.training_shape_id` is required. The deployment shape comes from the profile. Manual infra fields are a mistake; the backend will reject or ignore them. See [`references/shapes.md`](references/shapes.md).
-2. **Trainer-first for new work.** Create the trainer, then create the deployment with `hot_load_trainer_job=<trainer>`. Do not mix in a legacy `hot_load_deployment_id`. See [`references/rl/hotload.md`](references/rl/hotload.md#trainer-first-vs-deployment-first-two-creation-orders).
+1. **Shape first.** Prefer leaving `cfg.infra.training_shape_id` unset so recipes auto-select the smallest validated shape that fits; set it only when you need an explicit override. The deployment shape comes from the profile. Manual infra fields are a mistake; the backend will reject or ignore them. See [`references/shapes.md`](references/shapes.md).
+2. **`WeightSyncScope.PER_TRAINER` is the default.** Set `DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER)` (the default). Do not combine it with `hot_load_deployment_id` — that field belongs to `PER_DEPLOYMENT`. Pick one bucket scope. See [`references/rl/hotload.md`](references/rl/hotload.md#weight-sync-scope-per_trainer-vs-per_deployment).
 3. **Fork, don't reinvent.** Training loop plumbing lives in `training/recipes/`. Fork the file that matches the task; do not rewire `FiretitanTrainingClient` / `DeploymentManager` / `WeightSyncer` from scratch.
 4. **Validate `output_model_id` before promote.** Server cap is 63 chars, charset `[a-z0-9-]`. A rejected promote orphans the sampler blob; the same `checkpoint_id` returns "not found in GCS" after GC. See [`references/checkpoints.md`](references/checkpoints.md#output_model_id-validation).
 

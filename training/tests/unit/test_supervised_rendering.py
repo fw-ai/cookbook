@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 import torch
 import tinker
@@ -10,10 +12,12 @@ from training.utils.data import prepare_sampling_messages
 from training.utils.supervised import (
     build_renderer,
     build_datum_from_token_mask,
+    populate_render_worker_state,
     resolve_renderer_name,
     render_preference_pair,
     normalize_messages,
     render_messages_to_datum,
+    render_messages_to_datums,
 )
 
 
@@ -69,6 +73,33 @@ class ModelInputRenderer:
         )
         weights = torch.tensor([0, 0, 0, 0, 1, 1, 1], dtype=torch.float32)
         return model_input, weights
+
+
+class SplitRenderer:
+    has_extension_property = False
+
+    def __init__(self):
+        self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+    def build_supervised_examples(
+        self,
+        messages,
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
+    ):
+        self.calls.append((messages, train_on_what))
+        return [
+            (
+                torch.tensor([10, 11, 12], dtype=torch.int64),
+                torch.tensor([0, 1, 1], dtype=torch.float32),
+            ),
+            (
+                torch.tensor([20, 21, 22], dtype=torch.int64),
+                torch.tensor([0, 1, 1], dtype=torch.float32),
+            ),
+        ]
+
+    def build_supervised_example(self, messages, train_on_what):
+        raise AssertionError("render_messages_to_datums should use split examples")
 
 
 def test_render_messages_to_datum_preserves_multi_turn_weights():
@@ -184,6 +215,74 @@ def test_build_datum_from_token_mask_reuses_ui_mask_semantics():
     assert rendered.datum.loss_fn_inputs["loss_mask"].data == [0.0, 1.0, 1.0, 0.0, 1.0]
 
 
+def test_render_messages_to_datums_uses_renderer_split_for_all_assistant_messages():
+    renderer = SplitRenderer()
+
+    rendered = render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    assert len(rendered) == 2
+    assert [example.token_ids for example in rendered] == [[10, 11, 12], [20, 21, 22]]
+    assert renderer.calls[0][1] == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+
+def test_render_messages_to_datums_uses_renderer_split_for_weighted_rows():
+    renderer = SplitRenderer()
+
+    rendered = render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1", "weight": 0},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    normalized_messages, train_on_what = renderer.calls[0]
+    assert len(rendered) == 2
+    assert [example.token_ids for example in rendered] == [[10, 11, 12], [20, 21, 22]]
+    assert train_on_what == TrainOnWhat.CUSTOMIZED
+    assert [message["trainable"] for message in normalized_messages] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+
+
+def test_render_messages_to_datums_fails_fast_without_split_implementation():
+    class UnimplementedSplitRenderer:
+        has_extension_property = False
+
+        def build_supervised_examples(self, messages, train_on_what):
+            raise NotImplementedError("split rendering is required")
+
+        def build_supervised_example(self, messages, train_on_what):
+            raise AssertionError("should not fall back to a single datum")
+
+    with pytest.raises(NotImplementedError, match="split rendering is required"):
+        render_messages_to_datums(
+            [
+                {"role": "user", "content": "u1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "u2"},
+                {"role": "assistant", "content": "a2"},
+            ],
+            renderer=UnimplementedSplitRenderer(),
+            train_on_what="all_assistant_messages",
+        )
+
+
 def test_normalize_messages_supports_openai_tool_call_shape():
     normalized = normalize_messages(
         [
@@ -234,6 +333,228 @@ def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():
     ]
 
 
+def test_normalize_messages_promotes_reasoning_content_to_thinking_part():
+    """OpenAI-style ``reasoning_content`` should become a ThinkingPart.
+
+    Datasets produced by Fireworks/OpenAI-compatible APIs store the
+    assistant's chain-of-thought in a top-level ``reasoning_content``
+    field rather than Tinker's ``thinking`` field. Without this alias,
+    renderers like KimiK2Renderer see an empty ``thinking_content``
+    string and emit an empty ``<think></think>`` block, so the model
+    never learns to produce reasoning traces.
+    """
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "reasoning_content": "let me compute 2+2",
+                "content": "The answer is 4",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "let me compute 2+2"},
+        {"type": "text", "text": "The answer is 4"},
+    ]
+
+
+def test_normalize_messages_reasoning_content_with_no_text_content():
+    """``reasoning_content`` alone should still produce a ThinkingPart.
+
+    Some reasoning-only turns may carry an empty ``content`` string but
+    a non-empty ``reasoning_content``. The resulting content must keep
+    the ThinkingPart so downstream renderers can still fill the
+    ``<think>...</think>`` block during training.
+    """
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "reasoning_content": "some thoughts",
+                "content": "",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "some thoughts"},
+        {"type": "text", "text": ""},
+    ]
+
+
+def test_normalize_messages_thinking_wins_over_reasoning_content():
+    """If both fields are present, ``thinking`` is preserved as-is.
+
+    Keeps a single source of truth per message to avoid duplicating the
+    chain-of-thought when a caller supplies both the Tinker-native
+    ``thinking`` field and the OpenAI-style ``reasoning_content``.
+    """
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "thinking": "native thinking",
+                "reasoning_content": "openai reasoning",
+                "content": "answer",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "native thinking"},
+        {"type": "text", "text": "answer"},
+    ]
+
+
+def test_normalize_messages_rejects_non_string_reasoning_content():
+    """Non-string ``reasoning_content`` values should raise TypeError."""
+    with pytest.raises(TypeError):
+        normalize_messages(
+            [
+                {
+                    "role": "assistant",
+                    "reasoning_content": ["not", "a", "string"],
+                    "content": "answer",
+                },
+            ]
+        )
+
+
+def test_normalize_messages_translates_weight_zero_to_trainable_false():
+    """Fireworks V1 SFT datasets mark context-only assistant messages with
+    ``weight=0``. Without translating that to Tinker's ``trainable`` field,
+    ``train_on_what=all_assistant_messages`` silently trains on every
+    assistant — including the context-only ones — which teaches thinking
+    models to emit empty ``<think></think>`` for the majority of turns
+    because historical assistants on Kimi/Qwen3/DeepSeek-thinking are
+    rendered with their thinking stripped."""
+    normalized = normalize_messages(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "ctx", "weight": 0},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "train me"},
+        ]
+    )
+
+    assert normalized[0]["trainable"] is False  # user
+    assert normalized[1]["trainable"] is False  # weight=0
+    assert normalized[2]["trainable"] is False  # user
+    assert normalized[3]["trainable"] is True  # weight absent -> assistant default
+
+
+def test_normalize_messages_translates_weight_one_to_trainable_true():
+    """``weight=1`` (explicit trainable marker) must map to ``trainable=True``."""
+    normalized = normalize_messages(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1", "weight": 1},
+        ]
+    )
+
+    assert normalized[1]["trainable"] is True
+
+
+def test_normalize_messages_prefers_explicit_trainable_over_weight():
+    """If both ``trainable`` and ``weight`` are set, ``trainable`` wins."""
+    normalized = normalize_messages(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a", "weight": 1, "trainable": False},
+        ]
+    )
+
+    assert normalized[1]["trainable"] is False
+
+
+def test_normalize_messages_does_not_add_trainable_when_no_weight_or_trainable():
+    """Datasets without ``weight``/``trainable`` on any message must not
+    gain a ``trainable`` field, so renderers still see a back-compatible
+    schema and default ``train_on_what`` modes keep working unchanged."""
+    normalized = normalize_messages(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+    )
+
+    assert "trainable" not in normalized[0]
+    assert "trainable" not in normalized[1]
+
+
+def test_normalize_messages_rejects_non_numeric_weight():
+    """Non-numeric ``weight`` values must raise TypeError to avoid silently
+    accepting garbage data."""
+    with pytest.raises(TypeError):
+        normalize_messages(
+            [
+                {"role": "assistant", "content": "a", "weight": "yes"},
+            ]
+        )
+
+
+def test_render_messages_to_datum_auto_switches_to_customized_when_weight_set():
+    """When the dataset marks messages with ``weight`` / ``trainable``,
+    ``render_messages_to_datum`` must auto-promote ``train_on_what`` to
+    ``CUSTOMIZED`` so the renderer honors the per-message flag. Otherwise
+    the legacy V1 SFT convention (``weight=0`` means "context only")
+    silently degrades into "train on everything" on the V2 path."""
+
+    class RecordingRenderer:
+        def __init__(self):
+            self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+        def build_supervised_example(self, messages, train_on_what):
+            self.calls.append((list(messages), train_on_what))
+            return (
+                torch.tensor([1, 2, 3, 4], dtype=torch.int64),
+                torch.tensor([0, 0, 1, 1], dtype=torch.float32),
+            )
+
+    renderer = RecordingRenderer()
+    render_messages_to_datum(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a", "weight": 0},
+            {"role": "assistant", "content": "b"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+    _, resolved_train_on_what = renderer.calls[0]
+    assert resolved_train_on_what == TrainOnWhat.CUSTOMIZED
+
+
+def test_render_messages_to_datum_keeps_default_train_on_what_without_weight():
+    """Without ``weight``/``trainable`` anywhere in the conversation, the
+    caller-specified ``train_on_what`` must flow through unchanged — this
+    preserves back-compat for datasets that don't use the V1 field."""
+
+    class RecordingRenderer:
+        def __init__(self):
+            self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+        def build_supervised_example(self, messages, train_on_what):
+            self.calls.append((list(messages), train_on_what))
+            return (
+                torch.tensor([1, 2, 3, 4], dtype=torch.int64),
+                torch.tensor([0, 0, 1, 1], dtype=torch.float32),
+            )
+
+    renderer = RecordingRenderer()
+    render_messages_to_datum(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+    _, resolved_train_on_what = renderer.calls[0]
+    assert resolved_train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+
 def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
     calls: list[tuple[str, object | None]] = []
 
@@ -260,8 +581,95 @@ def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
     assert calls == [("qwen3_vl_instruct", "image-processor")]
 
 
+def test_build_renderer_opts_in_trust_remote_code_for_kimi_k2_6(monkeypatch):
+    """Kimi-K2.6 ships a custom image processor not covered by tinker_cookbook's
+    hardcoded trust_remote_code=True list; build_renderer must set the
+    HF_TRUST_REMOTE_CODE env var before calling get_image_processor so the
+    cached AutoImageProcessor load succeeds non-interactively in CI."""
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+
+    env_at_call: list[str | None] = []
+
+    def fake_get_image_processor(model_name):
+        env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
+        return "image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        return ("renderer", name, image_processor)
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    result = build_renderer(
+        tokenizer="tok",
+        tokenizer_model="moonshotai/Kimi-K2.6",
+    )
+
+    assert env_at_call == ["1"]
+    assert result == ("renderer", "kimi_k25", "image-processor")
+
+
+def test_build_renderer_does_not_touch_trust_remote_code_for_kimi_k2_5(monkeypatch):
+    """K2.5 is already covered by tinker_cookbook's hardcoded trust_remote_code
+    branch, so our opt-in helper must leave HF_TRUST_REMOTE_CODE unset for it."""
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+
+    env_at_call: list[str | None] = []
+
+    def fake_get_image_processor(model_name):
+        env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
+        return "image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    build_renderer(
+        tokenizer="tok",
+        tokenizer_model="moonshotai/Kimi-K2.5",
+    )
+
+    assert env_at_call == [None]
+
+
+def test_build_renderer_preserves_existing_trust_remote_code_value(monkeypatch):
+    """Don't stomp a user-set HF_TRUST_REMOTE_CODE — setdefault semantics."""
+    monkeypatch.setenv("HF_TRUST_REMOTE_CODE", "0")
+
+    env_at_call: list[str | None] = []
+
+    def fake_get_image_processor(model_name):
+        env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
+        return "image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    build_renderer(
+        tokenizer="tok",
+        tokenizer_model="moonshotai/Kimi-K2.6",
+    )
+
+    assert env_at_call == ["0"]
+
+
 def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_5():
     assert resolve_renderer_name("moonshotai/Kimi-K2.5") == "kimi_k25"
+
+
+def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_6():
+    assert resolve_renderer_name("moonshotai/Kimi-K2.6") == "kimi_k25"
 
 
 def test_resolve_renderer_name_prefers_minimax_m2() -> None:
@@ -278,10 +686,24 @@ def test_resolve_renderer_name_prefers_qwen3_5() -> None:
     assert resolve_renderer_name("Qwen/Qwen3.5-397B-A17B") == "qwen3_5"
 
 
+def test_resolve_renderer_name_prefers_qwen3_6() -> None:
+    """Qwen3.6 models should resolve to the qwen3_6 renderer (alias of qwen3_5)."""
+    assert resolve_renderer_name("Qwen/Qwen3.6-27B") == "qwen3_6"
+    assert resolve_renderer_name("Qwen/Qwen3.6-9B") == "qwen3_6"
+    assert resolve_renderer_name("custom/qwen3_6-finetune") == "qwen3_6"
+
+
 def test_resolve_renderer_name_prefers_gemma4() -> None:
     """Gemma 4 models should resolve to the gemma4 renderer."""
     assert resolve_renderer_name("google/gemma-4-12b-it") == "gemma4"
     assert resolve_renderer_name("google/gemma-4-27b-it") == "gemma4"
+
+
+def test_resolve_renderer_name_prefers_deepseek_v4() -> None:
+    """DeepSeek-V4 tokenizers should resolve to the custom deepseek_v4 renderer."""
+    assert resolve_renderer_name("deepseek-ai/DeepSeek-V4-Flash") == "deepseek_v4"
+    assert resolve_renderer_name("deepseek-ai/deepseek_v4") == "deepseek_v4"
+    assert resolve_renderer_name("custom/DeepSeekV4-finetune") == "deepseek_v4"
 
 
 def test_build_renderer_resolves_minimax_m2(monkeypatch) -> None:
@@ -424,3 +846,59 @@ def test_prepare_sampling_messages_only_strips_trailing_assistant():
     )
 
     assert [m["role"] for m in prepared] == ["system", "user", "assistant", "user"]
+
+
+# ---------------------------------------------------------------------------
+# populate_render_worker_state
+# ---------------------------------------------------------------------------
+
+
+def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
+    """Common keys (tokenizer, renderer, max_seq_len) plus extras land in state."""
+    from training.utils import supervised as sup
+
+    fake_tokenizer = object()
+    fake_renderer = object()
+    monkeypatch.setattr(
+        sup, "load_tokenizer", lambda model, revision=None: fake_tokenizer
+    )
+    monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: fake_renderer)
+
+    state: dict = {}
+    populate_render_worker_state(
+        state,
+        tokenizer_model="acme/llama",
+        renderer_name="llama-3",
+        max_seq_len=4096,
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+        custom_extra="hello",
+    )
+
+    assert state["tokenizer"] is fake_tokenizer
+    assert state["renderer"] is fake_renderer
+    assert state["max_seq_len"] == 4096
+    assert state["train_on_what"] == TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    assert state["custom_extra"] == "hello"
+
+
+def test_populate_render_worker_state_forwards_tokenizer_revision(monkeypatch):
+    from training.utils import supervised as sup
+
+    captured: dict = {}
+
+    def fake_load_tokenizer(model, revision=None):
+        captured.update(model=model, revision=revision)
+        return object()
+
+    monkeypatch.setattr(sup, "load_tokenizer", fake_load_tokenizer)
+    monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: object())
+
+    populate_render_worker_state(
+        {},
+        tokenizer_model="m",
+        tokenizer_revision="abc123",
+        renderer_name="r",
+        max_seq_len=1,
+    )
+    assert captured["model"] == "m"
+    assert captured["revision"] == "abc123"

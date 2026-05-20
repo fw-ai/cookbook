@@ -22,6 +22,7 @@ Config args:
     base_model       Fireworks model ID (default: qwen3-235b-a22b-instruct-2507)
     dataset          Path to preference JSONL file
     tokenizer_model  HuggingFace model name for client-side tokenization
+    tokenizer_revision Optional HuggingFace revision for client-side tokenization
     orpo_lambda      Weight for odds-ratio loss term (default: 1.0)
     learning_rate    Adam learning rate (default: 1e-5)
     epochs           Number of passes over the dataset (default: 1)
@@ -34,44 +35,45 @@ Infrastructure defaults target Qwen3-235B on 2 nodes with CP=16, EP=8.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
-import time
-import signal
 import random
-import logging
+import signal
+import time
 from contextlib import ExitStack
-from dataclasses import field, dataclass
-import torch
+from dataclasses import dataclass, field
 
 import tinker
-
+import torch
 from fireworks.training.sdk import TrainerJobManager
+
 from training.utils import (
     DEFAULT_ADAM,
     InfraConfig,
+    ReconnectableClient,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
-    ReconnectableClient,
-    wandb_log,
-    setup_wandb,
-    wandb_finish,
+    auto_select_training_shape,
+    build_renderer,
+    create_trainer_job,
+    load_preference_dataset,
+    load_tokenizer,
     log_metrics_json,
     make_batch_orpo_loss_fn,
-    create_trainer_job,
     read_api_extra_headers_env,
-    load_preference_dataset,
-    build_renderer,
-    auto_select_training_shape,
     render_preference_pair,
     resolve_renderer_name,
+    setup_wandb,
     validate_config,
+    wandb_finish,
+    wandb_log,
 )
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,7 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
     dataset: str = ""
     tokenizer_model: str = ""
+    tokenizer_revision: str = ""
     renderer_name: str = ""
 
     orpo_lambda: float = 1.0
@@ -95,8 +98,8 @@ class Config:
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step."""
-    grad_accum: int = 1
-    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
+    seed: int = 0
+    """Seed for deterministic per-epoch shuffling of preference pairs."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
@@ -147,6 +150,10 @@ class Config:
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
     init_from_checkpoint: str | None = None
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
 
 
 # ---------------------------------------------------------------------------
@@ -203,13 +210,11 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
-
-    if cfg.grad_accum > 1:
-        logger.warning(
-            "grad_accum is deprecated and ignored. "
-            "Increase batch_size instead for larger effective batches."
-        )
-
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -281,16 +286,24 @@ def main(
         )
         if hasattr(client, "close"):
             stack.callback(client.close)
-        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+
+        ckpt = TrainingCheckpoints(
+            client,
+            rlor_mgr,
+            trainer_id=job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
+        )
         step_offset = resume_info.step if resume_info else 0
 
         # -- Data ----------------------------------------------------------------
 
-        import transformers
-
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.tokenizer_model, trust_remote_code=True
-        )
+        tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision)
         renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
         logger.info(
             "Using renderer=%s for preference tokenization",
@@ -387,13 +400,12 @@ def main(
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 logger.info("Saving DCP checkpoint at step %d", step)
-                save_checkpoint(client, f"step-{step}", cfg.log_path, {
-                    "step": step,
-                    "data_consumed": (step - step_offset) * cfg.batch_size,
-                    "source_job_id": job_id,
-                }, kind=CheckpointKind.STATE,
-                base_model=cfg.base_model,
-                training_shape=cfg.infra.training_shape_id)
+                ckpt.save(
+                    f"step-{step}",
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=(step - step_offset) * cfg.batch_size,
+                )
 
             step_elapsed = time.monotonic() - step_started_at
             tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
@@ -436,6 +448,11 @@ def main(
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps, message="training")
 
         for epoch in range(cfg.epochs):
+            # Seed before each epoch so identical configs reproduce the same
+            # data order across runs. Using the global random state (rather
+            # than a local Random instance) preserves the existing test
+            # surface that monkeypatches ``orpo_loop.random.shuffle``.
+            random.seed(cfg.seed + epoch)
             random.shuffle(pair_cache)
             step_t0 = time.monotonic()
             batch_buffer: list[dict] = []
@@ -453,20 +470,14 @@ def main(
         if cfg.save_final_checkpoint and step > step_offset:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
-            paths = save_checkpoint(client, cp_name, cfg.log_path, {
-                "step": step,
-                "data_consumed": (step - step_offset) * cfg.batch_size,
-                "source_job_id": job_id,
-            }, kind=CheckpointKind.BOTH,
-            base_model=cfg.base_model,
-            training_shape=cfg.infra.training_shape_id)
+            ckpt.save(
+                cp_name,
+                resumable=True,
+                promotable=True,
+                data_consumed=(step - step_offset) * cfg.batch_size,
+            )
             if getattr(cfg, "output_model_id", None):
-                rlor_mgr.promote_checkpoint(
-                    job_id,
-                    paths["sampler_path"],
-                    cfg.output_model_id,
-                    cfg.base_model,
-                )
+                ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
                 )

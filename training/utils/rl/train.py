@@ -31,7 +31,19 @@ __all__ = [
     "TrainStepFns",
     "DynamicFilterFn",
     "run_rl_loop",
+    "raw_rows_from_stats",
 ]
+
+
+def raw_rows_from_stats(loop_stats: dict | None, accepted_rows: int) -> int:
+    """Extract ``total_sampled`` (raw rows pulled, incl. drops/fails) from a
+    ``run_rl_loop`` stats dict; fall back to ``accepted_rows`` when missing/malformed."""
+    if not loop_stats:
+        return accepted_rows
+    try:
+        return int(loop_stats.get("total_sampled", accepted_rows))
+    except (TypeError, ValueError):
+        return accepted_rows
 
 DynamicFilterFn = Callable[[PromptGroup], bool]
 """Filter callback applied after sampling, before training.
@@ -101,7 +113,7 @@ async def _run_pipeline_window(
             "total_sampled": total_sampled,
             "filter_drops": filter_drops,
             "sample_fails": sample_fails,
-            "sample_wait_time": 0.0,
+            "trainer_wait_for_sampler_time": 0.0,
             "step_wall_time": wall,
             "all_raw_rewards": list(all_raw_rewards),
         }
@@ -184,6 +196,9 @@ async def _run_pipeline_window(
                     all_raw_rewards = []
                     step_start = time.time()
 
+            # TODO: drops/fails arriving after the last full-batch dispatch in
+            # a window are uncounted (cursor under-counts). See
+            # test_tail_drops_in_window_are_unaccounted.
             if buffer:
                 wall = time.time() - step_start
                 logger.info(

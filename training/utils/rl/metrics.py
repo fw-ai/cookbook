@@ -25,18 +25,28 @@ def median(values: Sequence[int]) -> float:
 
 
 def datum_target_len(datum: tinker.Datum) -> int:
-    """Best-effort extraction of target-token length from a training datum."""
-    try:
-        target = datum.loss_fn_inputs.get("target_tokens")
-        shape = getattr(target, "shape", None)
-        if isinstance(shape, (list, tuple)) and shape:
-            return int(shape[0])
-        data = getattr(target, "data", None)
-        if data is not None:
-            return len(data)
-    except Exception:
-        pass
+    """Length of the target-token tensor on a training datum (0 if missing)."""
+    target = datum.loss_fn_inputs.get("target_tokens")
+    shape = getattr(target, "shape", None)
+    if isinstance(shape, (list, tuple)) and shape:
+        return int(shape[0])
+    data = getattr(target, "data", None)
+    if data is not None:
+        return len(data)
     return 0
+
+
+def datum_loss_mask(datum: tinker.Datum) -> list[float] | None:
+    """Per-position loss mask for a datum (length == target_tokens), or None.
+
+    The adapter writes the mask under ``"weights"`` (legacy datums use
+    ``"loss_mask"``).  Returned values are floats; callers compare against
+    a positive threshold to find active positions.
+    """
+    td = datum.loss_fn_inputs.get("weights") or datum.loss_fn_inputs.get("loss_mask")
+    if td is None:
+        return None
+    return list(getattr(td, "data", []) or [])
 
 
 def total_target_tokens(prompt_groups: Sequence[PromptGroup]) -> int:
@@ -75,6 +85,29 @@ def add_train_perf_metrics(metrics: dict[str, Any], *, total_model_tokens: int) 
         metrics["perf/weight_sync_ratio"] = weight_sync_time / step_time
 
 
+def compute_minibatch_metrics(
+    fwd_bwd_result: Any,
+    optim_result: Any,
+) -> dict[str, Any]:
+    """Per-minibatch ``train/*`` metrics for one ``fwd_bwd + optim_step``.
+
+    Recipes that log on a per-PPO-minibatch axis (slime convention: each
+    inner step is its own data point on ``train/step``) call this once
+    per minibatch instead of letting :func:`compute_step_metrics`
+    average across the inner loop.
+    """
+    metrics: dict[str, Any] = {}
+    if fwd_bwd_result is not None and getattr(fwd_bwd_result, "metrics", None):
+        for k, v in fwd_bwd_result.metrics.items():
+            if k not in _SKIP_REMOTE_KEYS:
+                metrics[f"train/{k}"] = v
+    if optim_result is not None and getattr(optim_result, "metrics", None):
+        for k, v in optim_result.metrics.items():
+            if k not in _SKIP_REMOTE_KEYS:
+                metrics[f"train/{k}"] = v
+    return metrics
+
+
 def build_loop_metrics(
     *,
     train_step: int,
@@ -111,7 +144,7 @@ def compute_step_metrics(
     metrics = dict(timing_metrics)
 
     total_model_tokens = total_target_tokens(prompt_groups)
-    metrics["train/effective_grad_accum_steps"] = n_accum
+    metrics["train/effective_accumulation_steps"] = n_accum
     add_train_perf_metrics(metrics, total_model_tokens=total_model_tokens)
 
     if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
@@ -119,11 +152,18 @@ def compute_step_metrics(
             if k not in _SKIP_REMOTE_KEYS:
                 metrics[f"train/{k}"] = v
 
-    last_fwd_bwd = fwd_bwd_results[-1] if fwd_bwd_results else None
-    if last_fwd_bwd is not None:
-        for k, v in last_fwd_bwd.metrics.items():
-            if k not in _SKIP_REMOTE_KEYS:
-                metrics[f"train/{k}"] = v
+    # Mean across inner minibatches (last-only would hide that early
+    # minibatches don't clip yet while later ones do).
+    if fwd_bwd_results:
+        accum: dict[str, float] = {}
+        for result in fwd_bwd_results:
+            for k, v in result.metrics.items():
+                if k in _SKIP_REMOTE_KEYS:
+                    continue
+                accum[k] = accum.get(k, 0.0) + v
+        n = len(fwd_bwd_results)
+        for k, v in accum.items():
+            metrics[f"train/{k}"] = v / n
 
     all_rewards: list[float] = []
     all_comp_lens: list[int] = []
@@ -146,13 +186,29 @@ def compute_step_metrics(
     if all_truncated:
         metrics["rollout/truncated_ratio"] = sum(all_truncated) / len(all_truncated)
 
+    # Entropy is a mean of -logprob over loss_mask>0 positions only.
+    # Multi-turn rollouts emit loss_mask=0 / logprobs=0.0 on bridge/user/tool
+    # tokens; including them biases entropy toward 0.
     entropy_vals: list[float] = []
     for pg in prompt_groups:
-        for inf_lp in pg.inf_logprobs:
-            resp_start = max(0, pg.prompt_len - 1)
+        per_sample = pg.prompt_lens if pg.prompt_lens is not None else None
+        for i, inf_lp in enumerate(pg.inf_logprobs):
+            sample_prompt_len = (
+                per_sample[i] if per_sample is not None and i < len(per_sample)
+                else pg.prompt_len
+            )
+            resp_start = max(0, sample_prompt_len - 1)
             resp_lp = inf_lp[resp_start:] if len(inf_lp) > resp_start else []
-            if resp_lp:
-                entropy_vals.append(-sum(resp_lp) / len(resp_lp))
+            if not resp_lp:
+                continue
+            mask = datum_loss_mask(pg.data[i]) if i < len(pg.data) else None
+            if mask is not None:
+                resp_mask = mask[resp_start : resp_start + len(resp_lp)]
+                active = [lp for lp, m in zip(resp_lp, resp_mask) if m > 0.5]
+            else:
+                active = list(resp_lp)
+            if active:
+                entropy_vals.append(-sum(active) / len(active))
     if entropy_vals:
         metrics["rollout/entropy"] = sum(entropy_vals) / len(entropy_vals)
 
@@ -166,13 +222,21 @@ def compute_step_metrics(
         metrics["rollout/sample_fail_count"] = loop_stats["sample_fails"]
         metrics["rollout/fwd_bwd_count"] = n_accum
 
-        sample_wait_time = float(loop_stats["sample_wait_time"])
-        metrics["perf/sample_wait_time"] = sample_wait_time
-        # The ratio is defined over the same sampling window that drives
-        # fwd_bwd firing: queue-wait time divided by sampling-loop wall time.
-        step_wall_time = float(loop_stats["step_wall_time"])
+        # Gap between successive train_steps; folds in weight_sync wall time
+        # (``last_step_end`` is set before ``weight_sync_fn`` runs), so subtract
+        # ``perf/weight_sync_time`` to back out the pure-starvation portion.
+        trainer_wait_for_sampler_time = float(loop_stats.get("trainer_wait_for_sampler_time", 0.0))
+        metrics["perf/trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
+        # Should be ~0 in healthy async (concurrency cap binds before staleness);
+        # large values mean the staleness budget is throttling the rollout side.
+        metrics["perf/sampler_wait_for_trainer_time"] = float(
+            loop_stats.get("sampler_wait_for_trainer_time", 0.0)
+        )
+        # = wait / (wait + train_wall).  When rollouts are structurally slower
+        # than train+sync the ratio is Amdahl-bound -- not a pipeline bug.
+        step_wall_time = float(loop_stats.get("step_wall_time", 0.0))
         if step_wall_time > 0:
-            wait_ratio = sample_wait_time / step_wall_time
+            wait_ratio = trainer_wait_for_sampler_time / step_wall_time
             metrics["perf/wait_time_ratio"] = wait_ratio
             metrics["perf/overlap_ratio"] = 1.0 - wait_ratio
 

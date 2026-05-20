@@ -5,6 +5,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
+TRAINER_REPLICAS_ARG=()
+if [[ -n "${TRAINER_REPLICAS:-}" ]]; then
+    TRAINER_REPLICAS_ARG=(--trainer-replicas "${TRAINER_REPLICAS}")
+fi
+
 python "$HERE/train_deepmath.py" \
     --base-model accounts/fireworks/models/qwen3-4b \
     --tokenizer-model Qwen/Qwen3-4B \
@@ -16,4 +21,5 @@ python "$HERE/train_deepmath.py" \
     --completions-per-prompt 8 \
     --learning-rate 1e-5 \
     --kl-beta 0.001 \
-    --output-model-id deepmath-qwen3-4b-$(date +%s)
+    --output-model-id deepmath-qwen3-4b-$(date +%s) \
+    "${TRAINER_REPLICAS_ARG[@]}"

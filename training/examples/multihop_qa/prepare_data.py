@@ -18,7 +18,7 @@ Output format per row:
    "question_type": "bridge|comparison|..."}
 
 Usage:
-    pip install datasets
+    Follow the setup instructions in ../../README.md.
     python prepare_data.py --max-rows 2000 --difficulty hard
     python prepare_data.py --dataset musique --max-rows 1000
     python prepare_data.py --dataset all --max-rows 3000

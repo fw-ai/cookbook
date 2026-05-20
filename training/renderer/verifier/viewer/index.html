@@ -1,0 +1,1700 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Renderer Verifier</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Fonts: Fraunces for display, Hanken Grotesk for UI, JetBrains Mono for token stream. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..400&family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* ================================================================
+       Renderer Verifier — light editorial theme
+       ----------------------------------------------------------------
+       Single :root palette, then sections in this order:
+         1. base + page
+         2. banner + section headers
+         3. disclosure (details/summary)
+         4. forms + buttons
+         5. data tables (table-compact, meta-grid, pills)
+         6. token stream (legend, filters, .stream, .tok)
+         7. status (empty-state, error-banner, footer)
+       Keep changes inside one of those blocks.
+       ================================================================ */
+
+    :root {
+      /* Surfaces */
+      --bg:           #faf9f5;   /* warm off-white */
+      --bg-card:      #ffffff;
+      --bg-soft:      #f3eee3;   /* cream */
+
+      /* Text */
+      --fg:           #1a1a1a;
+      --fg-soft:      #383838;
+      --fg-dim:       #6e6e6e;
+      --fg-mute:      #9d9d9d;
+
+      /* Hairlines */
+      --border:       #ece7da;
+      --border-strong:#d8d2c2;
+
+      /* Brand — Claude clay */
+      --accent:       #cc785c;
+      --accent-deep:  #a85a3f;
+      --accent-soft:  #f3ddcf;
+
+      /* Status chips */
+      --ok-bg:    #edf3e8;  --ok-fg:    #5e7a55;  --ok-bd:    #d6e0cc;
+      --warn-bg:  #f6ecd6;  --warn-fg:  #9c7438;  --warn-bd:  #ead7a8;
+      --fail-bg:  #f7e7e1;  --fail-fg:  #a05d54;  --fail-bd:  #edcec5;
+
+      /* Provenance backgrounds (very subtle) */
+      --prov-prompt:    #eef2f7;
+      --prov-native:    #eef3eb;
+      --prov-trailing:  #f6ead4;
+      --prov-diverged:  #f7e7e1;
+
+      /* Strong amber for "worth inspecting" tokens — clearly distinct
+         from all four provenance tints so flagged tokens jump out. */
+      --warn-token-bg:  #ffd966;
+      --warn-token-bd:  #d9a625;
+
+      /* Chunk-source left borders (muted) */
+      --chunk-bos:        #9b6db8;
+      --chunk-header:     #7a6db8;
+      --chunk-output:     #6b9762;
+      --chunk-stopover:   #cc785c;
+      --chunk-genprefix:  #5b7494;
+
+      --special-fg:    #a05d54;
+      --trainable-bar: #6b9762;
+
+      /* Type stack */
+      --serif: "Fraunces", "Iowan Old Style", "Palatino", Georgia, serif;
+      --sans:  "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      --mono:  "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    /* -- 1. base + page --------------------------------------------- */
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      font-size: 14px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 56px 40px 80px;
+    }
+    @media (max-width: 720px) {
+      main { padding: 32px 20px 64px; }
+    }
+
+    code {
+      font-family: var(--mono);
+      font-size: 0.9em;
+      background: var(--bg-soft);
+      padding: 1px 6px;
+      border-radius: 3px;
+      color: var(--fg);
+    }
+
+    /* -- 2. banner + section headers -------------------------------- */
+
+    .banner {
+      margin: 0;
+      font-family: var(--serif);
+      font-weight: 300;
+      font-size: 44px;
+      line-height: 1.04;
+      letter-spacing: -0.02em;
+      color: var(--fg);
+      font-variation-settings: "opsz" 96;
+    }
+    .banner em {
+      font-style: italic;
+      color: var(--accent-deep);
+      font-weight: 300;
+    }
+    .banner-sub {
+      margin: 14px 0 0;
+      max-width: 60ch;
+      font-size: 15px;
+      line-height: 1.55;
+      color: var(--fg-dim);
+    }
+    .banner-rule {
+      height: 1px;
+      background: var(--border);
+      margin: 36px 0 8px;
+      border: 0;
+    }
+
+    .advisory {
+      margin: 18px 0 24px;
+      padding: 14px 18px;
+      background: var(--bg-soft);
+      border: 1px solid var(--border-strong);
+      border-left: 3px solid var(--accent);
+      border-radius: 5px;
+      font-size: 13.5px;
+      line-height: 1.55;
+      color: var(--fg-soft);
+    }
+    .advisory .label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 10.5px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+      font-weight: 500;
+    }
+    .advisory strong { color: var(--accent-deep); font-weight: 500; }
+    .advisory code {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+    }
+
+    h2 {
+      margin: 40px 0 14px;
+      font-family: var(--sans);
+      font-weight: 500;
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+    }
+
+    /* -- 3. disclosure (details/summary) ---------------------------- */
+
+    details {
+      margin: 0;
+      border-top: 1px solid var(--border);
+    }
+    details:last-of-type { border-bottom: 1px solid var(--border); }
+
+    details > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 16px 4px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--fg);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: color 120ms ease;
+    }
+    details > summary:hover { color: var(--accent-deep); }
+    details > summary::-webkit-details-marker { display: none; }
+    details > summary::before {
+      content: "›";
+      display: inline-block;
+      font-size: 20px;
+      line-height: 1;
+      color: var(--fg-mute);
+      transition: transform 160ms ease, color 120ms ease;
+      width: 14px;
+      text-align: center;
+    }
+    details[open] > summary { color: var(--fg); }
+    details[open] > summary::before {
+      transform: rotate(90deg);
+      color: var(--accent);
+    }
+    details > *:not(summary) { padding: 0 4px 24px 30px; }
+
+    /* -- 4. forms + buttons ----------------------------------------- */
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px 20px;
+    }
+    .form-grid label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+    }
+    .form-grid label.span-2,
+    .form-grid .span-2 { grid-column: span 2; }
+
+    .form-grid input,
+    .form-grid select,
+    .form-grid textarea {
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 400;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--fg);
+      background: var(--bg-card);
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      padding: 8px 11px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+    .form-grid input:focus,
+    .form-grid select:focus,
+    .form-grid textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .form-grid input:disabled,
+    .form-grid select:disabled,
+    .form-grid textarea:disabled {
+      background: var(--bg-soft);
+      color: var(--fg-mute);
+      cursor: not-allowed;
+    }
+    .form-grid textarea { resize: vertical; min-height: 38px; line-height: 1.5; }
+
+    /* Inline note shown next to the model field when a serverless
+       model is selected. Amber, not red — it's a reminder, not an error. */
+    .billing-note {
+      display: block;
+      margin-top: 4px;
+      font-size: 11px;
+      font-weight: 400;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--warn-fg);
+    }
+
+    .form-grid fieldset {
+      grid-column: span 2;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px 12px;
+      margin: 0;
+      background: var(--bg-card);
+    }
+    .form-grid legend {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 500;
+      padding: 0 8px;
+      color: var(--fg-dim);
+    }
+
+    .msg-row {
+      display: grid;
+      grid-template-columns: max-content 1fr max-content;
+      gap: 8px;
+      margin-bottom: 6px;
+      align-items: stretch;
+    }
+
+    .dispatch-preview {
+      grid-column: span 2;
+      padding: 12px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 5px;
+      font-size: 13px;
+      color: var(--fg);
+    }
+    .dispatch-preview .label {
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+      font-weight: 500;
+      margin-right: 8px;
+    }
+    .dispatch-preview code { background: transparent; padding: 0; color: var(--fg-soft); }
+
+    .api-flags-note {
+      grid-column: span 2;
+      padding: 10px 14px;
+      background: var(--bg-soft);
+      border-radius: 5px;
+      font-size: 12.5px;
+      color: var(--fg-dim);
+      line-height: 1.55;
+    }
+    .api-flags-note code { background: var(--bg-card); }
+
+    .form-actions {
+      grid-column: span 2;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 4px;
+    }
+    .form-actions .hint {
+      font-size: 12.5px;
+      color: var(--fg-dim);
+      line-height: 1.5;
+    }
+
+    /* Generic buttons (the +user / +assistant / etc.). */
+    button {
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 500;
+      background: var(--bg-card);
+      color: var(--fg);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 6px 12px;
+      cursor: pointer;
+      transition: border-color 120ms ease, color 120ms ease;
+    }
+    button:hover {
+      border-color: var(--fg-soft);
+      color: var(--fg);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #ffffff;
+      border: 1px solid var(--accent);
+      border-radius: 5px;
+      padding: 9px 22px;
+      font-family: var(--sans);
+      font-weight: 500;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .btn-primary:hover {
+      background: var(--accent-deep);
+      border-color: var(--accent-deep);
+    }
+    .btn-primary:disabled {
+      background: transparent;
+      color: var(--fg-mute);
+      border-color: var(--border-strong);
+      cursor: wait;
+    }
+
+    .btn-icon {
+      background: transparent;
+      color: var(--fg-mute);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 0 10px;
+      cursor: pointer;
+      font-family: var(--sans);
+      font-size: 14px;
+      line-height: 1;
+    }
+    .btn-icon:hover { color: var(--fail-fg); border-color: var(--fail-fg); }
+
+    /* -- 5. data tables -------------------------------------------- */
+
+    .table-compact {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 13px;
+    }
+    .table-compact th, .table-compact td {
+      padding: 9px 12px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+    }
+    .table-compact tr:last-child td { border-bottom: 0; }
+    .table-compact td:first-child {
+      color: var(--fg-dim);
+      font-weight: 500;
+      white-space: nowrap;
+      width: 200px;
+    }
+    .table-compact th {
+      font-weight: 500;
+      color: var(--fg-dim);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      column-gap: 24px;
+      row-gap: 6px;
+      font-size: 13px;
+    }
+    .meta-grid dt { color: var(--fg-dim); font-weight: 500; }
+    .meta-grid dd {
+      margin: 0;
+      word-break: break-all;
+      color: var(--fg-soft);
+      font-family: var(--mono);
+      font-size: 12.5px;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 9px;
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      border: 1px solid var(--border-strong);
+      border-radius: 3px;
+      background: var(--bg-soft);
+      color: var(--fg-soft);
+      margin: 0 6px 4px 0;
+    }
+    .pill.ok    { background: var(--ok-bg);   color: var(--ok-fg);   border-color: var(--ok-bd); }
+    .pill.warn  { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-bd); }
+    .pill.fail  { background: var(--fail-bg); color: var(--fail-fg); border-color: var(--fail-bd); }
+
+    /* -- 5b. batch cases ------------------------------------------- */
+
+    .cases-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin: 28px 0 4px;
+    }
+    .cases-bar .cases-count {
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--fg-dim);
+      font-weight: 500;
+    }
+    .cases-bar .btn-clear {
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      color: var(--fg-dim);
+      padding: 5px 12px;
+      font-family: var(--sans);
+      font-size: 12px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .cases-bar .btn-clear:hover { color: var(--fail-fg); border-color: var(--fail-fg); }
+
+    .case {
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 2px solid var(--border-strong);
+    }
+    .case:first-of-type { border-top: 1px solid var(--border); }
+    .case-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .case-label {
+      margin: 0;
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 22px;
+      line-height: 1.25;
+      letter-spacing: -0.005em;
+      color: var(--fg);
+      font-variation-settings: "opsz" 36;
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .case-label .case-num {
+      color: var(--accent-deep);
+      font-feature-settings: "tnum";
+      font-style: italic;
+    }
+    .case-label .case-name {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--fg-soft);
+      background: var(--bg-soft);
+      padding: 2px 8px;
+      border-radius: 3px;
+      letter-spacing: 0;
+    }
+    .case-label .case-snippet {
+      font-family: var(--sans);
+      font-size: 13.5px;
+      color: var(--fg-dim);
+      font-style: italic;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .btn-icon-danger {
+      background: transparent;
+      color: var(--fg-mute);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 4px 12px;
+      cursor: pointer;
+      font-family: var(--sans);
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .btn-icon-danger:hover { color: var(--fail-fg); border-color: var(--fail-fg); }
+
+    /* -- 6. token stream ------------------------------------------- */
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 22px;
+      padding: 14px 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12.5px;
+      color: var(--fg-soft);
+      margin-bottom: 12px;
+    }
+    .legend-item { display: inline-flex; align-items: center; gap: 8px; }
+    .swatch {
+      display: inline-block;
+      width: 14px; height: 12px;
+      border-radius: 2px;
+      border: 1px solid var(--border-strong);
+    }
+
+    /* Unified attribute filters — every dimension is a chip multi-select. */
+    .filters {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 14px 16px;
+      background: var(--bg-soft);
+      border-radius: 6px;
+      margin-bottom: 16px;
+    }
+    .filter-group {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 12px;
+      align-items: center;
+    }
+    .filter-label {
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      font-weight: 500;
+      color: var(--fg-dim);
+    }
+    .filter-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .filter-chip {
+      font-family: var(--sans);
+      font-size: 11.5px;
+      padding: 3px 11px;
+      border-radius: 14px;
+      cursor: pointer;
+      background: transparent;
+      color: var(--fg-mute);
+      border: 1px solid var(--border);
+      transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .filter-chip:hover { color: var(--fg); border-color: var(--fg-soft); }
+    .filter-chip.on {
+      background: var(--bg-card);
+      color: var(--fg);
+      border-color: var(--border-strong);
+    }
+    .filter-chip.on::before {
+      content: "●";
+      margin-right: 6px;
+      color: var(--accent);
+      font-size: 8px;
+      vertical-align: middle;
+    }
+
+    .stream {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 22px 24px;
+      font-family: var(--mono);
+      font-size: 13.5px;
+      line-height: 1.85;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--fg);
+    }
+    .tok {
+      display: inline;
+      padding: 2px 3px;
+      margin: 0 1px 0 0;
+      border-radius: 2px;
+      cursor: default;
+      transition: outline-color 80ms ease;
+      outline: 1px solid transparent;
+    }
+    .tok:hover { outline-color: var(--accent); }
+    .tok.special { color: var(--special-fg); font-weight: 600; }
+    /* Tokens that match one or more inspection rules get a strong amber
+       background AND a continuous expanding-ring ripple so they're
+       impossible to miss in a long stream. Provenance is still visible
+       in the detail panel on hover. */
+    @keyframes warn-ripple {
+      0%   { box-shadow: 0 0 0 0   rgba(217, 166, 37, 0.55); }
+      70%  { box-shadow: 0 0 0 7px rgba(217, 166, 37, 0); }
+      100% { box-shadow: 0 0 0 0   rgba(217, 166, 37, 0); }
+    }
+    .tok.warn {
+      background-color: var(--warn-token-bg) !important;
+      animation: warn-ripple 1.8s ease-out infinite;
+      border-radius: 3px;
+    }
+    /* Honour the OS-level "reduce motion" preference. */
+    @media (prefers-reduced-motion: reduce) {
+      .tok.warn { animation: none; }
+    }
+    .tok-newline {
+      display: inline-block;
+      color: var(--fg-mute);
+      opacity: 0.7;
+      padding-right: 2px;
+    }
+    .token-detail .td-val.flags-list {
+      color: var(--accent-deep);
+      white-space: pre-line;
+    }
+
+    /* Stream + sticky detail sidebar layout. The detail panel sits to
+       the right of the stream and pins to the top as you scroll a long
+       audit table; on narrow viewports they stack instead. */
+    .stream-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .stream-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Detail panel that updates on token hover. */
+    .token-detail {
+      padding: 14px 18px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      column-gap: 16px;
+      row-gap: 6px;
+      font-size: 13px;
+      position: sticky;
+      top: 16px;
+      align-self: start;
+    }
+    @media (max-width: 900px) {
+      .token-detail {
+        position: static;
+        margin-top: 12px;
+      }
+    }
+    .token-detail .td-label {
+      color: var(--fg-dim);
+      font-weight: 500;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .token-detail .td-val {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--fg-soft);
+      word-break: break-all;
+    }
+    .token-detail-empty {
+      display: block;
+      text-align: left;
+      color: var(--fg-dim);
+      font-style: italic;
+      font-family: var(--serif);
+      font-size: 14px;
+      font-weight: 300;
+    }
+
+    /* -- 7. status (empty-state, error-banner, footer, file-row) ---- */
+
+    .empty-state {
+      padding: 56px 32px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--fg-dim);
+      font-family: var(--serif);
+      font-style: italic;
+      font-weight: 300;
+      font-size: 17px;
+      line-height: 1.55;
+      text-align: center;
+      font-variation-settings: "opsz" 48;
+    }
+    .empty-state strong {
+      font-style: normal;
+      font-weight: 500;
+      color: var(--fg-soft);
+      font-family: var(--sans);
+    }
+    .empty-state code { font-style: normal; }
+
+    .error-banner {
+      margin: 0 0 18px;
+      padding: 14px 16px;
+      background: var(--fail-bg);
+      border: 1px solid var(--fail-bd);
+      border-left: 3px solid var(--fail-fg);
+      border-radius: 5px;
+      color: var(--fail-fg);
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .file-row {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    /* Hide the native file input and render a styled label-as-button
+       that triggers it. Matches the rest of the form's button style. */
+    .file-row input[type=file] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
+    .file-row .file-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-card);
+      color: var(--fg);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 500;
+      transition: border-color 120ms ease, color 120ms ease;
+    }
+    .file-row .file-button:hover {
+      border-color: var(--fg-soft);
+      color: var(--fg);
+    }
+    .file-row .file-button:focus-within {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .file-row .file-name {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--fg-soft);
+    }
+    .file-row .hint { color: var(--fg-dim); font-size: 12.5px; }
+
+    .footer {
+      margin-top: 56px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--fg-dim);
+      font-size: 12.5px;
+      line-height: 1.7;
+      max-width: 78ch;
+    }
+  </style>
+</head>
+<body>
+  <main id="root"></main>
+
+  <script type="text/babel">
+    const { useState, useMemo, useCallback, useEffect } = React;
+
+    /* ----------------------------------------------------------------- */
+    /* Constants                                                          */
+    /* ----------------------------------------------------------------- */
+
+    const PROV_BG = {
+      prompt_hard_append:    "var(--prov-prompt)",
+      native_generated:      "var(--prov-native)",
+      trailing_hard_append:  "var(--prov-trailing)",
+      tokenization_diverged: "var(--prov-diverged)",
+    };
+
+    const CHUNK_BORDER = {
+      bos:               "var(--chunk-bos)",
+      header:            "var(--chunk-header)",
+      output:            "var(--chunk-output)",
+      stop_overlap:      "var(--chunk-stopover)",
+      generation_suffix: "var(--chunk-genprefix)",
+    };
+
+    const PROVENANCES = [
+      "prompt_hard_append",
+      "native_generated",
+      "trailing_hard_append",
+      "tokenization_diverged",
+    ];
+
+    /* Renderer + Fireworks model lists are loaded live at runtime
+       (see /renderers and /models in serve.py). The viewer carries
+       no static mappings — pairing renderer ↔ tokenizer ↔ model is
+       documented in training/renderer/verifier/SKILL.md. */
+
+    /* ----------------------------------------------------------------- */
+    /* Helpers                                                            */
+    /* ----------------------------------------------------------------- */
+
+    function renderDecoded(decoded) {
+      if (decoded == null) return null;
+      const out = [];
+      const lines = decoded.split("\n");
+      lines.forEach((line, i) => {
+        if (i > 0) {
+          out.push(<span className="tok-newline" key={`nl-${i}`}>⏎</span>);
+          out.push(<br key={`br-${i}`} />);
+        }
+        if (line.length > 0) {
+          out.push(<span key={`t-${i}`}>{line}</span>);
+        }
+      });
+      return out;
+    }
+
+    function pillStatus(value) {
+      if (value === true) return "ok";
+      if (value === false) return "fail";
+      return "";
+    }
+
+    /* Per-token "worth inspecting" reasons. The rule set is loaded at
+     * runtime from /inspect_rules (served from inspect_rules.yaml) so
+     * the viewer and CLI scans share one source of truth. */
+    function rowField(row, field, isSpecial) {
+      if (field === "trainable") return (row.renderer_claim_weight || 0) > 0.5;
+      if (field === "special")   return isSpecial;
+      return row[field];
+    }
+    function evaluateRules(row, rules, isSpecial) {
+      const out = [];
+      for (const rule of rules || []) {
+        let matched = true;
+        for (const [field, expected] of Object.entries(rule.when || {})) {
+          const actual = rowField(row, field, isSpecial);
+          const ok = Array.isArray(expected)
+            ? expected.includes(actual)
+            : actual === expected;
+          if (!ok) { matched = false; break; }
+        }
+        if (matched) out.push(rule.reason);
+      }
+      return out;
+    }
+
+    const FILTER_DIMENSIONS = [
+      { key: "provenance",   label: "provenance",   options: ["prompt_hard_append", "native_generated", "trailing_hard_append", "tokenization_diverged"] },
+      { key: "chunk_source", label: "chunk_source", options: ["bos", "header", "output", "stop_overlap", "generation_suffix"] },
+      { key: "trainable",    label: "trainable",    options: ["yes", "no"] },
+      { key: "special",      label: "special",      options: ["yes", "no"] },
+      { key: "inspect",      label: "inspect",      options: ["flagged", "clean"] },
+    ];
+
+    function makeDefaultFilters() {
+      const out = {};
+      for (const d of FILTER_DIMENSIONS) {
+        out[d.key] = Object.fromEntries(d.options.map((o) => [o, true]));
+      }
+      return out;
+    }
+
+    function rowMatchesFilters(row, filters, isSpecial, hasFlags) {
+      if (!filters.provenance[row.provenance]) return false;
+      if (!filters.chunk_source[row.chunk_source]) return false;
+      const trainable = (row.renderer_claim_weight || 0) > 0.5 ? "yes" : "no";
+      if (!filters.trainable[trainable]) return false;
+      const sp = isSpecial ? "yes" : "no";
+      if (!filters.special[sp]) return false;
+      const ins = hasFlags ? "flagged" : "clean";
+      if (!filters.inspect[ins]) return false;
+      return true;
+    }
+
+    /* ----------------------------------------------------------------- */
+    /* Components                                                         */
+    /* ----------------------------------------------------------------- */
+
+    function LiveProbeForm({ onArtifact, onError, busy, setBusy }) {
+      const [renderer, setRenderer] = useState("");
+      const [tokenizerModel, setTokenizerModel] = useState("");
+      const [model, setModel] = useState("");
+      const [deploymentId, setDeploymentId] = useState("");
+      const [maxTokens, setMaxTokens] = useState(1024);
+      const [temperature, setTemperature] = useState(0.0);
+      const [trainOnWhat, setTrainOnWhat] = useState("last_assistant_turn");
+      const [messages, setMessages] = useState([
+        { role: "system", content: "Answer with a single integer and nothing else." },
+        { role: "user",   content: "2 + 2 = ?" },
+      ]);
+      const [tools, setTools] = useState("");
+      const [registeredRenderers, setRegisteredRenderers] = useState([]);
+      const [availableModels, setAvailableModels] = useState([]);
+      const [modelsError, setModelsError] = useState(null);
+
+      // /renderers returns [{name, tokenizer_default, registered}, ...]
+      // Build a name→tokenizer lookup so the renderer dropdown can
+      // auto-fill the tokenizer field on change.
+      useEffect(() => {
+        fetch("/renderers")
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then((d) => {
+            const list = Array.isArray(d.renderers) ? d.renderers : [];
+            setRegisteredRenderers(list);
+            if (list.length > 0) {
+              setRenderer((cur) => {
+                const next = cur || list[0].name;
+                const found = list.find((x) => x.name === next);
+                if (found && found.tokenizer_default) setTokenizerModel((t) => t || found.tokenizer_default);
+                return next;
+              });
+            }
+          })
+          .catch((e) => console.warn("could not load /renderers:", e));
+
+        fetch("/models")
+          .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
+          .then(({ ok, body }) => {
+            if (!ok || body.error) {
+              setModelsError(body.error || "/models failed");
+              return;
+            }
+            setAvailableModels(Array.isArray(body.models) ? body.models : []);
+          })
+          .catch((e) => setModelsError(e.message));
+      }, []);
+
+      const updateMessage = (i, patch) =>
+        setMessages((prev) => prev.map((m, idx) => (idx === i ? { ...m, ...patch } : m)));
+      const removeMessage = (i) =>
+        setMessages((prev) => prev.filter((_, idx) => idx !== i));
+      const addMessage = (role) =>
+        setMessages((prev) => [...prev, { role, content: "" }]);
+
+      const dispatchPreview = useMemo(() => {
+        if (model && deploymentId) return "ERROR: pass at most one of `model` and `deployment_id`";
+        if (deploymentId) return `mode=deployment  →  accounts/<account>/deployments/${deploymentId}`;
+        if (model) return `mode=explicit  →  ${model}`;
+        return "ERROR: pick a model from the dropdown or enter a deployment_id";
+      }, [model, deploymentId]);
+
+      const onSubmit = useCallback(async (e) => {
+        e.preventDefault();
+        if (busy) return;
+
+        let toolsParsed = [];
+        if (tools.trim()) {
+          try {
+            toolsParsed = JSON.parse(tools);
+            if (!Array.isArray(toolsParsed)) throw new Error("must be a JSON array");
+          } catch (err) {
+            onError(`Tools field is not a JSON array: ${err.message}`);
+            return;
+          }
+        }
+
+        setBusy(true);
+        try {
+          const res = await fetch("/probe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              renderer,
+              tokenizer_model: tokenizerModel,
+              model: model.trim() || null,
+              deployment_id: deploymentId.trim() || null,
+              messages,
+              tools: toolsParsed,
+              max_tokens: Number(maxTokens),
+              temperature: Number(temperature),
+              train_on_what: trainOnWhat,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok || data.error) {
+            onError(data.error || `HTTP ${res.status}`);
+            return;
+          }
+          onArtifact(data, "live");
+        } catch (err) {
+          onError(`fetch failed: ${err.message}`);
+        } finally {
+          setBusy(false);
+        }
+      }, [
+        busy, renderer, tokenizerModel, model, deploymentId,
+        messages, tools, maxTokens, temperature, trainOnWhat,
+        onArtifact, onError, setBusy,
+      ]);
+
+      return (
+        <details open>
+          <summary>Live probe — form input</summary>
+          <form onSubmit={onSubmit} className="form-grid">
+            <label>renderer
+              <select value={renderer} onChange={(e) => {
+                const next = e.target.value;
+                setRenderer(next);
+                const found = registeredRenderers.find((x) => x.name === next);
+                if (found && found.tokenizer_default) setTokenizerModel(found.tokenizer_default);
+              }}>
+                {registeredRenderers.length === 0 && <option value="">(loading…)</option>}
+                {registeredRenderers.map((r) => (
+                  <option key={r.name} value={r.name}>
+                    {r.name}{r.registered ? "" : "  ·  not registered"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>tokenizer_model (HuggingFace id)
+              <input value={tokenizerModel} placeholder="e.g. zai-org/GLM-5.1" onChange={(e) => setTokenizerModel(e.target.value)} />
+            </label>
+            <label>model (Fireworks serverless)
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={!!deploymentId}
+              >
+                <option value="">— pick one —</option>
+                {availableModels.map((m) => (
+                  <option key={m.name} value={m.name}>{m.name}</option>
+                ))}
+              </select>
+              {modelsError && (
+                <span style={{ color: "var(--fail-fg)", fontSize: 11, fontWeight: 400 }}>
+                  /models error: {modelsError}
+                </span>
+              )}
+              {model && (
+                <span className="billing-note">
+                  ⚠ Serverless probes hit the live API and are billed at this
+                  model's standard per-token rate.
+                </span>
+              )}
+            </label>
+            <label>deployment_id (your RL deployment — recommended)
+              <input
+                value={deploymentId}
+                placeholder="e.g. my-glm5-probe"
+                onChange={(e) => setDeploymentId(e.target.value)}
+                disabled={!!model}
+              />
+            </label>
+            <label>max_tokens
+              <input type="number" min="1" step="1" value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} />
+            </label>
+            <label>temperature
+              <input type="number" min="0" max="2" step="0.05" value={temperature} onChange={(e) => setTemperature(e.target.value)} />
+            </label>
+            <label>train_on_what
+              <select value={trainOnWhat} onChange={(e) => setTrainOnWhat(e.target.value)}>
+                <option value="last_assistant_message">last_assistant_message</option>
+                <option value="last_assistant_turn">last_assistant_turn</option>
+                <option value="all_assistant_messages">all_assistant_messages</option>
+                <option value="all_messages">all_messages</option>
+                <option value="all_tokens">all_tokens</option>
+              </select>
+            </label>
+            <label className="span-2">tools (optional, JSON array)
+              <textarea rows="2" value={tools} onChange={(e) => setTools(e.target.value)} placeholder="[]" />
+            </label>
+
+            <div className="dispatch-preview">
+              <span className="label">Dispatch</span>
+              <code>{dispatchPreview}</code>
+            </div>
+            <div className="api-flags-note">
+              The probe always sends <code>echo=true</code>, <code>raw_output=true</code>,
+              {" "}<code>return_token_ids=true</code> to the gateway. They are required for
+              token-id ground truth and are recorded verbatim in the artifact.
+            </div>
+
+            <fieldset className="span-2">
+              <legend>messages</legend>
+              {messages.map((m, i) => (
+                <div key={i} className="msg-row">
+                  <select value={m.role} onChange={(e) => updateMessage(i, { role: e.target.value })}>
+                    <option value="system">system</option>
+                    <option value="user">user</option>
+                    <option value="assistant">assistant</option>
+                    <option value="tool">tool</option>
+                  </select>
+                  <textarea
+                    rows="2"
+                    value={m.content}
+                    onChange={(e) => updateMessage(i, { content: e.target.value })}
+                  />
+                  <button type="button" className="btn-icon" onClick={() => removeMessage(i)} title="remove this message">×</button>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button type="button" onClick={() => addMessage("user")}>+ user</button>
+                <button type="button" onClick={() => addMessage("assistant")}>+ assistant</button>
+                <button type="button" onClick={() => addMessage("system")}>+ system</button>
+                <button type="button" onClick={() => addMessage("tool")}>+ tool</button>
+              </div>
+            </fieldset>
+
+            <div className="form-actions">
+              <button type="submit" disabled={busy} className="btn-primary">
+                {busy ? "Running probe…" : "Run probe"}
+              </button>
+              <span className="hint">
+                POST <code>/probe</code> on the local server, runs <code>run_probe</code>,
+                returns the same JSON the CLI writes.
+              </span>
+            </div>
+          </form>
+        </details>
+      );
+    }
+
+    function FilePicker({ onLoad }) {
+      const [fileName, setFileName] = useState(null);
+
+      const consume = useCallback((file) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const artifact = JSON.parse(ev.target.result);
+            onLoad(artifact, file.name);
+            setFileName(file.name);
+          } catch (err) {
+            alert("Could not parse JSON: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+      }, [onLoad]);
+
+      const handleChange = useCallback((e) => {
+        consume(e.target.files && e.target.files[0]);
+      }, [consume]);
+
+      const handleDrop = useCallback((e) => {
+        e.preventDefault();
+        consume(e.dataTransfer.files && e.dataTransfer.files[0]);
+      }, [consume]);
+
+      return (
+        <div className="file-row" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop}>
+          <label className="file-button">
+            ▸ Choose JSON
+            <input type="file" accept=".json,application/json" onChange={handleChange} />
+          </label>
+          {fileName && <span className="file-name">{fileName}</span>}
+          <span className="hint">…or drop a probe JSON onto this row.</span>
+        </div>
+      );
+    }
+
+    function caseLabel(artifact) {
+      const renderer = artifact?.renderer?.name || "?";
+      const msgs = artifact?.input?.messages || [];
+      let snippet = "";
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === "user" && typeof msgs[i].content === "string") {
+          snippet = msgs[i].content.trim();
+          break;
+        }
+      }
+      if (!snippet && msgs.length) snippet = String(msgs[0].content || "").trim();
+      if (snippet.length > 80) snippet = snippet.slice(0, 77) + "…";
+      return { renderer, snippet };
+    }
+
+    function RendererArgs({ artifact }) {
+      const r = artifact.renderer || {};
+      const cfg = r.config || {};
+      const cfgKeys = Object.keys(cfg);
+      return (
+        <details>
+          <summary>Renderer args</summary>
+          <table className="table-compact">
+            <tbody>
+              <tr><td>name</td><td><code>{r.name}</code></td></tr>
+              <tr><td>train_on_what</td><td><code>{r.train_on_what}</code></td></tr>
+              {cfgKeys.length === 0 ? (
+                <tr><td>config</td><td style={{ color: "var(--fg-dim)" }}>(default — no overrides)</td></tr>
+              ) : cfgKeys.map((k) => (
+                <tr key={k}>
+                  <td>config.{k}</td>
+                  <td><code>{JSON.stringify(cfg[k])}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      );
+    }
+
+    function DeploymentArgs({ artifact }) {
+      const d = artifact.deployment || {};
+      const sampling = d.sampling || {};
+      const flags = d.api_flags || {};
+      const extra = d.extra_completion_kwargs || {};
+      const tools = ((artifact.input || {}).tools) || [];
+
+      const modePill = ({
+        serverless: "ok",
+        deployment: "ok",
+        explicit: "warn",
+      }[d.mode]) || "";
+
+      return (
+        <details>
+          <summary>Deployment / API args</summary>
+          <table className="table-compact">
+            <tbody>
+              <tr>
+                <td>mode</td>
+                <td>{d.mode ? <span className={`pill ${modePill}`}>{d.mode}</span> : "—"}</td>
+              </tr>
+              <tr><td>model</td><td><code>{d.model}</code></td></tr>
+              {d.deployment_id ? (
+                <tr><td>deployment_id</td><td><code>{d.deployment_id}</code></td></tr>
+              ) : null}
+              <tr><td>sampling.temperature</td><td><code>{String(sampling.temperature ?? "—")}</code></td></tr>
+              <tr><td>sampling.max_tokens</td><td><code>{String(sampling.max_tokens ?? "—")}</code></td></tr>
+              {Object.entries(flags).map(([k, v]) => (
+                <tr key={`f-${k}`}>
+                  <td>api_flags.{k}</td>
+                  <td><span className={`pill ${v === true ? "ok" : ""}`}>{String(v)}</span></td>
+                </tr>
+              ))}
+              {Object.keys(extra).length > 0 && Object.entries(extra).map(([k, v]) => (
+                <tr key={`x-${k}`}>
+                  <td>extra.{k}</td>
+                  <td><code>{JSON.stringify(v)}</code></td>
+                </tr>
+              ))}
+              <tr>
+                <td>tools</td>
+                <td>{tools.length === 0 ? <span style={{ color: "var(--fg-dim)" }}>none</span> : <code>{tools.length} declared</code>}</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+      );
+    }
+
+    function Sanity({ sanity }) {
+      if (!sanity) return null;
+      const keys = [
+        "renderer_prompt_matches_api_prompt",
+        "full_render_prompt_prefix_matches_api",
+        "renderer_prompt_len",
+        "api_prompt_len",
+        "tokenization_diverged_count",
+        "echo_prompt_stripped",
+        "parse_response_ok",
+        "structural_walk_token_match",
+        "completion_token_count",
+        "completion_stop_reason",
+      ];
+      return (
+        <details>
+          <summary>Sanity flags</summary>
+          <table className="table-compact">
+            <tbody>
+              {keys.filter((k) => k in sanity).map((k) => {
+                const v = sanity[k];
+                const pill = typeof v === "boolean" ? pillStatus(v) : "";
+                return (
+                  <tr key={k}>
+                    <td>{k}</td>
+                    <td>
+                      {pill ? <span className={`pill ${pill}`}>{String(v)}</span> : <code>{String(v)}</code>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </details>
+      );
+    }
+
+    function CaseView({ index, caseObj, onDelete, filters, rules }) {
+      const { artifact } = caseObj;
+      const { renderer, snippet } = caseLabel(artifact);
+      return (
+        <section className="case">
+          <header className="case-header">
+            <h3 className="case-label">
+              <span className="case-num">#{index}</span>
+              <span className="case-name">{renderer}</span>
+              <span className="case-snippet" title={snippet}>{snippet || "(no user message)"}</span>
+            </h3>
+            <button type="button" className="btn-icon-danger" onClick={onDelete} title="Delete this case">
+              × delete
+            </button>
+          </header>
+          <TokenStream artifact={artifact} filters={filters} rules={rules} />
+          <Sanity sanity={artifact.sanity} />
+          <RendererArgs artifact={artifact} />
+          <DeploymentArgs artifact={artifact} />
+        </section>
+      );
+    }
+
+    function Legend() {
+      return (
+        <div className="legend">
+          <span className="legend-item"><span className="swatch" style={{ background: "var(--prov-prompt)" }} /> prompt_hard_append</span>
+          <span className="legend-item"><span className="swatch" style={{ background: "var(--prov-native)" }} /> native_generated</span>
+          <span className="legend-item"><span className="swatch" style={{ background: "var(--prov-trailing)" }} /> trailing_hard_append</span>
+          <span className="legend-item"><span className="swatch" style={{ background: "var(--prov-diverged)" }} /> tokenization_diverged</span>
+          <span className="legend-item">
+            <span className="swatch" style={{ background: "var(--warn-token-bg)" }} />
+            worth inspecting (matches a rule in inspect_rules.yaml)
+          </span>
+          <span className="legend-item">
+            <span style={{ color: "var(--special-fg)", fontWeight: 600, fontFamily: "var(--mono)" }}>&lt;|special|&gt;</span>
+            tokenizer.special_tokens
+          </span>
+        </div>
+      );
+    }
+
+    function Filters({ filters, setFilters }) {
+      const toggle = (dim, opt) =>
+        setFilters((prev) => ({
+          ...prev,
+          [dim]: { ...prev[dim], [opt]: !prev[dim][opt] },
+        }));
+      return (
+        <div className="filters">
+          {FILTER_DIMENSIONS.map(({ key, label, options }) => (
+            <div key={key} className="filter-group">
+              <span className="filter-label">{label}</span>
+              <div className="filter-chips">
+                {options.map((opt) => (
+                  <button
+                    type="button"
+                    key={opt}
+                    className={`filter-chip ${filters[key][opt] ? "on" : "off"}`}
+                    onClick={() => toggle(key, opt)}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function Token({ row, isSpecial, flags, onHover }) {
+      const flagged = flags && flags.length > 0;
+      const bg = flagged ? "var(--warn-token-bg)" : (PROV_BG[row.provenance] || "var(--bg-soft)");
+      const cls = [
+        "tok",
+        isSpecial ? "special" : "",
+        flagged ? "warn" : "",
+      ].filter(Boolean).join(" ");
+      // Stagger the ripple by token idx so multiple flagged tokens form
+      // a travelling wave rather than a synchronized strobe.
+      const style = { backgroundColor: bg };
+      if (flagged) style.animationDelay = `${((row.idx || 0) % 6) * 0.15}s`;
+      return (
+        <span
+          className={cls}
+          style={style}
+          onMouseEnter={() => onHover(row, flags)}
+        >
+          {renderDecoded(row.decoded)}
+        </span>
+      );
+    }
+
+    function TokenDetail({ row, flags }) {
+      if (!row) {
+        return (
+          <div className="token-detail token-detail-empty">
+            Hover any token in the stream above to see its full audit row here.
+          </div>
+        );
+      }
+      const fields = [
+        ["idx",          row.idx],
+        ["token_id",     row.token_id],
+        ["decoded",      JSON.stringify(row.decoded)],
+        ["chunk_source", row.chunk_source],
+        ["role",         row.role ?? "—"],
+        ["msg_idx",      row.msg_idx ?? "—"],
+        ["weight",       row.renderer_claim_weight],
+        ["provenance",   row.provenance],
+      ];
+      const flagText = (flags && flags.length)
+        ? flags.map((f, i) => `! ${f}`).join("\n")
+        : "—";
+      return (
+        <div className="token-detail">
+          {fields.map(([k, v]) => (
+            <React.Fragment key={k}>
+              <span className="td-label">{k}</span>
+              <span className="td-val">{String(v)}</span>
+            </React.Fragment>
+          ))}
+          <span className="td-label">inspect</span>
+          <span className={`td-val ${flags && flags.length ? "flags-list" : ""}`}>{flagText}</span>
+        </div>
+      );
+    }
+
+    function TokenStream({ artifact, filters, rules }) {
+      const specialIds = useMemo(() => {
+        const ids = new Set();
+        const map = (artifact.tokenizer && artifact.tokenizer.special_tokens) || {};
+        for (const k of Object.keys(map)) ids.add(Number(k));
+        return ids;
+      }, [artifact]);
+
+      const [hovered, setHovered] = useState(null);
+      const [hoveredFlags, setHoveredFlags] = useState(null);
+
+      const rows = artifact.audit_table || [];
+
+      // Pre-compute per-row inspect flags once (used both for filtering
+      // and for the warning background on flagged tokens).
+      const flagsByIdx = useMemo(() => {
+        const m = new Map();
+        for (const r of rows) {
+          m.set(r.idx, evaluateRules(r, rules, specialIds.has(r.token_id)));
+        }
+        return m;
+      }, [rows, specialIds, rules]);
+
+      const filtered = useMemo(() => {
+        return rows.filter((r) => {
+          const isSp = specialIds.has(r.token_id);
+          const flags = flagsByIdx.get(r.idx);
+          return rowMatchesFilters(r, filters, isSp, flags && flags.length > 0);
+        });
+      }, [rows, filters, specialIds, flagsByIdx]);
+
+      if (rows.length === 0) {
+        return <div className="empty-state">No audit_table rows in this artifact.</div>;
+      }
+
+      const onTokenHover = (row, flags) => {
+        setHovered(row);
+        setHoveredFlags(flags || null);
+      };
+      const onLeave = () => { setHovered(null); setHoveredFlags(null); };
+
+      return (
+        <div className="stream-grid">
+          <div className="stream" onMouseLeave={onLeave}>
+            {filtered.length === 0 ? (
+              <span style={{ color: "var(--fg-dim)", fontStyle: "italic" }}>
+                No tokens match the current filter selection.
+              </span>
+            ) : filtered.map((row) => (
+              <Token
+                key={row.idx}
+                row={row}
+                isSpecial={specialIds.has(row.token_id)}
+                flags={flagsByIdx.get(row.idx)}
+                onHover={onTokenHover}
+              />
+            ))}
+          </div>
+          <TokenDetail row={hovered} flags={hoveredFlags} />
+        </div>
+      );
+    }
+
+    function App() {
+      // Batch-native: each "Run probe" or file-drop appends a case.
+      // Filters (top) and inspection rules (YAML) are shared across cases.
+      const [cases, setCases] = useState([]);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState(null);
+      const [filters, setFilters] = useState(makeDefaultFilters);
+      const [rules, setRules] = useState([]);
+
+      // Inspection rules live in inspect_rules.yaml on the server.
+      // Fetch once on mount; the server re-reads the file per request
+      // so editing the YAML and refreshing the page picks up changes.
+      useEffect(() => {
+        fetch("/inspect_rules")
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then((d) => setRules(Array.isArray(d.rules) ? d.rules : []))
+          .catch((e) => console.warn("could not load inspect_rules:", e));
+      }, []);
+
+      // If the dev server was started with --session-file, /session
+      // returns a probe-batch with the flagged cases. Auto-seed them
+      // so the page comes up showing exactly what needs review.
+      useEffect(() => {
+        fetch("/session")
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (!d || d.kind !== "probe-batch" || !Array.isArray(d.cases)) return;
+            if (d.cases.length === 0) return;
+            setCases(
+              d.cases.map((c, i) => ({
+                id: `seed-${i}-${Math.random().toString(36).slice(2, 6)}`,
+                artifact: c.artifact,
+                source: c.name || `seed-${i + 1}`,
+              }))
+            );
+          })
+          .catch(() => { /* no session is fine */ });
+      }, []);
+
+      const addCase = useCallback((a, source) => {
+        const id = `c-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        setCases((prev) => [...prev, { id, artifact: a, source }]);
+        setError(null);
+      }, []);
+      const removeCase = useCallback((id) => {
+        setCases((prev) => prev.filter((c) => c.id !== id));
+      }, []);
+      const clearCases = useCallback(() => setCases([]), []);
+      const handleError = useCallback((msg) => {
+        setError(msg);
+      }, []);
+
+      return (
+        <>
+          <h1 className="banner">
+            Renderer <em>Verifier</em>
+          </h1>
+          <p className="banner-sub">
+            Render a chat locally, complete on a deployed model, and audit every
+            token side by side. Each <strong>Run probe</strong> or file-drop
+            appends a new case below; cases stay until you delete them.
+          </p>
+          <hr className="banner-rule" />
+
+          <aside className="advisory">
+            <span className="label">Heads up</span>
+            Serverless models may render and tokenize differently from your
+            actual RL deployment — different runtimes, optimization passes,
+            sometimes different chat templates. <strong>Probe a real
+            deployment when you can</strong>: enter its id in the{" "}
+            <code>deployment_id</code> field below. Treat serverless probes
+            as approximations of how the deployed model behaves.
+          </aside>
+
+          <LiveProbeForm
+            onArtifact={addCase}
+            onError={handleError}
+            busy={busy}
+            setBusy={setBusy}
+          />
+
+          <details>
+            <summary>Or load an existing probe JSON artifact</summary>
+            <FilePicker onLoad={(a, n) => addCase(a, n)} />
+          </details>
+
+          {error && <div className="error-banner" style={{ marginTop: 24 }}>{error}</div>}
+
+          {cases.length === 0 ? (
+            <div className="empty-state" style={{ marginTop: 32 }}>
+              Type a few messages above and click <strong>Run probe</strong>,
+              or drop a JSON artifact produced by{" "}
+              <code>python -m training.renderer.verifier render</code>. Run more probes
+              and they'll stack here for side-by-side comparison.
+            </div>
+          ) : (
+            <>
+              <div className="cases-bar">
+                <span className="cases-count">
+                  {cases.length} probe{cases.length !== 1 ? "s" : ""} in this session
+                </span>
+                <button type="button" className="btn-clear" onClick={clearCases}>
+                  Clear all
+                </button>
+              </div>
+              <h2>Token stream</h2>
+              <Legend />
+              <Filters filters={filters} setFilters={setFilters} />
+              {cases.map((c, i) => (
+                <CaseView
+                  key={c.id}
+                  index={i + 1}
+                  caseObj={c}
+                  onDelete={() => removeCase(c.id)}
+                  filters={filters}
+                  rules={rules}
+                />
+              ))}
+            </>
+          )}
+          <div className="footer">
+            Background tint = provenance. An <strong>amber</strong>
+            background means the token matches one or more rules in{" "}
+            <code>inspect_rules.yaml</code> and is worth a closer look —
+            not necessarily a bug. A muted rose colour marks tokens whose
+            ids appear in <code>tokenizer.special_tokens</code>. Hover any
+            token to see its full audit row + the matching rule reasons in
+            the detail panel below the stream. Edit the YAML and reload to
+            change which combinations are flagged. Live form posts to{" "}
+            <code>/probe</code> on this server
+            (<code>python -m training.renderer.verifier.serve</code>).
+          </div>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

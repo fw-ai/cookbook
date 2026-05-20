@@ -29,12 +29,17 @@ def _get_loss_mask(
     dtype: torch.dtype,
     device: torch.device,
 ) -> torch.Tensor:
-    """Extract per-position loss mask from ``loss_fn_inputs["loss_mask"]``.
+    """Extract per-position loss mask from ``loss_fn_inputs["weights"]``.
 
     Returns a tensor of shape ``[resp_len]`` sliced from ``response_start``.
-    Falls back to all-ones (no masking) when the datum has no ``loss_mask``.
+    Falls back to ``loss_fn_inputs["loss_mask"]`` for legacy datums and
+    finally to all-ones (no masking) when neither is present.
+
+    The trainer SDK rejects any ``loss_fn_inputs`` key other than
+    ``{"target_tokens", "weights"}`` for ``forward_backward_custom``, so
+    new producers MUST write the per-token mask under ``"weights"``.
     """
-    mask_td = datum.loss_fn_inputs.get("loss_mask")
+    mask_td = datum.loss_fn_inputs.get("weights") or datum.loss_fn_inputs.get("loss_mask")
     if mask_td is not None:
         mask_vals = mask_td.data[response_start : response_start + resp_len]
         if len(mask_vals) < resp_len:
@@ -142,6 +147,9 @@ def run_loss_loop(
     total_kl = 0.0
     total_inf_diff = 0.0
     total_inf_kld = 0.0
+    total_ppo_kl = 0.0
+    total_ref_kl = 0.0
+    ref_num_samples = 0
     inf_num_samples = 0
     num_tokens = 0
     tis_metrics_agg: Dict[str, float] = {}
@@ -196,12 +204,29 @@ def run_loss_loop(
             device=resp_pi.device,
         )
 
-        inf_log_diff = pi_detached - resp_inf
+        # Filter to loss_mask>0 positions: masked bridge/tool tokens otherwise
+        # contaminate sequence-level TIS weight (matches slime/AReaL behavior).
+        active_pi = pi_detached[active]
+        active_ref = resp_ref[active]
+        active_inf = resp_inf[active]
+        active_prox = resp_prox[active]
+
+        inf_log_diff = active_pi - active_inf
         total_inf_diff += inf_log_diff.abs().mean().item()
         total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
+        ppo_log_diff = active_pi - active_prox
+        total_ppo_kl += (torch.exp(ppo_log_diff) - ppo_log_diff - 1.0).mean().item()
+        if ref_lp:
+            ref_log_diff = active_ref - active_pi
+            total_ref_kl += (torch.exp(ref_log_diff) - ref_log_diff - 1.0).mean().item()
+            ref_num_samples += 1
         inf_num_samples += 1
 
-        tis_weight, bm = compute_tis_weight(resp_prox, resp_inf, tis_config)
+        tis_weight_active, bm = compute_tis_weight(active_prox, active_inf, tis_config)
+        # Identity (1.0) at masked positions: zeroes under ``resp_mask`` for
+        # masked-multiplied losses, no-op weight for ``dro``.
+        tis_weight = torch.ones(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
+        tis_weight[active] = tis_weight_active.to(resp_pi.dtype)
         for k, v in bm.items():
             tis_metrics_agg[k] = tis_metrics_agg.get(k, 0.0) + v
 
@@ -232,6 +257,9 @@ def run_loss_loop(
     if inf_num_samples > 0:
         base_metrics["inference_diff"] = total_inf_diff / inf_num_samples
         base_metrics["inference_kld"] = total_inf_kld / inf_num_samples
+        base_metrics["ppo_kl"] = total_ppo_kl / inf_num_samples
+    if ref_num_samples > 0:
+        base_metrics["ref_kl"] = total_ref_kl / ref_num_samples
     for k, v in tis_metrics_agg.items():
         base_metrics[k] = v / n_samples
 

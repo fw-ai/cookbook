@@ -8,7 +8,7 @@ Demonstrates reinforcement learning with multi-turn tool-calling:
     it falls back to the client-side custom loss path
 
 Usage:
-    pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook eval-protocol
+    Follow the setup instructions in ../../../README.md.
     export FIREWORKS_API_KEY=...
     python train_frozen_lake.py --training-shape <shape_id>
 """
@@ -35,7 +35,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from eval_protocol.models import EvaluationRow, InputMetadata
-from eval_protocol.pytest.types import RolloutProcessorConfig
+from eval_protocol.pytest import evaluation_test
 
 from training.examples.rl.frozen_lake.frozen_lake_rollout import (
     DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
@@ -64,14 +64,31 @@ from training.utils import (
     log_metrics_json,
     setup_deployment,
     create_trainer_job,
-    compute_advantages,
     build_datum_from_token_mask,
     validate_config,
     auto_select_training_shape,
 )
 from training.utils.rl import PromptGroup
-from training.utils.rl.train import TrainStepFns, run_rl_loop
-from training.utils.rl.losses import build_builtin_loss_datums, build_loss_fn, combine_prompt_groups, resolve_builtin_loss
+from training.utils.rl.async_train import RowRequest, run_async_rl_loop
+from training.utils.rl.rollout import (
+    RolloutSample,
+    load_eval_protocol_input_rows,
+    make_eval_protocol_rollout_fn_factory,
+)
+from training.utils.rl.train import TrainStepFns
+from training.utils.rl.cispo import CISPOConfig
+from training.utils.rl.dapo import DAPOConfig
+from training.utils.rl.dro import DROConfig
+from training.utils.rl.gspo import GSPOConfig
+from training.utils.rl.losses import (
+    LossPath,
+    PolicyLoss,
+    build_builtin_loss_datums,
+    build_loss_fn,
+    combine_prompt_groups,
+    get_builtin_loss_config,
+    validate_loss_path,
+)
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.pp import compute_pp_recommendation
@@ -121,15 +138,25 @@ class FrozenLakeConfig:
     prompt_groups_per_step: int = 4
     max_concurrent: int = 16
 
-    policy_loss: str = "grpo"
-    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, or ``"cispo"``.
+    policy_loss: PolicyLoss = "grpo"
+    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
 
-    If an eligible builtin kernel exists for the selected loss, training uses
-    the server-side ``forward_backward(...)`` path. Otherwise it falls back to
-    the client-side ``forward_backward_custom(...)`` path.
-    """
+    loss_path: LossPath = "client"
+    """``"builtin"`` for server-side fused kernel, ``"client"`` for the
+    Python loss closure. Validated at startup -- mismatches raise instead
+    of silently falling back."""
+    eps_clip: float = 0.2
+    """PPO clip epsilon for the off-policy ratio (GRPO/DAPO)."""
+    eps_clip_high: float | None = None
+    """Asymmetric upper clip bound (GRPO/DAPO)."""
     ratio_log_cap: float = 20.0
-    tis_enabled: bool = False
+    """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
+    dapo: DAPOConfig = field(default_factory=DAPOConfig)
+    dro: DROConfig = field(default_factory=DROConfig)
+    gspo: GSPOConfig = field(default_factory=GSPOConfig)
+    cispo: CISPOConfig = field(default_factory=CISPOConfig)
+    tis: TISConfig = field(default_factory=TISConfig)
+    """TIS (Train-Inference IS) weight correction config."""
 
     seed_jsonl_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "seeds.jsonl")
@@ -301,6 +328,90 @@ def evaluation_row_to_training_data(
     episode_reward = 1.0 if step_rewards and float(step_rewards[-1]) > 0 else 0.0
 
     return [datum], first_prompt_len, [inf_logprobs], [episode_reward]
+
+
+def evaluation_row_to_rollout_sample(row: EvaluationRow) -> RolloutSample | None:
+    """Convert a completed FrozenLake EvaluationRow into one RolloutSample."""
+    extra = row.execution_metadata.extra or {}
+    token_turn_traces = extra.get("token_turn_traces") or []
+    step_rewards = extra.get("step_rewards") or []
+
+    if not token_turn_traces:
+        return None
+
+    last_trace = token_turn_traces[-1]
+    last_prompt_ids = [int(x) for x in (last_trace.get("prompt_ids") or [])]
+    last_completion_ids = [int(x) for x in (last_trace.get("completion_ids") or [])]
+    full_tokens = last_prompt_ids + last_completion_ids
+    if len(full_tokens) < 2:
+        return None
+
+    model_request_traces = extra.get("model_request_traces") or []
+    spans = compute_model_output_spans(token_turn_traces, model_request_traces)
+    ui_token_mask = build_ui_token_mask(spans, len(full_tokens))
+    loss_mask = [1 if int(m) > 0 else 0 for m in ui_token_mask]
+
+    # RolloutSample.logprobs are token-aligned. Non-generated tokens keep 0.0;
+    # generated token logprobs are copied from each turn's completion payload.
+    token_logprobs = [0.0] * len(full_tokens)
+    for trace in token_turn_traces:
+        turn_prompt_len = len(trace.get("prompt_ids") or [])
+        turn_completion_logprobs = trace.get("completion_logprobs") or []
+        for i, lp in enumerate(turn_completion_logprobs):
+            pos = turn_prompt_len + i
+            if pos < len(token_logprobs):
+                token_logprobs[pos] = float(lp)
+
+    episode_reward = 1.0 if step_rewards and float(step_rewards[-1]) > 0 else 0.0
+    return RolloutSample(
+        tokens=full_tokens,
+        logprobs=token_logprobs,
+        loss_mask=loss_mask,
+        reward=episode_reward,
+        finish_reason=str(row.execution_metadata.finish_reason or "stop"),
+    )
+
+
+def frozen_lake_eval_row_factory(row: Dict[str, Any]) -> EvaluationRow:
+    """Build one per-sample EvaluationRow from an eval3 input row."""
+    base_row = row.get("evaluation_row")
+    rollout_idx = int(row.get("rollout_idx", 0))
+    if not isinstance(base_row, EvaluationRow):
+        raise TypeError("FrozenLake row must include an 'evaluation_row' EvaluationRow.")
+
+    eval_row = base_row.model_copy(deep=True)
+    base_row_id = eval_row.input_metadata.row_id or "row"
+    eval_row.input_metadata.row_id = f"{base_row_id}_{rollout_idx}"
+    return eval_row
+
+
+def make_frozen_lake_eval3_evaluator(
+    *,
+    input_rows: List[EvaluationRow],
+    rollout_processor: FrozenLakeToolRolloutProcessor,
+    completion_params: Dict[str, Any],
+    steps: int,
+):
+    """Create the eval3 expression that managed RFT can adapt into rollout_fn.
+
+    FrozenLake's scalar reward and token trace are produced by the rollout
+    processor, so the pointwise evaluator body is intentionally identity.
+    """
+
+    def frozen_lake_eval(row):
+        return row
+
+    # eval-protocol validates annotations by object identity, while this module
+    # uses postponed annotations. Set the runtime annotations explicitly.
+    frozen_lake_eval.__annotations__ = {"row": EvaluationRow, "return": EvaluationRow}
+
+    return evaluation_test(
+        input_rows=[input_rows],
+        completion_params=[completion_params],
+        rollout_processor=rollout_processor,
+        mcp_config_path="",
+        steps=steps,
+    )(frozen_lake_eval)
 
 
 # ---------------------------------------------------------------------------
@@ -565,9 +676,17 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         infra_boot_time = time.time() - _infra_start
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
-        from training.utils.checkpoint_utils import resolve_resume, save_checkpoint, CheckpointKind
-        resume_info = resolve_resume(policy, cfg.log_path)
+        from training.utils.checkpoints import TrainingCheckpoints
+        ckpt = TrainingCheckpoints(
+            policy,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+        resume_info = ckpt.resume()
         step_offset = resume_info.step if resume_info else 0
+        prior_rows_consumed = resume_info.data_consumed if resume_info else 0
         if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
@@ -614,114 +733,81 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             observation_mode=cfg.observation_mode,
             allow_plaintext_action_fallback=cfg.allow_plaintext_action_fallback,
         )
-        rollout_config = RolloutProcessorConfig(
+        all_prompts = seed_contexts * cfg.epochs
+        frozen_lake_input_rows = [
+            EvaluationRow(
+                input_metadata=InputMetadata(
+                    row_id=f"seed_{env_context.get('seed', row_idx)}_{row_idx}",
+                    dataset_info={
+                        "environment_context": dict(env_context),
+                        "user_prompt_template": cfg.user_prompt_template,
+                        "visual_prompt_template": cfg.visual_prompt_template,
+                    },
+                ),
+            )
+            for row_idx, env_context in enumerate(all_prompts)
+        ]
+        frozen_lake_evaluator = make_frozen_lake_eval3_evaluator(
+            input_rows=frozen_lake_input_rows,
+            rollout_processor=rollout_processor,
             completion_params={"model": inference_model},
-            mcp_config_path="",
             steps=cfg.max_steps,
-            semaphore=asyncio.Semaphore(cfg.max_concurrent),
         )
+        eval3_input_rows = load_eval_protocol_input_rows(frozen_lake_evaluator)[prior_rows_consumed:]
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         # Client-side fallback: build the Python loss closure used by
         # forward_backward_custom(...) when no eligible builtin kernel exists.
-        client_loss_builder = build_loss_fn(
-            policy_loss=cfg.policy_loss, kl_beta=cfg.kl_beta,
-            ratio_log_cap=cfg.ratio_log_cap,
-            tis_config=TISConfig(),
-        )
+        # ``cfg`` satisfies the LossArgs Protocol via its top-level loss fields.
+        client_loss_builder = build_loss_fn(cfg)
 
         # -- Trajectory logging -----------------------------------------------
         trajectory_path = f"/tmp/frozen_lake_trajectories_{int(time.time())}.jsonl"
         trajectory_log = open(trajectory_path, "a")
         logger.info("Logging trajectories to %s", trajectory_path)
         try:
-            # -- Sample one prompt group ----------------------------------------
+            # -- Per-sample rollout function ------------------------------------
 
-            async def sample_one_prompt(env_context: Dict[str, Any]) -> PromptGroup | None:
-                """Run completions_per_prompt rollouts for one seed, return PromptGroup."""
-                rows: List[EvaluationRow] = []
-                for rollout_idx in range(completions_per_prompt):
-                    rows.append(EvaluationRow(
-                        input_metadata=InputMetadata(
-                            row_id=f"seed_{env_context.get('seed', 0)}_{rollout_idx}",
-                            dataset_info={
-                                "environment_context": dict(env_context),
-                                "user_prompt_template": cfg.user_prompt_template,
-                                "visual_prompt_template": cfg.visual_prompt_template,
-                            },
-                        ),
-                    ))
+            def convert_and_log_sample(result: EvaluationRow) -> RolloutSample | None:
+                extra = result.execution_metadata.extra or {}
+                dataset_info = result.input_metadata.dataset_info or {}
+                env_context = dict(dataset_info.get("environment_context") or {})
+                rollout_idx = str(result.input_metadata.row_id or "").rsplit("_", 1)[-1]
+                if extra.get("rollout_error"):
+                    logger.warning(
+                        "Rollout error for seed %s sample %s: %s",
+                        env_context.get("seed"),
+                        rollout_idx,
+                        extra["rollout_error"],
+                    )
+                    return None
 
-                tasks = rollout_processor(rows, rollout_config)
-                completed_rows: List[EvaluationRow] = []
-                for task in tasks:
-                    try:
-                        result = await task
-                        extra = result.execution_metadata.extra or {}
-                        if extra.get("rollout_error"):
-                            logger.warning(
-                                "Rollout error for seed %s: %s",
-                                env_context.get("seed"), extra["rollout_error"],
-                            )
-                            continue
-                        completed_rows.append(result)
-                    except Exception as e:
-                        logger.warning("Rollout task failed for seed %s: %s", env_context.get("seed"), e)
+                sample = evaluation_row_to_rollout_sample(result)
+                if sample is None:
+                    return None
 
                 if trajectory_log:
-                    for row in completed_rows:
-                        extra = row.execution_metadata.extra or {}
-                        entry = {
-                            "seed": env_context.get("seed"),
-                            "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in (row.messages or [])],
-                            "step_rewards": extra.get("step_rewards", []),
-                            "reward": 1.0 if extra.get("step_rewards") and float(extra["step_rewards"][-1]) > 0 else 0.0,
-                            "rollout_error": extra.get("rollout_error"),
-                        }
-                        trajectory_log.write(json.dumps(entry) + "\n")
-                        trajectory_log.flush()
+                    entry = {
+                        "seed": env_context.get("seed"),
+                        "rollout_idx": rollout_idx,
+                        "messages": [
+                            m.model_dump() if hasattr(m, "model_dump") else m
+                            for m in (result.messages or [])
+                        ],
+                        "step_rewards": extra.get("step_rewards", []),
+                        "reward": sample.reward,
+                        "rollout_error": extra.get("rollout_error"),
+                    }
+                    trajectory_log.write(json.dumps(entry) + "\n")
+                    trajectory_log.flush()
 
-                if len(completed_rows) < 2:
-                    return None
+                return sample
 
-                all_datums: List[tinker.Datum] = []
-                all_ref_datums: List[tinker.Datum] = []
-                all_rewards: List[float] = []
-                all_inf_logprobs: List[List[float]] = []
-                first_prompt_len = 0
-
-                for row in completed_rows:
-                    datums, prompt_len, inf_lps, rewards = evaluation_row_to_training_data(row)
-                    if not datums:
-                        continue
-                    all_datums.extend(datums)
-                    all_rewards.extend(rewards)
-                    all_inf_logprobs.extend(inf_lps)
-                    if first_prompt_len == 0:
-                        first_prompt_len = prompt_len
-
-                    if use_reference:
-                        for d in datums:
-                            ref_datum = tinker.Datum(
-                                model_input=d.model_input,
-                                loss_fn_inputs=d.loss_fn_inputs,
-                            )
-                            all_ref_datums.append(ref_datum)
-
-                if not all_datums or len(all_rewards) < 2:
-                    return None
-
-                advantages = compute_advantages(all_rewards)
-
-                return PromptGroup(
-                    data=all_datums,
-                    ref_data=all_ref_datums,
-                    advantages=advantages,
-                    ref_logprobs=[],
-                    prompt_len=first_prompt_len,
-                    rewards=all_rewards,
-                    inf_logprobs=all_inf_logprobs,
-                )
+            frozen_lake_rollout_fn = make_eval_protocol_rollout_fn_factory(
+                frozen_lake_evaluator,
+                row_factory=frozen_lake_eval_row_factory,
+                sample_converter=convert_and_log_sample,
+            )(None)
 
             # -- Training callbacks ---------------------------------------------
 
@@ -740,24 +826,28 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     ]
                     idx += n
 
-            # Server-side fast path: resolve the builtin kernel/config used by
-            # forward_backward(...). Returns None when this loss has no builtin
-            # implementation, and raises when the current profile is ineligible.
-            builtin_server_loss = resolve_builtin_loss(
-                cfg.policy_loss,
-                profile,
-                ratio_log_cap=cfg.ratio_log_cap,
-            )
+            # Validate user's explicit loss_path choice; raises (no silent
+            # fallback) if builtin was picked in a configuration that forbids
+            # it (PP > 1, kl_beta > 0, or a client-only loss).
+            validate_loss_path(cfg, profile)
+            if cfg.loss_path == "builtin":
+                builtin_loss = get_builtin_loss_config(cfg)
+                logger.info(
+                    "policy_loss=%s loss_path=builtin (server-side loss=%s)",
+                    cfg.policy_loss, builtin_loss[0],
+                )
+            else:
+                builtin_loss = None
+                logger.info(
+                    "policy_loss=%s loss_path=client", cfg.policy_loss,
+                )
 
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 prox_fwd = policy.forward(data, "cross_entropy")
                 prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-                if builtin_server_loss is not None:
-                    # Server-side builtin path: pre-pack the rollout tensors
-                    # into datums the trainer kernel understands, then call
-                    # forward_backward(...).
-                    kernel_loss, kernel_config = builtin_server_loss
+                if builtin_loss is not None:
+                    loss_name, loss_cfg = builtin_loss
                     rl_datums = build_builtin_loss_datums(
                         data,
                         adv,
@@ -767,10 +857,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         policy_loss=cfg.policy_loss,
                     )
                     return policy.forward_backward(
-                        rl_datums, kernel_loss, loss_fn_config=kernel_config,
+                        rl_datums, loss_name, loss_fn_config=loss_cfg,
                     )
-                # Client-side custom path: execute the Python loss closure
-                # returned by build_loss_fn(...) via forward_backward_custom(...).
                 return policy.forward_backward_custom(
                     data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
                 )
@@ -801,15 +889,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     logger.info("[step %d] dcp_save...", step)
                     t0 = time.time()
                     with timer("dcp_save"):
-                        save_checkpoint(
-                            policy, f"step-{step}", cfg.log_path,
-                            {
-                                "step": step,
-                                "data_consumed": step - step_offset,
-                                "source_job_id": policy.job_id,
-                            },
-                            kind=CheckpointKind.STATE,
-                            base_model=cfg.base_model,
+                        ckpt.save(
+                            f"step-{step}",
+                            resumable=True,
+                            promotable=False,
+                            data_consumed=step - step_offset,
                         )
                     logger.info("[step %d] dcp_save: done (%.1fs)", step, time.time() - t0)
 
@@ -828,19 +912,19 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
 
                 avg_reward = metrics.get("rollout/reward", 0.0)
-                avg_kl = metrics.get("train/mean_kl", 0.0)
+                avg_ref_kl = metrics.get("train/ref_kl", 0.0)
                 mean_loss = metrics.get("train/mean_loss", 0.0)
                 adv_loss = metrics.get("train/mean_adv_loss", 0.0)
                 kl_pen = metrics.get("train/mean_kl_penalty", 0.0)
                 mask_r = metrics.get("train/mask_ratio", 0.0)
                 inf_kld = metrics.get("train/inference_kld", 0.0)
                 logger.info(
-                    "Step %d | Reward: %.3f | KL: %.4f | Loss: %.4f "
+                    "Step %d | Reward: %.3f | RefKL: %.4f | Loss: %.4f "
                     "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
-                    step, avg_reward, avg_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
+                    step, avg_reward, avg_ref_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
                 )
                 reward_history.append(avg_reward)
-                log_metrics_json(step, reward=avg_reward, kl=avg_kl)
+                log_metrics_json(step, reward=avg_reward, ref_kl=avg_ref_kl)
                 _wandb_step[0] = max(_wandb_step[0] + 1, step)
                 wandb_log(metrics, _wandb_step[0])
                 return step, metrics
@@ -857,29 +941,68 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             def should_accept(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
 
-            all_prompts = seed_contexts * cfg.epochs
+            max_concurrent_samples = cfg.max_concurrent if cfg.max_concurrent > 0 else None
+            min_group_size = 2 if completions_per_prompt > 1 else 1
+            async_weight_sync_interval = (
+                max(1, weight_sync_cfg.weight_sync_interval)
+                if weight_sync_cfg.weight_sync_interval > 0
+                else 1
+            )
+            max_head_offpolicy_versions = (
+                max(0, async_weight_sync_interval - 1)
+                if weight_sync_cfg.weight_sync_interval > 0
+                else max(0, (len(eval3_input_rows) + prompt_groups_per_step - 1) // prompt_groups_per_step)
+            )
             logger.info(
                 "Training: %d seeds x %d epochs = %d prompt groups, "
-                "%d completions/prompt, %d groups/step",
-                len(seed_contexts), cfg.epochs, len(all_prompts),
-                completions_per_prompt, prompt_groups_per_step,
+                "%d completions/prompt, %d groups/step, max_concurrent_samples=%s",
+                len(seed_contexts), cfg.epochs, len(eval3_input_rows),
+                completions_per_prompt, prompt_groups_per_step, max_concurrent_samples,
             )
 
             _wandb_step = [step_offset]
 
-            def _filtered_step_callback(loop_metrics: dict) -> None:
-                _wandb_step[0] += 1
-                wandb_log(loop_metrics, step=_wandb_step[0])
+            def make_row_requests():
+                for row_idx, eval_row in enumerate(eval3_input_rows, start=prior_rows_consumed):
+                    dataset_info = eval_row.input_metadata.dataset_info or {}
+                    env_context_dict = dict(dataset_info.get("environment_context") or {})
 
-            global_step = asyncio.run(run_rl_loop(
-                sample_fns=(sample_one_prompt(ctx) for ctx in all_prompts),
+                    def factory(
+                        rollout_idx: int,
+                        *,
+                        row_idx: int = row_idx,
+                        eval_row: EvaluationRow = eval_row,
+                    ):
+                        return frozen_lake_rollout_fn({
+                            "row_id": row_idx,
+                            "rollout_idx": rollout_idx,
+                            "evaluation_row": eval_row,
+                        })
+
+                    yield RowRequest(
+                        row_id=row_idx,
+                        sample_factory=factory,
+                        row_meta={
+                            "seed": env_context_dict.get("seed"),
+                            "environment_context": env_context_dict,
+                        },
+                    )
+
+            global_step, final_stats = asyncio.run(run_async_rl_loop(
+                rows=make_row_requests(),
                 train_fns=train_fns,
+                completions_per_prompt=completions_per_prompt,
                 prompt_groups_per_step=prompt_groups_per_step,
+                max_head_offpolicy_versions=max_head_offpolicy_versions,
+                with_reference=use_reference,
+                min_group_size=min_group_size,
+                weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
+                weight_sync_interval=async_weight_sync_interval,
+                max_concurrent=max_concurrent_samples,
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
-                metrics_callback=_filtered_step_callback,
-                weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
-                weight_sync_interval=weight_sync_cfg.weight_sync_interval,
+                resolved_rows_offset=prior_rows_consumed,
+                return_final_stats=True,
             ))
 
             # -- Final checkpoint -----------------------------------------------
@@ -887,21 +1010,15 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             if global_step > step_offset:
                 try:
                     cp_name = f"step-{global_step}"
-                    _data_consumed = (resume_info.data_consumed if resume_info else 0) + (global_step - step_offset) * prompt_groups_per_step
-                    from training.utils.checkpoint_utils import save_checkpoint
-                    paths = save_checkpoint(policy, cp_name, cfg.log_path, {
-                        "step": global_step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    }, kind="both")
-
+                    _data_consumed = int(final_stats["resolved_rows"])
+                    ckpt.save(
+                        cp_name,
+                        resumable=True,
+                        promotable=True,
+                        data_consumed=_data_consumed,
+                    )
                     if getattr(cfg, "output_model_id", None):
-                        rlor_mgr.promote_checkpoint(
-                            policy_job_id,
-                            paths["sampler_path"],
-                            cfg.output_model_id,
-                            cfg.base_model,
-                        )
+                        ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 except Exception as e:
                     logger.warning("Failed to save final checkpoint: %s", e)
                 logger.info("Training complete: %d steps", global_step)

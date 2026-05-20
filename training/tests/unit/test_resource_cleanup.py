@@ -49,16 +49,3 @@ class TestResourceCleanup:
             (("job-early",),),
             (("job-keep",),),
         ]
-
-    def test_delete_trainer_alias_cancels_and_unregisters(self):
-        rlor_mgr = MagicMock()
-
-        with ResourceCleanup(rlor_mgr) as cleanup:
-            cleanup.trainer("job-keep")
-            cleanup.trainer("job-early")
-            cleanup.delete_trainer("job-early")
-
-        assert rlor_mgr.cancel.call_args_list == [
-            (("job-early",),),
-            (("job-keep",),),
-        ]

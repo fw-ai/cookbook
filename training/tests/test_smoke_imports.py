@@ -41,7 +41,7 @@ UTIL_MODULES = [
     "training.utils.infra",
     "training.utils.losses",
     "training.utils.logging",
-    "training.utils.checkpoint_utils",
+    "training.utils.checkpoints",
     "training.utils.timer",
     "training.utils.validation",
     "training.utils.rl",
@@ -83,6 +83,8 @@ EXAMPLE_MODULES_WITH_ENV = [
 
 EXAMPLE_MODULES = [
     "training.examples.rl.deepmath.prepare_data",
+    "training.examples.rl.single_turn_token_in.rollout",
+    "training.examples.rl.multi_turn_message_in.rollout",
     "training.examples.tools.promote_checkpoint",
 ]
 

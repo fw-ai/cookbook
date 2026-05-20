@@ -28,9 +28,31 @@ training/           Training SDK recipes, utilities, and examples
   recipes/          Fork-and-customize training loop scripts
   utils/            Shared config, data loading, losses, metrics
   examples/         Worked examples (RL, SFT, DPO, ORPO)
+  verifier/         Renderer correctness validator + live React viewer
   tests/            Unit and end-to-end tests
 skills/             Agent skills and reference docs
 ```
+
+## Fireworks Agent skill
+
+- [`skills/fireworks-agent/SKILL.md`](skills/fireworks-agent/SKILL.md)
+  — end-to-end fine-tuning via the Fireworks Agent (`firectl
+  session`). Give it one natural-language instruction and it handles
+  data inspection, model selection, hyperparameter sweeps, training,
+  evaluation, and deployment. Includes the full session lifecycle:
+  create, stream events, answer the agent's mid-run questions,
+  recover from failures, and clean up.
+
+## Renderer skills
+
+- [`skills/renderer/SKILL.md`](skills/renderer/SKILL.md) — implementing
+  a new renderer (chat template, stop semantics, weight-mask
+  invariants, registration, dev loop).
+- [`skills/verifier/SKILL.md`](skills/verifier/SKILL.md) — validating
+  a renderer against the live Fireworks gateway and the upstream
+  HuggingFace chat template. The verifier ships a probe CLI, a batch
+  triage runner, and a single-file React viewer that highlights every
+  audit-table row by provenance, weight, and inspection-rule match.
 
 ## Contributing
 

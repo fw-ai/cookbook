@@ -8,11 +8,15 @@ strategy to fit your task.
 Each optimizer step samples ``prompt_groups_per_step`` prompts concurrently,
 then runs a single training update + ``optim_step`` (1:1 ratio).
 
-RL losses can execute in two places:
-- Server-side builtin path: ``forward_backward(...)`` with a builtin kernel
-  resolved by :func:`training.utils.rl.losses.resolve_builtin_loss`.
-- Client-side custom path: ``forward_backward_custom(...)`` with a Python
-  loss closure built by :func:`training.utils.rl.losses.build_loss_fn`.
+RL losses can execute in two places, picked **explicitly** by ``cfg.loss_path``:
+- ``"builtin"``: ``forward_backward(...)`` with a server-side fused kernel,
+  configured via :func:`training.utils.rl.losses.get_builtin_kernel_config`.
+- ``"client"``: ``forward_backward_custom(...)`` with a Python loss closure
+  built by :func:`training.utils.rl.losses.build_loss_fn`.
+
+``validate_loss_path`` runs at startup and raises with an actionable message
+if the chosen path is incompatible with this run's config/profile (e.g.
+``"builtin"`` + ``kl_beta>0`` or PP>1).
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -24,11 +28,12 @@ from __future__ import annotations
 import os
 import re
 import json
+import math
 import signal
 import asyncio
 import logging
 from contextlib import ExitStack
-from typing import List, Optional
+from typing import Any, List, Optional
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -36,6 +41,8 @@ import tinker
 
 from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
+from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
     ConcurrencyConfig,
@@ -47,45 +54,37 @@ from training.utils import (
     WandBConfig,
     DeployConfig,
     WeightSyncConfig,
-    ReconnectableClient,
+    RawRowCursor,
     RLPromptDataset,
     wandb_log,
     setup_wandb,
     wandb_finish,
     validate_config,
     log_metrics_json,
-    get_deployment_gpu_count,
-    setup_deployment,
-    setup_or_reattach_deployment,
     compute_advantages,
-    create_trainer_job,
+    load_deployment_tokenizer,
     read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
-    auto_select_training_shape,
 )
-from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.checkpoint_utils import (
-    resolve_resume,
-    save_checkpoint,
-    CheckpointKind,
-)
-from fireworks.training.sdk.deployment import DeploymentSampler
-
-from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, FixedConcurrencyController
-from training.utils.rl import PromptGroup
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.rl import PromptGroup, setup_infra
 from training.utils.rl.tis import TISConfig
-from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.timer import timer, flush_timing
+import time as _time
 from training.utils.rl.dapo import DAPOConfig
+from training.utils.rl.dro import DROConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
 from training.utils.rl.losses import (
+    LossPath,
+    PolicyLoss,
     build_builtin_loss_datums,
     build_loss_fn,
     combine_prompt_groups,
-    resolve_builtin_loss,
+    get_builtin_loss_config,
+    validate_loss_path,
 )
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -120,7 +119,6 @@ class Config:
     ``max_supported_context_length``.  Must be set manually on the
     manual path (no training shape)."""
     lora_rank: int = 0
-
     prompt_groups_per_step: int = 1
     """Number of prompt groups per optimizer step.
 
@@ -134,15 +132,24 @@ class Config:
     """Normalization mode for accumulated gradients at optim_step.
     Defaults to ``GradAccNormalization.NUM_LOSS_TOKENS`` (per-token mean)."""
 
-    policy_loss: str = "grpo"
-    """``"grpo"``, ``"importance_sampling"``, ``"dapo"``, ``"dro"``, ``"gspo"``, ``"reinforce"``, or ``"cispo"``.
+    policy_loss: PolicyLoss = "grpo"
+    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
 
-    If an eligible builtin kernel exists for the selected loss, training uses
-    the server-side ``forward_backward(...)`` path. Otherwise it falls back to
-    the client-side ``forward_backward_custom(...)`` path.
+    loss_path: LossPath = "client"
+    """Which forward/backward path to use:
+
+    - ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
+      kernel. Faster, but cannot apply KL (``kl_beta`` must be 0) and
+      requires PP=1.
+    - ``"client"`` -- client-side ``forward_backward_custom(...)``. Always
+      works; slower because of an extra forward pass for old-policy logprobs.
+
+    Validated at startup by :func:`validate_loss_path` -- mismatches raise,
+    they no longer silently fall back.
     """
 
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
+    dro: DROConfig = field(default_factory=DROConfig)
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     cispo: CISPOConfig = field(default_factory=CISPOConfig)
     eps_clip: float = 0.2
@@ -151,6 +158,14 @@ class Config:
     """Asymmetric upper clip bound (GRPO only)."""
     ratio_log_cap: float = 20.0
     """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
+    ppo_n_minibatches: int = 1
+    """Number of inner PPO minibatches per rollout batch.
+
+    Each rollout batch snapshots ``old_policy_logprobs`` followed by
+    ``ppo_n_minibatches`` × (``forward_backward`` + ``optim_step``). When
+    >1, the policy drifts across inner steps, so ``old_policy_logprobs`` anchors the
+    PPO ratio and the clip does real work. ``1`` reproduces the legacy
+    1:1 behavior."""
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
 
@@ -166,18 +181,23 @@ class Config:
     policy_job_id: str | None = None
     """Pre-created RLOR policy trainer job ID (skip creation if set)."""
 
-    policy_base_url: str | None = None
-    """Base URL for the policy trainer (bypass direct route)."""
-
     reference_job_id: str | None = None
     """Pre-created RLOR reference trainer job ID (skip creation if set)."""
 
+    policy_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
+
     reference_base_url: str | None = None
-    """Base URL for the reference trainer (bypass direct route)."""
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
+
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
 
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
@@ -282,9 +302,24 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cleanup_on_exit: bool = False,
+    cancel_on_exit: bool = False,
+    cleanup_on_exit: bool | None = None,
 ):
+    if cleanup_on_exit is not None:
+        import warnings
+        warnings.warn(
+            "rl_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
+            DeprecationWarning, stacklevel=2,
+        )
+        cancel_on_exit = cleanup_on_exit
+
     cfg = config
+    if cfg.policy_base_url or cfg.reference_base_url:
+        logger.warning(
+            "Config.policy_base_url / Config.reference_base_url are ignored; "
+            "the gateway routes all trainer traffic. These fields are kept for "
+            "back-compat and will be removed in a future release.",
+        )
     runner = RunnerIO(cfg.runner)
 
     # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
@@ -302,6 +337,11 @@ def main(
         cfg.weight_sync,
         cfg.deployment,
         output_model_id=cfg.output_model_id,
+    )
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
     )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
@@ -339,202 +379,65 @@ def main(
             additional_headers=additional_headers,
         )
 
-    # -- Resolve policy training shape -------------------------------------------
-    if not cfg.infra.training_shape_id:
-        cfg.infra.training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="policy",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected policy training shape: %s", cfg.infra.training_shape_id)
-
-    policy_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-
-    if not cfg.deployment.deployment_shape and policy_profile.deployment_shape_version:
-        cfg.deployment.deployment_shape = policy_profile.deployment_shape_version
-    logger.info(
-        "Policy shape=%s  deployment_shape=%s",
-        cfg.infra.training_shape_id,
-        cfg.deployment.deployment_shape,
-    )
-
-    if cfg.max_seq_len is None:
-        cfg.max_seq_len = policy_profile.max_supported_context_length
-        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
-    if cfg.max_seq_len is None:
-        raise ValueError(
-            "max_seq_len is required. Set it in Config, or use a training shape "
-            "(InfraConfig.training_shape_id) to auto-populate it."
-        )
-
-    # -- Resolve reference training shape ------------------------------------------
-    # ref_profile is non-None only when a *separate* reference trainer is needed.
-    # LoRA + kl_beta > 0 without an explicit ref shape: the policy trainer
-    # serves reference logprobs via a base-only model handle (no extra GPU job).
-    # See create_base_reference() in utils/client.py — both clients share one
-    # FiretitanServiceClient (one session) so they don't reset each other.
-    ref_profile = None
-    if cfg.infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-    elif cfg.kl_beta > 0 and cfg.lora_rank == 0:
-        cfg.infra.ref_training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="reference",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected reference training shape: %s", cfg.infra.ref_training_shape_id)
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-
-    import time as _time
-
-    runner.set_accelerator_info(profile=policy_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
         runner.write_status(RunStatus.PENDING, message=msg)
 
-    _infra_start = _time.time()
-
     with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        # -- Provision trainer jobs ------------------------------------------------
+        # Shapes + trainers + deployment + trainer clients.
+        # LoRA shared-reference branching is handled inside setup_infra.
+        infra = setup_infra(
+            rlor_mgr=rlor_mgr,
+            deploy_mgr=deploy_mgr,
+            base_model=cfg.base_model,
+            infra_cfg=cfg.infra,
+            deploy_cfg=cfg.deployment,
+            lora_rank=cfg.lora_rank,
+            max_seq_len=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            step_timeout=cfg.step_timeout,
+            policy_job_id=cfg.policy_job_id,
+            reference_job_id=cfg.reference_job_id,
+            needs_reference=(cfg.kl_beta > 0),
+            needs_inference=True,
+            role_prefix="grpo",
+            api_key=api_key,
+            cleanup=cleanup if cancel_on_exit else None,
+            on_status=_on_trainer_status,
+        )
+        for closeable in infra.closeables:
+            stack.callback(closeable.close)
+
+        runner.set_accelerator_info(profile=infra.policy_profile)
+        wandb_log(infra.boot_metrics, step=0)
+
+        policy = infra.policy
+        reference = infra.reference
+        policy_profile = infra.policy_profile
+        policy_job_id = infra.policy_job_id
+        reference_job_id = infra.reference_job_id or infra.policy_job_id
+
+        tokenizer = load_deployment_tokenizer(cfg.deployment)
+        # Adaptive concurrency — window adjusts based on server-side prefill queue.
+        # For fixed (no rate limiting), use FixedConcurrencyController instead.
+        initial_window = cfg.concurrency.initial_window or (8 * infra.deployment_gpu_count)
+        concurrency_controller = AdaptiveConcurrencyController(
+            initial_window=initial_window,
+            min_window=cfg.concurrency.min_window,
+            max_window=cfg.concurrency.max_window,
+            prefill_queue_target=cfg.concurrency.prefill_queue_target,
+        )
         logger.info(
-            "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
-            prompt_groups_per_step,
-            completions_per_prompt,
+            "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
+            initial_window,
+            cfg.concurrency.min_window,
+            cfg.concurrency.max_window,
+            cfg.concurrency.prefill_queue_target,
         )
-
-        _cleanup = cleanup if cleanup_on_exit else None
-
-        def _make_trainer(role: str, profile, *, forward_only: bool = False):
-            is_ref = role == "reference"
-            return create_trainer_job(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                infra=cfg.infra,
-                profile=profile,
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name=f"grpo-{role}",
-                forward_only=forward_only,
-                job_id=cfg.reference_job_id if is_ref else cfg.policy_job_id,
-                base_url_override=cfg.reference_base_url if is_ref else cfg.policy_base_url,
-                cleanup=_cleanup,
-                on_status=_on_trainer_status,
-            )
-
-        if ref_profile is not None:
-            _on_trainer_status("provisioning policy and reference trainers")
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(_make_trainer, "policy", policy_profile)
-                ref_fut = pool.submit(
-                    _make_trainer, "reference", ref_profile, forward_only=True,
-                )
-                errors: list[str] = []
-                policy_ep = reference_ep = None
-                try:
-                    policy_ep = pol_fut.result()
-                except Exception as e:
-                    errors.append(f"Policy trainer: {e}")
-                try:
-                    reference_ep = ref_fut.result()
-                except Exception as e:
-                    errors.append(f"Reference trainer: {e}")
-                if errors:
-                    raise RuntimeError(
-                        "Trainer creation failed:\n" + "\n".join(errors)
-                    )
-        else:
-            _on_trainer_status("provisioning policy trainer")
-            policy_ep = _make_trainer("policy", policy_profile)
-            reference_ep = None
-
-        policy_job_id = policy_ep.job_id
-        reference_job_id = reference_ep.job_id if reference_ep else policy_ep.job_id
-
-        # -- Connect deployment to the trainer's hot-load bucket ----------------
-        dep_info = setup_or_reattach_deployment(
-            deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra, policy_ep.job_name,
-        )
-        if cleanup_on_exit:
-            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-
-        _timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-
-        def _make_client(ep):
-            c = ReconnectableClient(
-                rlor_mgr, ep.job_id, cfg.base_model,
-                lora_rank=cfg.lora_rank,
-                fw_api_key=api_key,
-                default_timeout=_timeout,
-                endpoint=ep if (cfg.policy_base_url or cfg.reference_base_url) else None,
-            )
-            if hasattr(c, "close"):
-                stack.callback(c.close)
-            return c
-
-        policy = _make_client(policy_ep)
-
-        if reference_ep is not None:
-            reference = _make_client(reference_ep)
-        elif cfg.lora_rank > 0 and cfg.kl_beta > 0:
-            # Share the policy trainer's session: base-only model handle, no
-            # second trainer, no second create_session (which would unload the
-            # policy LoRA).
-            reference = policy.create_base_reference()
-            stack.callback(reference.close)
-        else:
-            reference = None
-
-        import transformers
-
-        inference_model = dep_info.inference_model if dep_info else cfg.base_model
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.deployment.tokenizer_model, trust_remote_code=True)
-
-        # -- Concurrency controller ------------------------------------------------
-        if cfg.concurrency.mode == "adaptive":
-            gpu_count = get_deployment_gpu_count(deploy_mgr, cfg.deployment)
-            _SLOTS_PER_GPU = 8  # Default concurrent requests per GPU.
-            initial_window = cfg.concurrency.initial_window or (_SLOTS_PER_GPU * gpu_count)
-            concurrency_controller = AdaptiveConcurrencyController(
-                initial_window=initial_window,
-                min_window=cfg.concurrency.min_window,
-                max_window=cfg.concurrency.max_window,
-                prefill_queue_target=cfg.concurrency.prefill_queue_target,
-            )
-            logger.info(
-                "Using adaptive concurrency (initial=%d, range=%d-%d, target_pq=%.2fs)",
-                initial_window,
-                cfg.concurrency.min_window,
-                cfg.concurrency.max_window,
-                cfg.concurrency.prefill_queue_target,
-            )
-        elif cfg.concurrency.mode == "fixed":
-            concurrency_controller = None
-            logger.info("Using fixed concurrency: unlimited")
-        elif cfg.concurrency.mode is None and cfg.concurrency.max_concurrency is not None:
-            import warnings
-            warnings.warn(
-                "ConcurrencyConfig.max_concurrency is deprecated. "
-                "Use mode='adaptive' (default) or mode='fixed' with "
-                "FixedConcurrencyController instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            concurrency_controller = FixedConcurrencyController(cfg.concurrency.max_concurrency)
-            logger.info("Using fixed concurrency (deprecated max_concurrency=%d)", cfg.concurrency.max_concurrency)
-        else:
-            raise ValueError(
-                f"Unknown concurrency mode: {cfg.concurrency.mode!r}. Must be 'adaptive' or 'fixed'."
-            )
-
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
-            model=inference_model,
+            model=infra.inference_model,
             api_key=api_key,
             tokenizer=tokenizer,
             concurrency_controller=concurrency_controller,
@@ -542,29 +445,37 @@ def main(
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
             deploy_mgr=deploy_mgr,
-            deployment_id=cfg.deployment.deployment_id,
+            deployment_id=infra.deployment_id,
             base_model=cfg.rollout_base_model or cfg.base_model,
             hotload_timeout=cfg.weight_sync.weight_sync_timeout,
             first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
             lora_rank=cfg.lora_rank,
         )
 
-        infra_boot_time = _time.time() - _infra_start
-        boot_metrics: dict = {
-            "train/step": 0,
-            "infra/total_boot_time": infra_boot_time,
-        }
-        if deploy_mgr.boot_time_s is not None:
-            boot_metrics["infra/deploy_boot_time"] = deploy_mgr.boot_time_s
-        wandb_log(boot_metrics, step=0)
+        ckpt = TrainingCheckpoints(
+            policy,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
+        logger.info(
+            "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
+            prompt_groups_per_step,
+            completions_per_prompt,
+        )
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
+        )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
 
-        if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:
+        if cfg.weight_sync.weight_sync_before_training and infra.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             weight_syncer.save_and_hotload(name, checkpoint_type="base")
 
@@ -573,25 +484,17 @@ def main(
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
+        cursor = RawRowCursor(max_rows=len(all_rows))
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         # Client-side fallback: build the Python loss closure used by
         # forward_backward_custom(...) when no eligible builtin kernel exists.
-        client_loss_builder = build_loss_fn(
-            policy_loss=cfg.policy_loss,
-            kl_beta=cfg.kl_beta,
-            dapo_config=cfg.dapo,
-            gspo_config=cfg.gspo,
-            cispo_config=cfg.cispo,
-            ratio_log_cap=cfg.ratio_log_cap,
-            tis_config=cfg.tis,
-            eps_clip=cfg.eps_clip,
-            eps_clip_high=cfg.eps_clip_high,
-        )
+        # ``cfg`` satisfies the LossArgs Protocol via its top-level loss fields.
+        client_loss_builder = build_loss_fn(cfg)
 
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            max_seq_len=cfg.max_seq_len,
+            max_seq_len=infra.max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
         if cfg.router_replay:
@@ -722,110 +625,137 @@ def main(
                 pg.ref_logprobs = [ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)]
                 idx += n
 
-        # Server-side fast path: resolve the builtin kernel/config used by
-        # forward_backward(...). Returns None when this loss has no builtin
-        # implementation, and raises when the current profile is ineligible.
-        builtin_server_loss = resolve_builtin_loss(
-            cfg.policy_loss,
-            policy_profile,
-            dapo_config=cfg.dapo,
-            gspo_config=cfg.gspo,
-            cispo_config=cfg.cispo,
-            ratio_log_cap=cfg.ratio_log_cap,
-            eps_clip=cfg.eps_clip,
-            eps_clip_high=cfg.eps_clip_high,
-        )
+        # Validate the user's loss_path choice against this run's config and
+        # training profile. Raises (no silent fallback) if builtin was picked
+        # in a configuration that forbids it (PP > 1, kl_beta > 0, or a
+        # client-only loss).
+        validate_loss_path(cfg, policy_profile)
+        if cfg.loss_path == "builtin":
+            builtin_loss = get_builtin_loss_config(cfg)
+            logger.info(
+                "policy_loss=%s loss_path=builtin (server-side loss=%s)",
+                cfg.policy_loss, builtin_loss[0],
+            )
+        else:
+            builtin_loss = None
+            logger.info(
+                "policy_loss=%s loss_path=client (forward_backward_custom; "
+                "extra forward pass for old-policy logprobs)",
+                cfg.policy_loss,
+            )
 
-        def fwd_bwd_one(prompt_groups: list[PromptGroup]):
-            """One minibatch update using the builtin or client-side loss path."""
-            if not prompt_groups:
-                raise ValueError("fwd_bwd_one requires at least one prompt group")
+        def fwd_bwd_minibatch(
+            data, adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs,
+        ):
+            """One inner PPO minibatch using builtin or client-side loss path.
 
-            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
-
-            t0 = _time.time()
-            prox_fwd = policy.forward(data, "cross_entropy")
-            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("policy_forward: done (%.1fs)", _time.time() - t0)
-
-            t0 = _time.time()
-            if builtin_server_loss is not None:
-                # Server-side builtin path: pre-pack the rollout tensors into
-                # datums the trainer kernel understands, then call
-                # forward_backward(...).
-                kernel_loss, kernel_config = builtin_server_loss
+            Callers pre-compute ``old_policy_logprobs`` once per rollout batch and pass
+            a slice of the flattened rollout tensors for this minibatch.
+            """
+            if builtin_loss is not None:
+                loss_name, loss_cfg = builtin_loss
                 rl_datums = build_builtin_loss_datums(
                     data,
                     adv,
-                    prox_lp,
+                    old_policy_logprobs,
                     inf_lp,
                     prompt_lens,
                     cfg.tis,
                     policy_loss=cfg.policy_loss,
                 )
-                fwd_bwd_result = policy.forward_backward(
+                return policy.forward_backward(
                     rl_datums,
-                    kernel_loss,
-                    loss_fn_config=kernel_config,
+                    loss_name,
+                    loss_fn_config=loss_cfg,
                 )
-            else:
-                # Client-side custom path: execute the Python loss closure
-                # returned by build_loss_fn(...) via forward_backward_custom(...).
-                fwd_bwd_result = policy.forward_backward_custom(
-                    data,
-                    client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
-                )
-            logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
-            return fwd_bwd_result
+            return policy.forward_backward_custom(
+                data,
+                client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs),
+            )
 
         def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + fwd_bwd + optim_step + metrics (1:1)."""
+            """ref_forward + old_policy_logprobs snapshot + num_minibatches x (fwd_bwd + optim_step) + metrics.
+
+            ``num_minibatches = cfg.ppo_n_minibatches``. ``old_policy_logprobs``
+            is snapshotted once per rollout batch and reused across every inner
+            optim step so the PPO ratio measures genuine policy drift. DCP
+            checkpoints fire only at rollout boundaries (cadence in rollout
+            batches, not optim steps) so resume accounting is independent of
+            the minibatch count.
+            """
+            if not prompt_groups:
+                raise ValueError("train_step requires at least one prompt group")
+
             t0 = _time.time()
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
+            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
             t0 = _time.time()
-            fwd_bwd_result = fwd_bwd_one(prompt_groups)
-            logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, _time.time() - t0)
+            old_policy_fwd = policy.forward(data, "cross_entropy")
+            old_policy_logprobs = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+            logger.info("[step %d] old_policy_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
-            t0 = _time.time()
-            optim_result = policy.optim_step(
-                adam_params,
-                grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-            )
-            step += 1
-            logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
+            n = len(data)
+            num_minibatches = max(1, cfg.ppo_n_minibatches)
+            minibatch_size = max(1, math.ceil(n / num_minibatches))
+            fwd_bwd_results: list = []
+            optim_result: Any = None
+            for minibatch_idx in range(num_minibatches):
+                minibatch_start = minibatch_idx * minibatch_size
+                minibatch_end = min(minibatch_start + minibatch_size, n)
+                if minibatch_start >= minibatch_end:
+                    break
 
-            if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
+                t0 = _time.time()
+                fwd_bwd_results.append(fwd_bwd_minibatch(
+                    data[minibatch_start:minibatch_end],
+                    adv[minibatch_start:minibatch_end],
+                    ref_lp[minibatch_start:minibatch_end],
+                    prompt_lens[minibatch_start:minibatch_end],
+                    inf_lp[minibatch_start:minibatch_end],
+                    old_policy_logprobs[minibatch_start:minibatch_end],
+                ))
+                logger.info(
+                    "[step %d] fwd_bwd (mb %d/%d): done (%.1fs)",
+                    step + 1, minibatch_idx + 1, num_minibatches, _time.time() - t0,
+                )
+
+                t0 = _time.time()
+                optim_result = policy.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                )
+                step += 1
+                logger.info(
+                    "[step %d] optim_step (mb %d/%d): done (%.1fs)",
+                    step, minibatch_idx + 1, num_minibatches, _time.time() - t0,
+                )
+
+            cursor.record(raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups)))
+
+            rollouts_completed = (step - step_offset) // num_minibatches
+            dcp_interval = cfg.weight_sync.dcp_save_interval
+            if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
-                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    step - step_offset
-                ) * prompt_groups_per_step
-                save_checkpoint(
-                    policy,
+                ckpt.save(
                     f"step-{step}",
-                    cfg.log_path,
-                    {
-                        "step": step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
-                    kind=CheckpointKind.STATE,
-                    base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id,
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=cursor.value,
                 )
+                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
-                fwd_bwd_results=[fwd_bwd_result],
+                fwd_bwd_results=fwd_bwd_results,
                 optim_result=optim_result,
-                n_accum=1,
+                n_accum=len(fwd_bwd_results),
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
                 completions_per_prompt=completions_per_prompt,
@@ -837,18 +767,18 @@ def main(
             )
             avg_reward = metrics.get("rollout/reward", 0.0)
             avg_acc = metrics.get("rollout/accuracy", 0.0)
-            avg_kl = metrics.get("train/mean_kl", 0.0)
+            avg_ref_kl = metrics.get("train/ref_kl", 0.0)
             logger.info(
-                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f",
+                "Step %d | Reward: %.3f | Acc: %.1f%% | RefKL: %.4f",
                 step,
                 avg_reward,
                 avg_acc * 100,
-                avg_kl,
+                avg_ref_kl,
             )
-            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
+            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, ref_kl=avg_ref_kl)
             wandb_log(metrics, step)
 
-            total_rl_steps = len(rl_dataset) - step_offset
+            total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
             runner.append_metrics(step, metrics, tokens=step_tokens)
             runner.write_status(
                 RunStatus.RUNNING, step=step, total_steps=total_rl_steps, message="training",
@@ -879,11 +809,16 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        remaining_rows = []
-        for i_step in range(step_offset, len(rl_dataset)):
-            remaining_rows.extend(rl_dataset.get_batch(i_step))
+        # Prefer the persisted raw-row cursor; fall back to step-derived for
+        # legacy checkpoints (dataloader.json predates this PR).
+        rollouts_done = step_offset // max(1, cfg.ppo_n_minibatches)
+        cursor.resume(
+            resume_info.data_consumed if resume_info else None,
+            fallback=rollouts_done * prompt_groups_per_step,
+        )
+        remaining_rows = all_rows[cursor.value:]
 
-        total_rl_steps = len(rl_dataset) - step_offset
+        total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_rl_steps, message="training")
 
@@ -904,31 +839,16 @@ def main(
 
         if cfg.save_final_checkpoint and global_step > step_offset:
             try:
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    global_step - step_offset
-                ) * prompt_groups_per_step
                 cp_name = f"step-{global_step}"
-                paths = save_checkpoint(
-                    policy,
+                ckpt.save(
                     cp_name,
-                    cfg.log_path,
-                    {
-                        "step": global_step,
-                        "data_consumed": _data_consumed,
-                        "source_job_id": policy_job_id,
-                    },
-                    kind=CheckpointKind.BOTH,
-                    base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id,
+                    resumable=True,
+                    promotable=True,
+                    data_consumed=cursor.value,
                 )
 
                 if getattr(cfg, "output_model_id", None):
-                    rlor_mgr.promote_checkpoint(
-                        policy_job_id,
-                        paths["sampler_path"],
-                        cfg.output_model_id,
-                        cfg.base_model,
-                    )
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                     runner.write_output_model(
                         model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                     )

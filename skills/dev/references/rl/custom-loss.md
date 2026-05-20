@@ -33,7 +33,7 @@ All live on `rl_loop.Config`:
 | `policy_loss` | `"grpo"` | `grpo`, `importance_sampling`, `dapo`, `dro`, `gspo`, `reinforce`, `cispo`. Decides server-side vs client-side dispatch. |
 | `completions_per_prompt` | `4` | GRPO group size — responses sampled per prompt. |
 | `prompt_groups_per_step` | `1` | Number of prompt groups per `forward_backward + optim_step` pair. |
-| `kl_beta` | `0.001` | KL-to-reference coefficient (requires `cfg.infra.ref_training_shape_id`). |
+| `kl_beta` | `0.001` | KL-to-reference coefficient. For full-param, requires `cfg.infra.ref_training_shape_id` (provisions a separate forward-only trainer). For LoRA, leave it unset — `setup_infra` uses the shared-session reference on the policy trainer. |
 | `eps_clip`, `eps_clip_high` | `0.2`, `None` | PPO clip for GRPO. |
 | `router_replay` | `False` | Record routing at rollout time and replay during training (MoE models). |
 | `grad_accumulation_normalization` | `NUM_LOSS_TOKENS` | Per-token mean (matches GRPO paper). See [`gradient-accumulation.md`](gradient-accumulation.md). |

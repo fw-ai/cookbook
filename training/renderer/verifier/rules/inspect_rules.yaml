@@ -1,0 +1,40 @@
+# Inspection rules — attribute combinations on audit_table rows that are
+# "worth a closer look". A matching token is NOT a definite bug; some
+# combinations are intentional (e.g. GLM5's stop_overlap with weight=1).
+# The verifier highlights matching tokens with a warning background in
+# the GUI and lists them in CLI inspection scans. Both surfaces load
+# this same file via training.renderer.verifier.inspect_rules.
+#
+# Each rule:
+#   id      — short stable identifier (kebab-case)
+#   when    — equality conditions on row fields; ALL must match (AND)
+#   reason  — short human-readable explanation shown to the user
+#
+# Supported fields in `when`:
+#   provenance    — prompt_hard_append | native_generated |
+#                   trailing_hard_append | tokenization_diverged
+#   chunk_source  — bos | header | output | stop_overlap | generation_suffix
+#   role          — system | user | assistant | tool | null
+#   trainable     — bool, derived from renderer_claim_weight > 0.5
+#   special       — bool, derived from token_id ∈ tokenizer.special_tokens
+#
+# A value can be a scalar (eq) or a YAML list (in).
+
+rules:
+  - id: trains-on-prompt-prefix
+    when:
+      provenance: prompt_hard_append
+      trainable: true
+    reason: trains on prompt_hard_append (prompt prefix tokens should have weight 0)
+
+  - id: trains-on-trailing-append
+    when:
+      provenance: trailing_hard_append
+      trainable: true
+    reason: trains on trailing_hard_append (intentional only if this is a stop_overlap)
+
+  - id: zero-weight-on-native
+    when:
+      provenance: native_generated
+      trainable: false
+    reason: zero weight on native_generated (model emitted but loss masked — verify if intended)

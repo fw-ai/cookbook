@@ -36,7 +36,7 @@ class TestBuildLoopMetrics:
         assert "rollout/tokens_completed" not in loop_metrics
         assert "rollout/sample_fail_ratio" not in loop_metrics
         assert "rollout/raw_reward" not in loop_metrics
-        assert "perf/sample_wait_time" not in loop_metrics
+        assert "perf/trainer_wait_for_sampler_time" not in loop_metrics
         assert "perf/wait_time_ratio" not in loop_metrics
         assert "perf/overlap_ratio" not in loop_metrics
         assert "perf/step_wall_time" not in loop_metrics
@@ -59,7 +59,7 @@ class TestComputeStepMetrics:
                 "total_sampled": 7,
                 "filter_drops": 1,
                 "sample_fails": 2,
-                "sample_wait_time": 3.0,
+                "trainer_wait_for_sampler_time": 3.0,
                 "step_wall_time": 4.0,
                 "all_raw_rewards": [1.0, 0.0],
             },
@@ -70,7 +70,7 @@ class TestComputeStepMetrics:
         assert metrics["rollout/samples_completed"] == 1
         assert metrics["rollout/filter_reject_ratio"] == 1 / 7
         assert metrics["rollout/sample_fail_count"] == 2
-        assert metrics["perf/sample_wait_time"] == 3.0
+        assert metrics["perf/trainer_wait_for_sampler_time"] == 3.0
         assert metrics["perf/wait_time_ratio"] == 0.75
         assert metrics["perf/overlap_ratio"] == 0.25
         assert metrics["perf/step_wall_time"] == 4.0
@@ -84,3 +84,51 @@ class TestComputeStepMetrics:
         assert "rollout/filter_ratio" not in metrics
         assert "rollout/sample_fails" not in metrics
         assert "batch/mean_groups_per_fwd_bwd" not in metrics
+
+
+class TestFwdBwdMinibatchAveraging:
+    """With ppo_n_minibatches>1 the per-step train/* metrics must average
+    across minibatches, not report only the last one."""
+
+    @staticmethod
+    def _fake_fwd_bwd(**metrics):
+        return SimpleNamespace(metrics=dict(metrics))
+
+    def test_averages_across_minibatches(self):
+        fwd_bwds = [
+            self._fake_fwd_bwd(ppo_clip_frac=0.0, ppo_ratio_mean=1.00),
+            self._fake_fwd_bwd(ppo_clip_frac=0.1, ppo_ratio_mean=1.05),
+            self._fake_fwd_bwd(ppo_clip_frac=0.3, ppo_ratio_mean=1.20),
+        ]
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=fwd_bwds,
+            optim_result=None,
+            n_accum=len(fwd_bwds),
+            timing_metrics={},
+        )
+        assert metrics["train/ppo_clip_frac"] == (0.0 + 0.1 + 0.3) / 3
+        assert metrics["train/ppo_ratio_mean"] == (1.0 + 1.05 + 1.2) / 3
+
+    def test_k1_matches_single_fwd_bwd_behavior(self):
+        """K=1: report the single minibatch's metrics directly (pre-PR behavior)."""
+        only = self._fake_fwd_bwd(ppo_clip_frac=0.42, ppo_ratio_mean=1.07)
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=[only],
+            optim_result=None,
+            n_accum=1,
+            timing_metrics={},
+        )
+        assert metrics["train/ppo_clip_frac"] == 0.42
+        assert metrics["train/ppo_ratio_mean"] == 1.07
+
+    def test_empty_fwd_bwd_results_emits_no_train_keys(self):
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=[],
+            optim_result=None,
+            n_accum=0,
+            timing_metrics={},
+        )
+        assert not any(k.startswith("train/ppo_") for k in metrics)

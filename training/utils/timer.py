@@ -29,6 +29,7 @@ from copy import deepcopy
 from typing import Any
 from functools import wraps
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,13 @@ class Timer:
             logger.warning("Timer '%s' already running -- restarting", name)
         self._start_time[name] = time.time()
 
-    def end(self, name: str) -> None:
+    def end(self, name: str) -> float | None:
         if name not in self._start_time:
             logger.warning("Timer '%s' was never started -- ignoring end", name)
-            return
+            return None
         elapsed = time.time() - self._start_time.pop(name)
         self.timers[name] = self.timers.get(name, 0.0) + elapsed
+        return elapsed
 
     def add(self, name: str, elapsed: float) -> None:
         self.timers[name] = self.timers.get(name, 0.0) + elapsed
@@ -104,6 +106,22 @@ def timer(name_or_func):
             return func(*args, **kwargs)
 
     return wrapper
+
+
+@dataclass
+class TimerSpan:
+    elapsed: float = 0.0
+
+
+@contextmanager
+def elapsed_timer(name: str):
+    span = TimerSpan()
+    t = Timer()
+    t.start(name)
+    try:
+        yield span
+    finally:
+        span.elapsed = t.end(name) or 0.0
 
 
 @contextmanager

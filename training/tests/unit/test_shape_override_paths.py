@@ -14,13 +14,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
-import training.utils.infra as infra_module
-from training.utils.config import InfraConfig
 from fireworks.training.sdk import (
     TrainerJobConfig,
     TrainingShapeProfile,
 )
+
+import training.utils.infra as infra_module
+from training.utils.config import InfraConfig
 
 BASE_MODEL = "accounts/fireworks/models/qwen3-1p7b"
 
@@ -77,13 +77,12 @@ class TestShapePath:
             base_model=BASE_MODEL,
             infra=InfraConfig(region="US_VIRGINIA_1"),
             profile=PROFILE,
-            grad_accum=2,
         )
         c = mgr.captured
 
         assert c.training_shape_ref == PROFILE.training_shape_version
         assert c.base_model == BASE_MODEL
-        assert c.gradient_accumulation_steps == 2
+        assert c.gradient_accumulation_steps is None
         assert c.region == "US_VIRGINIA_1"
 
         assert c.accelerator_type is None

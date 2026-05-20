@@ -39,6 +39,7 @@ def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
             wandb.define_metric("rollout/*", step_metric="train/step")
             wandb.define_metric("batch/*", step_metric="train/step")
             wandb.define_metric("infra/*", step_metric="train/step")
+            wandb.define_metric("ctx/*", step_metric="train/step")
             logger.info("WandB: %s", wandb.run.url)
         return True
     except ImportError:
@@ -72,13 +73,23 @@ def compute_pass_at_k(
     return results
 
 
-def wandb_log(metrics: dict[str, Any], step: int) -> None:
-    """Log metrics to WandB if available."""
+def wandb_log(metrics: dict[str, Any], step: int | None = None) -> None:
+    """Log metrics to WandB if available.
+
+    When ``step`` is ``None`` we let wandb auto-increment its internal
+    step counter; metrics with a declared ``step_metric`` (via
+    ``define_metric``) read their x-axis from the dict instead.  Passing
+    an explicit ``step`` is still supported for single-axis recipes that
+    want to peg the global step manually.
+    """
     try:
         import wandb
 
         if wandb.run is not None:
-            wandb.log(metrics, step=step, commit=True)
+            if step is None:
+                wandb.log(metrics, commit=True)
+            else:
+                wandb.log(metrics, step=step, commit=True)
     except ImportError:
         pass
 

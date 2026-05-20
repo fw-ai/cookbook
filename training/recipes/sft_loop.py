@@ -14,110 +14,327 @@ Usage:
 
 from __future__ import annotations
 
-import multiprocessing
-import os
-import signal
-import logging
-from contextlib import ExitStack
-from typing import Any, Dict, List
-from dataclasses import field, dataclass
-
-import torch
-import tinker
-
+import functools
 import json
-import datasets as hf_datasets
-import transformers
-from dotenv import load_dotenv
+import logging
+import os
+import random
+import signal
+import tempfile
+from contextlib import ExitStack
+from dataclasses import dataclass, field
+from itertools import islice
+from pathlib import Path
+from typing import Any, Dict, List
 
+import tinker
+import torch
+from dotenv import load_dotenv
 from fireworks.training.sdk import TrainerJobManager
-from tinker_cookbook.supervised.data import SupervisedDatasetFromHFDataset
+
+from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
+    DEFAULT_RENDER_WORKERS,
     InfraConfig,
+    JSONL_ROW_INDEX_KEY,
+    JsonlRenderDataset,
+    RawRowCursor,
+    ReconnectableClient,
     ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
-    ReconnectableClient,
-    wandb_log,
-    setup_wandb,
-    wandb_finish,
-    validate_config,
-    log_metrics_json,
-    create_trainer_job,
-    read_api_extra_headers_env,
-    build_renderer,
-    parse_train_on_what,
     auto_select_training_shape,
-    render_messages_to_datum,
+    create_trainer_job,
+    log_metrics_json,
+    make_render_dataloader,
+    parse_train_on_what,
+    populate_render_worker_state,
+    read_api_extra_headers_env,
+    render_messages_to_datums,
     resolve_renderer_name,
+    setup_wandb,
+    validate_config,
+    wandb_finish,
+    wandb_log,
 )
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.checkpoint_utils import (
-    resolve_resume,
-    save_checkpoint,
-    CheckpointKind,
-)
 from training.utils.losses import make_batch_weighted_sft_loss_fn
-from training.utils.timer import timer, flush_timing
+from training.utils.timer import flush_timing, timer
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Parallel rendering worker (multiprocessing)
-# ---------------------------------------------------------------------------
+# Module-level so DataLoader worker_init_fn can populate it once per
+# worker (avoids re-pickling the tokenizer on every batch). The parent
+# process also initialises this dict to support eval-set rendering and
+# auto carve-out, which run in-process with the same render_fn.
+_worker_state: dict = {}
 
-_worker_renderer = None
-_worker_train_on_what = None
-_worker_max_seq_len = None
+RENDER_SAMPLE_LIMIT_ENV = "FIRETITAN_SFT_RENDER_SAMPLES_LIMIT"
+DEFAULT_RENDER_SAMPLE_LIMIT = 20
 
 
-def _init_render_worker(tokenizer_model, renderer_name, train_on_what_str, max_seq_len):
-    """Create a renderer per worker process to avoid pickling the tokenizer."""
-    global _worker_renderer, _worker_train_on_what, _worker_max_seq_len
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        tokenizer_model, trust_remote_code=True,
+def _parse_render_samples_limit(value: str) -> int | None:
+    normalized = value.strip().lower()
+    if normalized in {"all", "full", "unlimited", "-1"}:
+        return None
+    limit = int(normalized)
+    if limit < 0:
+        return None
+    return limit
+
+
+def _resolve_render_samples_limit(config_limit: int | None) -> int | None:
+    env_limit = os.environ.get(RENDER_SAMPLE_LIMIT_ENV)
+    if env_limit is not None:
+        try:
+            return _parse_render_samples_limit(env_limit)
+        except ValueError:
+            logger.warning(
+                "Invalid %s=%r; using default render sample limit %d",
+                RENDER_SAMPLE_LIMIT_ENV,
+                env_limit,
+                DEFAULT_RENDER_SAMPLE_LIMIT,
+            )
+            return DEFAULT_RENDER_SAMPLE_LIMIT
+    if config_limit is None:
+        return DEFAULT_RENDER_SAMPLE_LIMIT
+    if config_limit < 0:
+        return None
+    return int(config_limit)
+
+
+def _decode_tokens(token_ids: list[int]) -> list[str]:
+    tokenizer = _worker_state.get("tokenizer")
+    if tokenizer is None:
+        return ["" for _ in token_ids]
+    decoded: list[str] = []
+    for token_id in token_ids:
+        try:
+            text = tokenizer.decode([int(token_id)], skip_special_tokens=False)
+        except TypeError:
+            text = tokenizer.decode([int(token_id)])
+        except Exception:  # noqa: BLE001 - diagnostic artifact must not break rendering
+            text = ""
+        decoded.append(str(text))
+    return decoded
+
+
+def _render_sample_worker_path() -> str:
+    local_dir = _worker_state.get("render_samples_local_dir") or ""
+    worker_id = _worker_state.get("worker_id")
+    worker_label = "main" if worker_id is None else str(worker_id)
+    return os.path.join(local_dir, f"render_samples.worker-{worker_label}.jsonl")
+
+
+def _remaining_render_sample_capacity() -> int | None:
+    limit = _worker_state.get("render_samples_limit")
+    if limit is None:
+        return None
+    written = int(_worker_state.get("render_samples_written", 0))
+    return max(0, int(limit) - written)
+
+
+def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
+    local_dir = _worker_state.get("render_samples_local_dir") or ""
+    if not local_dir:
+        return
+    remaining = _remaining_render_sample_capacity()
+    if remaining == 0:
+        return
+
+    selected = rendered_examples if remaining is None else rendered_examples[:remaining]
+    if not selected:
+        return
+
+    row_index = row.get(JSONL_ROW_INDEX_KEY)
+    try:
+        row_index_int = int(row_index) if row_index is not None else None
+    except (TypeError, ValueError):
+        row_index_int = None
+
+    path = _render_sample_worker_path()
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            for split_index, rendered in enumerate(selected):
+                token_ids = [int(x) for x in rendered.token_ids]
+                token_weights = [float(x) for x in rendered.token_weights]
+                datum = rendered.datum
+                target_tokens = [int(x) for x in datum.loss_fn_inputs["target_tokens"].data]
+                training_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
+                record = {
+                    # source_jsonl_row_index is 0-based; source_jsonl_line_number
+                    # is 1-based to match editor / CLI line-number conventions.
+                    "source_jsonl_row_index": row_index_int,
+                    "source_jsonl_line_number": row_index_int + 1 if row_index_int is not None else None,
+                    "split_index": split_index,
+                    "worker_id": _worker_state.get("worker_id"),
+                    "renderer": _worker_state.get("resolved_renderer_name", ""),
+                    "train_on_what": _worker_state.get("train_on_what_str", ""),
+                    "token_ids": token_ids,
+                    "decoded_tokens": _decode_tokens(token_ids),
+                    "token_weights": token_weights,
+                    "training_target_token_ids": target_tokens,
+                    "training_loss_weights": training_weights,
+                }
+                handle.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
+                _worker_state["render_samples_written"] = int(
+                    _worker_state.get("render_samples_written", 0)
+                ) + 1
+    except Exception:  # noqa: BLE001 - best-effort debug artifact
+        if not _worker_state.get("render_samples_error_logged"):
+            logger.warning("Failed to write SFT render sample", exc_info=True)
+            _worker_state["render_samples_error_logged"] = True
+
+
+def _round_robin_render_sample_lines(files: list[Path]) -> list[str]:
+    handles = []
+    try:
+        for path in files:
+            handles.append(path.open(encoding="utf-8"))
+        lines: list[str] = []
+        while handles:
+            next_handles = []
+            for handle in handles:
+                line = handle.readline()
+                if line:
+                    lines.append(line)
+                    next_handles.append(handle)
+                else:
+                    handle.close()
+            handles = next_handles
+        return lines
+    finally:
+        for handle in handles:
+            if not handle.closed:
+                handle.close()
+
+
+def _finalize_render_samples(
+    local_dir: str,
+    output_path: str,
+    render_samples_limit: int | None,
+) -> None:
+    if not local_dir or not output_path:
+        return
+    try:
+        files = sorted(Path(local_dir).glob("render_samples.worker-*.jsonl"))
+        all_lines = _round_robin_render_sample_lines(files)
+        content_parts = all_lines
+        truncated_count = 0
+        if render_samples_limit is not None:
+            content_parts = all_lines[:render_samples_limit]
+            truncated_count = max(0, len(all_lines) - render_samples_limit)
+        if not content_parts:
+            logger.info("No SFT render samples were captured; skipping %s", output_path)
+            return
+        content = "".join(content_parts)
+        content_bytes = content.encode("utf-8")
+        fileio.write_bytes(output_path, content_bytes)
+        logger.info(
+            "Uploaded %d SFT render sample records (%d bytes) to %s",
+            len(content_parts),
+            len(content_bytes),
+            output_path,
+        )
+        if truncated_count:
+            logger.info(
+                "Skipped %d extra SFT render sample records after global limit=%d",
+                truncated_count,
+                render_samples_limit,
+            )
+    except Exception:  # noqa: BLE001 - diagnostic artifact must not fail the job
+        logger.warning("Failed to finalize SFT render samples to %s", output_path, exc_info=True)
+
+
+def _configure_render_sample_state(
+    render_samples_local_dir: str = "",
+    render_samples_limit: int | None = 0,
+    _worker_id: int | None = None,
+) -> None:
+    _worker_state.update(
+        worker_id=_worker_id,
+        render_samples_local_dir=render_samples_local_dir,
+        render_samples_limit=render_samples_limit,
+        render_samples_written=0,
+        render_samples_error_logged=False,
     )
-    _worker_renderer = build_renderer(tokenizer, tokenizer_model, renderer_name)
-    _worker_train_on_what = parse_train_on_what(train_on_what_str)
-    _worker_max_seq_len = max_seq_len
 
 
-def _render_one(row: dict) -> tinker.Datum | None:
-    """Render a single chat example. Runs in a worker process."""
+def _init_render_worker(
+    tokenizer_model: str,
+    renderer_name: str,
+    train_on_what_str: str,
+    max_seq_len: int,
+    tokenizer_revision: str = "",
+    render_samples_local_dir: str = "",
+    render_samples_limit: int | None = 0,
+    _worker_id: int | None = None,
+) -> None:
+    """DataLoader ``worker_init_fn`` for SFT chat-row rendering.
+
+    Module-level (so spawn workers can pickle it) and accepts
+    ``_worker_id`` so it can be used as a DataLoader ``worker_init_fn``.
+    """
+    populate_render_worker_state(
+        _worker_state,
+        tokenizer_model=tokenizer_model,
+        tokenizer_revision=tokenizer_revision,
+        renderer_name=renderer_name,
+        max_seq_len=max_seq_len,
+        train_on_what=parse_train_on_what(train_on_what_str),
+    )
+    _worker_state.update(
+        resolved_renderer_name=resolve_renderer_name(tokenizer_model, renderer_name),
+        train_on_what_str=train_on_what_str,
+    )
+    _configure_render_sample_state(
+        render_samples_local_dir=render_samples_local_dir,
+        render_samples_limit=render_samples_limit,
+        _worker_id=_worker_id,
+    )
+
+
+def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
+    """Render a chat row to one or more Datums, dropping empty / long sequences.
+
+    Reads renderer / train_on_what / max_seq_len from the per-process
+    ``_worker_state`` populated by ``_init_render_worker``. Top-level
+    so spawn workers can pickle it as the DataLoader's render_fn.
+    """
     messages = row.get("messages", [])
     if not messages:
         return None
-    rendered = render_messages_to_datum(
+    tools = row.get("tools")
+    rendered_examples = render_messages_to_datums(
         messages,
-        renderer=_worker_renderer,
-        train_on_what=_worker_train_on_what,
+        renderer=_worker_state["renderer"],
+        train_on_what=_worker_state["train_on_what"],
+        tools=tools,
     )
-    if len(rendered.token_ids) > _worker_max_seq_len or len(rendered.token_ids) < 2:
+    if not isinstance(rendered_examples, list):
+        rendered_examples = [rendered_examples]
+    valid_rendered_examples = [
+        rendered
+        for rendered in rendered_examples
+        if 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]
+        and any(w > 0 for w in rendered.token_weights)
+    ]
+    _write_render_samples(row, valid_rendered_examples)
+    datums = [rendered.datum for rendered in valid_rendered_examples]
+    if not datums:
         return None
-    return rendered.datum
-
-
-def _render_one_inline(
-    row: dict, *, renderer, train_on_what, max_seq_len: int,
-) -> tinker.Datum | None:
-    """Single-threaded rendering using an already-constructed renderer."""
-    messages = row.get("messages", [])
-    if not messages:
-        return None
-    rendered = render_messages_to_datum(
-        messages, renderer=renderer, train_on_what=train_on_what,
-    )
-    if len(rendered.token_ids) > max_seq_len or len(rendered.token_ids) < 2:
-        return None
-    return rendered.datum
+    if len(datums) == 1:
+        return datums[0]
+    return datums
 
 
 # ---------------------------------------------------------------------------
-# Eval auto carve-out defaults
+# Dataset preparation
 # ---------------------------------------------------------------------------
 
 DEFAULT_EVAL_CARVE_RATIO = 0.1
@@ -129,27 +346,95 @@ def compute_eval_carveout(
     max_ratio: float = DEFAULT_EVAL_CARVE_RATIO,
     max_seqs: int = DEFAULT_MAX_EVAL_SEQS,
 ) -> int:
-    """Compute number of samples to carve out from training data for eval.
-
-    Mirrors the SFT v1 carve-out logic: take min(total * ratio, max_seqs),
-    but return 0 if the dataset is too small to split.
-
-    Args:
-        total_samples: Total number of tokenized training examples.
-        max_ratio: Max fraction of data to use for eval (default 10%).
-        max_seqs: Absolute cap on eval sequences (default 100).
-
-    Returns:
-        Number of samples to reserve for eval (first N of the dataset).
-    """
+    """Number of head samples to carve out as eval (0 if dataset too small)."""
     if total_samples <= 1:
         return 0
-    carveout = int(total_samples * max_ratio)
-    carveout = min(carveout, max_seqs)
-    # Need at least 1 sample left for training
-    if carveout >= total_samples:
-        return 0
-    return carveout
+    carveout = min(int(total_samples * max_ratio), max_seqs)
+    return 0 if carveout >= total_samples else carveout
+
+
+def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
+    """Render the first ``n`` rows of ``ds`` in-process, dropping Nones."""
+    datums: List[tinker.Datum] = []
+    for item in (ds[i] for i in range(n)):
+        if item is None:
+            continue
+        if isinstance(item, list):
+            datums.extend(item)
+        else:
+            datums.append(item)
+    return datums
+
+
+def _flatten_rendered_batch(
+    batch: list[tinker.Datum | list[tinker.Datum]],
+) -> list[tinker.Datum]:
+    datums: list[tinker.Datum] = []
+    for item in batch:
+        if isinstance(item, list):
+            datums.extend(item)
+        else:
+            datums.append(item)
+    return datums
+
+
+def _prepare_datasets(
+    cfg: "Config",
+) -> tuple[JsonlRenderDataset, List[tinker.Datum]]:
+    """Build the training dataset and (optional) eval set.
+
+    Eval can come from an explicit ``cfg.evaluation_dataset`` or be
+    carved out from a seeded random subset of the training dataset. In
+    the carve-out case the returned training dataset excludes those eval
+    rows but otherwise preserves raw-file order; the training loader
+    still does its own per-epoch shuffling.
+    """
+    training_ds = JsonlRenderDataset(
+        cfg.dataset,
+        _render_one_worker,
+        max_examples=cfg.max_examples,
+        row_index_key=JSONL_ROW_INDEX_KEY,
+    )
+    if len(training_ds) == 0:
+        raise RuntimeError(f"No examples found in {cfg.dataset}")
+
+    if cfg.evaluation_dataset:
+        eval_ds = JsonlRenderDataset(
+            cfg.evaluation_dataset,
+            _render_one_worker,
+            row_index_key=JSONL_ROW_INDEX_KEY,
+        )
+        eval_data = _render_eagerly(eval_ds, len(eval_ds))
+        logger.info(
+            "Loaded %d eval examples from %s",
+            len(eval_data), cfg.evaluation_dataset,
+        )
+        return training_ds, eval_data
+
+    if cfg.eval_auto_carveout:
+        n = compute_eval_carveout(
+            len(training_ds), cfg.eval_carve_ratio, cfg.max_eval_seqs,
+        )
+        if n > 0:
+            shuffled_indices = list(range(len(training_ds)))
+            random.Random(cfg.seed).shuffle(shuffled_indices)
+            eval_indices = shuffled_indices[:n]
+            eval_index_set = set(eval_indices)
+            eval_data = _render_eagerly(
+                training_ds.with_indices(eval_indices), len(eval_indices),
+            )
+            training_ds = training_ds.with_indices(
+                [idx for idx in range(len(training_ds)) if idx not in eval_index_set]
+            )
+            logger.info(
+                "Auto carve-out: %d eval examples, %d training examples "
+                "(seed=%d)",
+                len(eval_data), len(training_ds), cfg.seed,
+            )
+            return training_ds, eval_data
+        logger.warning("Dataset too small for auto carve-out, skipping eval")
+
+    return training_ds, []
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +447,24 @@ class Config:
     log_path: str
     """Directory for checkpoints and logs. Required, no default."""
 
+    render_samples_file: str = ""
+    """Optional JSONL path for rendered token/mask diagnostic samples."""
+
+    render_samples_limit: int | None = None
+    """Global rendered datum sample cap. ``None`` means default; negative
+    values mean full dump. Can be overridden by
+    FIRETITAN_SFT_RENDER_SAMPLES_LIMIT."""
+
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
+    tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     renderer_name: str = ""
     train_on_what: str = "all_assistant_messages"
 
     learning_rate: float = 1e-4
     epochs: int = 3
     batch_size: int = 32
-    grad_accum: int = 1
-    """Deprecated. Ignored. Use ``batch_size`` to control the effective batch."""
     max_seq_len: int | None = None
     max_examples: int | None = None
     lora_rank: int = 0
@@ -185,8 +477,34 @@ class Config:
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
 
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
+
     grad_clip_norm: float = 1.0
     """Max gradient norm for clipping. 0 = no clipping."""
+
+    adam_beta2: float | None = None
+    """Override Adam beta2 (default 0.999 via DEFAULT_ADAM). Lower values
+    (e.g. 0.98) make the variance estimate converge faster — useful for
+    short runs or recipes like slime's GLM5 SFT."""
+
+    weight_decay: float | None = None
+    """Override Adam weight decay (default 0.01 via DEFAULT_ADAM)."""
+
+    warmup_steps: int = 0
+    """Linear LR warmup from 0 → learning_rate over the first N optimizer
+    steps. 0 disables warmup (lr is constant)."""
+
+    seed: int = 0
+    """Shuffle seed for the training dataset.
+
+    Used both for deterministic eval auto-carveout membership and for
+    per-epoch training shuffle as ``seed + epoch`` so fresh runs and
+    resumes see the same raw-row order in epoch 0 before any skipped
+    batches.
+    """
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
@@ -196,9 +514,7 @@ class Config:
     """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
 
     trainer_base_url: str | None = None
-    """Direct base URL for the trainer (e.g. ``http://localhost:8080``).
-    When set together with ``trainer_job_id``, bypasses the gateway and
-    connects to the trainer directly."""
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
 
     evaluation_dataset: str = ""
     """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
@@ -213,6 +529,12 @@ class Config:
 
     max_eval_seqs: int = DEFAULT_MAX_EVAL_SEQS
     """Max number of eval sequences for carve-out."""
+
+    render_workers: int | None = None
+    """Number of worker processes for streaming dataset rendering. ``None``
+    auto-selects ``min(os.cpu_count(), DEFAULT_RENDER_WORKERS)``. Set to 1
+    to disable the spawn pool and render in-process (useful for unit tests
+    that monkeypatch the renderer)."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
@@ -244,10 +566,10 @@ def run_eval(
 ) -> float | None:
     """Run evaluation without affecting model weights or optimizer state.
 
-    Uses forward_backward_custom with a zero-gradient loss function: the
-    training loss computes correct metrics, but the returned loss is
-    multiplied by zero so backward produces zero gradients.  This avoids
-    corrupting Adam's momentum/variance estimates.
+    Uses forward (no backward) so weights, gradient state, and Adam moments
+    are untouched. Logprobs come back from the server; the training loss
+    function is invoked client-side purely to compute metrics, and the
+    returned loss tensor is discarded.
     """
     if not eval_data:
         return None
@@ -257,31 +579,27 @@ def run_eval(
     eval_loss_sum = 0.0
     eval_resp_tokens = 0
 
-    def _make_eval_loss_fn():
-        train_loss_fn = make_batch_weighted_sft_loss_fn()
+    train_loss_fn = make_batch_weighted_sft_loss_fn()
 
-        def eval_loss_fn(
-            data: List[tinker.Datum],
-            logprobs_list: List[torch.Tensor],
-        ) -> tuple[torch.Tensor, Dict[str, float]]:
-            real_loss, metrics = train_loss_fn(data, logprobs_list)
-            return real_loss * 0.0, metrics
-
-        return eval_loss_fn
+    def _eval_batch(b: List[tinker.Datum]) -> Dict[str, float]:
+        fwd = client.forward(b, "cross_entropy")
+        logprobs_list = [
+            fwd.loss_fn_outputs[i]["logprobs"].to_torch() for i in range(len(b))
+        ]
+        _, metrics = train_loss_fn(b, logprobs_list)
+        return metrics
 
     batch: List[tinker.Datum] = []
     for item in eval_data:
         batch.append(item)
         if len(batch) >= batch_size:
-            result = client.forward_backward_custom(batch, _make_eval_loss_fn())
-            m = result.metrics
+            m = _eval_batch(batch)
             eval_loss_sum += m.get("ce_loss_sum", 0.0)
             eval_resp_tokens += int(m.get("response_tokens", 0))
             batch = []
 
     if batch:
-        result = client.forward_backward_custom(batch, _make_eval_loss_fn())
-        m = result.metrics
+        m = _eval_batch(batch)
         eval_loss_sum += m.get("ce_loss_sum", 0.0)
         eval_resp_tokens += int(m.get("response_tokens", 0))
 
@@ -315,6 +633,12 @@ def main(
     rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
+    if cfg.trainer_base_url:
+        logger.warning(
+            "Config.trainer_base_url is ignored; the gateway routes all trainer "
+            "traffic. This field is kept for back-compat and will be removed "
+            "in a future release.",
+        )
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
@@ -326,13 +650,11 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
-
-    if cfg.grad_accum > 1:
-        logger.warning(
-            "grad_accum is deprecated and ignored. "
-            "Increase batch_size instead for larger effective batches."
-        )
-
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
     setup_wandb(
         cfg.wandb,
         {
@@ -350,8 +672,6 @@ def main(
 
     # -- Setup infrastructure ----------------------------------------------
 
-    _precreated_trainer = cfg.trainer_job_id and cfg.trainer_base_url
-
     api_key = os.environ.get("FIREWORKS_API_KEY", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
@@ -363,15 +683,41 @@ def main(
             additional_headers=additional_headers,
         )
 
-    if _precreated_trainer:
-        trainer_infra = cfg.infra
+    if cfg.trainer_job_id and cfg.max_seq_len is None:
+        raise ValueError(
+            "max_seq_len is required when reusing a pre-created trainer "
+            "(trainer_job_id is set). The auto-selected training shape may not "
+            "match the trainer's actual context length."
+        )
+    if (
+        not cfg.infra.training_shape_id
+        and (
+            cfg.infra.accelerator_type
+            or cfg.infra.node_count
+            or cfg.infra.custom_image_tag
+            or cfg.infra.extra_args
+        )
+    ):
+        # Manual infra path: caller has supplied explicit infra fields and
+        # no validated training shape exists (e.g. a brand-new base model).
+        # create_trainer_job supports this path; we just skip the shape
+        # lookup. Individual infra fields may still be unset — the server
+        # auto-configures what is omitted.
         trainer_profile = None
         if cfg.max_seq_len is None:
-            raise ValueError("max_seq_len is required when using a pre-created trainer.")
+            raise ValueError(
+                "Config.max_seq_len is required when using the manual "
+                "infra path (no training_shape_id)."
+            )
         logger.info(
-            "Using pre-created trainer %s at %s",
-            cfg.trainer_job_id,
-            cfg.trainer_base_url,
+            "Manual infra path: accelerator=%s count=%s nodes=%s "
+            "custom_image_tag=%s max_seq_len=%s extra_args=%s",
+            cfg.infra.accelerator_type,
+            cfg.infra.accelerator_count,
+            cfg.infra.node_count,
+            cfg.infra.custom_image_tag,
+            cfg.max_seq_len,
+            cfg.infra.extra_args,
         )
     else:
         if not cfg.infra.training_shape_id:
@@ -384,13 +730,11 @@ def main(
             )
             logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
 
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        trainer_profile = profile
-
+        trainer_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
         if cfg.max_seq_len is None:
-            cfg.max_seq_len = profile.max_supported_context_length
+            cfg.max_seq_len = trainer_profile.max_supported_context_length
 
-    runner.set_accelerator_info(profile=trainer_profile if not _precreated_trainer else None)
+    runner.set_accelerator_info(profile=trainer_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     def _on_trainer_status(msg: str) -> None:
@@ -407,7 +751,6 @@ def main(
             learning_rate=cfg.learning_rate,
             display_name="sft-trainer",
             job_id=cfg.trainer_job_id,
-            base_url_override=cfg.trainer_base_url,
             cleanup=cleanup,
             on_status=_on_trainer_status,
         )
@@ -415,185 +758,136 @@ def main(
         client = ReconnectableClient(
             rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key,
             default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
-            endpoint=endpoint if cfg.trainer_base_url else None,
         )
         if hasattr(client, "close"):
             stack.callback(client.close)
 
-        # -- Prepare data ------------------------------------------------------
-        tokenizer = transformers.AutoTokenizer.from_pretrained(cfg.tokenizer_model, trust_remote_code=True)
-        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
-        train_on_what = parse_train_on_what(cfg.train_on_what)
-        logger.info(
-            "Using renderer=%s train_on_what=%s",
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-            train_on_what.value,
+        ckpt = TrainingCheckpoints(
+            client,
+            rlor_mgr,
+            trainer_id=job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
         )
 
-        raw_data: List[Dict[str, Any]] = []
-        with open(cfg.dataset) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                raw_data.append(json.loads(line))
-                if cfg.max_examples and len(raw_data) >= cfg.max_examples:
-                    break
-        logger.info("Loaded %d examples from %s", len(raw_data), cfg.dataset)
+        # -- Prepare data ------------------------------------------------------
+        # Render JSONL rows on the fly inside DataLoader workers so peak
+        # RAM is O(num_workers * per_worker_render_footprint) instead of
+        # O(dataset_size). See docs/engineering/sft-v2-orchestrator-oom-debug.md.
+        num_workers = (
+            cfg.render_workers
+            if cfg.render_workers is not None
+            else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
+        )
+        base_init_args = (
+            cfg.tokenizer_model,
+            cfg.renderer_name,
+            cfg.train_on_what,
+            cfg.max_seq_len,
+            cfg.tokenizer_revision,
+        )
+        _init_render_worker(*base_init_args)
 
-        max_seq_len = cfg.max_seq_len
-        total_raw = len(raw_data)
-        log_interval = max(1, total_raw // 20)  # ~5% increments
-        training_data: List[tinker.Datum] = []
-        filtered_count = 0
+        training_dataset, eval_data = _prepare_datasets(cfg)
 
-        num_workers = min(os.cpu_count() or 1, 8)
-        use_parallel = num_workers > 1 and total_raw > num_workers
-
-        if use_parallel:
+        render_samples_local_dir = ""
+        render_samples_limit = _resolve_render_samples_limit(cfg.render_samples_limit)
+        if cfg.render_samples_file and render_samples_limit != 0:
+            render_samples_local_dir = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="sft-render-samples-")
+            )
+            stack.callback(
+                _finalize_render_samples,
+                render_samples_local_dir,
+                cfg.render_samples_file,
+                render_samples_limit,
+            )
+            limit_label = "full dataset" if render_samples_limit is None else str(render_samples_limit)
             logger.info(
-                "Rendering %d examples with %d parallel workers",
-                total_raw, num_workers,
+                "Capturing SFT render samples to %s (global limit=%s)",
+                cfg.render_samples_file,
+                limit_label,
             )
-            spawn_ctx = multiprocessing.get_context("spawn")
-            with spawn_ctx.Pool(
-                processes=num_workers,
-                initializer=_init_render_worker,
-                initargs=(
-                    cfg.tokenizer_model, cfg.renderer_name,
-                    cfg.train_on_what, max_seq_len,
-                ),
-            ) as pool:
-                for i, datum in enumerate(
-                    pool.imap(_render_one, raw_data, chunksize=100)
-                ):
-                    if datum is not None:
-                        training_data.append(datum)
-                    else:
-                        filtered_count += 1
-                    if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                        runner.report_rendering_progress(i + 1, total_raw)
-        else:
-            for i, row in enumerate(raw_data):
-                datum = _render_one_inline(
-                    row, renderer=renderer,
-                    train_on_what=train_on_what, max_seq_len=max_seq_len,
-                )
-                if datum is not None:
-                    training_data.append(datum)
-                else:
-                    filtered_count += 1
-                if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                    runner.report_rendering_progress(i + 1, total_raw)
+        elif cfg.render_samples_file:
+            logger.info("SFT render samples disabled by limit=0 for %s", cfg.render_samples_file)
 
-        if filtered_count > 0:
-            logger.info(
-                "Seq-length filter: %d/%d examples filtered (len > %d or len < 2)",
-                filtered_count,
-                len(raw_data),
-                max_seq_len,
-            )
-        logger.info("Prepared %d training examples", len(training_data))
-        if not training_data:
-            raise RuntimeError("No valid training examples after tokenization")
+        init_args = (
+            *base_init_args,
+            render_samples_local_dir,
+            render_samples_limit,
+        )
+        _configure_render_sample_state(
+            render_samples_local_dir=render_samples_local_dir,
+            render_samples_limit=render_samples_limit,
+        )
+        worker_init_fn = functools.partial(_init_render_worker, *init_args)
 
-        # -- Eval dataset (explicit or auto carve-out) -------------------------
-        eval_data: List[tinker.Datum] = []
-        if cfg.evaluation_dataset:
-            raw_eval: List[Dict[str, Any]] = []
-            with open(cfg.evaluation_dataset) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    raw_eval.append(json.loads(line))
-            total_eval = len(raw_eval)
-            eval_log_interval = max(1, total_eval // 10)
-            eval_data = []
-            if use_parallel:
-                spawn_ctx = multiprocessing.get_context("spawn")
-                with spawn_ctx.Pool(
-                    processes=num_workers,
-                    initializer=_init_render_worker,
-                    initargs=(
-                        cfg.tokenizer_model, cfg.renderer_name,
-                        cfg.train_on_what, max_seq_len,
-                    ),
-                ) as pool:
-                    for i, datum in enumerate(
-                        pool.imap(_render_one, raw_eval, chunksize=100)
-                    ):
-                        if datum is not None:
-                            eval_data.append(datum)
-                        if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
-                            runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
-            else:
-                for i, row in enumerate(raw_eval):
-                    datum = _render_one_inline(
-                        row, renderer=renderer,
-                        train_on_what=train_on_what, max_seq_len=max_seq_len,
-                    )
-                    if datum is not None:
-                        eval_data.append(datum)
-                    if (i + 1) % eval_log_interval == 0 or (i + 1) == total_eval:
-                        runner.report_rendering_progress(i + 1, total_eval, label="rendering eval data")
-            logger.info("Loaded %d eval examples from %s", len(eval_data), cfg.evaluation_dataset)
-        elif cfg.eval_auto_carveout:
-            # Auto carve-out: split first N examples as eval
-            carveout_count = compute_eval_carveout(
-                len(training_data), cfg.eval_carve_ratio, cfg.max_eval_seqs,
-            )
-            if carveout_count > 0:
-                eval_data = training_data[:carveout_count]
-                training_data = training_data[carveout_count:]
-                logger.info(
-                    "Auto carve-out: %d eval examples, %d training examples",
-                    len(eval_data), len(training_data),
-                )
-            else:
-                logger.warning("Dataset too small for auto carve-out, skipping eval")
-
-        effective_batch_size = cfg.batch_size
-        if len(training_data) < effective_batch_size:
+        training_count = len(training_dataset)
+        effective_batch_size = max(1, min(cfg.batch_size, training_count))
+        if effective_batch_size < cfg.batch_size:
             logger.warning(
                 "Training examples (%d) < batch_size (%d); reducing effective "
-                "batch_size to %d so all examples are trained on.",
-                len(training_data),
-                effective_batch_size,
-                len(training_data),
+                "batch_size to %d.",
+                training_count, cfg.batch_size, effective_batch_size,
             )
-            effective_batch_size = len(training_data)
 
-        sft_dataset = SupervisedDatasetFromHFDataset(
-            hf_datasets.Dataset.from_dict({"datum_idx": list(range(len(training_data)))}),
+        loader_generator = torch.Generator()
+        loader = make_render_dataloader(
+            training_dataset,
             batch_size=effective_batch_size,
-            map_fn=lambda row: training_data[row["datum_idx"]],
+            num_workers=num_workers,
+            shuffle=True,
+            generator=loader_generator,
+            worker_init_fn=worker_init_fn,
         )
-        total_batches_per_epoch = len(sft_dataset)
+        # Pre-filter upper bound; filtered rows make actual batches
+        # smaller but never larger.
+        total_batches_per_epoch = (training_count + effective_batch_size - 1) // effective_batch_size
         logger.info(
-            "Dataset: %d examples, %d batches/epoch, %d epochs",
-            len(training_data),
-            total_batches_per_epoch,
-            cfg.epochs,
+            "Dataset: %d examples from %s (renderer=%s, train_on_what=%s,"
+            " workers=%d, seed=%d) -> ~%d batches/epoch x %d epochs%s",
+            training_count, cfg.dataset,
+            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            cfg.train_on_what, num_workers, cfg.seed,
+            total_batches_per_epoch, cfg.epochs,
+            f" + {len(eval_data)} eval examples" if eval_data else "",
         )
-        if eval_data:
-            logger.info("Eval dataset: %d examples (eval after each epoch)", len(eval_data))
 
         # -- Resume ---------------------------------------------------------------
 
-        resume_info = resolve_resume(client, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
+        )
         step = resume_info.step if resume_info else 0
-        data_consumed = resume_info.data_consumed if resume_info else 0
+        total_raw_rows = training_count * cfg.epochs
+        cursor = RawRowCursor(max_rows=total_raw_rows)
+        cursor.resume(resume_info.data_consumed if resume_info else None)
         wandb_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
+        if cfg.adam_beta2 is not None:
+            adam_kwargs["beta2"] = cfg.adam_beta2
+        if cfg.weight_decay is not None:
+            adam_kwargs["weight_decay"] = cfg.weight_decay
+
+        def _current_lr(optim_step_idx: int) -> float:
+            # 1-indexed optim step; linear warmup from 0 → cfg.learning_rate
+            # over cfg.warmup_steps, constant afterwards.
+            if cfg.warmup_steps > 0 and optim_step_idx <= cfg.warmup_steps:
+                return cfg.learning_rate * (optim_step_idx / cfg.warmup_steps)
+            return cfg.learning_rate
 
         # -- Training loop (batch-indexed) -------------------------------------
 
-        start_batch = data_consumed // effective_batch_size
-        total_steps_estimate = total_batches_per_epoch * cfg.epochs
+        completed_epochs = cursor.value // training_count if training_count else 0
+        rows_into_current_epoch = cursor.value % training_count if training_count else 0
+        start_batch = rows_into_current_epoch // effective_batch_size
+        remaining_raw_rows = max(0, total_raw_rows - cursor.value)
+        total_steps_estimate = step + (
+            (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
+        )
 
         def _run_train_step(
             batch: list[tinker.Datum],
@@ -616,19 +910,21 @@ def main(
                     response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch)
 
             with timer("optim_step"):
-                optim_result = client.optim_step(adam_params)
+                # Rebuild AdamParams each step so warmup can scale lr.
+                step_lr = _current_lr(step + 1)
+                step_adam = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
+                optim_result = client.optim_step(step_adam)
             step += 1
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 with timer("dcp_save"):
                     logger.info("Saving DCP checkpoint at step %d", step)
-                    save_checkpoint(client, f"step-{step}", cfg.log_path, {
-                        "step": step,
-                        "data_consumed": data_consumed,
-                        "source_job_id": job_id,
-                    }, kind=CheckpointKind.STATE,
-                    base_model=cfg.base_model,
-                    training_shape=cfg.infra.training_shape_id)
+                    ckpt.save(
+                        f"step-{step}",
+                        resumable=True,
+                        promotable=False,
+                        data_consumed=cursor.value,
+                    )
 
             step_metrics: Dict[str, Any] = flush_timing()
 
@@ -671,13 +967,36 @@ def main(
         runner.start_training()
         runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
 
-        for epoch in range(cfg.epochs):
-            sft_dataset.set_epoch(epoch)
-            epoch_start = start_batch if epoch == 0 else 0
-            for i_batch in range(epoch_start, total_batches_per_epoch):
-                batch = sft_dataset.get_batch(i_batch)
-                data_consumed += len(batch)
+        for epoch in range(completed_epochs, cfg.epochs):
+            loader_generator.manual_seed(cfg.seed + epoch)
+            batch_iter = iter(loader)
+            epoch_start_batch = start_batch if epoch == completed_epochs else 0
+            if epoch_start_batch > 0:
+                batch_iter = islice(batch_iter, epoch_start_batch, None)
+
+            epoch_valid_examples = 0
+            for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
+                raw_batch_size = min(
+                    effective_batch_size,
+                    training_count - raw_batch_idx * effective_batch_size,
+                )
+                cursor.record(raw_batch_size)
+                batch = _flatten_rendered_batch(batch)
+                if not batch:
+                    continue  # entire batch was filtered (None render); skip
+                epoch_valid_examples += len(batch)
                 step = _run_train_step(batch, step)
+
+            if epoch == 0 and completed_epochs == 0 and start_batch == 0:
+                filtered_count = training_count - epoch_valid_examples
+                if filtered_count > 0:
+                    logger.info(
+                        "Seq-length / format filter: %d/%d raw rows filtered",
+                        filtered_count,
+                        training_count,
+                    )
+                if epoch_valid_examples == 0:
+                    raise RuntimeError("No valid training examples after tokenization")
 
             # Run eval after each epoch
             if eval_data:
@@ -703,26 +1022,20 @@ def main(
         if cfg.save_final_checkpoint and step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
-            paths = save_checkpoint(client, cp_name, cfg.log_path, {
-                "step": step,
-                "data_consumed": data_consumed,
-                "source_job_id": job_id,
-            }, kind=CheckpointKind.BOTH,
-            base_model=cfg.base_model,
-            training_shape=cfg.infra.training_shape_id)
+            ckpt.save(
+                cp_name,
+                resumable=True,
+                promotable=True,
+                data_consumed=cursor.value,
+            )
             if getattr(cfg, "output_model_id", None):
-                rlor_mgr.promote_checkpoint(
-                    job_id,
-                    paths["sampler_path"],
-                    cfg.output_model_id,
-                    cfg.base_model,
-                )
+                ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
                 )
 
         runner.write_status(
-            RunStatus.COMPLETED, step=step, total_steps=total_steps_estimate, message="done",
+            RunStatus.COMPLETED, step=step, total_steps=step, message="done",
         )
         runner.write_metadata()
         logger.info("Training complete: %d optimizer steps", step)

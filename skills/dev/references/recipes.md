@@ -7,8 +7,9 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | SFT | `training/recipes/sft_loop.py` |
 | DPO | `training/recipes/dpo_loop.py` |
 | ORPO | `training/recipes/orpo_loop.py` |
-| Importance-weighted GRPO | `training/recipes/igpo_loop.py` |
+| Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
 | Generic RL loop (GRPO scaffold) | `training/recipes/rl_loop.py` |
+| Async RL loop (rollout/train overlap, PPO inner minibatches) | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
 
 ## "Reference loop" means these files
 
@@ -21,14 +22,14 @@ Always required on `Config` + `InfraConfig`:
 - `base_model` — `accounts/fireworks/models/<name>`
 - `dataset` — path to JSONL
 - `tokenizer_model` — HF model name
-- `log_path` — directory for `checkpoints.jsonl` and logs
-- `infra.training_shape_id` — **required**; do not set manual `accelerator_type` / `node_count` (see [`shapes.md`](shapes.md))
+- `log_path` — directory for `dataloader.json` and logs
+- `infra.training_shape_id` — optional override; leave unset for auto-selection. Do not set manual `accelerator_type` / `node_count` (see [`shapes.md`](shapes.md))
 
 RL-specific (in `rl_loop.py`'s `Config`): reward function, rollout batch sizes, deployment config (shape is auto-filled from the profile).
 
 ## Resume
 
-Rerun the same script with the same `log_path`. The recipe reads `checkpoints.jsonl`, picks up the last row with a `state_path`, restores DCP state, and continues. See [`checkpoints.md`](checkpoints.md) for the layout.
+Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL/IGPO), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`checkpoints.md`](checkpoints.md) for the full priority order and constraints.
 
 ## Init from another job
 
@@ -51,6 +52,7 @@ RL has its own skill folder. Open [`rl/`](rl/) when working with `rl_loop.py`:
 - [`rl/dynamic-filter.md`](rl/dynamic-filter.md) — `should_accept`, why zero-variance groups get dropped
 - [`rl/custom-loss.md`](rl/custom-loss.md) — interface + reference implementation + RL `Config` fields
 - [`rl/hotload.md`](rl/hotload.md) — weight-sync cadence, `weight_sync_timeout`, on-policy vs off-policy, base/delta chain
-- [`rl/concurrency.md`](rl/concurrency.md) — rollout concurrency control; adaptive is the default and the recommendation
+- [`rl/concurrency.md`](rl/concurrency.md) — rollout concurrency control for the **sync** `rl_loop.py` (adaptive is the default)
+- [`rl/async-rl.md`](rl/async-rl.md) — `async_rl_loop.py` overlap recipe: sample-level cap, off-policy budget, PPO inner minibatches
 
 SFT / DPO / ORPO users do not need these.

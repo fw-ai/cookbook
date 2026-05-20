@@ -1,31 +1,32 @@
 # Out-of-the-box examples
 
-When the user wants "something that just runs", point them at `training/examples/`. Each subdirectory imports from `training/recipes/` and ships a ready-to-run `Config`.
+When the user wants "something that just runs", point them at `training/examples/`. Most subdirectories import from `training/recipes/` and ship a ready-to-run `Config`; the agentic examples may own a custom loop plus rollout code.
 
 | Task | Path |
 |------|------|
-| Minimal SFT (single-file demo) | `training/examples/sft_getting_started/` |
-| SFT on real datasets | `training/examples/sft/` |
+| SFT | `training/examples/sft/` |
 | DPO | `training/examples/dpo/` |
-| ORPO | `training/examples/orpo/` |
-| GRPO on deepmath | `training/examples/deepmath_rl/` |
-| Tool-use RL (frozen lake) | `training/examples/frozen_lake/` |
-| Multi-hop QA RL | `training/examples/multihop_qa/` |
-| Generic RL wiring | `training/examples/rl/` |
+| ORPO (IFEval) | `training/examples/orpo/ifeval/` |
+| GRPO on DeepMath | `training/examples/rl/deepmath/` |
+| Tool-use RL (Frozen Lake) | `training/examples/rl/frozen_lake/` |
+| Async RL single-turn (token-in rollout) | `training/examples/rl/single_turn_token_in/` |
+| Async RL multi-turn (message-in rollout) | `training/examples/rl/multi_turn_message_in/` |
+| Multi-hop QA async RL (+ optional IGPO) | `training/examples/multihop_qa/` |
+| Manual hotload-scope tests (PER_TRAINER re-attach, PER_DEPLOYMENT) | `training/examples/manual/` |
 
 ## What to read
 
-In each example directory, read the top-level `train_*.py` (or `main.py`) — it builds the `Config` and calls `main(config)` from the corresponding recipe. That's the whole script.
+In each example directory, read the top-level `train_*.py`, `train.py`, or `rollout.py` — it builds the `Config` or rollout function and calls the corresponding recipe/helper.
 
 ## Running
 
 ```bash
 cd cookbook/training
-pip install -e .
-python examples/sft_getting_started/<script>.py
+pip install --pre -e .
+python examples/sft/train_sft.py --output-model-id <model-id>
 ```
 
-Every example pulls `FIREWORKS_API_KEY` from the env (or `.env`). If the example needs a dataset path, it is listed in its `README.md`.
+Every example pulls `FIREWORKS_API_KEY` from the env (or `.env`). If an example needs a dataset path or extra arguments, check that script's `argparse` block, `README.md`, or `run.sh`.
 
 ## When the example isn't quite right
 

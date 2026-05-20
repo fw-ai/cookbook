@@ -18,6 +18,9 @@ __all__ = [
     "DynamicFilterFn",
     "TrainStepFns",
     "run_rl_loop",
+    # Bundled infra setup
+    "Infra",
+    "setup_infra",
     # Metrics helpers
     "add_response_length_stats",
     "add_train_perf_metrics",
@@ -30,6 +33,30 @@ __all__ = [
     "expand_turn_advantages_from_spans",
     "make_igpo_loss_fn",
     "score_prefix",
+    # Async loop + rollout contract
+    "run_async_rl_loop",
+    "RowRequest",
+    "Rollout",
+    "RolloutSample",
+    "GroupAssembler",
+    "rollout_to_prompt_group",
+    # Service-agnostic rollout adapter
+    "RolloutPayload",
+    "RolloutService",
+    "TurnRecord",
+    "make_remote_rollout_fn",
+    # Multi-turn assembly
+    "InferenceCall",
+    "MessageTrajectoryAssembler",
+    "MessageTrajectoryError",
+    "MessageValidationError",
+    "PrefixMismatch",
+    "TrajectoryAssembler",
+    "TITOTokenizer",
+    "extract_completion",
+    "get_tito_tokenizer",
+    "precompute_chat_suffix",
+    "TokenizationError",
 ]
 
 from training.utils.rl.pp import PPBatchRecommendation, compute_pp_recommendation
@@ -43,6 +70,7 @@ from training.utils.rl.train import (
     run_rl_loop,
 )
 from training.utils.rl.losses import PromptGroup
+from training.utils.infra import Infra, setup_infra
 from training.utils.rl.metrics import (
     build_loop_metrics,
     total_target_tokens,
@@ -58,4 +86,26 @@ from training.utils.rl.igpo import (
     expand_turn_advantages_from_spans,
     make_igpo_loss_fn,
     score_prefix,
+)
+from training.utils.rl.async_train import RowRequest, run_async_rl_loop
+from training.utils.rl.rollout import (
+    GroupAssembler,
+    InferenceCall,
+    MessageTrajectoryAssembler,
+    MessageTrajectoryError,
+    MessageValidationError,
+    PrefixMismatch,
+    Rollout,
+    RolloutPayload,
+    RolloutSample,
+    RolloutService,
+    TITOTokenizer,
+    TrajectoryAssembler,
+    TurnRecord,
+    TokenizationError,
+    extract_completion,
+    get_tito_tokenizer,
+    make_remote_rollout_fn,
+    precompute_chat_suffix,
+    rollout_to_prompt_group,
 )

@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Unit tests for the DeepMath reward function."""
 
-import os
 import json
+import os
+import tempfile
+import textwrap
+import threading
+import time
 
 from train_deepmath import (
     extract_boxed,
     deepmath_reward,
     extract_answer_from_completion,
+    math_verify,
+    _MathVerifyService,
 )
 
 
@@ -88,6 +94,71 @@ def test_reward_with_real_dataset():
     assert passed >= 15, f"Too many failures: only {passed}/{len(rows)} matched"
 
 
+def test_math_verify_correctness():
+    """The out-of-process math_verify returns correct symbolic results."""
+    assert math_verify(r"\boxed{42}", r"\boxed{42}") is True
+    assert math_verify(r"\boxed{42}", r"\boxed{43}") is False
+    assert math_verify(r"\boxed{\frac{1}{2}}", r"\boxed{0.5}") is True
+    print("  [PASS] test_math_verify_correctness")
+
+
+def test_math_verify_thread_safe():
+    """math_verify must work when called from a non-main thread.
+
+    math_verify's native timeout uses signal.SIGALRM, which only works on the
+    main thread; our out-of-process wrapper must not depend on that.
+    """
+    results = []
+
+    def _worker():
+        results.append(math_verify(r"\boxed{7}", r"\boxed{7}"))
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join(15.0)
+    assert not t.is_alive(), "math_verify hung when called from a worker thread"
+    assert results == [True], f"expected [True], got {results}"
+    print("  [PASS] test_math_verify_thread_safe")
+
+
+def test_math_verify_killable_timeout():
+    """A wedged worker is killed on timeout — fast False, no leaked thread/proc.
+
+    This is the property the in-process (thread-based) approach could not
+    provide: a runaway sympy expansion can only be bounded by killing the
+    process it runs in.
+    """
+    # A stand-in worker that hangs forever instead of computing.
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(textwrap.dedent("""
+            import sys, time
+            for _line in sys.stdin:
+                time.sleep(3600)
+        """))
+        slow_worker = f.name
+
+    try:
+        svc = _MathVerifyService(worker_path=slow_worker)
+        t0 = time.time()
+        result = svc.verify(r"\\boxed{1}", r"\\boxed{2}", timeout=0.5)
+        elapsed = time.time() - t0
+        assert result is False, f"wedged worker should yield False, got {result}"
+        assert elapsed < 5.0, f"timeout not enforced — took {elapsed:.1f}s"
+        assert svc._proc is None, "wedged worker process was not killed"
+        # Reader threads must not leak: after the kill, none should survive.
+        leaked = [
+            th for th in threading.enumerate()
+            if th.name.startswith("Thread-") and th.is_alive() and th.daemon
+        ]
+        # Give any just-killed reader a moment to observe EOF and exit.
+        time.sleep(0.5)
+        still = [th for th in leaked if th.is_alive()]
+        assert not still, f"reader thread leaked after worker kill: {still}"
+    finally:
+        os.unlink(slow_worker)
+    print("  [PASS] test_math_verify_killable_timeout")
+
+
 def main():
     print("Running reward function unit tests...")
     test_extract_boxed()
@@ -96,6 +167,9 @@ def main():
     test_reward_numeric()
     test_reward_latex_fractions()
     test_reward_symbolic()
+    test_math_verify_correctness()
+    test_math_verify_thread_safe()
+    test_math_verify_killable_timeout()
     test_reward_with_real_dataset()
     print("\nAll tests passed!")
 

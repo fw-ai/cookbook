@@ -38,7 +38,7 @@ def test_dpo_smoke(
     smoke_dpo_infra,
 ):
     from training.recipes.dpo_loop import Config, main
-    from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
+    from training.utils import DeployConfig, WandBConfig
 
     rlor_mgr, deploy_mgr = smoke_sdk_managers
 
@@ -56,11 +56,10 @@ def test_dpo_smoke(
             learning_rate=1e-5,
             epochs=1,
             batch_size=1,
-            grad_accum=1,
             max_pairs=4,
+            dcp_save_interval=0,
             infra=smoke_dpo_infra,
             deployment=DeployConfig(),
-            weight_sync=WeightSyncConfig(weight_sync_interval=0, dcp_save_interval=0),
             wandb=WandBConfig(),
         )
 

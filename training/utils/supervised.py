@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -34,6 +35,9 @@ from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.renderer.nemotron as _nemotron_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
+from training.utils.tokenizers import load_tokenizer
 
 
 @dataclass(frozen=True)
@@ -73,16 +77,63 @@ def resolve_renderer_name(
     normalized_model_name = tokenizer_model.lower()
     if "moonshotai/kimi-k2.5" in normalized_model_name:
         return "kimi_k25"
+    # Kimi-K2.6 ships the same tiktoken vocab and special tokens as K2.5, and its
+    # default chat template output is identical to K2.5's (K2.6 only adds an
+    # opt-in preserve_thinking flag). Reuse the kimi_k25 renderer until a
+    # dedicated kimi_k26 renderer is registered in tinker_cookbook.
+    if "moonshotai/kimi-k2.6" in normalized_model_name:
+        return "kimi_k25"
     if "nemotron" in normalized_model_name:
         return "nemotron"
     if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
         return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
+    # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
+    # adds an opt-in `preserve_thinking` flag (renders historical thinking
+    # for ALL assistant turns when true). Default invocation produces output
+    # byte-identical to Qwen3.5's template, so the qwen3_5 renderer family
+    # is correct for non-interleave-thinking workflows on Qwen3.6 checkpoints.
+    # Same alias pattern as the kimi-k25 → Kimi-K2.6 case above.
+    if "qwen3.6" in normalized_model_name or "qwen3_6" in normalized_model_name:
+        return "qwen3_6"
     if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name:
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
         return "gemma4"
+    # DeepSeek-V4 ships a custom non-Jinja encoder (see encoding_dsv4.py upstream)
+    # with thinking blocks and DSML tool calls. Match the V4 family explicitly so
+    # we don't accidentally claim V3 (which routes through tinker_cookbook's
+    # built-in deepseekv3_thinking renderer via get_recommended_renderer_name).
+    if (
+        "deepseek-v4" in normalized_model_name
+        or "deepseek_v4" in normalized_model_name
+        or "deepseekv4" in normalized_model_name
+    ):
+        return "deepseek_v4"
+    # ZhipuAI GLM-5.1 chat template (`[gMASK]<sop>`, `<|user|>`,
+    # `<|assistant|>`, `<think>...</think>`, `<|endoftext|>`). Validated
+    # end-to-end via SFT training. Other GLM versions are out of scope;
+    # opt in explicitly with `renderer_name="glm5"` if you want to try.
+    if (
+        "glm-5p1" in normalized_model_name
+        or "glm-5.1" in normalized_model_name
+        or "glm5" in normalized_model_name
+    ):
+        return "glm5"
+    # Mistral / Ministral Tekken-style chat (`[SYSTEM_PROMPT]`, `[INST]…[/INST]`,
+    # `[TOOL_CALLS]…[ARGS]…`, `[TOOL_RESULTS]…[/TOOL_RESULTS]`). Covers
+    # Ministral 3 / 8B, Mistral 7B Instruct v0.3+, Mistral Small 3 Instruct, and
+    # any other ``mistralai/...`` checkpoint that ships the same template.
+    # Validated end-to-end via SFT training on Ministral-3-3B-Instruct-2512.
+    if (
+        normalized_model_name.startswith("mistralai/")
+        or "ministral-" in normalized_model_name
+        or "mistral-7b-instruct-v0.3" in normalized_model_name
+        or "mistral-7b-instruct-v0.4" in normalized_model_name
+        or "mistral-small" in normalized_model_name
+    ):
+        return "mistral"
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
@@ -100,6 +151,7 @@ def build_renderer(
     """Construct the Tinker renderer used for supervised formatting."""
     resolved_name = resolve_renderer_name(tokenizer_model, renderer_name)
     if get_image_processor is not None and _renderer_uses_images(resolved_name):
+        _ensure_trust_remote_code_for_image_processor(tokenizer_model)
         return get_renderer(
             resolved_name,
             tokenizer,
@@ -108,12 +160,64 @@ def build_renderer(
     return get_renderer(resolved_name, tokenizer)
 
 
+def populate_render_worker_state(
+    state: dict,
+    *,
+    tokenizer_model: str,
+    tokenizer_revision: str | None = None,
+    renderer_name: str,
+    max_seq_len: int,
+    **extras: Any,
+) -> None:
+    """Build a tokenizer + renderer and populate ``state`` for DataLoader workers.
+
+    Centralises the per-worker setup that every streaming render recipe needs
+    (SFT, DPO, ORPO, ...). Call from your recipe's module-level
+    ``_init_<recipe>_worker(_worker_id)`` shim, which DataLoader spawns with
+    ``worker_init_fn``. ``state`` must be a module-level dict so the recipe's
+    top-level render function (also picklable for spawn) can read from it.
+
+    Stores ``tokenizer``, ``renderer``, ``max_seq_len`` plus any keyword
+    ``extras`` (e.g. ``train_on_what`` for SFT). Reuses ``trust_remote_code``
+    for HF tokenizer load -- required by Kimi / Qwen image processors.
+    """
+    tokenizer = load_tokenizer(tokenizer_model, tokenizer_revision)
+    state.update(
+        tokenizer=tokenizer,
+        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
+        max_seq_len=max_seq_len,
+        **extras,
+    )
+
+
+# tinker_cookbook.image_processing_utils.get_image_processor has a hard-coded
+# trust_remote_code=True branch only for moonshotai/Kimi-K2.5. Other Kimi-family
+# checkpoints that ship a custom image processor (e.g. moonshotai/Kimi-K2.6)
+# also require trust_remote_code, otherwise AutoImageProcessor.from_pretrained
+# raises ValueError in non-interactive environments (CI, service mode). The
+# same module honors HF_TRUST_REMOTE_CODE as an opt-in hook, so set it for
+# those checkpoints before the first (cached) call.
+_MODELS_REQUIRING_TRUST_REMOTE_CODE_FOR_IMAGE_PROCESSOR: tuple[str, ...] = (
+    "moonshotai/kimi-k2.6",
+)
+
+
+def _ensure_trust_remote_code_for_image_processor(tokenizer_model: str) -> None:
+    normalized = tokenizer_model.lower()
+    if any(
+        marker in normalized
+        for marker in _MODELS_REQUIRING_TRUST_REMOTE_CODE_FOR_IMAGE_PROCESSOR
+    ):
+        os.environ.setdefault("HF_TRUST_REMOTE_CODE", "1")
+
+
 def _renderer_uses_images(renderer_name: str) -> bool:
     return any(
         marker in renderer_name
         for marker in (
             "_vl",
             "qwen3_5",
+            "qwen3_6",
             "kimi_k25",
         )
     )
@@ -254,10 +358,68 @@ def _ensure_content_parts(content: str | list[dict[str, Any]]) -> list[dict[str,
     return list(content)
 
 
-def normalize_messages(messages: Iterable[Mapping[str, Any]]) -> list[Message]:
-    """Normalize cookbook/eval-style messages into Tinker's message schema."""
+def _any_message_has_per_message_training_flag(
+    messages: Iterable[Mapping[str, Any]],
+) -> bool:
+    """Return True if any message carries an explicit per-message training flag.
+
+    The Fireworks SFT dataset schema uses ``weight`` (int, 0 or 1) on
+    individual messages to mark which assistant turns should contribute loss.
+    Tinker's schema uses ``trainable`` (bool) for the same purpose. Either
+    field enables the per-message ``CUSTOMIZED`` training path.
+    """
+    return any(("weight" in m) or ("trainable" in m) for m in messages)
+
+
+def _resolve_trainable(
+    message: Mapping[str, Any],
+    *,
+    assistant_default: bool,
+) -> bool:
+    """Derive the per-message ``trainable`` flag from ``trainable`` or ``weight``.
+
+    ``trainable`` (bool) wins if present. Otherwise, a legacy ``weight`` (int
+    or float) maps to ``bool(weight)`` — matching the V1 SFT trainer
+    convention where ``weight=0`` marks an assistant message as context only
+    (no loss) and ``weight=1`` (or the field being absent) marks it as a
+    trainable target. When neither field is present, falls back to
+    ``assistant_default`` (True for assistants, False otherwise).
+    """
+    trainable = message.get("trainable")
+    if trainable is not None:
+        return bool(trainable)
+
+    weight = message.get("weight")
+    if weight is not None:
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            raise TypeError(
+                f"Unsupported weight value type: {type(weight)!r} (expected int or float)"
+            )
+        return bool(weight)
+
+    return assistant_default
+
+
+def normalize_messages(
+    messages: Iterable[Mapping[str, Any]],
+) -> list[Message]:
+    """Normalize cookbook/eval-style messages into Tinker's message schema.
+
+    When any message in the conversation carries an explicit ``weight`` or
+    ``trainable`` field, every returned message gets a ``trainable`` flag so
+    that renderers invoked with ``train_on_what=CUSTOMIZED`` can honor the
+    per-message selection. Assistant messages default to trainable=True,
+    non-assistant messages to False. The legacy Fireworks ``weight`` field
+    (0 or 1) is translated to ``trainable = bool(weight)``, matching the V1
+    SFT trainer semantics.
+    """
+    messages_list = list(messages)
+    use_per_message_trainable = _any_message_has_per_message_training_flag(
+        messages_list
+    )
+
     normalized: list[Message] = []
-    for message in messages:
+    for message in messages_list:
         role = message.get("role")
         if not isinstance(role, str):
             raise ValueError(f"Message is missing a string role: {message}")
@@ -280,9 +442,36 @@ def normalize_messages(messages: Iterable[Mapping[str, Any]]) -> list[Message]:
                 *_ensure_content_parts(normalized_message["content"]),
             ]
 
-        trainable = message.get("trainable")
-        if trainable is not None:
-            normalized_message["trainable"] = bool(trainable)
+        # OpenAI/Fireworks chat convention: assistant turns carry their
+        # chain-of-thought in a top-level ``reasoning_content`` string
+        # (rather than Tinker's ``thinking`` field). Without this branch,
+        # reasoning traces in training datasets are silently dropped here
+        # before they ever reach a renderer, so ``<think>`` blocks show
+        # up empty in the training tokens and the fine-tuned model never
+        # learns to emit a CoT. Treat ``reasoning_content`` as an alias
+        # for ``thinking`` so both keys flow through every renderer that
+        # understands ThinkingPart (qwen3*, kimi_k2*, kimi_k25*,
+        # kimi_k26*, deepseekv3_thinking, nemotron3*, gpt_oss_*).
+        # ``reasoning_content`` takes precedence only when no ``thinking``
+        # field is present; if both are set the ``thinking`` value is
+        # preserved and ``reasoning_content`` is ignored to keep a single
+        # source of truth per message.
+        reasoning_content = message.get("reasoning_content")
+        if thinking is None and reasoning_content is not None:
+            if not isinstance(reasoning_content, str):
+                raise TypeError(
+                    f"Unsupported reasoning_content value type: {type(reasoning_content)!r}"
+                )
+            normalized_message["content"] = [
+                {"type": "thinking", "thinking": reasoning_content},
+                *_ensure_content_parts(normalized_message["content"]),
+            ]
+
+        if use_per_message_trainable:
+            normalized_message["trainable"] = _resolve_trainable(
+                message,
+                assistant_default=(role == "assistant"),
+            )
 
         tool_call_id = message.get("tool_call_id")
         if tool_call_id is not None:
@@ -554,12 +743,38 @@ def render_messages_to_datum(
     max_seq_len: int | None = None,
     include_loss_mask: bool = False,
 ) -> RenderedSupervisedDatum:
-    """Render a multi-turn conversation into the shared weighted datum format."""
+    """Render a multi-turn conversation into the shared weighted datum format.
+
+    When any message in the conversation carries an explicit ``weight`` or
+    ``trainable`` field, ``train_on_what`` is overridden to ``CUSTOMIZED`` so
+    that the renderer honors per-message training flags. This matches the V1
+    SFT trainer contract (``weight=0`` means "context-only, no loss") and
+    prevents the cookbook from silently training on assistant turns the
+    dataset author explicitly excluded.
+    """
     normalized_messages = normalize_messages(messages)
+    effective_train_on_what = parse_train_on_what(train_on_what)
+    if any("trainable" in m for m in normalized_messages):
+        effective_train_on_what = TrainOnWhat.CUSTOMIZED
     rendered_input, weights = renderer.build_supervised_example(
         normalized_messages,
-        train_on_what=parse_train_on_what(train_on_what),
+        train_on_what=effective_train_on_what,
     )
+    return _build_rendered_supervised_datum(
+        rendered_input,
+        weights,
+        max_seq_len=max_seq_len,
+        include_loss_mask=include_loss_mask,
+    )
+
+
+def _build_rendered_supervised_datum(
+    rendered_input: Any,
+    weights: Any,
+    *,
+    max_seq_len: int | None,
+    include_loss_mask: bool,
+) -> RenderedSupervisedDatum:
     weight_values = weights.tolist() if hasattr(weights, "tolist") else list(weights)
     if isinstance(rendered_input, tinker.ModelInput):
         return build_datum_from_model_input_and_weights(
@@ -579,6 +794,125 @@ def render_messages_to_datum(
         max_seq_len=max_seq_len,
         include_loss_mask=include_loss_mask,
     )
+
+
+_SPLIT_REQUIRED_TRAINING_MODES = {
+    TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    TrainOnWhat.ALL_MESSAGES,
+    TrainOnWhat.ALL_TOKENS,
+    TrainOnWhat.ALL_USER_AND_SYSTEM_MESSAGES,
+    TrainOnWhat.CUSTOMIZED,
+}
+
+
+def _requires_renderer_supervised_examples(
+    renderer: Renderer,
+    messages: list[Message],
+    train_on_what: TrainOnWhat,
+) -> bool:
+    """Whether rendering must use the renderer's multi-example dispatcher."""
+    if getattr(renderer, "has_extension_property", False):
+        return False
+    if train_on_what not in _SPLIT_REQUIRED_TRAINING_MODES:
+        return False
+    return sum(1 for message in messages if message["role"] == "user") > 1
+
+
+def _build_renderer_supervised_examples(
+    renderer: Renderer,
+    messages: list[Message],
+    train_on_what: TrainOnWhat,
+) -> list[tuple[Any, Any]]:
+    if _requires_renderer_supervised_examples(renderer, messages, train_on_what):
+        build_supervised_examples = getattr(renderer, "build_supervised_examples", None)
+        if build_supervised_examples is None:
+            raise TypeError(
+                f"{type(renderer).__name__} has has_extension_property=False and "
+                f"cannot safely render train_on_what={train_on_what.value!r} without "
+                "build_supervised_examples."
+            )
+        return list(
+            build_supervised_examples(
+                messages,
+                train_on_what=train_on_what,
+            )
+        )
+
+    return [
+        renderer.build_supervised_example(
+            messages,
+            train_on_what=train_on_what,
+        )
+    ]
+
+
+def render_messages_to_datums(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    renderer: Renderer,
+    train_on_what: str | TrainOnWhat = TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    max_seq_len: int | None = None,
+    include_loss_mask: bool = False,
+    tools: Sequence[Mapping[str, Any]] | None = None,
+) -> list[RenderedSupervisedDatum]:
+    """Render a chat row, splitting multi-target rows when required.
+
+    When ``tools`` is provided (top-level OpenAI function-calling array
+    with ``{"type": "function", "function": {...}}`` items) and the
+    renderer exposes ``create_conversation_prefix_with_tools``, the tool
+    definitions are encoded as a ``tool_declare``-role message and
+    prepended to the conversation. An existing leading system message's
+    content is preserved as the system prompt passed to the renderer.
+    Renderers without tool support silently drop the field.
+    """
+    normalized_messages = list(normalize_messages(messages))
+
+    if tools:
+        prefix_builder = getattr(renderer, "create_conversation_prefix_with_tools", None)
+        if prefix_builder is not None:
+            tool_specs = [
+                t["function"]
+                for t in tools
+                if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)
+            ]
+            if tool_specs:
+                system_prompt = ""
+                if normalized_messages and normalized_messages[0].get("role") == "system":
+                    sys_content = normalized_messages.pop(0).get("content")
+                    if isinstance(sys_content, str):
+                        system_prompt = sys_content
+                    elif isinstance(sys_content, list):
+                        system_prompt = "\n".join(
+                            part.get("text", "")
+                            for part in sys_content
+                            if isinstance(part, Mapping) and part.get("type") == "text"
+                        )
+                prefix = prefix_builder(tool_specs, system_prompt=system_prompt)
+                prefix_messages = list(prefix)
+                if any("trainable" in m for m in normalized_messages):
+                    for prefix_msg in prefix_messages:
+                        prefix_msg.setdefault("trainable", False)
+                normalized_messages = prefix_messages + normalized_messages
+
+    effective_train_on_what = parse_train_on_what(train_on_what)
+    if any("trainable" in m for m in normalized_messages):
+        effective_train_on_what = TrainOnWhat.CUSTOMIZED
+
+    examples = _build_renderer_supervised_examples(
+        renderer,
+        normalized_messages,
+        effective_train_on_what,
+    )
+
+    return [
+        _build_rendered_supervised_datum(
+            rendered_input,
+            weights,
+            max_seq_len=max_seq_len,
+            include_loss_mask=include_loss_mask,
+        )
+        for rendered_input, weights in examples
+    ]
 
 
 def _common_prefix_length(tokens_a: Sequence[int], tokens_b: Sequence[int]) -> int:

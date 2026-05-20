@@ -47,12 +47,14 @@ from training.utils import (
     DeployConfig,
     WeightSyncConfig,
     ReconnectableClient,
+    RawRowCursor,
     RLPromptDataset,
     wandb_log,
     setup_wandb,
     wandb_finish,
     validate_config,
     log_metrics_json,
+    load_deployment_tokenizer,
     setup_deployment,
     create_trainer_job,
     read_api_extra_headers_env,
@@ -60,21 +62,16 @@ from training.utils import (
     prepare_sampling_messages,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.checkpoint_utils import (
-    resolve_resume,
-    save_checkpoint,
-    CheckpointKind,
-)
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.timer import timer, flush_timing
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
 from training.utils.rl.losses import (
-    build_loss_fn,
+    PolicyLoss,
     combine_prompt_groups,
-    resolve_builtin_loss,
 )
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
@@ -103,7 +100,6 @@ class Config:
     max_rows: int = 100
     max_seq_len: int | None = None
     lora_rank: int = 0
-
     prompt_groups_per_step: int = 1
     router_replay: bool = False
     router_replay_completion_only: bool = True
@@ -112,7 +108,7 @@ class Config:
         GradAccNormalization.NUM_LOSS_TOKENS
     )
 
-    policy_loss: str = "grpo"
+    policy_loss: PolicyLoss = "grpo"
     tis: TISConfig = field(default_factory=TISConfig)
     eps_clip: float = 0.2
     eps_clip_high: float | None = None
@@ -126,10 +122,16 @@ class Config:
     """ThreadPoolExecutor max_workers for async IG scoring."""
 
     policy_job_id: str | None = None
-    policy_base_url: str | None = None
     reference_job_id: str | None = None
+    policy_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
     reference_base_url: str | None = None
+    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
     init_from_checkpoint: str | None = None
+    warm_start_from_adapter: str | None = None
+    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
+    weights from the adapter at training start (weights-only, fresh optimizer).
+    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
     output_model_id: str | None = None
 
     step_timeout: int = 0
@@ -241,9 +243,24 @@ def main(
     config: Config,
     rlor_mgr: TrainerJobManager | None = None,
     deploy_mgr: DeploymentManager | None = None,
-    cleanup_on_exit: bool = False,
+    cancel_on_exit: bool = False,
+    cleanup_on_exit: bool | None = None,
 ):
+    if cleanup_on_exit is not None:
+        import warnings
+        warnings.warn(
+            "igpo_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
+            DeprecationWarning, stacklevel=2,
+        )
+        cancel_on_exit = cleanup_on_exit
+
     cfg = config
+    if cfg.policy_base_url or cfg.reference_base_url:
+        logger.warning(
+            "Config.policy_base_url / Config.reference_base_url are ignored; "
+            "the gateway routes all trainer traffic. These fields are kept for "
+            "back-compat and will be removed in a future release.",
+        )
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
@@ -257,6 +274,11 @@ def main(
     validate_config(
         cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment,
         output_model_id=cfg.output_model_id,
+    )
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
     )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
@@ -324,7 +346,7 @@ def main(
                     infra=cfg.infra, profile=profile, lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                     display_name="igpo-policy",
-                    job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+                    job_id=cfg.policy_job_id,
                     cleanup=cleanup if not cfg.policy_job_id else None,
                 )
                 ref_fut = pool.submit(
@@ -332,7 +354,7 @@ def main(
                     infra=cfg.infra, profile=ref_profile, lora_rank=cfg.lora_rank,
                     max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                     display_name="igpo-reference", forward_only=True,
-                    job_id=cfg.reference_job_id, base_url_override=cfg.reference_base_url,
+                    job_id=cfg.reference_job_id,
                     cleanup=cleanup if not cfg.reference_job_id else None,
                 )
                 policy_ep = pol_fut.result()
@@ -343,7 +365,7 @@ def main(
                 profile=profile, lora_rank=cfg.lora_rank,
                 max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
                 display_name="igpo-policy",
-                job_id=cfg.policy_job_id, base_url_override=cfg.policy_base_url,
+                job_id=cfg.policy_job_id,
                 cleanup=cleanup if not cfg.policy_job_id else None,
             )
             reference_ep = None
@@ -351,7 +373,7 @@ def main(
         # Create deployment referencing the trainer's hot-load bucket
         cfg.deployment.hot_load_trainer_job = policy_ep.job_name
         dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
-        if cleanup_on_exit:
+        if cancel_on_exit:
             cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
 
         policy_job_id = policy_ep.job_id
@@ -362,24 +384,18 @@ def main(
             rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
             fw_api_key=api_key,
             default_timeout=_timeout,
-            endpoint=policy_ep if cfg.policy_base_url else None,
         )
         reference = (
             ReconnectableClient(
                 rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
                 fw_api_key=api_key,
                 default_timeout=_timeout,
-                endpoint=reference_ep if cfg.reference_base_url else None,
             )
             if reference_ep else None
         )
 
-        import transformers
-
         inference_model = dep_info.inference_model if dep_info else cfg.base_model
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            cfg.deployment.tokenizer_model, trust_remote_code=True
-        )
+        tokenizer = load_deployment_tokenizer(cfg.deployment)
         sampler = DeploymentSampler(
             inference_url=deploy_mgr.inference_url,
             model=inference_model,
@@ -396,8 +412,19 @@ def main(
             dcp_timeout=cfg.weight_sync.dcp_timeout,
         )
 
+        ckpt = TrainingCheckpoints(
+            policy,
+            rlor_mgr,
+            trainer_id=policy_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+
         # Resume
-        resume_info = resolve_resume(policy, cfg.log_path, cfg.init_from_checkpoint)
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
+        )
         step_offset = resume_info.step if resume_info else 0
 
         if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:
@@ -408,6 +435,7 @@ def main(
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
+        cursor = RawRowCursor(max_rows=len(all_rows))
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         sample_kwargs: dict = dict(
@@ -695,18 +723,18 @@ def main(
             step += 1
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
+            cursor.record(raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups)))
+
             # 5. Weight sync
             if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
                 with timer("weight_sync"):
                     weight_syncer.save_and_hotload(f"step-{step}")
             if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    step - step_offset
-                ) * prompt_groups_per_step
-                save_checkpoint(
-                    policy, f"step-{step}", cfg.log_path,
-                    {"step": step, "data_consumed": _data_consumed, "source_job_id": policy_job_id},
-                    kind=CheckpointKind.STATE,
+                ckpt.save(
+                    f"step-{step}",
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=cursor.value,
                 )
 
             # 6. Metrics
@@ -749,9 +777,13 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        remaining_rows = []
-        for i_step in range(step_offset, len(rl_dataset)):
-            remaining_rows.extend(rl_dataset.get_batch(i_step))
+        # Prefer the persisted raw-row cursor; fall back to step-derived for
+        # legacy checkpoints (dataloader.json predates this PR).
+        cursor.resume(
+            resume_info.data_consumed if resume_info else None,
+            fallback=step_offset * prompt_groups_per_step,
+        )
+        remaining_rows = all_rows[cursor.value:]
 
         total_rl_steps = len(rl_dataset) - step_offset
         runner.start_training()
@@ -771,17 +803,15 @@ def main(
         # Final checkpoint
         if global_step > step_offset:
             try:
-                _data_consumed = (resume_info.data_consumed if resume_info else 0) + (
-                    global_step - step_offset
-                ) * prompt_groups_per_step
                 cp_name = f"step-{global_step}"
-                paths = save_checkpoint(
-                    policy, cp_name, cfg.log_path,
-                    {"step": global_step, "data_consumed": _data_consumed, "source_job_id": policy_job_id},
-                    kind=CheckpointKind.BOTH,
+                ckpt.save(
+                    cp_name,
+                    resumable=True,
+                    promotable=True,
+                    data_consumed=cursor.value,
                 )
                 if getattr(cfg, "output_model_id", None):
-                    rlor_mgr.promote_checkpoint(policy_job_id, paths["sampler_path"], cfg.output_model_id)
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                     runner.write_output_model(model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id)
             except Exception as e:
                 logger.warning("Final checkpoint failed: %s", e)

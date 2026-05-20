@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Dict, Callable
 from dataclasses import dataclass
 
@@ -61,7 +62,8 @@ class InfraConfig:
 
     * **Shape path** (``training_shape_id`` set): the backend owns all
       shape-derived fields (accelerator, image tag, node count).
-      Setting infra overrides raises ``ValueError``.
+      Setting shape-owned infra overrides raises ``ValueError``; trainer
+      replica count remains a run-level control.
     * **Manual path** (``training_shape_id`` is ``None``): all fields
       are sent as-is; the server skips shape validation.
     """
@@ -71,11 +73,13 @@ class InfraConfig:
     When set, infra config is auto-derived from the shape."""
 
     ref_training_shape_id: str | None = None
-    """Training shape ID for the reference (forward-only) trainer.
-    When set, a reference model is created.  When not set, no reference
-    model is created.  No implicit fallback.  Can be the same value as
-    ``training_shape_id`` -- the control plane auto-appends
-    ``--forward-only`` via ``applyForwardOnlyConfig``."""
+    """Training shape ID for a **separate** forward-only reference trainer.
+    Only relevant for **full-parameter** training — LoRA runs use the
+    shared-session reference (``policy.create_base_reference()``) on the
+    policy trainer, so leave this ``None`` when ``lora_rank > 0``. For
+    full-param, when set, a second trainer is provisioned; when not set,
+    no reference is created. Can be the same value as ``training_shape_id``
+    — the control plane auto-appends ``--forward-only``."""
 
     region: str | None = None
     custom_image_tag: str | None = None
@@ -84,6 +88,13 @@ class InfraConfig:
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
+    trainer_replica_count: int | None = None
+    """Data-parallel trainer replica count for service-mode HSDP launches.
+
+    Leave unset for the backend default. Values greater than 1 request
+    replicated HSDP for this trainer launch; this is intentionally a run-level
+    knob, not part of the validated training shape.
+    """
     purpose: str | None = None
     """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
     managed_by: str | None = None
@@ -92,10 +103,32 @@ class InfraConfig:
     """Skip server-side shape validation. Requires superuser API key."""
 
 
+class WeightSyncScope(Enum):
+    """How trainer weights are synced to the inference deployment.
+
+    ``PER_TRAINER`` (default)
+        Trainer is provisioned first; the deployment is created (or re-wired on
+        resume) to pull weights from that trainer's bucket.  Each trainer gets
+        its own bucket.  On resume, the deployment is re-pointed to the new
+        trainer, which briefly restarts the serving pod.
+
+    ``PER_DEPLOYMENT``
+        Deployment is provisioned first with a stable, deployment-scoped bucket.
+        Trainers are created referencing that deployment so they all write to the
+        same bucket URL.  On resume, a new trainer is created pointing at the
+        same deployment — no serving pod restart required.
+    """
+
+    PER_TRAINER = "per_trainer"
+    PER_DEPLOYMENT = "per_deployment"
+
+
 @dataclass
 class DeployConfig:
     """Inference deployment settings."""
 
+    weight_sync_scope: WeightSyncScope = WeightSyncScope.PER_TRAINER
+    """Controls how trainer weights reach the inference deployment; see :class:`WeightSyncScope`."""
     deployment_id: str | None = None
     """If set, use this existing deployment.  If ``None``, a new deployment
     is auto-created (ID derived from the base model name)."""
@@ -112,10 +145,15 @@ class DeployConfig:
     Format: accounts/{account}/rlorTrainerJobs/{job_id}.
     When set, the deployment copies the trainer's bucket URL at creation."""
     deployment_timeout_s: float = 5400
+    reattach_settle_timeout_s: int = 600
+    """How long to wait for the serving pod to cycle after a re-attach PATCH
+    (separate from the full deployment creation timeout)."""
     deployment_extra_args: list[str] | None = None
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).
     Required for client-side tokenization (GRPO)."""
+    tokenizer_revision: str | None = None
+    """Optional HuggingFace revision for client-side tokenization."""
     sample_timeout: int = 600
     """HTTP read timeout in seconds for sampling completions (default 10 min).
     Increase for R3 + long completions where responses can be very large."""
@@ -174,4 +212,3 @@ class WandBConfig:
     entity: str | None = None
     project: str | None = None
     run_name: str | None = None
-

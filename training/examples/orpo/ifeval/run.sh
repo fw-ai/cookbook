@@ -19,7 +19,6 @@ python train_ifeval_orpo.py \
     --region US_VIRGINIA_1 \
     --max-pairs 200 \
     --epochs 1 \
-    --grad-accum 4 \
     --learning-rate 1e-5 \
     --orpo-lambda 1.0 \
     --output-model-id orpo-finetuned-qwen3-8b-$(date +%Y%m%d%H%M)

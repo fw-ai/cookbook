@@ -47,7 +47,6 @@ def test_sft_smoke(
             learning_rate=1e-4,
             epochs=1,
             batch_size=2,
-            grad_accum=1,
             max_examples=4,
             infra=smoke_infra,
             wandb=WandBConfig(),

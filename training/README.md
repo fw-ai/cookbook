@@ -10,6 +10,8 @@ Each recipe is a single Python file you can fork and customize.
 | Recipe | File | Description |
 | --- | --- | --- |
 | GRPO / IS / DAPO / DRO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"importance_sampling"`, `"dapo"`, `"dro"`, `"gspo"`, or `"cispo"`. |
+| Async RL (any of the above losses) | `recipes/async_rl_loop.py` | Gate-native async RL: rollout/train overlap with bounded off-policy staleness. Strict superset of `rl_loop.py`; recommended for new RL work. |
+| IGPO (multi-turn turn-level Information Gain) | `recipes/igpo_loop.py` | GRPO + per-turn IG rewards for agent trajectories (Wang et al., ICLR 2026). |
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
 | SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
@@ -29,12 +31,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12
 source .venv/bin/activate
 
-# Install the Fireworks training SDK prerelease that provides
-# `fireworks.training.sdk`.
-uv pip install --pre "fireworks-ai>=1.0.0a36" tinker-cookbook
-
-# Install this package in editable mode
-uv pip install -e .
+# Install this package in editable mode.
+# Dependencies, including the Fireworks training SDK, are pulled from pyproject.toml.
+uv pip install --pre -e .
 
 # If you skip `--pre`, pip may resolve to the stable `0.x` line,
 # which does not include `fireworks.training.sdk` and will cause
@@ -89,6 +88,24 @@ flows request a validated forward-only reference shape. Explicit
 `training_shape_id`, `ref_training_shape_id`, and deployment-shape
 overrides still take precedence.
 
+To launch trainers with replicated HSDP, set the run-level replica count on
+`InfraConfig`; it is not part of the validated training shape:
+
+```python
+config = rl_loop.Config(
+    base_model="accounts/fireworks/models/qwen3-8b",
+    infra=InfraConfig(
+        training_shape_id="accounts/fireworks/trainingShapes/your-shape",
+        trainer_replica_count=2,
+    ),
+    deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
+)
+```
+
+The example entrypoints expose the same setting as `--trainer-replicas 2`.
+It applies to trainer jobs the recipe creates for that run; pre-created
+`policy_job_id` / `reference_job_id` values are reused as-is.
+
 **LoRA RL** -- for LoRA GRPO with KL regularisation (`kl_beta > 0`), set `lora_rank`:
 
 | Field | What to set |
@@ -116,8 +133,8 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 
 ## Useful examples
 
-- `examples/snippets/promote_checkpoint.py` reads `checkpoints.jsonl` (produced by cookbook recipes), finds the sampler checkpoint ID and source trainer job, and calls the promotion API to promote it to a deployable Fireworks model. No temporary trainer needed.
-- `examples/snippets/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
+- `examples/tools/promote_checkpoint.py` queries the control plane (`list_checkpoints(job_id)`) for the trainer job's promotable rows and calls the promotion API. No `checkpoints.jsonl`, no temporary trainer — pass `--job-id <id>` and `--base-model <model>` and pick which checkpoint via `--checkpoint-name` / `--step` (default: newest promotable).
+- `examples/tools/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
 
 ## Documentation
 
@@ -130,15 +147,19 @@ For detailed guides, configuration reference, and examples, see the official doc
 ## Directory layout
 
 ```
-recipes/                 Training loop scripts (fork these)
-utils/                   Shared config, data loading, loss functions, metrics
-examples/rl/deepmath/    Worked example: math reasoning with GRPO
-examples/rl/frozen_lake/ Worked example: Frozen Lake with tool-use RL
-examples/orpo/ifeval/    Worked example: IFEval with ORPO
-examples/sft/            Worked example: SFT getting started
-examples/dpo/            Worked example: DPO
-examples/snippets/       Standalone utility scripts
-tests/                   Unit and end-to-end tests
+recipes/                                Training loop scripts (fork these)
+utils/                                  Shared config, data loading, loss functions, metrics
+examples/sft/                           Worked example: SFT getting started
+examples/dpo/                           Worked example: DPO
+examples/orpo/ifeval/                   Worked example: IFEval with ORPO
+examples/rl/deepmath/                   GRPO on DeepMath (rl_loop)
+examples/rl/frozen_lake/                Frozen Lake tool-use RL (custom loop)
+examples/rl/single_turn_token_in/       Async RL single-turn, token-in rollout
+examples/rl/multi_turn_message_in/      Async RL multi-turn, message-in rollout
+examples/multihop_qa/                   Multi-hop QA async RL (+ optional IGPO turn-level scoring)
+examples/manual/                        Manual hotload-scope tests (PER_TRAINER / PER_DEPLOYMENT)
+examples/tools/                         Standalone utility scripts
+tests/                                  Unit and end-to-end tests
 ```
 
 ## Tests
