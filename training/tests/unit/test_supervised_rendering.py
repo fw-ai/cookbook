@@ -305,7 +305,7 @@ def test_normalize_messages_supports_openai_tool_call_shape():
 
     tool_call = normalized[0]["tool_calls"][0]
     assert tool_call.function.name == "lake_move"
-    assert tool_call.function.arguments == '{"action": "RIGHT"}'
+    assert tool_call.function.arguments == '{"action":"RIGHT"}'
 
 
 def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():

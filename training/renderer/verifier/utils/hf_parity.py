@@ -35,6 +35,8 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 # ``tinker_cookbook.renderers.get_renderer``.
 import training.renderer  # noqa: F401
 from training.utils.supervised import normalize_messages
+from training.utils.supervised import parse_train_on_what
+from training.utils.supervised import render_messages_to_datums
 
 
 @dataclasses.dataclass
@@ -45,6 +47,13 @@ class HFParityResult:
     first_divergence_idx: int | None
     renderer_decoded: list[str]
     hf_decoded: list[str]
+
+
+@dataclasses.dataclass
+class HFSupervisedParityResult:
+    examples: list[HFParityResult]
+    match: bool
+    first_mismatch_example: int | None
 
 
 def _decode_each(tokenizer: Any, ids: list[int]) -> list[str]:
@@ -71,6 +80,76 @@ def _first_divergence(a: list[int], b: list[int]) -> int | None:
     if len(a) != len(b):
         return n
     return None
+
+
+def _hf_tokens(
+    tokenizer: Any,
+    messages: list[dict],
+    *,
+    add_generation_prompt: bool,
+    tools: list[dict] | None = None,
+    apply_chat_template_kwargs: dict[str, Any] | None = None,
+) -> list[int]:
+    kwargs: dict[str, Any] = {
+        "tokenize": True,
+        "add_generation_prompt": add_generation_prompt,
+    }
+    if tools is not None:
+        kwargs["tools"] = tools
+    kwargs.update(apply_chat_template_kwargs or {})
+    hf_result = tokenizer.apply_chat_template(messages, **kwargs)
+    if hasattr(hf_result, "input_ids"):
+        return [int(t) for t in list(hf_result.input_ids)]  # type: ignore[arg-type]
+    return [int(t) for t in list(hf_result)]  # type: ignore[arg-type]
+
+
+_SPLIT_REQUIRED_TRAINING_MODES = {
+    "all_assistant_messages",
+    "all_messages",
+    "all_tokens",
+    "all_user_and_system_messages",
+    "customized",
+}
+
+
+def _expected_supervised_prefixes(
+    *,
+    renderer: Any,
+    messages: list[dict],
+    train_on_what: Any,
+) -> list[list[dict]]:
+    train_mode = parse_train_on_what(train_on_what)
+    if any(("weight" in m) or ("trainable" in m) for m in messages):
+        train_mode = parse_train_on_what("customized")
+    if getattr(renderer, "has_extension_property", False):
+        return [messages]
+    if train_mode.value not in _SPLIT_REQUIRED_TRAINING_MODES:
+        return [messages]
+    user_message_idxs = [
+        idx for idx, message in enumerate(messages) if message.get("role") == "user"
+    ]
+    if len(user_message_idxs) <= 1:
+        return [messages]
+    return [
+        messages[:next_user_idx]
+        for next_user_idx in [*user_message_idxs[1:], len(messages)]
+    ]
+
+
+def _build_result(
+    tokenizer: Any,
+    renderer_tokens: list[int],
+    hf_tokens: list[int],
+) -> HFParityResult:
+    first_div = _first_divergence(renderer_tokens, hf_tokens)
+    return HFParityResult(
+        renderer_tokens=renderer_tokens,
+        hf_tokens=hf_tokens,
+        match=first_div is None,
+        first_divergence_idx=first_div,
+        renderer_decoded=_decode_each(tokenizer, renderer_tokens),
+        hf_decoded=_decode_each(tokenizer, hf_tokens),
+    )
 
 
 def compare_renderer_to_hf(
@@ -103,27 +182,74 @@ def compare_renderer_to_hf(
         renderer_input, _weights = renderer.build_supervised_example(normalized)
     renderer_tokens = [int(t) for t in renderer_input.to_ints()]
 
-    # ``apply_chat_template(tokenize=True)`` returns either a list or a
-    # ``BatchEncoding`` depending on the transformers version; normalize.
-    hf_result = tokenizer.apply_chat_template(
+    hf_tokens = _hf_tokens(
+        tokenizer,
         messages,
-        tokenize=True,
         add_generation_prompt=add_generation_prompt,
-        **(apply_chat_template_kwargs or {}),
+        apply_chat_template_kwargs=apply_chat_template_kwargs,
     )
-    if hasattr(hf_result, "input_ids"):
-        hf_tokens = [int(t) for t in list(hf_result.input_ids)]  # type: ignore[arg-type]
-    else:
-        hf_tokens = [int(t) for t in list(hf_result)]  # type: ignore[arg-type]
 
-    first_div = _first_divergence(renderer_tokens, hf_tokens)
-    return HFParityResult(
-        renderer_tokens=renderer_tokens,
-        hf_tokens=hf_tokens,
-        match=first_div is None,
-        first_divergence_idx=first_div,
-        renderer_decoded=_decode_each(tokenizer, renderer_tokens),
-        hf_decoded=_decode_each(tokenizer, hf_tokens),
+    return _build_result(tokenizer, renderer_tokens, hf_tokens)
+
+
+def compare_supervised_rendering_to_hf(
+    *,
+    renderer_name: str,
+    tokenizer_model: str,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    train_on_what: Any = "all_assistant_messages",
+    apply_chat_template_kwargs: dict[str, Any] | None = None,
+) -> HFSupervisedParityResult:
+    """Compare SFT ``render_messages_to_datums`` outputs to HF tokenization.
+
+    Multi-turn renderers that disaggregate training examples are compared one
+    split prefix at a time, which catches missing per-prefix tool declarations
+    and thinking-template drift.
+    """
+    tokenizer = get_tokenizer(tokenizer_model)
+    if not getattr(tokenizer, "chat_template", None):
+        raise RuntimeError(
+            f"Tokenizer {tokenizer_model!r} has no chat_template; "
+            "HF parity comparison is not meaningful."
+        )
+
+    renderer = get_renderer(renderer_name, tokenizer)
+    rendered_examples = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what=train_on_what,
+        tools=tools,
+    )
+    prefixes = _expected_supervised_prefixes(
+        renderer=renderer,
+        messages=messages,
+        train_on_what=train_on_what,
+    )
+    if len(rendered_examples) != len(prefixes):
+        raise RuntimeError(
+            f"rendered example count mismatch: {len(rendered_examples)} != {len(prefixes)}"
+        )
+
+    example_results: list[HFParityResult] = []
+    for rendered, prefix_messages in zip(rendered_examples, prefixes, strict=True):
+        hf_tokens = _hf_tokens(
+            tokenizer,
+            prefix_messages,
+            add_generation_prompt=False,
+            tools=tools,
+            apply_chat_template_kwargs=apply_chat_template_kwargs,
+        )
+        example_results.append(_build_result(tokenizer, rendered.token_ids, hf_tokens))
+
+    first_mismatch = next(
+        (idx for idx, result in enumerate(example_results) if not result.match),
+        None,
+    )
+    return HFSupervisedParityResult(
+        examples=example_results,
+        match=first_mismatch is None,
+        first_mismatch_example=first_mismatch,
     )
 
 
@@ -156,3 +282,14 @@ def format_divergence(result: HFParityResult, *, context: int = 6) -> str:
         dec = result.hf_decoded[i] if i < len(result.hf_decoded) else ""
         lines.append(f"  {marker} idx={i}  tok={tok}  decoded={dec!r}")
     return "\n".join(lines)
+
+
+def format_supervised_divergence(
+    result: HFSupervisedParityResult,
+    *,
+    context: int = 6,
+) -> str:
+    if result.match:
+        return "all supervised examples match"
+    idx = result.first_mismatch_example or 0
+    return f"example {idx} diverged:\n{format_divergence(result.examples[idx], context=context)}"

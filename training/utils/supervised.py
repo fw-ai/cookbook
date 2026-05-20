@@ -273,9 +273,11 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
         if isinstance(function, Mapping) and isinstance(function.get("name"), str):
             raw_args = function.get("arguments", {})
             if isinstance(raw_args, str):
-                parsed_args = json.loads(raw_args) if raw_args else {}
+                if raw_args:
+                    json.loads(raw_args)
+                arguments = raw_args or "{}"
             elif isinstance(raw_args, Mapping):
-                parsed_args = dict(raw_args)
+                arguments = json.dumps(dict(raw_args))
             else:
                 raise TypeError(
                     f"Unsupported tool call arguments type: {type(raw_args)!r}"
@@ -284,7 +286,7 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
                 ToolCall(
                     function=ToolCall.FunctionBody(
                         name=function["name"],
-                        arguments=json.dumps(parsed_args),
+                        arguments=arguments,
                     ),
                     id=tool_call.get("id"),
                 )
@@ -293,6 +295,26 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
 
         raise ValueError(f"Unsupported tool call shape: {tool_call}")
     return normalized
+
+
+def _tool_specs_for_prefix_builder(
+    renderer: Renderer,
+    tools: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Return the tool shape expected by a renderer's tool-prefix hook.
+
+    Most upstream Tinker renderers accept plain function specs and wrap them
+    internally. A few cookbook-local renderers mirror HF's
+    ``apply_chat_template(..., tools=...)`` surface directly and need the
+    original OpenAI ``{"type": "function", "function": ...}`` wrappers.
+    """
+    if getattr(renderer, "expects_openai_tool_wrappers", False):
+        return [t for t in tools if isinstance(t, Mapping)]
+    return [
+        t["function"]
+        for t in tools
+        if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)
+    ]
 
 
 def _normalize_image_part(part: Mapping[str, Any]) -> dict[str, Any]:
@@ -870,11 +892,7 @@ def render_messages_to_datums(
     if tools:
         prefix_builder = getattr(renderer, "create_conversation_prefix_with_tools", None)
         if prefix_builder is not None:
-            tool_specs = [
-                t["function"]
-                for t in tools
-                if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)
-            ]
+            tool_specs = _tool_specs_for_prefix_builder(renderer, tools)
             if tool_specs:
                 system_prompt = ""
                 if normalized_messages and normalized_messages[0].get("role") == "system":

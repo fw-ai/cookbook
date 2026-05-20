@@ -423,6 +423,8 @@ class Gemma4Renderer(Renderer):
     share across threads. The underlying tokenizer must also be thread-safe.
     """
 
+    expects_openai_tool_wrappers = True
+
     def __init__(self, tokenizer: Tokenizer, *, enable_thinking: bool = False):
         super().__init__(tokenizer)
         self.enable_thinking = enable_thinking

@@ -32,8 +32,11 @@ import pytest
 
 from training.renderer.verifier.utils.hf_parity import (
     HFParityResult,
+    HFSupervisedParityResult,
+    compare_supervised_rendering_to_hf,
     compare_renderer_to_hf,
     format_divergence,
+    format_supervised_divergence,
 )
 
 
@@ -47,6 +50,18 @@ class _Case:
     xfail_reason: str | None = None  # if set, mark the test xfail with this reason
 
 
+@dataclasses.dataclass
+class _SupervisedCase:
+    case_id: str
+    renderer: str
+    tokenizer_model: str
+    messages: list[dict]
+    tools: list[dict] | None = None
+    train_on_what: str = "all_assistant_messages"
+    apply_chat_template_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
+    xfail_reason: str | None = None
+
+
 _SHORT_MSGS = [
     {"role": "system", "content": "Answer with a single integer and nothing else."},
     {"role": "user", "content": "2 + 2 = ?"},
@@ -57,6 +72,20 @@ _MULTI_TURN_MSGS = [
     {"role": "assistant", "content": "4."},
     {"role": "user", "content": "And 3+3?"},
 ]
+_WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a city.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name."},
+            },
+            "required": ["city"],
+        },
+    },
+}
 
 
 _CASES: list[_Case] = [
@@ -155,6 +184,60 @@ _CASES: list[_Case] = [
 _PARAM = pytest.mark.parametrize("case", _CASES, ids=[c.case_id for c in _CASES])
 
 
+_SUPERVISED_CASES: list[_SupervisedCase] = [
+    _SupervisedCase(
+        case_id="kimi_k25-tools-multiturn-sft",
+        renderer="kimi_k25",
+        tokenizer_model="moonshotai/Kimi-K2.5",
+        tools=[_WEATHER_TOOL],
+        messages=[
+            {"role": "system", "content": "Be precise."},
+            {"role": "user", "content": "Weather in SF?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": {"city": "SF"},
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": "get_weather",
+                "content": "Foggy.",
+            },
+            {"role": "assistant", "content": "SF is foggy."},
+            {"role": "user", "content": "And NYC?"},
+            {"role": "assistant", "content": "NYC is clear."},
+        ],
+    ),
+    _SupervisedCase(
+        case_id="mistral-tools-sft",
+        renderer="mistral",
+        tokenizer_model="mistralai/Ministral-3-3B-Instruct-2512",
+        tools=[_WEATHER_TOOL],
+        messages=[
+            {"role": "system", "content": "Be precise."},
+            {"role": "user", "content": "Weather in SF?"},
+            {"role": "assistant", "content": "I will check."},
+        ],
+    ),
+]
+
+_SUPERVISED_PARAM = pytest.mark.parametrize(
+    "case",
+    _SUPERVISED_CASES,
+    ids=[c.case_id for c in _SUPERVISED_CASES],
+)
+
+
 @_PARAM
 @pytest.mark.timeout(180)
 def test_renderer_matches_hf_chat_template(case: _Case) -> None:
@@ -176,3 +259,24 @@ def test_renderer_matches_hf_chat_template(case: _Case) -> None:
         pytest.skip(f"tokenizer unavailable for {case.tokenizer_model!r}: {exc}")
 
     assert result.match, format_divergence(result)
+
+
+@_SUPERVISED_PARAM
+@pytest.mark.timeout(180)
+def test_supervised_rendering_matches_hf_chat_template(case: _SupervisedCase) -> None:
+    if case.xfail_reason:
+        pytest.xfail(case.xfail_reason)
+
+    try:
+        result: HFSupervisedParityResult = compare_supervised_rendering_to_hf(
+            renderer_name=case.renderer,
+            tokenizer_model=case.tokenizer_model,
+            messages=case.messages,
+            tools=case.tools,
+            train_on_what=case.train_on_what,
+            apply_chat_template_kwargs=case.apply_chat_template_kwargs,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        pytest.skip(f"tokenizer unavailable for {case.tokenizer_model!r}: {exc}")
+
+    assert result.match, format_supervised_divergence(result)

@@ -140,6 +140,8 @@ class MistralRenderer(Renderer):
     Instruct v0.3+, Ministral 8B 2410, Mistral Small 3 Instruct).
     """
 
+    expects_openai_tool_wrappers = True
+
     def __init__(self, tokenizer: Tokenizer) -> None:
         super().__init__(tokenizer)
         self.default_system_prompt = self._detect_default_system_prompt()
