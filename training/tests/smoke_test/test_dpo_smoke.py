@@ -57,9 +57,9 @@ def test_dpo_smoke(
             epochs=1,
             batch_size=1,
             max_pairs=4,
-            dcp_save_interval=0,
             infra=smoke_dpo_infra,
             deployment=DeployConfig(),
+            dcp_save_interval=0,
             wandb=WandBConfig(),
         )
 

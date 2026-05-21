@@ -33,16 +33,6 @@ training/           Training SDK recipes, utilities, and examples
 skills/             Agent skills and reference docs
 ```
 
-## Fireworks Agent skill
-
-- [`skills/fireworks-agent/SKILL.md`](skills/fireworks-agent/SKILL.md)
-  — end-to-end fine-tuning via the Fireworks Agent (`firectl
-  session`). Give it one natural-language instruction and it handles
-  data inspection, model selection, hyperparameter sweeps, training,
-  evaluation, and deployment. Includes the full session lifecycle:
-  create, stream events, answer the agent's mid-run questions,
-  recover from failures, and clean up.
-
 ## Renderer skills
 
 - [`skills/renderer/SKILL.md`](skills/renderer/SKILL.md) — implementing

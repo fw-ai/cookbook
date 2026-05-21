@@ -16,6 +16,8 @@ integration test against ``sft_loop.main``.
 from __future__ import annotations
 
 import json
+import os
+from typing import Any
 
 import pytest
 
@@ -23,7 +25,6 @@ from training.utils.streaming import (
     AppendOnlyPickleLog,
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,
-    JSONL_ROW_INDEX_KEY,
     JsonlRenderDataset,
     _scan_jsonl_offsets,
     make_render_dataloader,
@@ -157,39 +158,6 @@ def test_dataset_init_with_explicit_indices(tmp_path):
     assert len(ds) == 3
     assert ds.num_underlying_rows == 10  # full file still scanned
     assert [ds[i]["id"] for i in range(3)] == [7, 2, 9]
-
-
-def test_dataset_passes_source_row_index_to_render_fn(tmp_path):
-    path = str(tmp_path / "data.jsonl")
-    _write_jsonl(path, [{"i": i} for i in range(5)])
-
-    def render(row: dict) -> dict:
-        return {"id": row["i"], "source_index": row[JSONL_ROW_INDEX_KEY]}
-
-    ds = JsonlRenderDataset(
-        path,
-        render,
-        indices=[4, 1, 3],
-        row_index_key=JSONL_ROW_INDEX_KEY,
-    )
-
-    assert [ds[i] for i in range(3)] == [
-        {"id": 4, "source_index": 4},
-        {"id": 1, "source_index": 1},
-        {"id": 3, "source_index": 3},
-    ]
-
-
-def test_dataset_does_not_add_source_row_index_by_default(tmp_path):
-    path = str(tmp_path / "data.jsonl")
-    _write_jsonl(path, [{"i": 0}])
-
-    def render(row: dict) -> dict:
-        return row
-
-    ds = JsonlRenderDataset(path, render)
-
-    assert ds[0] == {"i": 0}
 
 
 # ---------------------------------------------------------------------------
