@@ -1,0 +1,43 @@
+name: Create Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: cookbook-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: create release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create cookbook release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          today="$(date -u +%Y.%m.%d)"
+          latest="$(
+            git tag --list "cookbook-v${today}.*" |
+              sed -E "s/^cookbook-v${today}\\.([0-9]+)$/\\1/" |
+              sort -n |
+              tail -1
+          )"
+          next=$(( ${latest:-0} + 1 ))
+          tag="cookbook-v${today}.${next}"
+
+          gh release create "${tag}" \
+            --target "${GITHUB_SHA}" \
+            --title "${tag}" \
+            --generate-notes
