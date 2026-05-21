@@ -80,4 +80,4 @@ If the installed version doesn't satisfy the pin, upgrade first and retry. Only 
 
 ## SDK surface
 
-The training SDK lives at <https://github.com/stainless-sdks/fireworks-ai-python> under `src/fireworks/training/sdk/`. Code outside that directory in that repo is auto-generated — ignore. For any SDK call an agent needs, read the cookbook recipe that already makes it: recipe files are listed in [`references/recipes.md`](references/recipes.md).
+The training SDK lives at <https://github.com/fw-ai-external/python-sdk> under `src/fireworks/training/sdk/`. For any SDK call an agent needs, read the cookbook recipe that already makes it: recipe files are listed in [`references/recipes.md`](references/recipes.md).
