@@ -54,14 +54,9 @@ def test_setup_deployment_omits_placement_for_shape_backed_create():
                 }
             )
 
-        def _post(self, path, json, timeout):
-            captured["path"] = path
-            captured["json"] = json
-            captured["timeout"] = timeout
-            return FakeResponse()
-
-        def _parse_deployment_info(self, deployment_id, data):
-            return SimpleNamespace(deployment_id=deployment_id, state=data["state"])
+        def create_or_get(self, config):
+            captured["config"] = config
+            return SimpleNamespace(deployment_id=config.deployment_id, state="CREATING")
 
         def wait_for_ready(self, deployment_id, timeout_s):
             return SimpleNamespace(deployment_id=deployment_id, state="READY")
@@ -78,10 +73,8 @@ def test_setup_deployment_omits_placement_for_shape_backed_create():
 
     assert info.state == "READY"
     assert captured["shape_timeout"] == 30
-    assert captured["timeout"] == 60
-    assert captured["json"]["deploymentShape"] == "accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2"
-    assert captured["json"]["forTraining"] is True
-    assert "placement" not in captured["json"]
+    assert captured["config"].deployment_shape == "accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2"
+    assert captured["config"].accelerator_type is None
 
 
 def test_setup_deployment_infers_ohio_for_b200_shape():
