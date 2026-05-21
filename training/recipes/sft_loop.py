@@ -624,8 +624,6 @@ def main(
                 return cfg.learning_rate * (optim_step_idx / cfg.warmup_steps)
             return cfg.learning_rate
 
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
-
         # -- Training loop (batch-indexed) -------------------------------------
 
         completed_epochs = cursor.value // training_count if training_count else 0
