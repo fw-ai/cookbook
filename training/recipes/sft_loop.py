@@ -15,13 +15,16 @@ Usage:
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import random
 import signal
+import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from itertools import islice
+from pathlib import Path
 from typing import Any, Dict, List
 
 import tinker
@@ -29,10 +32,12 @@ import torch
 from dotenv import load_dotenv
 from fireworks.training.sdk import TrainerJobManager
 
+from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
     DEFAULT_RENDER_WORKERS,
     InfraConfig,
+    JSONL_ROW_INDEX_KEY,
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
@@ -69,6 +74,196 @@ logger = logging.getLogger(__name__)
 # auto carve-out, which run in-process with the same render_fn.
 _worker_state: dict = {}
 
+RENDER_SAMPLE_LIMIT_ENV = "FIRETITAN_SFT_RENDER_SAMPLES_LIMIT"
+DEFAULT_RENDER_SAMPLE_LIMIT = 20
+
+
+def _parse_render_samples_limit(value: str) -> int | None:
+    normalized = value.strip().lower()
+    if normalized in {"all", "full", "unlimited", "-1"}:
+        return None
+    limit = int(normalized)
+    if limit < 0:
+        return None
+    return limit
+
+
+def _resolve_render_samples_limit(config_limit: int | None) -> int | None:
+    env_limit = os.environ.get(RENDER_SAMPLE_LIMIT_ENV)
+    if env_limit is not None:
+        try:
+            return _parse_render_samples_limit(env_limit)
+        except ValueError:
+            logger.warning(
+                "Invalid %s=%r; using default render sample limit %d",
+                RENDER_SAMPLE_LIMIT_ENV,
+                env_limit,
+                DEFAULT_RENDER_SAMPLE_LIMIT,
+            )
+            return DEFAULT_RENDER_SAMPLE_LIMIT
+    if config_limit is None:
+        return DEFAULT_RENDER_SAMPLE_LIMIT
+    if config_limit < 0:
+        return None
+    return int(config_limit)
+
+
+def _decode_tokens(token_ids: list[int]) -> list[str]:
+    tokenizer = _worker_state.get("tokenizer")
+    if tokenizer is None:
+        return ["" for _ in token_ids]
+    decoded: list[str] = []
+    for token_id in token_ids:
+        try:
+            text = tokenizer.decode([int(token_id)], skip_special_tokens=False)
+        except TypeError:
+            text = tokenizer.decode([int(token_id)])
+        except Exception:  # noqa: BLE001 - diagnostic artifact must not break rendering
+            text = ""
+        decoded.append(str(text))
+    return decoded
+
+
+def _render_sample_worker_path() -> str:
+    local_dir = _worker_state.get("render_samples_local_dir") or ""
+    worker_id = _worker_state.get("worker_id")
+    worker_label = "main" if worker_id is None else str(worker_id)
+    return os.path.join(local_dir, f"render_samples.worker-{worker_label}.jsonl")
+
+
+def _remaining_render_sample_capacity() -> int | None:
+    limit = _worker_state.get("render_samples_limit")
+    if limit is None:
+        return None
+    written = int(_worker_state.get("render_samples_written", 0))
+    return max(0, int(limit) - written)
+
+
+def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
+    local_dir = _worker_state.get("render_samples_local_dir") or ""
+    if not local_dir:
+        return
+    remaining = _remaining_render_sample_capacity()
+    if remaining == 0:
+        return
+
+    selected = rendered_examples if remaining is None else rendered_examples[:remaining]
+    if not selected:
+        return
+
+    row_index = row.get(JSONL_ROW_INDEX_KEY)
+    try:
+        row_index_int = int(row_index) if row_index is not None else None
+    except (TypeError, ValueError):
+        row_index_int = None
+
+    path = _render_sample_worker_path()
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            for split_index, rendered in enumerate(selected):
+                token_ids = [int(x) for x in rendered.token_ids]
+                token_weights = [float(x) for x in rendered.token_weights]
+                datum = rendered.datum
+                target_tokens = [int(x) for x in datum.loss_fn_inputs["target_tokens"].data]
+                training_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
+                record = {
+                    # source_jsonl_row_index is 0-based; source_jsonl_line_number
+                    # is 1-based to match editor / CLI line-number conventions.
+                    "source_jsonl_row_index": row_index_int,
+                    "source_jsonl_line_number": row_index_int + 1 if row_index_int is not None else None,
+                    "split_index": split_index,
+                    "worker_id": _worker_state.get("worker_id"),
+                    "renderer": _worker_state.get("resolved_renderer_name", ""),
+                    "train_on_what": _worker_state.get("train_on_what_str", ""),
+                    "token_ids": token_ids,
+                    "decoded_tokens": _decode_tokens(token_ids),
+                    "token_weights": token_weights,
+                    "training_target_token_ids": target_tokens,
+                    "training_loss_weights": training_weights,
+                }
+                handle.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
+                _worker_state["render_samples_written"] = int(
+                    _worker_state.get("render_samples_written", 0)
+                ) + 1
+    except Exception:  # noqa: BLE001 - best-effort debug artifact
+        if not _worker_state.get("render_samples_error_logged"):
+            logger.warning("Failed to write SFT render sample", exc_info=True)
+            _worker_state["render_samples_error_logged"] = True
+
+
+def _round_robin_render_sample_lines(files: list[Path]) -> list[str]:
+    handles = []
+    try:
+        for path in files:
+            handles.append(path.open(encoding="utf-8"))
+        lines: list[str] = []
+        while handles:
+            next_handles = []
+            for handle in handles:
+                line = handle.readline()
+                if line:
+                    lines.append(line)
+                    next_handles.append(handle)
+                else:
+                    handle.close()
+            handles = next_handles
+        return lines
+    finally:
+        for handle in handles:
+            if not handle.closed:
+                handle.close()
+
+
+def _finalize_render_samples(
+    local_dir: str,
+    output_path: str,
+    render_samples_limit: int | None,
+) -> None:
+    if not local_dir or not output_path:
+        return
+    try:
+        files = sorted(Path(local_dir).glob("render_samples.worker-*.jsonl"))
+        all_lines = _round_robin_render_sample_lines(files)
+        content_parts = all_lines
+        truncated_count = 0
+        if render_samples_limit is not None:
+            content_parts = all_lines[:render_samples_limit]
+            truncated_count = max(0, len(all_lines) - render_samples_limit)
+        if not content_parts:
+            logger.info("No SFT render samples were captured; skipping %s", output_path)
+            return
+        content = "".join(content_parts)
+        content_bytes = content.encode("utf-8")
+        fileio.write_bytes(output_path, content_bytes)
+        logger.info(
+            "Uploaded %d SFT render sample records (%d bytes) to %s",
+            len(content_parts),
+            len(content_bytes),
+            output_path,
+        )
+        if truncated_count:
+            logger.info(
+                "Skipped %d extra SFT render sample records after global limit=%d",
+                truncated_count,
+                render_samples_limit,
+            )
+    except Exception:  # noqa: BLE001 - diagnostic artifact must not fail the job
+        logger.warning("Failed to finalize SFT render samples to %s", output_path, exc_info=True)
+
+
+def _configure_render_sample_state(
+    render_samples_local_dir: str = "",
+    render_samples_limit: int | None = 0,
+    _worker_id: int | None = None,
+) -> None:
+    _worker_state.update(
+        worker_id=_worker_id,
+        render_samples_local_dir=render_samples_local_dir,
+        render_samples_limit=render_samples_limit,
+        render_samples_written=0,
+        render_samples_error_logged=False,
+    )
+
 
 def _init_render_worker(
     tokenizer_model: str,
@@ -76,6 +271,8 @@ def _init_render_worker(
     train_on_what_str: str,
     max_seq_len: int,
     tokenizer_revision: str = "",
+    render_samples_local_dir: str = "",
+    render_samples_limit: int | None = 0,
     _worker_id: int | None = None,
 ) -> None:
     """DataLoader ``worker_init_fn`` for SFT chat-row rendering.
@@ -90,6 +287,15 @@ def _init_render_worker(
         renderer_name=renderer_name,
         max_seq_len=max_seq_len,
         train_on_what=parse_train_on_what(train_on_what_str),
+    )
+    _worker_state.update(
+        resolved_renderer_name=resolve_renderer_name(tokenizer_model, renderer_name),
+        train_on_what_str=train_on_what_str,
+    )
+    _configure_render_sample_state(
+        render_samples_local_dir=render_samples_local_dir,
+        render_samples_limit=render_samples_limit,
+        _worker_id=_worker_id,
     )
 
 
@@ -112,12 +318,14 @@ def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
     )
     if not isinstance(rendered_examples, list):
         rendered_examples = [rendered_examples]
-    datums = [
-        rendered.datum
+    valid_rendered_examples = [
+        rendered
         for rendered in rendered_examples
         if 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]
         and any(w > 0 for w in rendered.token_weights)
     ]
+    _write_render_samples(row, valid_rendered_examples)
+    datums = [rendered.datum for rendered in valid_rendered_examples]
     if not datums:
         return None
     if len(datums) == 1:
@@ -182,13 +390,20 @@ def _prepare_datasets(
     still does its own per-epoch shuffling.
     """
     training_ds = JsonlRenderDataset(
-        cfg.dataset, _render_one_worker, max_examples=cfg.max_examples,
+        cfg.dataset,
+        _render_one_worker,
+        max_examples=cfg.max_examples,
+        row_index_key=JSONL_ROW_INDEX_KEY,
     )
     if len(training_ds) == 0:
         raise RuntimeError(f"No examples found in {cfg.dataset}")
 
     if cfg.evaluation_dataset:
-        eval_ds = JsonlRenderDataset(cfg.evaluation_dataset, _render_one_worker)
+        eval_ds = JsonlRenderDataset(
+            cfg.evaluation_dataset,
+            _render_one_worker,
+            row_index_key=JSONL_ROW_INDEX_KEY,
+        )
         eval_data = _render_eagerly(eval_ds, len(eval_ds))
         logger.info(
             "Loaded %d eval examples from %s",
@@ -231,6 +446,14 @@ def _prepare_datasets(
 class Config:
     log_path: str
     """Directory for checkpoints and logs. Required, no default."""
+
+    render_samples_file: str = ""
+    """Optional JSONL path for rendered token/mask diagnostic samples."""
+
+    render_samples_limit: int | None = None
+    """Global rendered datum sample cap. ``None`` means default; negative
+    values mean full dump. Can be overridden by
+    FIRETITAN_SFT_RENDER_SAMPLES_LIMIT."""
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
@@ -556,17 +779,49 @@ def main(
             if cfg.render_workers is not None
             else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
-        init_args = (
+        base_init_args = (
             cfg.tokenizer_model,
             cfg.renderer_name,
             cfg.train_on_what,
             cfg.max_seq_len,
             cfg.tokenizer_revision,
         )
-        _init_render_worker(*init_args)
-        worker_init_fn = functools.partial(_init_render_worker, *init_args)
+        _init_render_worker(*base_init_args)
 
         training_dataset, eval_data = _prepare_datasets(cfg)
+
+        render_samples_local_dir = ""
+        render_samples_limit = _resolve_render_samples_limit(cfg.render_samples_limit)
+        if cfg.render_samples_file and render_samples_limit != 0:
+            render_samples_local_dir = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="sft-render-samples-")
+            )
+            stack.callback(
+                _finalize_render_samples,
+                render_samples_local_dir,
+                cfg.render_samples_file,
+                render_samples_limit,
+            )
+            limit_label = "full dataset" if render_samples_limit is None else str(render_samples_limit)
+            logger.info(
+                "Capturing SFT render samples to %s (global limit=%s)",
+                cfg.render_samples_file,
+                limit_label,
+            )
+        elif cfg.render_samples_file:
+            logger.info("SFT render samples disabled by limit=0 for %s", cfg.render_samples_file)
+
+        init_args = (
+            *base_init_args,
+            render_samples_local_dir,
+            render_samples_limit,
+        )
+        _configure_render_sample_state(
+            render_samples_local_dir=render_samples_local_dir,
+            render_samples_limit=render_samples_limit,
+        )
+        worker_init_fn = functools.partial(_init_render_worker, *init_args)
+
         training_count = len(training_dataset)
         effective_batch_size = max(1, min(cfg.batch_size, training_count))
         if effective_batch_size < cfg.batch_size:

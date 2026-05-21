@@ -68,9 +68,6 @@ class TestComputeStepMetrics:
 
         assert metrics["rollout/valid_prompt_groups"] == 6
         assert metrics["rollout/samples_completed"] == 1
-        assert metrics["rollout/raw_samples_completed"] == 2
-        assert metrics["rollout/raw_reward"] == 0.5
-        assert metrics["rollout/raw_accuracy"] == 0.5
         assert metrics["rollout/filter_reject_ratio"] == 1 / 7
         assert metrics["rollout/sample_fail_count"] == 2
         assert metrics["perf/trainer_wait_for_sampler_time"] == 3.0

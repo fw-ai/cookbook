@@ -26,8 +26,8 @@ def test_setup_deployment_omits_placement_for_shape_backed_create():
     captured = {}
 
     class FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
+        def __init__(self, payload=None):
+            self._payload = payload or {"name": "accounts/acct/deployments/dep-123", "state": "CREATING"}
 
         def raise_for_status(self):
             return None
@@ -74,7 +74,7 @@ def test_setup_deployment_omits_placement_for_shape_backed_create():
     assert info.state == "READY"
     assert captured["shape_timeout"] == 30
     assert captured["config"].deployment_shape == "accounts/fireworks/deploymentShapes/rft-kimi-k2p5-v2"
-    assert captured["config"].region is None
+    assert captured["config"].accelerator_type is None
 
 
 def test_setup_deployment_infers_ohio_for_b200_shape():

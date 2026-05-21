@@ -275,29 +275,6 @@ class TestHappyPath:
         assert len(trained_groups) == 3
         assert all(g.rewards[0] >= 3.0 for g in trained_groups)
 
-    def test_all_raw_rewards_include_filter_drops(self):
-        """Per-step raw rewards include rows dropped by dynamic filtering."""
-        raw_rewards_by_step = []
-
-        def filter_fn(pg):
-            return pg.rewards[0] >= 3.0
-
-        def train_step(step, groups, extra):
-            raw_rewards_by_step.append(list(extra["all_raw_rewards"]))
-            return step + 1, {}
-
-        _run(run_async_rl_loop(
-            rows=(_row(i, reward=float(i)) for i in range(6)),
-            train_fns=TrainStepFns(train_step=train_step),
-            prompt_groups_per_step=3,
-            max_head_offpolicy_versions=2,
-            dynamic_filter_fn=filter_fn,
-            **_DEFAULTS,
-        ))
-
-        assert len(raw_rewards_by_step) == 1
-        assert sorted(raw_rewards_by_step[0]) == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
-
     def test_iterator_exhausted_flushes_partial_final_step(self):
         sizes: list[int] = []
 

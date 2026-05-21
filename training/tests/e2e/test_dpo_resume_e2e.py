@@ -52,6 +52,7 @@ class TestDPOResumeE2E:
         sdk_managers,
         e2e_region,
         e2e_model,
+        e2e_tokenizer_model,
         e2e_training_accelerator,
         custom_image_tag,
     ):
@@ -78,13 +79,14 @@ class TestDPOResumeE2E:
                 log_path=log_dir,
                 base_model=e2e_model,
                 dataset=dataset_path,
+                tokenizer_model=e2e_tokenizer_model,
                 beta=0.1,
                 learning_rate=1e-5,
                 epochs=1,
                 max_pairs=8,
+                dcp_save_interval=2,
                 infra=shared_infra,
                 deployment=DeployConfig(),
-                dcp_save_interval=2,
             )
 
             phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
@@ -105,6 +107,7 @@ class TestDPOResumeE2E:
                 log_path=log_dir,
                 base_model=e2e_model,
                 dataset=dataset_path,
+                tokenizer_model=e2e_tokenizer_model,
                 beta=0.1,
                 learning_rate=1e-5,
                 epochs=1,
