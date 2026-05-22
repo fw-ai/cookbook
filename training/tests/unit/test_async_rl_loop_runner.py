@@ -2,8 +2,8 @@
 
 These tests cover two layers of the managed runtime artifact contract:
 
-1. **Deterministic helpers** (``_emit_resources_ready``,
-   ``_estimate_total_steps``) -- callback invocation + progress-bar
+1. **Deterministic helpers** (``notify_resources_ready``,
+   ``estimate_async_total_steps``) -- callback invocation + progress-bar
    total formula.
 2. **End-to-end through ``async_rl_loop.main`` with fakes** --
    exercises the real ``RunnerIO`` writes that satisfy the explicit
@@ -29,6 +29,7 @@ import pytest
 
 from training.recipes import async_rl_loop
 from training.utils import DeployConfig, RunnerConfig
+from training.utils.runner_state import estimate_async_total_steps, notify_resources_ready
 
 
 @dataclass
@@ -40,13 +41,13 @@ class _FakeInfra:
     reference_job_id: str | None = None
 
 
-class TestEmitResourcesReady:
-    """``_emit_resources_ready`` is the FIR2-1599 resource-ready hook surface."""
+class TestNotifyResourcesReady:
+    """``notify_resources_ready`` is the FIR2-1599 resource-ready hook surface."""
 
     def test_noop_when_callback_is_none(self) -> None:
         """A missing callback is silently skipped (no kwargs required)."""
         infra = _FakeInfra(deployment_id="dep-1", policy_job_id="pol-1")
-        async_rl_loop._emit_resources_ready(infra, None)
+        notify_resources_ready(infra, None)
 
     def test_invokes_callback_with_resource_ids(self) -> None:
         """The callback receives deployment/policy/reference IDs as kwargs."""
@@ -60,7 +61,7 @@ class TestEmitResourcesReady:
             policy_job_id="policy-xyz",
             reference_job_id="ref-123",
         )
-        async_rl_loop._emit_resources_ready(infra, callback)
+        notify_resources_ready(infra, callback)
 
         assert captured == [
             {
@@ -82,7 +83,7 @@ class TestEmitResourcesReady:
             policy_job_id="pol-1",
             reference_job_id=None,
         )
-        async_rl_loop._emit_resources_ready(infra, callback)
+        notify_resources_ready(infra, callback)
 
         assert captured == [
             {"deployment_id": "dep-1", "policy_job_id": "pol-1", "reference_job_id": None}
@@ -96,17 +97,17 @@ class TestEmitResourcesReady:
             raise RuntimeError("disk full")
 
         with caplog.at_level("WARNING"):
-            async_rl_loop._emit_resources_ready(infra, boom)
+            notify_resources_ready(infra, boom)
 
         assert any("on_resources_ready" in rec.message for rec in caplog.records)
 
 
-class TestEstimateTotalSteps:
-    """``_estimate_total_steps`` mirrors the FIR2-1599 progress formula."""
+class TestEstimateAsyncTotalSteps:
+    """``estimate_async_total_steps`` mirrors the FIR2-1599 progress formula."""
 
     def test_fresh_run_single_minibatch(self) -> None:
         """No resume, one minibatch per rollout -> one step per row."""
-        total = async_rl_loop._estimate_total_steps(
+        total = estimate_async_total_steps(
             step_offset=0,
             total_items=10,
             prior_rows_consumed=0,
@@ -117,7 +118,7 @@ class TestEstimateTotalSteps:
 
     def test_fresh_run_batches_rows(self) -> None:
         """With ``prompt_groups_per_step=4`` we expect ceil(10/4) = 3 rollouts."""
-        total = async_rl_loop._estimate_total_steps(
+        total = estimate_async_total_steps(
             step_offset=0,
             total_items=10,
             prior_rows_consumed=0,
@@ -128,7 +129,7 @@ class TestEstimateTotalSteps:
 
     def test_ppo_inner_minibatches_multiply_steps(self) -> None:
         """Each rollout batch fans out into ``ppo_n_minibatches`` optim steps."""
-        total = async_rl_loop._estimate_total_steps(
+        total = estimate_async_total_steps(
             step_offset=0,
             total_items=10,
             prior_rows_consumed=0,
@@ -140,7 +141,7 @@ class TestEstimateTotalSteps:
 
     def test_resume_adds_step_offset(self) -> None:
         """Resume from step N -> total includes N + remaining estimate."""
-        total = async_rl_loop._estimate_total_steps(
+        total = estimate_async_total_steps(
             step_offset=4,
             total_items=10,
             prior_rows_consumed=6,
@@ -152,7 +153,7 @@ class TestEstimateTotalSteps:
 
     def test_clamps_negative_remaining(self) -> None:
         """If the cursor is past total_items we still return at least the offset."""
-        total = async_rl_loop._estimate_total_steps(
+        total = estimate_async_total_steps(
             step_offset=7,
             total_items=10,
             prior_rows_consumed=12,
@@ -163,7 +164,7 @@ class TestEstimateTotalSteps:
 
     def test_invalid_groups_per_step_floors_to_one(self) -> None:
         """A zero/negative ``prompt_groups_per_step`` is treated as 1."""
-        total = async_rl_loop._estimate_total_steps(
+        total = estimate_async_total_steps(
             step_offset=0,
             total_items=5,
             prior_rows_consumed=0,
@@ -174,7 +175,7 @@ class TestEstimateTotalSteps:
 
     def test_zero_total_items_returns_offset_only(self) -> None:
         """An empty dataset reports the step offset as the total."""
-        total = async_rl_loop._estimate_total_steps(
+        total = estimate_async_total_steps(
             step_offset=3,
             total_items=0,
             prior_rows_consumed=0,
@@ -226,7 +227,7 @@ class TestResourceCallbackSignature:
         def cb(**kwargs: object) -> None:
             seen.append(set(kwargs))
 
-        async_rl_loop._emit_resources_ready(
+        notify_resources_ready(
             _FakeInfra(deployment_id="d", policy_job_id="p", reference_job_id="r"),
             cb,
         )
