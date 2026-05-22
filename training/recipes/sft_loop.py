@@ -466,6 +466,9 @@ class Config:
     learning_rate: float = 1e-4
     epochs: int = 3
     batch_size: int = 32
+    """Number of training samples per optimizer step. For managed (V2) jobs
+    this is set from ``BaseTrainingConfig.batch_size_samples`` via the
+    cookbook orchestrator."""
     max_seq_len: int | None = None
     max_examples: int | None = None
     lora_rank: int = 0
