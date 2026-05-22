@@ -81,6 +81,14 @@ from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_me
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
 from training.utils.rl.rollout import RolloutSample
+from training.utils.runner_state import (
+    ResourceCallback,
+    estimate_async_total_steps,
+    notify_resources_ready,
+    start_running,
+    write_completed,
+    write_running_step,
+)
 from training.utils.timer import elapsed_timer, flush_timing, timer
 
 logger = logging.getLogger(__name__)
@@ -190,75 +198,6 @@ class RolloutSetup:
 
 RolloutFn = Callable[[dict], Awaitable[RolloutSample | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
-
-ResourceCallback = Callable[..., None]
-"""Callback invoked once training resources (deployment, policy trainer,
-optionally reference trainer) have been provisioned.
-
-The callback receives keyword arguments so the recipe can add future
-identifiers without forcing every caller to update their signature.
-Current keyword arguments:
-
-* ``deployment_id`` -- inference deployment ID (``None`` if no inference)
-* ``policy_job_id`` -- policy trainer job ID
-* ``reference_job_id`` -- reference trainer job ID (``None`` when not used)
-
-Exceptions raised inside the callback are logged and swallowed -- a
-broken orchestration writer must never abort training.
-"""
-
-
-def _emit_resources_ready(infra, on_resources_ready: ResourceCallback | None) -> None:
-    """Notify the orchestration layer that training resources are ready.
-
-    Called immediately after :func:`setup_infra` returns so cold-start
-    fallback can recover ``deployment_id`` / ``policy_job_id`` /
-    ``reference_job_id`` from the orchestrator's ``resources.json``
-    before training starts (FIR2-1599).
-
-    Callback failures are logged but never propagated -- a broken
-    orchestration writer must not be able to take down training.
-    """
-    if on_resources_ready is None:
-        return
-    try:
-        on_resources_ready(
-            deployment_id=infra.deployment_id,
-            policy_job_id=infra.policy_job_id,
-            reference_job_id=infra.reference_job_id,
-        )
-    except Exception as exc:  # noqa: BLE001 - artifact writer must not abort training
-        logger.warning(
-            "on_resources_ready callback raised %r; ignoring",
-            exc,
-            exc_info=True,
-        )
-
-
-def _estimate_total_steps(
-    *,
-    step_offset: int,
-    total_items: int,
-    prior_rows_consumed: int,
-    prompt_groups_per_step: int,
-    ppo_n_minibatches: int,
-) -> int:
-    """Estimate the total number of optimizer steps for status reporting.
-
-    Mirrors the formula from the FIR2-1599 plan:
-
-        remaining_rows = total_items - prior_rows_consumed
-        rollout_batches = ceil(remaining_rows / prompt_groups_per_step)
-        total_steps = step_offset + rollout_batches * max(1, ppo_n_minibatches)
-
-    The result is a best-effort upper bound; dynamic filtering / dropped
-    rows can reduce the realised count, so callers should clamp the
-    progress fraction at 100% (the loop does this by writing
-    ``step=max(global_step, total_steps_estimate)`` on completion).
-    """
-    remaining = max(0, total_items - prior_rows_consumed)
-    rollout_batches = math.ceil(remaining / max(1, prompt_groups_per_step))
-    return step_offset + rollout_batches * max(1, ppo_n_minibatches)
 
 
 def _save_checkpoint(
@@ -413,7 +352,7 @@ def main(
         # ready BEFORE running any further setup. Cold-start fallback
         # needs ``resources.json`` to be on disk by the time the trainer
         # / deployment IDs are usable.
-        _emit_resources_ready(infra, on_resources_ready)
+        notify_resources_ready(infra, on_resources_ready)
 
         policy_job_id = infra.policy_job_id
         assert infra.inference_model is not None  # needs_inference=True invariant
@@ -481,7 +420,7 @@ def main(
             seed=cfg.seed,
         )
 
-        total_steps_estimate = _estimate_total_steps(
+        total_steps_estimate = estimate_async_total_steps(
             step_offset=step_offset,
             total_items=row_loader.total_items,
             prior_rows_consumed=prior_rows_consumed,
@@ -723,18 +662,13 @@ def main(
             # the batch so billing metadata accumulates the actual
             # number of tokens trained on at this step (not the raw
             # rollout length, and not zero).
-            runner.append_metrics(
-                step,
-                metrics,
-                tokens=total_target_tokens(prompt_groups),
-            )
-            runner.write_status(
-                RunStatus.RUNNING,
+            write_running_step(
+                runner,
                 step=step,
                 total_steps=total_steps_estimate,
-                message="training",
+                metrics=metrics,
+                tokens=total_target_tokens(prompt_groups),
             )
-            runner.write_metadata()
             # DCP cadence is in rollout batches, not optim steps, so
             # ppo_n_minibatches doesn't change save frequency.
             rollouts_completed = (step - step_offset) // num_minibatches
@@ -765,12 +699,10 @@ def main(
             current_version = step
             logger.info("[step %d] weight_sync (%.1fs)", step, span.elapsed)
 
-        runner.start_training()
-        runner.write_status(
-            RunStatus.RUNNING,
+        start_running(
+            runner,
             step=step_offset,
             total_steps=total_steps_estimate,
-            message="training",
         )
 
         global_step, final_stats = asyncio.run(
@@ -822,13 +754,11 @@ def main(
         # / dropped rows shorten the realised step count below the
         # original estimate (FIR2-1599 plan).
         final_step = max(global_step, total_steps_estimate)
-        runner.write_status(
-            RunStatus.COMPLETED,
+        write_completed(
+            runner,
             step=final_step,
             total_steps=final_step,
-            message="done",
         )
-        runner.write_metadata()
 
         logger.info(
             "Async RL training complete: %d steps (%d new in this run)",

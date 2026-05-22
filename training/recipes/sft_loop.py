@@ -63,6 +63,7 @@ from training.utils import (
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.losses import make_batch_weighted_sft_loss_fn
+from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
 load_dotenv()
@@ -956,16 +957,17 @@ def main(
                 })
                 wandb_log(step_metrics, step)
 
-            runner.append_metrics(step, step_metrics, tokens=step_total_tokens)
-            runner.write_status(
-                RunStatus.RUNNING, step=step, total_steps=total_steps_estimate, message="training",
+            write_running_step(
+                runner,
+                step=step,
+                total_steps=total_steps_estimate,
+                metrics=step_metrics,
+                tokens=step_total_tokens,
             )
-            runner.write_metadata()
 
             return step
 
-        runner.start_training()
-        runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
+        start_running(runner, total_steps=total_steps_estimate)
 
         for epoch in range(completed_epochs, cfg.epochs):
             loader_generator.manual_seed(cfg.seed + epoch)
@@ -1034,10 +1036,7 @@ def main(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
                 )
 
-        runner.write_status(
-            RunStatus.COMPLETED, step=step, total_steps=step, message="done",
-        )
-        runner.write_metadata()
+        write_completed(runner, step=step, total_steps=step)
         logger.info("Training complete: %d optimizer steps", step)
         wandb_finish()
         return {"steps": step, "job_id": job_id}

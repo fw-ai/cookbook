@@ -78,6 +78,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import setup_infra
+from training.utils.runner_state import write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
 logger = logging.getLogger(__name__)
@@ -396,9 +397,13 @@ async def _train_loop(
             "train/total_tokens": total_tokens,
         })
         wandb_log(step_metrics, step)
-        runner.append_metrics(step, step_metrics, tokens=total_tokens)
-        runner.write_status(RunStatus.RUNNING, step=step, total_steps=total_steps, message="training")
-        runner.write_metadata()
+        write_running_step(
+            runner,
+            step=step,
+            total_steps=total_steps,
+            metrics=step_metrics,
+            tokens=total_tokens,
+        )
 
     # -- Epoch 0: stream render → ref forward → training -----------------------
 
@@ -735,8 +740,7 @@ def main(
                 )
 
         total_steps = step
-        runner.write_status(RunStatus.COMPLETED, step=step, total_steps=total_steps, message="done")
-        runner.write_metadata()
+        write_completed(runner, step=step, total_steps=total_steps)
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()
         return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
