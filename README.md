@@ -43,17 +43,6 @@ skills/             Agent skills and reference docs
   create, stream events, answer the agent's mid-run questions,
   recover from failures, and clean up.
 
-## Renderer skills
-
-- [`skills/renderer/SKILL.md`](skills/renderer/SKILL.md) — implementing
-  a new renderer (chat template, stop semantics, weight-mask
-  invariants, registration, dev loop).
-- [`skills/verifier/SKILL.md`](skills/verifier/SKILL.md) — validating
-  a renderer against the live Fireworks gateway and the upstream
-  HuggingFace chat template. The verifier ships a probe CLI, a batch
-  triage runner, and a single-file React viewer that highlights every
-  audit-table row by provenance, weight, and inspection-rule match.
-
 ## Contributing
 
 See the [Contribution Guide](./Contribution.md).
