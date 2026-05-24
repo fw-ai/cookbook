@@ -104,7 +104,9 @@ class Config:
     learning_rate: float = 1e-5
     epochs: int = 1
     batch_size: int = 4
-    """Number of preference pairs per optimizer step."""
+    """Number of preference pairs per optimizer step. For managed (V2) jobs
+    this is set from ``BaseTrainingConfig.batch_size_samples`` via the
+    cookbook orchestrator."""
     max_seq_len: int | None = None
     max_pairs: int | None = None
     """Cap on *valid rendered pairs* after schema/length filtering."""

@@ -14,10 +14,10 @@ from training.utils.checkpoints import TrainingCheckpoints
 class _FakeFuture:
     """Minimal future-like wrapper for FakeClient.inner return values."""
 
-    def __init__(self, value):
+    def __init__(self, value: object):
         self._value = value
 
-    def result(self, timeout=None):
+    def result(self, timeout: float | None = None) -> object:
         return self._value
 
 
@@ -29,13 +29,13 @@ class _FakeInner:
     future, so the test's existing event-tracking still fires.
     """
 
-    def __init__(self, parent):
+    def __init__(self, parent: object):
         self._parent = parent
 
-    def forward_backward(self, *args, **kwargs):
+    def forward_backward(self, *args, **kwargs) -> _FakeFuture:
         return _FakeFuture(self._parent.forward_backward(*args, **kwargs))
 
-    def optim_step(self, *args, **kwargs):
+    def optim_step(self, *args, **kwargs) -> _FakeFuture:
         return _FakeFuture(self._parent.optim_step(*args, **kwargs))
 
 
