@@ -10,6 +10,22 @@ Dataset format (JSONL, OpenAI chat format):
 Usage:
     export FIREWORKS_API_KEY=...
     python -m recipes.sft_loop
+
+
+Maximize GPU Utilization
+===========================================================================
+
+The cookbook overlaps GPU/server work along two dimensions:
+
+1. Intra-step overlap (always on). Each training step submits both
+   forward_backward and optim_step as futures, then awaits them together. 
+   This hides the round-trip between fwdbwd and optim within a single step.
+
+2. Inter-step pipelining (Config.pipeline_depth >= 2). Keep N (fwdbwd, optim)
+   pairs in flight on the server's continuous-batching coalescer, so step
+   N+1's server-side prep overlaps with step N's GPU compute. Increase this
+   number (i.e. set to 4) to improve throughput.
+
 """
 
 from __future__ import annotations
@@ -21,6 +37,8 @@ import os
 import random
 import signal
 import tempfile
+import time
+from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from itertools import islice
@@ -466,6 +484,9 @@ class Config:
     learning_rate: float = 1e-4
     epochs: int = 3
     batch_size: int = 32
+    """Number of training samples per optimizer step. For managed (V2) jobs
+    this is set from ``BaseTrainingConfig.batch_size_samples`` via the
+    cookbook orchestrator."""
     max_seq_len: int | None = None
     max_examples: int | None = None
     lora_rank: int = 0
@@ -510,6 +531,11 @@ class Config:
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
+
+    pipeline_depth: int = 1
+    """Number of (forward_backward, optim_step) pairs in flight at once
+    (inter-step pipelining). Intra-step fb/optim overlap is always on.
+    Increase this number (i.e. set to 4) to improve throughput."""
 
     trainer_job_id: str | None = None
     """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
@@ -890,133 +916,169 @@ def main(
             (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
         )
 
-        def _run_train_step(
-            batch: list[tinker.Datum],
-            step: int,
-        ) -> int:
+        # Always-on intra-step async + optional inter-step pipelining
+        in_flight: deque = deque()
+        pipe_started = time.time()
+        pipe_total_tokens = 0
+        # Track previous fb/opt completion times in pipeline mode   .
+        last_t_fb_done: float | None = None
+        last_t_opt_done: float | None = None
+        last_optim_time: float | None = None
 
-            # Count total tokens for throughput tracking
-            step_total_tokens = sum(
-                len(chunk.tokens)
-                for d in batch
-                for chunk in d.model_input.chunks
-                if hasattr(chunk, "tokens")
+        def _pipe_submit(batch: list[tinker.Datum], step: int) -> int:
+            """Submit one fwd_bwd + optim_step pair (non-blocking). Returns updated step."""
+            tokens = sum(
+                len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens")
             )
-
-            with timer("fwd_bwd"):
-                result = client.forward_backward(batch)
-                loss_sum = result.metrics.get("loss:sum", 0.0)
-                response_tokens = result.metrics.get("response_tokens")
-                if response_tokens is None:
-                    response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch)
-
-            with timer("optim_step"):
-                # Rebuild AdamParams each step so warmup can scale lr.
-                step_lr = _current_lr(step + 1)
-                step_adam = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
-                optim_result = client.optim_step(step_adam)
             step += 1
+            adam = tinker.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
+            inner = client.inner
+            t_submit = time.time()
+            in_flight.append((
+                step, tokens, t_submit,
+                inner.forward_backward(batch, loss_fn="cross_entropy"),
+                inner.optim_step(adam),
+            ))
+            return step
 
-            if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
+        def _pipe_collect() -> None:
+            """Pop the oldest pair, emit per-step metrics + checkpoint."""
+            nonlocal pipe_total_tokens, last_t_fb_done, last_t_opt_done, last_optim_time
+            s, tokens, t_submit, fb_fut, opt_fut = in_flight.popleft()
+            result = fb_fut.result(timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S)
+            t_fb_done = time.time()
+            loss_sum = result.metrics.get("loss:sum", 0.0)
+            response_tokens = result.metrics.get("response_tokens")
+            optim_result = opt_fut.result(timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S)
+            t_opt_done = time.time()
+
+            pipe_total_tokens += tokens
+            tps = pipe_total_tokens / max(1e-9, time.time() - pipe_started)
+
+            if cfg.dcp_save_interval > 0 and s % cfg.dcp_save_interval == 0:
                 with timer("dcp_save"):
-                    logger.info("Saving DCP checkpoint at step %d", step)
-                    ckpt.save(
-                        f"step-{step}",
-                        resumable=True,
-                        promotable=False,
-                        data_consumed=cursor.value,
-                    )
+                    logger.info("Saving DCP checkpoint at step %d", s)
+                    ckpt.save(f"step-{s}", resumable=True, promotable=False, data_consumed=cursor.value)
 
+            # Metrics logging
             step_metrics: Dict[str, Any] = flush_timing()
-
+            # Real per-step fb_compute and optim_compute (pipeline-agnostic).
+            #   gap_fb  = t_fb_done_N - t_fb_done_(N-1)  = optim_(N-1) + fb_N
+            #   gap_opt = t_opt_done_N - t_opt_done_(N-1) = fb_N + optim_N
+            if last_t_fb_done is None or last_t_opt_done is None:
+                fb_time = t_fb_done - t_submit
+                opt_time = t_opt_done - t_fb_done
+            else:
+                gap_fb = t_fb_done - last_t_fb_done
+                gap_opt = t_opt_done - last_t_opt_done
+                fb_time = max(0.0, gap_fb - (last_optim_time or 0.0))
+                opt_time = max(0.0, gap_opt - fb_time)
+            last_t_fb_done = t_fb_done
+            last_t_opt_done = t_opt_done
+            last_optim_time = opt_time
+            step_metrics["perf/fwd_bwd_time"] = fb_time
+            step_metrics["perf/optim_step_time"] = opt_time
             if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
                 for k, v in optim_result.metrics.items():
                     step_metrics[f"train/{k}"] = v
 
-            # Compute tokens/sec
-            fwd_bwd_time = step_metrics.get("perf/fwd_bwd_time", 0.0)
-            step_wall_time = fwd_bwd_time + step_metrics.get("perf/optim_step_time", 0.0)
-            if step_wall_time > 0:
-                step_metrics["train/tokens_per_sec"] = step_total_tokens / step_wall_time
-                step_metrics["train/tokens_per_sec_fwd_bwd"] = step_total_tokens / fwd_bwd_time if fwd_bwd_time > 0 else 0.0
-            step_metrics["train/total_tokens"] = step_total_tokens
+            step_metrics["train/total_tokens"] = tokens
+            step_metrics["train/tokens_per_sec"] = tps
 
-            if response_tokens > 0:
+            if response_tokens and response_tokens > 0:
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
-                    step, total_steps_estimate, avg_loss, ppl, step_metrics["train/tokens_per_sec"], step_total_tokens,
+                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d | depth: %d",
+                    s, total_steps_estimate, avg_loss, ppl, tps, tokens, cfg.pipeline_depth,
                 )
-                log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
+                log_metrics_json(s, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tps)
                 step_metrics.update({
-                    "train/step": step,
-                    "train/ce_loss": avg_loss,
-                    "train/loss": avg_loss,  # alias for frontend compatibility
-                    "train/ppl": ppl,
+                    "train/step": s, "train/ce_loss": avg_loss,
+                    "train/loss": avg_loss, "train/ppl": ppl,
                 })
-                wandb_log(step_metrics, step)
+                wandb_log(step_metrics, s)
 
             write_running_step(
                 runner,
-                step=step,
+                step=s,
                 total_steps=total_steps_estimate,
                 metrics=step_metrics,
-                tokens=step_total_tokens,
+                tokens=tokens,
             )
 
-            return step
+        def _pipe_drain_safe() -> None:
+            """Drain remaining in-flight ops for cleanup (e.g. in ``finally``)."""
+            while in_flight:
+                try:
+                    _pipe_collect()
+                except Exception as e:
+                    logger.warning("pipeline drain: %s", e)
 
         start_running(runner, total_steps=total_steps_estimate)
 
-        for epoch in range(completed_epochs, cfg.epochs):
-            loader_generator.manual_seed(cfg.seed + epoch)
-            batch_iter = iter(loader)
-            epoch_start_batch = start_batch if epoch == completed_epochs else 0
-            if epoch_start_batch > 0:
-                batch_iter = islice(batch_iter, epoch_start_batch, None)
+        try:
+            for epoch in range(completed_epochs, cfg.epochs):
+                loader_generator.manual_seed(cfg.seed + epoch)
+                batch_iter = iter(loader)
+                epoch_start_batch = start_batch if epoch == completed_epochs else 0
+                if epoch_start_batch > 0:
+                    batch_iter = islice(batch_iter, epoch_start_batch, None)
 
-            epoch_valid_examples = 0
-            for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
-                raw_batch_size = min(
-                    effective_batch_size,
-                    training_count - raw_batch_idx * effective_batch_size,
-                )
-                cursor.record(raw_batch_size)
-                batch = _flatten_rendered_batch(batch)
-                if not batch:
-                    continue  # entire batch was filtered (None render); skip
-                epoch_valid_examples += len(batch)
-                step = _run_train_step(batch, step)
-
-            if epoch == 0 and completed_epochs == 0 and start_batch == 0:
-                filtered_count = training_count - epoch_valid_examples
-                if filtered_count > 0:
-                    logger.info(
-                        "Seq-length / format filter: %d/%d raw rows filtered",
-                        filtered_count,
-                        training_count,
+                epoch_valid_examples = 0
+                for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
+                    raw_batch_size = min(
+                        effective_batch_size,
+                        training_count - raw_batch_idx * effective_batch_size,
                     )
-                if epoch_valid_examples == 0:
-                    raise RuntimeError("No valid training examples after tokenization")
+                    cursor.record(raw_batch_size)
+                    batch = _flatten_rendered_batch(batch)
+                    if not batch:
+                        continue  # entire batch was filtered (None render); skip
+                    epoch_valid_examples += len(batch)
+                    step = _pipe_submit(batch, step)
+                    if len(in_flight) >= cfg.pipeline_depth:  # collect once queue is full
+                        _pipe_collect()
 
-            # Run eval after each epoch
-            if eval_data:
-                try:
-                    eval_loss = run_eval(
-                        eval_data=eval_data,
-                        client=client,
-                        batch_size=cfg.batch_size,
-                        step=step,
-                        epoch=epoch,
-                    )
-                    if eval_loss is not None:
-                        runner.append_metrics(
-                            step,
-                            {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
+                # Drain in-flight ops so eval sees fully-applied gradients.
+                while in_flight:
+                    _pipe_collect()
+
+                # Reset pipe timing baselines so the next epoch's first step
+                # doesn't fold the eval / data-loader-setup gap into perf/fwd_bwd_time.
+                last_t_fb_done = last_t_opt_done = last_optim_time = None
+
+                if epoch == 0 and completed_epochs == 0 and start_batch == 0:
+                    filtered_count = training_count - epoch_valid_examples
+                    if filtered_count > 0:
+                        logger.info(
+                            "Seq-length / format filter: %d/%d raw rows filtered",
+                            filtered_count,
+                            training_count,
                         )
-                except Exception as e:
-                    logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
+                    if epoch_valid_examples == 0:
+                        raise RuntimeError("No valid training examples after tokenization")
+
+                # Run eval after each epoch
+                if eval_data:
+                    try:
+                        eval_loss = run_eval(
+                            eval_data=eval_data,
+                            client=client,
+                            batch_size=cfg.batch_size,
+                            step=step,
+                            epoch=epoch,
+                        )
+                        if eval_loss is not None:
+                            runner.append_metrics(
+                                step,
+                                {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
+                            )
+                    except Exception as e:
+                        logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
+        finally:
+            # Drain in-flight ops on exit (incl. SIGTERM) to avoid leaking partial batches.
+            _pipe_drain_safe()
 
         # -- Final checkpoint --------------------------------------------------
 
