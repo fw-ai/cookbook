@@ -306,7 +306,6 @@ def test_main_bootstraps_without_reference_and_cleans_up(monkeypatch, tmp_path):
             return SimpleNamespace(
                 deployment_shape="shape/versions/7",
                 deployment_shape_version="shape/versions/7",
-                pipeline_parallelism=1,
                 max_supported_context_length=256,
             )
 
@@ -448,7 +447,6 @@ def test_main_skips_consumed_eval3_rows_on_resume(monkeypatch, tmp_path):
             return SimpleNamespace(
                 deployment_shape="shape/versions/7",
                 deployment_shape_version="shape/versions/7",
-                pipeline_parallelism=1,
                 max_supported_context_length=256,
             )
 
@@ -627,7 +625,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
             return SimpleNamespace(
                 deployment_shape="shape/versions/7",
                 deployment_shape_version="shape/versions/7",
-                pipeline_parallelism=1,
                 max_supported_context_length=256,
             )
 
@@ -849,7 +846,6 @@ def test_main_runs_sampling_and_training_with_reference(monkeypatch, tmp_path):
         "train/inference_kld": 0.03,
     })
     monkeypatch.setattr(train_module, "flush_timing", lambda: {"perf/step_time": 1.0})
-    monkeypatch.setattr(train_module, "compute_pp_recommendation", lambda *args, **kwargs: SimpleNamespace(recommended_prompts_per_step=3))
     _OrigInfraConfig = train_module.InfraConfig
     monkeypatch.setattr(
         train_module, "InfraConfig",

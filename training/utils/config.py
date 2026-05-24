@@ -36,7 +36,7 @@ class ConcurrencyConfig:
     """``"adaptive"`` or ``"fixed"``.  ``None`` with ``max_concurrency`` set
     triggers the deprecated backward-compat path."""
 
-    max_concurrency: int | None = None  # TODO: remove after deprecation period
+    max_concurrency: int | None = None  # Deprecated alias for max_concurrency_rollout_sample.
     """Deprecated.  Set ``mode="fixed"`` and use ``FixedConcurrencyController``
     instead.  When set with ``mode=None``, creates a fixed controller and warns."""
 

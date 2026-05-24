@@ -91,7 +91,6 @@ from training.utils.rl.losses import (
 )
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
-from training.utils.rl.pp import compute_pp_recommendation
 from training.utils.timer import timer, flush_timing
 
 logging.basicConfig(
@@ -431,7 +430,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
-    total_samples_per_step = prompt_groups_per_step * completions_per_prompt
 
     infra = InfraConfig(
         training_shape_id=cfg.training_shape or None,
@@ -520,13 +518,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         )
     policy_infra = infra
     policy_profile = profile
-
-    if profile and profile.pipeline_parallelism > 1:
-        pp_rec = compute_pp_recommendation(profile, completions_per_prompt)
-        logger.info(
-            "PP recommendation: prompt_groups_per_step=%d (current=%d)",
-            pp_rec.recommended_prompts_per_step, prompt_groups_per_step,
-        )
 
     if profile and cfg.max_seq_len is None:
         cfg.max_seq_len = profile.max_supported_context_length
@@ -828,7 +819,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             # Validate user's explicit loss_path choice; raises (no silent
             # fallback) if builtin was picked in a configuration that forbids
-            # it (PP > 1, kl_beta > 0, or a client-only loss).
+            # it (kl_beta > 0 or a client-only loss).
             validate_loss_path(cfg, profile)
             if cfg.loss_path == "builtin":
                 builtin_loss = get_builtin_loss_config(cfg)

@@ -12,9 +12,7 @@ from writes to a ``DiskBackedDatumStore``). Page cache is reclaimable and
 will not cause OOM as long as the workload running above it is not also
 allocating committed RAM faster than reclaim can keep up.
 
-This module was extracted from ``sft_loop`` after the orchestrator OOM
-investigation; see docs/engineering/sft-v2-orchestrator-oom-debug.md for
-the story.
+This module keeps memory logging separate from the training loops.
 """
 
 from __future__ import annotations

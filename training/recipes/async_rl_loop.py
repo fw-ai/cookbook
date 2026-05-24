@@ -89,7 +89,7 @@ from training.utils.runner_state import (
     write_completed,
     write_running_step,
 )
-from training.utils.timer import elapsed_timer, flush_timing, timer
+from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
 
@@ -239,13 +239,10 @@ def main(
 
     ``cancel_on_exit=True`` tears down provisioned remote resources on exit.
 
-    ``on_resources_ready`` (FIR2-1599) is invoked exactly once,
-    immediately after :func:`setup_infra` returns, with keyword arguments
-    ``deployment_id`` / ``policy_job_id`` / ``reference_job_id``. The
-    orchestration layer uses this hook to persist a ``resources.json``
-    snapshot so cold-start fallback can recover resource IDs from GCS
-    before training completes. Errors raised by the callback are logged
-    and swallowed.
+    ``on_resources_ready`` is invoked exactly once after
+    :func:`setup_infra` returns, with keyword arguments
+    ``deployment_id`` / ``policy_job_id`` / ``reference_job_id``. Errors
+    raised by the callback are logged and swallowed.
     """
     cfg = config
     runner = RunnerIO(cfg.runner)
@@ -348,10 +345,7 @@ def main(
             api_key=api_key,
             cleanup=cleanup if cancel_on_exit else None,
         )
-        # FIR2-1599: notify the orchestrator that training resources are
-        # ready BEFORE running any further setup. Cold-start fallback
-        # needs ``resources.json`` to be on disk by the time the trainer
-        # / deployment IDs are usable.
+        # Make provisioned resource IDs available before trainer setup continues.
         notify_resources_ready(infra, on_resources_ready)
 
         policy_job_id = infra.policy_job_id
@@ -360,8 +354,7 @@ def main(
         for closeable in infra.closeables:
             stack.callback(closeable.close)
 
-        # Surface accelerator info + an early metadata snapshot so
-        # billing has something to consume before the first optim step.
+        # Surface accelerator info before the first optimizer step.
         runner.set_accelerator_info(profile=infra.policy_profile)
         runner.write_metadata()
 
@@ -656,12 +649,7 @@ def main(
                 ref_kl,
             )
             wandb_log(metrics)
-            # FIR2-1599: stream per-step status, metrics, and metadata to
-            # the orchestration layer. ``total_target_tokens`` sums the
-            # adapter loss-mask lengths across all rollout samples in
-            # the batch so billing metadata accumulates the actual
-            # number of tokens trained on at this step (not the raw
-            # rollout length, and not zero).
+            # Report the number of trained target tokens, not raw rollout length.
             write_running_step(
                 runner,
                 step=step,
@@ -750,9 +738,7 @@ def main(
                 job_id=policy_job_id,
             )
 
-        # ``total_steps`` clamps progress at 100% when dynamic filtering
-        # / dropped rows shorten the realised step count below the
-        # original estimate (FIR2-1599 plan).
+        # Clamp progress at 100% when dynamic filtering shortens the run.
         final_step = max(global_step, total_steps_estimate)
         write_completed(
             runner,

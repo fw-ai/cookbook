@@ -16,7 +16,6 @@ from types import SimpleNamespace
 import pytest
 from fireworks.training.sdk import (
     TrainerJobConfig,
-    TrainingShapeProfile,
 )
 
 import training.utils.infra as infra_module
@@ -24,7 +23,7 @@ from training.utils.config import InfraConfig
 
 BASE_MODEL = "accounts/fireworks/models/qwen3-1p7b"
 
-PROFILE = TrainingShapeProfile(
+PROFILE = SimpleNamespace(
     training_shape_version="accounts/fw/trainingShapes/ts-qwen3-1p7b/versions/v42",
     trainer_image_tag="0.35.0",
     max_supported_context_length=4096,
@@ -34,7 +33,6 @@ PROFILE = TrainingShapeProfile(
     accelerator_type="NVIDIA_H100_80GB",
     accelerator_count=1,
     base_model_weight_precision="bfloat16",
-    pipeline_parallelism=1,
 )
 
 

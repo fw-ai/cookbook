@@ -15,7 +15,7 @@ Coverage matrix (run for every renderer name in ``_PARITY_CASES``):
 3. ``test_disaggregate_strips_history_thinking`` — multi-turn input
    carrying ``reasoning_content`` produces datums where the *current*
    turn's reasoning is preserved while *historical* turns' reasoning is
-   stripped (the precise inference-parity bug this PR fixes).
+   stripped to preserve inference parity.
 4. ``test_disaggregate_per_datum_weight_mask_only_last_assistant`` —
    only the final assistant span in each datum has nonzero weight; the
    rest of the prompt context is loss-masked.

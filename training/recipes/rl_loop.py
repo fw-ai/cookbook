@@ -16,7 +16,7 @@ RL losses can execute in two places, picked **explicitly** by ``cfg.loss_path``:
 
 ``validate_loss_path`` runs at startup and raises with an actionable message
 if the chosen path is incompatible with this run's config/profile (e.g.
-``"builtin"`` + ``kl_beta>0`` or PP>1).
+``"builtin"`` + ``kl_beta>0``).
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -35,7 +35,6 @@ import logging
 from contextlib import ExitStack
 from typing import Any, List, Optional
 from dataclasses import field, dataclass
-from concurrent.futures import ThreadPoolExecutor
 
 import tinker
 
@@ -140,8 +139,7 @@ class Config:
     """Which forward/backward path to use:
 
     - ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
-      kernel. Faster, but cannot apply KL (``kl_beta`` must be 0) and
-      requires PP=1.
+      kernel. Faster, but cannot apply KL (``kl_beta`` must be 0).
     - ``"client"`` -- client-side ``forward_backward_custom(...)``. Always
       works; slower because of an extra forward pass for old-policy logprobs.
 
@@ -518,10 +516,7 @@ def main(
                     **sample_kwargs,
                 )
             except Exception as e:
-                # TODO: HTTP 425 (deployment hot-loading after weight sync)
-                # can cause transient failures here.  Currently the prompt is
-                # silently dropped (counted as sample_fails).  Consider adding
-                # a retry loop so no training data is lost during hotload.
+                # HTTP 425 during deployment hot-load is counted as a sample failure.
                 logger.warning("Sampling failed: %s", e)
                 return None
 
@@ -628,8 +623,8 @@ def main(
 
         # Validate the user's loss_path choice against this run's config and
         # training profile. Raises (no silent fallback) if builtin was picked
-        # in a configuration that forbids it (PP > 1, kl_beta > 0, or a
-        # client-only loss).
+        # in a configuration that forbids it (kl_beta > 0 or a client-only
+        # loss).
         validate_loss_path(cfg, policy_profile)
         if cfg.loss_path == "builtin":
             builtin_loss = get_builtin_loss_config(cfg)
@@ -812,8 +807,8 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        # Prefer the persisted raw-row cursor; fall back to step-derived for
-        # legacy checkpoints (dataloader.json predates this PR).
+        # Prefer the persisted raw-row cursor; fall back to step-derived
+        # progress for older checkpoints.
         rollouts_done = step_offset // max(1, cfg.ppo_n_minibatches)
         cursor.resume(
             resume_info.data_consumed if resume_info else None,

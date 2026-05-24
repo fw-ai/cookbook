@@ -18,7 +18,7 @@ Maximize GPU Utilization
 The cookbook overlaps GPU/server work along two dimensions:
 
 1. Intra-step overlap (always on). Each training step submits both
-   forward_backward and optim_step as futures, then awaits them together. 
+   forward_backward and optim_step as futures, then awaits them together.
    This hides the round-trip between fwdbwd and optim within a single step.
 
 2. Inter-step pipelining (Config.pipeline_depth >= 2). Keep N (fwdbwd, optim)
@@ -137,7 +137,7 @@ def _decode_tokens(token_ids: list[int]) -> list[str]:
             text = tokenizer.decode([int(token_id)], skip_special_tokens=False)
         except TypeError:
             text = tokenizer.decode([int(token_id)])
-        except Exception:  # noqa: BLE001 - diagnostic artifact must not break rendering
+        except Exception:  # noqa: BLE001 - token decode is best effort for samples
             text = ""
         decoded.append(str(text))
     return decoded
@@ -204,7 +204,7 @@ def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
                 _worker_state["render_samples_written"] = int(
                     _worker_state.get("render_samples_written", 0)
                 ) + 1
-    except Exception:  # noqa: BLE001 - best-effort debug artifact
+    except Exception:  # noqa: BLE001 - render sample write must not fail training
         if not _worker_state.get("render_samples_error_logged"):
             logger.warning("Failed to write SFT render sample", exc_info=True)
             _worker_state["render_samples_error_logged"] = True
@@ -266,7 +266,7 @@ def _finalize_render_samples(
                 truncated_count,
                 render_samples_limit,
             )
-    except Exception:  # noqa: BLE001 - diagnostic artifact must not fail the job
+    except Exception:  # noqa: BLE001 - render sample upload must not fail training
         logger.warning("Failed to finalize SFT render samples to %s", output_path, exc_info=True)
 
 
@@ -800,7 +800,7 @@ def main(
         # -- Prepare data ------------------------------------------------------
         # Render JSONL rows on the fly inside DataLoader workers so peak
         # RAM is O(num_workers * per_worker_render_footprint) instead of
-        # O(dataset_size). See docs/engineering/sft-v2-orchestrator-oom-debug.md.
+        # O(dataset_size).
         num_workers = (
             cfg.render_workers
             if cfg.render_workers is not None

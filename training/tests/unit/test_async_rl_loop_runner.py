@@ -1,4 +1,4 @@
-"""FIR2-1599: artifact writer + resource-ready callback tests for async_rl_loop.
+"""Artifact writer + resource-ready callback tests for async_rl_loop.
 
 These tests cover two layers of the managed runtime artifact contract:
 
@@ -6,8 +6,8 @@ These tests cover two layers of the managed runtime artifact contract:
    ``estimate_async_total_steps``) -- callback invocation + progress-bar
    total formula.
 2. **End-to-end through ``async_rl_loop.main`` with fakes** --
-   exercises the real ``RunnerIO`` writes that satisfy the explicit
-   FIR2-1599 acceptance criteria:
+   exercises the real ``RunnerIO`` writes that satisfy the managed-runtime
+   artifact contract:
    * final ``COMPLETED`` status is written;
    * final ``FAILED`` status is written when the loop raises;
    * ``RunnerIO.append_metrics`` is called during an async run.
@@ -42,7 +42,7 @@ class _FakeInfra:
 
 
 class TestNotifyResourcesReady:
-    """``notify_resources_ready`` is the FIR2-1599 resource-ready hook surface."""
+    """``notify_resources_ready`` is the resource-ready hook surface."""
 
     def test_noop_when_callback_is_none(self) -> None:
         """A missing callback is silently skipped (no kwargs required)."""
@@ -103,7 +103,7 @@ class TestNotifyResourcesReady:
 
 
 class TestEstimateAsyncTotalSteps:
-    """``estimate_async_total_steps`` mirrors the FIR2-1599 progress formula."""
+    """``estimate_async_total_steps`` mirrors the async progress formula."""
 
     def test_fresh_run_single_minibatch(self) -> None:
         """No resume, one minibatch per rollout -> one step per row."""
@@ -188,7 +188,7 @@ class TestEstimateAsyncTotalSteps:
 class TestConfigRunnerField:
     """``Config.runner`` accepts a ``RunnerConfig`` so the orchestrator can
     plumb status / metadata / metrics / output_model paths through to the
-    cookbook RunnerIO (FIR2-1599)."""
+    cookbook RunnerIO."""
 
     def test_config_exposes_runner_default(self) -> None:
         """Default ``Config.runner`` is an empty RunnerConfig (no outputs)."""
@@ -218,7 +218,7 @@ class TestConfigRunnerField:
 
 class TestResourceCallbackSignature:
     """``ResourceCallback`` is a kwargs-only contract so we can add future
-    identifiers without breaking existing callers (FIR2-1599)."""
+    identifiers without breaking existing callers."""
 
     def test_callable_with_only_documented_kwargs(self) -> None:
         """Today's keyword args are deployment_id / policy_job_id / reference_job_id."""
@@ -237,12 +237,10 @@ class TestResourceCallbackSignature:
 # ---------------------------------------------------------------------------
 # End-to-end ``async_rl_loop.main`` exercise (with fake deps)
 #
-# Acceptance criteria (FIR2-1599) require unit tests that verify the
-# final success/failure status is written and that ``append_metrics`` is
-# called during an async run. The helper tests above only cover the
-# tiny callback / formula surface; these tests stub every heavy
-# dependency and actually drive ``async_rl_loop.main`` so the real
-# ``RunnerIO`` writes land on disk.
+# Unit tests verify the final success/failure status and metrics writes.
+# The helper tests above only cover the tiny callback / formula surface;
+# these tests stub every heavy dependency and drive ``async_rl_loop.main``
+# so the real ``RunnerIO`` writes land on disk.
 # ---------------------------------------------------------------------------
 
 
@@ -420,7 +418,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 
 class TestAsyncRunArtifactWrites:
-    """FIR2-1599 acceptance: ``async_rl_loop.main`` writes the managed runtime
+    """``async_rl_loop.main`` writes the managed runtime
     artifacts (status / metadata / metrics) end-to-end against fake infra."""
 
     def test_completed_status_written_and_clamped_to_100_percent(
@@ -555,7 +553,7 @@ class TestAsyncRunArtifactWrites:
         """The resource-ready hook fires right after ``setup_infra`` returns,
         *before* the async loop starts -- so a cold-start fallback that
         reads ``resources.json`` is guaranteed to see the IDs even if
-        the trainer crashes on the first step (FIR2-1599)."""
+        the trainer crashes on the first step."""
         events: list[str] = []
         callback_payloads: list[dict] = []
 

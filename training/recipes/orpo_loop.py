@@ -45,7 +45,6 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 
 import tinker
-import torch
 from fireworks.training.sdk import TrainerJobManager
 
 from training.utils import (
@@ -190,6 +189,16 @@ def _compute_lr(
         return peak_lr - (peak_lr - min_lr) * decay_step / decay_total
 
     raise ValueError(f"Unknown lr_schedule: {schedule!r}. Use 'constant', 'cosine', or 'linear'.")
+
+
+def _shuffled_pair_cache(
+    pair_cache: list[dict],
+    seed: int,
+    epoch: int,
+) -> list[dict]:
+    epoch_pairs = list(pair_cache)
+    random.Random(seed + epoch).shuffle(epoch_pairs)
+    return epoch_pairs
 
 
 # ---------------------------------------------------------------------------
@@ -454,15 +463,10 @@ def main(
         start_running(runner, total_steps=total_steps)
 
         for epoch in range(cfg.epochs):
-            # Seed before each epoch so identical configs reproduce the same
-            # data order across runs. Using the global random state (rather
-            # than a local Random instance) preserves the existing test
-            # surface that monkeypatches ``orpo_loop.random.shuffle``.
-            random.seed(cfg.seed + epoch)
-            random.shuffle(pair_cache)
+            epoch_pairs = _shuffled_pair_cache(pair_cache, cfg.seed, epoch)
             step_t0 = time.monotonic()
             batch_buffer: list[dict] = []
-            for pair in pair_cache:
+            for pair in epoch_pairs:
                 batch_buffer.append(pair)
                 if len(batch_buffer) >= cfg.batch_size:
                     step_t0 = _run_train_step(epoch, batch_buffer, step_t0)

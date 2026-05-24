@@ -8,7 +8,7 @@ locally-persisted file is ``dataloader.json``, which maps checkpoint name
 to the cookbook's ``data_consumed`` counter (no server-side
 representation).
 
-See issue fw-ai/fireworks#23495 for the full design.
+The helpers centralize checkpoint naming and resume metadata handling.
 
 Usage::
 

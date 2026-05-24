@@ -1,4 +1,4 @@
-"""RL utilities: losses, training loop, PP recommendation, TIS, router replay."""
+"""RL utilities: losses, training loop, TIS, router replay."""
 
 __all__ = [
     # Losses & algorithms
@@ -6,10 +6,8 @@ __all__ = [
     "DAPOConfig",
     "TISConfig",
     "GSPOConfig",
-    "PPBatchRecommendation",
     "PromptGroup",
     "build_r3_routing_matrices",
-    "compute_pp_recommendation",
     "make_cispo_loss_fn",
     "make_dapo_loss_fn",
     "make_grpo_loss_fn",
@@ -59,7 +57,6 @@ __all__ = [
     "TokenizationError",
 ]
 
-from training.utils.rl.pp import PPBatchRecommendation, compute_pp_recommendation
 from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
 from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
