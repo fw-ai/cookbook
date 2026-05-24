@@ -404,7 +404,7 @@ async def _train_loop(
             step=step,
             total_steps=total_steps,
             metrics=step_metrics,
-            tokens=total_tokens,
+            tokens=step_tokens,
         )
 
     # -- Epoch 0: stream render → ref forward → training -----------------------

@@ -622,6 +622,73 @@ class TestTrainLoop:
         assert executed["count"] == 3
         assert reported_total_steps["value"] == 3
 
+    def test_billing_tokens_exclude_reference_forward(self, tmp_path, monkeypatch) -> None:
+        """DPO billing metadata counts policy chosen+rejected tokens only.
+
+        The reference trainer processes the same sequences during epoch 0, but
+        those tokens are reported as metrics rather than accumulated into
+        RunnerIO metadata for billing.
+        """
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+        append_calls: list[dict] = []
+
+        class RecordingRunner:
+            def start_training(self):
+                pass
+
+            def write_status(self, *args, **kwargs):
+                pass
+
+            def write_metadata(self, *args, **kwargs):
+                pass
+
+            def append_metrics(self, step, metrics, *, tokens=0):
+                append_calls.append({
+                    "step": step,
+                    "metrics": dict(metrics),
+                    "tokens": tokens,
+                })
+
+            def report_rendering_progress(self, *args, **kwargs):
+                pass
+
+            def set_accelerator_info(self, *args, **kwargs):
+                pass
+
+        ds = _make_pair_dataset(tmp_path, n=2)
+        cfg = module.Config(
+            log_path=str(tmp_path),
+            beta=0.1,
+            epochs=1,
+            batch_size=2,
+            render_workers=0,
+        )
+
+        asyncio.run(
+            module._train_loop(
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params={"lr": 1e-4},
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=2),
+                runner=RecordingRunner(),
+            )
+        )
+
+        assert len(append_calls) == 1
+        call = append_calls[0]
+        # _make_pair has 3 chosen + 3 rejected tokens. Two pairs => 12 policy
+        # tokens. The epoch-0 reference forward also sees 12 tokens, but billing
+        # should not count it.
+        assert call["tokens"] == 12
+        assert call["metrics"]["train/step_tokens"] == 12
+        assert call["metrics"]["train/ref_tokens"] == 12
+        assert call["metrics"]["train/total_tokens"] == 24
+
     def test_data_consumed_includes_render_drops(self, tmp_path, monkeypatch):
         """``data_consumed`` reflects raw rows pulled (incl. render drops), not post-filter pairs."""
         events: dict = {}
