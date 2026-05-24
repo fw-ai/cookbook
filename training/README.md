@@ -14,7 +14,7 @@ Each recipe is a single Python file you can fork and customize.
 | IGPO (multi-turn turn-level Information Gain) | `recipes/igpo_loop.py` | GRPO + per-turn IG rewards for agent trajectories (Wang et al., ICLR 2026). |
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
-| SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. Set `pipeline_depth>=2` to enable client-side pipelining (Tinker async pattern) for **+25-35% throughput** on long-context / production runs. See module docstring for tuning guidance. |
+| SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
 
 ## Getting started
 

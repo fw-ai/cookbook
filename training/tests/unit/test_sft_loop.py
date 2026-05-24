@@ -11,6 +11,43 @@ import training.recipes.sft_loop as module
 from training.utils.checkpoints import TrainingCheckpoints
 
 
+class _FakeFuture:
+    """Minimal future-like wrapper for FakeClient.inner return values."""
+
+    def __init__(self, value: object):
+        self._value = value
+
+    def result(self, timeout: float | None = None) -> object:
+        return self._value
+
+
+class _FakeInner:
+    """Stand-in for ``tinker.client.inner`` (futures API).
+
+    Wraps a parent FakeClient: forward_backward() / optim_step() delegate
+    to the parent's sync implementation and the result is wrapped in a
+    future, so the test's existing event-tracking still fires.
+    """
+
+    def __init__(self, parent: object):
+        self._parent = parent
+
+    def forward_backward(self, *args, **kwargs) -> _FakeFuture:
+        return _FakeFuture(self._parent.forward_backward(*args, **kwargs))
+
+    def optim_step(self, *args, **kwargs) -> _FakeFuture:
+        return _FakeFuture(self._parent.optim_step(*args, **kwargs))
+
+
+class _FakeInnerMixin:
+    """Adds a ``.inner`` property to FakeClient classes for the cookbook's
+    pipelined fwd_bwd + optim_step path (see ``recipes/sft_loop.py``)."""
+
+    @property
+    def inner(self):
+        return _FakeInner(self)
+
+
 def _patch_resume(monkeypatch, resume_info):
     """Replace TrainingCheckpoints.resume on the class for unit tests.
 
@@ -336,7 +373,7 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         def __init__(self, *args, **kwargs):
             pass
 
@@ -398,7 +435,7 @@ def test_main_reduces_batch_size_when_examples_fewer_than_batch_size(tmp_path, m
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -502,7 +539,7 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -623,7 +660,7 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -726,7 +763,7 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -830,7 +867,7 @@ def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         def __init__(self, *args, **kwargs):
             self.job_id = kwargs.get("job_id", "job-sft")
 
@@ -943,7 +980,7 @@ def test_main_resume_uses_raw_row_cursor_when_filtering_shrinks_batches(tmp_path
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         def __init__(self, *args, **kwargs):
             self.job_id = kwargs.get("job_id", "job-sft")
 
@@ -1033,7 +1070,7 @@ def test_completed_status_reports_actual_steps_when_filtering_drops_raw_batches(
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -1168,7 +1205,7 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
@@ -1301,7 +1338,7 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
         def resolve_training_profile(self, shape_id):
             return _fake_profile(shape_id)
 
-    class FakeClient:
+    class FakeClient(_FakeInnerMixin):
         job_id = "job-sft"
 
         def __init__(self, *args, **kwargs):
