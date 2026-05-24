@@ -8,6 +8,7 @@ import pytest
 import torch
 
 import training.recipes.sft_loop as module
+from training.utils import LRScheduleConfig
 from training.utils.checkpoints import TrainingCheckpoints
 
 
@@ -156,6 +157,166 @@ def test_main_requires_tokenizer_model(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="tokenizer_model"):
         module.main(cfg)
+
+
+def test_periodic_dcp_checkpoint_saves_training_and_inference(tmp_path, monkeypatch):
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": "u1"}, {"role": "assistant", "content": "a1"}]},
+            {"messages": [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]},
+        ],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    saves: list[tuple[str, dict]] = []
+
+    class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            pass
+
+        def delete(self, job_id):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            return SimpleNamespace(metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": len(batch)})
+
+        def optim_step(self, _params, **kwargs):
+            return SimpleNamespace(metrics={})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(module, "auto_select_training_shape", lambda *args, **kwargs: "accounts/test/trainingShapes/sft")
+    monkeypatch.setattr(module, "make_render_dataloader", lambda *args, **kwargs: [[_test_datum("a")], [_test_datum("b")]])
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    _patch_resume(monkeypatch, None)
+    monkeypatch.setattr(
+        TrainingCheckpoints,
+        "save",
+        lambda self, name, **kwargs: saves.append((name, kwargs)),
+    )
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=1,
+        epochs=1,
+        render_workers=1,
+        dcp_save_interval=1,
+        save_final_checkpoint=False,
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert result["steps"] == 2
+    assert saves == [
+        ("step-1", {"resumable": True, "promotable": True, "data_consumed": 1}),
+        ("step-2", {"resumable": True, "promotable": True, "data_consumed": 2}),
+    ]
+
+
+def test_main_applies_cosine_lr_schedule_per_optimizer_step(tmp_path, monkeypatch):
+    dataset_path = _write_dataset(
+        tmp_path,
+        [
+            {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+            for i in range(3)
+        ],
+    )
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://unit.test")
+
+    lrs: list[float] = []
+
+    class FakeMgr:
+        def create(self, config):
+            return SimpleNamespace(job_id="job-sft", job_name="jobs/job-sft")
+
+        def wait_for_ready(self, job_id, **kwargs):
+            return SimpleNamespace(job_id=job_id, job_name=f"jobs/{job_id}", base_url="https://unit.test")
+
+        def cancel(self, job_id):
+            pass
+
+        def delete(self, job_id):
+            pass
+
+        def resolve_training_profile(self, shape_id):
+            return _fake_profile(shape_id)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_backward(self, batch, loss_fn="cross_entropy", loss_fn_config=None):
+            return SimpleNamespace(
+                metrics={"loss:sum": 1.0, "ce_loss_sum": 1.0, "response_tokens": len(batch)}
+            )
+
+        def optim_step(self, params, **kwargs):
+            lrs.append(params.learning_rate)
+            return SimpleNamespace(metrics={})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "wandb_finish", lambda: None)
+    monkeypatch.setattr(module, "wandb_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
+    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(module, "auto_select_training_shape", lambda *args, **kwargs: "accounts/test/trainingShapes/sft")
+    monkeypatch.setattr(
+        module,
+        "make_render_dataloader",
+        lambda *args, **kwargs: [[_test_datum("a")], [_test_datum("b")], [_test_datum("c")]],
+    )
+    monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
+    _patch_resume(monkeypatch, None)
+
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        base_model="accounts/test/models/custom-sft",
+        dataset=str(dataset_path),
+        tokenizer_model="Qwen/Qwen3-4B",
+        max_seq_len=32,
+        batch_size=1,
+        epochs=1,
+        render_workers=1,
+        learning_rate=1e-4,
+        lr_schedule=LRScheduleConfig(kind="cosine"),
+        save_final_checkpoint=False,
+    )
+
+    result = module.main(cfg, rlor_mgr=FakeMgr())
+
+    assert result["steps"] == 3
+    assert lrs == pytest.approx([1e-4, 5e-5, 0.0])
 
 
 def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):

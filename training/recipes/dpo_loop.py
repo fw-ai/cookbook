@@ -56,6 +56,7 @@ from training.utils import (
     DeployConfig,
     InfraConfig,
     JsonlRenderDataset,
+    LRScheduleConfig,
     RawRowCursor,
     ReconnectableClient,
     ResourceCleanup,
@@ -63,6 +64,7 @@ from training.utils import (
     RunnerIO,
     RunStatus,
     WandBConfig,
+    compute_learning_rate,
     log_metrics_json,
     make_batch_dpo_loss_fn,
     make_render_dataloader,
@@ -73,6 +75,7 @@ from training.utils import (
     resolve_renderer_name,
     setup_wandb,
     validate_config,
+    validate_lr_schedule_config,
     wandb_finish,
     wandb_log,
 )
@@ -101,6 +104,7 @@ class Config:
 
     beta: float = 0.1
     learning_rate: float = 1e-5
+    lr_schedule: LRScheduleConfig = field(default_factory=LRScheduleConfig)
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step."""
@@ -127,6 +131,10 @@ class Config:
     policy_job_id: str | None = None
     reference_job_id: str | None = None
     init_from_checkpoint: str | None = None
+    """Load pretrained DCP weights on a fresh dataset. Supports cross-job
+    format ``"job_id:checkpoint_name"`` or
+    ``"cross_job://job_id/checkpoint_name"``."""
+
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
     weights from the adapter at training start (weights-only, fresh optimizer).
@@ -288,7 +296,6 @@ async def _train_loop(
     ref_cache_log: AppendOnlyPickleLog | None,
     reference: ReconnectableClient,
     policy: ReconnectableClient,
-    adam_params: tinker.AdamParams,
     cfg: Config,
     step_offset: int,
     *,
@@ -315,6 +322,7 @@ async def _train_loop(
     multi_epoch = cfg.epochs > 1
     if multi_epoch and ref_cache_log is None:
         raise ValueError("ref_cache_log is required when cfg.epochs > 1")
+    validate_lr_schedule_config(cfg.lr_schedule)
 
     batch_size = cfg.batch_size
     step = step_offset
@@ -323,7 +331,49 @@ async def _train_loop(
         if cfg.max_pairs is not None
         else len(pair_dataset)
     )
-    total_steps = ((rough_pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
+    has_lr_schedule = (
+        cfg.lr_schedule.warmup_steps > 0 or cfg.lr_schedule.kind != "constant"
+    )
+    if has_lr_schedule:
+        rendered_pairs_for_schedule = 0
+        count_loader = make_render_dataloader(
+            pair_dataset,
+            batch_size=batch_size,
+            num_workers=cfg.render_workers,
+            shuffle=False,
+            worker_init_fn=worker_init_fn,
+        )
+        count_iter = iter(count_loader)
+        try:
+            for batch in count_iter:
+                if not batch:
+                    continue
+                if cfg.max_pairs is not None:
+                    remaining = cfg.max_pairs - rendered_pairs_for_schedule
+                    if remaining <= 0:
+                        break
+                    rendered_pairs_for_schedule += min(len(batch), remaining)
+                    if rendered_pairs_for_schedule >= cfg.max_pairs:
+                        break
+                else:
+                    rendered_pairs_for_schedule += len(batch)
+        finally:
+            shutdown_workers = getattr(count_iter, "_shutdown_workers", None)
+            if shutdown_workers is not None:
+                shutdown_workers()
+        total_steps = (
+            (rendered_pairs_for_schedule + batch_size - 1) // batch_size
+        ) * cfg.epochs
+        total_steps = max(step, total_steps)
+        logger.info(
+            "LR schedule: %s | warmup_steps=%d | peak_lr=%g | min_lr=%g",
+            cfg.lr_schedule.kind,
+            cfg.lr_schedule.warmup_steps,
+            cfg.learning_rate,
+            cfg.learning_rate * cfg.lr_schedule.min_lr_ratio,
+        )
+    else:
+        total_steps = ((rough_pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
     total_raw_rows = len(pair_dataset)
     total_raw_batches = (total_raw_rows + batch_size - 1) // batch_size
     progress_interval = max(1, total_raw_batches // 20) if total_raw_batches else 1
@@ -349,20 +399,27 @@ async def _train_loop(
 
         with timer("fwd_bwd"):
             fwd_bwd_result = _forward_backward_pairs(step_pairs, policy, cfg.beta)
-        optim_result = policy.optim_step(adam_params)
+        current_lr = compute_learning_rate(
+            step + 1, total_steps, cfg.learning_rate, cfg.lr_schedule,
+        )
+        optim_result = policy.optim_step(
+            tinker.AdamParams(learning_rate=current_lr, **DEFAULT_ADAM)
+        )
         step += 1
 
         step_metrics: dict[str, Any] = {}
+        step_metrics["train/lr"] = current_lr
         if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
             for k, v in optim_result.metrics.items():
                 step_metrics[f"train/{k}"] = v
 
         if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
             with timer("dcp_save"):
+                logger.info("Saving training and inference checkpoints at step %d", step)
                 ckpt.save(
                     f"step-{step}",
                     resumable=True,
-                    promotable=False,
+                    promotable=True,
                     data_consumed=cursor.value,
                 )
 
@@ -375,9 +432,9 @@ async def _train_loop(
         avg_margin = fwd_metrics["margin"]
         avg_acc = fwd_metrics["accuracy"]
         logger.info(
-            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | "
+            "Step %d/%d | lr=%.2e | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | "
             "policy=%d ref=%d tok | %.1f tok/s (%.1fs)",
-            step, total_steps, avg_loss, avg_margin, avg_acc * 100,
+            step, total_steps, current_lr, avg_loss, avg_margin, avg_acc * 100,
             step_tokens, ref_tokens, tokens_per_sec, step_elapsed,
         )
         log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc,
@@ -558,6 +615,7 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    validate_lr_schedule_config(cfg.lr_schedule)
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -567,6 +625,14 @@ def main(
     setup_wandb(cfg.wandb, {
         "beta": cfg.beta,
         "lr": cfg.learning_rate,
+        "lr_schedule": cfg.lr_schedule.kind,
+        "lr_schedule/warmup_steps": cfg.lr_schedule.warmup_steps,
+        "lr_schedule/min_lr_ratio": cfg.lr_schedule.min_lr_ratio,
+        "lr_schedule/cosine_power": cfg.lr_schedule.cosine_power,
+        "lr_schedule/two_point_linear/x1": cfg.lr_schedule.two_point_linear.x1,
+        "lr_schedule/two_point_linear/y1": cfg.lr_schedule.two_point_linear.y1,
+        "lr_schedule/two_point_linear/x2": cfg.lr_schedule.two_point_linear.x2,
+        "lr_schedule/two_point_linear/y2": cfg.lr_schedule.two_point_linear.y2,
         "epochs": cfg.epochs,
         "batch_size": cfg.batch_size,
     })
@@ -639,7 +705,6 @@ def main(
         )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
 
         # -- Stream-render dataset + (optional) ref cache ---------------------
         #
@@ -707,7 +772,7 @@ def main(
         step = asyncio.run(
             _train_loop(
                 pair_dataset, ref_cache_log,
-                reference, policy, adam_params, cfg, step_offset,
+                reference, policy, cfg, step_offset,
                 cursor=cursor,
                 ckpt=ckpt,
                 worker_init_fn=worker_init_fn,

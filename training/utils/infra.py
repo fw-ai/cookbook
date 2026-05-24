@@ -71,6 +71,9 @@ lifecycle step (creating, waiting, ready, failed)."""
 
 logger = logging.getLogger(__name__)
 
+_RESUME_STATE_RACE_RETRY_ATTEMPTS = 12
+_RESUME_STATE_RACE_RETRY_SLEEP_S = 10.0
+
 _TRAINER_JOB_CONFIG_SUPPORTS_SKIP_VALIDATIONS = (
     "skip_validations" in inspect.signature(TrainerJobConfig).parameters
 )
@@ -330,7 +333,10 @@ def request_trainer_job(
     if requested_job_id:
         try:
             _emit(f"reusing existing {trainer_role} trainer {requested_job_id}")
-            return _reuse_or_resume_job(rlor_mgr, requested_job_id)
+            endpoint = _reuse_or_resume_job(rlor_mgr, requested_job_id)
+            if cleanup:
+                cleanup.trainer(endpoint.job_id)
+            return endpoint
         except Exception as e:
             if not _is_http_not_found(e):
                 raise
@@ -912,13 +918,36 @@ def _reuse_or_resume_job(
     )
     if state in resumable:
         logger.info("Job %s is %s, resuming...", job_id, state)
-        return rlor_mgr.resume_and_wait(job_id)
+        for attempt in range(1, _RESUME_STATE_RACE_RETRY_ATTEMPTS + 1):
+            try:
+                return rlor_mgr.resume_and_wait(job_id)
+            except Exception as e:
+                if attempt >= _RESUME_STATE_RACE_RETRY_ATTEMPTS or not _is_transient_resume_state_race(e):
+                    raise
+                logger.info(
+                    "Job %s was reported as %s but resume is not accepted yet; "
+                    "retrying in %.1fs (attempt %d/%d)",
+                    job_id,
+                    state,
+                    _RESUME_STATE_RACE_RETRY_SLEEP_S,
+                    attempt + 1,
+                    _RESUME_STATE_RACE_RETRY_ATTEMPTS,
+                )
+                time.sleep(_RESUME_STATE_RACE_RETRY_SLEEP_S)
     return rlor_mgr.wait_for_existing(job_id)
 
 
 def _is_http_not_found(err: Exception) -> bool:
     response = getattr(err, "response", None)
     return response is not None and getattr(response, "status_code", None) == 404
+
+
+def _is_transient_resume_state_race(err: Exception) -> bool:
+    response = getattr(err, "response", None)
+    if response is None or getattr(response, "status_code", None) != 400:
+        return False
+    body = (getattr(response, "text", "") or "").lower()
+    return "not in a resumable state" in body or "cannot resume" in body
 
 
 def _flatten_extra_args(extra_args: list[str] | None) -> list[str] | None:

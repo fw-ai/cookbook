@@ -21,8 +21,8 @@ Usage::
         warm_start_from_adapter=cfg.warm_start_from_adapter,
     )
 
-    # periodic (RL / SFT)
-    ckpt.save(f"step-{step}", resumable=True, promotable=False,
+    # periodic (SFT / DPO)
+    ckpt.save(f"step-{step}", resumable=True, promotable=True,
               data_consumed=data_consumed)
 
     # final
@@ -174,7 +174,12 @@ def _newest_first(rows: list[dict]) -> list[dict]:
 
 
 def _parse_cross_job(spec: str) -> tuple[str | None, str]:
-    """Parse ``"job_id:checkpoint_name"`` or a plain path/name."""
+    """Parse ``"job_id:checkpoint_name"``, ``cross_job://job/name``, or a plain path/name."""
+    if spec.startswith("cross_job://"):
+        remainder = spec.removeprefix("cross_job://").strip("/")
+        job_id, sep, name = remainder.partition("/")
+        if sep and job_id and name:
+            return job_id, name
     if ":" in spec and not spec.startswith(("gs://", "/")):
         job_id, name = spec.split(":", 1)
         return job_id, name

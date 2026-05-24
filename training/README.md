@@ -133,6 +133,9 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 
 ## Useful examples
 
+- SFT and DPO can use a shared learning-rate schedule. The default is constant LR; for cosine decay, import `LRScheduleConfig` from `training.utils` and set `lr_schedule=LRScheduleConfig(kind="cosine", warmup_steps=10, min_lr_ratio=0.1)` on the recipe config.
+- SFT and DPO periodic checkpointing (`dcp_save_interval`) writes both a training checkpoint for resume and an inference checkpoint for promotion/evaluation at the same step. The final checkpoint uses the same pair when `save_final_checkpoint=True`.
+- To resume training, let the same managed job resume normally to pick up its newest DCP checkpoint, or pass an explicit DCP reference such as `init_from_checkpoint="job_id:step-100"` or `init_from_checkpoint="cross_job://job_id/step-100"` in cookbook configs.
 - `examples/tools/promote_checkpoint.py` queries the control plane (`list_checkpoints(job_id)`) for the trainer job's promotable rows and calls the promotion API. No `checkpoints.jsonl`, no temporary trainer — pass `--job-id <id>` and `--base-model <model>` and pick which checkpoint via `--checkpoint-name` / `--step` (default: newest promotable).
 - `examples/tools/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
 

@@ -29,7 +29,12 @@ from types import SimpleNamespace
 import pytest
 
 import training.recipes.dpo_loop as module
-from training.utils import AppendOnlyPickleLog, JsonlRenderDataset, RawRowCursor
+from training.utils import (
+    AppendOnlyPickleLog,
+    JsonlRenderDataset,
+    LRScheduleConfig,
+    RawRowCursor,
+)
 from training.utils.data import iter_preference_examples, load_preference_dataset
 
 
@@ -298,9 +303,11 @@ class _FakePolicy:
 
     def __init__(self):
         self.optim_step_count = 0
+        self.lrs: list[float] = []
 
     def optim_step(self, _params, **kwargs):
         self.optim_step_count += 1
+        self.lrs.append(_params.learning_rate)
         return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
     def save_state(self, name, timeout=None):
@@ -339,7 +346,6 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
                 cfg=cfg,
                 step_offset=0,
                 cursor=cursor,
@@ -357,7 +363,7 @@ class TestTrainLoop:
                 assert "ref_chosen" in pair and "ref_rejected" in pair
 
     def test_periodic_dcp_checkpoint_uses_top_level_interval(self, tmp_path, monkeypatch):
-        """DPO saves resumable checkpoints from Config.dcp_save_interval."""
+        """DPO saves resumable and promotable checkpoints from Config.dcp_save_interval."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
@@ -379,7 +385,6 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
                 cfg=cfg,
                 step_offset=0,
                 cursor=_new_cursor(max_rows=4),
@@ -389,8 +394,8 @@ class TestTrainLoop:
 
         assert step == 2
         assert ckpt.saves == [
-            ("step-1", {"resumable": True, "promotable": False, "data_consumed": 2}),
-            ("step-2", {"resumable": True, "promotable": False, "data_consumed": 4}),
+            ("step-1", {"resumable": True, "promotable": True, "data_consumed": 2}),
+            ("step-2", {"resumable": True, "promotable": True, "data_consumed": 4}),
         ]
 
     def test_multi_epoch_uses_ref_cache_log(self, tmp_path, monkeypatch):
@@ -410,7 +415,6 @@ class TestTrainLoop:
                 module._train_loop(
                     ds, ref_cache,
                     _FakeReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4},
                     cfg=cfg, step_offset=0,
                     cursor=cursor,
                 )
@@ -442,7 +446,6 @@ class TestTrainLoop:
                 module._train_loop(
                     ds, None,
                     _FakeReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4},
                     cfg=cfg, step_offset=0,
                     cursor=_new_cursor(max_rows=4),
                 )
@@ -473,7 +476,6 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
                 cfg=cfg, step_offset=0,
                 cursor=_new_cursor(max_rows=4),
                 on_ref_done=lambda: timeline.append(time.monotonic()),
@@ -517,7 +519,7 @@ class TestTrainLoop:
             asyncio.run(
                 module._train_loop(
                     ds, None, CountingReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+                    cfg=cfg, step_offset=0,
                     cursor=_new_cursor(max_rows=4),
                 )
             )
@@ -551,7 +553,7 @@ class TestTrainLoop:
         step = asyncio.run(
             module._train_loop(
                 ds, None, _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+                cfg=cfg, step_offset=0,
                 cursor=_new_cursor(max_rows=5),
             )
         )
@@ -611,7 +613,6 @@ class TestTrainLoop:
                 None,
                 _FakeReference(),
                 _FakePolicy(),
-                adam_params={"lr": 1e-4},
                 cfg=cfg,
                 step_offset=0,
                 cursor=_new_cursor(max_rows=5),
@@ -621,6 +622,36 @@ class TestTrainLoop:
 
         assert executed["count"] == 3
         assert reported_total_steps["value"] == 3
+
+    def test_train_loop_applies_generalized_cosine_lr_schedule(self, tmp_path, monkeypatch):
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        ds = _make_pair_dataset(tmp_path, n=3)
+        policy = _FakePolicy()
+        cfg = module.Config(
+            log_path=str(tmp_path),
+            epochs=1,
+            batch_size=1,
+            learning_rate=1e-4,
+            lr_schedule=LRScheduleConfig(kind="generalized_cosine", cosine_power=2.0),
+            render_workers=0,
+        )
+
+        step = asyncio.run(
+            module._train_loop(
+                ds,
+                None,
+                _FakeReference(),
+                policy,
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=3),
+            )
+        )
+
+        assert step == 3
+        assert policy.lrs == pytest.approx([1e-4, 2.5e-5, 0.0])
 
     def test_data_consumed_includes_render_drops(self, tmp_path, monkeypatch):
         """``data_consumed`` reflects raw rows pulled (incl. render drops), not post-filter pairs."""
@@ -655,7 +686,6 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
                 cfg=cfg, step_offset=0,
                 cursor=cursor,
                 ckpt=_CapturingCkpt(),
@@ -690,7 +720,6 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
                 cfg=cfg, step_offset=10,
                 cursor=cursor,
                 ckpt=_CapturingCkpt(),
@@ -717,7 +746,6 @@ class TestTrainLoop:
                 module._train_loop(
                     ds, ref_cache,
                     _FakeReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4},
                     cfg=cfg, step_offset=0,
                     cursor=cursor,
                 )

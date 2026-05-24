@@ -2,14 +2,157 @@
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Dict, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fireworks.training.sdk.client import FiretitanTrainingClient
 from fireworks.training.sdk.deployment import DeploymentConfig
 
 DEFAULT_ADAM = dict(beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01, grad_clip_norm=1.0)
+
+# Schedule families follow the warmup + decay shapes studied in
+# Naganuma et al. (2026), "What do near-optimal learning rate schedules
+# look like?" https://arxiv.org/abs/2603.10301
+LR_SCHEDULE_KINDS = {
+    "constant",
+    "cosine",
+    "generalized_cosine",
+    "linear",
+    "two_point_linear",
+}
+
+
+@dataclass
+class TwoPointLinearConfig:
+    x1: float = 0.33
+    """First interior x-position for two-point linear decay progress."""
+
+    y1: float = 0.5
+    """LR multiplier at ``x1``."""
+
+    x2: float = 0.66
+    """Second interior x-position for two-point linear decay progress."""
+
+    y2: float = 0.1
+    """LR multiplier at ``x2``."""
+
+
+@dataclass
+class LRScheduleConfig:
+    kind: str = "constant"
+    """Schedule after warmup: ``"constant"``, ``"cosine"``,
+    ``"generalized_cosine"``, ``"linear"``, or ``"two_point_linear"``."""
+
+    warmup_steps: int = 0
+    """Linear LR warmup from 0 to learning_rate over the first N optimizer
+    steps. 0 disables warmup."""
+
+    min_lr_ratio: float = 0.0
+    """Minimum LR as a fraction of ``learning_rate`` for decay schedules."""
+
+    cosine_power: float = 1.0
+    """Exponent for ``generalized_cosine``. 1.0 is the standard cosine shape."""
+
+    two_point_linear: TwoPointLinearConfig = field(default_factory=TwoPointLinearConfig)
+
+
+def validate_lr_schedule_config(schedule: LRScheduleConfig) -> None:
+    if schedule.warmup_steps < 0:
+        raise ValueError("warmup_steps must be >= 0")
+    if not 0.0 <= schedule.min_lr_ratio <= 1.0:
+        raise ValueError("min_lr_ratio must be between 0.0 and 1.0")
+    if schedule.kind not in LR_SCHEDULE_KINDS:
+        allowed = ", ".join(sorted(LR_SCHEDULE_KINDS))
+        raise ValueError(f"Unknown lr_schedule: {schedule.kind!r}. Use one of: {allowed}.")
+    if schedule.kind == "generalized_cosine" and schedule.cosine_power <= 0:
+        raise ValueError("cosine_power must be > 0")
+
+    if schedule.kind == "two_point_linear":
+        x1 = schedule.two_point_linear.x1
+        x2 = schedule.two_point_linear.x2
+        y1 = schedule.two_point_linear.y1
+        y2 = schedule.two_point_linear.y2
+        if not 0.0 < x1 < x2 < 1.0:
+            raise ValueError("two_point_linear.x1/x2 must satisfy 0.0 < x1 < x2 < 1.0")
+        if not schedule.min_lr_ratio <= y2 <= y1 <= 1.0:
+            raise ValueError(
+                "two_point_linear.y1/y2 must satisfy min_lr_ratio <= y2 <= y1 <= 1.0"
+            )
+
+
+def _decay_progress(optim_step_idx: int, total_steps: int, warmup_steps: int) -> float:
+    """Map a 1-indexed optimizer step to [0, 1] after warmup."""
+    total_steps = max(total_steps, 1)
+    if warmup_steps > 0:
+        decay_steps = max(total_steps - warmup_steps, 1)
+        decay_idx = min(max(optim_step_idx - warmup_steps, 0), decay_steps)
+    else:
+        decay_steps = max(total_steps - 1, 1)
+        decay_idx = min(max(optim_step_idx - 1, 0), decay_steps)
+    return decay_idx / decay_steps
+
+
+def _piecewise_linear_multiplier(
+    progress: float,
+    *,
+    min_lr_ratio: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> float:
+    points = ((0.0, 1.0), (x1, y1), (x2, y2), (1.0, min_lr_ratio))
+    for (left_x, left_y), (right_x, right_y) in zip(points, points[1:]):
+        if progress <= right_x:
+            span = right_x - left_x
+            t = 0.0 if span == 0.0 else (progress - left_x) / span
+            return left_y + t * (right_y - left_y)
+    return min_lr_ratio
+
+
+def compute_learning_rate(
+    optim_step_idx: int,
+    total_steps: int,
+    peak_lr: float,
+    schedule: LRScheduleConfig,
+) -> float:
+    """Return the LR for a 1-indexed optimizer step."""
+    if optim_step_idx < 1:
+        raise ValueError("optim_step_idx must be >= 1")
+
+    if schedule.warmup_steps > 0 and optim_step_idx <= schedule.warmup_steps:
+        return peak_lr * (optim_step_idx / schedule.warmup_steps)
+
+    if schedule.kind == "constant":
+        return peak_lr
+
+    min_lr = peak_lr * schedule.min_lr_ratio
+    progress = _decay_progress(optim_step_idx, total_steps, schedule.warmup_steps)
+
+    if schedule.kind == "cosine":
+        multiplier = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr + (peak_lr - min_lr) * multiplier
+    if schedule.kind == "generalized_cosine":
+        multiplier = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr + (peak_lr - min_lr) * (multiplier ** schedule.cosine_power)
+    if schedule.kind == "linear":
+        return peak_lr - (peak_lr - min_lr) * progress
+    if schedule.kind == "two_point_linear":
+        multiplier = _piecewise_linear_multiplier(
+            progress,
+            min_lr_ratio=schedule.min_lr_ratio,
+            x1=schedule.two_point_linear.x1,
+            y1=schedule.two_point_linear.y1,
+            x2=schedule.two_point_linear.x2,
+            y2=schedule.two_point_linear.y2,
+        )
+        return peak_lr * multiplier
+
+    allowed = ", ".join(sorted(LR_SCHEDULE_KINDS))
+    raise ValueError(f"Unknown lr_schedule: {schedule.kind!r}. Use one of: {allowed}.")
+
 
 RewardFn = Callable[[str, dict], float]
 """Signature: (completion_text, dataset_row) -> reward_float."""

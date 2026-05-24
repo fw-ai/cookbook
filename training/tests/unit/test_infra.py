@@ -340,6 +340,64 @@ def test_requested_trainer_job_id_resumes_existing_job():
     assert endpoint.job_id == "sft-job"
 
 
+def test_requested_trainer_job_id_reuse_registers_cleanup():
+    cleanup_jobs: list[str] = []
+    mgr = _FakeRlorMgr(get_result={"state": "JOB_STATE_RUNNING"})
+
+    endpoint = create_trainer_job(
+        mgr,
+        base_model="accounts/fireworks/models/qwen",
+        infra=InfraConfig(requested_trainer_job_id="sft-job"),
+        display_name="sft-policy",
+        cleanup=SimpleNamespace(trainer=cleanup_jobs.append),
+    )
+
+    assert endpoint.job_id == "sft-job"
+    assert cleanup_jobs == ["sft-job"]
+
+
+def test_requested_trainer_job_id_retries_resume_state_race(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(infra_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    class ResumeStateRace(Exception):
+        response = SimpleNamespace(
+            status_code=400,
+            text="job is not in a resumable state, cannot resume",
+        )
+
+    class FakeMgr(_FakeRlorMgr):
+        def __init__(self):
+            super().__init__(get_result={"state": "JOB_STATE_CANCELLED"})
+            self.resume_calls = 0
+
+        def resume_and_wait(self, job_id):
+            self.resume_calls += 1
+            if self.resume_calls < 3:
+                raise ResumeStateRace()
+            return SimpleNamespace(
+                job_id=job_id,
+                job_name=f"accounts/{self.account_id}/rlorTrainerJobs/{job_id}",
+                base_url="http://localhost:8080",
+            )
+
+    mgr = FakeMgr()
+
+    endpoint = create_trainer_job(
+        mgr,
+        base_model="accounts/fireworks/models/qwen",
+        infra=InfraConfig(requested_trainer_job_id="sft-job"),
+        display_name="sft-policy",
+    )
+
+    assert endpoint.job_id == "sft-job"
+    assert mgr.resume_calls == 3
+    assert sleeps == [
+        infra_module._RESUME_STATE_RACE_RETRY_SLEEP_S,
+        infra_module._RESUME_STATE_RACE_RETRY_SLEEP_S,
+    ]
+
+
 class TestCreateTrainerJobErrorMessages:
     def test_runtime_error_includes_original_exception_message(self):
         mgr = _FakeRlorMgr(wait_error=RuntimeError("NCCL timeout after 300s"))

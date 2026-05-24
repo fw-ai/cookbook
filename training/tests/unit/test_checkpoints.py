@@ -182,6 +182,14 @@ class TestResume:
             "path://other-job/step-3"
         )
 
+    def test_init_from_checkpoint_accepts_restore_reference(self, log_dir):
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+        info = ckpt.resume(init_from_checkpoint="cross_job://other-job/step-3")
+        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id="other-job")
+        client.load_state_with_optimizer.assert_called_once_with(
+            "path://other-job/step-3"
+        )
+
     def test_warm_start_adapter_when_no_resume(self, log_dir):
         ckpt, client, _ = _make(log_dir, fw_rows=[], lora_rank=8)
         info = ckpt.resume(warm_start_from_adapter="hf/adapter")

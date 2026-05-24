@@ -34,6 +34,7 @@ from training.utils import (
     DEFAULT_RENDER_WORKERS,
     InfraConfig,
     JsonlRenderDataset,
+    LRScheduleConfig,
     RawRowCursor,
     ReconnectableClient,
     ResourceCleanup,
@@ -42,6 +43,7 @@ from training.utils import (
     RunStatus,
     WandBConfig,
     auto_select_training_shape,
+    compute_learning_rate,
     create_trainer_job,
     log_metrics_json,
     make_render_dataloader,
@@ -52,6 +54,7 @@ from training.utils import (
     resolve_renderer_name,
     setup_wandb,
     validate_config,
+    validate_lr_schedule_config,
     wandb_finish,
     wandb_log,
 )
@@ -240,6 +243,7 @@ class Config:
     train_on_what: str = "all_assistant_messages"
 
     learning_rate: float = 1e-4
+    lr_schedule: LRScheduleConfig = field(default_factory=LRScheduleConfig)
     epochs: int = 3
     batch_size: int = 32
     max_seq_len: int | None = None
@@ -252,7 +256,8 @@ class Config:
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
-    format ``"job_id:checkpoint_name"``."""
+    format ``"job_id:checkpoint_name"`` or
+    ``"cross_job://job_id/checkpoint_name"``."""
 
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
@@ -271,8 +276,7 @@ class Config:
     """Override Adam weight decay (default 0.01 via DEFAULT_ADAM)."""
 
     warmup_steps: int = 0
-    """Linear LR warmup from 0 → learning_rate over the first N optimizer
-    steps. 0 disables warmup (lr is constant)."""
+    """Deprecated alias for ``lr_schedule.warmup_steps``."""
 
     seed: int = 0
     """Shuffle seed for the training dataset.
@@ -432,10 +436,25 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    if cfg.warmup_steps > 0:
+        if cfg.lr_schedule.warmup_steps not in (0, cfg.warmup_steps):
+            raise ValueError(
+                "Set either warmup_steps or lr_schedule.warmup_steps, not both."
+            )
+        cfg.lr_schedule.warmup_steps = cfg.warmup_steps
+    validate_lr_schedule_config(cfg.lr_schedule)
     setup_wandb(
         cfg.wandb,
         {
             "lr": cfg.learning_rate,
+            "lr_schedule": cfg.lr_schedule.kind,
+            "lr_schedule/warmup_steps": cfg.lr_schedule.warmup_steps,
+            "lr_schedule/min_lr_ratio": cfg.lr_schedule.min_lr_ratio,
+            "lr_schedule/cosine_power": cfg.lr_schedule.cosine_power,
+            "lr_schedule/two_point_linear/x1": cfg.lr_schedule.two_point_linear.x1,
+            "lr_schedule/two_point_linear/y1": cfg.lr_schedule.two_point_linear.y1,
+            "lr_schedule/two_point_linear/x2": cfg.lr_schedule.two_point_linear.x2,
+            "lr_schedule/two_point_linear/y2": cfg.lr_schedule.two_point_linear.y2,
             "epochs": cfg.epochs,
             "batch_size": cfg.batch_size,
         },
@@ -617,28 +636,32 @@ def main(
         if cfg.weight_decay is not None:
             adam_kwargs["weight_decay"] = cfg.weight_decay
 
-        def _current_lr(optim_step_idx: int) -> float:
-            # 1-indexed optim step; linear warmup from 0 → cfg.learning_rate
-            # over cfg.warmup_steps, constant afterwards.
-            if cfg.warmup_steps > 0 and optim_step_idx <= cfg.warmup_steps:
-                return cfg.learning_rate * (optim_step_idx / cfg.warmup_steps)
-            return cfg.learning_rate
-
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
-
         # -- Training loop (batch-indexed) -------------------------------------
 
         completed_epochs = cursor.value // training_count if training_count else 0
         rows_into_current_epoch = cursor.value % training_count if training_count else 0
         start_batch = rows_into_current_epoch // effective_batch_size
         remaining_raw_rows = max(0, total_raw_rows - cursor.value)
-        total_steps_estimate = step + (
+        rough_total_steps_estimate = step + (
             (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
         )
+        filtered_batch_steps = 0
+        has_lr_schedule = (
+            cfg.lr_schedule.warmup_steps > 0 or cfg.lr_schedule.kind != "constant"
+        )
+        if has_lr_schedule:
+            logger.info(
+                "LR schedule: %s | warmup_steps=%d | peak_lr=%g | min_lr=%g",
+                cfg.lr_schedule.kind,
+                cfg.lr_schedule.warmup_steps,
+                cfg.learning_rate,
+                cfg.learning_rate * cfg.lr_schedule.min_lr_ratio,
+            )
 
         def _run_train_step(
             batch: list[tinker.Datum],
             step: int,
+            total_steps_for_lr: int,
         ) -> int:
 
             # Count total tokens for throughput tracking
@@ -657,23 +680,29 @@ def main(
                     response_tokens = sum(sum(d.loss_fn_inputs["weights"].data) for d in batch)
 
             with timer("optim_step"):
-                # Rebuild AdamParams each step so warmup can scale lr.
-                step_lr = _current_lr(step + 1)
+                # Rebuild AdamParams each step so the LR schedule can update.
+                step_lr = compute_learning_rate(
+                    step + 1,
+                    total_steps_for_lr,
+                    cfg.learning_rate,
+                    cfg.lr_schedule,
+                )
                 step_adam = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
                 optim_result = client.optim_step(step_adam)
             step += 1
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 with timer("dcp_save"):
-                    logger.info("Saving DCP checkpoint at step %d", step)
+                    logger.info("Saving training and inference checkpoints at step %d", step)
                     ckpt.save(
                         f"step-{step}",
                         resumable=True,
-                        promotable=False,
+                        promotable=True,
                         data_consumed=cursor.value,
                     )
 
             step_metrics: Dict[str, Any] = flush_timing()
+            step_metrics["train/lr"] = step_lr
 
             if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
                 for k, v in optim_result.metrics.items():
@@ -691,8 +720,14 @@ def main(
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
                 logger.info(
-                    "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
-                    step, total_steps_estimate, avg_loss, ppl, step_metrics["train/tokens_per_sec"], step_total_tokens,
+                    "Step %d/%d | lr=%.2e | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d",
+                    step,
+                    total_steps_for_lr,
+                    step_lr,
+                    avg_loss,
+                    ppl,
+                    step_metrics["train/tokens_per_sec"],
+                    step_total_tokens,
                 )
                 log_metrics_json(step, ce_loss=avg_loss, ppl=ppl)
                 step_metrics.update({
@@ -705,14 +740,34 @@ def main(
 
             runner.append_metrics(step, step_metrics, tokens=step_total_tokens)
             runner.write_status(
-                RunStatus.RUNNING, step=step, total_steps=total_steps_estimate, message="training",
+                RunStatus.RUNNING, step=step, total_steps=total_steps_for_lr, message="training",
             )
             runner.write_metadata()
 
             return step
 
         runner.start_training()
-        runner.write_status(RunStatus.RUNNING, total_steps=total_steps_estimate, message="training")
+        runner.write_status(RunStatus.RUNNING, total_steps=rough_total_steps_estimate, message="training")
+
+        def _next_trainable_batch(
+            enumerated_batches,
+        ) -> tuple[list[tinker.Datum] | None, int, int] | None:
+            nonlocal filtered_batch_steps
+            raw_rows_to_record = 0
+            for raw_batch_idx, raw_batch in enumerated_batches:
+                raw_batch_size = min(
+                    effective_batch_size,
+                    training_count - raw_batch_idx * effective_batch_size,
+                )
+                raw_rows_to_record += raw_batch_size
+                batch = _flatten_rendered_batch(raw_batch)
+                if not batch:
+                    filtered_batch_steps += 1
+                    continue
+                return batch, len(batch), raw_rows_to_record
+            if raw_rows_to_record:
+                return None, 0, raw_rows_to_record
+            return None
 
         for epoch in range(completed_epochs, cfg.epochs):
             loader_generator.manual_seed(cfg.seed + epoch)
@@ -722,17 +777,33 @@ def main(
                 batch_iter = islice(batch_iter, epoch_start_batch, None)
 
             epoch_valid_examples = 0
-            for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
-                raw_batch_size = min(
-                    effective_batch_size,
-                    training_count - raw_batch_idx * effective_batch_size,
+            enumerated_batches = enumerate(batch_iter, start=epoch_start_batch)
+            pending = _next_trainable_batch(enumerated_batches)
+            while pending is not None:
+                batch, valid_count, raw_rows_to_record = pending
+                if batch is None:
+                    cursor.record(raw_rows_to_record)
+                    break
+
+                next_pending = _next_trainable_batch(enumerated_batches)
+                is_final_training_step = (
+                    (next_pending is None or next_pending[0] is None)
+                    and epoch == cfg.epochs - 1
                 )
-                cursor.record(raw_batch_size)
-                batch = _flatten_rendered_batch(batch)
-                if not batch:
-                    continue  # entire batch was filtered (None render); skip
-                epoch_valid_examples += len(batch)
-                step = _run_train_step(batch, step)
+                total_steps_for_lr = (
+                    step + 1
+                    if is_final_training_step
+                    else max(step + 1, rough_total_steps_estimate - filtered_batch_steps)
+                )
+                cursor.record(raw_rows_to_record)
+                epoch_valid_examples += valid_count
+                step = _run_train_step(batch, step, total_steps_for_lr)
+
+                if next_pending is not None and next_pending[0] is None:
+                    cursor.record(next_pending[2])
+                    pending = None
+                else:
+                    pending = next_pending
 
             if epoch == 0 and completed_epochs == 0 and start_batch == 0:
                 filtered_count = training_count - epoch_valid_examples
