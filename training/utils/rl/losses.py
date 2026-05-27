@@ -51,7 +51,7 @@ LossPath = Literal["builtin", "client"]
 - ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
   loss. Faster, but the loss sees only
   ``(target_tokens, logprobs, advantages)`` so KL penalties (``kl_beta>0``)
-  cannot be applied; pipeline parallelism > 1 is also unsupported.
+  cannot be applied.
 - ``"client"`` -- client-side ``forward_backward_custom(...)`` with the
   Python loss closure. Always works, slower because of an extra forward
   pass for old-policy logprobs.
@@ -69,7 +69,7 @@ SUPPORTED_POLICY_LOSSES: tuple[str, ...] = tuple(CLIENT_LOSSES)
 
 # Drift guard: PolicyLoss Literal must list every client-registered loss,
 # and every builtin must also be in CLIENT_LOSSES (a builtin without a
-# client fallback is a footgun -- there's no way to apply KL or run on PP>1).
+# client fallback is a footgun -- there's no way to apply KL.
 import typing as _typing  # noqa: E402
 assert set(_typing.get_args(PolicyLoss)) == set(CLIENT_LOSSES), (
     "PolicyLoss Literal is out of sync with CLIENT_LOSSES. "
@@ -114,7 +114,7 @@ class LossConfig:
 
     policy_loss: PolicyLoss = "grpo"
     loss_path: LossPath = "client"
-    """Default ``"client"`` because it works for every loss/PP/kl_beta combo;
+    """Default ``"client"`` because it works for every loss/kl_beta combo;
     opt into ``"builtin"`` explicitly when you want the server-side fast path."""
     kl_beta: float = 0.0
     eps_clip: float = 0.2
@@ -146,7 +146,6 @@ def validate_loss_path(args: LossArgs, profile: Any | None = None) -> None:
     - ``args.kl_beta > 0`` (builtin datums have no ``ref_logprobs`` field, so
       the KL term ``kl_beta * (pi - pi_ref)`` would be silently dropped --
       see :func:`build_builtin_loss_datums`),
-    - ``profile.pipeline_parallelism > 1`` (server kernels don't support PP).
     """
     if args.loss_path == "client":
         return
@@ -170,14 +169,6 @@ def validate_loss_path(args: LossArgs, profile: Any | None = None) -> None:
             f"(see build_builtin_loss_datums) so the KL term would be "
             f"silently dropped. Set loss_path='client' or kl_beta=0."
         )
-    if profile is not None:
-        pp = getattr(profile, "pipeline_parallelism", 1)
-        if pp > 1:
-            raise ValueError(
-                f"loss_path='builtin' requested with pipeline_parallelism={pp} > 1. "
-                f"Server-side builtin kernels do not support PP. "
-                f"Set loss_path='client' or use a PP=1 training shape."
-            )
 
 
 def get_builtin_loss_config(args: LossArgs) -> tuple[str, dict[str, Any]]:

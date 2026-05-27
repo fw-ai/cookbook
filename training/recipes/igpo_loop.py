@@ -23,12 +23,10 @@ from __future__ import annotations
 
 import os
 import re
-import json
-import math
 import signal
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -72,6 +70,12 @@ from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_lo
 from training.utils.rl.losses import (
     PolicyLoss,
     combine_prompt_groups,
+)
+from training.utils.rl.igpo import (
+    score_prefix as _score_prefix,
+    compute_turn_advantages,
+    expand_turn_advantages,
+    make_igpo_loss_fn,
 )
 from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.rl.metrics import compute_step_metrics
@@ -193,15 +197,6 @@ def detect_turn_boundaries(
 # ---------------------------------------------------------------------------
 # IG scoring, turn advantages, and loss function — imported from shared utils
 # ---------------------------------------------------------------------------
-
-from training.utils.rl.igpo import (
-    build_score_datum as _build_score_datum,
-    score_prefix as _score_prefix,
-    compute_turn_advantages,
-    expand_turn_advantages,
-    make_igpo_loss_fn,
-)
-
 
 # ---------------------------------------------------------------------------
 # Reward function -- customise for your task
@@ -782,8 +777,8 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        # Prefer the persisted raw-row cursor; fall back to step-derived for
-        # legacy checkpoints (dataloader.json predates this PR).
+        # Prefer the persisted raw-row cursor; fall back to step-derived
+        # progress for older checkpoints.
         cursor.resume(
             resume_info.data_consumed if resume_info else None,
             fallback=step_offset * prompt_groups_per_step,

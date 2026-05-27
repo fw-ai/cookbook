@@ -102,7 +102,6 @@ def _fake_profile(shape_id: str = "accounts/test/trainingShapes/sft"):
         accelerator_count=None,
         node_count=None,
         deployment_shape_version=None,
-        pipeline_parallelism=1,
     )
 
 

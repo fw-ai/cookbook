@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-import pytest
-
 from training.tests._dataloader_test_helpers import load_cursor, load_rl_train
 
 
@@ -199,7 +197,7 @@ def test_pipeline_clean_run_advances_cursor_to_dataset_length():
 
 def test_pipeline_with_drops_advances_cursor_by_raw_rows_not_accepted():
     """Cursor advances by raw rows (incl. drops/fails), not accepted groups —
-    the cursor-drift failure mode this PR fixes."""
+    the cursor-drift failure mode that raw-row accounting prevents."""
     # Place drops/fails before the second accept in each window so their
     # stats land in the dispatched batch (see test_tail_drops_in_window_are_unaccounted).
     rows = [

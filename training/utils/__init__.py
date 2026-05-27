@@ -1,8 +1,7 @@
 """Cookbook utilities -- infrastructure, losses, data, logging, and more.
 
-RL-specific utilities (losses, training loop, PP recommendation,
-importance sampling, router replay) live in
-``training.utils.rl``.
+RL-specific utilities (losses, training loop, importance sampling,
+router replay) live in ``training.utils.rl``.
 """
 
 # ---------------------------------------------------------------------------

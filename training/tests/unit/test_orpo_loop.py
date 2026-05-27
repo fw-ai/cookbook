@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -150,9 +149,6 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
                 snapshot_name=f"{name}-session",
             )
 
-        def resolve_checkpoint_path(self, name, source_job_id=None):
-            return f"cross_job://{source_job_id}/{name}"
-
         def load_state_with_optimizer(self, path):
             pass
 
@@ -196,7 +192,6 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "render_preference_pair", lambda *args, **kwargs: next(pair_outputs))
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "make_batch_orpo_loss_fn", lambda response_starts, orpo_lambda: ("loss", response_starts, orpo_lambda))
-    monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
     mgr = FakeMgr()
     cfg = module.Config(
         log_path=str(tmp_path),
@@ -206,6 +201,7 @@ def test_main_uses_profile_and_trains_pairs(monkeypatch, tmp_path):
         max_seq_len=None,
         epochs=1,
         batch_size=1,
+        seed=0,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1"),
         output_model_id="promoted-orpo-model",
     )
@@ -328,7 +324,6 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "render_preference_pair", lambda *args, **kwargs: next(pair_outputs))
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(module, "make_batch_orpo_loss_fn", lambda response_starts, orpo_lambda: ("loss", response_starts, orpo_lambda))
-    monkeypatch.setattr(module.random, "shuffle", lambda seq: None)
 
     cfg = module.Config(
         log_path=str(tmp_path),
@@ -338,6 +333,7 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch, tmp_path):
         max_seq_len=None,
         epochs=1,
         batch_size=2,
+        seed=0,
         infra=module.InfraConfig(training_shape_id="ts-qwen3-4b-smoke-v1"),
     )
 
@@ -354,23 +350,11 @@ def test_main_batches_pairs_per_optimizer_step(monkeypatch, tmp_path):
     assert events["deleted_jobs"] == ["job-orpo"]
 
 
-def test_orpo_epoch_shuffle_uses_seeded_rng() -> None:
-    """ORPO must seed its per-epoch shuffle for reproducibility.
+def test_shuffled_pair_cache_is_seeded_without_mutating_source():
+    pair_cache = [{"id": i} for i in range(5)]
 
-    Previously the loop called ``random.shuffle(pair_cache)`` on the global
-    random state with no ``random.seed``, so reruns with identical configs
-    produced different data orderings. Every shuffle must go through a seeded
-    RNG (e.g. ``random.Random(seed + epoch)``).
-    """
-    src = inspect.getsource(module)
-    uses_unseeded_global_shuffle = (
-        "random.shuffle(pair_cache)" in src
-        and "random.seed" not in src
-        and "random.Random" not in src
-    )
-    assert not uses_unseeded_global_shuffle, (
-        "orpo_loop.py calls `random.shuffle(pair_cache)` on the global random state "
-        "with no `random.seed` / `random.Random` anywhere in the module, so reruns "
-        "with identical configs produce different data orderings. "
-        "Fix: expose a `seed` in Config and use `random.Random(seed + epoch).shuffle(...)`."
-    )
+    first_order = module._shuffled_pair_cache(pair_cache, seed=17, epoch=0)
+    second_order = module._shuffled_pair_cache(pair_cache, seed=17, epoch=0)
+
+    assert first_order == second_order
+    assert pair_cache == [{"id": i} for i in range(5)]

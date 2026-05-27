@@ -28,7 +28,7 @@ from training.utils.config import (
     WeightSyncConfig,
 )
 from training.utils.infra import ResourceCleanup
-from training.utils.infra import Infra, setup_infra
+from training.utils.infra import setup_infra
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,6 @@ from training.utils.infra import Infra, setup_infra
 
 def _profile(*, max_seq: int = 4096, dep_shape: str | None = "ds-v1") -> SimpleNamespace:
     return SimpleNamespace(
-        pipeline_parallelism=1,
         max_supported_context_length=max_seq,
         deployment_shape_version=dep_shape,
         accelerator_type="NVIDIA_B200",
