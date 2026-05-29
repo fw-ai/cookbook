@@ -58,7 +58,9 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.opd import (
+    MultiTeacherConfig,
     OPDPromptGroup,
+    TeacherConfig,
     build_opd_server_datums,
     combine_opd_prompt_groups,
 )
@@ -125,6 +127,14 @@ class Config:
 
     teacher_top_logprobs: int = 0
     """Optional top-logprob count to request while scoring. The loss needs only sampled-token logprobs."""
+
+    multi_teacher: MultiTeacherConfig | None = None
+    """Optional multi-TARGET routing config. When set (non-empty ``teachers``) it
+    overrides the single ``teacher_model``: each prompt is scored by exactly ONE
+    teacher, chosen by ``row[multi_teacher.route_key]`` (value == a teacher
+    ``model``). One student, N frozen teacher deployments; the async sampling
+    window interleaves scoring across them. Not a per-prompt mixture. Leave
+    ``None`` for the single-teacher default."""
 
     learning_rate: float = 1e-5
     opd_loss_scale: float = 1.0
@@ -265,25 +275,44 @@ def _wait_frozen_teacher_deployment(
     return ready.inference_model or f"accounts/{deploy_mgr.account_id}/deployments/{request.deployment_id}"
 
 
+def _resolve_teacher_specs(cfg: Config) -> list[TeacherConfig]:
+    """Normalize single- and multi-teacher config into a list of teacher specs.
+
+    Single ``teacher_model`` (no ``multi_teacher``) is the backward-compatible
+    default and yields one spec. With ``multi_teacher`` set, its ``teachers``
+    list is used as-is.
+    """
+    if cfg.multi_teacher is not None and cfg.multi_teacher.teachers:
+        return list(cfg.multi_teacher.teachers)
+    return [TeacherConfig(model=cfg.teacher_model, weight=1.0)]
+
+
 def _make_teacher_deployment_provisioner(
     cfg: Config,
     deploy_mgr: DeploymentManager,
     *,
+    teacher_model: str,
+    deployment_id: str,
     cleanup: ResourceCleanup | None,
     model_out: dict[str, str],
+    out_key: str,
 ) -> Callable[[str | None], tuple[str, Callable[[], None]] | None]:
-    """Build a setup hook for an auto-created frozen teacher deployment."""
+    """Build a setup hook for ONE auto-created frozen teacher deployment.
+
+    Multi-teacher: call once per base-model teacher; each captures its resolved
+    inference target into ``model_out[out_key]`` (keyed by teacher model so
+    duplicate models share a deployment).
+    """
 
     def _provision(resolved_deployment_shape: str | None) -> tuple[str, Callable[[], None]] | None:
-        if not _is_base_model_resource(cfg.teacher_model):
+        if not _is_base_model_resource(teacher_model):
             return None
 
-        deployment_id = cfg.teacher_deployment_id or _default_teacher_deployment_id(cfg.teacher_model)
         deployment_shape = cfg.teacher_deployment_shape or resolved_deployment_shape
         request = _request_frozen_teacher_deployment(
             deploy_mgr,
             infra_cfg=cfg.infra,
-            base_model=cfg.teacher_model,
+            base_model=teacher_model,
             deployment_id=deployment_id,
             deployment_shape=deployment_shape,
             replica_count=cfg.teacher_replica_count,
@@ -291,26 +320,26 @@ def _make_teacher_deployment_provisioner(
         )
 
         def _wait_and_capture() -> None:
-            model_out["teacher_model"] = _wait_frozen_teacher_deployment(
+            model_out[out_key] = _wait_frozen_teacher_deployment(
                 deploy_mgr,
                 request,
                 timeout_s=cfg.teacher_deployment_timeout_s,
             )
 
-        return "teacher_deployment", _wait_and_capture
+        return f"teacher_deployment[{out_key}]", _wait_and_capture
 
     return _provision
 
 
 def _resolve_teacher_model_for_scoring(
-    cfg: Config,
+    teacher_model: str,
     infra_teacher_model: str | None,
 ) -> str:
-    """Resolve ``cfg.teacher_model`` to an inference target for frozen scoring."""
-    if not _is_base_model_resource(cfg.teacher_model):
-        return cfg.teacher_model
+    """Resolve a teacher spec model to an inference target for frozen scoring."""
+    if not _is_base_model_resource(teacher_model):
+        return teacher_model
     if not infra_teacher_model:
-        raise RuntimeError("OPD teacher deployment was not provisioned")
+        raise RuntimeError(f"OPD teacher deployment for {teacher_model!r} was not provisioned")
     return infra_teacher_model
 
 
@@ -407,15 +436,43 @@ def main(
         runner.write_status(RunStatus.PENDING, message=msg)
 
     with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
+        teacher_specs = _resolve_teacher_specs(cfg)
+        # The online loop scores every teacher against the row's shared privileged
+        # prompt; per-teacher privileged messages are not wired in yet. Warn rather
+        # than silently ignore a non-default key.
+        for _spec in teacher_specs:
+            if _spec.teacher_messages_key != "teacher_messages":
+                logger.warning(
+                    "TeacherConfig.teacher_messages_key=%r is not consumed by the online "
+                    "loop; teacher %s will see the row's shared teacher prompt.",
+                    _spec.teacher_messages_key,
+                    _spec.model,
+                )
         teacher_provisioners = []
         teacher_model_out: dict[str, str] = {}
-        if _is_base_model_resource(cfg.teacher_model):
+        # Provision one frozen deployment per distinct base-model teacher.
+        # ``out_key`` is the teacher model string so duplicate models reuse one
+        # deployment id / one captured inference target.
+        _provisioned_models: set[str] = set()
+        for spec in teacher_specs:
+            if not _is_base_model_resource(spec.model) or spec.model in _provisioned_models:
+                continue
+            _provisioned_models.add(spec.model)
+            single = len(teacher_specs) == 1
+            deployment_id = (
+                cfg.teacher_deployment_id
+                if single and cfg.teacher_deployment_id
+                else _default_teacher_deployment_id(spec.model)
+            )
             teacher_provisioners.append(
                 _make_teacher_deployment_provisioner(
                     cfg,
                     deploy_mgr,
+                    teacher_model=spec.model,
+                    deployment_id=deployment_id,
                     cleanup=cleanup if cancel_on_exit else None,
                     model_out=teacher_model_out,
+                    out_key=spec.model,
                 )
             )
 
@@ -474,16 +531,58 @@ def main(
             tokenizer=tokenizer,
             concurrency_controller=concurrency_controller,
         )
-        teacher_model = _resolve_teacher_model_for_scoring(
-            cfg,
-            teacher_model_out.get("teacher_model"),
-        )
-        teacher_sampler = DeploymentSampler(
-            inference_url=cfg.teacher_inference_url or base_url,
-            model=teacher_model,
-            api_key=api_key,
-            tokenizer=tokenizer,
-        )
+        # Build one scoring sampler per teacher spec. Multi-target routing: each
+        # prompt is scored by exactly one teacher, chosen by ``row[route_key]``
+        # (value == a configured teacher ``model``). ``route_to_entry`` maps that
+        # configured model string to its (resolved_model, sampler). The primary
+        # (first) teacher backs the single-teacher fields used by eval contexts.
+        teacher_entries: list[tuple[str, DeploymentSampler]] = []
+        route_to_entry: dict[str, tuple[str, DeploymentSampler]] = {}
+        for spec in teacher_specs:
+            resolved = _resolve_teacher_model_for_scoring(
+                spec.model,
+                teacher_model_out.get(spec.model),
+            )
+            sampler = DeploymentSampler(
+                inference_url=cfg.teacher_inference_url or base_url,
+                model=resolved,
+                api_key=api_key,
+                tokenizer=tokenizer,
+            )
+            teacher_entries.append((resolved, sampler))
+            route_to_entry[spec.model] = (resolved, sampler)
+        teacher_model, teacher_sampler = teacher_entries[0]
+        is_multi_teacher = len(teacher_entries) > 1
+        teacher_route_key = cfg.multi_teacher.route_key if cfg.multi_teacher is not None else "teacher"
+
+        # Per-teacher visibility so skewed routing / idle teachers are observable.
+        # ``scored`` is cumulative attempts (skew); ``inflight`` is the live gauge
+        # (saturation). Keyed by resolved deployment model.
+        teacher_scored: dict[str, int] = {model: 0 for model, _ in teacher_entries}
+        teacher_inflight: dict[str, int] = {model: 0 for model, _ in teacher_entries}
+
+        async def _score_routed(
+            model: str,
+            sampler: DeploymentSampler,
+            scoring_tokens: list[int],
+            *,
+            prompt_len: int,
+            response_len: int,
+        ) -> list[float] | None:
+            teacher_inflight[model] += 1
+            try:
+                return await _score_with_teacher(
+                    sampler,
+                    scoring_tokens,
+                    prompt_len=prompt_len,
+                    response_len=response_len,
+                    top_logprobs=cfg.teacher_top_logprobs,
+                    http_timeout=cfg.deployment.sample_timeout,
+                )
+            finally:
+                teacher_inflight[model] -= 1
+                teacher_scored[model] += 1
+
         weight_syncer = WeightSyncer(
             policy_client=policy.inner,
             deploy_mgr=deploy_mgr,
@@ -501,6 +600,15 @@ def main(
             lora_rank=cfg.lora_rank,
         )
 
+        if is_multi_teacher:
+            logger.info(
+                "OPD training: %d teachers routed by row[%r] (%s) | completions_per_prompt=%d | groups_per_step=%d",
+                len(teacher_entries),
+                teacher_route_key,
+                ", ".join(m for m, _ in teacher_entries),
+                completions_per_prompt,
+                prompt_groups_per_step,
+            )
         logger.info(
             "OPD training: teacher=%s | completions_per_prompt=%d | groups_per_step=%d",
             teacher_model,
@@ -567,6 +675,22 @@ def main(
             if not sampled:
                 return None
 
+            # Route this prompt to exactly one teacher. Single-teacher -> primary.
+            if is_multi_teacher:
+                route_value = row.get(teacher_route_key)
+                entry = route_to_entry.get(route_value) if isinstance(route_value, str) else None
+                if entry is None:
+                    logger.warning(
+                        "Skipping prompt: route key %r=%r not in configured teachers %s",
+                        teacher_route_key,
+                        route_value,
+                        sorted(route_to_entry),
+                    )
+                    return None
+                scoring_model, scoring_sampler = entry
+            else:
+                scoring_model, scoring_sampler = teacher_model, teacher_sampler
+
             teacher_scores: list[list[float] | None] = [None] * len(sampled)
             teacher_task_indices: list[int] = []
             teacher_tasks = []
@@ -581,13 +705,12 @@ def main(
                 scoring_tokens, response_len = teacher_scoring_tokens
                 teacher_task_indices.append(idx)
                 teacher_tasks.append(
-                    _score_with_teacher(
-                        teacher_sampler,
+                    _score_routed(
+                        scoring_model,
+                        scoring_sampler,
                         scoring_tokens,
                         prompt_len=len(teacher_prompt_tokens),
                         response_len=response_len,
-                        top_logprobs=cfg.teacher_top_logprobs,
-                        http_timeout=cfg.deployment.sample_timeout,
                     )
                 )
             if teacher_tasks:
@@ -830,6 +953,11 @@ def main(
             cc_summary = concurrency_controller.step_completed()
             for key, value in cc_summary.items():
                 loop_metrics[f"concurrency/{key}"] = value
+            if is_multi_teacher:
+                for model, _ in teacher_entries:
+                    slug = model.rstrip("/").split("/")[-1]
+                    loop_metrics[f"teacher_route/{slug}/scored"] = teacher_scored[model]
+                    loop_metrics[f"teacher_route/{slug}/inflight"] = teacher_inflight[model]
             wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
 
         # -- Run loop -------------------------------------------------------------
@@ -905,12 +1033,28 @@ def main(
         }
 
 
+def _multi_teacher_from_env() -> MultiTeacherConfig | None:
+    """Parse ``OPD_TEACHERS`` (comma-separated teacher models) for routing.
+
+    ``OPD_TEACHER_ROUTE_KEY`` -> dataset row key whose value names the teacher
+    model for each prompt (default ``teacher``). Returns ``None`` when
+    ``OPD_TEACHERS`` is unset (single-teacher default).
+    """
+    raw = os.environ.get("OPD_TEACHERS", "").strip()
+    if not raw:
+        return None
+    teachers = [TeacherConfig(model=m.strip()) for m in raw.split(",") if m.strip()]
+    route_key = os.environ.get("OPD_TEACHER_ROUTE_KEY", "teacher")
+    return MultiTeacherConfig(teachers=teachers, route_key=route_key)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = Config(
         log_path="./opd_logs",
         base_model="accounts/fireworks/models/qwen3-8b",
         teacher_model=os.environ.get("OPD_TEACHER_MODEL", ""),
+        multi_teacher=_multi_teacher_from_env(),
         infra=InfraConfig(
             training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200",
         ),

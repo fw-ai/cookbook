@@ -248,3 +248,49 @@ def build_opd_server_datums(
         sampling_nll_sum=sampling_nll_sum,
     )
     return server_datums, metrics.as_dict()
+
+
+# ---------------------------------------------------------------------------
+# Multi-target teacher routing (one student, N frozen teachers, routed per prompt)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TeacherConfig:
+    """One teacher in a multi-target OPD run.
+
+    Args:
+        model: Inference model id (or base-model resource to auto-deploy).
+        deployment_id: Optional explicit frozen-teacher deployment id.
+        teacher_messages_key: Dataset key holding this teacher's privileged
+            prompt messages (falls back to the row's own messages).
+        top_logprobs: Per-teacher override of ``K``; ``None`` uses the run value.
+    """
+
+    model: str
+    deployment_id: str | None = None
+    teacher_messages_key: str = "teacher_messages"
+    top_logprobs: int | None = None
+
+
+@dataclass
+class MultiTeacherConfig:
+    """Multi-TARGET routing: one student, N frozen teachers, ROUTED per prompt.
+
+    This is NOT a per-prompt mixture/blend (that would be N x teacher cost for a
+    single target). Each prompt is scored by exactly ONE teacher, chosen by the
+    row's ``route_key`` value (which must equal one teacher's ``model``). The
+    student samples from its single deployment; routing different prompts to
+    different teacher deployments lets the async sampling window interleave
+    scoring across teachers so every deployment's GPU stays busy.
+    """
+
+    teachers: list[TeacherConfig] = field(default_factory=list)
+    route_key: str = "teacher"  # row key whose value names the teacher ``model``
+
+    def __post_init__(self) -> None:
+        if not self.teachers:
+            raise ValueError("MultiTeacherConfig requires at least one teacher.")
+        models = [t.model for t in self.teachers]
+        if len(set(models)) != len(models):
+            raise ValueError(f"Duplicate teacher models in MultiTeacherConfig: {models}")
