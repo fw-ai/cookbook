@@ -1,25 +1,112 @@
-"""Utilities for sampled-token on-policy distillation (OPD).
+"""On-policy distillation datums and losses (online OPD / OPSD).
 
-The Tinker server already has the primitive OPD needs: the built-in
-``importance_sampling`` loss computes
+All objectives here train on *student* rollouts. The focus is the ONLINE path
+(``opd_loop.py``); offline top-K KL distillation is intentionally deferred --
+the co-located LoRA ``kl_distillation`` loss already covers the offline case
+(see "Offline" note below).
 
-    -exp(current_logprob - sampling_logprob) * advantage
+Modes
+-----
+    DistillMode        KL direction          source-K model   student training pass
+    -----------------  --------------------  ---------------  -----------------------------
+    SAMPLED_IS         reverse KL (1-sample) n/a (no top-K)   builtin ``importance_sampling``
+    TOPK_REVERSE_KL    reverse  KL(S || T)   STUDENT          ``forward_backward_custom``
+    TOPK_FORWARD_KL    forward  KL(T || S)   TEACHER          builtin ``cross_entropy`` [N,K]
 
-per token.  Sampled-token OPD uses the teacher/student log-ratio as the dense
-reward, so the per-token advantage is simply
+* ``SAMPLED_IS`` (ships in #391): per-token advantage = ``teacher_logprob -
+  sampling_logprob`` on the sampled token, fed to ``importance_sampling``
+  (``-exp(lp - slp) * advantage``). A 1-sample Monte-Carlo estimate of reverse
+  KL ``KL(pi_S || pi_T)`` -- correct direction, NO top-K. Both logprobs come
+  from INFERENCE (student sampling + teacher-deployment scoring).
+* ``TOPK_REVERSE_KL`` (``reverse_kl_topk_loss``): analytic reverse KL over the
+  top-K. Reverse KL's expectation is over ``pi_S``, so the source K (the K-token
+  support) is the **STUDENT's** top-K. Recommended OPSD default (mode-seeking,
+  matches the literature).
+* ``TOPK_FORWARD_KL``: cross-entropy against the teacher's renormalized top-K.
+  Forward KL's expectation is over ``pi_T``, so the source K is the **TEACHER's**
+  top-K. Mass-covering; opt-in for SDFT-style continual-learning.
 
-    teacher_logprob - sampling_logprob
+Source-K vs gather (the key rule -- see also opd_sampling.py)
+------------------------------------------------------------
+"source K" = the FIRST call that *selects* the K token indices (+ that model's
+logprobs): ``forward(loss_fn_config={"top_k": K})`` (trainer, ``@no_grad``) or
+inference ``top_logprobs``. "gather" = the SECOND stage that reads logprobs AT
+those fixed indices via ``target_tokens=[N,K]`` (PR #27269). The other model and
+the training ``forward_backward`` MUST gather at the SAME source-K indices.
+NEVER run a second ``topK`` selection at stage 2 -- it would pick a *different*
+K set and silently compute per-token KL on mismatched tokens.
 
-for response tokens.  These helpers build server-side datums that encode that
-reward in ``loss_fn_inputs["advantages"]``.
+OPSD extraction provenance (TOPK_REVERSE_KL, source = student)
+--------------------------------------------------------------
+For correctness the student source K is obtained by a trainer-side forward-only
+extraction run AFTER inference, over the sampled rollout tokens -- NOT from the
+inference ``top_logprobs``. Reasons: inference runs quantized weights + different
+kernels + a truncated/renormalized sampling nucleus (capped at top_logprobs<=5),
+i.e. the train/inference gap; reverse KL needs the student's true training-time
+distribution. Flow:
+    1. inference samples rollouts                -> on-policy TOKEN SEQUENCES
+    2. trainer forward(top_k=K) over sequences   -> source K = student top-K indices (@no_grad)
+    3. gather TEACHER at those indices           -> target logprobs (q)
+    4. student forward_backward at those indices -> student logprobs WITH grad -> loss
+Inference ``top_logprobs`` may be used as a cheap approximation (skips step 2)
+but bakes in the train/inference gap.
+
+Custom-loss path is two-pass
+----------------------------
+``forward_backward_custom`` does NOT avoid forward: pass 1 is a server ``forward``
+returning student logprobs at ``target_tokens`` (re-leafed with ``requires_grad``
+on the client); the client loss yields ``dC/dlogprobs``; pass 2 backprops a CE
+surrogate with ``weights = -dC/dlogprobs``. The framework errors if the loss has
+no gradient w.r.t. logprobs, so the detached ``forward(top_k)`` extraction can
+never silently "train".
+
+Masking
+-------
+When inference truncates sampling (top-p/top-k) it renormalizes over the
+surviving nucleus and reports the post-mask ``Choice.sampling_logprob``. When a
+sampling-support mask is present it is applied to BOTH sides: candidates outside
+the support are dropped and the student is renormalized over the same surviving
+slots (``build_topk_datum`` / ``reverse_kl_topk_loss``). No mask (common) ->
+nothing changes.
+
+Offline (deferred)
+------------------
+Offline top-K KL (teacher = separate frozen model, or teacher top-K stored in
+the dataset) is NOT built here -- the co-located full-vocab LoRA
+``kl_distillation`` loss (``train/nn/kl_distillation.py``) already covers offline
+distillation, and is exact (full logits via the shared lm_head, no top-K
+approximation). ``teacher_topk_from_row`` remains as a thin hook for that future
+path but is not wired into the online loop.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from enum import Enum
+from typing import Callable, Iterable, Sequence
 
+import torch
 import tinker
+
+from training.utils.opd_sampling import TopKDist
+
+
+class DistillMode(str, Enum):
+    """OPSD distillation objective. See module docstring for trade-offs."""
+
+    SAMPLED_IS = "sampled_is"
+    TOPK_FORWARD_KL = "topk_forward_kl"
+    TOPK_REVERSE_KL = "topk_reverse_kl"
+
+    @property
+    def needs_teacher_topk(self) -> bool:
+        return self in (DistillMode.TOPK_FORWARD_KL, DistillMode.TOPK_REVERSE_KL)
+
+    @property
+    def uses_custom_loss(self) -> bool:
+        """True when training must go through ``forward_backward_custom``."""
+        return self is DistillMode.TOPK_REVERSE_KL
 
 
 @dataclass
@@ -251,7 +338,7 @@ def build_opd_server_datums(
 
 
 # ---------------------------------------------------------------------------
-# Multi-target teacher routing (one student, N frozen teachers, routed per prompt)
+# Multi-teacher configuration
 # ---------------------------------------------------------------------------
 
 
@@ -283,6 +370,10 @@ class MultiTeacherConfig:
     student samples from its single deployment; routing different prompts to
     different teacher deployments lets the async sampling window interleave
     scoring across teachers so every deployment's GPU stays busy.
+
+    (Weighted mixture-of-teachers on the SAME prompt is intentionally not
+    supported online; ``blend_teacher_topk`` remains in utils for the future
+    offline top-K path only.)
     """
 
     teachers: list[TeacherConfig] = field(default_factory=list)
@@ -294,3 +385,243 @@ class MultiTeacherConfig:
         models = [t.model for t in self.teachers]
         if len(set(models)) != len(models):
             raise ValueError(f"Duplicate teacher models in MultiTeacherConfig: {models}")
+
+
+# ---------------------------------------------------------------------------
+# Teacher top-K renormalization + multi-teacher blend
+# ---------------------------------------------------------------------------
+
+
+def teacher_topk_from_row(
+    row: dict,
+    *,
+    ids_key: str = "teacher_topk_ids",
+    logprobs_key: str = "teacher_topk_logprobs",
+) -> list[TopKDist] | None:
+    """Parse dataset-stored teacher top-K into per-response-position ``TopKDist``.
+
+    DEFERRED offline hook (not wired into the online loop). The offline top-K KL
+    path (teacher = separate frozen model, or golden top-K stored on the row) is
+    deferred in favor of the co-located LoRA ``kl_distillation`` loss. Kept as a
+    thin parser for when that path is built: expects parallel ``[response_len][k]``
+    ``ids`` and ``logprobs`` arrays on the row. Returns ``None`` if absent.
+    """
+    ids_rows = row.get(ids_key)
+    lps_rows = row.get(logprobs_key)
+    if not isinstance(ids_rows, list) or not isinstance(lps_rows, list):
+        return None
+    if len(ids_rows) != len(lps_rows):
+        raise ValueError(
+            f"{ids_key} ({len(ids_rows)}) and {logprobs_key} ({len(lps_rows)}) "
+            "must have the same number of positions."
+        )
+    out: list[TopKDist] = []
+    for ids, lps in zip(ids_rows, lps_rows):
+        out.append(
+            TopKDist(token_ids=[int(t) for t in ids], logprobs=[float(v) for v in lps])
+        )
+    return out
+
+
+def _apply_support_mask(dist: TopKDist, support: set[int] | None) -> TopKDist | None:
+    """Drop teacher candidates outside the student's sampling support nucleus.
+
+    ``support`` is the set of token ids the student could actually sample at this
+    position under its top-p/top-k settings (from inference). Returns ``None`` if
+    no teacher candidate survives (the position is then skipped).
+    """
+    if support is None:
+        return dist
+    kept = [(tid, lp) for tid, lp in zip(dist.token_ids, dist.logprobs) if tid in support]
+    if not kept:
+        return None
+    return TopKDist(token_ids=[t for t, _ in kept], logprobs=[lp for _, lp in kept])
+
+
+def _renormalize_topk(dist: TopKDist) -> tuple[list[int], list[float]]:
+    """Return ``(ids, q_renorm)`` where ``q`` sums to 1 over the candidates."""
+    if not dist.logprobs:
+        return [], []
+    m = max(dist.logprobs)
+    probs = [math.exp(lp - m) for lp in dist.logprobs]
+    z = sum(probs)
+    if z <= 0:
+        return [], []
+    return list(dist.token_ids), [p / z for p in probs]
+
+
+def blend_teacher_topk(
+    per_teacher: Sequence[tuple[TopKDist, float]],
+    *,
+    top_k: int,
+) -> TopKDist:
+    """Blend several teachers' top-K into one renormalized top-K (prob space).
+
+    ``per_teacher`` is ``(dist, weight)`` pairs for the SAME response position.
+    Mass is mixed as ``sum_t w_t * q_t(token)`` over the union of candidate ids,
+    truncated to ``top_k`` and re-expressed as logprobs.
+    """
+    pooled: dict[int, float] = {}
+    total_w = sum(w for _, w in per_teacher) or 1.0
+    for dist, weight in per_teacher:
+        ids, q = _renormalize_topk(dist)
+        for tok_id, prob in zip(ids, q):
+            pooled[tok_id] = pooled.get(tok_id, 0.0) + (weight / total_w) * prob
+    if not pooled:
+        return TopKDist(token_ids=[], logprobs=[])
+    ranked = sorted(pooled.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
+    z = sum(p for _, p in ranked) or 1.0
+    ids = [tok_id for tok_id, _ in ranked]
+    lps = [math.log(max(p / z, 1e-30)) for _, p in ranked]
+    return TopKDist(token_ids=ids, logprobs=lps)
+
+
+# ---------------------------------------------------------------------------
+# [N, K] top-K datum builder (shared by forward- and reverse-KL modes)
+# ---------------------------------------------------------------------------
+
+
+def build_topk_datum(
+    model_input: tinker.ModelInput,
+    topk_by_pos: Sequence[TopKDist | None],
+    *,
+    target_len: int,
+    prompt_len: int,
+    top_k: int,
+    support_ids_by_pos: Sequence[set[int] | None] | None = None,
+) -> tinker.Datum:
+    """Build one ``[N, K]`` datum shared by both top-K distillation modes.
+
+    Encodes per position:
+        ``target_tokens``  int64   ``[N, K]``  teacher top-K ids
+        ``weights``        float32 ``[N, K]``  renormalized teacher prob ``q``,
+                                                0 at padding / non-response slots
+
+    ``topk_by_pos`` is indexed over the RESPONSE window; entry ``j`` lands at
+    target position ``response_start + j`` (``response_start = prompt_len - 1``),
+    matching ``build_opd_server_datums``. A ``None`` entry marks a position with
+    no valid teacher data (or outside the student's sampling nucleus); it gets
+    all-zero weights and is skipped by both losses via the ``weights > 0`` mask.
+
+    ``support_ids_by_pos`` (optional) is the student's top-p/top-k **sampling
+    support** per response position, as surfaced by inference (``sampling.py``
+    renormalizes over this nucleus; see ``Choice.sampling_logprob``). When a mask
+    IS present it is applied to BOTH sides: teacher candidates outside the
+    support are dropped (``q`` renormalized over survivors), and because the
+    surviving slots are the only ones with ``weight > 0``, ``reverse_kl_topk_loss``
+    renormalizes the STUDENT over exactly the same surviving slots -- the
+    masking is two-sided, not teacher-only. When no mask is given (the common
+    case) nothing is filtered.
+
+    For ``TOPK_FORWARD_KL`` the builtin ``cross_entropy`` kernel consumes these
+    directly (loss ``= -sum_k q_k log p_k``). For ``TOPK_REVERSE_KL`` the same
+    datum feeds ``forward_backward_custom`` and ``reverse_kl_topk_loss`` rebuilds
+    ``q`` from ``weights``.
+    """
+    response_start = max(0, prompt_len - 1)
+    ids = [[0] * top_k for _ in range(target_len)]
+    weights = [[0.0] * top_k for _ in range(target_len)]
+    for j, dist in enumerate(topk_by_pos):
+        pos = response_start + j
+        if pos >= target_len or dist is None:
+            continue
+        support = support_ids_by_pos[j] if support_ids_by_pos is not None else None
+        dist = _apply_support_mask(dist, support)
+        if dist is None:
+            continue
+        tok_ids, q = _renormalize_topk(dist)
+        for k, (tok_id, qk) in enumerate(zip(tok_ids[:top_k], q[:top_k])):
+            ids[pos][k] = int(tok_id)
+            weights[pos][k] = float(qk)
+
+    return tinker.Datum(
+        model_input=model_input,
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(
+                data=[t for row in ids for t in row],
+                dtype="int64",
+                shape=[target_len, top_k],
+            ),
+            "weights": tinker.TensorData(
+                data=[w for row in weights for w in row],
+                dtype="float32",
+                shape=[target_len, top_k],
+            ),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reverse-KL custom loss over teacher top-K (REINFORCE form)
+# ---------------------------------------------------------------------------
+
+
+def reverse_kl_topk_loss(
+    data: list[tinker.Datum],
+    logprobs_list: list[torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Analytical reverse KL ``KL(pi_S || pi_T)`` over the teacher top-K.
+
+    Consumes datums from :func:`build_topk_datum`. The server returns student
+    logprobs at the teacher-top-K ``target_tokens`` (shape ``[N, K]``); we
+    renormalize the student over those K slots, stop-grad the
+    ``[log p_renorm - log q_renorm]`` bracket, and take the mass-weighted sum.
+    Gradient flows only through the outer ``p_renorm`` weight, matching the
+    ``importance_sampling`` convention. ``weights`` carries ``q_renorm`` at valid
+    slots and ``0`` at padding/masked slots; validity is recovered via
+    ``weights > 0``.
+
+    Run this only via ``forward_backward_custom`` (two-pass): pass 1 is a server
+    ``forward`` returning student logprobs at the teacher's ``[N,K]`` target ids,
+    which the framework re-leafs with ``requires_grad`` on the client; this loss
+    then produces ``dC/dlogprobs``; pass 2 backprops a CE surrogate with
+    ``weights = -dC/dlogprobs``. The framework already errors if the loss yields
+    no gradient w.r.t. the logprobs, so no extra guard is needed here. The
+    forward-only top-K extraction (``forward(top_k=K)``, ``@no_grad``) is for KLD
+    verification, never training -- it never reaches pass 2.
+    """
+    device = logprobs_list[0].device if logprobs_list else torch.device("cpu")
+    total_loss = torch.zeros((), device=device)
+    sum_kl = 0.0
+    sum_positions = 0.0
+
+    for i, datum in enumerate(data):
+        student_logp_NK = logprobs_list[i]
+        weights_NK = datum.loss_fn_inputs["weights"].to_torch().to(device)
+
+        slot_mask_NK = weights_NK > 0
+        position_mask_N = slot_mask_NK.any(dim=-1).float()
+
+        safe_weights = weights_NK.clamp(min=1e-30)
+        teacher_log_renorm_NK = torch.where(
+            slot_mask_NK, torch.log(safe_weights), torch.zeros_like(weights_NK)
+        )
+
+        neg_inf = torch.full_like(student_logp_NK, float("-inf"))
+        masked_logp = torch.where(slot_mask_NK, student_logp_NK, neg_inf)
+        log_p_renorm = torch.log_softmax(masked_logp, dim=-1)
+        log_p_renorm = torch.nan_to_num(log_p_renorm, nan=0.0, neginf=0.0)
+        p_renorm = log_p_renorm.exp()
+
+        adv_NK = (log_p_renorm - teacher_log_renorm_NK).detach()
+        per_pos_N = (p_renorm * adv_NK * slot_mask_NK.float()).sum(dim=-1)
+        total_loss = total_loss + (per_pos_N * position_mask_N).sum()
+
+        with torch.no_grad():
+            kl_NK = p_renorm * (log_p_renorm - teacher_log_renorm_NK) * slot_mask_NK.float()
+            sum_kl += (kl_NK.sum(dim=-1) * position_mask_N).sum().item()
+            sum_positions += position_mask_N.sum().item()
+
+    metrics: dict[str, float] = {"opsd/reverse_kl_loss": total_loss.item()}
+    if sum_positions > 0:
+        metrics["opsd/reverse_kl_mean"] = sum_kl / sum_positions
+    metrics["opsd/reverse_kl_positions"] = sum_positions
+    return total_loss, metrics
+
+
+def make_reverse_kl_topk_loss() -> Callable[
+    [list[tinker.Datum], list[torch.Tensor]],
+    tuple[torch.Tensor, dict[str, float]],
+]:
+    """Client loss factory for ``forward_backward_custom`` (reverse-KL top-K)."""
+    return reverse_kl_topk_loss
