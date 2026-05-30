@@ -52,6 +52,13 @@ Inference `top_logprobs` is a cheap approximation (skips step 2) but bakes in th
 train/inference gap (quantized weights, different kernels, truncated/renormalized
 nucleus, cap ≤ 5).
 
+**Backend dependency (masked top-K gather).** Steps 2–4 need the RLOR backend to
+(a) gather logprobs at fixed `[N,K]` `target_tokens` in one forward, and (b)
+apply the sampling nucleus (top-p/top-k) mask *inside* top-K selection so the
+top-K is **gathered after masking**. Nucleus masking is the engine's job (it owns
+the sampling params); the cookbook does not reconstruct it client-side. Tracked
+in the backend PR; until it lands these top-K modes are not wired into the loop.
+
 ## Multi-teacher = multi-TARGET routing (one student, N teachers)
 
 This is **routing, not blending**. Each prompt is scored by **exactly one**

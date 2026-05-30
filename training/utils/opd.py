@@ -60,14 +60,16 @@ surrogate with ``weights = -dC/dlogprobs``. The framework errors if the loss has
 no gradient w.r.t. logprobs, so the detached ``forward(top_k)`` extraction can
 never silently "train".
 
-Masking
--------
-When inference truncates sampling (top-p/top-k) it renormalizes over the
-surviving nucleus and reports the post-mask ``Choice.sampling_logprob``. When a
-sampling-support mask is present it is applied to BOTH sides: candidates outside
-the support are dropped and the student is renormalized over the same surviving
-slots (``build_topk_datum`` / ``reverse_kl_topk_loss``). No mask (common) ->
-nothing changes.
+Masking (lives in the RLOR backend, NOT here)
+---------------------------------------------
+Sampling-nucleus (top-p/top-k) masking is a BACKEND concern: the engine owns the
+sampling params and must **gather the top-K after masking** -- select/gather the
+top-K over the post-mask nucleus distribution (and gather the other model at
+those ``[N, K]`` indices). The cookbook consumes already-masked top-K; it does
+NOT reconstruct the nucleus from inference ``top_logprobs`` (lossy: cap <=5,
+token-string ambiguity, quant/kernel gap). The only client-side mask here is the
+``weights > 0`` slot mask in ``reverse_kl_topk_loss`` -- that is datum *shaping*
+(padding / variable-K), not sampling masking.
 
 Offline (deferred)
 ------------------
@@ -423,21 +425,6 @@ def teacher_topk_from_row(
     return out
 
 
-def _apply_support_mask(dist: TopKDist, support: set[int] | None) -> TopKDist | None:
-    """Drop teacher candidates outside the student's sampling support nucleus.
-
-    ``support`` is the set of token ids the student could actually sample at this
-    position under its top-p/top-k settings (from inference). Returns ``None`` if
-    no teacher candidate survives (the position is then skipped).
-    """
-    if support is None:
-        return dist
-    kept = [(tid, lp) for tid, lp in zip(dist.token_ids, dist.logprobs) if tid in support]
-    if not kept:
-        return None
-    return TopKDist(token_ids=[t for t, _ in kept], logprobs=[lp for _, lp in kept])
-
-
 def _renormalize_topk(dist: TopKDist) -> tuple[list[int], list[float]]:
     """Return ``(ids, q_renorm)`` where ``q`` sums to 1 over the candidates."""
     if not dist.logprobs:
@@ -488,30 +475,28 @@ def build_topk_datum(
     target_len: int,
     prompt_len: int,
     top_k: int,
-    support_ids_by_pos: Sequence[set[int] | None] | None = None,
 ) -> tinker.Datum:
     """Build one ``[N, K]`` datum shared by both top-K distillation modes.
 
     Encodes per position:
-        ``target_tokens``  int64   ``[N, K]``  teacher top-K ids
+        ``target_tokens``  int64   ``[N, K]``  source top-K ids
         ``weights``        float32 ``[N, K]``  renormalized teacher prob ``q``,
                                                 0 at padding / non-response slots
 
     ``topk_by_pos`` is indexed over the RESPONSE window; entry ``j`` lands at
     target position ``response_start + j`` (``response_start = prompt_len - 1``),
     matching ``build_opd_server_datums``. A ``None`` entry marks a position with
-    no valid teacher data (or outside the student's sampling nucleus); it gets
-    all-zero weights and is skipped by both losses via the ``weights > 0`` mask.
+    no valid data; it gets all-zero weights and is skipped by both losses via the
+    ``weights > 0`` mask. That ``weights > 0`` mask is purely datum *shaping*
+    (padding / variable-K slots), NOT sampling masking.
 
-    ``support_ids_by_pos`` (optional) is the student's top-p/top-k **sampling
-    support** per response position, as surfaced by inference (``sampling.py``
-    renormalizes over this nucleus; see ``Choice.sampling_logprob``). When a mask
-    IS present it is applied to BOTH sides: teacher candidates outside the
-    support are dropped (``q`` renormalized over survivors), and because the
-    surviving slots are the only ones with ``weight > 0``, ``reverse_kl_topk_loss``
-    renormalizes the STUDENT over exactly the same surviving slots -- the
-    masking is two-sided, not teacher-only. When no mask is given (the common
-    case) nothing is filtered.
+    Sampling-nucleus (top-p/top-k) masking is intentionally NOT done here. The
+    top-K must be **gathered after masking** in the RLOR backend: the engine owns
+    the sampling params and should select/gather the top-K over the post-mask
+    nucleus distribution (and the ``[N, K]`` gather of the other model's logprobs
+    at those indices). The cookbook then just consumes already-masked top-K --
+    reconstructing the nucleus client-side from inference ``top_logprobs`` would
+    be lossy (cap <=5, token-string ambiguity) and duplicate engine logic.
 
     For ``TOPK_FORWARD_KL`` the builtin ``cross_entropy`` kernel consumes these
     directly (loss ``= -sum_k q_k log p_k``). For ``TOPK_REVERSE_KL`` the same
@@ -524,10 +509,6 @@ def build_topk_datum(
     for j, dist in enumerate(topk_by_pos):
         pos = response_start + j
         if pos >= target_len or dist is None:
-            continue
-        support = support_ids_by_pos[j] if support_ids_by_pos is not None else None
-        dist = _apply_support_mask(dist, support)
-        if dist is None:
             continue
         tok_ids, q = _renormalize_topk(dist)
         for k, (tok_id, qk) in enumerate(zip(tok_ids[:top_k], q[:top_k])):
