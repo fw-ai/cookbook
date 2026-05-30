@@ -1,0 +1,5 @@
+# Install from the cookbook root or package metadata first, then add:
+eval-protocol>=0.3.30
+fastapi
+openai
+uvicorn

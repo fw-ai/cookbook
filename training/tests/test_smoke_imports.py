@@ -78,6 +78,21 @@ EXAMPLE_MODULES_WITH_ENV = [
         "fireworks",
         {"FIREWORKS_API_KEY": "test"},
     ),
+    (
+        "training.examples.rl.grpo_remote_rollout.convert",
+        "eval_protocol",
+        {},
+    ),
+    (
+        "training.examples.rl.grpo_remote_rollout.reward",
+        "eval_protocol",
+        {},
+    ),
+    (
+        "training.examples.rl.grpo_remote_rollout.rollout",
+        "eval_protocol",
+        {},
+    ),
 ]
 
 EXAMPLE_MODULES = [
