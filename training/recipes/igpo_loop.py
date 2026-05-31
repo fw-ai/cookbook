@@ -26,45 +26,40 @@ import re
 import signal
 import asyncio
 import logging
+from contextlib import ExitStack
 from typing import Dict, List, Optional, Tuple
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
 import tinker
 
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
-from fireworks.training.sdk.client import GradAccNormalization
+from training.utils.client import GradAccNormalization
 from training.utils import (
     DEFAULT_ADAM,
-    InfraConfig,
-    ResourceCleanup,
+    TrainerConfig,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
     DeployConfig,
-    WeightSyncConfig,
     ReconnectableClient,
     RawRowCursor,
     RLPromptDataset,
+    build_service_client,
     wandb_log,
     setup_wandb,
     wandb_finish,
     validate_config,
     log_metrics_json,
     load_deployment_tokenizer,
-    setup_deployment,
-    create_trainer_job,
     read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
-from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
-from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils.timer import timer, flush_timing
 from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
 from training.utils.rl.losses import (
@@ -126,12 +121,6 @@ class Config:
     scoring_workers: int = 8
     """ThreadPoolExecutor max_workers for async IG scoring."""
 
-    policy_job_id: str | None = None
-    reference_job_id: str | None = None
-    policy_base_url: str | None = None
-    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
-    reference_base_url: str | None = None
-    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
     init_from_checkpoint: str | None = None
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
@@ -143,9 +132,12 @@ class Config:
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
-    infra: InfraConfig = field(default_factory=InfraConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
+    weight_sync_interval: int = 1
+    weight_sync_before_training: bool = False
+    weight_sync_timeout: int = 600
+    dcp_save_interval: int = 0
     wandb: WandBConfig = field(
         default_factory=lambda: WandBConfig(project="igpo-tinker")
     )
@@ -237,26 +229,8 @@ def should_accept(pg: PromptGroup) -> bool:
 
 def main(
     config: Config,
-    rlor_mgr: TrainerJobManager | None = None,
-    deploy_mgr: DeploymentManager | None = None,
-    cancel_on_exit: bool = False,
-    cleanup_on_exit: bool | None = None,
 ):
-    if cleanup_on_exit is not None:
-        import warnings
-        warnings.warn(
-            "igpo_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
-            DeprecationWarning, stacklevel=2,
-        )
-        cancel_on_exit = cleanup_on_exit
-
     cfg = config
-    if cfg.policy_base_url or cfg.reference_base_url:
-        logger.warning(
-            "Config.policy_base_url / Config.reference_base_url are ignored; "
-            "the gateway routes all trainer traffic. These fields are kept for "
-            "back-compat and will be removed in a future release.",
-        )
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
@@ -268,7 +242,7 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(
-        cfg.base_model, cfg.dataset, cfg.weight_sync, cfg.deployment,
+        cfg.base_model, cfg.dataset, deploy=cfg.deployment,
         output_model_id=cfg.output_model_id,
     )
     validate_warm_start_config(
@@ -296,121 +270,70 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-        )
-    if deploy_mgr is None:
-        deploy_mgr = DeploymentManager(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-        )
-
-    profile = None
-    if cfg.infra.training_shape_id:
-        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        dep_shape = getattr(profile, "deployment_shape", None) or getattr(
-            profile, "deployment_shape_version", None
-        )
-        if dep_shape and not cfg.deployment.deployment_shape:
-            cfg.deployment.deployment_shape = dep_shape
-
-    if profile and cfg.max_seq_len is None:
-        cfg.max_seq_len = profile.max_supported_context_length
-    if cfg.max_seq_len is None:
-        raise ValueError("max_seq_len is required.")
-
-    ref_profile = None
-    if cfg.infra.ref_training_shape_id:
-        ref_profile = rlor_mgr.resolve_training_profile(cfg.infra.ref_training_shape_id)
-    use_reference = ref_profile is not None
-
     import time as _time
 
-    runner.set_accelerator_info(cfg.infra.accelerator_type, cfg.infra.accelerator_count)
     runner.write_status(RunStatus.RUNNING, message="provisioning")
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup:
-        # Create trainer jobs first (trainer owns the hot-load bucket)
-        if use_reference:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                pol_fut = pool.submit(
-                    create_trainer_job, rlor_mgr, base_model=cfg.base_model,
-                    infra=cfg.infra, profile=profile, lora_rank=cfg.lora_rank,
-                    max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
-                    display_name="igpo-policy",
-                    job_id=cfg.policy_job_id,
-                    cleanup=cleanup if not cfg.policy_job_id else None,
-                )
-                ref_fut = pool.submit(
-                    create_trainer_job, rlor_mgr, base_model=cfg.base_model,
-                    infra=cfg.infra, profile=ref_profile, lora_rank=cfg.lora_rank,
-                    max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
-                    display_name="igpo-reference", forward_only=True,
-                    job_id=cfg.reference_job_id,
-                    cleanup=cleanup if not cfg.reference_job_id else None,
-                )
-                policy_ep = pol_fut.result()
-                reference_ep = ref_fut.result()
-        else:
-            policy_ep = create_trainer_job(
-                rlor_mgr, base_model=cfg.base_model, infra=cfg.infra,
-                profile=profile, lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len, learning_rate=cfg.learning_rate,
-                display_name="igpo-policy",
-                job_id=cfg.policy_job_id,
-                cleanup=cleanup if not cfg.policy_job_id else None,
-            )
-            reference_ep = None
-
-        # Create deployment referencing the trainer's hot-load bucket
-        cfg.deployment.hot_load_trainer_job = policy_ep.job_name
-        dep_info = setup_deployment(deploy_mgr, cfg.deployment, cfg.base_model, cfg.infra)
-        if cancel_on_exit:
-            cleanup.deployment(cfg.deployment.deployment_id, action="scale_to_zero")
-
-        policy_job_id = policy_ep.job_id
-        reference_job_id = reference_ep.job_id if reference_ep else None
+    with runner, ExitStack() as stack:
+        service = build_service_client(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=additional_headers,
+            base_model=cfg.base_model,
+            tokenizer_model=cfg.deployment.tokenizer_model,
+            lora_rank=cfg.lora_rank,
+            max_context_length=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            trainer=cfg.trainer,
+            deployment=cfg.deployment,
+            hotload_timeout_s=cfg.weight_sync_timeout,
+            reference_required=cfg.kl_beta > 0,
+        )
+        stack.callback(service.close)
+        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        runner.set_accelerator_info(
+            service.accelerator_type,
+            service.accelerator_count,
+            profile=service.training_profile,
+        )
+        max_seq_len = service.max_context_length
+        policy_job_id = service.trainer_job_id
 
         _timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-        policy = ReconnectableClient(
-            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
-            fw_api_key=api_key,
-            default_timeout=_timeout,
-        )
-        reference = (
-            ReconnectableClient(
-                rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
-                fw_api_key=api_key,
-                default_timeout=_timeout,
-            )
-            if reference_ep else None
-        )
-
-        inference_model = dep_info.inference_model if dep_info else cfg.base_model
-        tokenizer = load_deployment_tokenizer(cfg.deployment)
-        sampler = DeploymentSampler(
-            inference_url=deploy_mgr.inference_url,
-            model=inference_model,
-            api_key=api_key,
-            tokenizer=tokenizer,
-        )
-        weight_syncer = WeightSyncer(
-            policy_client=policy.inner,
-            deploy_mgr=deploy_mgr,
-            deployment_id=cfg.deployment.deployment_id,
+        policy = ReconnectableClient.from_training_client(
+            training_client,
             base_model=cfg.base_model,
-            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
-            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
-            dcp_timeout=cfg.weight_sync.dcp_timeout,
+            lora_rank=cfg.lora_rank,
+            job_id=policy_job_id,
+            default_timeout=_timeout,
+            service=service,
         )
+        # KL reference (optional in iGPO): the SDK owns the shared-vs-separate
+        # decision. LoRA without an explicit reference shape reuses the policy
+        # session; full-param (or an explicit reference_training_shape_id)
+        # provisions a separate forward-only reference trainer that `service`
+        # owns. reference_job_id mirrors the policy job when shared.
+        reference = None
+        reference_job_id = None
+        if cfg.kl_beta > 0:
+            reference = ReconnectableClient.from_training_client(
+                service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+                base_model=cfg.base_model,
+                lora_rank=0,
+                job_id=service.reference_client_job_id,
+                default_timeout=_timeout,
+                service=service,
+                base_only=True,
+            )
+            reference_job_id = service.reference_trainer_job_id
+        use_reference = reference is not None
+
+        tokenizer = load_deployment_tokenizer(cfg.deployment)
+        sampler = service.create_deployment_sampler(tokenizer=tokenizer)
 
         ckpt = TrainingCheckpoints(
             policy,
-            rlor_mgr,
+            service,
             trainer_id=policy_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
@@ -423,9 +346,13 @@ def main(
         )
         step_offset = resume_info.step if resume_info else 0
 
-        if cfg.weight_sync.weight_sync_before_training and cfg.deployment.deployment_id:
-            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            weight_syncer.save_and_hotload(name, checkpoint_type="base")
+        if cfg.weight_sync_before_training:
+            with timer("weight_sync"):
+                saved = policy.save_weights_for_sampler_ext(
+                    f"step-{step_offset}",
+                    checkpoint_type="base",
+                )
+                service.hotload_sampler_snapshot(saved.snapshot_name)
 
         # Dataset
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
@@ -437,7 +364,7 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            max_seq_len=cfg.max_seq_len,
+            max_seq_len=max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
         if cfg.router_replay:
@@ -585,7 +512,7 @@ def main(
 
                 # Async IG scoring: baseline + per-turn prefixes
                 baseline_future = scoring_executor.submit(
-                    _score_prefix, policy.inner, prompt_tokens, answer_tokens,
+                    _score_prefix, policy, prompt_tokens, answer_tokens,
                 )
                 scoring_futures = []
                 for i, ft in enumerate(full_tokens_list):
@@ -594,7 +521,7 @@ def main(
                         prefix = ft[:t_end]
                         rollout_futures.append(
                             scoring_executor.submit(
-                                _score_prefix, policy.inner, prefix, answer_tokens,
+                                _score_prefix, policy, prefix, answer_tokens,
                             )
                         )
                     scoring_futures.append(rollout_futures)
@@ -721,11 +648,12 @@ def main(
 
             cursor.record(raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups)))
 
-            # 5. Weight sync
-            if cfg.weight_sync.weight_sync_interval > 0 and step % cfg.weight_sync.weight_sync_interval == 0:
+            # 5. Sync weights
+            if cfg.weight_sync_interval > 0 and step % cfg.weight_sync_interval == 0:
                 with timer("weight_sync"):
-                    weight_syncer.save_and_hotload(f"step-{step}")
-            if cfg.weight_sync.dcp_save_interval > 0 and step % cfg.weight_sync.dcp_save_interval == 0:
+                    saved = policy.save_weights_for_sampler_ext(f"step-{step}")
+                    service.hotload_sampler_snapshot(saved.snapshot_name)
+            if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 ckpt.save(
                     f"step-{step}",
                     resumable=True,
@@ -815,11 +743,11 @@ def main(
             except Exception as e:
                 logger.warning("Final checkpoint failed: %s", e)
 
-            write_completed(runner, step=global_step, total_steps=total_rl_steps)
-            logger.info("IGPO training complete: %d steps", global_step)
-            wandb_finish()
-            scoring_executor.shutdown(wait=False)
-            return {"steps": global_step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
+        write_completed(runner, step=global_step, total_steps=total_rl_steps)
+        logger.info("IGPO training complete: %d steps", global_step)
+        wandb_finish()
+        scoring_executor.shutdown(wait=False)
+        return {"steps": global_step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
 
 
 if __name__ == "__main__":

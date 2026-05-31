@@ -7,29 +7,29 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | SFT | `training/recipes/sft_loop.py` |
 | DPO | `training/recipes/dpo_loop.py` |
 | ORPO | `training/recipes/orpo_loop.py` |
+| **RL (primary)** — write a rollout function; recipe owns the loop. Async by default, sync via `synchronous_training=True` | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
+| RL (simpler, synchronous GRPO scaffold) | `training/recipes/rl_loop.py` |
 | Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
-| Generic RL loop (GRPO scaffold) | `training/recipes/rl_loop.py` |
-| Async RL loop (rollout/train overlap, PPO inner minibatches) | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
 
 ## "Reference loop" means these files
 
-They are the canonical wiring of `FiretitanTrainingClient` + `DeploymentManager` + `WeightSyncer`. Do not rewrite — fork.
+They are the canonical wiring of `FiretitanServiceClient` + `FiretitanTrainingClient` + `TrainingCheckpoints` + deployment sampler hotload. Do not rewrite — fork.
 
 ## What to fill in on `Config`
 
-Always required on `Config` + `InfraConfig`:
+Always required on `Config` (with `trainer=TrainerConfig(...)`):
 
 - `base_model` — `accounts/fireworks/models/<name>`
 - `dataset` — path to JSONL
 - `tokenizer_model` — HF model name
 - `log_path` — directory for `dataloader.json` and logs
-- `infra.training_shape_id` — optional override; leave unset for auto-selection. Do not set manual `accelerator_type` / `node_count` (see [`shapes.md`](shapes.md))
+- `trainer.training_shape_id` — optional override; leave unset for auto-selection. Do not set manual `accelerator_type` / `node_count` (see [`shapes.md`](shapes.md))
 
-RL-specific (in `rl_loop.py`'s `Config`): reward function, rollout batch sizes, deployment config (shape is auto-filled from the profile).
+RL-specific: for the primary `async_rl_loop.py`, you write a `rollout_fn` (typically a `rollout.py`) and a `train.py` that sets the `Config` (policy loss, reward wiring, deployment) and calls `main(cfg, rollout_fn_factory=..., rows=...)`; the recipe owns the loop. The simpler synchronous `rl_loop.py` takes a reward function, rollout batch sizes, and a deployment config directly. See [`rl/async-rl.md`](rl/async-rl.md).
 
 ## Resume
 
-Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL/IGPO), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`checkpoints.md`](checkpoints.md) for the full priority order and constraints.
+Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes; the reference trainer is SDK-managed, so there is no separate reference job id to pin), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`checkpoints.md`](checkpoints.md) for the full priority order and constraints.
 
 ## Init from another job
 

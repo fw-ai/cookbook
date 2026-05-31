@@ -229,7 +229,7 @@ class TrainingCheckpoints:
         ``promotable=True`` writes a sampler checkpoint. The sampler write is
         skipped if a row with the same name already exists on the control
         plane with ``promotable=True`` (e.g. produced earlier by
-        ``WeightSyncer.save_and_hotload`` in an RL loop).
+        RL weight sync in the same loop).
 
         ``data_consumed`` is persisted to ``dataloader.json`` keyed on
         ``name`` so the corresponding resume call can recover the cookbook's
@@ -361,7 +361,7 @@ class TrainingCheckpoints:
 
         No local lookup. Works identically for full and LoRA runs; in LoRA
         runs this transparently picks up the most recent
-        ``save_and_hotload`` row without requiring an explicit final
+        weight-sync sampler row without requiring an explicit final
         sampler save.
         """
         rows = _newest_first(
@@ -370,7 +370,7 @@ class TrainingCheckpoints:
         if not rows:
             raise RuntimeError(
                 f"No promotable checkpoints found for trainer job '{self._trainer_id}'. "
-                "Call save(promotable=True) or weight_syncer.save_and_hotload() first."
+                "Call save(promotable=True) or run a promotable weight sync first."
             )
         # Use the 4-segment resource name end-to-end: the SDK accepts
         # ``name=`` directly, so we hand the row's ``name`` field through

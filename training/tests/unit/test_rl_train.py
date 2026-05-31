@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -219,7 +218,6 @@ class TestPipelineOverlap:
             weight_sync_interval=4,
         ))
 
-        train_starts = [t for name, _, t in timestamps if name == "train_start"]
         sample_starts = [t for name, _, t in timestamps if name == "sample_start"]
         train_ends = [t for name, _, t in timestamps if name == "train_end"]
 

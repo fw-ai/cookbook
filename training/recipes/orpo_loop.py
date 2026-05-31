@@ -45,20 +45,17 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 
 import tinker
-from fireworks.training.sdk import TrainerJobManager
 
 from training.utils import (
     DEFAULT_ADAM,
-    InfraConfig,
+    TrainerConfig,
     ReconnectableClient,
-    ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
-    auto_select_training_shape,
     build_renderer,
-    create_trainer_job,
+    build_service_client,
     load_preference_dataset,
     load_tokenizer,
     log_metrics_json,
@@ -105,7 +102,6 @@ class Config:
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
-    job_id: str | None = None
     output_model_id: str | None = None
 
     warmup_ratio: float = 0.0
@@ -124,8 +120,8 @@ class Config:
     already computes per-pair means client-side, so server-side
     normalization would double-normalize."""
 
-    infra: InfraConfig = field(
-        default_factory=lambda: InfraConfig()
+    trainer: TrainerConfig = field(
+        default_factory=lambda: TrainerConfig()
     )
     wandb: WandBConfig = field(
         default_factory=lambda: WandBConfig(
@@ -208,7 +204,6 @@ def _shuffled_pair_cache(
 
 def main(
     config: Config,
-    rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
     runner = RunnerIO(cfg.runner)
@@ -242,66 +237,47 @@ def main(
         },
     )
 
-    # -- Infrastructure ------------------------------------------------------
+    # -- SDK-managed Tinker client -----------------------------------------
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
+    runner.write_status(RunStatus.PENDING, message="provisioning")
+
+    with runner, ExitStack() as stack:
+        service = build_service_client(
             api_key=api_key,
             base_url=base_url,
             additional_headers=additional_headers,
-        )
-
-    if not cfg.infra.training_shape_id:
-        cfg.infra.training_shape_id = auto_select_training_shape(
-            rlor_mgr,
             base_model=cfg.base_model,
-            trainer_role="policy",
+            tokenizer_model=cfg.tokenizer_model,
             lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
-
-    profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-    trainer_profile = profile
-
-    if cfg.max_seq_len is None:
-        cfg.max_seq_len = profile.max_supported_context_length
-
-    runner.set_accelerator_info(profile=profile)
-    runner.write_status(RunStatus.PENDING, message="provisioning")
-
-    def _on_trainer_status(msg: str) -> None:
-        runner.write_status(RunStatus.PENDING, message=msg)
-
-    with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
-        endpoint = create_trainer_job(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            infra=cfg.infra,
-            profile=trainer_profile,
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
+            max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
-            display_name="orpo-trainer",
-            job_id=cfg.job_id,
-            cleanup=cleanup if not cfg.job_id else None,
-            on_status=_on_trainer_status,
+            trainer=cfg.trainer,
         )
-        job_id = endpoint.job_id
-        client = ReconnectableClient(
-            rlor_mgr, endpoint.job_id, cfg.base_model, cfg.lora_rank,
+        stack.callback(service.close)
+        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        runner.set_accelerator_info(
+            service.accelerator_type,
+            service.accelerator_count,
+            profile=service.training_profile,
+        )
+        job_id = service.trainer_job_id
+        max_seq_len = service.max_context_length
+        client = ReconnectableClient.from_training_client(
+            training_client,
+            base_model=cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            job_id=job_id,
             default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
+            service=service,
         )
-        if hasattr(client, "close"):
-            stack.callback(client.close)
 
         ckpt = TrainingCheckpoints(
             client,
-            rlor_mgr,
+            service,
             trainer_id=job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
@@ -343,8 +319,8 @@ def main(
                 continue
 
             if (
-                len(pair.chosen_tokens) > cfg.max_seq_len
-                or len(pair.rejected_tokens) > cfg.max_seq_len
+                len(pair.chosen_tokens) > max_seq_len
+                or len(pair.rejected_tokens) > max_seq_len
             ):
                 filtered_count += 1
                 continue
@@ -365,7 +341,7 @@ def main(
                 "Seq-length filter: %d/%d pairs filtered (chosen or rejected > %d tokens)",
                 filtered_count,
                 len(raw_data),
-                cfg.max_seq_len,
+                max_seq_len,
             )
         logger.info("Prepared %d preference pairs", len(pair_cache))
         if not pair_cache:

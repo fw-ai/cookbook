@@ -21,6 +21,17 @@ covers the full spectrum:
 rollouts before each step).  The async recipe is a strict superset of that
 behavior and is the recommended starting point for new RL work.
 
+**Sync RL is the same recipe.** Set `synchronous_training=True` (or just leave
+`max_head_offpolicy_versions=0`) and the loop drains rollouts before each train
+step — fully on-policy, no overlap. Raising `O` later is a one-knob change.
+
+**Two-file layout.** A run is typically a `rollout.py` (the rollout function,
+`make_rollout_fn(setup) -> rollout_fn`) plus a `train.py` (the `Config` —
+training/deployment shapes, `policy_loss`, reward wiring — and the
+`main(cfg, rollout_fn_factory=..., rows=...)` call). The reward is computed
+inside the rollout and set on `RolloutSample.reward` (often factored into a
+`reward.py` the rollout imports). The recipe owns everything between.
+
 ## What you customize (and what you don't)
 
 The recipe is intentionally minimal-surface: **the only thing most users need
@@ -236,7 +247,7 @@ cfg = Config(
     ppo_n_minibatches=2,                 # K = 2 inner PPO steps per rollout
     max_completion_tokens=16384,
     deployment=DeployConfig(tokenizer_model="Qwen/Qwen2.5-1.5B-Instruct"),
-    infra=InfraConfig(training_shape_id="..."),
+    trainer=TrainerConfig(training_shape_id="..."),
 )
 
 main(cfg, rollout_fn_factory=make_rollout_fn, rows=rows)

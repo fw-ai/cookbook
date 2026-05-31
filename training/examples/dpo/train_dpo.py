@@ -13,10 +13,8 @@ import os
 import signal
 
 from dotenv import load_dotenv
-from fireworks.training.sdk import TrainerJobManager
-
 import training.recipes.dpo_loop as dpo_loop
-from training.utils import InfraConfig, WandBConfig
+from training.utils import TrainerConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,11 +103,6 @@ def main():
     os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
     os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
-    rlor_mgr = TrainerJobManager(
-        api_key=FIREWORKS_API_KEY,
-        base_url=FIREWORKS_BASE_URL,
-    )
-
     config = dpo_loop.Config(
         log_path=args.log_path,
         base_model=args.base_model,
@@ -128,10 +121,10 @@ def main():
         ref_cache_concurrency=args.ref_cache_concurrency,
         ref_cache_batch_size=args.ref_cache_batch_size,
         dcp_save_interval=args.dcp_save_interval,
-        infra=InfraConfig(
+        trainer=TrainerConfig(
             training_shape_id=args.training_shape_id or None,
-            ref_training_shape_id=args.ref_training_shape_id or None,
-            trainer_replica_count=args.trainer_replica_count,
+            reference_training_shape_id=args.ref_training_shape_id or None,
+            replica_count=args.trainer_replica_count,
             region=args.region,
             custom_image_tag=args.custom_image_tag or None,
             purpose=args.purpose or None,
@@ -143,7 +136,7 @@ def main():
         ),
     )
 
-    metrics = dpo_loop.main(config, rlor_mgr=rlor_mgr)
+    metrics = dpo_loop.main(config)
     logger.info("DPO training complete. Final metrics: %s", metrics)
 
 

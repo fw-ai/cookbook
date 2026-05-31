@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fireworks.training.sdk.client import GradAccNormalization
 import pytest
 
@@ -20,11 +22,27 @@ class _FakeInnerClient:
         self.calls = []
         self.future = _FakeFuture()
         self.holder = None
+        self.saved_sampler = SimpleNamespace(
+            path="snapshot-identity",
+            snapshot_name="snapshot-identity",
+        )
 
     def optim_step(self, params, **kwargs):
         self.calls.append((params, kwargs))
         return self.future
 
+    def save_weights_for_sampler_ext(self, name, *, checkpoint_type=None):
+        self.calls.append(("save_weights_for_sampler_ext", name, checkpoint_type))
+        return self.saved_sampler
+
+
+class _FakeService:
+    def __init__(self):
+        self.calls = []
+
+    def create_deployment_sampler(self, **kwargs):
+        self.calls.append(kwargs)
+        return "sampler"
 
 def _make_client(inner: _FakeInnerClient) -> ReconnectableClient:
     client = object.__new__(ReconnectableClient)
@@ -123,6 +141,30 @@ def test_optim_step_rejects_unknown_normalization():
 
     with pytest.raises(ValueError, match="Unknown grad_accumulation_normalization"):
         client.optim_step("adam", grad_accumulation_normalization="not-a-real-mode")
+
+
+def test_save_weights_and_get_sampler_uses_snapshot_identity():
+    inner = _FakeInnerClient()
+    service = _FakeService()
+    client = _make_client(inner)
+    client._service = service
+
+    result = client.save_weights_and_get_sampler(
+        "step-1",
+        checkpoint_type="base",
+        tokenizer="tok",
+        concurrency_controller="cc",
+    )
+
+    assert result == "sampler"
+    assert inner.calls == [("save_weights_for_sampler_ext", "step-1", "base")]
+    assert service.calls == [
+        {
+            "model_path": "snapshot-identity",
+            "tokenizer": "tok",
+            "concurrency_controller": "cc",
+        }
+    ]
 
 
 def test_close_drains_telemetry_and_stops_holder_cleanup():

@@ -36,9 +36,7 @@ source .venv/bin/activate
 uv pip install --pre -e .
 
 # If you skip `--pre`, pip may resolve to the stable `0.x` line,
-# which does not include `fireworks.training.sdk` and will cause
-# imports like `from fireworks.training.sdk import DeploymentManager`
-# to fail.
+# which does not include the managed Fireworks training SDK clients.
 ```
 
 ### 2. Set your credentials
@@ -66,7 +64,7 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | `dataset` | Path to your JSONL training data |
 | `base_model` | Fireworks model ID (e.g. `"accounts/fireworks/models/qwen3-8b"`) |
 | `max_seq_len` | Max token length for training examples |
-| `infra` | `InfraConfig()` to auto-select validated shapes from Fireworks control-plane data, or `InfraConfig(training_shape_id="your-shape")` to override them |
+| `trainer` | Optional trainer job and shape overrides. Leave as `TrainerConfig()` for SDK-managed defaults, or set `training_shape_id` when you need a specific shape. |
 
 **SFT** (`recipes/sft_loop.py`) -- also requires:
 
@@ -79,32 +77,31 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | Field | What to set |
 | --- | --- |
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
-| `weight_sync` | `WeightSyncConfig(weight_sync_interval=1)` to sync weights to the deployment |
+| `sampler_refresh_interval` | Refresh the sampler from trainer-saved weights every N optimizer steps. |
 
-When `training_shape_id` is not set, the cookbook auto-selects validated
-trainer shapes at runtime from Fireworks control-plane data. RL-family
-recipes also auto-select a validated deployment shape, and DPO / KL
-flows request a validated forward-only reference shape. Explicit
-`training_shape_id`, `ref_training_shape_id`, and deployment-shape
-overrides still take precedence.
+The recipes create SDK-managed training and sampling clients directly.
+They do not require explicit trainer-job, deployment, or sampler setup.
+When `training_shape_id` is not set, the SDK selects validated runtime
+defaults. Explicit `training_shape_id`, `reference_training_shape_id`, and
+deployment-shape overrides still take precedence.
 
 To launch trainers with replicated HSDP, set the run-level replica count on
-`InfraConfig`; it is not part of the validated training shape:
+`TrainerConfig`; it is not part of the validated training shape:
 
 ```python
 config = rl_loop.Config(
     base_model="accounts/fireworks/models/qwen3-8b",
-    infra=InfraConfig(
+    trainer=TrainerConfig(
         training_shape_id="accounts/fireworks/trainingShapes/your-shape",
-        trainer_replica_count=2,
+        replica_count=2,
     ),
     deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
 )
 ```
 
 The example entrypoints expose the same setting as `--trainer-replicas 2`.
-It applies to trainer jobs the recipe creates for that run; pre-created
-`policy_job_id` / `reference_job_id` values are reused as-is.
+It applies to trainer jobs the recipe creates for that run; a pre-created
+`trainer.job_id` value is reused as-is.
 
 **LoRA RL** -- for LoRA GRPO with KL regularisation (`kl_beta > 0`), set `lora_rank`:
 
@@ -112,11 +109,10 @@ It applies to trainer jobs the recipe creates for that run; pre-created
 | --- | --- |
 | `lora_rank` | Rank of the LoRA adapter (e.g. `64`, `128`) |
 
-When `kl_beta > 0` the RL loop provisions a separate forward-only
-reference trainer (with `lora_rank=0`, full-param frozen base) in
-addition to the LoRA policy trainer. Auto-selection picks an
-appropriate validated reference shape unless `ref_training_shape_id`
-is set explicitly.
+When `kl_beta > 0` the RL loop uses a separate forward-only reference
+client for the full-param frozen base in addition to the LoRA policy
+trainer. Auto-selection picks an appropriate validated reference shape
+unless `reference_training_shape_id` is set explicitly.
 
 **DPO / ORPO** -- also requires:
 

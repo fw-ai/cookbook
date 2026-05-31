@@ -2,7 +2,7 @@
 
 RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-training and pushes them to the serving deployment so new rollouts come from the updated policy. SFT / DPO / ORPO don't typically hotload — they save once at the end and call it a day.
 
-All hotload behaviour in `rl_loop.py` is controlled by `cfg.weight_sync: WeightSyncConfig`; the *scope* (who owns the GCS bucket) is set on `DeployConfig.weight_sync_scope`.
+Recipe hotload behaviour is controlled by top-level fields such as `weight_sync_interval`, `weight_sync_before_training`, and `weight_sync_timeout`; the *scope* (who owns the GCS bucket) is set on `DeployConfig.weight_sync_scope`.
 
 For the user-facing overview of the two bucket scopes (`PER_TRAINER` vs `PER_DEPLOYMENT`), see the docs page: [Hotload flows](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows). This skill is the deep reference — server-side validation details, knob tuning, recovery playbooks.
 
@@ -63,10 +63,10 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 
 ## Base vs delta chain
 
-For full-parameter training, the first sampler save is `base` (full weights, ~16 GB for 8B). Subsequent saves are `delta` (XOR diff, ~10× smaller). `WeightSyncer` manages this automatically — users don't pick per-step.
+For full-parameter training, the first sampler save is `base` (full weights, ~16 GB for 8B). Subsequent saves are `delta` (XOR diff, ~10× smaller). The SDK-managed sampler backend records this chain automatically — users don't pick per-step.
 
 - LoRA always saves the full adapter regardless of `checkpoint_type` — every LoRA sampler checkpoint is promotable.
-- Full-param `delta` saves are **not** promotable. Only `base` saves are. The cookbook's `TrainingCheckpoints.save(promotable=True)` always emits a `base` save, so periodic promotables stay promotable. `WeightSyncer.save_and_hotload` switches to `delta` after the first call — those are still visible in `list_checkpoints` and `promote_latest` will pick the most-recent **promotable** row.
+- Full-param `delta` saves are **not** promotable. Only `base` saves are. The cookbook's `TrainingCheckpoints.save(promotable=True)` always emits a `base` save, so periodic promotables stay promotable. Recipe weight sync switches to `delta` after the first call — those rows are still visible in `list_checkpoints`, while `promote_latest` picks the most-recent **promotable** row.
 
 ## `dcp_save_interval` for resume
 
@@ -74,7 +74,7 @@ Separate from hotload: DCP saves persist the full train state (weights + optimiz
 
 ## Two deployments, one trainer (PER_TRAINER only)
 
-On-policy sampler + held-out eval deployment is a common pattern. Both copy the trainer's `hotLoadBucketUrl` at creation, and both can be hotloaded from the same `WeightSyncer`.
+On-policy sampler + held-out eval deployment is a common pattern. Both copy the trainer's `hotLoadBucketUrl` at creation, and both can hotload snapshots saved by the same trainer.
 
 ```python
 sampler = deploy_mgr.create_or_get(DeploymentConfig(
@@ -156,7 +156,7 @@ Root cause: `PER_TRAINER` and `PER_DEPLOYMENT` got crossed — the deployment wa
 
 Two recovery options:
 
-1. **Re-attach the existing deployment to this trainer.** When the deployment is warmed up / serving traffic and you don't want to re-provision. `setup_infra` in `training/utils/infra.py` handles re-attach inline when an existing `deployment_id` is passed alongside a fresh `PER_TRAINER` trainer: it PATCHes `hot_load_trainer_job`, waits for the serving pod's rolling restart, and re-runs `WeightSyncer`'s one-time deployment-state check. `training/recipes/rl_loop.py` is the reference call shape.
+1. **Re-attach the existing deployment to this trainer.** When the deployment is warmed up / serving traffic and you don't want to re-provision. The SDK-managed service path handles re-attach when an existing `cfg.deployment.deployment_id` is passed alongside a fresh `PER_TRAINER` trainer: the SDK PATCHes `hot_load_trainer_job`, waits for the serving pod's rolling restart, reconciles the deployment shape, and re-runs the one-time deployment-state check. `training/recipes/async_rl_loop.py` is the reference call shape.
 
 2. **Create a fresh deployment with `hot_load_trainer_job=<this trainer>`.** Simpler and safer when you don't need to preserve the existing deployment. The new deployment inherits the trainer's bucket at creation so no mismatch.
 
@@ -182,6 +182,6 @@ Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_
 ## See also
 
 - [Hotload flows docs page](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows) — user-facing overview (this skill is the deep reference)
-- `WeightSyncer` lifecycle: `fireworks.training.sdk.weight_syncer.WeightSyncer` (installed under `src/fireworks/training/sdk/weight_syncer.py`).
+- Low-level `WeightSyncer` lifecycle: `fireworks.training.sdk.weight_syncer.WeightSyncer` (installed under `src/fireworks/training/sdk/weight_syncer.py`). Recipes use SDK-managed service hotload directly.
 - `save_weights_for_sampler_ext`, `save_state`, `list_checkpoints`: `fireworks.training.sdk.client.FiretitanTrainingClient`.
 - Trainer + deployment managers this flow depends on: `fireworks.training.sdk.trainer.TrainerJobManager` and `fireworks.training.sdk.deployment.DeploymentManager`.

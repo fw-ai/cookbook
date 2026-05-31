@@ -27,7 +27,7 @@ from typing import Iterator
 
 from training.examples.rl.multi_turn_message_in.rollout import make_rollout_fn
 from training.recipes.async_rl_loop import Config, main
-from training.utils import DeployConfig, InfraConfig, WandBConfig
+from training.utils import DeployConfig, TrainerConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -129,7 +129,7 @@ def run():
         max_concurrency_rollout_sample=args.max_concurrency_rollout_sample,
         synchronous_training=args.synchronous_training,
         output_model_id=args.output_model_id,
-        infra=InfraConfig(training_shape_id=args.training_shape_id),
+        trainer=TrainerConfig(training_shape_id=args.training_shape_id),
         deployment=DeployConfig(
             tokenizer_model=args.tokenizer_model,
             replica_count=args.replica_count,

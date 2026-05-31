@@ -3,7 +3,7 @@
 Two-phase test on qwen3-30b-a3b:
   Phase 1: Train on first portion of data, save DCP checkpoints. Capture
            the trainer job ID.
-  Phase 2: Reattach to the same trainer (``trainer_job_id=phase1_job_id``)
+  Phase 2: Reattach to the same trainer (``trainer.job_id=phase1_job_id``)
            with the same ``log_path``. ``TrainingCheckpoints.resume()``
            lists the trainer's checkpoints on the control plane, picks
            the newest resumable row, and restores ``raw_rows_consumed``
@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import os
 import json
+import dataclasses
 import logging
 import tempfile
 
 import pytest
 
 from fireworks.training.sdk import FireworksClient
-from training.utils import InfraConfig
+from training.utils import TrainerConfig
 from training.utils.checkpoints import DATALOADER_BASE_NAME
 from training.recipes.sft_loop import Config, main
 
@@ -75,7 +76,7 @@ class TestSFTResumeE2E:
         try:
             _make_chat_dataset(dataset_path, num_examples=20)
 
-            shared_infra = InfraConfig(
+            shared_trainer = TrainerConfig(
                 region=e2e_region,
                 custom_image_tag=custom_image_tag or "0.33.0",
             )
@@ -96,10 +97,10 @@ class TestSFTResumeE2E:
                 max_examples=20,
                 dcp_save_interval=2,
                 log_path=log_dir,
-                infra=shared_infra,
+                trainer=shared_trainer,
             )
 
-            phase1_metrics = main(phase1_config, rlor_mgr=rlor_mgr)
+            phase1_metrics = main(phase1_config)
 
             assert isinstance(phase1_metrics, dict)
             phase1_steps = phase1_metrics["steps"]
@@ -154,11 +155,10 @@ class TestSFTResumeE2E:
                 max_seq_len=4096,
                 max_examples=20,
                 log_path=log_dir,
-                trainer_job_id=phase1_job_id,
-                infra=shared_infra,
+                trainer=dataclasses.replace(shared_trainer, job_id=phase1_job_id),
             )
 
-            phase2_metrics = main(phase2_config, rlor_mgr=rlor_mgr)
+            phase2_metrics = main(phase2_config)
             phase2_steps = phase2_metrics["steps"]
             assert phase2_steps > phase1_steps, (
                 f"Phase 2 step count ({phase2_steps}) should exceed phase 1's "

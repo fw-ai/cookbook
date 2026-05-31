@@ -21,18 +21,12 @@ import json
 import logging
 import os
 import signal
-import sys
 import time
-from contextlib import ExitStack
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, cast
 
 import tinker
-
-_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 
 from eval_protocol.models import EvaluationRow, InputMetadata
 from eval_protocol.pytest import evaluation_test
@@ -46,27 +40,22 @@ from training.examples.rl.frozen_lake.masking import (
     build_ui_token_mask,
 )
 
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from fireworks.training.sdk.client import GradAccNormalization
-from fireworks.training.sdk.weight_syncer import WeightSyncer
 
 from training.utils import (
     DEFAULT_ADAM,
-    InfraConfig,
-    ResourceCleanup,
+    TrainerConfig,
     WandBConfig,
     DeployConfig,
-    WeightSyncConfig,
     ReconnectableClient,
     wandb_log,
     setup_wandb,
     wandb_finish,
     log_metrics_json,
-    setup_deployment,
-    create_trainer_job,
+    build_service_client,
+    read_api_extra_headers_env,
     build_datum_from_token_mask,
     validate_config,
-    auto_select_training_shape,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_train import RowRequest, run_async_rl_loop
@@ -114,6 +103,9 @@ DEFAULT_VISUAL_PROMPT_TEMPLATE = (
 )
 
 DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS
+WEIGHT_SYNC_INTERVAL = 1
+DCP_SAVE_INTERVAL = 20
+WEIGHT_SYNC_TIMEOUT_S = 900
 
 
 @dataclass
@@ -170,7 +162,6 @@ class FrozenLakeConfig:
 
     training_shape: str = ""
     deployment_shape: str = ""
-    accelerator_type: str = ""
     deployment_id: str | None = None
     region: str | None = None
     deployment_region: str | None = None
@@ -193,7 +184,6 @@ def parse_args() -> FrozenLakeConfig:
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
     parser.add_argument("--training-shape", default=os.environ.get("TRAINING_SHAPE", ""))
     parser.add_argument("--deployment-shape", default="")
-    parser.add_argument("--accelerator-type", default="")
     parser.add_argument("--deployment-id", default=None)
     parser.add_argument("--region", default="US_VIRGINIA_1")
     parser.add_argument("--deployment-region", default=None)
@@ -431,26 +421,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
 
-    infra = InfraConfig(
-        training_shape_id=cfg.training_shape or None,
-        region=cfg.region,
-    )
     deploy_cfg = DeployConfig(
         deployment_id=cfg.deployment_id,
         deployment_shape=cfg.deployment_shape or None,
-        deployment_accelerator_type=cfg.accelerator_type or None,
         deployment_region=cfg.deployment_region,
         replica_count=cfg.deployment_replica_count,
         tokenizer_model=cfg.tokenizer_model,
         sample_timeout=1200,
-    )
-    weight_sync_cfg = WeightSyncConfig(
-        weight_sync_interval=1,
-        dcp_save_interval=20,
-        dcp_timeout=2700,
-        first_checkpoint_type="base",
-        weight_sync_before_training=bool(cfg.deployment_id),
-        weight_sync_timeout=900,
     )
     wandb_cfg = WandBConfig(
         entity=cfg.wandb_entity or None,
@@ -461,8 +438,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     validate_config(
         cfg.base_model,
         cfg.seed_jsonl_path,
-        weight_sync_cfg,
-        deploy_cfg,
+        deploy=deploy_cfg,
         output_model_id=cfg.output_model_id,
     )
 
@@ -476,14 +452,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         "max_seeds": cfg.max_seeds,
     })
 
-    rlor_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
-    deploy_mgr = DeploymentManager(
-        api_key=api_key,
-        base_url=base_url,
-        hotload_api_url=base_url,
-        inference_url=cfg.inference_base_url or base_url,
-    )
-
     # -- Load seed contexts --------------------------------------------------
 
     seed_contexts = load_seed_contexts(cfg.seed_jsonl_path, cfg.max_seeds)
@@ -492,66 +460,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         len(seed_contexts), os.path.abspath(cfg.seed_jsonl_path),
     )
 
-    if not infra.training_shape_id:
-        infra.training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="policy",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        cfg.training_shape = infra.training_shape_id
-        logger.info(
-            "Auto-selected policy training shape for %s: %s",
-            cfg.base_model, infra.training_shape_id,
-        )
-
-    # -- Resolve training shapes --------------------------------------------
-
-    profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
-    if not deploy_cfg.deployment_shape and getattr(profile, "deployment_shape_version", None):
-        deploy_cfg.deployment_shape = profile.deployment_shape_version
-        cfg.deployment_shape = profile.deployment_shape_version
-        logger.info(
-            "Using deployment shape from training profile for %s: %s",
-            cfg.base_model, deploy_cfg.deployment_shape,
-        )
-    policy_infra = infra
-    policy_profile = profile
-
-    if profile and cfg.max_seq_len is None:
-        cfg.max_seq_len = profile.max_supported_context_length
-        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
-
-    ref_profile = None
-    reference_infra = infra
-    reference_launch_profile = None
-    reference_needed = cfg.kl_beta > 0 or infra.ref_training_shape_id is not None
-    if reference_needed:
-        if not infra.ref_training_shape_id:
-            infra.ref_training_shape_id = auto_select_training_shape(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                trainer_role="reference",
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-            )
-            logger.info(
-                "Auto-selected reference training shape for %s: %s",
-                cfg.base_model, infra.ref_training_shape_id,
-            )
-        ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
-        reference_infra = infra
-        reference_launch_profile = ref_profile
-    use_reference = ref_profile is not None
-    if not use_reference:
-        logger.info("No ref_training_shape_id set, skipping reference model")
+    use_reference = cfg.kl_beta > 0 or cfg.reference_job_id is not None
 
     # -- Infrastructure setup -----------------------------------------------
 
     _infra_start = time.time()
     policy_job_id: str | None = None
-    reference_job_id: str | None = None
     trajectory_log = None
     global_step = step_offset = 0
 
@@ -568,101 +482,50 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        if cfg.policy_job_id and cfg.deployment_id:
-            dep_info = None
-            logger.info("Skipping deployment setup — using pre-created resources")
-        else:
-            dep_info = setup_deployment(deploy_mgr, deploy_cfg, cfg.base_model, policy_infra)
-            if not cfg.deployment_id and deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") != "1":
-                cleanup.deployment(deploy_cfg.deployment_id)
-            elif deploy_cfg.deployment_id and os.environ.get("KEEP_DEPLOYMENT", "0") == "1":
-                logger.info("Keeping deployment %s (KEEP_DEPLOYMENT=1)", deploy_cfg.deployment_id)
+    service = build_service_client(
+        api_key=api_key,
+        base_url=base_url,
+        inference_url=cfg.inference_base_url,
+        additional_headers=read_api_extra_headers_env(),
+        base_model=cfg.base_model,
+        tokenizer_model=cfg.tokenizer_model,
+        lora_rank=cfg.lora_rank,
+        max_context_length=cfg.max_seq_len,
+        learning_rate=cfg.learning_rate,
+        trainer=TrainerConfig(
+            job_id=cfg.policy_job_id or None,
+            training_shape_id=cfg.training_shape or None,
+            reference_job_id=(cfg.reference_job_id if use_reference else None),
+            region=cfg.region,
+        ),
+        deployment=deploy_cfg,
+        hotload_timeout_s=WEIGHT_SYNC_TIMEOUT_S,
+        cleanup_trainer_on_close=not cfg.policy_job_id,
+        reference_required=use_reference,
+    )
 
-        # -- Create or reuse trainer jobs ------------------------------------
-        # Pre-created job IDs let CI scripts manage jobs externally (e.g. via
-        # firectl-admin for regions the main gateway doesn't support yet).
-
-        def _make_job(label: str, precreated_id: str | None, job_infra, job_profile=None, **extra_kw):
-            if precreated_id:
-                ep = create_trainer_job(
-                    rlor_mgr, base_model=cfg.base_model, infra=job_infra,
-                    job_id=precreated_id,
-                )
-                return ep, precreated_id, True
-            ep = create_trainer_job(
-                rlor_mgr, base_model=cfg.base_model, infra=job_infra, profile=job_profile,
-                lora_rank=cfg.lora_rank, max_seq_len=cfg.max_seq_len,
-                learning_rate=cfg.learning_rate,
-                display_name=f"frozen-lake-{label}",
-                hot_load_deployment_id=deploy_cfg.deployment_id if label == "policy" else None,  # weight sync target deployment
-                **extra_kw,
-            )
-            return ep, ep.job_id, False
-
-        precreated_policy = False
-        precreated_reference = False
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            pol_fut = pool.submit(
-                _make_job,
-                "policy",
-                cfg.policy_job_id,
-                job_infra=policy_infra,
-                job_profile=policy_profile,
-            )
-            ref_fut = (
-                pool.submit(
-                    _make_job,
-                    "reference",
-                    cfg.reference_job_id,
-                    job_infra=reference_infra,
-                    job_profile=reference_launch_profile,
-                    forward_only=True,
-                )
-                if use_reference else None
-            )
-
-            policy_ep, policy_job_id, precreated_policy = pol_fut.result()
-            if ref_fut:
-                reference_ep, reference_job_id, precreated_reference = ref_fut.result()
-            else:
-                reference_ep, reference_job_id, precreated_reference = None, None, False
-
-            if not precreated_policy:
-                cleanup.trainer(policy_job_id)
-            if not precreated_reference and reference_job_id:
-                cleanup.trainer(reference_job_id)
-
-        policy = ReconnectableClient(
-            rlor_mgr, policy_ep.job_id, cfg.base_model, cfg.lora_rank,
-            fw_api_key=api_key,
-            endpoint=policy_ep,
+    with closing(service):
+        policy = ReconnectableClient.from_training_client(
+            service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank),
+            base_model=cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            job_id=service.trainer_job_id,
+            service=service,
         )
-        if hasattr(policy, "close"):
-            stack.callback(policy.close)
-        reference = (
-            ReconnectableClient(
-                rlor_mgr, reference_ep.job_id, cfg.base_model, cfg.lora_rank,
-                fw_api_key=api_key,
-                endpoint=reference_ep,
+        policy_job_id = service.trainer_job_id
+        sampler = service.create_deployment_sampler()
+        reference = None
+        if use_reference:
+            reference = ReconnectableClient.from_training_client(
+                service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+                base_model=cfg.base_model,
+                lora_rank=0,
+                job_id=service.reference_client_job_id,
+                service=service,
+                base_only=True,
             )
-            if reference_ep else None
-        )
-        if reference is not None and hasattr(reference, "close"):
-            stack.callback(reference.close)
 
-        if dep_info:
-            inference_model = dep_info.inference_model
-        elif deploy_cfg.deployment_id:
-            inference_model = f"{cfg.base_model}#accounts/{deploy_mgr.account_id}/deployments/{deploy_cfg.deployment_id}"
-        else:
-            inference_model = cfg.base_model
-        weight_syncer = WeightSyncer(
-            policy_client=policy.inner, deploy_mgr=deploy_mgr,
-            deployment_id=deploy_cfg.deployment_id, base_model=cfg.base_model,
-            hotload_timeout=weight_sync_cfg.weight_sync_timeout,
-            first_checkpoint_type=weight_sync_cfg.first_checkpoint_type,
-        )
+        inference_model = sampler.model
 
         infra_boot_time = time.time() - _infra_start
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
@@ -670,7 +533,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         from training.utils.checkpoints import TrainingCheckpoints
         ckpt = TrainingCheckpoints(
             policy,
-            rlor_mgr,
+            service,
             trainer_id=policy_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
@@ -678,39 +541,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         resume_info = ckpt.resume()
         step_offset = resume_info.step if resume_info else 0
         prior_rows_consumed = resume_info.data_consumed if resume_info else 0
-        if weight_sync_cfg.weight_sync_before_training and deploy_cfg.deployment_id:
+        if cfg.deployment_id:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            weight_syncer.save_and_hotload(name, checkpoint_type="base")
-
-        # -- Wait for deployment readiness -----------------------------------
-
-        inference_url = deploy_mgr.inference_url
-        logger.info("Waiting for deployment to be ready for inference...")
-        import httpx
-        _inference_prefix = "/v1" if cfg.inference_base_url else "/inference/v1"
-        _readiness_url = inference_url.rstrip("/") + _inference_prefix + "/completions"
-        for _ready_attempt in range(600):
-            try:
-                _resp = httpx.post(
-                    _readiness_url,
-                    json={"model": inference_model, "prompt": "test", "max_tokens": 1},
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    timeout=15,
-                )
-                if _resp.status_code == 200:
-                    logger.info("Deployment is ready for inference")
-                    break
-                logger.info("Deployment not ready yet (status=%d), waiting...", _resp.status_code)
-                time.sleep(5)
-                continue
-            except Exception as e:
-                logger.info("Readiness check failed (%s), waiting...", e)
-                time.sleep(5)
-        else:
-            logger.warning("Deployment readiness timeout, proceeding anyway")
+            saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
+            service.hotload_sampler_snapshot(saved.snapshot_name)
 
         # -- Build rollout processor ----------------------------------------
-        rollout_base_url = inference_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
+        rollout_base_url = sampler.base_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
         rollout_processor = FrozenLakeToolRolloutProcessor(
             model_id=inference_model,
             tokenizer_name_or_path=cfg.tokenizer_model,
@@ -820,7 +657,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             # Validate user's explicit loss_path choice; raises (no silent
             # fallback) if builtin was picked in a configuration that forbids
             # it (kl_beta > 0 or a client-only loss).
-            validate_loss_path(cfg, profile)
+            validate_loss_path(cfg, service.training_profile)
             if cfg.loss_path == "builtin":
                 builtin_loss = get_builtin_loss_config(cfg)
                 logger.info(
@@ -876,7 +713,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 step += 1
                 logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
 
-                if weight_sync_cfg.dcp_save_interval > 0 and step % weight_sync_cfg.dcp_save_interval == 0:
+                if DCP_SAVE_INTERVAL > 0 and step % DCP_SAVE_INTERVAL == 0:
                     logger.info("[step %d] dcp_save...", step)
                     t0 = time.time()
                     with timer("dcp_save"):
@@ -924,7 +761,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 logger.info("[step %d] weight_sync: saving + loading...", step)
                 t0 = time.time()
                 with timer("weight_sync"):
-                    weight_syncer.save_and_hotload(f"step-{step}")
+                    saved = policy.save_weights_for_sampler_ext(f"step-{step}")
+                    service.hotload_sampler_snapshot(saved.snapshot_name)
                 logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
 
             train_fns = TrainStepFns(train_step=train_step)
@@ -935,13 +773,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             max_concurrent_samples = cfg.max_concurrent if cfg.max_concurrent > 0 else None
             min_group_size = 2 if completions_per_prompt > 1 else 1
             async_weight_sync_interval = (
-                max(1, weight_sync_cfg.weight_sync_interval)
-                if weight_sync_cfg.weight_sync_interval > 0
+                max(1, WEIGHT_SYNC_INTERVAL)
+                if WEIGHT_SYNC_INTERVAL > 0
                 else 1
             )
             max_head_offpolicy_versions = (
                 max(0, async_weight_sync_interval - 1)
-                if weight_sync_cfg.weight_sync_interval > 0
+                if WEIGHT_SYNC_INTERVAL > 0
                 else max(0, (len(eval3_input_rows) + prompt_groups_per_step - 1) // prompt_groups_per_step)
             )
             logger.info(
@@ -987,7 +825,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 max_head_offpolicy_versions=max_head_offpolicy_versions,
                 with_reference=use_reference,
                 min_group_size=min_group_size,
-                weight_sync_fn=_weight_sync if weight_sync_cfg.weight_sync_interval > 0 else None,
+                weight_sync_fn=_weight_sync if WEIGHT_SYNC_INTERVAL > 0 else None,
                 weight_sync_interval=async_weight_sync_interval,
                 max_concurrent=max_concurrent_samples,
                 dynamic_filter_fn=should_accept,

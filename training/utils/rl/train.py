@@ -4,10 +4,10 @@ Provides ``run_rl_loop`` -- a pipelined on-policy loop that samples
 ``prompt_groups_per_step`` prompts per optimizer step, then runs a single
 ``train_step`` callback (1:1 ratio).
 
-``weight_sync_interval`` controls both hotload frequency *and* pipeline
+``weight_sync_interval`` controls both weight sync frequency *and* pipeline
 overlap depth:
 
-- **0**: no syncs, one big window, full overlap (deployment never changes)
+- **0**: no weight syncs, one big window, full overlap (sampler never changes)
 - **1**: sync every step, 1-step windows, no overlap (strict on-policy)
 - **N > 1**: sync every N steps, N-step windows, overlap within windows
 """
@@ -263,12 +263,12 @@ async def run_rl_loop(
     one training step.
 
     At window boundaries the pipeline drains, ``weight_sync_fn`` fires
-    (hotload) if at least one training step ran, and new sampling starts
-    with the updated deployment.  Windows where all groups are filtered
-    out do not trigger a sync (matching pre-pipeline behavior).
+    if at least one training step ran, and new sampling starts with the
+    updated sampler.  Windows where all groups are filtered out do not
+    trigger a weight sync.
 
     ``weight_sync_interval=0`` puts all coroutines in a single window
-    (full overlap, no syncs).  ``weight_sync_interval=1`` creates
+    (full overlap, no weight syncs).  ``weight_sync_interval=1`` creates
     single-step windows (no overlap, strict on-policy).
     """
     coros = list(sample_fns)

@@ -1,13 +1,14 @@
 """Shared fixtures for algorithm E2E tests.
 
 These tests create real RLOR jobs and deployments on Fireworks infrastructure.
-All algorithms run on qwen3-30b-a3b (MoE) by default.
+They default to the SDK-managed qwen3p5-9b single-shape port path.
 
 Requires FIREWORKS_API_KEY to be set.
 
 Override defaults via environment variables:
-  FIREWORKS_E2E_MODEL, FIREWORKS_E2E_REGION, FIREWORKS_E2E_DEPLOYMENT_SHAPE,
-  FIREWORKS_E2E_TOKENIZER_MODEL, FIREWORKS_BASE_URL
+  FIREWORKS_E2E_MODEL, FIREWORKS_E2E_REGION, FIREWORKS_E2E_TRAINING_SHAPE,
+  FIREWORKS_E2E_DEPLOYMENT_SHAPE, FIREWORKS_E2E_TOKENIZER_MODEL,
+  FIREWORKS_BASE_URL
 """
 
 from __future__ import annotations
@@ -20,14 +21,17 @@ import pytest
 from fireworks.training.sdk.trainer import TrainerJobManager
 from fireworks.training.sdk.deployment import DeploymentManager
 
-DEFAULT_MODEL = "accounts/fireworks/models/qwen3-30b-a3b"
-DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3-30B-A3B"
+DEFAULT_MODEL = "accounts/fireworks/models/qwen3p5-9b"
+DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3.5-9B"
 DEFAULT_REGION = "US_OHIO_1"
+DEFAULT_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k"
+DEFAULT_REFERENCE_TRAINING_SHAPE = (
+    "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only"
+)
+DEFAULT_LORA_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
 DEFAULT_TRAINING_ACCELERATOR = None
 DEFAULT_DEPLOYMENT_ACCELERATOR = "NVIDIA_B200_180GB"
-# For GRPO MoE tests, set FIREWORKS_E2E_DEPLOYMENT_SHAPE to a shape that
-# enables router stats (e.g. --enable-moe-stats).
-DEFAULT_DEPLOYMENT_SHAPE = None
+DEFAULT_DEPLOYMENT_SHAPE = "accounts/fireworks/deploymentShapes/rft-qwen3p5-9b-v2/versions/n864rzzy"
 
 GSM8K_SAMPLE_URL = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
@@ -102,6 +106,44 @@ def e2e_training_accelerator() -> str | None:
 
 
 @pytest.fixture(scope="module")
+def e2e_training_shape(port_lora_rank) -> str | None:
+    """Training shape for SDK-managed trainer jobs."""
+    if port_lora_rank:
+        return _get_env("FIREWORKS_E2E_LORA_TRAINING_SHAPE", DEFAULT_LORA_TRAINING_SHAPE)
+    return _get_env("FIREWORKS_E2E_TRAINING_SHAPE", DEFAULT_TRAINING_SHAPE)
+
+
+@pytest.fixture(scope="module")
+def e2e_reference_training_shape(port_lora_rank) -> str | None:
+    """Forward-only reference shape for full-param SDK-managed jobs."""
+    if port_lora_rank:
+        return None
+    return _get_env(
+        "FIREWORKS_E2E_REFERENCE_TRAINING_SHAPE",
+        DEFAULT_REFERENCE_TRAINING_SHAPE,
+    )
+
+
+@pytest.fixture(scope="module")
+def e2e_training_profile(sdk_managers, e2e_training_shape, port_lora_rank):
+    """Resolve the training shape before provisioning live resources."""
+    rlor_mgr, _deploy_mgr = sdk_managers
+    profile = rlor_mgr.resolve_training_profile(e2e_training_shape)
+    if port_lora_rank:
+        assert profile.supports_lora, f"LoRA track requires a LoRA-capable shape: {e2e_training_shape}"
+    return profile
+
+
+@pytest.fixture(scope="module")
+def e2e_reference_training_profile(sdk_managers, e2e_reference_training_shape):
+    """Resolve the full-param forward-only reference shape before provisioning."""
+    if e2e_reference_training_shape is None:
+        return None
+    rlor_mgr, _deploy_mgr = sdk_managers
+    return rlor_mgr.resolve_training_profile(e2e_reference_training_shape)
+
+
+@pytest.fixture(scope="module")
 def e2e_deployment_accelerator() -> str | None:
     """Accelerator for inference deployments (required by the deployment API)."""
     return _get_env("FIREWORKS_E2E_DEPLOYMENT_ACCELERATOR", DEFAULT_DEPLOYMENT_ACCELERATOR)
@@ -109,7 +151,7 @@ def e2e_deployment_accelerator() -> str | None:
 
 @pytest.fixture(scope="module")
 def e2e_deployment_shape() -> str | None:
-    """Deployment shape for MoE models (includes --enable-moe-stats for R3)."""
+    """Deployment shape for the SDK-managed sampler."""
     return _get_env("FIREWORKS_E2E_DEPLOYMENT_SHAPE", DEFAULT_DEPLOYMENT_SHAPE)
 
 

@@ -48,24 +48,21 @@ from typing import Any, Dict, List
 import tinker
 import torch
 from dotenv import load_dotenv
-from fireworks.training.sdk import TrainerJobManager
 
 from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
     DEFAULT_RENDER_WORKERS,
-    InfraConfig,
+    TrainerConfig,
     JSONL_ROW_INDEX_KEY,
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
-    ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
-    auto_select_training_shape,
-    create_trainer_job,
+    build_service_client,
     log_metrics_json,
     make_render_dataloader,
     parse_train_on_what,
@@ -537,12 +534,6 @@ class Config:
     (inter-step pipelining). Intra-step fb/optim overlap is always on.
     Increase this number (i.e. set to 4) to improve throughput."""
 
-    trainer_job_id: str | None = None
-    """Pre-created RLOR trainer job ID. When set, skips trainer creation."""
-
-    trainer_base_url: str | None = None
-    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
-
     evaluation_dataset: str = ""
     """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
     is skipped and this dataset is used for evaluation instead."""
@@ -563,7 +554,7 @@ class Config:
     to disable the spawn pool and render in-process (useful for unit tests
     that monkeypatch the renderer)."""
 
-    infra: InfraConfig = field(default_factory=InfraConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     """Optional orchestration outputs written during training.
@@ -657,15 +648,8 @@ def run_eval(
 
 def main(
     config: Config,
-    rlor_mgr: TrainerJobManager | None = None,
 ):
     cfg = config
-    if cfg.trainer_base_url:
-        logger.warning(
-            "Config.trainer_base_url is ignored; the gateway routes all trainer "
-            "traffic. This field is kept for back-compat and will be removed "
-            "in a future release.",
-        )
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
@@ -697,101 +681,47 @@ def main(
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
 
-    # -- Setup infrastructure ----------------------------------------------
+    # -- SDK-managed Tinker client -----------------------------------------
 
     api_key = os.environ.get("FIREWORKS_API_KEY", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
+    runner.write_status(RunStatus.PENDING, message="provisioning")
+
+    with runner, ExitStack() as stack:
+        service = build_service_client(
             api_key=api_key,
             base_url=base_url,
             additional_headers=additional_headers,
-        )
-
-    if cfg.trainer_job_id and cfg.max_seq_len is None:
-        raise ValueError(
-            "max_seq_len is required when reusing a pre-created trainer "
-            "(trainer_job_id is set). The auto-selected training shape may not "
-            "match the trainer's actual context length."
-        )
-    if (
-        not cfg.infra.training_shape_id
-        and (
-            cfg.infra.accelerator_type
-            or cfg.infra.node_count
-            or cfg.infra.custom_image_tag
-            or cfg.infra.extra_args
-        )
-    ):
-        # Manual infra path: caller has supplied explicit infra fields and
-        # no validated training shape exists (e.g. a brand-new base model).
-        # create_trainer_job supports this path; we just skip the shape
-        # lookup. Individual infra fields may still be unset — the server
-        # auto-configures what is omitted.
-        trainer_profile = None
-        if cfg.max_seq_len is None:
-            raise ValueError(
-                "Config.max_seq_len is required when using the manual "
-                "infra path (no training_shape_id)."
-            )
-        logger.info(
-            "Manual infra path: accelerator=%s count=%s nodes=%s "
-            "custom_image_tag=%s max_seq_len=%s extra_args=%s",
-            cfg.infra.accelerator_type,
-            cfg.infra.accelerator_count,
-            cfg.infra.node_count,
-            cfg.infra.custom_image_tag,
-            cfg.max_seq_len,
-            cfg.infra.extra_args,
-        )
-    else:
-        if not cfg.infra.training_shape_id:
-            cfg.infra.training_shape_id = auto_select_training_shape(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                trainer_role="policy",
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-            )
-            logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
-
-        trainer_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-        if cfg.max_seq_len is None:
-            cfg.max_seq_len = trainer_profile.max_supported_context_length
-
-    runner.set_accelerator_info(profile=trainer_profile)
-    runner.write_status(RunStatus.PENDING, message="provisioning")
-
-    def _on_trainer_status(msg: str) -> None:
-        runner.write_status(RunStatus.PENDING, message=msg)
-
-    with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
-        endpoint = create_trainer_job(
-            rlor_mgr,
             base_model=cfg.base_model,
-            infra=cfg.infra,
-            profile=trainer_profile,
+            tokenizer_model=cfg.tokenizer_model,
             lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
+            max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
-            display_name="sft-trainer",
-            job_id=cfg.trainer_job_id,
-            cleanup=cleanup,
-            on_status=_on_trainer_status,
+            trainer=cfg.trainer,
         )
-        job_id = endpoint.job_id
-        client = ReconnectableClient(
-            rlor_mgr, job_id, cfg.base_model, cfg.lora_rank, fw_api_key=api_key,
+        stack.callback(service.close)
+        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        runner.set_accelerator_info(
+            service.accelerator_type,
+            service.accelerator_count,
+            profile=service.training_profile,
+        )
+        job_id = service.trainer_job_id
+        max_seq_len = service.max_context_length
+        client = ReconnectableClient.from_training_client(
+            training_client,
+            base_model=cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            job_id=job_id,
             default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
+            service=service,
         )
-        if hasattr(client, "close"):
-            stack.callback(client.close)
 
         ckpt = TrainingCheckpoints(
             client,
-            rlor_mgr,
+            service,
             trainer_id=job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
@@ -810,7 +740,7 @@ def main(
             cfg.tokenizer_model,
             cfg.renderer_name,
             cfg.train_on_what,
-            cfg.max_seq_len,
+            max_seq_len,
             cfg.tokenizer_revision,
         )
         _init_render_worker(*base_init_args)
@@ -932,12 +862,11 @@ def main(
             )
             step += 1
             adam = tinker.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
-            inner = client.inner
             t_submit = time.time()
             in_flight.append((
                 step, tokens, t_submit,
-                inner.forward_backward(batch, loss_fn="cross_entropy"),
-                inner.optim_step(adam),
+                client.submit_forward_backward(batch, loss_fn="cross_entropy"),
+                client.submit_optim_step(adam),
             ))
             return step
 
@@ -1112,7 +1041,7 @@ if __name__ == "__main__":
         tokenizer_model="Qwen/Qwen3-8B",
         max_seq_len=4096,
         max_examples=10,
-        infra=InfraConfig(
+        trainer=TrainerConfig(
             training_shape_id="your-training-shape",
         ),
     )

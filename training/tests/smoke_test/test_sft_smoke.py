@@ -6,7 +6,23 @@ import json
 import os
 import tempfile
 
+import httpx
 import pytest
+
+
+_DELETING_STATES = {
+    "JOB_STATE_DELETING",
+    "JOB_STATE_DELETING_CLEANING_UP",
+    "JOB_STATE_DELETED",
+}
+
+
+def _delete_trainer_if_present(rlor_mgr, job_id: str) -> None:
+    try:
+        rlor_mgr.delete(job_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise
 
 
 def _make_chat_dataset(path: str, num_examples: int = 4) -> None:
@@ -27,12 +43,14 @@ def test_sft_smoke(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
-    smoke_infra,
+    smoke_trainer_config,
+    port_lora_rank,
 ):
     from training.recipes.sft_loop import Config, main
     from training.utils import WandBConfig
 
     rlor_mgr, _deploy_mgr = smoke_sdk_managers
+    job_id = None
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         dataset_path = f.name
@@ -48,25 +66,29 @@ def test_sft_smoke(
             epochs=1,
             batch_size=2,
             max_examples=4,
-            infra=smoke_infra,
+            lora_rank=port_lora_rank,
+            trainer=smoke_trainer_config,
             wandb=WandBConfig(),
         )
 
-        metrics = main(config, rlor_mgr=rlor_mgr)
+        metrics = main(config)
         assert isinstance(metrics, dict)
         assert metrics["steps"] >= 2, f"Expected >= 2 steps, got {metrics['steps']}"
-
-        import httpx, time
-        time.sleep(3)
         job_id = metrics.get("job_id")
+
+        import time
+        time.sleep(3)
         if job_id:
+            _delete_trainer_if_present(rlor_mgr, job_id)
             try:
                 job = rlor_mgr.get(job_id)
                 state = job.get("state", "")
-                assert state in ("JOB_STATE_DELETING", "JOB_STATE_DELETED"), (
+                assert state in _DELETING_STATES, (
                     f"ResourceCleanup failed: job {job_id} still {state}"
                 )
             except httpx.HTTPStatusError as e:
                 assert e.response.status_code == 404
     finally:
+        if job_id:
+            _delete_trainer_if_present(rlor_mgr, job_id)
         os.unlink(dataset_path)

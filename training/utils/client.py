@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import logging
 import os
+from types import SimpleNamespace
 from enum import Enum
+from typing import Any
 
 try:
     from fireworks.training.sdk.client import (
@@ -67,22 +69,18 @@ class ReconnectableClient:
     until the result is ready (or the timeout expires).  No retry, no
     reconnect -- failures propagate to the caller.
 
-    For LoRA GRPO with KL regularisation, a single LoRA trainer can serve
-    both policy and reference logprobs.  Use :meth:`create_base_reference`
-    to obtain a second ``ReconnectableClient`` that shares the same trainer
-    job *and the same session* but operates on a ``base-<hex>`` model handle
-    (no LoRA adapter).  Sharing the service client is essential — creating
-    a second :class:`FiretitanServiceClient` would create a second session
-    and reset the trainer, unloading the policy LoRA.
-
-    The two clients must not dispatch concurrent requests; the trainer
-    serialises ops per session.  The cookbook RL loop already alternates
-    policy and reference forward passes synchronously.
+    The KL/DPO reference is provisioned by the SDK
+    (``service.create_reference_client``) and wrapped inline by each recipe
+    via :meth:`from_training_client` (``base_only=True``). The SDK decides
+    whether the reference reuses the policy session (LoRA) or runs on a
+    separate forward-only trainer (full-parameter / explicit reference shape),
+    and owns that trainer's lifecycle — the cookbook never manages a second
+    service.
     """
 
     def __init__(
         self,
-        rlor_mgr: TrainerJobManager,
+        rlor_mgr: TrainerJobManager | None,
         job_id: str,
         base_model: str,
         lora_rank: int = 0,
@@ -110,32 +108,32 @@ class ReconnectableClient:
         else:
             self._connect()
 
-    def create_base_reference(self) -> ReconnectableClient:
-        """Create a base-only reference client sharing this trainer's session.
-
-        Returns a new :class:`ReconnectableClient` that reuses the same
-        :class:`FiretitanServiceClient` (and therefore the same session) as
-        this client, but issues forward passes against a ``base-<hex>``
-        model handle (LoRA adapter disabled).
-
-        The returned client must NOT be used concurrently with the policy
-        client; calls are serialised through the shared session.  Do not
-        call ``forward_backward`` or ``optim_step`` on it.
-        """
-        assert self._endpoint is not None and self._service is not None, (
-            "policy client must be connected before creating a base reference"
-        )
-        return ReconnectableClient(
-            rlor_mgr=self._rlor_mgr,
-            job_id=self._job_id,
-            base_model=self._base_model,
-            lora_rank=0,
-            fw_api_key=self._fw_api_key,
-            default_timeout=self._default_timeout,
-            endpoint=self._endpoint,
-            service=self._service,
-            base_only=True,
-        )
+    @classmethod
+    def from_training_client(
+        cls,
+        client: FiretitanTrainingClient,
+        *,
+        base_model: str,
+        lora_rank: int = 0,
+        job_id: str,
+        default_timeout: int = DEFAULT_TIMEOUT_S,
+        service: FiretitanServiceClient | None = None,
+        base_only: bool = False,
+    ) -> "ReconnectableClient":
+        self = cls.__new__(cls)
+        self._rlor_mgr = None
+        self._job_id = job_id
+        self._base_model = base_model
+        self._lora_rank = lora_rank
+        self._base_only = base_only
+        self._fw_api_key = None
+        self._default_timeout = default_timeout
+        self._endpoint = SimpleNamespace(job_id=job_id, base_url="")
+        self._service = service
+        self._client = client
+        self._owns_service = False
+        self._closed = False
+        return self
 
     @property
     def inner(self) -> FiretitanTrainingClient:
@@ -180,6 +178,19 @@ class ReconnectableClient:
             timeout=self._default_timeout,
         )
 
+    # -- Non-blocking submit API (for pipelining) ------------------------------
+    #
+    # The methods above block on the result. These return the raw future so a
+    # caller can overlap fwd/bwd + optim across steps (the SFT pipeline). Pair
+    # with ``future.result(timeout=...)``. They exist so callers don't reach
+    # through ``.inner`` for the future API.
+
+    def submit_forward_backward(self, data, loss_fn: str = "cross_entropy", loss_fn_config=None):
+        return self._client.forward_backward(data, loss_fn, loss_fn_config=loss_fn_config)
+
+    def submit_optim_step(self, params):
+        return self._client.optim_step(params)
+
     def save_state(self, name: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.save_state(name).result(timeout=timeout)
 
@@ -205,8 +216,38 @@ class ReconnectableClient:
 
     def save_weights_for_sampler_ext(
         self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S
-    ):
+    ) -> Any:
         return self.inner.save_weights_for_sampler_ext(name, checkpoint_type=checkpoint_type)
+
+    def save_weights_and_get_sampler(
+        self,
+        name: str,
+        *,
+        checkpoint_type: str | None = None,
+        tokenizer: object | None = None,
+        concurrency_controller: object | None = None,
+        timeout: int = DCP_TIMEOUT_S,
+    ) -> Any:
+        """Save sampler weights, hot-load them, and return the refreshed sampler.
+
+        FireTitan's one-call equivalent of tinker's
+        ``save_weights_and_get_sampling_client``: it saves a sampler snapshot on
+        the trainer and hot-loads it into the colocated inference deployment,
+        then returns the (client-side-tokenizing) ``DeploymentSampler``.
+        Behavior is equivalent to saving a sampler snapshot and then creating a
+        deployment sampler from the returned snapshot identity. FireTitan can't
+        return an in-service sampler the way tinker does because sampling runs
+        on a separate deployment. Blocks until the hot-load is ready. Requires
+        the SDK-managed service.
+        """
+        if self._service is None:
+            raise RuntimeError("save_weights_and_get_sampler requires the managed service")
+        saved = self._client.save_weights_for_sampler_ext(name, checkpoint_type=checkpoint_type)
+        return self._service.create_deployment_sampler(
+            model_path=saved.snapshot_name,
+            tokenizer=tokenizer,
+            concurrency_controller=concurrency_controller,
+        )
 
     def resolve_checkpoint_path(self, name: str, source_job_id: str | None = None) -> str:
         return self.inner.resolve_checkpoint_path(name, source_job_id=source_job_id)
@@ -340,6 +381,8 @@ class ReconnectableClient:
         self._endpoint = ep
 
     def _connect(self) -> None:
+        if self._rlor_mgr is None:
+            raise RuntimeError("ReconnectableClient cannot connect without a TrainerJobManager")
         ep = self._rlor_mgr.wait_for_existing(self._job_id)
         self._use_endpoint(ep)
 

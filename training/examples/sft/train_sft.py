@@ -9,10 +9,9 @@ import os
 import signal
 
 from dotenv import load_dotenv
-from fireworks.training.sdk import TrainerJobManager
 
 import training.recipes.sft_loop as sft_loop
-from training.utils import InfraConfig, WandBConfig
+from training.utils import TrainerConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,11 +79,6 @@ def main():
     os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
     os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
-    rlor_mgr = TrainerJobManager(
-        api_key=FIREWORKS_API_KEY,
-        base_url=FIREWORKS_BASE_URL,
-    )
-
     config = sft_loop.Config(
         log_path="./text2sql_logs",
         base_model=args.base_model,
@@ -99,7 +93,7 @@ def main():
         output_model_id=args.output_model_id,
         grad_clip_norm=args.grad_clip_norm,
         dcp_save_interval=-1 if args.no_checkpoint else 0,
-        infra=InfraConfig(
+        trainer=TrainerConfig(
             training_shape_id=args.training_shape,
             region=args.region,
         ),
@@ -110,7 +104,7 @@ def main():
         ),
     )
 
-    metrics = sft_loop.main(config, rlor_mgr=rlor_mgr)
+    metrics = sft_loop.main(config)
     logger.info("SFT complete. Final metrics: %s", metrics)
 
 

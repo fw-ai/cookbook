@@ -16,7 +16,7 @@ import tempfile
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
+from training.utils import TrainerConfig, DeployConfig
 from training.recipes.sft_loop import Config, main
 
 
@@ -61,16 +61,15 @@ class TestSFTE2E:
                 learning_rate=1e-4,
                 epochs=2,
                 max_examples=10,
-                infra=InfraConfig(
+                trainer=TrainerConfig(
                     region=e2e_region,
                     accelerator_type=e2e_training_accelerator,
                     custom_image_tag=custom_image_tag,
                 ),
                 deployment=DeployConfig(),
-                weight_sync=WeightSyncConfig(weight_sync_interval=0),
             )
 
-            metrics = main(config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+            metrics = main(config)
 
             assert isinstance(metrics, dict)
             assert "steps" in metrics

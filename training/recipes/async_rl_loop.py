@@ -2,8 +2,7 @@
 """Async RL recipe with per-sample rollouts and recipe-owned training.
 
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
-names, ``RolloutSetup`` shape, gate semantics) may change without a
-backward-compat shim.  The recipe is intentionally minimal-surface: the
+names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intentionally minimal-surface: the
 only thing most users need to write is the rollout function; everything
 else (gate, advantage, ref forward, weight sync, KL/TIS, PPO inner loop,
 checkpoints) is handled by ``main()``.  See
@@ -30,6 +29,7 @@ the setup; this matches AReaL's workflow construction pattern.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import math
 import os
@@ -41,19 +41,17 @@ from typing import Any, Awaitable, Callable
 
 import tinker
 
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils.client import GradAccNormalization
-from fireworks.training.sdk.weight_syncer import WeightSyncer
 from training.utils import (
     DEFAULT_ADAM,
     DeployConfig,
-    InfraConfig,
-    ResourceCleanup,
+    TrainerConfig,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
-    WeightSyncConfig,
+    ReconnectableClient,
+    build_service_client,
     load_deployment_tokenizer,
     load_jsonl_dataset,
     read_api_extra_headers_env,
@@ -64,7 +62,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.dataloader import CursorDataLoader
-from training.utils.rl import PromptGroup, setup_infra
+from training.utils.rl import PromptGroup
 from training.utils.rl.async_train import RowRequest, run_async_rl_loop
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.dapo import DAPOConfig
@@ -82,9 +80,7 @@ from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
 from training.utils.rl.rollout import RolloutSample
 from training.utils.runner_state import (
-    ResourceCallback,
     estimate_async_total_steps,
-    notify_resources_ready,
     start_running,
     write_completed,
     write_running_step,
@@ -95,14 +91,13 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "Config",
-    "ResourceCallback",
     "RolloutFn",
     "RolloutFnFactory",
     "RolloutSetup",
     "main",
 ]
 
-# Pinned: raising sync interval trades rollout staleness for sync wall-time,
+# Pinned: raising weight-sync interval trades rollout staleness for weight-sync wall-time,
 # almost never worth it in fully-async RL.
 _WEIGHT_SYNC_INTERVAL = 1
 
@@ -152,15 +147,17 @@ class Config:
     ratio_log_cap: float = 20.0
     ppo_n_minibatches: int = 1
     """Inner PPO steps per rollout batch sharing one ``old_policy_logprobs``
-    snapshot; ``1`` reproduces the legacy 1:1 behavior."""
+    snapshot; ``1`` uses the default 1:1 behavior."""
     synchronous_training: bool = False
     """Drain rollouts before each train step (no overlap); baseline knob
     for measuring async savings."""
     tis: TISConfig = field(default_factory=TISConfig)
 
-    infra: InfraConfig = field(default_factory=InfraConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
+    weight_sync_before_training: bool = False
+    dcp_save_interval: int = 0
+    weight_sync_timeout: int = 600
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     """Optional orchestration outputs (status / metadata / metrics / output
@@ -174,8 +171,6 @@ class Config:
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
     """Promote the final checkpoint to this 4-segment model id on clean exit."""
-    policy_job_id: str | None = None
-    """Reuse an existing policy trainer job (e.g. when resuming)."""
 
 
 @dataclass
@@ -196,8 +191,33 @@ class RolloutSetup:
     extras: dict[str, Any] = field(default_factory=dict)
 
 
-RolloutFn = Callable[[dict], Awaitable[RolloutSample | None]]
+RolloutFn = Callable[..., Awaitable[RolloutSample | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
+
+
+_ROLLOUT_CONTEXT_KWARGS = frozenset(
+    {
+        "cursor_index",
+        "row_index",
+        "epoch",
+        "rollout_idx",
+        "sample_index",
+        "end_of_epoch",
+    }
+)
+
+
+def _rollout_fn_accepts_any_context_kwargs(rollout_fn: RolloutFn) -> bool:
+    return any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in inspect.signature(rollout_fn).parameters.values()
+    )
+
+
+def _rollout_fn_context_param_names(rollout_fn: RolloutFn) -> frozenset[str]:
+    if _rollout_fn_accepts_any_context_kwargs(rollout_fn):
+        return _ROLLOUT_CONTEXT_KWARGS
+    return _ROLLOUT_CONTEXT_KWARGS & inspect.signature(rollout_fn).parameters.keys()
 
 
 def _save_checkpoint(
@@ -225,9 +245,7 @@ def main(
     rollout_fn_factory: RolloutFnFactory,
     dynamic_filter_fn: DynamicFilterFn | None = None,
     rows: list[dict] | None = None,
-    cancel_on_exit: bool = False,
     rollout_extras: dict[str, Any] | None = None,
-    on_resources_ready: ResourceCallback | None = None,
 ) -> None:
     """Run the async RL loop with a user-supplied rollout factory.
 
@@ -237,20 +255,15 @@ def main(
     ``completions_per_prompt`` times per dataset row (each invocation is
     one sample draw against the inference deployment).
 
-    ``cancel_on_exit=True`` tears down provisioned remote resources on exit.
-
-    ``on_resources_ready`` is invoked exactly once after
-    :func:`setup_infra` returns, with keyword arguments
-    ``deployment_id`` / ``policy_job_id`` / ``reference_job_id``. Errors
-    raised by the callback are logged and swallowed.
+    Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
     cfg = config
     runner = RunnerIO(cfg.runner)
 
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
-        "the Config / RolloutSetup API may change without backward-compat "
-        "shims.  See skills/dev/references/rl/async-rl.md.",
+        "the Config / RolloutSetup API may change. See "
+        "skills/dev/references/rl/async-rl.md.",
     )
 
     def _signal_handler(signum, _):
@@ -267,8 +280,7 @@ def main(
     validate_config(
         cfg.base_model,
         cfg.dataset or None,
-        cfg.weight_sync,
-        cfg.deployment,
+        deploy=cfg.deployment,
         output_model_id=cfg.output_model_id,
         require_dataset=(rows is None),
     )
@@ -319,65 +331,63 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    rlor_mgr = TrainerJobManager(
-        api_key=api_key, base_url=base_url, additional_headers=additional_headers,
-    )
-    deploy_mgr = DeploymentManager(
-        api_key=api_key, base_url=base_url, additional_headers=additional_headers,
-    )
-
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
-    with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        infra = setup_infra(
-            rlor_mgr=rlor_mgr,
-            deploy_mgr=deploy_mgr,
-            base_model=cfg.base_model,
-            infra_cfg=cfg.infra,
-            deploy_cfg=cfg.deployment,
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            policy_job_id=cfg.policy_job_id,
-            needs_reference=(cfg.kl_beta > 0),
-            needs_inference=True,
-            role_prefix="rl-async",
+    with runner, ExitStack() as stack:
+        tokenizer = load_deployment_tokenizer(cfg.deployment)
+        service = build_service_client(
             api_key=api_key,
-            cleanup=cleanup if cancel_on_exit else None,
+            base_url=base_url,
+            additional_headers=additional_headers,
+            base_model=cfg.base_model,
+            tokenizer_model=cfg.deployment.tokenizer_model,
+            lora_rank=cfg.lora_rank,
+            max_context_length=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            trainer=cfg.trainer,
+            deployment=cfg.deployment,
+            hotload_timeout_s=cfg.weight_sync_timeout,
+            reference_required=cfg.kl_beta > 0,
         )
-        # Make provisioned resource IDs available before trainer setup continues.
-        notify_resources_ready(infra, on_resources_ready)
+        stack.callback(service.close)
+        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        sampler = service.create_deployment_sampler(tokenizer=tokenizer)
+        runner.set_accelerator_info(
+            service.accelerator_type,
+            service.accelerator_count,
+            profile=service.training_profile,
+        )
 
-        policy_job_id = infra.policy_job_id
-        assert infra.inference_model is not None  # needs_inference=True invariant
-        inference_model = infra.inference_model
-        for closeable in infra.closeables:
-            stack.callback(closeable.close)
-
-        # Surface accelerator info before the first optimizer step.
-        runner.set_accelerator_info(profile=infra.policy_profile)
         runner.write_metadata()
 
-        wandb_log({**infra.boot_metrics, "rollout/step": 0})
+        wandb_log({"rollout/step": 0})
 
-        policy = infra.policy
-        reference = infra.reference
-
-        tokenizer = load_deployment_tokenizer(cfg.deployment)
-        weight_syncer = WeightSyncer(
-            policy_client=policy,
-            deploy_mgr=deploy_mgr,
-            deployment_id=infra.deployment_id,
+        policy = ReconnectableClient.from_training_client(
+            training_client,
             base_model=cfg.base_model,
-            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
-            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
             lora_rank=cfg.lora_rank,
+            job_id=service.trainer_job_id,
+            service=service,
         )
+        reference = None
+        if cfg.kl_beta > 0:
+            reference_training_client = service.create_reference_client(
+                cfg.base_model,
+                lora_rank=cfg.lora_rank,
+            )
+            reference = ReconnectableClient.from_training_client(
+                reference_training_client,
+                base_model=cfg.base_model,
+                lora_rank=0,
+                job_id=service.reference_client_job_id,
+                service=service,
+                base_only=True,
+            )
 
         ckpt = TrainingCheckpoints(
             policy,
-            rlor_mgr,
-            trainer_id=policy_job_id,
+            service,
+            trainer_id=service.trainer_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
         )
@@ -393,11 +403,14 @@ def main(
                 {"train/step": step_offset, "rollout/step": rollout_offset},
             )
 
-        if cfg.weight_sync.weight_sync_before_training:
-            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            weight_syncer.save_and_hotload(name, checkpoint_type="base")
-
-        current_version = step_offset
+        if cfg.weight_sync_before_training:
+            with elapsed_timer("weight_sync") as span:
+                saved = policy.save_weights_for_sampler_ext(
+                    f"step-{step_offset}",
+                    checkpoint_type="base",
+                )
+                service.hotload_sampler_snapshot(saved.snapshot_name)
+            logger.info("[step %d] weight sync (%.1fs)", step_offset, span.elapsed)
 
         if rows is None:
             rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
@@ -444,7 +457,7 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            max_seq_len=infra.max_seq_len,
+            max_seq_len=service.max_context_length,
             http_timeout=cfg.deployment.sample_timeout,
             logprobs=True,
         )
@@ -453,13 +466,14 @@ def main(
             tokenizer=tokenizer,
             tokenizer_id=cfg.deployment.tokenizer_model,
             sample_kwargs=sample_kwargs,
-            inference_base_url=deploy_mgr.inference_url,
+            inference_base_url=sampler.base_url,
             api_key=api_key,
-            model=inference_model,
+            model=sampler.model,
             completions_per_prompt=cfg.completions_per_prompt,
             extras=dict(rollout_extras or {}),
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
+        rollout_context_param_names = _rollout_fn_context_param_names(rollout_fn)
 
         ctx_metadata: dict[str, Any] = {
             "completions_per_prompt": cfg.completions_per_prompt,
@@ -473,21 +487,49 @@ def main(
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
             "tokenizer_id": cfg.deployment.tokenizer_model,
-            "model": inference_model,
+            "model": sampler.model,
         }
 
         def make_row_requests():
+            rows_per_epoch = len(rows)
             for item in row_loader:
                 row = item.value
                 idx = item.index
+                epoch = idx // rows_per_epoch if rows_per_epoch else 0
+                row_index = idx % rows_per_epoch if rows_per_epoch else idx
+                end_of_epoch = row_index == rows_per_epoch - 1 if rows_per_epoch else True
+                source_row_id = row.get("id") if isinstance(row, dict) else None
 
-                def factory(_sub_index: int, sample_prompt=row):
+                def factory(
+                    sub_index: int,
+                    sample_prompt=row,
+                    cursor_index=idx,
+                    row_index=row_index,
+                    epoch=epoch,
+                    end_of_epoch=end_of_epoch,
+                ):
+                    context = {
+                        "cursor_index": cursor_index,
+                        "row_index": row_index,
+                        "epoch": epoch,
+                        "rollout_idx": sub_index,
+                        "sample_index": sub_index,
+                        "end_of_epoch": end_of_epoch,
+                    }
+                    if rollout_context_param_names:
+                        return rollout_fn(
+                            sample_prompt,
+                            **{
+                                key: context[key]
+                                for key in rollout_context_param_names
+                            },
+                        )
                     return rollout_fn(sample_prompt)
 
                 yield RowRequest(
                     row_id=idx,
                     sample_factory=factory,
-                    row_meta={"row_id": row.get("id")},
+                    row_meta={"row_id": source_row_id},
                     on_resolved=lambda _reason, idx=idx: row_loader.mark_resolved(idx),
                 )
 
@@ -533,10 +575,10 @@ def main(
             on the ``train/step`` axis (one point per inner PPO step);
             per-batch ``rollout/*`` / ``perf/*`` / ``async/*`` / ``version/*``
             land on ``rollout/step`` (one point per outer rollout batch).
-            ``ctx.current_version`` and checkpoint identities remain
-            optimizer-step labels (resume math is in optim steps); the
-            off-policy budget is accounted in weight-sync versions inside
-            ``_StalenessController`` and is independent of those labels.
+            checkpoint identities remain optimizer-step labels (resume math is
+            in optim steps); the off-policy budget is accounted in
+            weight-sync versions inside ``_StalenessController`` and is
+            independent of those labels.
             """
             train_start = time.monotonic()
             num_minibatches = max(1, cfg.ppo_n_minibatches)
@@ -633,7 +675,6 @@ def main(
             metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
             metrics["rollout/step"] = rollout_id
             metrics["train/step"] = step  # monotonic fallback for the wandb global step
-            metrics["ctx/current_version"] = current_version
             for k, v in ctx_metadata.items():
                 if isinstance(v, bool):
                     metrics[f"ctx/{k}"] = int(v)
@@ -660,7 +701,7 @@ def main(
             # DCP cadence is in rollout batches, not optim steps, so
             # ppo_n_minibatches doesn't change save frequency.
             rollouts_completed = (step - step_offset) // num_minibatches
-            interval = cfg.weight_sync.dcp_save_interval
+            interval = cfg.dcp_save_interval
             if (
                 loop_stats is not None
                 and interval > 0
@@ -680,13 +721,6 @@ def main(
                     logger.warning("[step %d] dcp_save failed: %s", step, e)
             return step, metrics
 
-        def _weight_sync(step: int) -> None:
-            nonlocal current_version
-            with elapsed_timer("weight_sync") as span:
-                weight_syncer.save_and_hotload(f"step-{step}")
-            current_version = step
-            logger.info("[step %d] weight_sync (%.1fs)", step, span.elapsed)
-
         start_running(
             runner,
             step=step_offset,
@@ -702,7 +736,9 @@ def main(
                 max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
                 with_reference=(reference is not None),
                 min_group_size=cfg.min_group_size,
-                weight_sync_fn=_weight_sync,
+                weight_sync_fn=lambda step: service.hotload_sampler_snapshot(
+                    policy.save_weights_for_sampler_ext(f"step-{step}").snapshot_name
+                ),
                 weight_sync_interval=_WEIGHT_SYNC_INTERVAL,
                 max_concurrent=cfg.max_concurrency_rollout_sample,
                 dynamic_filter_fn=dynamic_filter_fn,
@@ -735,7 +771,7 @@ def main(
             runner.write_output_model(
                 model_id=cfg.output_model_id,
                 checkpoint=promoted_checkpoint,
-                job_id=policy_job_id,
+                job_id=service.trainer_job_id,
             )
 
         # Clamp progress at 100% when dynamic filtering shortens the run.
@@ -753,6 +789,7 @@ def main(
         wandb_finish()
         return {
             "steps": global_step,
-            "policy_job_id": policy_job_id,
-            "reference_job_id": infra.reference_job_id,
+            "policy_job_id": service.trainer_job_id,
+            "reference_job_id": service.reference_trainer_job_id,
+            "deployment_id": service.deployment_id,
         }
