@@ -38,10 +38,8 @@ future rollouts automatically hit the newer policy behind that stable id.
 
 ## Run
 
-When this repo is checked out with sibling `eval-protocol-python-sdk/`, `run.sh`
-adds it to `PYTHONPATH` so the example uses the local Eval Protocol sources
-instead of any installed package. If you run the commands manually, either add
-that path yourself or install the SDK editable.
+Install dependencies from `requirements.txt` (includes `eval-protocol`). `run.sh`
+only adds the cookbook repo root to `PYTHONPATH`.
 
 From this directory:
 

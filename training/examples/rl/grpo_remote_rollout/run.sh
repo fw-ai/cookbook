@@ -3,14 +3,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
-WORKSPACE_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
-
-PYTHONPATH_ENTRIES=("$REPO_ROOT")
-if [[ -d "$WORKSPACE_ROOT/eval-protocol-python-sdk" ]]; then
-    PYTHONPATH_ENTRIES+=("$WORKSPACE_ROOT/eval-protocol-python-sdk")
-fi
-JOINED_PYTHONPATH="$(IFS=:; echo "${PYTHONPATH_ENTRIES[*]}")"
-export PYTHONPATH="${JOINED_PYTHONPATH}:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 if [[ ! -f "$HERE/train.jsonl" ]]; then
     echo "train.jsonl not found; writing tiny example dataset..."
