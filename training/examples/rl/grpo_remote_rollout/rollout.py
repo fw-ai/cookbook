@@ -20,20 +20,6 @@ from training.utils.rl.rollout import RolloutSample
 logger = logging.getLogger(__name__)
 
 
-def _coerce_message(message: dict[str, Any] | Message) -> Message:
-    if isinstance(message, Message):
-        return message
-    return Message.model_validate(message)
-
-
-def _row_id(sample_prompt: dict[str, Any]) -> str:
-    return str(
-        sample_prompt.get("id")
-        or sample_prompt.get("row_id")
-        or f"row_{uuid.uuid4().hex[:8]}"
-    )
-
-
 def _build_evaluation_row(
     sample_prompt: dict[str, Any],
     *,
@@ -42,12 +28,13 @@ def _build_evaluation_row(
     invocation_id: str,
     experiment_id: str,
 ) -> EvaluationRow:
-    messages = [_coerce_message(message) for message in (sample_prompt.get("messages") or [])]
-    if not messages:
+    raw_messages = sample_prompt.get("messages") or []
+    if not raw_messages:
         raise ValueError("sample row must include OpenAI-style `messages`")
 
-    row = EvaluationRow(messages=messages)
-    row.input_metadata.row_id = f"{_row_id(sample_prompt)}-{uuid.uuid4().hex[:8]}"
+    row = EvaluationRow(messages=[Message.model_validate(m) for m in raw_messages])
+    row_id = str(sample_prompt.get("id") or uuid.uuid4().hex[:8])
+    row.input_metadata.row_id = f"{row_id}-{uuid.uuid4().hex[:8]}"
     row.input_metadata.completion_params = dict(completion_params)
     row.input_metadata.dataset_info = {
         key: value
@@ -99,6 +86,7 @@ def make_rollout_fn(setup: RolloutSetup) -> RolloutFn:
     processor = RemoteRolloutProcessor(
         remote_base_url=str(remote_base_url),
         model_base_url=str(tracing_base_url),
+        # Required so trace hydration includes completion payloads with per-token logprobs.
         include_payloads=True,
         timeout_seconds=timeout_seconds,
         poll_interval=poll_interval,

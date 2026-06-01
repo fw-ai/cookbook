@@ -96,6 +96,8 @@ def run() -> None:
             run_name=args.wandb_run_name or f"grpo-remote-{int(time.time()) % 100000}",
         ),
     )
+    # Drop prompt groups whose rewards are constant across all samples --
+    # GRPO z-score advantage is 0 there, so the optimizer step is a no-op.
     dynamic_filter_fn = (
         (lambda pg: len(set(pg.rewards)) > 1)
         if args.filter_constant_reward else None
