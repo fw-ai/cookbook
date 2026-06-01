@@ -33,14 +33,19 @@ trainer/deployment provisioning path.
 
 ## Deployment shape
 
-Do not set `cfg.deployment.deployment_shape` manually. The recipe copies it from the training profile:
+Do not set `cfg.deployment.deployment_shape` manually. The SDK resolves it from
+the requested deployment shape or the selected training profile, and recipes read
+the resolved value from the service:
 
 ```python
-if not cfg.deployment.deployment_shape and profile.deployment_shape_version:
-    cfg.deployment.deployment_shape = profile.deployment_shape_version
+service = build_service_client(...)
+training_client = service.create_training_client(...)
+deployment_shape = service.deployment_shape
 ```
 
-That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123`). The `to_deployment_config` helper in `training/utils/config.py` auto-clears manual accelerator fields whenever a shape is present.
+That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123`).
+The `to_deployment_config` helper in `training/utils/config.py` auto-clears
+manual accelerator fields whenever a shape is present.
 
 ## Reference-model shape (RL / DPO)
 

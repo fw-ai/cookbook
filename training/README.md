@@ -12,6 +12,7 @@ Each recipe is a single Python file you can fork and customize.
 | GRPO / IS / DAPO / DRO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"importance_sampling"`, `"dapo"`, `"dro"`, `"gspo"`, or `"cispo"`. |
 | Async RL (any of the above losses) | `recipes/async_rl_loop.py` | Gate-native async RL: rollout/train overlap with bounded off-policy staleness. Strict superset of `rl_loop.py`; recommended for new RL work. |
 | IGPO (multi-turn turn-level Information Gain) | `recipes/igpo_loop.py` | GRPO + per-turn IG rewards for agent trajectories (Wang et al., ICLR 2026). |
+| OPD | `recipes/opd_loop.py` | Sampled-token on-policy distillation. The student rolls out on policy, a teacher scores those same tokens, and training uses the server-side importance-sampling loss. |
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
 | SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
@@ -78,6 +79,26 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | --- | --- |
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
 | `sampler_refresh_interval` | Refresh the sampler from trainer-saved weights every N optimizer steps. |
+
+**OPD** (`recipes/opd_loop.py`) -- also requires:
+
+| Field | What to set |
+| --- | --- |
+| `teacher_model` | Fireworks teacher model or deployment ID using the same tokenizer as the student |
+| `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for student rollouts |
+| `weight_sync_interval` | Set to `1` for strict on-policy updates |
+
+If `teacher_model` is a base model resource such as
+`accounts/fireworks/models/qwen3p5-9b`, the OPD recipe creates or reuses a
+separate frozen teacher deployment for scoring during provisioning. Set
+`teacher_deployment_id` to pin that deployment name. If `teacher_model` is
+already a deployment/deployed model resource, OPD uses it directly.
+
+OPD rows can include `teacher_messages` for privileged teacher context. The
+student samples from `messages`; the frozen teacher scores the sampled response
+under `teacher_messages`. If `teacher_messages` is absent, OPD falls back to
+the student prompt. The aliases `privileged_messages` and
+`teacher_prompt_messages` are also accepted.
 
 The recipes create SDK-managed training and sampling clients directly.
 They do not require explicit trainer-job, deployment, or sampler setup.

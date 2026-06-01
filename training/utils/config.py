@@ -204,6 +204,8 @@ class DeployConfig:
     """Trainer job name whose hot-load bucket this deployment should use.
     Format: accounts/{account}/rlorTrainerJobs/{job_id}.
     When set, the deployment copies the trainer's bucket URL at creation."""
+    enable_hot_load: bool = True
+    """Whether to create a hot-load-capable deployment."""
     deployment_timeout_s: float = 5400
     reattach_settle_timeout_s: int = 600
     """How long to wait for the serving pod to cycle after a re-attach PATCH
@@ -240,8 +242,9 @@ class DeployConfig:
             base_model=base_model,
             deployment_shape=self.deployment_shape,
             region=self.deployment_region or None,
-            hot_load_bucket_type=self.hot_load_bucket_type,
-            hot_load_trainer_job=self.hot_load_trainer_job,
+            hot_load_bucket_type=self.hot_load_bucket_type if self.enable_hot_load else None,
+            hot_load_trainer_job=self.hot_load_trainer_job if self.enable_hot_load else None,
+            enable_hot_load=self.enable_hot_load,
             skip_shape_validation=skip_validation,
             extra_args=self.deployment_extra_args,
             min_replica_count=replica_count,
