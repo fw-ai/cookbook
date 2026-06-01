@@ -49,3 +49,22 @@ def test_to_deployment_config_sets_fixed_replica_count():
     assert isinstance(deployment_config, DeploymentConfig)
     assert deployment_config.min_replica_count == 3
     assert deployment_config.max_replica_count == 3
+
+
+def test_to_deployment_config_drops_hotload_fields_when_disabled():
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        enable_hot_load=False,
+        hot_load_bucket_type="FW_HOSTED",
+        hot_load_trainer_job="accounts/test/rlorTrainerJobs/job-123",
+    )
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(),
+    )
+
+    assert isinstance(deployment_config, DeploymentConfig)
+    assert deployment_config.enable_hot_load is False
+    assert deployment_config.hot_load_bucket_type is None
+    assert deployment_config.hot_load_trainer_job is None

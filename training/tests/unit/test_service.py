@@ -102,6 +102,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "purpose": "PURPOSE_PILOT",
             "skip_validations": True,
             "cleanup_trainer_on_close": True,
+            "cleanup_deployment_on_close": None,
             "create_deployment": True,
             "hotload_timeout_s": 600,
             "deployment_shape": "ds-x",

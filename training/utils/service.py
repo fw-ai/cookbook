@@ -20,6 +20,7 @@ def _firetitan_service_kwargs(
     deployment: DeployConfig | None = None,
     hotload_timeout_s: float | None = None,
     cleanup_trainer_on_close: bool = False,
+    cleanup_deployment_on_close: str | None = None,
     reference_required: bool = False,
 ) -> dict[str, Any]:
     """Translate cookbook user config into SDK service kwargs."""
@@ -48,6 +49,7 @@ def _firetitan_service_kwargs(
         "cleanup_trainer_on_close": cleanup_trainer_on_close,
         "create_deployment": deployment is not None,
         "hotload_timeout_s": hotload_timeout_s,
+        "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
     if deployment is None:
         service_kwargs["replica_count"] = 1
@@ -83,6 +85,7 @@ def build_service_client(
     deployment: DeployConfig | None = None,
     hotload_timeout_s: float | None = None,
     cleanup_trainer_on_close: bool = False,
+    cleanup_deployment_on_close: str | None = None,
     reference_required: bool = False,
 ) -> FiretitanServiceClient:
     """Create an SDK-managed service client from cookbook config."""
@@ -96,6 +99,7 @@ def build_service_client(
         deployment=deployment,
         hotload_timeout_s=hotload_timeout_s,
         cleanup_trainer_on_close=cleanup_trainer_on_close,
+        cleanup_deployment_on_close=cleanup_deployment_on_close,
         reference_required=reference_required,
     )
     return FiretitanServiceClient.from_firetitan_config(
