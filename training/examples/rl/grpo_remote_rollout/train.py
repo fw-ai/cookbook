@@ -77,7 +77,7 @@ def run() -> None:
         raise ValueError("Set --remote-rollout-base-url or REMOTE_ROLLOUT_BASE_URL.")
     if not os.path.exists(args.dataset_path):
         raise FileNotFoundError(
-            f"Dataset not found at {args.dataset_path}. Run `python prepare_data.py` first."
+            f"Dataset not found at {args.dataset_path}."
         )
 
     rows = list(_iter_rows(args.dataset_path, args.max_rows))

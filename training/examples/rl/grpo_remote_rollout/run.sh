@@ -5,11 +5,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-if [[ ! -f "$HERE/train.jsonl" ]]; then
-    echo "train.jsonl not found; writing tiny example dataset..."
-    python "$HERE/prepare_data.py"
-fi
-
 : "${REMOTE_ROLLOUT_BASE_URL:=http://127.0.0.1:3000}"
 
 python "$HERE/train.py" \

@@ -12,7 +12,7 @@ environment server once the wiring is clear.
 
 ## Files
 
-- `prepare_data.py` writes a tiny arithmetic JSONL dataset.
+- `train.jsonl` is a tiny arithmetic dataset (4 rows).
 - `remote_server/server.py` is a FastAPI `/init` server. It calls the model for
   multiple turns, logs `Status.rollout_finished()`, and emits per-turn prompt
   token ids in rollout extras.
@@ -41,13 +41,7 @@ future rollouts automatically hit the newer policy behind that stable id.
 Install dependencies from `requirements.txt` (includes `eval-protocol`). `run.sh`
 only adds the cookbook repo root to `PYTHONPATH`.
 
-From this directory:
-
-```bash
-python prepare_data.py
-```
-
-Start the remote server in one terminal:
+From this directory, start the remote server in one terminal:
 
 ```bash
 export FIREWORKS_API_KEY=...
