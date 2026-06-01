@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from enum import Enum
 from typing import Dict, Callable
 from dataclasses import dataclass
@@ -58,6 +59,13 @@ class ConcurrencyConfig:
 class InfraConfig:
     """GPU, region, and image settings.
 
+    .. deprecated::
+        ``InfraConfig`` is retained only for backward compatibility. New code
+        should configure provisioning with :class:`TrainerConfig` (and
+        :class:`DeployConfig`) and use the recipe's SDK-managed provisioning
+        path.
+        The recipe ``Config`` objects no longer accept an ``infra=`` field.
+
     Two launch paths:
 
     * **Shape path** (``training_shape_id`` set): the backend owns all
@@ -74,9 +82,9 @@ class InfraConfig:
 
     ref_training_shape_id: str | None = None
     """Training shape ID for a **separate** forward-only reference trainer.
-    Only relevant for **full-parameter** training — LoRA runs use the
-    shared-session reference (``policy.create_base_reference()``) on the
-    policy trainer, so leave this ``None`` when ``lora_rank > 0``. For
+    Only relevant for **full-parameter** training — LoRA runs reuse the
+    policy session as their frozen reference (adapter disabled), so leave
+    this ``None`` when ``lora_rank > 0``. For
     full-param, when set, a second trainer is provisioned; when not set,
     no reference is created. Can be the same value as ``training_shape_id``
     — the control plane auto-appends ``--forward-only``."""
@@ -97,8 +105,57 @@ class InfraConfig:
     """
     purpose: str | None = None
     """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
-    managed_by: str | None = None
-    """Internal. Populated automatically by the Fireworks platform when needed."""
+    skip_validations: bool = False
+    """Skip server-side shape validation. Requires superuser API key."""
+
+    def __post_init__(self) -> None:
+        warnings.warn(
+            "InfraConfig is deprecated; use TrainerConfig (and DeployConfig) with "
+            "the recipe's SDK-managed provisioning path. It is retained only for backward compatibility "
+            "and will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+
+@dataclass
+class TrainerConfig:
+    """Training client launch settings."""
+
+    job_id: str | None = None
+    """Existing trainer job ID to reattach to. Leave unset to create one."""
+
+    training_shape_id: str | None = None
+    """Training shape ID for the policy trainer."""
+
+    reference_training_shape_id: str | None = None
+    """Training shape ID for a separate forward-only reference trainer."""
+
+    reference_job_id: str | None = None
+    """Existing forward-only reference trainer job ID to reattach to."""
+
+    cleanup_reference_on_close: bool = True
+    """Delete SDK-created separate reference trainers when the service closes."""
+
+    region: str | None = None
+    custom_image_tag: str | None = None
+    accelerator_type: str | None = None
+    """Deprecated and ignored. Trainer accelerator type is owned by the
+    training shape; setting this emits a ``DeprecationWarning``. Use
+    ``replica_count`` for data-parallel scaling."""
+    accelerator_count: int | None = None
+    """Deprecated and ignored. Trainer accelerator count is owned by the
+    training shape; setting this emits a ``DeprecationWarning``. Use
+    ``replica_count`` for data-parallel scaling."""
+    node_count: int | None = None
+    timeout_s: float = 3600
+    extra_args: list[str] | None = None
+    replica_count: int | None = None
+    """Data-parallel trainer replica count for service-mode HSDP launches."""
+
+    purpose: str | None = None
+    """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
+
     skip_validations: bool = False
     """Skip server-side shape validation. Requires superuser API key."""
 
@@ -139,6 +196,9 @@ class DeployConfig:
     ``profile.deployment_shape`` which returns the versioned path."""
     deployment_region: str | None = None
     deployment_accelerator_type: str | None = None
+    """DEPRECATED and ignored on the SDK-managed path. The deployment shape
+    owns accelerator selection; set the accelerator via ``deployment_shape``.
+    Retained only for the legacy ``to_deployment_config`` path."""
     hot_load_bucket_type: str = "FW_HOSTED"
     hot_load_trainer_job: str | None = None
     """Trainer job name whose hot-load bucket this deployment should use.

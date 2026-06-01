@@ -44,13 +44,6 @@ from training.utils.rl.rollout.assembler import (
     extract_completion,
     precompute_chat_suffix,
 )
-from training.utils.rl.rollout.eval_protocol import (
-    default_completion_params_factory,
-    default_eval_row_factory,
-    get_eval_protocol_params,
-    load_eval_protocol_input_rows,
-    make_eval_protocol_rollout_fn_factory,
-)
 from training.utils.rl.rollout.group_assembler import (
     GroupAssembler,
     PendingGroup,
@@ -90,6 +83,22 @@ from training.utils.rl.rollout.types import (
     RolloutSample,
     rollout_to_prompt_group,
 )
+
+_EVAL_PROTOCOL_EXPORTS = {
+    "default_completion_params_factory",
+    "default_eval_row_factory",
+    "get_eval_protocol_params",
+    "load_eval_protocol_input_rows",
+    "make_eval_protocol_rollout_fn_factory",
+}
+
+
+def __getattr__(name: str):
+    if name in _EVAL_PROTOCOL_EXPORTS:
+        from training.utils.rl.rollout import eval_protocol
+
+        return getattr(eval_protocol, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

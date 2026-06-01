@@ -8,7 +8,7 @@ cd cookbook/training
 
 # Option A: conda
 conda create -n cookbook python=3.12 -y && conda activate cookbook
-pip install --pre -e .
+python -m pip install --pre -e .
 
 # Option B: uv
 uv venv --python 3.12 && source .venv/bin/activate
@@ -32,15 +32,20 @@ export FIREWORKS_API_KEY="your-api-key"
 ## Verify
 
 ```bash
-python -c "from fireworks.training.sdk import TrainerJobManager; print('SDK OK')"
-python -c "from training.utils.config import InfraConfig; print('Cookbook OK')"
+python -c "import fireworks.training.sdk; print('SDK OK')"
+python -c "import training.recipes.rl_loop, training.recipes.dpo_loop; print('Recipes OK')"
 ```
+
+The recipe import check is intentional: a clean base install should run the
+standard DPO/RL recipes without optional example-only packages such as
+`eval-protocol`. Install the `dev` extra only when running tests or
+eval-protocol examples.
 
 ## Dev dependencies (tests, coverage)
 
 ```bash
-pip install --pre -e ".[dev]"
-pytest tests/
+uv pip install --pre -e ".[dev]"   # or: python -m pip install --pre -e ".[dev]"
+python -m pytest tests/
 ```
 
 ## Upgrading the SDK
@@ -48,7 +53,7 @@ pytest tests/
 The required SDK version is pinned in `training/pyproject.toml`. To upgrade:
 
 ```bash
-pip install --pre --upgrade "fireworks-ai[training]"
+uv pip install --pre --upgrade "fireworks-ai[training]"
 ```
 
 Then verify the installed version satisfies the pin:

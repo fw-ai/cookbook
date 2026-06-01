@@ -113,7 +113,7 @@ class TestCheckpointsSmoke:
         smoke_minimal_lora_training_shape,
     ):
         from training.recipes.sft_loop import Config, main
-        from training.utils import InfraConfig, WandBConfig
+        from training.utils import TrainerConfig, WandBConfig
         from training.utils.checkpoints import DATALOADER_BASE_NAME
 
         rlor_mgr, _deploy_mgr = smoke_sdk_managers
@@ -130,7 +130,7 @@ class TestCheckpointsSmoke:
         dataset_path = os.path.join(log_dir, "dataset.jsonl")
         _make_chat_dataset(dataset_path, num_examples=_NUM_TRAINING_EXAMPLES)
 
-        infra = InfraConfig(training_shape_id=smoke_minimal_lora_training_shape)
+        trainer = TrainerConfig(training_shape_id=smoke_minimal_lora_training_shape)
 
         # ---- Run SFT LoRA with promotion ------------------------------------
         logger.info(
@@ -152,11 +152,11 @@ class TestCheckpointsSmoke:
             lora_rank=8,
             dcp_save_interval=_DCP_SAVE_INTERVAL,
             output_model_id=output_model_id,
-            infra=infra,
+            trainer=trainer,
             wandb=WandBConfig(),
         )
 
-        metrics = main(cfg, rlor_mgr=rlor_mgr)
+        metrics = main(cfg)
         assert isinstance(metrics, dict)
         steps = metrics["steps"]
         job_id = metrics["job_id"]

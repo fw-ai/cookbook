@@ -140,7 +140,7 @@ class TestArgValidation:
                 **_DEFAULTS,
             ))
 
-    def test_rejects_sync_interval_gt_offpolicy_plus_one(self):
+    def test_rejects_weight_sync_interval_gt_offpolicy_plus_one(self):
         """``weight_sync_interval > 1`` + ``max_head_offpolicy_versions == 0``
         is mathematically guaranteed to stall."""
         with pytest.raises(ValueError, match="max_head_offpolicy_versions"):
@@ -153,7 +153,7 @@ class TestArgValidation:
                 **_DEFAULTS,
             ))
 
-    def test_accepts_balanced_sync_interval_and_offpolicy(self):
+    def test_accepts_balanced_weight_sync_interval_and_offpolicy(self):
         result = _run(run_async_rl_loop(
             rows=iter([]),
             train_fns=TrainStepFns(train_step=_noop_train_step),

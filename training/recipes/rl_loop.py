@@ -38,23 +38,20 @@ from dataclasses import field, dataclass
 
 import tinker
 
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
-from fireworks.training.sdk.client import GradAccNormalization
-from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
-from fireworks.training.sdk.weight_syncer import WeightSyncer
+from training.utils.client import GradAccNormalization
 from training.utils import (
     DEFAULT_ADAM,
+    AdaptiveConcurrencyController,
     ConcurrencyConfig,
-    InfraConfig,
-    ResourceCleanup,
+    TrainerConfig,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
     DeployConfig,
-    WeightSyncConfig,
     RawRowCursor,
     RLPromptDataset,
+    build_service_client,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -65,9 +62,10 @@ from training.utils import (
     read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
+    ReconnectableClient,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
-from training.utils.rl import PromptGroup, setup_infra
+from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
 import time as _time
@@ -103,7 +101,6 @@ class Config:
     """Directory for checkpoints and logs. Required, no default."""
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
-    rollout_base_model: str | None = None
     dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 
     learning_rate: float = 1e-5
@@ -163,8 +160,8 @@ class Config:
     Each rollout batch snapshots ``old_policy_logprobs`` followed by
     ``ppo_n_minibatches`` × (``forward_backward`` + ``optim_step``). When
     >1, the policy drifts across inner steps, so ``old_policy_logprobs`` anchors the
-    PPO ratio and the clip does real work. ``1`` reproduces the legacy
-    1:1 behavior."""
+    PPO ratio and the clip does real work. ``1`` uses the default 1:1
+    behavior."""
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
 
@@ -176,18 +173,6 @@ class Config:
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files.  Each file contains
     prompts, completions, and rewards for every prompt group in that step."""
-
-    policy_job_id: str | None = None
-    """Pre-created RLOR policy trainer job ID (skip creation if set)."""
-
-    reference_job_id: str | None = None
-    """Pre-created RLOR reference trainer job ID (skip creation if set)."""
-
-    policy_base_url: str | None = None
-    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
-
-    reference_base_url: str | None = None
-    """Deprecated. Kept for back-compat; ignored (the gateway routes all trainer traffic)."""
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
@@ -205,9 +190,12 @@ class Config:
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
-    infra: InfraConfig = field(default_factory=InfraConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    weight_sync: WeightSyncConfig = field(default_factory=WeightSyncConfig)
+    weight_sync_interval: int = 1
+    weight_sync_before_training: bool = False
+    weight_sync_timeout: int = 600
+    dcp_save_interval: int = 0
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     """Optional orchestration outputs written during training.
@@ -299,26 +287,8 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
 
 def main(
     config: Config,
-    rlor_mgr: TrainerJobManager | None = None,
-    deploy_mgr: DeploymentManager | None = None,
-    cancel_on_exit: bool = False,
-    cleanup_on_exit: bool | None = None,
 ):
-    if cleanup_on_exit is not None:
-        import warnings
-        warnings.warn(
-            "rl_loop.main(cleanup_on_exit=...) is deprecated; use cancel_on_exit=...",
-            DeprecationWarning, stacklevel=2,
-        )
-        cancel_on_exit = cleanup_on_exit
-
     cfg = config
-    if cfg.policy_base_url or cfg.reference_base_url:
-        logger.warning(
-            "Config.policy_base_url / Config.reference_base_url are ignored; "
-            "the gateway routes all trainer traffic. These fields are kept for "
-            "back-compat and will be removed in a future release.",
-        )
     runner = RunnerIO(cfg.runner)
 
     # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
@@ -333,8 +303,7 @@ def main(
     validate_config(
         cfg.base_model,
         cfg.dataset,
-        cfg.weight_sync,
-        cfg.deployment,
+        deploy=cfg.deployment,
         output_model_id=cfg.output_model_id,
     )
     validate_warm_start_config(
@@ -359,68 +328,76 @@ def main(
         },
     )
 
-    # -- Setup infrastructure -----------------------------------------------
+    # -- SDK-managed Tinker clients -----------------------------------------
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-        )
-    if deploy_mgr is None:
-        deploy_mgr = DeploymentManager(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-        )
-
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
-    def _on_trainer_status(msg: str) -> None:
-        runner.write_status(RunStatus.PENDING, message=msg)
-
-    with runner, ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        # Shapes + trainers + deployment + trainer clients.
-        # LoRA shared-reference branching is handled inside setup_infra.
-        infra = setup_infra(
-            rlor_mgr=rlor_mgr,
-            deploy_mgr=deploy_mgr,
-            base_model=cfg.base_model,
-            infra_cfg=cfg.infra,
-            deploy_cfg=cfg.deployment,
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            step_timeout=cfg.step_timeout,
-            policy_job_id=cfg.policy_job_id,
-            reference_job_id=cfg.reference_job_id,
-            needs_reference=(cfg.kl_beta > 0),
-            needs_inference=True,
-            role_prefix="grpo",
+    with runner, ExitStack() as stack:
+        service = build_service_client(
             api_key=api_key,
-            cleanup=cleanup if cancel_on_exit else None,
-            on_status=_on_trainer_status,
+            base_url=base_url,
+            additional_headers=additional_headers,
+            base_model=cfg.base_model,
+            tokenizer_model=cfg.deployment.tokenizer_model,
+            lora_rank=cfg.lora_rank,
+            max_context_length=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            trainer=cfg.trainer,
+            deployment=cfg.deployment,
+            hotload_timeout_s=cfg.weight_sync_timeout,
+            reference_required=cfg.kl_beta > 0,
         )
-        for closeable in infra.closeables:
-            stack.callback(closeable.close)
+        stack.callback(service.close)
+        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        runner.set_accelerator_info(
+            service.accelerator_type,
+            service.accelerator_count,
+            profile=service.training_profile,
+        )
 
-        runner.set_accelerator_info(profile=infra.policy_profile)
-        wandb_log(infra.boot_metrics, step=0)
+        policy_job_id = service.trainer_job_id
+        deployment_id = service.deployment_id
 
-        policy = infra.policy
-        reference = infra.reference
-        policy_profile = infra.policy_profile
-        policy_job_id = infra.policy_job_id
-        reference_job_id = infra.reference_job_id or infra.policy_job_id
+        policy = ReconnectableClient.from_training_client(
+            training_client,
+            base_model=cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            job_id=policy_job_id,
+            default_timeout=cfg.step_timeout or 3600,
+            service=service,
+        )
+        policy_profile = None
+        max_seq_len = service.max_context_length
+
+        # The KL reference is optional in RL (only needed when kl_beta > 0).
+        # The SDK owns the shared-vs-separate decision: LoRA without an explicit
+        # reference shape reuses the policy session; full-param (or an explicit
+        # reference_training_shape_id) provisions a separate forward-only
+        # reference trainer that `service` owns. reference_job_id mirrors the
+        # policy job when shared, else the separate reference trainer's id.
+        reference = None
+        reference_job_id = None
+        if cfg.kl_beta > 0:
+            reference = ReconnectableClient.from_training_client(
+                service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+                base_model=cfg.base_model,
+                lora_rank=0,
+                job_id=service.reference_client_job_id,
+                default_timeout=cfg.step_timeout or 3600,
+                service=service,
+                base_only=True,
+            )
+            reference_job_id = service.reference_trainer_job_id
 
         tokenizer = load_deployment_tokenizer(cfg.deployment)
         # Adaptive concurrency — window adjusts based on server-side prefill queue.
         # For fixed (no rate limiting), use FixedConcurrencyController instead.
-        initial_window = cfg.concurrency.initial_window or (8 * infra.deployment_gpu_count)
+        # Fallback scales with deployment replicas (see ConcurrencyConfig.initial_window).
+        initial_window = cfg.concurrency.initial_window or (8 * (cfg.deployment.replica_count or 1))
         concurrency_controller = AdaptiveConcurrencyController(
             initial_window=initial_window,
             min_window=cfg.concurrency.min_window,
@@ -434,26 +411,13 @@ def main(
             cfg.concurrency.max_window,
             cfg.concurrency.prefill_queue_target,
         )
-        sampler = DeploymentSampler(
-            inference_url=deploy_mgr.inference_url,
-            model=infra.inference_model,
-            api_key=api_key,
-            tokenizer=tokenizer,
-            concurrency_controller=concurrency_controller,
-        )
-        weight_syncer = WeightSyncer(
-            policy_client=policy.inner,
-            deploy_mgr=deploy_mgr,
-            deployment_id=infra.deployment_id,
-            base_model=cfg.rollout_base_model or cfg.base_model,
-            hotload_timeout=cfg.weight_sync.weight_sync_timeout,
-            first_checkpoint_type=cfg.weight_sync.first_checkpoint_type,
-            lora_rank=cfg.lora_rank,
+        sampler = service.create_deployment_sampler(
+            tokenizer=tokenizer, concurrency_controller=concurrency_controller,
         )
 
         ckpt = TrainingCheckpoints(
             policy,
-            rlor_mgr,
+            service,
             trainer_id=policy_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
@@ -474,9 +438,16 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
 
-        if cfg.weight_sync.weight_sync_before_training and infra.deployment_id:
-            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            weight_syncer.save_and_hotload(name, checkpoint_type="base")
+        if cfg.weight_sync_before_training:
+            logger.info("[step %d] weight sync: saving + loading...", step_offset)
+            t0 = _time.time()
+            with timer("weight_sync"):
+                saved = policy.save_weights_for_sampler_ext(
+                    f"step-{step_offset}",
+                    checkpoint_type="base",
+                )
+                service.hotload_sampler_snapshot(saved.snapshot_name)
+            logger.info("[step %d] weight sync: done (%.1fs)", step_offset, _time.time() - t0)
 
         # -- Prepare sampling and training --------------------------------------
 
@@ -493,7 +464,7 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            max_seq_len=infra.max_seq_len,
+            max_seq_len=max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
         if cfg.router_replay:
@@ -735,7 +706,7 @@ def main(
             cursor.record(raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups)))
 
             rollouts_completed = (step - step_offset) // num_minibatches
-            dcp_interval = cfg.weight_sync.dcp_save_interval
+            dcp_interval = cfg.dcp_save_interval
             if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
@@ -790,13 +761,6 @@ def main(
 
         # -- Run ----------------------------------------------------------------
 
-        def _weight_sync(step: int) -> None:
-            logger.info("[step %d] weight_sync: saving + loading...", step)
-            t0 = _time.time()
-            with timer("weight_sync"):
-                weight_syncer.save_and_hotload(f"step-{step}")
-            logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
-
         def _loop_metrics_callback(loop_metrics: dict) -> None:
             """Called by run_rl_loop after each train step with loop-level metrics."""
             if concurrency_controller is not None:
@@ -827,8 +791,14 @@ def main(
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
                 metrics_callback=_loop_metrics_callback,
-                weight_sync_fn=_weight_sync if cfg.weight_sync.weight_sync_interval > 0 else None,
-                weight_sync_interval=cfg.weight_sync.weight_sync_interval,
+                weight_sync_fn=(
+                    lambda step: service.hotload_sampler_snapshot(
+                        policy.save_weights_for_sampler_ext(f"step-{step}").snapshot_name
+                    )
+                    if cfg.weight_sync_interval > 0
+                    else None
+                ),
+                weight_sync_interval=cfg.weight_sync_interval,
             )
         )
 
@@ -852,14 +822,15 @@ def main(
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
 
-            write_completed(runner, step=global_step, total_steps=total_rl_steps)
-            logger.info("Training complete: %d steps", global_step)
-            wandb_finish()
-            return {
-                "steps": global_step,
-                "policy_job_id": policy_job_id,
-                "reference_job_id": reference_job_id,
-            }
+        write_completed(runner, step=global_step, total_steps=total_rl_steps)
+        logger.info("Training complete: %d steps", global_step)
+        wandb_finish()
+        return {
+            "steps": global_step,
+            "policy_job_id": policy_job_id,
+            "reference_job_id": reference_job_id,
+            "deployment_id": deployment_id,
+        }
 
 
 if __name__ == "__main__":
@@ -867,9 +838,6 @@ if __name__ == "__main__":
     cfg = Config(
         log_path="./rl_logs",
         base_model="accounts/fireworks/models/qwen3-8b",
-        infra=InfraConfig(
-            training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200",
-        ),
         deployment=DeployConfig(
             tokenizer_model="Qwen/Qwen3-8B",
         ),

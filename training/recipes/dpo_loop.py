@@ -46,7 +46,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import tinker
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from tqdm import tqdm
 
 from training.utils import (
@@ -54,15 +53,15 @@ from training.utils import (
     DEFAULT_RENDER_WORKERS,
     AppendOnlyPickleLog,
     DeployConfig,
-    InfraConfig,
+    TrainerConfig,
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
-    ResourceCleanup,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     WandBConfig,
+    build_service_client,
     log_metrics_json,
     make_batch_dpo_loss_fn,
     make_render_dataloader,
@@ -77,7 +76,6 @@ from training.utils import (
     wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
-from training.utils.rl import setup_infra
 from training.utils.runner_state import write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -122,13 +120,11 @@ class Config:
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
-    infra: InfraConfig = field(default_factory=InfraConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     dcp_save_interval: int = 0
     """Save DCP checkpoints every N steps. 0 disables."""
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
-    policy_job_id: str | None = None
-    reference_job_id: str | None = None
     init_from_checkpoint: str | None = None
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
@@ -137,6 +133,14 @@ class Config:
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
     runner: RunnerConfig = field(default_factory=RunnerConfig)
+    release_reference_after_cache: bool = True
+    """Release SDK-owned separate references after reference logprobs are cached.
+
+    Leave enabled for normal DPO runs to reduce GPU cost. Sequential live E2E
+    runs may disable it together with
+    ``trainer.cleanup_reference_on_close=False`` so a full-param reference
+    trainer can be reused by later phases via ``TrainerConfig.reference_job_id``.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +392,7 @@ async def _train_loop(
         step_metrics.update({
             "train/step": step,
             "train/dpo_loss": avg_loss,
-            "train/loss": avg_loss,  # alias for frontend compatibility
+            "train/loss": avg_loss,
             "train/margin": avg_margin,
             "train/accuracy": avg_acc,
             "train/epoch": epoch + 1,
@@ -541,8 +545,6 @@ async def _train_loop(
 
 def main(
     config: Config,
-    rlor_mgr: TrainerJobManager | None = None,
-    deploy_mgr: DeploymentManager | None = None,
 ):
     cfg = config
 
@@ -578,63 +580,65 @@ def main(
         "batch_size": cfg.batch_size,
     })
 
-    # -- Setup infrastructure ----------------------------------------------
+    # -- SDK-managed Tinker clients ----------------------------------------
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    if rlor_mgr is None:
-        rlor_mgr = TrainerJobManager(
-            api_key=api_key, base_url=base_url, additional_headers=additional_headers,
-        )
-    if deploy_mgr is None:
-        deploy_mgr = DeploymentManager(
-            api_key=api_key, base_url=base_url, additional_headers=additional_headers,
-        )
-
     runner = RunnerIO(cfg.runner)
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
-    def _on_trainer_status(msg: str) -> None:
-        runner.write_status(RunStatus.PENDING, message=msg)
-
-    with runner, ResourceCleanup(rlor_mgr) as cleanup, ExitStack() as stack:
-        # One call: shapes + trainers + clients. DPO doesn't need a
-        # deployment/sampler/weight_syncer (needs_inference=False).
-        # needs_reference=True drives the LoRA shared-session optimisation:
-        # when lora_rank > 0, only the policy trainer is provisioned and
-        # reference logprobs come from policy.create_base_reference().
-        infra = setup_infra(
-            rlor_mgr=rlor_mgr,
-            deploy_mgr=None,
-            base_model=cfg.base_model,
-            infra_cfg=cfg.infra,
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            step_timeout=cfg.step_timeout,
-            policy_job_id=cfg.policy_job_id,
-            reference_job_id=cfg.reference_job_id,
-            needs_reference=True,
-            needs_inference=False,
-            role_prefix="dpo",
+    with runner, ExitStack() as stack:
+        service = build_service_client(
             api_key=api_key,
-            cleanup=cleanup,
-            on_status=_on_trainer_status,
+            base_url=base_url,
+            additional_headers=additional_headers,
+            base_model=cfg.base_model,
+            tokenizer_model=cfg.tokenizer_model,
+            lora_rank=cfg.lora_rank,
+            max_context_length=cfg.max_seq_len,
+            learning_rate=cfg.learning_rate,
+            trainer=cfg.trainer,
+            reference_required=True,
         )
-        for closeable in infra.closeables:
-            stack.callback(closeable.close)
-        runner.set_accelerator_info(profile=infra.policy_profile)
+        stack.callback(service.close)
+        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        runner.set_accelerator_info(
+            service.accelerator_type,
+            service.accelerator_count,
+            profile=service.training_profile,
+        )
+        policy_job_id = service.trainer_job_id
+        max_seq_len = service.max_context_length
 
-        policy = infra.policy
-        reference = infra.reference
-        policy_job_id = infra.policy_job_id
-        reference_job_id = infra.reference_job_id
+        policy = ReconnectableClient.from_training_client(
+            training_client,
+            base_model=cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            job_id=policy_job_id,
+            default_timeout=cfg.step_timeout or 3600,
+            service=service,
+        )
+        # DPO always needs a reference. The SDK owns the shared-vs-separate
+        # decision: LoRA without an explicit reference shape reuses the policy
+        # session; full-param (or an explicit reference_training_shape_id)
+        # provisions a separate forward-only reference trainer that `service`
+        # owns. `reference_job_id` is that trainer's id, or None when shared.
+        reference = ReconnectableClient.from_training_client(
+            service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+            base_model=cfg.base_model,
+            lora_rank=0,
+            job_id=service.reference_client_job_id,
+            default_timeout=cfg.step_timeout or 3600,
+            service=service,
+            base_only=True,
+        )
+        reference_job_id = service.reference_trainer_job_id
 
         ckpt = TrainingCheckpoints(
             policy,
-            rlor_mgr,
+            service,
             trainer_id=policy_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
@@ -657,7 +661,6 @@ def main(
         # trainer can be released after epoch 0 and epochs 1+ stream the
         # cache from disk. See fw-ai/cookbook#371 / #373 for OOM context.
 
-        max_seq_len = infra.max_seq_len
         init_args = (
             cfg.tokenizer_model,
             cfg.renderer_name,
@@ -692,21 +695,15 @@ def main(
                 AppendOnlyPickleLog(os.path.join(ref_cache_dir, "ref_cache.pkl"))
             )
 
-        def _on_ref_done():
+        def _on_ref_done() -> None:
+            # Free the separate reference trainer (if any) as soon as all
+            # reference forwards are done, while policy training continues.
+            # No-op when the reference shared the policy session (LoRA).
             nonlocal reference_job_id
-            # LoRA shared-session: no separate trainer. The base-only handle
-            # is closed via the ExitStack callback; nothing to cancel here.
-            if reference_job_id is None:
+            if not cfg.release_reference_after_cache:
                 return
-            logger.info("Reference forward complete — closing reference client before trainer cleanup")
-            try:
-                if reference is not None and hasattr(reference, "close"):
-                    reference.close()
-                logger.info("Reference forward complete — canceling reference trainer to free GPU")
-                cleanup.cancel_trainer(reference_job_id)
-                reference_job_id = None
-            except Exception as e:
-                logger.warning("Early cleanup of reference job %s failed: %s", reference_job_id, e)
+            service.release_references()
+            reference_job_id = None
 
         cursor = RawRowCursor(max_rows=len(pair_dataset) * cfg.epochs)
         cursor.resume(resume_info.data_consumed if resume_info else None)
@@ -720,7 +717,7 @@ def main(
                 worker_init_fn=worker_init_fn,
                 on_ref_done=_on_ref_done,
                 runner=runner,
-                training_shape_id=infra.training_shape_id,
+                training_shape_id=cfg.trainer.training_shape_id,
             )
         )
 

@@ -138,6 +138,12 @@ class TestRenderPairWorker:
         assert captured["rejected"]["text"] == "bad"
 
 
+# The shared-vs-separate reference decision now lives in the SDK
+# (managed.py: _use_shared_base_reference / _reference_managed_config) and is
+# covered by python-sdk test_managed_reference.py. The cookbook only wraps the
+# SDK-provisioned reference inline (ReconnectableClient.from_training_client).
+
+
 # ---------------------------------------------------------------------------
 # _ref_forward_batch
 # ---------------------------------------------------------------------------

@@ -108,12 +108,10 @@ def math_verify(pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
 
 
 import training.recipes.rl_loop as rl_loop
-from fireworks.training.sdk import DeploymentManager, TrainerJobManager
 from training.utils import (
-    InfraConfig,
     WandBConfig,
     DeployConfig,
-    WeightSyncConfig,
+    TrainerConfig,
 )
 from training.utils.rl import TISConfig
 
@@ -367,16 +365,6 @@ def main():
     os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
     os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
-    rlor_mgr = TrainerJobManager(
-        api_key=FIREWORKS_API_KEY,
-        base_url=FIREWORKS_BASE_URL,
-    )
-    deploy_mgr = DeploymentManager(
-        api_key=FIREWORKS_API_KEY,
-        base_url=FIREWORKS_BASE_URL,
-        hotload_api_url=FIREWORKS_BASE_URL,
-    )
-
     config = rl_loop.Config(
         log_path=args.trajectory_dir or "./deepmath_logs",
         base_model=args.base_model,
@@ -394,13 +382,13 @@ def main():
         tis=TISConfig(cap=2.0),
         router_replay=args.router_replay,
         router_replay_completion_only=args.router_replay,
-        policy_job_id=args.policy_job_id,
-        reference_job_id=args.reference_job_id,
         output_model_id=args.output_model_id,
-        infra=InfraConfig(
+        trainer=TrainerConfig(
+            job_id=args.policy_job_id,
             training_shape_id=args.training_shape,
-            ref_training_shape_id=args.ref_training_shape,
-            trainer_replica_count=args.trainer_replica_count,
+            reference_training_shape_id=args.ref_training_shape,
+            reference_job_id=args.reference_job_id,
+            replica_count=args.trainer_replica_count,
             region=args.region,
         ),
         deployment=DeployConfig(
@@ -411,14 +399,12 @@ def main():
             sample_timeout=1200,
             extra_values=args.deployment_extra_values,
         ),
-        weight_sync=WeightSyncConfig(
-            weight_sync_interval=1,
-            dcp_save_interval=20,
-            dcp_timeout=2700,
-            first_checkpoint_type="base",
-            weight_sync_before_training=True,
-            weight_sync_timeout=600,
-        ),
+        # Hot-load a base checkpoint before training, then sync the weights
+        # every step (the SDK owns the reference trainer's lifecycle).
+        weight_sync_interval=1,
+        weight_sync_before_training=True,
+        weight_sync_timeout=600,
+        dcp_save_interval=20,
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
@@ -447,12 +433,7 @@ def main():
     )
 
     rl_loop.reward_fn = deepmath_reward
-    metrics = rl_loop.main(
-        config,
-        rlor_mgr=rlor_mgr,
-        deploy_mgr=deploy_mgr,
-        cancel_on_exit=not args.skip_cleanup,
-    )
+    metrics = rl_loop.main(config)
 
     logger.info("Training complete. Final metrics: %s", metrics)
 

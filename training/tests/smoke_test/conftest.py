@@ -1,4 +1,4 @@
-"""Shared fixtures for remote smoke tests on small Qwen3-4B shapes."""
+"""Shared fixtures for remote smoke tests on the SDK-managed Qwen3.5 shape."""
 
 from __future__ import annotations
 
@@ -9,16 +9,22 @@ import pytest
 
 from fireworks.training.sdk.deployment import DeploymentManager
 from fireworks.training.sdk.trainer import TrainerJobManager
-from training.utils.config import InfraConfig
+from training.utils.config import TrainerConfig
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SMOKE_BASE_MODEL = "accounts/fireworks/models/qwen3-4b"
-DEFAULT_SMOKE_TOKENIZER_MODEL = "Qwen/Qwen3-4B"
-DEFAULT_SMOKE_TRAINING_SHAPE = "ts-qwen3-4b-smoke-v1"
+DEFAULT_SMOKE_BASE_MODEL = "accounts/fireworks/models/qwen3p5-9b"
+DEFAULT_SMOKE_TOKENIZER_MODEL = "Qwen/Qwen3.5-9B"
+DEFAULT_SMOKE_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k"
+DEFAULT_SMOKE_REFERENCE_TRAINING_SHAPE = (
+    "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only"
+)
+DEFAULT_SMOKE_LORA_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
+DEFAULT_SMOKE_DEPLOYMENT_SHAPE = "accounts/fireworks/deploymentShapes/rft-qwen3p5-9b-v2/versions/n864rzzy"
+DEFAULT_SMOKE_REGION = "US_OHIO_1"
 DEFAULT_SMOKE_MINIMAL_TRAINING_SHAPE = "qwen3-4b-minimum"
 DEFAULT_SMOKE_MINIMAL_REF_TRAINING_SHAPE = "qwen3-4b-minimum-forward-only"
-DEFAULT_SMOKE_BASE_URL = "https://dev.api.fireworks.ai"
+DEFAULT_SMOKE_BASE_URL = "https://api.fireworks.ai"
 
 
 def _get_env(name: str, default: str | None = None) -> str | None:
@@ -36,8 +42,30 @@ def smoke_tokenizer_model() -> str:
 
 
 @pytest.fixture(scope="session")
-def smoke_training_shape() -> str:
+def smoke_training_shape(port_lora_rank) -> str:
+    if port_lora_rank:
+        return _get_env("FIREWORKS_SMOKE_LORA_TRAINING_SHAPE", DEFAULT_SMOKE_LORA_TRAINING_SHAPE)
     return _get_env("FIREWORKS_SMOKE_TRAINING_SHAPE", DEFAULT_SMOKE_TRAINING_SHAPE)
+
+
+@pytest.fixture(scope="session")
+def smoke_reference_training_shape(port_lora_rank) -> str | None:
+    if port_lora_rank:
+        return None
+    return _get_env(
+        "FIREWORKS_SMOKE_REFERENCE_TRAINING_SHAPE",
+        DEFAULT_SMOKE_REFERENCE_TRAINING_SHAPE,
+    )
+
+
+@pytest.fixture(scope="session")
+def smoke_deployment_shape() -> str:
+    return _get_env("FIREWORKS_SMOKE_DEPLOYMENT_SHAPE", DEFAULT_SMOKE_DEPLOYMENT_SHAPE)
+
+
+@pytest.fixture(scope="session")
+def smoke_region() -> str:
+    return _get_env("FIREWORKS_REGION", DEFAULT_SMOKE_REGION)
 
 
 @pytest.fixture(scope="session")
@@ -46,34 +74,46 @@ def smoke_custom_image_tag() -> str | None:
 
 
 @pytest.fixture(scope="session")
-def smoke_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig:
-    """Build the right InfraConfig for the smoke environment.
-
-    * CI sets ``FIREWORKS_CUSTOM_IMAGE_TAG`` to test a freshly-built image
-      -> manual path (no training shape, direct infra fields).
-    * Without a custom image -> shape path (validated training shape owns
-      all infra fields, which is what production users actually use).
-    """
-    if smoke_custom_image_tag:
-        logger.info("Smoke: manual path (custom_image_tag=%s)", smoke_custom_image_tag)
-        return InfraConfig(custom_image_tag=smoke_custom_image_tag)
-    logger.info("Smoke: shape path (training_shape_id=%s)", smoke_training_shape)
-    return InfraConfig(training_shape_id=smoke_training_shape)
+def smoke_training_profile(smoke_sdk_managers, smoke_training_shape, port_lora_rank):
+    """Resolve the training shape before provisioning live resources."""
+    rlor_mgr, _deploy_mgr = smoke_sdk_managers
+    profile = rlor_mgr.resolve_training_profile(smoke_training_shape)
+    if port_lora_rank:
+        assert profile.supports_lora, f"LoRA track requires a LoRA-capable shape: {smoke_training_shape}"
+    return profile
 
 
 @pytest.fixture(scope="session")
-def smoke_dpo_infra(smoke_training_shape, smoke_custom_image_tag) -> InfraConfig:
-    """InfraConfig for DPO smoke tests (includes ref_training_shape_id).
+def smoke_reference_training_profile(smoke_sdk_managers, smoke_reference_training_shape):
+    """Resolve the full-param forward-only reference shape before provisioning."""
+    if smoke_reference_training_shape is None:
+        return None
+    rlor_mgr, _deploy_mgr = smoke_sdk_managers
+    return rlor_mgr.resolve_training_profile(smoke_reference_training_shape)
 
-    DPO always needs a reference model. On the shape path, both policy
-    and reference use the same training shape -- the control plane's
-    ``applyForwardOnlyConfig`` handles the ``--forward-only`` difference.
-    """
-    if smoke_custom_image_tag:
-        return InfraConfig(custom_image_tag=smoke_custom_image_tag)
-    return InfraConfig(
+
+@pytest.fixture(scope="session")
+def smoke_trainer_config(
+    smoke_training_shape,
+    smoke_reference_training_shape,
+    smoke_region,
+    smoke_custom_image_tag,
+    smoke_training_profile,
+    smoke_reference_training_profile,
+) -> TrainerConfig:
+    """Build the SDK-managed trainer config for the smoke environment."""
+    _ = smoke_reference_training_profile
+    logger.info(
+        "Smoke: SDK-managed trainer shape=%s version=%s region=%s",
+        smoke_training_shape,
+        smoke_training_profile.training_shape_version,
+        smoke_region,
+    )
+    return TrainerConfig(
         training_shape_id=smoke_training_shape,
-        ref_training_shape_id=smoke_training_shape,
+        reference_training_shape_id=smoke_reference_training_shape,
+        region=smoke_region,
+        custom_image_tag=smoke_custom_image_tag,
     )
 
 
@@ -94,17 +134,17 @@ def smoke_minimal_ref_training_shape() -> str:
 
 
 @pytest.fixture(scope="session")
-def smoke_minimal_grpo_infra(
+def smoke_minimal_grpo_trainer(
     smoke_minimal_training_shape,
     smoke_minimal_ref_training_shape,
     smoke_custom_image_tag,
-) -> InfraConfig:
+) -> TrainerConfig:
     """Two minimal 1xGPU training shapes (policy + forward-only reference)."""
     if smoke_custom_image_tag:
-        return InfraConfig(custom_image_tag=smoke_custom_image_tag)
-    return InfraConfig(
+        return TrainerConfig(custom_image_tag=smoke_custom_image_tag)
+    return TrainerConfig(
         training_shape_id=smoke_minimal_training_shape,
-        ref_training_shape_id=smoke_minimal_ref_training_shape,
+        reference_training_shape_id=smoke_minimal_ref_training_shape,
     )
 
 

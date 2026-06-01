@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from training.utils import InfraConfig, DeployConfig, WeightSyncConfig
+from training.utils import TrainerConfig, DeployConfig
 from training.utils.rl import TISConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
@@ -67,7 +67,7 @@ class TestGRPOE2E:
             epochs=1,
             router_replay=True,
             tis=TISConfig(cap=10.0),
-            infra=InfraConfig(
+            trainer=TrainerConfig(
                 region=e2e_region,
                 accelerator_type=e2e_training_accelerator,
                 custom_image_tag=custom_image_tag,
@@ -78,15 +78,12 @@ class TestGRPOE2E:
                 deployment_region=e2e_region,
                 tokenizer_model=e2e_tokenizer_model,
             ),
-            weight_sync=WeightSyncConfig(
-                weight_sync_interval=1,
-                first_checkpoint_type="base",
-                weight_sync_before_training=True,
-                weight_sync_timeout=600,
-            ),
+            weight_sync_interval=1,
+            weight_sync_before_training=True,
+            weight_sync_timeout=600,
         )
 
-        metrics = main(config, rlor_mgr=rlor_mgr, deploy_mgr=deploy_mgr)
+        metrics = main(config)
 
         assert isinstance(metrics, dict)
         assert "steps" in metrics

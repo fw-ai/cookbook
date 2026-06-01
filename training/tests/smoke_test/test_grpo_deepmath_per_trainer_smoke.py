@@ -41,11 +41,11 @@ def test_grpo_deepmath_per_trainer(
     smoke_sdk_managers,
     smoke_base_model,
     smoke_tokenizer_model,
-    smoke_minimal_grpo_infra,
+    smoke_minimal_grpo_trainer,
     monkeypatch,
 ):
     # Late imports: module collection must not require FIREWORKS_API_KEY.
-    from training.utils import DeployConfig, WeightSyncConfig, WandBConfig
+    from training.utils import DeployConfig, WandBConfig
     from training.recipes.rl_loop import Config, main
     import training.recipes.rl_loop as rl_mod
     from training.examples.rl.deepmath.train_deepmath import deepmath_reward
@@ -73,26 +73,18 @@ def test_grpo_deepmath_per_trainer(
         max_completion_tokens=256,
         max_rows=40,
         epochs=1,
-        infra=smoke_minimal_grpo_infra,
+        trainer=smoke_minimal_grpo_trainer,
         deployment=DeployConfig(
             tokenizer_model=smoke_tokenizer_model,
             sample_timeout=600,
         ),
-        weight_sync=WeightSyncConfig(
-            weight_sync_interval=1,
-            first_checkpoint_type="base",
-            weight_sync_before_training=True,
-            weight_sync_timeout=600,
-        ),
+        weight_sync_interval=1,
+        weight_sync_before_training=True,
+        weight_sync_timeout=600,
         wandb=WandBConfig(),
     )
 
-    metrics = main(
-        config,
-        rlor_mgr=rlor_mgr,
-        deploy_mgr=deploy_mgr,
-        cancel_on_exit=True,
-    )
+    metrics = main(config)
 
     # No seed pinning: this is an API contract smoke (steps complete, cleanup
     # runs, PER_TRAINER invariant holds), not a numerical fidelity check.

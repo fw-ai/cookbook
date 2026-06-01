@@ -1,6 +1,6 @@
 ---
 name: fireworks-training
-description: Train models on Fireworks via the cookbook. Covers greenfield work (pick a recipe, fork it, resolve training + deployment shape from a profile) and user-level recovery (promote a checkpoint, list promotable checkpoints on a trainer, self-check a `WeightSyncScope.PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up). The cookbook is the reference implementation of `fireworks.training.sdk`; fork a recipe or run an example instead of reimplementing. Trigger when the user wants to start, resume, promote, or do a first-line diagnosis on a training run; for deeper recovery the skill routes users to Fireworks support.
+description: Debug and migrate training work on Fireworks via the cookbook. Covers greenfield work (pick a recipe, fork it, resolve training + deployment shape from a profile), user-level recovery (promote a checkpoint, list promotable checkpoints on a trainer, self-check a `WeightSyncScope.PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up), and migrating deprecated managed-infra scripts (port `InfraConfig` / `setup_infra` / `ResourceCleanup` to `TrainerConfig` + the recipe's SDK-managed provisioning path). The cookbook is the reference implementation of `fireworks.training.sdk`; fork a recipe or run an example instead of reimplementing. Trigger when the user wants to start, resume, promote, migrate off deprecated infra APIs, or do a first-line diagnosis on a training run; for deeper recovery the skill routes users to Fireworks support.
 ---
 
 # Fireworks training
@@ -16,6 +16,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "How do I set up / install the cookbook?" | [`references/setup.md`](references/setup.md) |
 | "I want to run something out of the box" | [`references/examples.md`](references/examples.md) |
 | "I want to fork a recipe and edit the Config" | [`references/recipes.md`](references/recipes.md) |
+| "Migrate off `InfraConfig` / `setup_infra` / `ResourceCleanup`" / `TypeError: ... unexpected keyword argument 'infra'` / `ImportError: cannot import name 'setup_infra'` | [`references/migrate.md`](references/migrate.md) |
 | "How do I set the training / deployment shape?" | [`references/shapes.md`](references/shapes.md) |
 | `RuntimeError: Failed to resolve latest validated training shape` | [`references/shapes.md`](references/shapes.md#when-resolve_training_profile-raises-failed-to-resolve-latest-validated-training-shape) — don't pin a version; retry or reach out |
 | "Can I run two deployments off one trainer (sampler + eval)?" | [`references/rl/hotload.md`](references/rl/hotload.md#two-deployments-one-trainer) |
@@ -71,9 +72,9 @@ If the installed version doesn't satisfy the pin, upgrade first and retry. Only 
 
 ## Non-negotiables
 
-1. **Shape first.** Prefer leaving `cfg.infra.training_shape_id` unset so recipes auto-select the smallest validated shape that fits; set it only when you need an explicit override. The deployment shape comes from the profile. Manual infra fields are a mistake; the backend will reject or ignore them. See [`references/shapes.md`](references/shapes.md).
+1. **Shape first.** Prefer leaving `cfg.trainer.training_shape_id` unset so recipes auto-select the smallest validated shape that fits; set it only when you need an explicit override. The deployment shape comes from the profile. Manual infra fields are a mistake; the backend will reject or ignore them. See [`references/shapes.md`](references/shapes.md).
 2. **`WeightSyncScope.PER_TRAINER` is the default.** Set `DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER)` (the default). Do not combine it with `hot_load_deployment_id` — that field belongs to `PER_DEPLOYMENT`. Pick one bucket scope. See [`references/rl/hotload.md`](references/rl/hotload.md#weight-sync-scope-per_trainer-vs-per_deployment).
-3. **Fork, don't reinvent.** Training loop plumbing lives in `training/recipes/`. Fork the file that matches the task; do not rewire `FiretitanTrainingClient` / `DeploymentManager` / `WeightSyncer` from scratch.
+3. **Fork, don't reinvent.** Training loop plumbing lives in `training/recipes/`. Fork the file that matches the task; do not rewire `FiretitanServiceClient` / `FiretitanTrainingClient` / deployment hotload from scratch.
 4. **Validate `output_model_id` before promote.** Server cap is 63 chars, charset `[a-z0-9-]`. A rejected promote orphans the sampler blob; the same `checkpoint_id` returns "not found in GCS" after GC. See [`references/checkpoints.md`](references/checkpoints.md#output_model_id-validation).
 
 ---

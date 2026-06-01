@@ -26,37 +26,29 @@ Usage:
 from __future__ import annotations
 
 import os
-import sys
 import json
 import time
 import logging
 import argparse
-from contextlib import ExitStack
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import torch
 import tinker
 import transformers
 
-_COOKBOOK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if _COOKBOOK_ROOT not in sys.path:
-    sys.path.insert(0, _COOKBOOK_ROOT)
-
 from fireworks.training.sdk import (
     TrainerJobManager,
     DeploymentManager,
-    DeploymentSampler,
 )
 from training.utils import (
-    InfraConfig,
+    TrainerConfig,
     DeployConfig,
     ReconnectableClient,
-    create_trainer_job,
-    setup_deployment,
+    build_service_client,
+    read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
 )
-from training.utils.infra import ResourceCleanup
 
 logging.basicConfig(
     level=logging.INFO,
@@ -198,99 +190,78 @@ def main():
     logger.info("  accelerator:      %s x%d", profile.accelerator_type, profile.accelerator_count)
 
     max_seq_len = profile.max_supported_context_length
-    infra = InfraConfig(training_shape_id=args.training_shape)
 
-    ref_profile = None
-    ref_infra = None
     if use_reference:
         logger.info("Resolving reference training shape: %s", args.ref_training_shape)
         ref_profile = shape_mgr.resolve_training_profile(args.ref_training_shape)
-        ref_infra = InfraConfig(training_shape_id=args.ref_training_shape)
         logger.info("  version:          %s", ref_profile.training_shape_version)
 
-    # -- Create resources in parallel -----------------------------------------
+    # -- Provision via the single SDK seam ------------------------------------
+    #
+    # build_service_client owns trainer + deployment provisioning; for the
+    # reference it spins up a separate forward-only trainer (full-param) on the
+    # reference shape. The profile above only supplied deployment_shape and
+    # max_seq_len for logging/config.
 
     dep_id = args.deployment_id or f"verify-{args.base_model.split('/')[-1]}-{int(time.time())}"
-    deploy_cfg = DeployConfig(
-        deployment_id=dep_id,
-        deployment_shape=profile.deployment_shape,
+    service = build_service_client(
+        api_key=api_key,
+        base_url=base_url,
+        additional_headers=read_api_extra_headers_env(),
+        base_model=args.base_model,
         tokenizer_model=args.tokenizer,
+        lora_rank=0,
+        max_context_length=max_seq_len,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(
+            training_shape_id=args.training_shape,
+            reference_training_shape_id=args.ref_training_shape if use_reference else None,
+        ),
+        deployment=DeployConfig(
+            deployment_id=dep_id,
+            deployment_shape=profile.deployment_shape,
+            tokenizer_model=args.tokenizer,
+        ),
+        cleanup_trainer_on_close=args.cleanup,
+        reference_required=use_reference,
     )
 
-    policy_job_id = None
-    ref_job_id = None
-
-    with ResourceCleanup(rlor_mgr, deploy_mgr) as cleanup, ExitStack() as stack:
-        n_workers = 3 if use_reference else 2
+    with closing(service):
         logger.info(
-            "\n[1/4] Setting up deployment + trainers in parallel (%s)...",
+            "\n[1/4] Provisioning deployment + trainers (%s)...",
             "policy + reference" if use_reference else "policy only",
         )
-
-        with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            dep_fut = pool.submit(
-                setup_deployment, deploy_mgr, deploy_cfg, args.base_model, infra,
-            )
-            pol_fut = pool.submit(
-                create_trainer_job, rlor_mgr,
-                base_model=args.base_model, infra=infra, profile=profile,
-                lora_rank=0, max_seq_len=max_seq_len,
-                display_name="verify-policy",
-            )
-            ref_fut = None
-            if use_reference:
-                ref_fut = pool.submit(
-                    create_trainer_job, rlor_mgr,
-                    base_model=args.base_model, infra=ref_infra, profile=ref_profile,
-                    lora_rank=0, max_seq_len=max_seq_len,
-                    display_name="verify-reference", forward_only=True,
-                )
-
-            dep_info = dep_fut.result()
-            if args.cleanup and not args.deployment_id:
-                cleanup.deployment(dep_id, action="scale_to_zero")
-
-            pol_ep = pol_fut.result()
-            policy_job_id = pol_ep.job_id
-            if args.cleanup:
-                cleanup.trainer(policy_job_id)
-            logger.info("  Deployment ready: %s", dep_info.name)
-            logger.info("  Policy trainer:   %s", pol_ep.job_id)
-
-            ref_ep = None
-            if ref_fut is not None:
-                ref_ep = ref_fut.result()
-                ref_job_id = ref_ep.job_id
-                if args.cleanup:
-                    cleanup.trainer(ref_job_id)
-                logger.info("  Reference trainer: %s", ref_ep.job_id)
-
-        policy = ReconnectableClient(
-            rlor_mgr, pol_ep.job_id, args.base_model, lora_rank=0, fw_api_key=api_key,
+        policy = ReconnectableClient.from_training_client(
+            service.create_training_client(args.base_model, lora_rank=0),
+            base_model=args.base_model,
+            lora_rank=0,
+            job_id=service.trainer_job_id,
+            service=service,
         )
-        if hasattr(policy, "close"):
-            stack.callback(policy.close)
-        reference = None
-        if ref_ep is not None:
-            reference = ReconnectableClient(
-                rlor_mgr, ref_ep.job_id, args.base_model, lora_rank=0, fw_api_key=api_key,
-            )
-            if hasattr(reference, "close"):
-                stack.callback(reference.close)
+        logger.info("  Policy trainer:   %s", service.trainer_job_id)
 
-        inference_model = dep_info.inference_model or args.base_model
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
+        reference = None
+        if use_reference:
+            reference = ReconnectableClient.from_training_client(
+                service.create_reference_client(args.base_model, lora_rank=0),
+                base_model=args.base_model,
+                lora_rank=0,
+                job_id=service.reference_client_job_id,
+                service=service,
+                base_only=True,
+            )
+            logger.info("  Reference trainer: %s", service.reference_trainer_job_id)
+
+        sampler = service.create_sampling_client().deployment_sampler
+        sampler.tokenizer = transformers.AutoTokenizer.from_pretrained(
             args.tokenizer, trust_remote_code=True,
         )
-        sampler = DeploymentSampler(
-            inference_url=deploy_mgr.inference_url,
-            model=inference_model, api_key=api_key, tokenizer=tokenizer,
-        )
+        logger.info("  Deployment:       %s", service.deployment_id)
 
         # -- Warmup -----------------------------------------------------------
 
         logger.info("\n[2/4] Warming up deployment...")
-        deploy_mgr.warmup(inference_model, max_retries=30)
+        deploy_mgr.warmup(sampler.model, max_retries=30)
 
         # -- Load dataset -----------------------------------------------------
 
@@ -439,6 +410,11 @@ def main():
             logger.info("  Results: %s", os.path.join(args.log_dir, "results.json"))
         else:
             logger.error("  No valid comparisons completed!")
+
+        # Trainers are deleted by service.close() (cleanup_trainer_on_close);
+        # scale the deployment we created to zero on cleanup.
+        if args.cleanup and not args.deployment_id:
+            deploy_mgr.scale_to_zero(dep_id)
 
 
 if __name__ == "__main__":

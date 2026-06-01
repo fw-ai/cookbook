@@ -194,7 +194,7 @@ async def run_async_rl_loop(
         completions_per_prompt: Number of samples drawn per row.
         prompt_groups_per_step: Number of accepted rows that form one
             optimizer step.
-        max_head_offpolicy_versions: Off-policy budget in weight-sync
+        max_head_offpolicy_versions: Off-policy budget in sampler
             (policy) versions; the gate's version increments once per
             ``weight_sync_fn`` call, not per optimizer step. ``0`` is
             strict on-policy.
@@ -210,7 +210,7 @@ async def run_async_rl_loop(
         min_group_size: Minimum surviving samples for a row to emit a
             PromptGroup.  Rows with fewer surviving samples are dropped.
         weight_sync_fn: Called after every ``weight_sync_interval``
-            optimizer steps.  Must bump the deployment version; the
+            optimizer steps.  Must bump the sampler version; the
             loop increments its internal version counter on return.
         weight_sync_interval: Fire ``weight_sync_fn`` every N steps.
         max_concurrent: Hard cap on **samples (LLM calls)** in flight --
@@ -258,12 +258,12 @@ async def run_async_rl_loop(
             f"weight_sync_interval ({weight_sync_interval}) must be "
             f"<= max_head_offpolicy_versions + 1 "
             f"({max_head_offpolicy_versions + 1}); otherwise the async "
-            "gate stalls before the next sync because all rollouts at "
+            "gate stalls before the next weight sync because all rollouts at "
             "the current version are exhausted.  Either lower "
             "weight_sync_interval to <= max_head_offpolicy_versions + 1 "
-            "(so a sync arrives before capacity hits zero), or raise "
+            "(so a weight sync arrives before capacity hits zero), or raise "
             "max_head_offpolicy_versions to >= weight_sync_interval - 1 "
-            "(so the head budget covers every step between syncs)."
+            "(so the head budget covers every step between weight syncs)."
         )
 
     staleness = _StalenessController(
@@ -487,6 +487,7 @@ async def run_async_rl_loop(
             "async/running_samples": staleness.running_samples,
             "async/accepted_samples": staleness.accepted_samples,
             "async/staleness_capacity_at_step": staleness.staleness_capacity(),
+            "ctx/current_version": staleness.version,
             "async/concurrency_capacity_at_step": (
                 -1 if cc is None else cc
             ),

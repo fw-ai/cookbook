@@ -10,7 +10,7 @@ The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/ch
 - `promotable=True` → sampler write (HF safetensors). Eligible for `promote_checkpoint`.
 - Both → DCP + sampler in one call.
 
-Periodic mid-training saves are usually `resumable=True, promotable=False`. The final save is `resumable=True, promotable=True`. For LoRA RL runs `WeightSyncer.save_and_hotload` already produces a promotable row each step — `promote_latest` picks that up automatically without an extra final sampler save.
+Periodic mid-training saves are usually `resumable=True, promotable=False`. The final save is `resumable=True, promotable=True`. RL weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves.
 
 ## `dataloader.json`
 
@@ -32,7 +32,7 @@ If `dcp_save_interval` is `0` (the default), mid-training saves are off — trai
 
 ## Delta chain (sampler `checkpoint_type`)
 
-This is an SDK-level detail, surfaced when you call `save_weights_for_sampler_ext` directly. For full-parameter training, only `base` sampler saves are promotable; `delta` saves are not. LoRA always saves the full adapter, so every LoRA sampler checkpoint is promotable. `WeightSyncer` manages the base-then-delta pattern automatically; recipe-level `ckpt.save(promotable=True)` always saves `base`.
+This is an SDK-level detail, surfaced when you call `save_weights_for_sampler_ext` directly. For full-parameter training, only `base` sampler saves are promotable; `delta` saves are not. LoRA always saves the full adapter, so every LoRA sampler checkpoint is promotable. The SDK-managed sampler backend records the base-then-delta chain for recipe hotload; recipe-level `ckpt.save(promotable=True)` always saves `base`.
 
 ---
 
@@ -71,7 +71,7 @@ Auto-resume (priority 2) is **scoped to one trainer job**. If you re-run with th
 
 To resume across separate `main()` invocations, either:
 
-- Pin both runs to the same trainer via `cfg.trainer_job_id` (SFT/DPO/ORPO) or `cfg.policy_job_id` + `cfg.reference_job_id` (RL/IGPO). The second run reattaches and the CP rows are visible.
+- Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes). The reference trainer is SDK-managed, so there is no separate reference job id to pin. The second run reattaches and the CP rows are visible.
 - Or use `init_from_checkpoint=f"{prior_job_id}:step-N"` for explicit cross-job DCP load. This resets the step counter to 0 — fine for warm-start scenarios, not for "continue training and skip to step N".
 
 ---

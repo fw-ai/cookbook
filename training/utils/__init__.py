@@ -1,3 +1,6 @@
+# ruff: noqa: E402
+# Warning filters must be installed before importing modules that emit noisy
+# import-time warnings.
 """Cookbook utilities -- infrastructure, losses, data, logging, and more.
 
 RL-specific utilities (losses, training loop, importance sampling,
@@ -32,6 +35,8 @@ _warnings.filterwarnings(
 del _warnings
 
 __all__ = [
+    "AdaptiveConcurrencyController",
+    "GradAccNormalization",
     "AppendOnlyPickleLog",
     "DEFAULT_ADAM",
     "DEFAULT_PREFETCH_FACTOR",
@@ -41,11 +46,12 @@ __all__ = [
     "EvalFn",
     "WeightSyncConfig",
     "WeightSyncScope",
+    "ConcurrencyConfig",
     "InfraConfig",
+    "TrainerConfig",
     "JsonlRenderDataset",
     "MemTracer",
     "ReconnectableClient",
-    "ResourceCleanup",
     "RewardFn",
     "RawRowCursor",
     "RLPromptDataset",
@@ -58,11 +64,6 @@ __all__ = [
     "compute_pass_at_k",
     "CursorDataLoader",
     "CursorItem",
-    "create_trainer_job",
-    "request_trainer_job",
-    "wait_trainer_job",
-    "request_deployment",
-    "wait_deployment",
     "read_api_extra_headers_env",
     "encode_text",
     "extract_text",
@@ -96,9 +97,7 @@ __all__ = [
     "render_messages_to_datums",
     "resolve_renderer_name",
     "prepare_sampling_messages",
-    "setup_deployment",
-    "setup_or_reattach_deployment",
-    "setup_training_client",
+    "build_service_client",
     "setup_wandb",
     "flush_timing",
     "timed",
@@ -110,13 +109,16 @@ __all__ = [
     "wandb_log",
 ]
 
-from training.utils.client import ReconnectableClient
+from fireworks.training.sdk.deployment import AdaptiveConcurrencyController
+
+from training.utils.client import GradAccNormalization, ReconnectableClient
 from training.utils.config import (
     DEFAULT_ADAM,
     ConcurrencyConfig,
     DeployConfig,
     EvalFn,
     InfraConfig,
+    TrainerConfig,
     RewardFn,
     StepCallback,
     WandBConfig,
@@ -138,21 +140,7 @@ from training.utils.data import (
 )
 from training.utils.dataloader import CursorDataLoader, CursorItem
 from training.utils.dataloader_cursor import RawRowCursor
-from training.utils.infra import (
-    Infra,
-    ResourceCleanup,
-    create_trainer_job,
-    get_deployment_gpu_count,
-    read_api_extra_headers_env,
-    request_deployment,
-    request_trainer_job,
-    setup_deployment,
-    setup_infra,
-    setup_or_reattach_deployment,
-    setup_training_client,
-    wait_deployment,
-    wait_trainer_job,
-)
+from training.utils.infra import read_api_extra_headers_env
 from training.utils.logging import (
     compute_pass_at_k,
     log_metrics_json,
@@ -170,6 +158,7 @@ from training.utils.losses import (
 )
 from training.utils.memlog import MemTracer
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
+from training.utils.service import build_service_client
 from training.utils.streaming import (
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,

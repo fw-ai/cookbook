@@ -12,10 +12,8 @@ import os
 from datetime import datetime
 
 from dotenv import load_dotenv
-from fireworks.training.sdk import TrainerJobManager
-
 import training.recipes.orpo_loop as orpo_loop
-from training.utils import InfraConfig, WandBConfig
+from training.utils import TrainerConfig, WandBConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,11 +74,6 @@ def main():
     os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
     os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
-    rlor_mgr = TrainerJobManager(
-        api_key=FIREWORKS_API_KEY,
-        base_url=FIREWORKS_BASE_URL,
-    )
-
     config = orpo_loop.Config(
         log_path="./ifeval_orpo_logs",
         base_model=args.base_model,
@@ -91,9 +84,9 @@ def main():
         epochs=args.epochs,
         max_pairs=args.max_pairs,
         lora_rank=args.lora_rank,
-        job_id=args.job_id,
         output_model_id=args.output_model_id,
-        infra=InfraConfig(
+        trainer=TrainerConfig(
+            job_id=args.job_id,
             training_shape_id=args.training_shape,
             region=args.region,
         ),
@@ -112,7 +105,7 @@ def main():
         args.orpo_lambda,
     )
 
-    metrics = orpo_loop.main(config, rlor_mgr=rlor_mgr)
+    metrics = orpo_loop.main(config)
     logger.info("ORPO training complete. Final metrics: %s", metrics)
 
 
