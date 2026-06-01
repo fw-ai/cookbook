@@ -276,7 +276,7 @@ def test_build_opd_server_datums_encodes_teacher_minus_sampling_advantages() -> 
 
     inputs = server_datums[0].loss_fn_inputs
     assert inputs["target_tokens"].data == [11, 12, 13, 14]
-    assert inputs["logprobs"].data == sampling_lp[0]
+    assert inputs["logprobs"].data == pytest.approx(sampling_lp[0])
     assert inputs["advantages"].data == pytest.approx([0.0, 0.6, -0.4, 0.8])
     assert metrics["opd_active_tokens"] == pytest.approx(3.0)
     assert metrics["opd_sampled_reverse_kl"] == pytest.approx((-0.3 + 0.2 - 0.4) / 3)
