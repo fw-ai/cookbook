@@ -4,15 +4,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import time
-from typing import Iterator
 
 from training.examples.rl.grpo_remote_rollout.rollout import make_rollout_fn
 from training.recipes.async_rl_loop import Config, main
-from training.utils import DeployConfig, InfraConfig, WandBConfig
+from training.utils import DeployConfig, InfraConfig, WandBConfig, load_jsonl_dataset
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,19 +20,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATASET = os.path.join(os.path.dirname(__file__), "train.jsonl")
-
-
-def _iter_rows(path: str, max_rows: int | None) -> Iterator[dict]:
-    count = 0
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            yield json.loads(stripped)
-            count += 1
-            if max_rows is not None and count >= max_rows:
-                return
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,8 +65,7 @@ def run() -> None:
             f"Dataset not found at {args.dataset_path}."
         )
 
-    rows = list(_iter_rows(args.dataset_path, args.max_rows))
-    logger.info("Loaded %d rows from %s", len(rows), args.dataset_path)
+    rows = load_jsonl_dataset(args.dataset_path, args.max_rows)
 
     cfg = Config(
         log_path=args.log_path,
