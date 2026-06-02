@@ -23,8 +23,10 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI
 from openai import OpenAI
+from openai.types.chat import ChatCompletion
 
 from eval_protocol import FireworksTracingHttpHandler, InitRequest, RolloutIdFilter, Status
+from eval_protocol.models import Message
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
@@ -37,20 +39,8 @@ RETRY_PROMPT = (
     "problem and try again. Put the final numeric answer in \\boxed{}."
 )
 
-_OPENAI_CHAT_KEYS = {
-    "model",
-    "messages",
-    "temperature",
-    "max_tokens",
-    "top_p",
-    "stop",
-    "presence_penalty",
-    "frequency_penalty",
-    "logprobs",
-    "top_logprobs",
-    "reasoning_effort",
-    "extra_body",
-}
+# Not accepted by chat.completions.create; rollout.py passes them for tracing/server use.
+_NON_CHAT_PARAM_KEYS = ("base_url", "max_seq_len", "http_timeout")
 
 
 @lru_cache(maxsize=4)
@@ -60,27 +50,10 @@ def _load_tokenizer(tokenizer_model: str) -> Any:
     return AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
 
 
-def _message_to_dict(message: Any) -> dict[str, Any]:
-    if hasattr(message, "dump_mdoel_for_chat_completion_request"):
+def _message_to_dict(message: Message | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(message, Message):
         return message.dump_mdoel_for_chat_completion_request()
-    if hasattr(message, "model_dump"):
-        return message.model_dump(exclude_none=True)
-    if isinstance(message, dict):
-        return {k: v for k, v in message.items() if v is not None}
-    return {
-        "role": getattr(message, "role", "user"),
-        "content": getattr(message, "content", ""),
-    }
-
-
-def _clean_completion_params(params: dict[str, Any]) -> dict[str, Any]:
-    cleaned = {
-        key: value
-        for key, value in params.items()
-        if key in _OPENAI_CHAT_KEYS and value is not None
-    }
-    cleaned["logprobs"] = True
-    return cleaned
+    return {k: v for k, v in dict(message).items() if v is not None}
 
 
 def _render_prompt_ids(
@@ -103,8 +76,8 @@ def _render_prompt_ids(
     return [int(token_id) for token_id in token_ids]
 
 
-def _extract_completion_trace(response: Any) -> tuple[str, list[int], list[float], str]:
-    payload = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+def _extract_completion_trace(response: ChatCompletion) -> tuple[str, list[int], list[float], str]:
+    payload = response.model_dump()
     choices = payload.get("choices") or []
     if not choices:
         return "", [], [], "unknown"
@@ -158,12 +131,14 @@ def init(req: InitRequest) -> dict[str, str]:
         )
         max_turns = int(params.pop("max_turns", os.environ.get("REMOTE_MAX_TURNS", "2")))
         max_turns = max(1, max_turns)
-        completion_params = _clean_completion_params(params)
+        for key in _NON_CHAT_PARAM_KEYS:
+            params.pop(key, None)
+        params["logprobs"] = True
 
         try:
             if not conversation:
                 raise ValueError("messages are required")
-            if not completion_params.get("model"):
+            if not params.get("model"):
                 raise ValueError("completion_params.model is required")
             if not req.model_base_url:
                 raise ValueError("model_base_url is required")
@@ -181,12 +156,12 @@ def init(req: InitRequest) -> dict[str, str]:
                 rollout_logger.info(
                     "remote rollout turn=%d model=%s messages=%d",
                     turn_idx + 1,
-                    completion_params["model"],
+                    params["model"],
                     len(conversation),
                 )
                 response = client.chat.completions.create(
                     messages=conversation,
-                    **completion_params,
+                    **params,
                 )
                 content, completion_ids, completion_logprobs, finish_reason = (
                     _extract_completion_trace(response)
