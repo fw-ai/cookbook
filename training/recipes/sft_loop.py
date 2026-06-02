@@ -674,7 +674,7 @@ def main(
                     ckpt.save(
                         f"step-{step}",
                         resumable=True,
-                        promotable=False,
+                        promotable=True,
                         data_consumed=cursor.value,
                     )
 

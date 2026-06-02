@@ -191,10 +191,24 @@ def make_batch_dpo_loss_fn(
             # *only* token that differs between chosen and rejected and
             # collapses the DPO margin to zero. Matches make_batch_orpo_loss_fn.
             lp_start = max(0, rs - 1)
-            pi_chosen = logprobs_list[2 * i][lp_start:].sum()
-            pi_rejected = logprobs_list[2 * i + 1][lp_start:].sum()
-            rc = ref_chosen_ts[i][lp_start:].sum()
-            rr = ref_rejected_ts[i][lp_start:].sum()
+            chosen_lp = logprobs_list[2 * i][lp_start:]
+            rejected_lp = logprobs_list[2 * i + 1][lp_start:]
+            chosen_rc = ref_chosen_ts[i][lp_start:]
+            rejected_rr = ref_rejected_ts[i][lp_start:]
+            # LENGTH-NORMALIZED DPO (sihan 2026-05-13).
+            # The original sum-based loss is unstable on very long completions
+            # (Harvey rollouts have ~5k assistant tokens × 2 sides). Tiny
+            # per-token preference shifts compound to a sum-margin of 1000+,
+            # which fully saturates σ and produces no learning signal for
+            # near-margin pairs while overshooting for in-batch outliers.
+            # Solution: report the per-token mean rather than sum, so margin
+            # scales with preference quality rather than sequence length.
+            n_chosen = max(int(chosen_lp.numel()), 1)
+            n_rejected = max(int(rejected_lp.numel()), 1)
+            pi_chosen = chosen_lp.sum() / n_chosen
+            pi_rejected = rejected_lp.sum() / n_rejected
+            rc = chosen_rc.sum() / n_chosen
+            rr = rejected_rr.sum() / n_rejected
 
             margin = (pi_chosen - rc) - (pi_rejected - rr)
             pair_loss = -F.logsigmoid(beta * margin)

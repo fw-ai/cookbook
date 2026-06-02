@@ -77,7 +77,9 @@ _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF = (
 _DEPLOYMENT_ACCELERATOR_REGION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("NVIDIA_H200", "US_VIRGINIA_1"),
     ("NVIDIA_B200", "US_OHIO_1"),
-    ("NVIDIA_B300", "NA_BRITISHCOLUMBIA_1"),
+    # B300 intentionally omitted: sihan has global--b300-count=32 but no
+    # na-britishcolumbia-1--b300-count record. Falling through to server-side
+    # auto-placement so the global cap can be used directly.
 )
 
 _TRAINER_CANCEL_GRACE_ENV = "FW_TRAINER_CANCEL_GRACE_PERIOD_S"
@@ -953,6 +955,7 @@ def setup_infra(
     lora_rank: int = 0,
     max_seq_len: int | None = None,
     learning_rate: float = 1e-5,
+    grad_accum: int = 1,
     step_timeout: float | None = None,
     policy_job_id: str | None = None,
     reference_job_id: str | None = None,
@@ -1051,6 +1054,7 @@ def setup_infra(
         policy_profile=policy_profile, ref_profile=ref_profile,
         lora_rank=lora_rank, max_seq_len=resolved_max_seq_len,
         learning_rate=learning_rate,
+        grad_accum=grad_accum,
         policy_job_id=policy_job_id, reference_job_id=reference_job_id,
         role_prefix=role_prefix, cleanup=cleanup, on_status=emit,
     )
@@ -1244,6 +1248,7 @@ def _request_trainers(
     lora_rank: int,
     max_seq_len: int,
     learning_rate: float,
+    grad_accum: int,
     policy_job_id: str | None,
     reference_job_id: str | None,
     role_prefix: str,
@@ -1260,6 +1265,7 @@ def _request_trainers(
         lora_rank=lora_rank,
         max_seq_len=max_seq_len,
         learning_rate=learning_rate,
+        grad_accum=grad_accum,
         display_name=f"{role_prefix}-policy",
         forward_only=False,
         hot_load_deployment_id=hot_load_deployment_id,

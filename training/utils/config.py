@@ -153,6 +153,10 @@ class DeployConfig:
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
     """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
+    description: str | None = None
+    """Free-text deployment description. Some accounts (notably ``fireworks``)
+    require this and reject creation with HTTP 400 ``description is required``
+    when omitted."""
 
     def to_deployment_config(
         self,
@@ -179,6 +183,7 @@ class DeployConfig:
             accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
+            description=self.description,
         )
 
 
