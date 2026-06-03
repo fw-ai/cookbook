@@ -5,6 +5,7 @@ from eval_protocol.models import EvaluationRow, InputMetadata, Message
 from eval_protocol.pytest import evaluation_test
 
 from training.utils.rl.rollout import (
+    RolloutRun,
     RolloutSample,
     default_completion_params_factory,
     get_eval_protocol_params,
@@ -15,6 +16,12 @@ from training.utils.rl.rollout import (
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _only_segment(run: RolloutRun | None) -> RolloutSample:
+    assert run is not None
+    assert len(run.segments) == 1
+    return run.segments[0]
 
 
 def _sample_from_row(row: EvaluationRow) -> RolloutSample:
@@ -99,7 +106,7 @@ def test_eval_protocol_adapter_invokes_processor_one_row_and_scores():
         )
     )
 
-    sample = _run(rollout_fn(input_row))
+    sample = _only_segment(_run(rollout_fn(input_row)))
 
     assert sample.reward == 1.0
     assert calls == [
@@ -175,7 +182,7 @@ def test_eval_protocol_adapter_synthesizes_token_trace_when_processor_omits_it()
         ),
     )(SimpleNamespace(model="runtime-model", tokenizer=_FakeTokenizer()))
 
-    sample = _run(rollout_fn(input_row))
+    sample = _only_segment(_run(rollout_fn(input_row)))
 
     assert sample.reward == 0.5
     assert sample.loss_mask[-2:] == [1, 1]
@@ -212,6 +219,6 @@ def test_eval_protocol_adapter_accepts_custom_row_factory():
         sample_converter=_sample_from_row,
     )(None)
 
-    sample = _run(rollout_fn({"id": "custom-row"}))
+    sample = _only_segment(_run(rollout_fn({"id": "custom-row"})))
 
     assert sample.reward == 0.5

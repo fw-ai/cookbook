@@ -7,7 +7,7 @@ from eval_protocol.models import EvaluationRow, InputMetadata, Message
 import pytest
 
 import training.examples.rl.frozen_lake.train_frozen_lake as train_module
-from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
+from training.utils.rl.rollout import Rollout, RolloutRun, rollout_to_prompt_group
 from training.examples.rl.frozen_lake.masking import (
     build_training_loss_mask,
     build_ui_token_mask,
@@ -203,7 +203,12 @@ def test_rollout_sample_adapter_matches_legacy_training_data():
         reward=0.0,
     )
 
-    prompt_group = rollout_to_prompt_group(Rollout(samples=[sample, contrasting_sample]))
+    prompt_group = rollout_to_prompt_group(
+        Rollout(runs=[
+            RolloutRun(segments=[sample]),
+            RolloutRun(segments=[contrasting_sample]),
+        ])
+    )
 
     assert prompt_group is not None
     assert (

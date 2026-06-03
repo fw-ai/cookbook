@@ -1,4 +1,4 @@
-"""Multi-turn GSM8K rollout (per-sample) with retry-on-wrong feedback.
+"""Multi-turn GSM8K rollout (per-run) with retry-on-wrong feedback.
 
 Mirrors AReaL's ``examples/multi_turn_math/gsm8k_rl_mt.py``: ask GSM8K, score
 the boxed answer, and -- if the model is wrong on the first try -- append a
@@ -6,7 +6,7 @@ fixed user-feedback message and let it try once more (configurable via
 ``setup.extras["max_turns"]``, default ``2``).
 
 The whole trajectory (prompt + assistant turn 1 + feedback + assistant turn 2)
-is packed into a single ``RolloutSample``.  ``MessageTrajectoryAssembler``
+is packed into a single-segment ``RolloutRun``.  ``MessageTrajectoryAssembler``
 keeps the per-token loss mask aligned: ``1`` on every assistant-generated
 token (across all turns), ``0`` everywhere else (original prompt, the
 user-feedback bridge between turns).  The scalar ``reward`` is the
@@ -25,6 +25,7 @@ from training.examples.rl.multi_turn_message_in.reward import gsm8k_reward
 from training.examples.rl.vanilla_sampler import build_deployment_sampler
 from training.utils.rl.rollout import (
     MessageTrajectoryAssembler,
+    RolloutRun,
     RolloutSample,
     TITOTokenizer,
 )
@@ -49,7 +50,7 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
     if max_turns < 1:
         raise ValueError(f"max_turns must be >= 1, got {max_turns}")
 
-    async def rollout_fn(sample_prompt: dict) -> RolloutSample | None:
+    async def rollout_fn(sample_prompt: dict) -> RolloutRun | None:
         messages = list(sample_prompt.get("messages") or [])
         answer = sample_prompt.get("answer")
         if not messages or answer is None:
@@ -101,11 +102,12 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                 ]
 
         tokens, logprobs, loss_mask = assembler.trajectory.to_flat()
-        return RolloutSample(
+        sample = RolloutSample(
             tokens=tokens,
             logprobs=logprobs,
             loss_mask=loss_mask,
             reward=last_reward,
         )
+        return RolloutRun(segments=[sample])
 
     return rollout_fn

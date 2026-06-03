@@ -9,11 +9,14 @@ from training.utils.client import ReconnectableClient
 
 
 class _FakeFuture:
-    def __init__(self):
+    def __init__(self, value=None):
         self.timeout = None
+        self.value = value
 
     def result(self, timeout=None):
         self.timeout = timeout
+        if self.value is not None:
+            return self.value
         return {"ok": True, "timeout": timeout}
 
 
@@ -34,6 +37,10 @@ class _FakeInnerClient:
     def save_weights_for_sampler_ext(self, name, *, checkpoint_type=None):
         self.calls.append(("save_weights_for_sampler_ext", name, checkpoint_type))
         return self.saved_sampler
+
+    def save_weights_for_sampler(self, name, ttl_seconds=None, *, checkpoint_type=None):
+        self.calls.append(("save_weights_for_sampler", name, checkpoint_type))
+        return _FakeFuture(self.saved_sampler)
 
 
 class _FakeService:
@@ -135,6 +142,22 @@ def test_optim_step_accepts_enum_normalization():
     ]
 
 
+def test_submit_optim_step_converts_normalization_without_waiting():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    future = client.submit_optim_step("adam", grad_accumulation_normalization="num_loss_tokens")
+
+    assert future is inner.future
+    assert inner.future.timeout is None
+    assert inner.calls == [
+        (
+            "adam",
+            {"grad_accumulation_normalization": GradAccNormalization.NUM_LOSS_TOKENS},
+        )
+    ]
+
+
 def test_optim_step_rejects_unknown_normalization():
     inner = _FakeInnerClient()
     client = _make_client(inner)
@@ -157,7 +180,7 @@ def test_save_weights_and_get_sampler_uses_snapshot_identity():
     )
 
     assert result == "sampler"
-    assert inner.calls == [("save_weights_for_sampler_ext", "step-1", "base")]
+    assert inner.calls == [("save_weights_for_sampler", "step-1", "base")]
     assert service.calls == [
         {
             "model_path": "snapshot-identity",

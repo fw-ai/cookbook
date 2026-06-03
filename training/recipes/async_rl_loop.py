@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Async RL recipe with per-sample rollouts and recipe-owned training.
+"""Async RL recipe with per-run rollouts and recipe-owned training.
 
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
 names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intentionally minimal-surface: the
@@ -14,11 +14,11 @@ Acknowledgements -- prior art referenced while designing this loop:
 * slime  (https://github.com/THUDM/slime)
 * Miles  (https://github.com/radixark/miles)
 
-Users write ``rollout_fn(sample_prompt) -> RolloutSample | None`` -- one
+Users write ``rollout_fn(sample_prompt) -> RolloutRun | None`` -- one
 trajectory per call.  ``sample_prompt`` is the dataset row's dict re-named
 once it crosses the dataset/sampling seam.  The recipe fans each dataset
 row out to ``completions_per_prompt`` parallel calls and assembles the
-resulting samples into a PromptGroup inside the loop.
+resulting runs into a PromptGroup inside the loop.
 
 Rollout dependencies (tokenizer, sampler, request gate, etc.) flow
 through :class:`RolloutSetup`.  The user supplies a
@@ -78,7 +78,7 @@ from training.utils.rl.losses import (
 from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics, total_target_tokens
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
-from training.utils.rl.rollout import RolloutSample
+from training.utils.rl.rollout import RolloutRun
 from training.utils.runner_state import (
     estimate_async_total_steps,
     start_running,
@@ -129,7 +129,7 @@ class Config:
     """In-flight LLM-call cap (same unit as ``deployment.max_batch_size``);
     must be ``>= completions_per_prompt`` or the gate stalls."""
     min_group_size: int = 1
-    """Minimum surviving samples per row to emit a PromptGroup."""
+    """Minimum surviving rollout runs per row to emit a PromptGroup."""
     grad_accumulation_normalization: GradAccNormalization | str | None = (
         GradAccNormalization.NUM_LOSS_TOKENS
     )
@@ -191,7 +191,7 @@ class RolloutSetup:
     extras: dict[str, Any] = field(default_factory=dict)
 
 
-RolloutFn = Callable[..., Awaitable[RolloutSample | None]]
+RolloutFn = Callable[..., Awaitable[RolloutRun | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
 
 
@@ -251,9 +251,9 @@ def main(
 
     ``rollout_fn_factory(setup) -> rollout_fn`` is called once at startup
     with the assembled :class:`RolloutSetup`.  The returned
-    ``rollout_fn(sample_prompt) -> RolloutSample | None`` is invoked
+    ``rollout_fn(sample_prompt) -> RolloutRun | None`` is invoked
     ``completions_per_prompt`` times per dataset row (each invocation is
-    one sample draw against the inference deployment).
+    one trajectory draw against the inference deployment).
 
     Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
@@ -403,13 +403,13 @@ def main(
                 {"train/step": step_offset, "rollout/step": rollout_offset},
             )
 
-        if cfg.weight_sync_before_training:
+        if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
             with elapsed_timer("weight_sync") as span:
-                saved = policy.save_weights_for_sampler_ext(
+                saved = policy.save_weights_for_sampler(
                     f"step-{step_offset}",
                     checkpoint_type="base",
                 )
-                service.hotload_sampler_snapshot(saved.snapshot_name)
+                service.hotload_sampler_snapshot(saved.path)
             logger.info("[step %d] weight sync (%.1fs)", step_offset, span.elapsed)
 
         if rows is None:
@@ -528,7 +528,7 @@ def main(
 
                 yield RowRequest(
                     row_id=idx,
-                    sample_factory=factory,
+                    run_factory=factory,
                     row_meta={"row_id": source_row_id},
                     on_resolved=lambda _reason, idx=idx: row_loader.mark_resolved(idx),
                 )
@@ -737,7 +737,7 @@ def main(
                 with_reference=(reference is not None),
                 min_group_size=cfg.min_group_size,
                 weight_sync_fn=lambda step: service.hotload_sampler_snapshot(
-                    policy.save_weights_for_sampler_ext(f"step-{step}").snapshot_name
+                    policy.save_weights_for_sampler(f"step-{step}").path
                 ),
                 weight_sync_interval=_WEIGHT_SYNC_INTERVAL,
                 max_concurrent=cfg.max_concurrency_rollout_sample,

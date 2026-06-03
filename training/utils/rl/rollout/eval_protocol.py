@@ -1,11 +1,11 @@
-"""Adapter from eval-protocol/eval3 evaluators to per-sample rollout fns.
+"""Adapter from eval-protocol/eval3 evaluators to per-run rollout fns.
 
-The async RL loop only depends on ``rollout_fn(row) -> RolloutSample | None``.
+The async RL loop only depends on ``rollout_fn(row) -> RolloutRun | None``.
 This module lets managed RFT accept the user-facing eval3 shape instead:
 ``@evaluation_test(..., rollout_processor=..., completion_params=..., steps=...)``.
 The adapter extracts the decorator metadata, invokes the rollout processor for
 exactly one row per call, optionally runs the pointwise evaluator body, and
-converts the resulting ``EvaluationRow`` into a token-native ``RolloutSample``.
+converts the resulting ``EvaluationRow`` into a token-native ``RolloutRun``.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ from typing import Any
 from eval_protocol.models import EPParameters, EvaluationRow
 from eval_protocol.pytest.types import RolloutProcessorConfig
 
-from training.utils.rl.rollout.types import RolloutSample
+from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 
-RolloutFn = Callable[[Any], Awaitable[RolloutSample | None]]
+RolloutFn = Callable[[Any], Awaitable[RolloutRun | None]]
 RolloutFnFactory = Callable[[Any], RolloutFn]
 EvalRowFactory = Callable[[Any], EvaluationRow]
 SampleConverter = Callable[[EvaluationRow], RolloutSample | None]
@@ -88,7 +88,7 @@ def make_eval_protocol_rollout_fn_factory(
     setup_processor: bool = True,
     swallow_exceptions: bool = True,
 ) -> RolloutFnFactory:
-    """Build a per-sample rollout factory from an eval3 evaluator.
+    """Build a per-run rollout factory from an eval3 evaluator.
 
     ``evaluator`` is expected to be a function decorated with
     ``@evaluation_test``. The decorator remains the user-facing place to
@@ -121,7 +121,7 @@ def make_eval_protocol_rollout_fn_factory(
         if setup_processor and hasattr(processor, "setup"):
             processor.setup()
 
-        async def rollout_fn(row: Any) -> RolloutSample | None:
+        async def rollout_fn(row: Any) -> RolloutRun | None:
             try:
                 eval_row = build_row(row)
                 config = RolloutProcessorConfig(
@@ -145,7 +145,10 @@ def make_eval_protocol_rollout_fn_factory(
                             f"or None, got {type(result).__name__}."
                         )
                 _ensure_token_turn_traces(result, setup)
-                return sample_converter(result)
+                sample = sample_converter(result)
+                if sample is None:
+                    return None
+                return RolloutRun(segments=[sample])
             except Exception:
                 if not swallow_exceptions:
                     raise

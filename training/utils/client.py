@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import logging
 import os
-from types import SimpleNamespace
+import warnings
 from enum import Enum
+from types import SimpleNamespace
 from typing import Any
 
 try:
@@ -135,9 +136,9 @@ class ReconnectableClient:
         self._closed = False
         return self
 
-    @property
-    def inner(self) -> FiretitanTrainingClient:
-        assert self._client is not None
+    def _require_client(self) -> FiretitanTrainingClient:
+        if self._client is None:
+            raise RuntimeError("ReconnectableClient is closed or not connected")
         return self._client
 
     @property
@@ -182,14 +183,23 @@ class ReconnectableClient:
     #
     # The methods above block on the result. These return the raw future so a
     # caller can overlap fwd/bwd + optim across steps (the SFT pipeline). Pair
-    # with ``future.result(timeout=...)``. They exist so callers don't reach
-    # through ``.inner`` for the future API.
+    # with ``future.result(timeout=...)``. They exist so callers use named
+    # methods instead of reaching through the wrapper.
 
     def submit_forward_backward(self, data, loss_fn: str = "cross_entropy", loss_fn_config=None):
-        return self._client.forward_backward(data, loss_fn, loss_fn_config=loss_fn_config)
+        return self._require_client().forward_backward(data, loss_fn, loss_fn_config=loss_fn_config)
 
-    def submit_optim_step(self, params):
-        return self._client.optim_step(params)
+    def submit_optim_step(
+        self,
+        params,
+        grad_accumulation_normalization: str | GradAccNormalization | None = None,
+    ):
+        kwargs: dict = {}
+        if grad_accumulation_normalization is not None:
+            kwargs["grad_accumulation_normalization"] = _normalize_grad_accumulation_normalization(
+                grad_accumulation_normalization
+            )
+        return self._require_client().optim_step(params, **kwargs)
 
     def save_state(self, name: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.save_state(name).result(timeout=timeout)
@@ -217,7 +227,38 @@ class ReconnectableClient:
     def save_weights_for_sampler_ext(
         self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S
     ) -> Any:
-        return self.inner.save_weights_for_sampler_ext(name, checkpoint_type=checkpoint_type)
+        """Deprecated compatibility shim.
+
+        New cookbook code should call :meth:`save_weights_for_sampler`, which
+        returns the SDK's standard ``path`` field. This wrapper exists only for
+        old callers that still read ``snapshot_name``.
+        """
+        warnings.warn(
+            "ReconnectableClient.save_weights_for_sampler_ext() is deprecated; "
+            "use save_weights_for_sampler() and read the returned .path instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        saved = self.save_weights_for_sampler(
+            name,
+            checkpoint_type=checkpoint_type,
+            timeout=timeout,
+        )
+        return SimpleNamespace(path=saved.path, snapshot_name=saved.path)
+
+    def save_weights_for_sampler(
+        self,
+        name: str,
+        ttl_seconds: int | None = None,
+        *,
+        checkpoint_type: str | None = None,
+        timeout: int = DCP_TIMEOUT_S,
+    ) -> Any:
+        return self._require_client().save_weights_for_sampler(
+            name,
+            ttl_seconds=ttl_seconds,
+            checkpoint_type=checkpoint_type,
+        ).result(timeout=timeout)
 
     def save_weights_and_get_sampler(
         self,
@@ -242,18 +283,22 @@ class ReconnectableClient:
         """
         if self._service is None:
             raise RuntimeError("save_weights_and_get_sampler requires the managed service")
-        saved = self._client.save_weights_for_sampler_ext(name, checkpoint_type=checkpoint_type)
+        saved = self.save_weights_for_sampler(
+            name,
+            checkpoint_type=checkpoint_type,
+            timeout=timeout,
+        )
         return self._service.create_deployment_sampler(
-            model_path=saved.snapshot_name,
+            model_path=saved.path,
             tokenizer=tokenizer,
             concurrency_controller=concurrency_controller,
         )
 
     def resolve_checkpoint_path(self, name: str, source_job_id: str | None = None) -> str:
-        return self.inner.resolve_checkpoint_path(name, source_job_id=source_job_id)
+        return self._require_client().resolve_checkpoint_path(name, source_job_id=source_job_id)
 
     def list_checkpoints(self) -> list[str]:
-        return self.inner.list_checkpoints()
+        return self._require_client().list_checkpoints()
 
     def unload_model(self, timeout: float = 30.0) -> None:
         """POST ``/api/v1/unload_model`` to drop this client's LoRA session."""

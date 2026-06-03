@@ -1,4 +1,4 @@
-"""Per-sample async RL training loop.
+"""Per-run async RL training loop.
 
 Acknowledgements -- prior art referenced while designing this loop:
 
@@ -6,18 +6,17 @@ Acknowledgements -- prior art referenced while designing this loop:
 * slime  (https://github.com/THUDM/slime)
 * Miles  (https://github.com/radixark/miles)
 
-The user supplies ``rollout_fn(sample_prompt) -> RolloutSample | None`` --
-one trajectory per call.  ``sample_prompt`` is a dataset row's dict
-re-named once it crosses into the sampling layer.  The loop fans each
-dataset row out to ``completions_per_prompt`` parallel sample calls,
-joins them by row id via :class:`GroupAssembler`, applies the optional
-dynamic filter on the assembled :class:`PromptGroup`, and feeds the
-trainer when a batch fills.
+The user supplies ``rollout_fn(sample_prompt) -> RolloutRun | None`` -- one
+trajectory per call.  ``sample_prompt`` is a dataset row's dict re-named
+once it crosses into the sampling layer.  The loop fans each dataset row
+out to ``completions_per_prompt`` parallel rollout calls, joins them by row
+id via :class:`GroupAssembler`, applies the optional dynamic filter on the
+assembled :class:`PromptGroup`, and feeds the trainer when a batch fills.
 
-Submission is row-atomic; the gate accounts in samples, with one row
-consuming ``completions_per_prompt`` sample slots against the staleness
-budget.  Because rows are submitted whole, every sample in a row carries
-the same submit version, so the group's accountable version is unambiguous.
+Submission is row-atomic; the gate accounts in LLM-call slots, with one row
+consuming ``completions_per_prompt`` slots against the staleness budget.
+Because rows are submitted whole, every rollout run in a row carries the
+same submit version, so the group's accountable version is unambiguous.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ from training.utils.rl.rollout.group_assembler import (
     GroupAssembler,
     RowResolution,
 )
-from training.utils.rl.rollout.types import RolloutSample
+from training.utils.rl.rollout.types import RolloutRun
 from training.utils.rl.train import DynamicFilterFn, TrainStepFns
 
 logger = logging.getLogger(__name__)
@@ -43,28 +42,28 @@ logger = logging.getLogger(__name__)
 __all__ = ["RowRequest", "run_async_rl_loop"]
 
 
-SampleFactory = Callable[[int], Awaitable[RolloutSample | None]]
+RunFactory = Callable[[int], Awaitable[RolloutRun | None]]
 
 
 @dataclass
 class RowRequest:
     """One dataset row's fan-out factory.
 
-    ``sample_factory(sub_index)`` is called by the loop for each
+    ``run_factory(sub_index)`` is called by the loop for each
     ``sub_index in [0, completions_per_prompt)`` and must return a fresh
-    coroutine resolving to a :class:`RolloutSample` or ``None``.
-    ``None`` counts as one lost sample within the row's group (the row
+    coroutine resolving to a :class:`RolloutRun` or ``None``.
+    ``None`` counts as one lost run within the row's group (the row
     can still produce a valid PromptGroup if at least
-    ``GroupAssembler.min_group_size`` samples land).
+    ``GroupAssembler.min_group_size`` runs land).
 
     ``on_resolved`` fires exactly once per row, when the loop decides the
     row's fate: ``"accepted"``, ``"filter"`` (assembled group rejected
-    by ``dynamic_filter_fn``), or ``"none"`` (no surviving samples /
+    by ``dynamic_filter_fn``), or ``"none"`` (no surviving runs /
     advantage_fn produced non-finite values).
     """
 
     row_id: Hashable
-    sample_factory: SampleFactory
+    run_factory: RunFactory
     row_meta: dict | None = None
     on_resolved: Callable[[str], None] | None = None
 
@@ -160,7 +159,7 @@ class _StalenessController:
 class _RowState:
     request: RowRequest
     submit_version: int
-    sample_tasks: List[asyncio.Task] = field(default_factory=list)
+    run_tasks: List[asyncio.Task] = field(default_factory=list)
 
 
 async def run_async_rl_loop(
@@ -184,14 +183,14 @@ async def run_async_rl_loop(
     return_final_stats: bool = False,
     synchronous_training: bool = False,
 ) -> int | tuple[int, dict[str, Any]]:
-    """Run the per-sample async RL loop.
+    """Run the per-run async RL loop.
 
     Args:
         rows: Iterable of :class:`RowRequest`, one per dataset row.  The
-            loop calls each row's ``sample_factory`` ``completions_per_prompt``
-            times to materialize the per-sample coroutines.
+            loop calls each row's ``run_factory`` ``completions_per_prompt``
+            times to materialize the per-run coroutines.
         train_fns: Training callbacks (see :class:`TrainStepFns`).
-        completions_per_prompt: Number of samples drawn per row.
+        completions_per_prompt: Number of rollout runs drawn per row.
         prompt_groups_per_step: Number of accepted rows that form one
             optimizer step.
         max_head_offpolicy_versions: Off-policy budget in sampler
@@ -204,11 +203,11 @@ async def run_async_rl_loop(
             dropped.
         with_reference: Pack reference-model datums alongside the
             policy datums (needed for KL).
-        router_replay_completion_only: When a sample carries
+        router_replay_completion_only: When a segment carries
             ``routing_matrices``, zero out prompt-position routing so
             only completion-token routing is replayed.
-        min_group_size: Minimum surviving samples for a row to emit a
-            PromptGroup.  Rows with fewer surviving samples are dropped.
+        min_group_size: Minimum surviving runs for a row to emit a
+            PromptGroup.  Rows with fewer surviving runs are dropped.
         weight_sync_fn: Called after every ``weight_sync_interval``
             optimizer steps.  Must bump the sampler version; the
             loop increments its internal version counter on return.
@@ -280,7 +279,7 @@ async def run_async_rl_loop(
         min_group_size=min_group_size,
     )
 
-    # Each in-flight sample task -> (row_id, sub_index).
+    # Each in-flight rollout task -> (row_id, sub_index).
     in_flight: dict[asyncio.Task, tuple[Hashable, int]] = {}
     # Row state by row_id; lifetime spans first sample submit -> row resolution.
     rows_state: dict[Hashable, _RowState] = {}
@@ -310,10 +309,10 @@ async def run_async_rl_loop(
                 submit_version=staleness.version,
                 row_meta=request.row_meta if sub_index == 0 else None,
             )
-            coro = request.sample_factory(sub_index)
+            coro = request.run_factory(sub_index)
             task = asyncio.ensure_future(coro)
             in_flight[task] = (request.row_id, sub_index)
-            rows_state[request.row_id].sample_tasks.append(task)
+            rows_state[request.row_id].run_tasks.append(task)
 
     def _refill() -> None:
         nonlocal iterator_exhausted
@@ -396,11 +395,11 @@ async def run_async_rl_loop(
                         other.cancel()
                     in_flight.clear()
                     raise exc
-                sample = task.result()
-                if sample is None:
+                run = task.result()
+                if run is None:
                     resolution = assembler.note_dropped(row_id)
                 else:
-                    resolution = assembler.add_sample(row_id, sample)
+                    resolution = assembler.add_run(row_id, run)
                 if resolution is not None:
                     _on_row_resolved(row_id, resolution)
             _refill()
@@ -437,11 +436,11 @@ async def run_async_rl_loop(
                             other.cancel()
                         in_flight.clear()
                         raise exc
-                    sample = task.result()
-                    if sample is None:
+                    run = task.result()
+                    if run is None:
                         resolution = assembler.note_dropped(row_id)
                     else:
-                        resolution = assembler.add_sample(row_id, sample)
+                        resolution = assembler.add_run(row_id, run)
                     if resolution is not None:
                         _on_row_resolved(row_id, resolution)
         if synchronous_training:

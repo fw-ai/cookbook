@@ -13,7 +13,7 @@ the rollout appends a fixed user-feedback message and lets the model retry
 once more (configurable via `--max-turns`, default 2).
 
 The full trajectory — prompt + first attempt + feedback + second attempt —
-is packed into a single `RolloutSample`.  `MessageTrajectoryAssembler`
+is packed into a single-segment `RolloutRun`.  `MessageTrajectoryAssembler`
 keeps the per-token loss mask aligned: assistant tokens are trained on
 across both turns; the original prompt and the user-feedback bridge tokens
 are masked out.
@@ -26,8 +26,8 @@ are masked out.
 - `reward.py` — extracts `\boxed{...}` from the completion and verifies
   against the GSM8K ground-truth (`#### N`) via numeric match plus a
   `math_verify` fallback.
-- `rollout.py` — per-sample `make_rollout_fn(setup) -> RolloutFn`; runs the
-  retry loop and returns one `RolloutSample` per trajectory.
+- `rollout.py` — per-run `make_rollout_fn(setup) -> RolloutFn`; runs the
+  retry loop and returns one `RolloutRun` per trajectory.
 - `train.py` — wires the dataset and the rollout factory into
   `recipes/async_rl_loop.main`.
 - `run.sh` — one-shot end-to-end (auto-runs `prepare_data.py` if needed).

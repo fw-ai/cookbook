@@ -219,8 +219,8 @@ class DeployConfig:
     sample_timeout: int = 600
     """HTTP read timeout in seconds for sampling completions (default 10 min).
     Increase for R3 + long completions where responses can be very large."""
-    disable_speculative_decoding: bool = True
-    """Disable base model's default draft/EAGLE speculation for hotload compatibility."""
+    disable_speculative_decoding: bool = False
+    """When true, disable the base model's default draft/EAGLE speculation."""
     replica_count: int | None = None
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None

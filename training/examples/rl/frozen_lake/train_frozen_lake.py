@@ -362,7 +362,7 @@ def evaluation_row_to_rollout_sample(row: EvaluationRow) -> RolloutSample | None
 
 
 def frozen_lake_eval_row_factory(row: Dict[str, Any]) -> EvaluationRow:
-    """Build one per-sample EvaluationRow from an eval3 input row."""
+    """Build one per-run EvaluationRow from an eval3 input row."""
     base_row = row.get("evaluation_row")
     rollout_idx = int(row.get("rollout_idx", 0))
     if not isinstance(base_row, EvaluationRow):
@@ -810,7 +810,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
                     yield RowRequest(
                         row_id=row_idx,
-                        sample_factory=factory,
+                        run_factory=factory,
                         row_meta={
                             "seed": env_context_dict.get("seed"),
                             "environment_context": env_context_dict,

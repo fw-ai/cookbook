@@ -278,7 +278,7 @@ class TrainingCheckpoints:
             else:
                 t1 = time.time()
                 logger.info("Saving sampler checkpoint '%s'...", name)
-                self._client.save_weights_for_sampler_ext(name, checkpoint_type="base")
+                self._client.save_weights_for_sampler(name, checkpoint_type="base")
                 logger.info(
                     "Sampler checkpoint '%s' saved (%.1fs)", name, time.time() - t1
                 )

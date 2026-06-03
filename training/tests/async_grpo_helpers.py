@@ -9,7 +9,7 @@ from fireworks.training.sdk.deployment import DeploymentSampler
 
 from training.recipes.async_rl_loop import RolloutFn, RolloutSetup
 from training.utils.data import prepare_sampling_messages
-from training.utils.rl.rollout import RolloutSample
+from training.utils.rl.rollout import RolloutRun, RolloutSample
 
 
 MAX_REALISTIC_COMPLETION_TOKENS = 32768
@@ -45,7 +45,7 @@ def make_message_rollout_fn_factory(
         )
         sample_kwargs = dict(setup.sample_kwargs)
 
-        async def rollout_fn(sample_prompt: dict) -> RolloutSample | None:
+        async def rollout_fn(sample_prompt: dict) -> RolloutRun | None:
             messages = prepare_sampling_messages(list(sample_prompt.get("messages") or []))
             if not messages:
                 return None
@@ -74,7 +74,7 @@ def make_message_rollout_fn_factory(
             if full_logprobs is None:
                 return None
 
-            return RolloutSample(
+            sample = RolloutSample(
                 tokens=tokens,
                 logprobs=full_logprobs,
                 loss_mask=[0] * prompt_len + [1] * len(output_tokens),
@@ -82,6 +82,7 @@ def make_message_rollout_fn_factory(
                 finish_reason=getattr(completion, "finish_reason", "stop"),
                 text=getattr(completion, "text", ""),
             )
+            return RolloutRun(segments=[sample])
 
         return rollout_fn
 

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from training.utils.rl.rollout import Rollout, RolloutSample, rollout_to_prompt_group
+from training.utils.rl.rollout import (
+    Rollout,
+    RolloutRun,
+    RolloutSample,
+    rollout_to_prompt_group,
+)
 
 
 def _sample(
@@ -28,10 +33,22 @@ def _sample(
     )
 
 
+def _run(*segments: RolloutSample) -> RolloutRun:
+    return RolloutRun(segments=list(segments))
+
+
+def _solo(*samples: RolloutSample) -> list[RolloutRun]:
+    return [_run(sample) for sample in samples]
+
+
 class TestValidation:
     def test_rejects_empty_samples(self):
         with pytest.raises(ValueError, match="empty"):
-            rollout_to_prompt_group(Rollout(samples=[]))
+            rollout_to_prompt_group(Rollout(runs=[]))
+
+    def test_rejects_empty_run_segments(self):
+        with pytest.raises(ValueError, match="segments is empty"):
+            rollout_to_prompt_group(Rollout(runs=[RolloutRun(segments=[])]))
 
     def test_rejects_length_mismatch(self):
         s = RolloutSample(
@@ -41,7 +58,7 @@ class TestValidation:
             reward=1.0,
         )
         with pytest.raises(ValueError, match="length mismatch"):
-            rollout_to_prompt_group(Rollout(samples=[s]))
+            rollout_to_prompt_group(Rollout(runs=[_run(s)]))
 
     def test_rejects_tokens_too_short(self):
         s = RolloutSample(
@@ -51,12 +68,22 @@ class TestValidation:
             reward=0.0,
         )
         with pytest.raises(ValueError, match="length >= 2"):
-            rollout_to_prompt_group(Rollout(samples=[s]))
+            rollout_to_prompt_group(Rollout(runs=[_run(s)]))
 
     def test_rejects_all_zero_loss_mask(self):
         s = _sample(tokens=[1, 2, 3], loss_mask=[0, 0, 0], logprobs=[0.0, 0.0, 0.0])
         with pytest.raises(ValueError, match="all zeros"):
-            rollout_to_prompt_group(Rollout(samples=[s]))
+            rollout_to_prompt_group(Rollout(runs=[_run(s)]))
+
+    def test_rejects_mixed_rewards_inside_one_run(self):
+        rollout = Rollout(runs=[_run(_sample(reward=1.0), _sample(reward=0.0))])
+        with pytest.raises(ValueError, match="trajectory-level reward"):
+            rollout_to_prompt_group(rollout)
+
+    def test_rejects_advantage_length_mismatch(self):
+        rollout = Rollout(runs=_solo(_sample(reward=1.0), _sample(reward=0.0)))
+        with pytest.raises(ValueError, match="one advantage per rollout run"):
+            rollout_to_prompt_group(rollout, advantage_fn=lambda _rewards: [1.0])
 
 
 class TestSingleTurnPacking:
@@ -65,10 +92,10 @@ class TestSingleTurnPacking:
         ``rollout_to_prompt_group`` now drops singleton groups (the
         default ``compute_advantages`` would produce NaN advantages
         on length-1 inputs and poison the training step)."""
-        r = Rollout(samples=[
+        r = Rollout(runs=_solo(
             _sample(reward=1.0),
             _sample(reward=0.0),
-        ])
+        ))
         pg = rollout_to_prompt_group(r)
         assert pg is not None
         assert len(pg.data) == 2
@@ -78,6 +105,21 @@ class TestSingleTurnPacking:
         assert td.shape == [4]
         mask_td = pg.data[0].loss_fn_inputs["weights"]
         assert mask_td.shape == [4]
+
+    def test_multi_segment_run_broadcasts_run_advantage(self):
+        rollout = Rollout(runs=[
+            _run(_sample(reward=1.0), _sample(reward=1.0)),
+            _run(_sample(reward=0.0)),
+        ])
+
+        pg = rollout_to_prompt_group(rollout)
+
+        assert pg is not None
+        assert len(pg.data) == 3
+        assert pg.rewards == [1.0, 0.0]
+        assert len(pg.advantages) == 3
+        assert pg.advantages[0] == pg.advantages[1]
+        assert pg.advantages[0] != pg.advantages[2]
 
     def test_singleton_rollout_with_default_advantages_dropped(self):
         """The default GRPO-style ``compute_advantages`` z-score-normalizes
@@ -89,7 +131,7 @@ class TestSingleTurnPacking:
         without pre-rejecting all N=1 groups (REINFORCE-style runs
         below).
         """
-        r = Rollout(samples=[_sample(reward=1.0)])
+        r = Rollout(runs=[_run(_sample(reward=1.0))])
         pg = rollout_to_prompt_group(r)
         assert pg is None
 
@@ -103,7 +145,7 @@ class TestSingleTurnPacking:
         finite values on N=1, the rollout MUST be packed into a
         PromptGroup like any other.
         """
-        r = Rollout(samples=[_sample(reward=0.7)])
+        r = Rollout(runs=[_run(_sample(reward=0.7))])
         pg = rollout_to_prompt_group(r, advantage_fn=lambda rewards: list(rewards))
         assert pg is not None
         assert pg.rewards == [0.7]
@@ -120,17 +162,17 @@ class TestSingleTurnPacking:
         custom advantage_fn that happens to return NaN on a
         degenerate input still produces a non-finite advantage that
         would poison the loss; drop the group."""
-        r = Rollout(samples=[_sample(reward=1.0), _sample(reward=2.0)])
+        r = Rollout(runs=_solo(_sample(reward=1.0), _sample(reward=2.0)))
         pg = rollout_to_prompt_group(
             r, advantage_fn=lambda rewards: [float("nan")] * len(rewards),
         )
         assert pg is None
 
     def test_n_samples_center_advantages(self):
-        r = Rollout(samples=[
+        r = Rollout(runs=_solo(
             _sample(reward=1.0),
             _sample(reward=0.0),
-        ])
+        ))
         pg = rollout_to_prompt_group(r)
         assert pg is not None
         assert pg.rewards == [1.0, 0.0]
@@ -138,10 +180,10 @@ class TestSingleTurnPacking:
 
     def test_prompt_len_derived_from_first_mask_one(self):
         """prompt_len field reflects where assistant tokens start in sample 0."""
-        r = Rollout(samples=[
+        r = Rollout(runs=_solo(
             _sample(tokens=[1, 2, 3, 4, 5], loss_mask=[0, 0, 0, 1, 1]),
             _sample(tokens=[1, 2, 3, 4, 5], loss_mask=[0, 0, 0, 1, 1]),
-        ])
+        ))
         pg = rollout_to_prompt_group(r)
         assert pg is not None
         assert pg.prompt_len == 3
@@ -156,12 +198,12 @@ class TestSingleTurnPacking:
         replicating a single ``prompt_len`` would drop tokens for
         short-prefix samples and leak prompt tokens for long-prefix ones.
         """
-        r = Rollout(samples=[
+        r = Rollout(runs=_solo(
             # Sample A: 2-token prefix, then 3 assistant tokens.
             _sample(tokens=[1, 2, 3, 4, 5], loss_mask=[0, 0, 1, 1, 1]),
             # Sample B (different branch): 4-token prefix, 1 assistant token.
             _sample(tokens=[1, 2, 9, 9, 7], loss_mask=[0, 0, 0, 0, 1]),
-        ])
+        ))
         pg = rollout_to_prompt_group(r)
         assert pg is not None
         assert pg.prompt_lens == [2, 4]
@@ -176,10 +218,10 @@ class TestSingleTurnPacking:
         """
         from training.utils.rl.losses import combine_prompt_groups
 
-        r = Rollout(samples=[
+        r = Rollout(runs=_solo(
             _sample(tokens=[1, 2, 3, 4, 5], loss_mask=[0, 0, 1, 1, 1]),
             _sample(tokens=[1, 2, 9, 9, 7], loss_mask=[0, 0, 0, 0, 1]),
-        ])
+        ))
         pg = rollout_to_prompt_group(r)
         _, _, _, prompt_lens, _ = combine_prompt_groups([pg])
         assert prompt_lens == [2, 4], (
@@ -188,25 +230,25 @@ class TestSingleTurnPacking:
         )
 
     def test_with_reference_mirrors_policy_datums(self):
-        r = Rollout(samples=[_sample(), _sample()])
+        r = Rollout(runs=_solo(_sample(), _sample()))
         pg = rollout_to_prompt_group(r, with_reference=True)
         assert pg is not None
         assert len(pg.ref_data) == 2
 
     def test_completion_lens_counts_mask_ones(self):
-        r = Rollout(samples=[
+        r = Rollout(runs=_solo(
             _sample(tokens=[1, 2, 3, 4, 5], loss_mask=[0, 0, 1, 1, 1]),  # 3 mask ones
             _sample(tokens=[1, 2, 3, 4, 5], loss_mask=[0, 0, 1, 1, 1]),
-        ])
+        ))
         pg = rollout_to_prompt_group(r)
         assert pg is not None
         assert pg.completion_lens == [3, 3]
 
     def test_truncated_from_finish_reason(self):
-        r = Rollout(samples=[
+        r = Rollout(runs=_solo(
             _sample(finish_reason="length"),
             _sample(finish_reason="stop"),
-        ])
+        ))
         pg = rollout_to_prompt_group(r)
         assert pg is not None
         assert pg.truncated == [True, False]
@@ -227,10 +269,10 @@ class TestMultiTurnPacking:
                 reward=reward,
             )
         # Two samples since singleton groups now drop (NaN-advantage guard).
-        pg = rollout_to_prompt_group(Rollout(samples=[
+        pg = rollout_to_prompt_group(Rollout(runs=_solo(
             _interleaved_sample(reward=1.0),
             _interleaved_sample(reward=0.0),
-        ]))
+        )))
         assert pg is not None
         mask_td = pg.data[0].loss_fn_inputs["weights"]
         # Target is tokens[1:] = 7 entries; mask is loss_mask[1:] = 7 entries.
@@ -250,7 +292,7 @@ class TestInferenceLogprobs:
                 reward=reward,
             )
         # Two samples — singleton groups now drop (NaN-advantage guard).
-        pg = rollout_to_prompt_group(Rollout(samples=[mk(1.0), mk(0.0)]))
+        pg = rollout_to_prompt_group(Rollout(runs=_solo(mk(1.0), mk(0.0))))
         assert pg is not None
         assert pg.inf_logprobs == [
             [0.0, -0.1, -0.2, -0.3],
@@ -261,7 +303,7 @@ class TestInferenceLogprobs:
 class TestRowMeta:
     def test_row_meta_copied_when_present(self):
         r = Rollout(
-            samples=[_sample(), _sample()],
+            runs=_solo(_sample(), _sample()),
             row_meta={"ground_truth": "42"},
         )
         pg = rollout_to_prompt_group(r)
@@ -272,7 +314,7 @@ class TestRowMeta:
 
     def test_row_meta_none_stays_none(self):
         pg = rollout_to_prompt_group(
-            Rollout(samples=[_sample(), _sample()])
+            Rollout(runs=_solo(_sample(), _sample()))
         )
         assert pg is not None
         assert pg.row_meta is None

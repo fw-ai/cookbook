@@ -438,15 +438,15 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
 
-        if cfg.weight_sync_before_training:
+        if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
             logger.info("[step %d] weight sync: saving + loading...", step_offset)
             t0 = _time.time()
             with timer("weight_sync"):
-                saved = policy.save_weights_for_sampler_ext(
+                saved = policy.save_weights_for_sampler(
                     f"step-{step_offset}",
                     checkpoint_type="base",
                 )
-                service.hotload_sampler_snapshot(saved.snapshot_name)
+                service.hotload_sampler_snapshot(saved.path)
             logger.info("[step %d] weight sync: done (%.1fs)", step_offset, _time.time() - t0)
 
         # -- Prepare sampling and training --------------------------------------
@@ -793,7 +793,7 @@ def main(
                 metrics_callback=_loop_metrics_callback,
                 weight_sync_fn=(
                     lambda step: service.hotload_sampler_snapshot(
-                        policy.save_weights_for_sampler_ext(f"step-{step}").snapshot_name
+                        policy.save_weights_for_sampler(f"step-{step}").path
                     )
                     if cfg.weight_sync_interval > 0
                     else None

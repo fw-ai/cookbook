@@ -525,6 +525,23 @@ class Config:
     batches.
     """
 
+    group_by_length: bool = False
+    """Compose each batch from similarly-sized examples (bucket-then-
+    shuffle) instead of a pure random shuffle. Cuts padding waste and,
+    when context parallel is enabled, lets most batches run at a low CP
+    degree -- only the long-sequence batches pay the high-CP cost. Uses
+    raw JSONL byte length as a cheap token-count proxy, so it is most
+    beneficial for text datasets with high length variance and should
+    stay off for base64-image multimodal data where byte length is a
+    poor proxy. Batch count and resume/cursor semantics are unchanged."""
+
+    length_group_factor: int = 50
+    """Mega-batch multiplier for ``group_by_length``: a fresh per-epoch
+    permutation is cut into windows of ``batch_size * length_group_factor``
+    that are sorted by length before chunking into batches. Larger ->
+    tighter length homogeneity (less padding / lower CP) but weaker
+    shuffling; smaller -> more randomness but looser grouping."""
+
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
@@ -796,6 +813,9 @@ def main(
             shuffle=True,
             generator=loader_generator,
             worker_init_fn=worker_init_fn,
+            group_by_length=cfg.group_by_length,
+            length_group_factor=cfg.length_group_factor,
+            sizes=training_dataset.approx_row_sizes() if cfg.group_by_length else None,
         )
         # Pre-filter upper bound; filtered rows make actual batches
         # smaller but never larger.

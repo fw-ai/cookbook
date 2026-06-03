@@ -1,0 +1,4 @@
+{"id": "eval-protocol-chat-1", "messages": [{"role": "system", "content": "You are a careful math assistant. Solve the problem and put the final numeric answer in \\boxed{}."}, {"role": "user", "content": "What is 17 + 25?"}], "answer": "42"}
+{"id": "eval-protocol-chat-2", "messages": [{"role": "system", "content": "You are a careful math assistant. Solve the problem and put the final numeric answer in \\boxed{}."}, {"role": "user", "content": "What is 9 * 8?"}], "answer": "72"}
+{"id": "eval-protocol-chat-3", "messages": [{"role": "system", "content": "You are a careful math assistant. Solve the problem and put the final numeric answer in \\boxed{}."}, {"role": "user", "content": "What is 144 / 12?"}], "answer": "12"}
+{"id": "eval-protocol-chat-4", "messages": [{"role": "system", "content": "You are a careful math assistant. Solve the problem and put the final numeric answer in \\boxed{}."}, {"role": "user", "content": "What is 31 - 14?"}], "answer": "17"}

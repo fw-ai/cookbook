@@ -162,18 +162,38 @@ Two recovery options:
 
 If neither applies or you can't determine which scope the run used, reach out to Fireworks support — server-side state is sometimes needed to untangle.
 
+## Runtime hotload mismatch or stale deployment attachment
+
+Runtime hotload failures can still happen after create-time validation passes. The user-facing SDK signal is that the SDK asked the deployment to load snapshot `S`, but the deployment status still reports a different current snapshot or never becomes ready for `S`.
+
+Typical causes:
+
+- The caller created trainer A plus deployment D, then later attached trainer B to the same deployment outside the SDK-managed cookbook path.
+- A full-parameter run sent a `delta` snapshot while the deployment still had an old base snapshot loaded.
+- A LoRA run saved a full adapter under trainer B, but deployment D was still attached to trainer A. LoRA has no base/delta repair step; fix the deployment attachment.
+
+Recovery:
+
+1. Full-parameter training: force the next sampler sync to `checkpoint_type="base"` before collecting more rollouts. If the trainer process already stopped, resume from the latest DCP checkpoint first. In the SDK-managed recipes, use the normal recipe path; if calling the SDK directly, call `save_weights_for_sampler(..., checkpoint_type="base")` and hotload that returned snapshot identity.
+2. LoRA training: `checkpoint_type` is not the fix. LoRA sampler saves are full adapter snapshots, so a snapshot mismatch means the deployment attachment is stale. Reattach the deployment through the SDK-managed cookbook path or create a fresh deployment tied to the current trainer.
+3. If reusing a deployment intentionally, use `DeployConfig(deployment_id=..., weight_sync_scope=WeightSyncScope.PER_TRAINER)` with the cookbook service path so the SDK patches `hot_load_trainer_job`, waits for the serving restart, and resets the sampler chain before the next rollout.
+4. If there is no usable DCP checkpoint, there is no clean "continue from last step" recovery. Start a fresh run or work with Fireworks support to inspect server-side state.
+
+Agent-assisted debugging: first search the Fireworks training cookbook skill for hotload recovery. If the cookbook is not available locally, clone `https://github.com/fw-ai/cookbook` and search `cookbook/skills`.
+
 ## Self-check when hotload fails
 
 Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>` or `checkpoint "<name>" not found in GCS`.
 
 1. **First, check the SDK version matches the cookbook's pin** (see [`../../SKILL.md#first-debug-step--always`](../../SKILL.md#first-debug-step--always)).
 2. **Check if it's a retention-expired trainer.** `list_checkpoints` / `promote_checkpoint` returning `NOT_FOUND` > 30 days after delete is expected — the row is gone and the checkpoints in GCS have been GC'd too.
-3. **If the trainer is alive or within retention:** most causes are a `PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up on a `--skip-validations` trainer or a pre-validation run. Ask:
+3. **If the error shows expected snapshot `S` but a different current deployment snapshot:** use [Runtime hotload mismatch or stale deployment attachment](#runtime-hotload-mismatch-or-stale-deployment-attachment).
+4. **If the trainer is alive or within retention:** most remaining causes are a `PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up on a `--skip-validations` trainer or a pre-validation run. Ask:
    - Was this deployment created with its own `hot_load_bucket_url` (i.e. `PER_DEPLOYMENT` scope), and then later attached to a `PER_TRAINER` trainer?
    - Was the trainer originally launched with `hot_load_deployment_id`, and is something now also setting `hot_load_trainer_job` on the deployment?
 
    Either answer means the trainer's bucket and the deployment's bucket disagree. Use one of the [bucket mismatch recovery](#bucket-mismatch-trainer-wrote-to-a-different-bucket-than-the-deployment-watches) options.
-4. If neither applies, or you're unsure how to untangle it, reach out to Fireworks support. Server-side recovery (re-pointing a deployment's bucket, recovering an orphaned sampler blob, looking up a legacy deployment ID) is handled by the Fireworks team.
+5. If neither applies, or you're unsure how to untangle it, reach out to Fireworks support. Server-side recovery (re-pointing a deployment's bucket, recovering an orphaned sampler blob, looking up a legacy deployment ID) is handled by the Fireworks team.
 
 ## Picking a scope: don't blind-copy `hot_load_deployment_id`
 

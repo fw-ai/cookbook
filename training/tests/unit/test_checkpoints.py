@@ -26,7 +26,7 @@ def log_dir():
 def _mock_fw_client(rows=None):
     """``fw._rows`` is the mutable source of truth; ``list_checkpoints`` returns
     a snapshot of it. This lets the client mock append a new row on
-    ``save_state``/``save_weights_for_sampler_ext``, exercising the polling
+    ``save_state``/``save_weights_for_sampler``, exercising the polling
     codepath in ``TrainingCheckpoints``."""
     fw = MagicMock()
     fw._rows = list(rows or [])
@@ -70,7 +70,7 @@ def _mock_client(fw=None, save_state_renames_to: str | None = None):
         return result
 
     client.save_state.side_effect = _save_state
-    client.save_weights_for_sampler_ext.side_effect = (
+    client.save_weights_for_sampler.side_effect = (
         lambda name, checkpoint_type="base": MagicMock(snapshot_name=f"{name}-snap")
     )
     return client
@@ -205,7 +205,7 @@ class TestSave:
         ckpt.save("step-1", resumable=True, promotable=False, data_consumed=100)
 
         client.save_state.assert_called_once_with("step-1")
-        client.save_weights_for_sampler_ext.assert_not_called()
+        client.save_weights_for_sampler.assert_not_called()
 
         with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
             assert json.load(f) == {"step-1": 100}
@@ -214,7 +214,7 @@ class TestSave:
         ckpt, client, fw = _make(log_dir)
         ckpt.save("step-1", resumable=False, promotable=True)
         client.save_state.assert_not_called()
-        client.save_weights_for_sampler_ext.assert_called_once_with(
+        client.save_weights_for_sampler.assert_called_once_with(
             "step-1", checkpoint_type="base"
         )
         assert not os.path.exists(os.path.join(log_dir, DATALOADER_BASE_NAME))
@@ -223,7 +223,7 @@ class TestSave:
         ckpt, client, _ = _make(log_dir)
         ckpt.save("step-1", resumable=True, promotable=True, data_consumed=42)
         client.save_state.assert_called_once_with("step-1")
-        client.save_weights_for_sampler_ext.assert_called_once()
+        client.save_weights_for_sampler.assert_called_once()
 
     def test_neither_raises(self, log_dir):
         ckpt, _, _ = _make(log_dir)
@@ -238,7 +238,7 @@ class TestSave:
         ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
         ckpt.save("step-1", resumable=True, promotable=True, data_consumed=10)
         client.save_state.assert_called_once()
-        client.save_weights_for_sampler_ext.assert_not_called()
+        client.save_weights_for_sampler.assert_not_called()
 
     def test_no_skip_when_existing_not_promotable(self, log_dir):
         existing = [
@@ -247,13 +247,13 @@ class TestSave:
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=existing)
         ckpt.save("step-1", resumable=False, promotable=True)
-        client.save_weights_for_sampler_ext.assert_called_once()
+        client.save_weights_for_sampler.assert_called_once()
 
     def test_skip_check_failure_falls_back_to_save(self, log_dir):
         ckpt, client, fw = _make(log_dir)
         fw.list_checkpoints.side_effect = RuntimeError("503")
         ckpt.save("step-1", resumable=False, promotable=True)
-        client.save_weights_for_sampler_ext.assert_called_once()
+        client.save_weights_for_sampler.assert_called_once()
 
     def test_skip_matches_suffixed_server_name(self, log_dir):
         """The trainer appends ``-<8 hex>`` to sampler names server-side.
@@ -265,7 +265,7 @@ class TestSave:
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
         ckpt.save("step-1", resumable=False, promotable=True)
-        client.save_weights_for_sampler_ext.assert_not_called()
+        client.save_weights_for_sampler.assert_not_called()
 
     def test_skip_does_not_match_different_step(self, log_dir):
         existing = [
@@ -274,7 +274,7 @@ class TestSave:
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
         ckpt.save("step-2", resumable=False, promotable=True)
-        client.save_weights_for_sampler_ext.assert_called_once()
+        client.save_weights_for_sampler.assert_called_once()
 
     def test_dataloader_keyed_on_server_name_when_trainer_renames(self, log_dir):
         """Trainer service-mode may rename DCP saves to its internal step
