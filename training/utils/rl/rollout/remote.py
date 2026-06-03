@@ -1,6 +1,6 @@
-"""Generic packer: :class:`RolloutService` output -> :class:`RolloutSample`.
+"""Generic packer: :class:`RolloutService` output -> :class:`RolloutRun`.
 
-The recipe needs ``rollout_fn(sample_prompt) -> RolloutSample | None``,
+The recipe needs ``rollout_fn(sample_prompt) -> RolloutRun | None``,
 called once per sample (each dataset row fans out to
 ``completions_per_prompt`` calls).  The most common integration pattern
 is "some remote service produces completion data; the trainer accepts
@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, List, Optional, Union
 
-from training.utils.rl.rollout.types import RolloutSample
+from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 from training.utils.rl.rollout.service import (
     RolloutPayload,
     RolloutService,
@@ -81,11 +81,11 @@ def make_remote_rollout_fn(
     messages_key: str = "messages",
     allow_empty_messages: bool = False,
 ):
-    """Build a per-sample ``rollout_fn`` that calls ``service`` once per
-    sample and packs the resulting payload.
+    """Build a per-run ``rollout_fn`` that calls ``service`` once per
+    run and packs the resulting payload.
 
     The framework fans each row out to ``completions_per_prompt`` parallel
-    samples; this helper requests ``n=1`` from the service per call.  When
+    runs; this helper requests ``n=1`` from the service per call.  When
     a payload carries ``total_reward=None``, ``reward_fn`` grades it
     client-side.
 
@@ -111,7 +111,7 @@ def make_remote_rollout_fn(
 
     sk = dict(sample_kwargs or {})
 
-    async def rollout_fn(sample_prompt: dict) -> RolloutSample | None:
+    async def rollout_fn(sample_prompt: dict) -> RolloutRun | None:
         messages = sample_prompt.get(messages_key) or []
         if not messages and not allow_empty_messages:
             return None
@@ -135,12 +135,13 @@ def make_remote_rollout_fn(
             )
 
         try:
-            return await pack_payload_to_sample(
+            sample = await pack_payload_to_sample(
                 payloads[0],
                 tokenizer_id=tokenizer_id,
                 reward_fn=reward_fn,
                 row=sample_prompt,
             )
+            return RolloutRun(segments=[sample])
         except _PackError as exc:
             logger.warning("dropping payload: %s", exc)
             return None

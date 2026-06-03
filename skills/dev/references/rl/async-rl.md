@@ -6,31 +6,44 @@
 > runtime `WARNING` at `main()` start.
 
 The async recipe runs rollout sampling and training as concurrent tasks behind a
-gate that bounds how stale a sample may be when it lands at the trainer.  It
-covers the full spectrum:
+gate that controls **submission headroom**.  Be precise about the two separate
+ideas:
 
-- **Strict on-policy** (`max_head_offpolicy_versions=0`): the gate admits at
-  most one outer batch worth of samples per policy version; samples that would
-  arrive after the next weight sync are held until the sync.  No off-policy
-  drift, but rollouts and training serialize at each batch boundary.
-- **Off-policy with bounded staleness** (`max_head_offpolicy_versions > 0`):
-  samples may land up to `O` weight-sync versions past their submit version,
-  which lets rollout sampling overlap with training in steady state.
+- **Fully synchronous execution** means `synchronous_training=True`: once a
+  train batch is ready, the runner drains outstanding rollout tasks before
+  entering `train_step`.  This removes rollout/trainer wall-time overlap.
+- **On-policy training** means the behavior policy that generated the trained
+  tokens matches the policy being updated.  AReaL tracks this with per-token
+  `versions` in rollout outputs.  Our async recipe currently tracks the row's
+  **submit version** (`async/version_offset_*`), which is only a proxy for the
+  behavior-policy version.
+- `max_head_offpolicy_versions=O` is an **admission budget**, not a completion
+  guarantee.  It controls whether the runner may submit more rows before future
+  weight syncs happen.  Once a request is submitted, the network/model runtime
+  can still make it finish before or after later syncs.
+
+For a conservative synchronous baseline, use `synchronous_training=True` and
+`max_head_offpolicy_versions=0`.  Raising `O` permits more head-of-line
+submission and can create useful overlap, but actual policy staleness must be
+validated with behavior-policy metadata when available and policy-drift metrics
+such as `train/inference_kld` / `train/inference_diff`.
 
 `rl_loop.py` is the older synchronous recipe (always strict on-policy, drains
 rollouts before each step).  The async recipe is a strict superset of that
 behavior and is the recommended starting point for new RL work.
 
-**Sync RL is the same recipe.** Set `synchronous_training=True` (or just leave
-`max_head_offpolicy_versions=0`) and the loop drains rollouts before each train
-step — fully on-policy, no overlap. Raising `O` later is a one-knob change.
+**Sync RL is the same recipe.** Set `synchronous_training=True` to force the
+drain-before-train behavior.  Do not use `max_head_offpolicy_versions=0` as a
+synonym for sync mode: `O=0` constrains new submissions, while
+`synchronous_training=True` changes when the runner is allowed to train.
 
 **Two-file layout.** A run is typically a `rollout.py` (the rollout function,
 `make_rollout_fn(setup) -> rollout_fn`) plus a `train.py` (the `Config` —
 training/deployment shapes, `policy_loss`, reward wiring — and the
 `main(cfg, rollout_fn_factory=..., rows=...)` call). The reward is computed
-inside the rollout and set on `RolloutSample.reward` (often factored into a
-`reward.py` the rollout imports). The recipe owns everything between.
+inside the rollout and set on each `RolloutSample.reward` segment inside a
+`RolloutRun` (often factored into a `reward.py` the rollout imports). The
+recipe owns everything between.
 
 ## What you customize (and what you don't)
 
@@ -52,31 +65,41 @@ should exist on `Config`.
 
 | | `rl_loop.py` (sync) | `async_rl_loop.py` (async) |
 |---|---|---|
-| Sampler/trainer overlap | None — drains rollouts before each step | Always concurrent; off-policy budget controls how much overlap |
+| Sampler/trainer overlap | None — drains rollouts before each step | Concurrent by default; `synchronous_training=True` disables train/rollout overlap |
 | Rollout API | `make_rollout_fn(rl_cfg, deploy_mgr) -> rollout_fn` | `rollout_fn_factory(setup) -> rollout_fn` |
-| Per-call signature | `rollout_fn(prompt, n)` returns N samples | `rollout_fn(sample_prompt) -> RolloutSample \| None` (one trajectory per call) |
+| Per-call signature | `rollout_fn(prompt, n)` returns N samples | `rollout_fn(sample_prompt) -> RolloutRun \| None` (one trajectory per call) |
 | Concurrency | `ConcurrencyConfig` (adaptive AIMD) | Sample-level cap on the async runner (`max_concurrency_rollout_sample`) |
-| On-/off-policy | Strict on-policy only | `max_head_offpolicy_versions=0` for strict on-policy, `>0` for off-policy with bounded staleness |
+| On-/off-policy | Strict on-policy only | `async/version_offset_*` measures submit-version lag; true behavior-policy staleness requires generation-version metadata |
 | PPO inner steps | One `fwd_bwd + optim_step` per rollout | `ppo_n_minibatches` × inner steps per rollout |
 
-Prefer the async recipe for new work — its `O=0` mode is equivalent to the sync
-recipe, and raising `O` later is a single-knob change.  The sync recipe stays
-for users who already depend on it.
+Prefer the async recipe for new work.  Use `synchronous_training=True` for a
+fully synchronous baseline, and tune `max_head_offpolicy_versions` separately
+when you want overlap.  The sync recipe stays for users who already depend on
+it.
 
 ## The rollout API
 
 The user supplies one trajectory per call:
 
 ```python
-async def rollout_fn(sample_prompt: dict) -> RolloutSample | None: ...
+async def rollout_fn(sample_prompt: dict) -> RolloutRun | None: ...
 ```
 
 `sample_prompt` is the dataset row's dict, renamed once it crosses the
 dataset/sampling seam (the dataset emits a "row"; the sampler treats it as a
-prompt to draw a sample against).  Return `None` to drop the sample (counts as
-one lost sample within the row's group).
+prompt to draw a trajectory against).  Return `None` to drop that trajectory
+draw (counts as one lost run within the row's group).
 
-`RolloutSample` is three parallel lists plus a scalar reward:
+`RolloutRun` is one trajectory. It contains one or more trainable
+`RolloutSample` segments that share the trajectory reward:
+
+```python
+@dataclass
+class RolloutRun:
+    segments: list[RolloutSample]
+```
+
+Each `RolloutSample` segment is three parallel lists plus a scalar reward:
 
 ```python
 @dataclass
@@ -95,13 +118,23 @@ in `loss_mask` transitions (0 on prompts/user/tool, 1 on assistant).  Per-token
 mask alignment is the contract — the trainer relies on it to mask non-generated
 positions out of the loss, TIS weight, and entropy metric.
 
+For the common one-segment case, wrap the segment:
+
+```python
+return RolloutRun(segments=[sample])
+```
+
+Multi-segment runs are for trajectories that produce multiple disjoint
+trainable traces under one trajectory reward. The recipe computes advantage at
+the run level and broadcasts it to each segment.
+
 The factory pattern keeps per-rollout dependencies (sampler, tokenizer, sample
 kwargs, custom state) out of the per-call signature:
 
 ```python
 def make_rollout_fn(setup: RolloutSetup) -> RolloutFn:
     sampler = DeploymentSampler(setup.inference_base_url, setup.model, setup.api_key, setup.tokenizer)
-    async def rollout_fn(sample_prompt: dict) -> RolloutSample | None:
+    async def rollout_fn(sample_prompt: dict) -> RolloutRun | None:
         ...
     return rollout_fn
 ```
@@ -132,7 +165,7 @@ many rows are submitted in the current admission tick.
 |---|---|---|
 | `prompt_groups_per_step` | prompts | `B_p`: how many prompts make one optimizer step |
 | `completions_per_prompt` | samples/prompt | `cpp`: GRPO group size per prompt |
-| `max_head_offpolicy_versions` | weight-sync versions | `O`: how many sync boundaries past submit a sample may land at the trainer.  `0` is strict on-policy |
+| `max_head_offpolicy_versions` | weight-sync versions | `O`: headroom for submitting rows ahead of future sampler versions.  This is an admission budget, not a guarantee that every request finishes within `O` versions |
 | `max_concurrency_rollout_sample` | samples | `C_s`: hard cap on in-flight LLM calls; map to `deployment.max_batch_size`.  Must be `>= cpp` or the gate deadlocks |
 | `ppo_n_minibatches` | minibatches | `K`: inner PPO steps per rollout batch (each with `old_policy_logprobs` snapshot reused) |
 
@@ -142,13 +175,44 @@ relative to one batch).
 **Version semantics.** `version` increments once per `weight_sync_fn` call
 (once per outer rollout batch when `weight_sync_interval=1`, which the recipe
 pins).  It is **not** an optimizer-step counter — with `K>1` the same version
-spans `K` optim steps.
+spans `K` optim steps.  Each row records the version at submission time; the
+train step reports `current_version - submit_version` as
+`async/version_offset_*`.
 
-**Sizing rule of thumb.**  For sustained overlap you need `O >= R - 1`.  At
-`O = 0` the loop runs strict on-policy regardless of `R`; raising `O` opens the
-overlap window.  AReaL's GSM8K example uses `R=1` with `O=2`; we've tested
-`R=4` with `O=4` (one margin step over the minimum) and found it healthy.  See
-`## Metrics` below for tuning from a live run.
+That metric is **submit-version lag**, not token-generation lag.  AReaL's
+stronger contract is per-token: workflows return a `versions` tensor whose
+entries are the weight version used when each generated token was produced, and
+staleness metrics compare those behavior-policy versions to the training
+version.  Fireworks async RL does not currently have equivalent per-token
+generation-version metadata in `RolloutSample`, so do not describe
+`version_offset=0` as a proof of on-policy generation.  It means the row was
+submitted under the same sampler-version counter the trainer currently sees.
+
+**Admission is not completion.** The gate decides whether to submit another
+row by looking at current in-flight and accepted sample counts.  It cannot
+promise that a submitted request will finish before a future weight sync, nor
+can it prove which model version served every generated token.  A slow rollout
+may come back after the trainer has advanced the sampler version, so validate
+policy drift with:
+
+- `async/version_offset_mean`
+- `async/version_offset_max`
+- `train/inference_kld`
+- `train/inference_diff`
+
+Treat the `async/version_offset_*` values as admission/submission diagnostics.
+Treat `train/inference_kld` and `train/inference_diff` as the policy-drift
+checks.  If drift is too high, lower `max_head_offpolicy_versions`, reduce
+`max_concurrency_rollout_sample`, or force `synchronous_training=True` for the
+baseline.
+
+**Sizing rule of thumb.**  For sustained overlap you usually need `O >= R - 1`.
+Treat this as an admission-sizing heuristic, not an on-policy guarantee.  At
+`O = 0`, the runner stops submitting new rows once the current version's batch
+budget is full, but only `synchronous_training=True` explicitly drains
+outstanding rollout tasks before training.  AReaL's GSM8K example uses `R=1`
+with `O=2`; we've tested `R=4` with `O=4` (one margin step over the minimum)
+and found it healthy.  See `## Metrics` below for tuning from a live run.
 
 ## Metrics: tuning staleness and the trainer/sampler GPU split
 
@@ -168,11 +232,12 @@ In off-policy steady state the two wait metrics are mutually exclusive: exactly
 one side waits per step.  Read the two ratios first to triage, then drop into
 the wait pair to decide what to change.
 
-> At `max_head_offpolicy_versions=0` (strict on-policy), `sampler_wait_for_trainer_time`
-> is structurally non-zero because the gate refuses to admit the next batch
-> until the current weight sync.  That is correct behavior, not a bug.  The
-> goal in that mode is just to keep the *trainer* fully utilized; the sampler
-> wait is the cost of strict on-policy.
+> At `max_head_offpolicy_versions=0`, `sampler_wait_for_trainer_time` can be
+> structurally non-zero because the gate refuses to admit the next batch once
+> the current version's submission budget is full.  That is correct behavior,
+> not a bug.  For the true fully synchronous baseline, also set
+> `synchronous_training=True`; then sampler wait includes the explicit
+> drain-before-train period.
 
 ### Reading a run (off-policy regime, `O > 0`)
 
@@ -214,9 +279,9 @@ Same metrics, in aggregate:
 In the off-policy regime, tune until `sampler_wait_for_trainer_time ≈ 0` *and*
 `trainer_wait_for_sampler_time` is small — the trainer is the marginal-cost
 resource and is fully utilized; the sampler always has work queued
-just-in-time.  In strict on-policy (`O=0`), only the second condition is
+just-in-time.  In the synchronous baseline, only the second condition is
 achievable; `sampler_wait_for_trainer_time` is bounded below by the train +
-sync wall time.
+sync wall time because the runner intentionally stops overlap.
 
 ### Other useful metrics
 
@@ -224,10 +289,12 @@ sync wall time.
   `old_policy_logprobs` snapshot.  Large with `ppo_n_minibatches > 1` means
   the inner loop is genuinely doing work; a near-zero value means
   `ppo_n_minibatches=1` would have the same effect at lower cost.
-- `train/inference_kld`, `train/inference_diff` — drift between the policy
-  used to sample and the policy at training time.  Should track `O`: at `O=0`
-  these are ~0; at `O=4` they grow but should remain bounded.  Spikes that
-  don't decay across steps often indicate `weight_sync_fn` is silently failing.
+- `train/inference_kld`, `train/inference_diff` — drift between rollout-time
+  inference logprobs and train-time policy logprobs.  These are the best
+  available signal for behavior-policy drift in this recipe because
+  `async/version_offset_*` only records submit-version lag.  If they spike even
+  when `O` is small, look for slow rollout tails, excessive concurrency, or a
+  silently failing `weight_sync_fn`.
 - `rollout/entropy` — averaged over `loss_mask>0` only.  Sudden collapse is
   the usual mode-collapse signal.
 
@@ -254,8 +321,9 @@ main(cfg, rollout_fn_factory=make_rollout_fn, rows=rows)
 ```
 
 `synchronous_training=True` forces the loop to drain rollouts before every
-train step; useful as a baseline for measuring the async overlap savings (it
-makes `perf/sampler_wait_for_trainer_time` ≈ train+sync wall time).
+train step; useful as a baseline for measuring async overlap savings.  Pair it
+with `max_head_offpolicy_versions=0` when you want the most conservative
+on-policy baseline.
 
 ## Loss path
 

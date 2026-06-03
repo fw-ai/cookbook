@@ -803,6 +803,100 @@ class TestTrainLoop:
 
 
 # ---------------------------------------------------------------------------
+# group_by_length wiring (length-grouped batching for DPO)
+# ---------------------------------------------------------------------------
+
+
+def _sized_pair_dataset(tmp_path, order_sizes) -> JsonlRenderDataset:
+    """Dataset where row ``i`` carries a pad of ``order_sizes[i]`` bytes, so the
+    byte-length proxy varies per row and we can recover each item's size from
+    its id (``c{i}`` -> ``order_sizes[i]``)."""
+    path = tmp_path / "pairs.jsonl"
+    with open(path, "w") as f:
+        for i, sz in enumerate(order_sizes):
+            f.write(json.dumps({"i": i, "pad": "x" * sz}) + "\n")
+    return JsonlRenderDataset(str(path), _test_render_pair)
+
+
+def _run_dpo_batches(
+    tmp_path, monkeypatch, order_sizes, *, batch_size, group_by_length, group_factor=50,
+):
+    """Run a single-epoch _train_loop and return the trained id batches in order."""
+    events: dict = {}
+    _stub_train_step_deps(monkeypatch, events)
+    ds = _sized_pair_dataset(tmp_path, order_sizes)
+    cfg = module.Config(
+        log_path=str(tmp_path), beta=0.1, epochs=1, batch_size=batch_size,
+        render_workers=0, group_by_length=group_by_length, length_group_factor=group_factor,
+    )
+    asyncio.run(
+        module._train_loop(
+            ds, None,
+            _FakeReference(), _FakePolicy(),
+            adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+            cursor=_new_cursor(max_rows=len(order_sizes)),
+        )
+    )
+    return [
+        [int(p["chosen_datum"]["id"][1:]) for p in batch]
+        for batch, _beta in events.get("flush_batches", [])
+    ]
+
+
+class TestGroupByLength:
+    def test_trains_every_pair_exactly_once(self, tmp_path, monkeypatch):
+        """No drop / no dup relative to the default path -- grouping only changes
+        which batch a pair lands in."""
+        order_sizes = [(i * 37) % 500 for i in range(20)]
+        batches = _run_dpo_batches(
+            tmp_path, monkeypatch, order_sizes, batch_size=4, group_by_length=True,
+            group_factor=2,
+        )
+        flat = sorted(i for b in batches for i in b)
+        assert flat == list(range(20))
+        assert len(batches) == 5  # ceil(20 / 4)
+
+    def test_is_deterministic_for_ref_cache_reproducibility(self, tmp_path, monkeypatch):
+        """The producer order MUST be reproducible (fixed seed) so the multi-epoch
+        ref cache replays correctly and epoch-0 resume is valid."""
+        order_sizes = [(i * 101) % 999 for i in range(23)]
+        a = _run_dpo_batches(
+            tmp_path, monkeypatch, order_sizes, batch_size=4, group_by_length=True,
+            group_factor=3,
+        )
+        b = _run_dpo_batches(
+            tmp_path, monkeypatch, order_sizes, batch_size=4, group_by_length=True,
+            group_factor=3,
+        )
+        assert a == b
+
+    def test_groups_similar_sizes_vs_file_order(self, tmp_path, monkeypatch):
+        """Grouped batches are far more length-homogeneous than the default
+        file-order batches on shuffled-on-disk pair sizes."""
+        import random
+
+        rng = random.Random(11)
+        order_sizes = [rng.randint(0, 4000) for _ in range(120)]
+
+        grouped = _run_dpo_batches(
+            tmp_path, monkeypatch, order_sizes, batch_size=6, group_by_length=True,
+            group_factor=10,
+        )
+        default = _run_dpo_batches(
+            tmp_path, monkeypatch, order_sizes, batch_size=6, group_by_length=False,
+        )
+
+        def mean_spread(batches):
+            vals = [
+                max(order_sizes[i] for i in b) - min(order_sizes[i] for i in b)
+                for b in batches
+            ]
+            return sum(vals) / len(vals)
+
+        assert mean_spread(grouped) < 0.5 * mean_spread(default)
+
+
+# ---------------------------------------------------------------------------
 # main()
 # ---------------------------------------------------------------------------
 

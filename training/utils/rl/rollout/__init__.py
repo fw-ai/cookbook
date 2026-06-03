@@ -1,11 +1,11 @@
 """Rollout primitives for the RL recipes.
 
-The trainer's user-facing contract is per-sample (matches AReaL/slime)::
+The trainer's user-facing contract is per-run (matches AReaL/slime)::
 
-    async def rollout_fn(sample_prompt) -> RolloutSample | None: ...
+    async def rollout_fn(sample_prompt) -> RolloutRun | None: ...
 
 ``sample_prompt`` is a dataset row's dict, renamed at the recipe seam
-to mark that it is now per-sample input rather than dataset-cursor
+to mark that it is now per-rollout input rather than dataset-cursor
 state.  The recipe fans each dataset row out to
 ``completions_per_prompt`` parallel calls and joins them by row id via
 :class:`GroupAssembler` before handing the assembled
@@ -13,11 +13,12 @@ state.  The recipe fans each dataset row out to
 
 This package layers the supporting types and helpers:
 
-* :mod:`.types` — :class:`Rollout` (group of samples) and
-  :class:`RolloutSample` (single trajectory), plus the
+* :mod:`.types` — :class:`Rollout` (group of runs),
+  :class:`RolloutRun` (single trajectory), and
+  :class:`RolloutSample` (single trainable segment), plus the
   :func:`rollout_to_prompt_group` adapter that packs a group into the
   trainer's :class:`PromptGroup`.
-* :mod:`.group_assembler` — :class:`GroupAssembler` joins per-sample
+* :mod:`.group_assembler` — :class:`GroupAssembler` joins per-run
   rollouts into PromptGroups by row id once all samples for a row have
   settled.
 * :mod:`.service` — service-agnostic Protocol + payload types
@@ -34,7 +35,7 @@ This package layers the supporting types and helpers:
 * :mod:`.trace` — native rollout trajectory analysis for visualization and
   diagnostics without a live verifier probe.
 * :mod:`.eval_protocol` — adapter from ``@evaluation_test`` metadata to the
-  per-sample rollout function contract.
+  per-run rollout function contract.
 """
 
 from training.utils.rl.rollout.assembler import (
@@ -62,7 +63,11 @@ from training.utils.rl.rollout.remote import (
 )
 from training.utils.rl.rollout.renderer import (
     MultimodalRenderingNotSupported,
+    VisionCompletionsResult,
+    build_multimodal_completions_prompt_token_ids,
+    build_multimodal_completions_request,
     model_input_to_token_ids,
+    sample_vision_completion,
     single_turn_renderer_rollout,
 )
 from training.utils.rl.rollout.service import (
@@ -80,6 +85,7 @@ from training.utils.rl.rollout.trace import (
 )
 from training.utils.rl.rollout.types import (
     Rollout,
+    RolloutRun,
     RolloutSample,
     rollout_to_prompt_group,
 )
@@ -108,10 +114,14 @@ __all__ = [
     "MessageTrajectoryError",
     "MessageValidationError",
     "MultimodalRenderingNotSupported",
+    "VisionCompletionsResult",
+    "build_multimodal_completions_prompt_token_ids",
+    "build_multimodal_completions_request",
     "PendingGroup",
     "PrefixMismatch",
     "Rollout",
     "RolloutPayload",
+    "RolloutRun",
     "RolloutSample",
     "RolloutService",
     "RolloutTrajectory",
@@ -133,6 +143,7 @@ __all__ = [
     "make_eval_protocol_rollout_fn_factory",
     "make_remote_rollout_fn",
     "model_input_to_token_ids",
+    "sample_vision_completion",
     "pack_payload_to_sample",
     "precompute_chat_suffix",
     "rollout_to_prompt_group",

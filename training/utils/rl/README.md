@@ -5,7 +5,7 @@
 
 Token-native rollout API for the async RL recipe (`training/recipes/async_rl_loop.py`).
 
-For the user-facing contract (`rollout_fn(sample_prompt) -> RolloutSample`,
+For the user-facing contract (`rollout_fn(sample_prompt) -> RolloutRun`,
 `RolloutSetup`, `rollout_fn_factory`, off-policy gate sizing), see
 [`/skills/dev/references/rl/async-rl.md`](/skills/dev/references/rl/async-rl.md).
 
@@ -13,7 +13,7 @@ For the user-facing contract (`rollout_fn(sample_prompt) -> RolloutSample`,
 
 | File | Purpose |
 | --- | --- |
-| `rollout/types.py` | `Rollout`, `RolloutSample`, `rollout_to_prompt_group` (trainer packing). |
+| `rollout/types.py` | `Rollout`, `RolloutRun`, `RolloutSample`, `rollout_to_prompt_group` (trainer packing). |
 | `rollout/assembler.py` | Token-native multi-turn assembly with prefix checks. |
 | `rollout/message.py` | Generic message-in TITO bridge that preserves prior assistant tokens. |
 | `rollout/renderer.py` | Optional renderer-backed single-turn helper. |

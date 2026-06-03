@@ -1,23 +1,25 @@
-"""Flat, mask-native rollout sample contract.
+"""Flat, mask-native rollout run contract.
 
 The user's ``rollout_fn(sample_prompt)`` hands back one
-:class:`RolloutSample` per call -- one trajectory.  Each sample is three parallel lists
-(``tokens``, ``logprobs``, ``loss_mask``) plus a scalar reward.  Multi-turn
-rollouts flatten into the same shape: turn boundaries are implicit in
-``loss_mask`` transitions (0 on prompts / env feedback / tool responses,
-1 on assistant-generated tokens).
+:class:`RolloutRun` per call -- one trajectory.  Each run contains one or
+more :class:`RolloutSample` segments.  A segment is three parallel lists
+(``tokens``, ``logprobs``, ``loss_mask``) plus the run reward.  Multi-turn
+rollouts can either flatten into one segment or emit one segment per
+trainable assistant span.  The trajectory-level reward is shared by every
+segment in the same run.
 
 This matches the user-facing contract used by AReaL and slime.  Group
-assembly (collecting N samples per row and computing GRPO-style
+assembly (collecting N rollout runs per row and computing GRPO-style
 advantages) happens framework-side via :class:`GroupAssembler` -- see
 :mod:`training.utils.rl.rollout.group_assembler`.
 
 :class:`Rollout` is the internal group representation that the
 :func:`rollout_to_prompt_group` adapter consumes after the assembler
-joins N samples by row.  The adapter emits ``tinker.Datum`` objects
-with a per-token ``loss_mask`` in ``loss_fn_inputs``; the existing
-loss kernels already honour this (see ``_get_loss_mask`` in
-``training/utils/rl/common.py``).
+joins N runs by row.  The adapter computes advantages over run rewards,
+broadcasts each run advantage to that run's segments, and emits
+``tinker.Datum`` objects with a per-token ``loss_mask`` in
+``loss_fn_inputs``; the existing loss kernels already honour this (see
+``_get_loss_mask`` in ``training/utils/rl/common.py``).
 """
 
 from __future__ import annotations
@@ -32,11 +34,13 @@ import tinker
 from training.utils.data import compute_advantages
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.router_replay import build_r3_routing_matrices
+from training.utils.supervised import build_multimodal_policy_datum
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "RolloutSample",
+    "RolloutRun",
     "Rollout",
     "rollout_to_prompt_group",
 ]
@@ -44,7 +48,7 @@ __all__ = [
 
 @dataclass
 class RolloutSample:
-    """One completion's flat, trainer-ready data.
+    """One trainable segment's flat, trainer-ready data.
 
     The three parallel lists MUST have identical length.  ``loss_mask``
     is ``1`` on assistant-generated positions (trained on) and ``0``
@@ -58,6 +62,11 @@ class RolloutSample:
     logprobs: List[float]
     loss_mask: List[int]
     reward: float
+    prompt_model_input: tinker.ModelInput | None = None
+    """When set, :func:`rollout_to_prompt_group` builds the trainer datum via
+    :func:`training.utils.supervised.build_multimodal_policy_datum` (chunked
+    ``model_input`` with image pointers).  ``tokens`` / ``logprobs`` /
+    ``loss_mask`` are text-only parallels for metrics and logprob alignment."""
     routing_matrices: List[str] | None = None
     """Optional per-token MoE routing matrices captured from the inference
     deployment (R3 / Router Replay).  When set, the adapter aligns them to
@@ -73,32 +82,136 @@ class RolloutSample:
 
 
 @dataclass
-class Rollout:
-    """One row's worth of completions (one GRPO group)."""
+class RolloutRun:
+    """One rollout function invocation, also called one trajectory.
 
-    samples: List[RolloutSample]
+    ``segments`` contains one or more trainable spans from the same
+    trajectory.  All segments in a run must carry the same scalar reward;
+    the adapter computes one advantage for the run and broadcasts it to
+    every segment before training.
+    """
+
+    segments: List[RolloutSample]
+    run_id: str | None = None
+    metadata: dict | None = None
+
+
+@dataclass
+class Rollout:
+    """One row's worth of rollout runs (one GRPO group)."""
+
+    runs: List[RolloutRun]
     row_meta: dict | None = None
 
 
+def _completion_tokens_from_sample(sample: RolloutSample) -> List[int]:
+    """Return assistant tokens from a flat segment (``loss_mask==1``)."""
+    return [int(t) for t, m in zip(sample.tokens, sample.loss_mask) if m > 0]
+
+
+def _completion_logprobs_from_sample(sample: RolloutSample) -> List[float]:
+    """Return per-completion inference logprobs (``loss_mask==1``)."""
+    return [float(lp) for lp, m in zip(sample.logprobs, sample.loss_mask) if m > 0]
+
+
+def _align_multimodal_inf_logprobs(
+    sample: RolloutSample,
+    shifted_weights: List[float],
+) -> List[float]:
+    """Map text-only inference logprobs into datum ``weights`` index space.
+
+    Multimodal datums use shifted weights over the full chunked sequence
+    (text + image slots + completion).  GRPO/TIS slice ``inf_logprobs`` with
+    ``prompt_lens`` in that same index space, so the parallel text-only
+    ``sample.logprobs[1:]`` must be scattered onto weight==1 positions.
+    """
+    completion_lps = _completion_logprobs_from_sample(sample)
+    active_indices = [i for i, w in enumerate(shifted_weights) if w > 0]
+    if len(completion_lps) != len(active_indices):
+        raise ValueError(
+            "multimodal inference logprobs misaligned with datum weights "
+            f"(got {len(completion_lps)} completion logprobs, "
+            f"expected {len(active_indices)} trained positions)."
+        )
+    aligned = [0.0] * len(shifted_weights)
+    for idx, lp in zip(active_indices, completion_lps):
+        aligned[idx] = lp
+    return aligned
+
+
 def _validate(rollout: Rollout) -> None:
-    if not rollout.samples:
-        raise ValueError("Rollout.samples is empty")
-    for i, s in enumerate(rollout.samples):
-        n = len(s.tokens)
-        if len(s.logprobs) != n or len(s.loss_mask) != n:
+    if not rollout.runs:
+        raise ValueError("Rollout.runs is empty")
+    for run_index, run in enumerate(rollout.runs):
+        if not run.segments:
+            raise ValueError(f"Run {run_index}: segments is empty")
+        _run_reward(run, run_index)
+        for segment_index, segment in enumerate(run.segments):
+            _validate_segment(run_index, segment_index, segment)
+
+
+def _run_reward(run: RolloutRun, run_index: int) -> float:
+    reward = float(run.segments[0].reward)
+    for segment_index, segment in enumerate(run.segments[1:], start=1):
+        if float(segment.reward) != reward:
             raise ValueError(
-                f"Sample {i}: tokens/logprobs/loss_mask length mismatch "
-                f"({n} / {len(s.logprobs)} / {len(s.loss_mask)}). All three "
-                "lists must be the same length.",
+                f"Run {run_index}: segment {segment_index} reward "
+                f"({segment.reward}) differs from segment 0 reward ({reward}). "
+                "A rollout run has one trajectory-level reward; duplicate it "
+                "onto every segment.",
+            )
+    return reward
+
+
+def _validate_segment(
+    run_index: int,
+    segment_index: int,
+    segment: RolloutSample,
+) -> None:
+    if segment.prompt_model_input is not None:
+        n = len(segment.tokens)
+        if len(segment.logprobs) != n or len(segment.loss_mask) != n:
+            raise ValueError(
+                f"Run {run_index} segment {segment_index}: multimodal "
+                "tokens/logprobs/loss_mask mismatch "
+                f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)})."
             )
         if n < 2:
-            raise ValueError(f"Sample {i}: tokens must have length >= 2.")
-        if not any(m > 0 for m in s.loss_mask):
             raise ValueError(
-                f"Sample {i}: loss_mask is all zeros -- no tokens would be "
-                "trained on.  Set loss_mask=1 on assistant-generated "
-                "positions.",
+                f"Run {run_index} segment {segment_index}: tokens must have "
+                "length >= 2.",
             )
+        if not any(m > 0 for m in segment.loss_mask):
+            raise ValueError(
+                f"Run {run_index} segment {segment_index}: loss_mask is all "
+                "zeros for multimodal segment.",
+            )
+        if not _completion_tokens_from_sample(segment):
+            raise ValueError(
+                f"Run {run_index} segment {segment_index}: multimodal segment "
+                "has no completion tokens.",
+            )
+        return
+
+    n = len(segment.tokens)
+    if len(segment.logprobs) != n or len(segment.loss_mask) != n:
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: "
+            "tokens/logprobs/loss_mask length mismatch "
+            f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)}). "
+            "All three lists must be the same length.",
+        )
+    if n < 2:
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: tokens must have "
+            "length >= 2.",
+        )
+    if not any(mask_value > 0 for mask_value in segment.loss_mask):
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: loss_mask is all zeros "
+            "-- no tokens would be trained on. Set loss_mask=1 on "
+            "assistant-generated positions.",
+        )
 
 
 def rollout_to_prompt_group(
@@ -124,27 +237,35 @@ def rollout_to_prompt_group(
     server picks its own routing for prompt tokens).  Reference-side
     datums never carry routing matrices.
 
-    Returns ``None`` when the group has no samples; raises on structural
-    issues (mismatched lengths, empty samples, all-zero loss mask).
+    Returns ``None`` when the group has no runs; raises on structural
+    issues (mismatched lengths, empty runs, all-zero loss mask).
     """
     _validate(rollout)
 
-    rewards = [s.reward for s in rollout.samples]
+    rewards = [
+        _run_reward(run, run_index)
+        for run_index, run in enumerate(rollout.runs)
+    ]
     advantages = list(advantage_fn(list(rewards)))
+    if len(advantages) != len(rewards):
+        raise ValueError(
+            "advantage_fn must return one advantage per rollout run "
+            f"(got {len(advantages)} for {len(rewards)} rewards).",
+        )
 
     # Drop on non-finite advantages (e.g., GRPO z-score on a length-1 group).
-    # Don't precheck on sample count -- REINFORCE (cpp=1, lambda r: r) is valid.
+    # Don't precheck on run count -- REINFORCE (cpp=1, lambda r: r) is valid.
     if any(not math.isfinite(a) for a in advantages):
         logger.warning(
             "rollout_to_prompt_group: dropping rollout (N=%d) -- "
             "advantage_fn produced non-finite advantages %r.  This "
             "typically happens when the default GRPO-style "
             "``compute_advantages`` z-score normalizer runs on a "
-            "single-sample group (std of a length-1 tensor is "
+            "single-run group (std of a length-1 tensor is "
             "undefined).  For REINFORCE-style runs with "
-            "completions_per_prompt=1, pass a single-sample-safe "
+            "completions_per_prompt=1, pass a single-run-safe "
             "advantage_fn (e.g. ``lambda r: r``).",
-            len(rollout.samples), advantages,
+            len(rollout.runs), advantages,
         )
         return None
 
@@ -157,68 +278,124 @@ def rollout_to_prompt_group(
 
     # Datum predicts tokens[1:] from tokens[:-1]; shift both loss_mask and
     # logprobs to match target positions.
-    for s in rollout.samples:
-        n = len(s.tokens)
-        target_len = n - 1
+    segment_advantages: List[float] = []
+    for run, run_advantage in zip(rollout.runs, advantages):
+        for s in run.segments:
+            segment_advantages.append(run_advantage)
 
-        target_tokens = s.tokens[1:]
-        target_mask = s.loss_mask[1:]
-        target_logprobs = s.logprobs[1:]
+            if s.prompt_model_input is not None:
+                completion_tokens = _completion_tokens_from_sample(s)
+                datum = build_multimodal_policy_datum(
+                    s.prompt_model_input,
+                    completion_tokens,
+                )
+                target_tokens = [
+                    int(x) for x in datum.loss_fn_inputs["target_tokens"].data
+                ]
+                target_len = len(target_tokens)
+                target_mask = [
+                    float(x) for x in datum.loss_fn_inputs["weights"].data
+                ]
+                target_logprobs = _align_multimodal_inf_logprobs(s, target_mask)
 
-        # Per-sample prompt boundary: index of the first assistant
-        # (loss_mask=1) token.  Heterogeneous rollouts (multi-turn,
-        # tool branches) can have different prefix lengths per sample,
-        # so the single ``PromptGroup.prompt_len`` is wrong for them.
-        sample_prompt_len = next(
-            (i for i, m in enumerate(s.loss_mask) if m > 0),
-            0,
-        )
-        per_sample_prompt_lens.append(sample_prompt_len)
+                # ``run_loss_loop`` uses ``response_start = prompt_len - 1`` on
+                # shifted datum weights.  The text path records the first active
+                # index in the *unshifted* loss_mask; map shifted weights the
+                # same way (+1) so multimodal GRPO/TIS slices align.
+                shifted_first_active = next(
+                    (i for i, w in enumerate(target_mask) if w > 0),
+                    0,
+                )
+                per_sample_prompt_lens.append(shifted_first_active + 1)
 
-        rm = None
-        if s.routing_matrices is not None:
-            rm = build_r3_routing_matrices(
-                s.routing_matrices,
-                prompt_len=sample_prompt_len,
-                model_input_len=target_len,
-                completion_only=router_replay_completion_only,
+                policy_data.append(datum)
+
+                if with_reference:
+                    mask_len = len(target_mask)
+                    reference_data.append(tinker.Datum(
+                        model_input=datum.model_input,
+                        loss_fn_inputs={
+                            "target_tokens": tinker.TensorData(
+                                data=target_tokens,
+                                dtype="int64",
+                                shape=[target_len],
+                            ),
+                            "loss_mask": tinker.TensorData(
+                                data=target_mask,
+                                dtype="float32",
+                                shape=[mask_len],
+                            ),
+                        },
+                    ))
+
+                inf_logprobs_aligned.append(target_logprobs)
+                completion_lens.append(sum(1 for w in target_mask if w > 0))
+                truncated.append(s.finish_reason == "length")
+                continue
+
+            n = len(s.tokens)
+            target_len = n - 1
+
+            target_tokens = s.tokens[1:]
+            target_mask = s.loss_mask[1:]
+            target_logprobs = s.logprobs[1:]
+
+            # Per-segment prompt boundary: index of the first assistant
+            # (loss_mask=1) token.  Heterogeneous rollouts (multi-turn,
+            # tool branches) can have different prefix lengths per segment,
+            # so the single ``PromptGroup.prompt_len`` is wrong for them.
+            sample_prompt_len = next(
+                (i for i, m in enumerate(s.loss_mask) if m > 0),
+                0,
             )
+            per_sample_prompt_lens.append(sample_prompt_len)
 
-        policy_data.append(tinker.Datum(
-            model_input=tinker.ModelInput.from_ints(s.tokens[:-1], routing_matrices=rm),
-            loss_fn_inputs={
-                "target_tokens": tinker.TensorData(
-                    data=target_tokens, dtype="int64", shape=[target_len],
-                ),
-                "weights": tinker.TensorData(
-                    data=target_mask, dtype="int64", shape=[target_len],
-                ),
-            },
-        ))
+            rm = None
+            if s.routing_matrices is not None:
+                rm = build_r3_routing_matrices(
+                    s.routing_matrices,
+                    prompt_len=sample_prompt_len,
+                    model_input_len=target_len,
+                    completion_only=router_replay_completion_only,
+                )
 
-        if with_reference:
-            reference_data.append(tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(s.tokens[:-1]),
+            policy_data.append(tinker.Datum(
+                model_input=tinker.ModelInput.from_ints(
+                    s.tokens[:-1], routing_matrices=rm,
+                ),
                 loss_fn_inputs={
                     "target_tokens": tinker.TensorData(
                         data=target_tokens, dtype="int64", shape=[target_len],
                     ),
-                    "loss_mask": tinker.TensorData(
+                    "weights": tinker.TensorData(
                         data=target_mask, dtype="int64", shape=[target_len],
                     ),
                 },
             ))
 
-        inf_logprobs_aligned.append(target_logprobs)
-        completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
-        truncated.append(s.finish_reason == "length")
+            if with_reference:
+                reference_data.append(tinker.Datum(
+                    model_input=tinker.ModelInput.from_ints(s.tokens[:-1]),
+                    loss_fn_inputs={
+                        "target_tokens": tinker.TensorData(
+                            data=target_tokens, dtype="int64", shape=[target_len],
+                        ),
+                        "loss_mask": tinker.TensorData(
+                            data=target_mask, dtype="int64", shape=[target_len],
+                        ),
+                    },
+                ))
+
+            inf_logprobs_aligned.append(target_logprobs)
+            completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
+            truncated.append(s.finish_reason == "length")
 
     # ``prompt_len`` is the legacy scalar (back-compat); ``prompt_lens``
-    # is the authoritative per-sample list for heterogeneous rollouts.
+    # is the authoritative per-segment list for heterogeneous rollouts.
     return PromptGroup(
         data=policy_data,
         ref_data=reference_data,
-        advantages=list(advantages),
+        advantages=segment_advantages,
         ref_logprobs=None,
         prompt_len=per_sample_prompt_lens[0],
         rewards=rewards,

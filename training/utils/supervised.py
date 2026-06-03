@@ -604,10 +604,58 @@ def _extract_text_only_token_ids(model_input: tinker.ModelInput) -> list[int]:
     return ids
 
 
-def _has_non_text_chunks(model_input: tinker.ModelInput) -> bool:
+def has_non_text_chunks(model_input: tinker.ModelInput) -> bool:
+    """Return True when *model_input* carries image (or other non-text) chunks."""
     return any(
         not isinstance(c, tinker.types.EncodedTextChunk) for c in model_input.chunks
     )
+
+
+def _has_non_text_chunks(model_input: tinker.ModelInput) -> bool:
+    return has_non_text_chunks(model_input)
+
+
+def _chunk_weight_slots(chunk: Any) -> int:
+    if isinstance(chunk, tinker.types.EncodedTextChunk):
+        return len(chunk.tokens)
+    if hasattr(chunk, "length"):
+        return int(chunk.length)
+    if hasattr(chunk, "expected_tokens"):
+        return int(chunk.expected_tokens)
+    return 0
+
+
+def build_multimodal_rollout_weights(
+    prompt_model_input: tinker.ModelInput,
+    completion_token_count: int,
+) -> list[float]:
+    """Per-position training weights for a single-turn RL trajectory."""
+    weights: list[float] = []
+    for chunk in prompt_model_input.chunks:
+        weights.extend([0.0] * _chunk_weight_slots(chunk))
+    weights.extend([1.0] * completion_token_count)
+    return weights
+
+
+def build_multimodal_policy_datum(
+    prompt_model_input: tinker.ModelInput,
+    completion_tokens: Sequence[int],
+    *,
+    max_seq_len: int | None = None,
+) -> tinker.Datum:
+    """Build a policy :class:`tinker.Datum` that preserves image chunks in ``model_input``."""
+    completion = [int(t) for t in completion_tokens]
+    chunks = list(prompt_model_input.chunks) + [
+        tinker.types.EncodedTextChunk(tokens=completion)
+    ]
+    full_input = tinker.ModelInput(chunks=chunks)
+    weights = build_multimodal_rollout_weights(prompt_model_input, len(completion))
+    if len(weights) != full_input.length:
+        raise ValueError(
+            f"multimodal rollout weights length {len(weights)} != "
+            f"model_input.length {full_input.length}"
+        )
+    return _build_multimodal_datum(full_input, weights, max_seq_len)
 
 
 def _build_multimodal_datum(

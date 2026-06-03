@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import tinker
+import torch
 from tqdm import tqdm
 
 from training.utils import (
@@ -81,6 +82,13 @@ from training.utils.timer import flush_timing, timer
 
 logger = logging.getLogger(__name__)
 
+# Fixed seed for the length-grouped batch order. DPO builds the ref cache in
+# producer order in epoch 0 and replays it in epochs 1+, and epoch-0 resume
+# re-streams from the start, so the loader order MUST be reproducible. A
+# constant seed keeps the grouped order deterministic across runs/resume while
+# still de-correlating batch length from training step.
+_DPO_LENGTH_GROUP_SEED = 0
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -115,6 +123,21 @@ class Config:
     """Number of preference pairs per reference forward call during caching."""
     render_workers: int = DEFAULT_RENDER_WORKERS
     """Number of DataLoader workers for streaming render. <=1 = in-process."""
+
+    group_by_length: bool = False
+    """Compose each batch from similarly-sized preference pairs (bucket-then-
+    shuffle on the whole-row byte-length proxy, which covers chosen+rejected)
+    instead of file order. Cuts padding waste and, under context parallel, lets
+    most batches run at a low CP degree. Bucket *order* is shuffled with a fixed
+    seed so the ref-cache producer order stays deterministic and resumable.
+    Keep off for base64-image multimodal data where byte length is a poor proxy.
+    Batch count and resume/cursor semantics are unchanged."""
+
+    length_group_factor: int = 50
+    """Mega-batch multiplier for ``group_by_length``: a permutation is cut into
+    windows of ``batch_size * length_group_factor`` that are sorted by length
+    before chunking into batches. Larger -> tighter length homogeneity (less
+    padding / lower CP) but weaker shuffling; smaller -> looser grouping."""
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
@@ -414,12 +437,25 @@ async def _train_loop(
     # -- Epoch 0: stream render → ref forward → training -----------------------
 
     pbar = tqdm(total=total_steps, desc="DPO training", unit="step")
+    # Default path: stable file order (shuffle=False) so the ref cache producer
+    # order is reproducible. Length-grouped path: bucket by the byte-length
+    # proxy and shuffle batch *order* with a FIXED seed -- still fully
+    # deterministic (so ref-cache replay + epoch-0 resume stay valid) but
+    # length is de-correlated from training step instead of file order.
+    group_by_length = cfg.group_by_length
+    loader_generator = (
+        torch.Generator().manual_seed(_DPO_LENGTH_GROUP_SEED) if group_by_length else None
+    )
     loader = make_render_dataloader(
         pair_dataset,
         batch_size=batch_size,
         num_workers=cfg.render_workers,
-        shuffle=False,  # ref-cache iteration depends on stable producer order
+        shuffle=group_by_length,  # grouped path uses seeded shuffle; else file order
+        generator=loader_generator,
         worker_init_fn=worker_init_fn,
+        group_by_length=group_by_length,
+        length_group_factor=cfg.length_group_factor,
+        sizes=pair_dataset.approx_row_sizes() if group_by_length else None,
     )
 
     async def _ref_producer() -> None:

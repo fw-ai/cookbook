@@ -1,6 +1,6 @@
 """Unit tests for training.utils.rl.async_train.run_async_rl_loop.
 
-Exercises the per-sample API: rows fan out to N samples, the
+Exercises the per-run API: rows fan out to N rollout runs, the
 GroupAssembler joins them by row id, and the loop trains on assembled
 PromptGroups.  No GPU / network / fireworks SDK required.
 """
@@ -16,7 +16,7 @@ from training.utils.rl.async_train import (
     _StalenessController,
     run_async_rl_loop,
 )
-from training.utils.rl.rollout import RolloutSample
+from training.utils.rl.rollout import RolloutRun, RolloutSample
 from training.utils.rl.train import TrainStepFns
 
 
@@ -34,6 +34,10 @@ def _sample(reward: float = 0.0) -> RolloutSample:
     )
 
 
+def _rollout_run(reward: float = 0.0) -> RolloutRun:
+    return RolloutRun(segments=[_sample(reward)])
+
+
 def _passthrough_advantages(rewards):
     """REINFORCE-style: raw reward as advantage.  Safe on N=1 groups."""
     return list(rewards)
@@ -47,17 +51,17 @@ def _row(
     on_resolved=None,
     row_meta=None,
 ) -> RowRequest:
-    """Build a RowRequest whose sample_factory returns a fresh sample
+    """Build a RowRequest whose run_factory returns a fresh rollout run
     per sub_index (or ``None`` for indices in ``fail_indices``)."""
 
     async def factory(sub_index: int):
         if sub_index in fail_indices:
             return None
-        return _sample(reward=reward)
+        return _rollout_run(reward=reward)
 
     return RowRequest(
         row_id=row_id,
-        sample_factory=factory,
+        run_factory=factory,
         row_meta=row_meta,
         on_resolved=on_resolved,
     )
@@ -228,7 +232,7 @@ class TestHappyPath:
         assert all(offset == 0 for _, _, offset in calls)
 
     def test_sample_failures_skip_batch_not_charge_gate(self):
-        """Sample factory returning None drops the row from training."""
+        """Run factory returning None drops the row from training."""
         n_rows = 6
         calls = []
 
@@ -408,10 +412,10 @@ class TestMaxConcurrent:
 
         async def slow_factory(_sub):
             await asyncio.sleep(0.01)
-            return _sample()
+            return _rollout_run()
 
         rows = (
-            RowRequest(row_id=i, sample_factory=slow_factory)
+            RowRequest(row_id=i, run_factory=slow_factory)
             for i in range(10)
         )
 
@@ -429,21 +433,21 @@ class TestMaxConcurrent:
         """cpp=4, max_concurrent=8: never more than 8 samples in flight.
 
         Pins the unit semantic for max_concurrent: it counts samples
-        (LLM calls), not rows.  Each row submits cpp=4 sample tasks
+        (LLM calls), not rows.  Each row submits cpp=4 rollout tasks
         atomically, so under an 8-sample cap at most 2 rows are admitted.
         """
         peak_samples = [0]
 
         async def slow_factory(_sub):
             await asyncio.sleep(0.005)
-            return _sample()
+            return _rollout_run()
 
         def train_step(step, groups, extra):
             peak_samples[0] = max(peak_samples[0], extra["async/in_flight"])
             return step + 1, {}
 
         rows = (
-            RowRequest(row_id=i, sample_factory=slow_factory)
+            RowRequest(row_id=i, run_factory=slow_factory)
             for i in range(6)
         )
 
@@ -475,13 +479,13 @@ class TestMaxConcurrent:
 
 class TestTaskExceptions:
     def test_exception_in_sample_propagates(self):
-        """Sample-task exceptions abort the run rather than getting silently
+        """Run-task exceptions abort the run rather than getting silently
         counted as ``sample_fails``."""
 
         async def factory(sub_index):
             raise RuntimeError("boom")
 
-        bad_row = RowRequest(row_id=99, sample_factory=factory)
+        bad_row = RowRequest(row_id=99, run_factory=factory)
 
         with pytest.raises(RuntimeError, match="boom"):
             _run(run_async_rl_loop(
@@ -575,17 +579,17 @@ class TestRowResolutionHooks:
         assert final["resolved_rows"] == 12
 
 
-class TestPerSampleFanout:
-    def test_grpo_fanout_assembles_n_samples_per_row(self):
+class TestPerRunFanout:
+    def test_grpo_fanout_assembles_n_runs_per_row(self):
         """completions_per_prompt=4 with default GRPO advantages: every row
-        produces a 4-sample group."""
+        produces a 4-run group."""
         trained_groups = []
 
         def train_step(step, groups, extra):
             trained_groups.extend(groups)
             return step + 1, {}
 
-        # Two rows -> 1 step at gpb=2.  Each row fans out to 4 samples.
+        # Two rows -> 1 step at gpb=2.  Each row fans out to 4 runs.
         _run(run_async_rl_loop(
             rows=iter([_row(0, reward=1.0), _row(1, reward=2.0)]),
             train_fns=TrainStepFns(train_step=train_step),
@@ -595,18 +599,46 @@ class TestPerSampleFanout:
             weight_sync_fn=lambda _step: None,
         ))
         assert len(trained_groups) == 2
-        # Each PromptGroup has 4 datums (one per sample).
+        # Each PromptGroup has 4 datums (one per one-segment run).
         assert all(len(g.data) == 4 for g in trained_groups)
 
+    def test_multi_segment_run_expands_datums_not_group_rewards(self):
+        trained_groups = []
+
+        async def run_factory(sub_index: int):
+            if sub_index == 0:
+                return RolloutRun(segments=[_sample(1.0), _sample(1.0)])
+            return _rollout_run(0.0)
+
+        def train_step(step, groups, extra):
+            trained_groups.extend(groups)
+            return step + 1, {}
+
+        _run(run_async_rl_loop(
+            rows=iter([RowRequest(row_id=0, run_factory=run_factory)]),
+            train_fns=TrainStepFns(train_step=train_step),
+            prompt_groups_per_step=1,
+            max_head_offpolicy_versions=0,
+            completions_per_prompt=2,
+            advantage_fn=_passthrough_advantages,
+            weight_sync_fn=lambda _step: None,
+        ))
+
+        assert len(trained_groups) == 1
+        prompt_group = trained_groups[0]
+        assert sorted(prompt_group.rewards) == [0.0, 1.0]
+        assert len(prompt_group.data) == 3
+        assert sorted(prompt_group.advantages) == [0.0, 1.0, 1.0]
+
     def test_partial_group_emits_when_min_group_size_satisfied(self):
-        """If 1 of 4 samples fails but min_group_size=2, the row still emits."""
+        """If 1 of 4 runs fails but min_group_size=2, the row still emits."""
         trained_groups = []
 
         def train_step(step, groups, extra):
             trained_groups.extend(groups)
             return step + 1, {}
 
-        # Fail 2 of 4 samples per row -> 2 surviving samples meets min=2.
+        # Fail 2 of 4 runs per row -> 2 surviving runs meets min=2.
         rows = iter([
             _row(0, reward=0.5, fail_indices=(0, 2)),
             _row(1, reward=1.5, fail_indices=(1, 3)),
@@ -624,7 +656,7 @@ class TestPerSampleFanout:
         assert all(len(g.data) == 2 for g in trained_groups)
 
     def test_row_fully_dropped_when_below_min_group_size(self):
-        """When more samples fail than min_group_size allows, the row drops
+        """When more runs fail than min_group_size allows, the row drops
         entirely and counts as sample_fail."""
         rows = iter([
             _row(0, fail_indices=(0, 1, 2, 3)),  # all fail
