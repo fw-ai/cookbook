@@ -61,52 +61,50 @@ def auto_select_training_shape(
 
     Raises ``ValueError`` if no matching shape is found.
     """
-    expected_mode = _expected_trainer_mode(trainer_role, lora_rank)
+    modes_to_try = _trainer_modes_for_selection(trainer_role, lora_rank)
     parent = (
         f"accounts/{shape_account}/trainingShapes/-"
         if shape_account
         else _TRAINING_SHAPE_VERSION_PARENT
     )
 
-    # Try exact base_model match first.
-    candidates = _list_and_filter(
-        trainer_mgr,
-        parent=parent,
-        filter_expr=_combine_filters(
-            f'snapshot.base_model="{base_model}"',
-            f'snapshot.trainer_mode="{expected_mode}"',
-            "latest_validated=true",
-            "public=true" if public_only else "",
-        ),
-        expected_mode=expected_mode,
-        max_seq_len=max_seq_len,
-    )
-    if candidates:
-        return _pick_best(candidates, max_seq_len)
+    for expected_mode in modes_to_try:
+        candidates = _list_and_filter(
+            trainer_mgr,
+            parent=parent,
+            filter_expr=_combine_filters(
+                f'snapshot.base_model="{base_model}"',
+                f'snapshot.trainer_mode="{expected_mode}"',
+                "latest_validated=true",
+                "public=true" if public_only else "",
+            ),
+            expected_modes={expected_mode},
+            max_seq_len=max_seq_len,
+        )
+        if candidates:
+            return _pick_best(candidates, max_seq_len)
 
-    # Fallback: compatible model_type + parameter_count bucket.
     model_ctx = _fetch_model_context(trainer_mgr, base_model)
     lo, hi = _param_count_bounds(model_ctx["parameter_count"])
-    candidates = _list_and_filter(
-        trainer_mgr,
-        parent=parent,
-        filter_expr=_combine_filters(
-            f'snapshot.model_type="{model_ctx["model_type"]}"',
-            f"snapshot.parameter_count>={lo}",
-            f"snapshot.parameter_count<={hi}",
-            f'snapshot.trainer_mode="{expected_mode}"',
-            "latest_validated=true",
-            "public=true" if public_only else "",
-        ),
-        expected_mode=expected_mode,
-        max_seq_len=max_seq_len,
-    )
-    if candidates:
-        return _pick_best(candidates, max_seq_len)
+    for expected_mode in modes_to_try:
+        candidates = _list_and_filter(
+            trainer_mgr,
+            parent=parent,
+            filter_expr=_combine_filters(
+                f'snapshot.model_type="{model_ctx["model_type"]}"',
+                f"snapshot.parameter_count>={lo}",
+                f"snapshot.parameter_count<={hi}",
+                f'snapshot.trainer_mode="{expected_mode}"',
+                "latest_validated=true",
+                "public=true" if public_only else "",
+            ),
+            expected_modes={expected_mode},
+            max_seq_len=max_seq_len,
+        )
+        if candidates:
+            return _pick_best(candidates, max_seq_len)
 
-    mode_label = {"LORA_TRAINER": "LoRA", "FORWARD_ONLY": "reference"}.get(
-        expected_mode, "full-tune"
-    )
+    mode_label = _selection_mode_label(trainer_role, modes_to_try)
     raise ValueError(
         f"No validated training shape matched base_model={base_model!r}, "
         f"mode={mode_label!r}, max_seq_len={max_seq_len!r}. "
@@ -123,11 +121,29 @@ def _expected_trainer_mode(
     trainer_role: Literal["policy", "reference"],
     lora_rank: int,
 ) -> str:
+    return _trainer_modes_for_selection(trainer_role, lora_rank)[0]
+
+
+def _trainer_modes_for_selection(
+    trainer_role: Literal["policy", "reference"],
+    lora_rank: int,
+) -> tuple[str, ...]:
     if lora_rank > 0:
-        return "LORA_TRAINER"
+        return ("LORA_TRAINER",)
     if trainer_role == "reference":
-        return "FORWARD_ONLY"
-    return "POLICY_TRAINER"
+        return ("LORA_TRAINER", "FORWARD_ONLY")
+    return ("POLICY_TRAINER",)
+
+
+def _selection_mode_label(
+    trainer_role: Literal["policy", "reference"],
+    modes_to_try: tuple[str, ...],
+) -> str:
+    if trainer_role == "reference":
+        return "reference (LoRA-capable or forward-only)"
+    return {"LORA_TRAINER": "LoRA", "FORWARD_ONLY": "reference", "POLICY_TRAINER": "full-tune"}.get(
+        modes_to_try[0], "full-tune"
+    )
 
 
 def _list_and_filter(
@@ -135,7 +151,7 @@ def _list_and_filter(
     *,
     parent: str,
     filter_expr: str,
-    expected_mode: str,
+    expected_modes: set[str],
     max_seq_len: int | None,
 ) -> list[dict]:
     """List training shape versions and filter by mode + context length."""
@@ -146,7 +162,7 @@ def _list_and_filter(
         mode = _normalize_trainer_mode(
             snap.get("trainerMode") or snap.get("trainer_mode")
         )
-        if mode != expected_mode:
+        if mode not in expected_modes:
             continue
         ctx_len = _int_val(snap, "maxSupportedContextLength", "max_supported_context_length")
         if max_seq_len is not None and ctx_len < max_seq_len:

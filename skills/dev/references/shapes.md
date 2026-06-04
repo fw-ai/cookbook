@@ -44,7 +44,7 @@ That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123
 
 ## Reference-model shape (RL / DPO)
 
-For **full-parameter** training with a frozen reference, leave `cfg.trainer.reference_training_shape_id` unset to auto-select a compatible validated shape. Set it explicitly only when you need an override; it can share the same shape as the policy, and the control plane appends `--forward-only` automatically.
+For **full-parameter** training with a frozen reference, leave `cfg.trainer.reference_training_shape_id` unset to auto-select a compatible validated shape (prefers `LORA_TRAINER`, falls back to legacy `FORWARD_ONLY`). Set it explicitly only when you need an override — typically the same `LORA_TRAINER` shape as a LoRA policy run. The control plane appends `--forward-only` on the reference trainer automatically.
 
 For **LoRA** (`lora_rank > 0`), two valid options:
 - **Shared session (recommended, saves GPUs)**: leave `cfg.trainer.reference_training_shape_id` unset. `service.create_reference_client(...)` reuses the policy session with the adapter disabled for reference logprobs — no separate trainer, no extra GPUs.
