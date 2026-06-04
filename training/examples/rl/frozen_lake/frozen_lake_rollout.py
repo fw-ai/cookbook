@@ -516,6 +516,13 @@ class FireworksV1ImageCompletionsClient:
         if isinstance(choice_logprobs, dict):
             token_logprobs = choice_logprobs.get("token_logprobs") or []
             completion_logprobs = [float(lp) if lp is not None else 0.0 for lp in token_logprobs]
+            if not completion_logprobs:
+                content = choice_logprobs.get("content") or []
+                completion_logprobs = [
+                    float(tok.get("logprob", 0.0))
+                    for tok in content
+                    if isinstance(tok, dict)
+                ]
             completion_logprobs = completion_logprobs[: len(completion_token_ids)]
 
         if self.tool_call_parser is not None:
