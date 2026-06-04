@@ -285,6 +285,9 @@ async def run_async_rl_loop(
     # Row state by row_id; lifetime spans first sample submit -> row resolution.
     rows_state: dict[Hashable, _RowState] = {}
     buffer: list[tuple[PromptGroup, int, RowRequest]] = []
+    # Per-train-step rewards from every assembled row (pre-filter), matching
+    # sync ``run_rl_loop`` ``all_raw_rewards`` used for rollout/raw_reward plots.
+    step_all_raw_rewards: list[float] = []
 
     rows_iter: Iterator[RowRequest] = iter(rows)
     iterator_exhausted = False
@@ -349,6 +352,7 @@ async def run_async_rl_loop(
     def _on_row_resolved(row_id: Hashable, resolution: RowResolution) -> None:
         """Drive row-level outcome bookkeeping when the GroupAssembler
         settles a row (returned ``RowResolution``)."""
+        nonlocal step_all_raw_rewards
         state = rows_state.pop(row_id, None)
         if state is None:
             return
@@ -356,6 +360,7 @@ async def run_async_rl_loop(
             staleness.reject("none")
             _resolve(state.request, "none")
             return
+        step_all_raw_rewards.extend(resolution.pg.rewards)
         if dynamic_filter_fn is not None and not dynamic_filter_fn(resolution.pg):
             staleness.reject("filter")
             _resolve(state.request, "filter")
@@ -475,7 +480,7 @@ async def run_async_rl_loop(
             "async/sample_fails": staleness.sample_fails,
             "async/filter_drops": staleness.filter_drops,
             "async/stale_drops": 0,
-            "all_raw_rewards": [r for pg in batch for r in pg.rewards],
+            "all_raw_rewards": list(step_all_raw_rewards),
             "valid_prompt_groups": len(batch),
             "total_sampled": staleness.accepted_samples + staleness.rejected_count * completions_per_prompt,
             "filter_drops": staleness.filter_drops,
@@ -496,6 +501,7 @@ async def run_async_rl_loop(
         global_step, _step_metrics = await asyncio.to_thread(
             train_fns.train_step, global_step, batch, extra_metrics,
         )
+        step_all_raw_rewards = []
         last_step_end = time.monotonic()
 
         if weight_sync_fn is not None and global_step % weight_sync_interval == 0:

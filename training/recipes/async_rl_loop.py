@@ -685,8 +685,9 @@ def main(
                 "Rollout %d (step %d) | Reward %.3f | Acc %.1f%% | RefKL %.4f",
                 rollout_id,
                 step,
-                metrics.get("rollout/reward", 0.0),
-                metrics.get("rollout/accuracy", 0.0) * 100,
+                metrics.get("rollout/raw_reward", metrics.get("rollout/reward", 0.0)),
+                metrics.get("rollout/raw_accuracy", metrics.get("rollout/accuracy", 0.0))
+                * 100,
                 ref_kl,
             )
             wandb_log(metrics)
