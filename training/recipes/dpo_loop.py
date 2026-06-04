@@ -47,6 +47,12 @@ from typing import Any, Callable
 
 import tinker
 import torch
+from fireworks.training.sdk.training_spec import (
+    LRSchedulerSpec,
+    compute_lr,
+    default_constant_schedule,
+    normalize_lr_scheduler_spec,
+)
 from tqdm import tqdm
 
 from training.utils import (
@@ -108,6 +114,9 @@ class Config:
 
     beta: float = 0.1
     learning_rate: float = 1e-5
+    lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
+    """LR scheduler spec."""
+
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step. For managed (V2) jobs
@@ -354,6 +363,7 @@ async def _train_loop(
         else len(pair_dataset)
     )
     total_steps = ((rough_pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
+    lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     total_raw_rows = len(pair_dataset)
     total_raw_batches = (total_raw_rows + batch_size - 1) // batch_size
     progress_interval = max(1, total_raw_batches // 20) if total_raw_batches else 1
@@ -379,7 +389,14 @@ async def _train_loop(
 
         with timer("fwd_bwd"):
             fwd_bwd_result = _forward_backward_pairs(step_pairs, policy, cfg.beta)
-        optim_result = policy.optim_step(adam_params)
+        step_lr = compute_lr(
+            lr_scheduler,
+            step=step + 1,
+            base_lr=cfg.learning_rate,
+            total_steps=total_steps,
+        )
+        step_adam_params = tinker.AdamParams(learning_rate=step_lr, **DEFAULT_ADAM)
+        optim_result = policy.optim_step(step_adam_params)
         step += 1
 
         step_metrics: dict[str, Any] = {}
@@ -609,9 +626,12 @@ def main(
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
 
+    lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
+    cfg.lr_scheduler = lr_scheduler
     setup_wandb(cfg.wandb, {
         "beta": cfg.beta,
         "lr": cfg.learning_rate,
+        "lr_schedule": lr_scheduler.type,
         "epochs": cfg.epochs,
         "batch_size": cfg.batch_size,
     })

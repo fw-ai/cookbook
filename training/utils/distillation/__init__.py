@@ -1,4 +1,4 @@
-"""Utilities for sampled-token on-policy distillation (OPD).
+"""Distillation utilities for sampled-token OPD-style training.
 
 The Tinker server already has the primitive OPD needs: the built-in
 ``importance_sampling`` loss computes
@@ -259,3 +259,94 @@ def build_opd_server_datums(
         sampling_nll_sum=sampling_nll_sum,
     )
     return server_datums, metrics.as_dict()
+
+
+# ---------------------------------------------------------------------------
+# Multi-target teacher routing (one student, N frozen teachers, routed per prompt)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TeacherConfig:
+    """One teacher in a multi-target distillation run.
+
+    Args:
+        model: Inference model id (or base-model resource to auto-deploy).
+        route_value: Dataset route value for this teacher. If unset, rows route
+            by ``model`` for backward compatibility.
+        deployment_id: Optional explicit frozen-teacher deployment id.
+        deployment_shape: Optional deployment shape for this teacher. When
+            unset, the recipe uses the run-level teacher deployment shape, or
+            lets the deployment API choose a compatible shape for heterogeneous
+            teachers.
+        teacher_messages_key: Dataset key holding this teacher's privileged
+            prompt messages (falls back to the row's own messages).
+        top_logprobs: Per-teacher override of ``K``; ``None`` uses the run value.
+        tokenizer_model: Optional tokenizer identifier for validation. When
+            set, it must match the student deployment tokenizer.
+    """
+
+    model: str
+    route_value: str | None = None
+    deployment_id: str | None = None
+    deployment_shape: str | None = None
+    teacher_messages_key: str = "teacher_messages"
+    top_logprobs: int | None = None
+    tokenizer_model: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model, str):
+            raise TypeError("TeacherConfig.model must be a string.")
+        if not self.model:
+            raise ValueError("TeacherConfig.model is required.")
+        if self.route_value is not None and not isinstance(self.route_value, str):
+            raise TypeError("TeacherConfig.route_value must be a string or None.")
+        if self.route_value == "":
+            raise ValueError("TeacherConfig.route_value must be non-empty when set.")
+        if self.deployment_shape is not None and not isinstance(self.deployment_shape, str):
+            raise TypeError("TeacherConfig.deployment_shape must be a string or None.")
+        if self.deployment_shape == "":
+            raise ValueError("TeacherConfig.deployment_shape must be non-empty when set.")
+        if not isinstance(self.teacher_messages_key, str):
+            raise TypeError("TeacherConfig.teacher_messages_key must be a string.")
+        if not self.teacher_messages_key:
+            raise ValueError("TeacherConfig.teacher_messages_key must be non-empty.")
+        if self.top_logprobs is not None and not isinstance(self.top_logprobs, int):
+            raise TypeError("TeacherConfig.top_logprobs must be an int or None.")
+        if self.top_logprobs is not None and self.top_logprobs < 0:
+            raise ValueError("TeacherConfig.top_logprobs must be non-negative.")
+        if self.tokenizer_model is not None and not isinstance(self.tokenizer_model, str):
+            raise TypeError("TeacherConfig.tokenizer_model must be a string or None.")
+
+    @property
+    def routing_value(self) -> str:
+        return self.route_value or self.model
+
+
+@dataclass
+class MultiTeacherConfig:
+    """Multi-TARGET routing: one student, N frozen teachers, ROUTED per prompt.
+
+    This is NOT a per-prompt mixture/blend (that would be N x teacher cost for a
+    single target). Each prompt is scored by exactly ONE teacher, chosen by the
+    row's ``route_key`` value (which must equal one teacher's
+    ``route_value`` when set, otherwise its ``model``). The student samples
+    from its single deployment; routing different prompts to different teacher
+    deployments lets the async sampling window interleave scoring across
+    teachers so every deployment's GPU stays busy.
+    """
+
+    teachers: list[TeacherConfig] = field(default_factory=list)
+    route_key: str = "teacher"
+    """Row key whose value selects a teacher routing value."""
+
+    def __post_init__(self) -> None:
+        if not self.teachers:
+            raise ValueError("MultiTeacherConfig requires at least one teacher.")
+        if not isinstance(self.route_key, str):
+            raise TypeError("MultiTeacherConfig.route_key must be a string.")
+        if not self.route_key:
+            raise ValueError("MultiTeacherConfig.route_key must be non-empty.")
+        route_values = [teacher.routing_value for teacher in self.teachers]
+        if len(set(route_values)) != len(route_values):
+            raise ValueError(f"Duplicate teacher route values in MultiTeacherConfig: {route_values}")

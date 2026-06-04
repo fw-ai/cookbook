@@ -1,4 +1,4 @@
-"""Evaluation and validation helpers for privileged-context OPD."""
+"""Evaluation and validation helpers for privileged-context distillation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.data import prepare_sampling_messages
-from training.utils.opd.sampling import (
+from training.utils.distillation.sampling import (
     _score_with_teacher,
     _teacher_messages_for_row,
     _tokenize_teacher_prompt,
@@ -84,12 +84,12 @@ def validate_privileged_opd_dataset(
     require_teacher_final_answer: bool = True,
     require_expected_answer: bool = True,
 ) -> None:
-    """Validate JSONL rows for privileged-context OPD before launching a job."""
+    """Validate JSONL rows for privileged-context distillation before launching a job."""
     errors: list[str] = []
     try:
         rows = _load_opd_rows(dataset)
     except Exception as exc:
-        raise ValueError(f"Failed to load OPD dataset {dataset!r}: {exc}") from exc
+        raise ValueError(f"Failed to load distillation dataset {dataset!r}: {exc}") from exc
 
     if len(rows) < min_rows:
         errors.append(f"expected at least {min_rows} rows, got {len(rows)}")
@@ -135,7 +135,10 @@ def validate_privileged_opd_dataset(
                 )
 
     if errors:
-        raise ValueError("Invalid privileged OPD dataset:\n" + "\n".join(f"- {error}" for error in errors))
+        raise ValueError(
+            "Invalid privileged distillation dataset:\n"
+            + "\n".join(f"- {error}" for error in errors)
+        )
 
 
 def _find_last_subsequence(haystack: list[int], needle: list[int]) -> int | None:
@@ -183,6 +186,33 @@ def _span_nll(logprobs: list[float], start: int = 0, end: int | None = None) -> 
     if not span:
         return 0.0
     return -sum(float(lp) for lp in span) / len(span)
+
+
+def _resolve_eval_teacher(
+    context: dict[str, Any],
+    row: dict[str, Any],
+) -> tuple[DeploymentSampler, str]:
+    if not context.get("is_multi_teacher", False):
+        return context["teacher_sampler"], "teacher_messages"
+
+    route_key = context.get("teacher_route_key")
+    if not isinstance(route_key, str) or not route_key:
+        raise RuntimeError("multi-teacher OPD eval requires teacher_route_key in context")
+
+    route_value = row.get(route_key)
+    if not isinstance(route_value, str):
+        raise RuntimeError(f"row is missing string teacher route key {route_key!r}: {row!r}")
+
+    teacher_samplers = context.get("teacher_samplers") or {}
+    teacher_sampler = teacher_samplers.get(route_value)
+    if teacher_sampler is None:
+        raise RuntimeError(
+            f"row route {route_key!r}={route_value!r} has no configured eval teacher"
+        )
+
+    teacher_messages_keys = context.get("teacher_messages_keys") or {}
+    teacher_messages_key = teacher_messages_keys.get(route_value, "teacher_messages")
+    return teacher_sampler, teacher_messages_key
 
 
 async def _sample_eval_completion(
@@ -244,13 +274,12 @@ async def _evaluate_teacher_trace_logprob_gap_async(
 ) -> dict[str, Any]:
     """Score teacher reasoning traces under teacher and student prompts.
 
-    This is meant for privileged-context OPD eval: the frozen teacher generates
+    This is meant for privileged-context distillation eval: the frozen teacher generates
     a trace from ``teacher_messages``; the same trace tokens are then scored
     under both the privileged teacher prompt and the ordinary student prompt.
     """
     config: Any = context["config"]
     student_sampler = context["student_sampler"]
-    teacher_sampler = context["teacher_sampler"]
     tokenizer = context["tokenizer"]
     rows = list(context["dataset"])
     step = int(context.get("global_step", 0))
@@ -265,13 +294,15 @@ async def _evaluate_teacher_trace_logprob_gap_async(
         student_messages = prepare_sampling_messages(row.get("messages", []))
         if not student_messages:
             raise RuntimeError(f"row is missing messages: {row!r}")
+        routed_teacher_sampler, teacher_messages_key = _resolve_eval_teacher(context, row)
         teacher_messages = _teacher_messages_for_row(
             row,
             student_messages,
+            teacher_messages_key=teacher_messages_key,
         )
 
         teacher_sample = await _sample_eval_completion(
-            teacher_sampler,
+            routed_teacher_sampler,
             teacher_messages,
             config,
             max_seq_len=max_seq_len,
@@ -290,7 +321,7 @@ async def _evaluate_teacher_trace_logprob_gap_async(
             )
 
         teacher_logprobs = await _score_eval_response_tokens(
-            teacher_sampler,
+            routed_teacher_sampler,
             tokenizer,
             teacher_messages,
             completion_tokens,
@@ -449,7 +480,7 @@ def validate_opd_trace_result(
     min_student_generation_accuracy: float | None = None,
     min_max_seq_len: int | None = None,
 ) -> None:
-    """Validate that an OPD run produced train and teacher-trace eval signal."""
+    """Validate that a distillation run produced train and teacher-trace eval signal."""
     errors: list[str] = []
     if expected_steps is None:
         expected_steps = (

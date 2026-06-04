@@ -48,6 +48,12 @@ from typing import Any, Dict, List
 import tinker
 import torch
 from dotenv import load_dotenv
+from fireworks.training.sdk.training_spec import (
+    LRSchedulerSpec,
+    compute_lr,
+    default_constant_schedule,
+    normalize_lr_scheduler_spec,
+)
 
 from training.utils import fileio
 from training.utils import (
@@ -479,6 +485,9 @@ class Config:
     train_on_what: str = "all_assistant_messages"
 
     learning_rate: float = 1e-4
+    lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
+    """LR scheduler spec. Legacy ``warmup_steps`` is still accepted below."""
+
     epochs: int = 3
     batch_size: int = 32
     """Number of training samples per optimizer step. For managed (V2) jobs
@@ -683,10 +692,15 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    lr_scheduler = normalize_lr_scheduler_spec(
+        cfg.lr_scheduler,
+        legacy_warmup_steps=cfg.warmup_steps,
+    )
     setup_wandb(
         cfg.wandb,
         {
             "lr": cfg.learning_rate,
+            "lr_schedule": lr_scheduler.type,
             "epochs": cfg.epochs,
             "batch_size": cfg.batch_size,
         },
@@ -850,11 +864,12 @@ def main(
             adam_kwargs["weight_decay"] = cfg.weight_decay
 
         def _current_lr(optim_step_idx: int) -> float:
-            # 1-indexed optim step; linear warmup from 0 → cfg.learning_rate
-            # over cfg.warmup_steps, constant afterwards.
-            if cfg.warmup_steps > 0 and optim_step_idx <= cfg.warmup_steps:
-                return cfg.learning_rate * (optim_step_idx / cfg.warmup_steps)
-            return cfg.learning_rate
+            return compute_lr(
+                lr_scheduler,
+                step=optim_step_idx,
+                base_lr=cfg.learning_rate,
+                total_steps=total_steps_estimate,
+            )
 
         # -- Training loop (batch-indexed) -------------------------------------
 

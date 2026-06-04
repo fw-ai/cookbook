@@ -40,6 +40,12 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 import tinker
+from fireworks.training.sdk.training_spec import (
+    LRSchedulerSpec,
+    compute_lr,
+    default_constant_schedule,
+    normalize_lr_scheduler_spec,
+)
 
 from training.utils.client import GradAccNormalization
 from training.utils import (
@@ -110,6 +116,9 @@ class Config:
     """JSONL path/URL; optional when passing ``rows=`` to ``main()``."""
 
     learning_rate: float = 1e-5
+    lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
+    """LR scheduler spec."""
+
     kl_beta: float = 0.001
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
@@ -297,6 +306,7 @@ def main(
         raise ValueError(
             f"ppo_n_minibatches must be >= 1; got {cfg.ppo_n_minibatches}."
         )
+    lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     setup_wandb(
         cfg.wandb,
         {
@@ -309,6 +319,7 @@ def main(
             "seed": cfg.seed,
             "kl_beta": cfg.kl_beta,
             "lr": cfg.learning_rate,
+            "lr_schedule": lr_scheduler.type,
         },
     )
     # Dual axis: train/* per inner PPO minibatch, rollout/* per outer batch.
@@ -434,7 +445,6 @@ def main(
             ppo_n_minibatches=cfg.ppo_n_minibatches,
         )
 
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         # This recipe is client-side only.  ``LossConfig`` adapts the cfg
         # fields to the ``LossArgs`` Protocol that ``build_loss_fn`` reads;
         # ``loss_path="client"`` is fixed (no builtin server-side path).
@@ -631,6 +641,13 @@ def main(
                     span.elapsed,
                 )
 
+                step_lr = compute_lr(
+                    lr_scheduler,
+                    step=step + 1,
+                    base_lr=cfg.learning_rate,
+                    total_steps=total_steps_estimate,
+                )
+                adam_params = tinker.AdamParams(learning_rate=step_lr, **DEFAULT_ADAM)
                 with elapsed_timer("optim_step") as span:
                     optim_result = policy.optim_step(
                         adam_params,
