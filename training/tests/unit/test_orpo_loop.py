@@ -36,3 +36,42 @@ def test_shuffled_pair_cache_is_seeded_without_mutating_source():
 
     assert first_order == second_order
     assert pair_cache == [{"id": i} for i in range(5)]
+
+
+def test_legacy_orpo_lr_schedule_preserves_warmup_floor():
+    cfg = module.Config(
+        log_path="/tmp/orpo_test_logs",
+        lr_schedule="cosine",
+        warmup_ratio=0.2,
+        min_lr_ratio=0.1,
+    )
+
+    assert module._uses_legacy_orpo_lr_schedule(cfg)
+    assert module._compute_legacy_orpo_lr(
+        0,
+        10,
+        peak_lr=1.0,
+        warmup_ratio=0.2,
+        min_lr_ratio=0.1,
+        schedule="cosine",
+    ) == pytest.approx(0.1)
+    assert module._compute_legacy_orpo_lr(
+        1,
+        10,
+        peak_lr=1.0,
+        warmup_ratio=0.2,
+        min_lr_ratio=0.1,
+        schedule="cosine",
+    ) == pytest.approx(0.55)
+
+
+def test_nested_orpo_lr_scheduler_uses_shared_scheduler():
+    cfg = module.Config(
+        log_path="/tmp/orpo_test_logs",
+        lr_scheduler={"type": "cosine", "warmup_ratio": 0.2, "min_lr_ratio": 0.1},
+        lr_schedule="cosine",
+        warmup_ratio=0.2,
+        min_lr_ratio=0.1,
+    )
+
+    assert not module._uses_legacy_orpo_lr_schedule(cfg)

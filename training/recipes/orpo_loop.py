@@ -45,6 +45,12 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 
 import tinker
+from fireworks.training.sdk.training_spec import (
+    LRSchedulerSpec,
+    compute_lr,
+    default_constant_schedule,
+    normalize_lr_scheduler_spec,
+)
 
 from training.utils import (
     DEFAULT_ADAM,
@@ -74,6 +80,7 @@ from training.utils.runner_state import start_running, write_completed, write_ru
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -92,6 +99,9 @@ class Config:
 
     orpo_lambda: float = 1.0
     learning_rate: float = 1e-5
+    lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
+    """LR scheduler spec. Legacy flat scheduler fields below remain accepted."""
+
     epochs: int = 1
     batch_size: int = 4
     """Number of preference pairs per optimizer step. For managed (V2) jobs
@@ -154,12 +164,29 @@ class Config:
     Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
 
 
-# ---------------------------------------------------------------------------
-# LR schedule
-# ---------------------------------------------------------------------------
+def _is_default_lr_scheduler(data: object) -> bool:
+    if data is None:
+        return True
+    if isinstance(data, dict):
+        return (
+            data.get("type", "constant") == "constant"
+            and (data.get("warmup_steps") or 0) == 0
+            and data.get("warmup_ratio") is None
+        )
+    return (
+        getattr(data, "type", None) == "constant"
+        and getattr(data, "warmup_steps", 0) == 0
+        and getattr(data, "warmup_ratio", None) is None
+    )
 
 
-def _compute_lr(
+def _uses_legacy_orpo_lr_schedule(cfg: Config) -> bool:
+    return _is_default_lr_scheduler(cfg.lr_scheduler) and (
+        cfg.lr_schedule != "constant" or cfg.warmup_ratio > 0
+    )
+
+
+def _compute_legacy_orpo_lr(
     step: int,
     total_steps: int,
     peak_lr: float,
@@ -167,7 +194,8 @@ def _compute_lr(
     min_lr_ratio: float,
     schedule: str,
 ) -> float:
-    """Linear warmup then cosine/linear/constant decay."""
+    """Legacy ORPO flat-field schedule; ``step`` is zero-indexed."""
+
     min_lr = peak_lr * min_lr_ratio
     warmup_steps = int(total_steps * warmup_ratio)
 
@@ -180,11 +208,15 @@ def _compute_lr(
     decay_step = step - warmup_steps
     decay_total = max(total_steps - warmup_steps, 1)
     if schedule == "cosine":
-        return min_lr + 0.5 * (peak_lr - min_lr) * (1 + math.cos(math.pi * decay_step / decay_total))
+        return min_lr + 0.5 * (peak_lr - min_lr) * (
+            1 + math.cos(math.pi * decay_step / decay_total)
+        )
     if schedule == "linear":
         return peak_lr - (peak_lr - min_lr) * decay_step / decay_total
 
-    raise ValueError(f"Unknown lr_schedule: {schedule!r}. Use 'constant', 'cosine', or 'linear'.")
+    raise ValueError(
+        f"Unknown lr_schedule: {schedule!r}. Use 'constant', 'cosine', or 'linear'."
+    )
 
 
 def _shuffled_pair_cache(
@@ -222,6 +254,13 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    use_legacy_orpo_lr_schedule = _uses_legacy_orpo_lr_schedule(cfg)
+    lr_scheduler = normalize_lr_scheduler_spec(
+        cfg.lr_scheduler,
+        legacy_lr_schedule=cfg.lr_schedule,
+        legacy_warmup_ratio=cfg.warmup_ratio,
+        legacy_min_lr_ratio=cfg.min_lr_ratio,
+    )
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -233,6 +272,7 @@ def main(
         {
             "orpo_lambda": cfg.orpo_lambda,
             "lr": cfg.learning_rate,
+            "lr_schedule": lr_scheduler.type,
             "epochs": cfg.epochs,
         },
     )
@@ -352,17 +392,13 @@ def main(
         step = step_offset
         total_steps = ((len(pair_cache) + cfg.batch_size - 1) // cfg.batch_size) * cfg.epochs
 
-        has_lr_schedule = cfg.warmup_ratio > 0 or cfg.lr_schedule != "constant"
-        if has_lr_schedule:
-            logger.info(
-                "LR schedule: %s | warmup_ratio=%.2f (%d steps) | "
-                "peak_lr=%g | min_lr=%g",
-                cfg.lr_schedule,
-                cfg.warmup_ratio,
-                int(total_steps * cfg.warmup_ratio),
-                cfg.learning_rate,
-                cfg.learning_rate * cfg.min_lr_ratio,
-            )
+        logger.info(
+            "LR schedule: %s | warmup_steps=%s | warmup_ratio=%s | peak_lr=%g",
+            lr_scheduler.type,
+            lr_scheduler.warmup_steps,
+            lr_scheduler.warmup_ratio,
+            cfg.learning_rate,
+        )
 
         def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
             nonlocal step
@@ -375,10 +411,22 @@ def main(
                 response_starts.append(pair["response_start"])
                 step_tokens += len(pair["chosen_tokens"]) + len(pair["rejected_tokens"])
 
-            current_lr = _compute_lr(
-                step, total_steps, cfg.learning_rate,
-                cfg.warmup_ratio, cfg.min_lr_ratio, cfg.lr_schedule,
-            )
+            if use_legacy_orpo_lr_schedule:
+                current_lr = _compute_legacy_orpo_lr(
+                    step,
+                    total_steps,
+                    cfg.learning_rate,
+                    cfg.warmup_ratio,
+                    cfg.min_lr_ratio,
+                    cfg.lr_schedule,
+                )
+            else:
+                current_lr = compute_lr(
+                    lr_scheduler,
+                    step=step + 1,
+                    base_lr=cfg.learning_rate,
+                    total_steps=total_steps,
+                )
             adam_params = tinker.AdamParams(learning_rate=current_lr, **DEFAULT_ADAM)
 
             loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
