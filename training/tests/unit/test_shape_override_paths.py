@@ -81,7 +81,11 @@ class TestShapePath:
         )
         c = mgr.captured
 
-        assert c.training_shape_ref == PROFILE.training_shape_version
+        # The resolved version is stripped so the control plane selects the
+        # latest *validated* version (avoids a 400 when a concurrent shape
+        # (re)validation has superseded the pinned version).
+        assert c.training_shape_ref == "accounts/fw/trainingShapes/ts-qwen3-1p7b"
+        assert "/versions/" not in c.training_shape_ref
         assert c.base_model == BASE_MODEL
         assert c.gradient_accumulation_steps == 2
         assert c.region == "US_VIRGINIA_1"
@@ -186,6 +190,24 @@ class TestManualPath:
         assert c.accelerator_type is None
         assert c.accelerator_count is None
         assert c.custom_image_tag is None
+
+
+class TestShapeRefSelection:
+    def test_version_pinned_ref_is_stripped(self):
+        assert (
+            infra_module._shape_ref_for_selection(
+                "accounts/fw/trainingShapes/ts-qwen3-1p7b/versions/v42"
+            )
+            == "accounts/fw/trainingShapes/ts-qwen3-1p7b"
+        )
+
+    def test_bare_ref_is_unchanged(self):
+        assert (
+            infra_module._shape_ref_for_selection(
+                "accounts/fw/trainingShapes/ts-qwen3-1p7b"
+            )
+            == "accounts/fw/trainingShapes/ts-qwen3-1p7b"
+        )
 
 
 def test_infra_fields_forwarded_to_config():
