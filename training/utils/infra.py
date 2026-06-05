@@ -156,20 +156,6 @@ class ResourceCleanup:
                 logger.warning("Cleanup: failed to clean deployment %s: %s", did, e)
 
 
-def _shape_ref_for_selection(training_shape_version: str) -> str:
-    """Return the training-shape selector to send to the control plane.
-
-    ``resolve_training_profile`` resolves a bare shape id to a concrete,
-    version-pinned ref (``.../trainingShapes/<id>/versions/<ver>``).  Sending
-    that pinned ref forces the control plane to require *that exact* version be
-    validated; if a concurrent shape (re)validation has just superseded it, a
-    non-superuser service-mode create is rejected with ``FAILED_PRECONDITION``
-    (HTTP 400).  Stripping the version yields the bare shape name, which the
-    control plane resolves to the latest *validated* version.
-    """
-    return training_shape_version.split("/versions/", 1)[0]
-
-
 def create_trainer_job(
     rlor_mgr: TrainerJobManager,
     *,
@@ -235,7 +221,10 @@ def create_trainer_job(
             region=infra.region,
             extra_args=extra_args or infra.extra_args,
             forward_only=forward_only,
-            training_shape_ref=_shape_ref_for_selection(profile.training_shape_version),
+            # Drop the resolved version so the control plane selects the latest
+            # *validated* version. A pinned version 400s if it isn't validated
+            # (e.g. superseded by a concurrent shape (re)validation).
+            training_shape_ref=profile.training_shape_version.split("/versions/")[0],
         )
     else:
         config = TrainerJobConfig(

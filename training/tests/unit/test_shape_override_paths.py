@@ -192,24 +192,6 @@ class TestManualPath:
         assert c.custom_image_tag is None
 
 
-class TestShapeRefSelection:
-    def test_version_pinned_ref_is_stripped(self):
-        assert (
-            infra_module._shape_ref_for_selection(
-                "accounts/fw/trainingShapes/ts-qwen3-1p7b/versions/v42"
-            )
-            == "accounts/fw/trainingShapes/ts-qwen3-1p7b"
-        )
-
-    def test_bare_ref_is_unchanged(self):
-        assert (
-            infra_module._shape_ref_for_selection(
-                "accounts/fw/trainingShapes/ts-qwen3-1p7b"
-            )
-            == "accounts/fw/trainingShapes/ts-qwen3-1p7b"
-        )
-
-
 def test_infra_fields_forwarded_to_config():
     mgr = _CapturingMgr()
     infra_module.create_trainer_job(
