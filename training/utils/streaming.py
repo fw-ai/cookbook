@@ -99,10 +99,10 @@ class JsonlRenderDataset(torch_data.Dataset):
 
     def __getitem__(self, i: int) -> Any:
         offset = self._offsets[self._index_map[i]]
-        with open(self._path) as f:
+        with open(self._path, "rb") as f:
             f.seek(offset)
             line = f.readline()
-        row = json.loads(line)
+        row = json.loads(line.decode("utf-8"))
         if self._row_index_key is not None:
             row[self._row_index_key] = self._index_map[i]
         return self._render_fn(row)
