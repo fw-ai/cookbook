@@ -111,6 +111,7 @@ def _short_name(resource_name: str) -> str:
 
 
 _SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
+_STEP_NAME_RE = re.compile(r"^step-(\d+)(?:-|$)")
 
 
 def _logical_name(short: str) -> str:
@@ -161,9 +162,8 @@ def _newest_first(rows: list[dict]) -> list[dict]:
     (``...:13.123456Z``) timestamps in the same response: ``'Z' (90)
     > '.' (46)`` makes the older second-precision row sort newer than
     the newer microsecond-precision one, silently picking a stale
-    checkpoint in :meth:`_latest_resumable` and :meth:`promote_latest`.
-    Sort by parsed datetime instead (epoch fallback for unparseable
-    values so they sort to the end).
+    checkpoint in :meth:`_latest_resumable`. Sort by parsed datetime instead
+    (epoch fallback for unparseable values so they sort to the end).
     """
     NEG_INF = datetime.min.replace(tzinfo=timezone.utc)
     return sorted(
@@ -171,6 +171,26 @@ def _newest_first(rows: list[dict]) -> list[dict]:
         key=lambda r: _parse_iso_time(r.get("createTime")) or NEG_INF,
         reverse=True,
     )
+
+
+def _promotable_newest_first(rows: list[dict]) -> list[dict]:
+    """Sort promotable rows by logical training step, then wall time.
+
+    Final promotion wants the latest training step, not whichever checkpoint
+    row the control plane most recently touched. Hotload/checkpoint rows can
+    be updated asynchronously during finalization, so createTime alone can
+    point at an older logical snapshot such as ``step-1-<session>``.
+    """
+    NEG_INF = datetime.min.replace(tzinfo=timezone.utc)
+
+    def _key(row: dict) -> tuple[int, datetime]:
+        short = _short_name(row.get("name", ""))
+        return (
+            _step_from_name(_logical_name(short)),
+            _parse_iso_time(row.get("createTime")) or NEG_INF,
+        )
+
+    return sorted(rows, key=_key, reverse=True)
 
 
 def _parse_cross_job(spec: str) -> tuple[str | None, str]:
@@ -364,7 +384,7 @@ class TrainingCheckpoints:
         weight-sync sampler row without requiring an explicit final
         sampler save.
         """
-        rows = _newest_first(
+        rows = _promotable_newest_first(
             [r for r in self._list_checkpoints() if r.get("promotable")]
         )
         if not rows:
@@ -529,9 +549,7 @@ class TrainingCheckpoints:
 
 def _step_from_name(name: str) -> int:
     """Parse an integer step from a ``"step-N"`` checkpoint name."""
-    if name.startswith("step-"):
-        try:
-            return int(name.removeprefix("step-"))
-        except ValueError:
-            pass
-    return 0
+    match = _STEP_NAME_RE.match(name)
+    if not match:
+        return 0
+    return int(match.group(1))

@@ -338,6 +338,19 @@ class TestPromoteLatest:
             hot_load_deployment_id=None,
         )
 
+    def test_picks_highest_promotable_step_even_if_create_time_is_older(self, log_dir):
+        rows = [
+            _row("step-1-70c5f9e2", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                 promotable=True, create_time="2026-06-06T18:47:35Z"),
+            _row("step-8-70c5f9e2", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                 promotable=True, create_time="2026-06-06T18:45:57Z"),
+        ]
+        ckpt, _, fw = _make(log_dir, fw_rows=rows, lora_rank=8)
+        ckpt.promote_latest("out", "base")
+        fw.promote_checkpoint.assert_called_once()
+        _, kwargs = fw.promote_checkpoint.call_args
+        assert kwargs["name"].endswith("/checkpoints/step-8-70c5f9e2")
+
     def test_skips_arc_v2_because_not_promotable(self, log_dir):
         rows = [
             _row("step-5-arc", ctype="CHECKPOINT_TYPE_INFERENCE_ARC_V2",

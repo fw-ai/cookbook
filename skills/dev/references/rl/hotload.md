@@ -130,7 +130,13 @@ One field — the `name` from the list response. Works identically for `PER_TRAI
 
 ```python
 entries = client.list_checkpoints(job_id=trainer_endpoint.job_name)
-entry = max((e for e in entries if e["promotable"]), key=lambda e: e["createTime"])
+entry = max(
+    (e for e in entries if e["promotable"]),
+    key=lambda e: (
+        int(e["name"].rsplit("/", 1)[-1].split("-")[1]),
+        e["createTime"],
+    ),
+)
 client.promote_checkpoint(
     name=entry["name"],   # 4-segment resource name, pass verbatim
     output_model_id="my-promoted-model",
@@ -138,7 +144,7 @@ client.promote_checkpoint(
 )
 ```
 
-The server parses the trainer id out of `name` and reads `dbJob.HotLoadBucketUrl` as the single source of truth — which was populated at trainer-create time regardless of which scope was used. No `trainer_job_id`, no `checkpoint_id` split, no `hot_load_deployment_id` guess.
+The server parses the trainer id out of `name` and reads `dbJob.HotLoadBucketUrl` as the single source of truth — which was populated at trainer-create time regardless of which scope was used. No `trainer_job_id`, no `checkpoint_id` split, no `hot_load_deployment_id` guess. Final promotion should prefer the highest logical `step-N`; `createTime` is only a tie-breaker because finalization can touch an older checkpoint row after newer-step rows exist.
 
 The legacy `promote_checkpoint.py --hot-load-deployment-id` flag is no longer needed: the API covers both scopes. It remains for deployments that predate the stored-bucket-URL migration; new runs should not use it (passing it now emits a `DeprecationWarning`). The cookbook also no longer writes a `checkpoints.jsonl` registry — the control plane is the source of truth.
 

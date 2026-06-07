@@ -3,11 +3,11 @@
 """Promote a sampler checkpoint to a deployable Fireworks model.
 
 Queries the control plane for the trainer job's checkpoints
-(``FireworksClient.list_checkpoints``), picks the newest promotable
-row (or a specific one if ``--checkpoint-name`` is given), and calls
-the promotion API. No temporary trainer is needed — promotion is a
-lightweight metadata + file-copy operation that works even after the
-trainer job has been deleted.
+(``FireworksClient.list_checkpoints``), picks the highest logical
+``step-N`` promotable row (or a specific one if ``--checkpoint-name`` is
+given), and calls the promotion API. No temporary trainer is needed —
+promotion is a lightweight metadata + file-copy operation that works
+even after the trainer job has been deleted.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -57,7 +57,11 @@ if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
 from fireworks.training.sdk import FireworksClient, TrainerJobManager
-from training.utils.checkpoints import _logical_name, _short_name
+from training.utils.checkpoints import (
+    _logical_name,
+    _promotable_newest_first,
+    _short_name,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -144,11 +148,7 @@ def _resolve_checkpoint(
     checkpoint_name: str | None,
 ) -> ResolvedCheckpoint:
     rows = fw_client.list_checkpoints(job_id)
-    promotable = sorted(
-        (r for r in rows if r.get("promotable")),
-        key=lambda r: r.get("createTime", ""),
-        reverse=True,
-    )
+    promotable = _promotable_newest_first([r for r in rows if r.get("promotable")])
     if not promotable:
         raise SystemExit(
             f"ERROR: no promotable checkpoints found on trainer job '{job_id}'.\n"

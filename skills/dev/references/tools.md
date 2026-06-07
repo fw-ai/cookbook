@@ -11,7 +11,7 @@ For renderer work, see the dedicated skills under `cookbook/skills/`:
 Promote a sampler checkpoint to a deployable Fireworks model. Queries the control plane directly via `list_checkpoints(job_id)` — no `checkpoints.jsonl` needed (and none is written; that legacy registry was removed when the cookbook moved to the CP-as-source-of-truth model).
 
 ```bash
-# Promote the newest promotable checkpoint on a trainer job
+# Promote the highest logical-step promotable checkpoint on a trainer job
 python training/examples/tools/promote_checkpoint.py \
     --job-id <trainer-job-id> \
     --base-model accounts/fireworks/models/qwen3-8b
@@ -72,7 +72,7 @@ rows = client.list_checkpoints(job_id)              # auto-paginates
 promotable = [r for r in rows if r.get("promotable")]
 ```
 
-Each row is the raw JSON from the server: `name`, `createTime`, `updateTime`, `checkpointType` (opaque server enum — treat as a string; several variants exist including `CHECKPOINT_TYPE_INFERENCE_BASE`, `CHECKPOINT_TYPE_INFERENCE_LORA`, `CHECKPOINT_TYPE_INFERENCE_ARC_V2`, `CHECKPOINT_TYPE_TRAINING`, `CHECKPOINT_TYPE_TRAINING_LORA`), and `promotable` (bool — authoritative; filter on this). The server returns rows **oldest-first**; the CLI wrapper re-sorts newest-first before printing. Pick the **latest `createTime` with `promotable: true`** — step numbers mislead when a trainer inherits from a predecessor.
+Each row is the raw JSON from the server: `name`, `createTime`, `updateTime`, `checkpointType` (opaque server enum — treat as a string; several variants exist including `CHECKPOINT_TYPE_INFERENCE_BASE`, `CHECKPOINT_TYPE_INFERENCE_LORA`, `CHECKPOINT_TYPE_INFERENCE_ARC_V2`, `CHECKPOINT_TYPE_TRAINING`, `CHECKPOINT_TYPE_TRAINING_LORA`), and `promotable` (bool — authoritative; filter on this). The server returns rows **oldest-first**; the CLI wrapper re-sorts newest-first before printing. For final promotion, pick the highest logical `step-N` among rows with `promotable: true`, using `createTime` only as a tie-breaker among rows from the same logical step.
 
 A thin CLI wrapper is available at `training/examples/tools/list_checkpoints.py` for quick terminal use:
 
