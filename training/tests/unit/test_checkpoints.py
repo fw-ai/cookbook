@@ -85,11 +85,12 @@ def _row(short_name, *, ctype, promotable, create_time):
     }
 
 
-def _make(log_dir, *, fw_rows=None, lora_rank=0, save_state_renames_to: str | None = None):
+def _make(log_dir, *, fw_rows=None, lora_rank=0, save_state_renames_to: str | None = None, serverless=False):
     fw = _mock_fw_client(rows=fw_rows)
     client = _mock_client(fw=fw, save_state_renames_to=save_state_renames_to)
     ckpt = TrainingCheckpoints(
         client, fw, trainer_id="job-1", log_path=log_dir, lora_rank=lora_rank,
+        serverless=serverless,
         # Disable stabilization + tighten timeouts so unit tests run instantly.
         save_appear_timeout_s=5.0, save_stabilize_s=0.0, save_poll_s=0.01,
     )
@@ -170,6 +171,26 @@ class TestResume:
         assert info.step == 5
         client.load_state_with_optimizer.assert_called_once_with("path://job-1/step-5")
 
+    def test_resume_serverless_uses_bare_name(self, log_dir):
+        # Serverless: trainer_id is the TrainingSession id, not a job. Auto-resume
+        # must NOT build cross_job://<session_id>/<name> — the pooled trainer
+        # rejects that (the name must already be session-scoped and session_id is
+        # not a source job). It must resume from the bare logical name
+        # (source_job_id=None) so the trainer prepends sessions/<sid>/ itself.
+        rows = [
+            _row("step-5", ctype="CHECKPOINT_TYPE_TRAINING_LORA", promotable=False,
+                 create_time="2026-04-01T00:00:00Z"),
+        ]
+        ckpt, client, _ = _make(log_dir, fw_rows=rows, lora_rank=8, serverless=True)
+        info = ckpt.resume()
+        assert info is not None
+        assert info.step == 5
+        assert info.source_job_id is None
+        client.resolve_checkpoint_path.assert_called_once_with("step-5", source_job_id=None)
+        # source_job_id=None => bare name (mock renders the absent job as 'self'),
+        # contrasting the dedicated path's "path://job-1/step-5".
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
+
     def test_init_from_checkpoint_takes_priority(self, log_dir):
         rows = [
             _row("step-50", ctype="CHECKPOINT_TYPE_TRAINING", promotable=False,
@@ -181,6 +202,22 @@ class TestResume:
         client.load_state_with_optimizer.assert_called_once_with(
             "path://other-job/step-3"
         )
+
+    def test_init_from_checkpoint_serverless_uses_bare_name(self, log_dir):
+        # Serverless: init_from_checkpoint must resume from the bare name, not
+        # cross_job://<session>/<name> (the pool trainer rejects that). A spec
+        # naming THIS session is accepted with its prefix stripped.
+        ckpt, client, _ = _make(log_dir, serverless=True)  # trainer_id/session == "job-1"
+        info = ckpt.resume(init_from_checkpoint="job-1:step-5")
+        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with("step-5", source_job_id=None)
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
+
+    def test_init_from_checkpoint_serverless_rejects_cross_session(self, log_dir):
+        # Cross-session warm-start is unsupported on the shared pool (isolation).
+        ckpt, _, _ = _make(log_dir, serverless=True)  # session == "job-1"
+        with pytest.raises(ValueError, match="another session"):
+            ckpt.resume(init_from_checkpoint="other-session:step-5")
 
     def test_warm_start_adapter_when_no_resume(self, log_dir):
         ckpt, client, _ = _make(log_dir, fw_rows=[], lora_rank=8)

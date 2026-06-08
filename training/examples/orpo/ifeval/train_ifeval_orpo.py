@@ -39,7 +39,6 @@ def parse_args():
         default=os.path.join(os.path.dirname(__file__), "dataset.jsonl"),
     )
     parser.add_argument("--training-shape", default="")
-    parser.add_argument("--region", default="US_VIRGINIA_1")
     parser.add_argument("--max-pairs", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
@@ -88,7 +87,6 @@ def main():
         trainer=TrainerConfig(
             job_id=args.job_id,
             training_shape_id=args.training_shape,
-            region=args.region,
         ),
         wandb=WandBConfig(
             entity=args.wandb_entity,

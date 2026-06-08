@@ -184,9 +184,6 @@ def _cmd_up(args: argparse.Namespace) -> int:
         max_replica_count=args.max_replicas,
         skip_shape_validation=args.skip_shape_validation,
     )
-    if args.region:
-        cfg.region = args.region
-
     logger.info(
         "creating-or-getting deployment %s (base_model=%s, shape=%s)",
         cfg.deployment_id,
@@ -273,11 +270,6 @@ def _build_parser() -> argparse.ArgumentParser:
     up.add_argument(
         "--max-replicas", type=int, default=1,
         help="Max replica count. Default 1; the probe is single-stream.",
-    )
-    up.add_argument(
-        "--region", default=None,
-        help="Optional region override (e.g. NA_BRITISHCOLUMBIA_1 for B300). "
-        "Inferred from accelerator type when omitted.",
     )
     up.add_argument(
         "--timeout-s", type=int, default=1800,

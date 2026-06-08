@@ -81,7 +81,6 @@ def parse_args():
         default=None,
         help="Run-level data-parallel trainer replicas for HSDP launches",
     )
-    parser.add_argument("--region", type=str, default="US_VIRGINIA_1")
     parser.add_argument("--custom-image-tag", type=str, default="")
     parser.add_argument("--purpose", type=str, default=None)
 
@@ -125,7 +124,6 @@ def main():
             training_shape_id=args.training_shape_id or None,
             reference_training_shape_id=args.ref_training_shape_id or None,
             replica_count=args.trainer_replica_count,
-            region=args.region,
             custom_image_tag=args.custom_image_tag or None,
             purpose=args.purpose or None,
         ),

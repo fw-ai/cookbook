@@ -45,6 +45,7 @@ def _firetitan_service_kwargs(
         "trainer_replica_count": trainer.replica_count,
         "trainer_timeout_s": trainer.timeout_s,
         "purpose": trainer.purpose,
+        "managed_by": trainer.managed_by,
         "skip_validations": trainer.skip_validations,
         "cleanup_trainer_on_close": cleanup_trainer_on_close,
         "create_deployment": deployment is not None,
@@ -59,7 +60,6 @@ def _firetitan_service_kwargs(
         {
             "deployment_shape": deployment.deployment_shape,
             "deployment_id": deployment.deployment_id,
-            "deployment_region": deployment.deployment_region,
             "deployment_extra_args": deployment.deployment_extra_args,
             "deployment_extra_values": deployment.extra_values,
             "deployment_timeout_s": deployment.deployment_timeout_s,

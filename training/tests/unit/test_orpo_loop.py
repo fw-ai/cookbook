@@ -75,3 +75,12 @@ def test_nested_orpo_lr_scheduler_uses_shared_scheduler():
     )
 
     assert not module._uses_legacy_orpo_lr_schedule(cfg)
+    scheduler = module.normalize_lr_scheduler_spec(
+        cfg.lr_scheduler,
+        legacy_lr_schedule=cfg.lr_schedule,
+        legacy_warmup_ratio=cfg.warmup_ratio,
+        legacy_min_lr_ratio=cfg.min_lr_ratio,
+    )
+    assert scheduler.type == "cosine"
+    assert scheduler.warmup_ratio == pytest.approx(0.2)
+    assert scheduler.min_lr_ratio == pytest.approx(0.1)

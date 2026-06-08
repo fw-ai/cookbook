@@ -57,7 +57,7 @@ class ConcurrencyConfig:
 
 @dataclass
 class InfraConfig:
-    """GPU, region, and image settings.
+    """GPU and image settings.
 
     .. deprecated::
         ``InfraConfig`` is retained only for backward compatibility. New code
@@ -89,8 +89,10 @@ class InfraConfig:
     no reference is created. Can be the same value as ``training_shape_id``
     — the control plane auto-appends ``--forward-only``."""
 
-    region: str | None = None
     custom_image_tag: str | None = None
+    region: str | None = None
+    """Optional explicit trainer region. Prefer leaving unset so the backend
+    can place the trainer from the validated training shape."""
     accelerator_type: str | None = None
     accelerator_count: int | None = None
     node_count: int | None = None
@@ -137,8 +139,10 @@ class TrainerConfig:
     cleanup_reference_on_close: bool = True
     """Delete SDK-created separate reference trainers when the service closes."""
 
-    region: str | None = None
     custom_image_tag: str | None = None
+    region: str | None = None
+    """Optional explicit trainer region. Prefer leaving unset so the backend
+    can place the trainer from the validated training shape."""
     accelerator_type: str | None = None
     """Deprecated and ignored. Trainer accelerator type is owned by the
     training shape; setting this emits a ``DeprecationWarning``. Use
@@ -155,6 +159,9 @@ class TrainerConfig:
 
     purpose: str | None = None
     """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
+
+    managed_by: str | None = None
+    """Optional parent resource ID for managed trainer ownership."""
 
     skip_validations: bool = False
     """Skip server-side shape validation. Requires superuser API key."""
@@ -194,7 +201,6 @@ class DeployConfig:
     (e.g. ``accounts/fw/deploymentShapes/ds-x/versions/abc123``) to pin the
     exact shape config.  Recipes populate this from
     ``profile.deployment_shape`` which returns the versioned path."""
-    deployment_region: str | None = None
     deployment_accelerator_type: str | None = None
     """DEPRECATED and ignored on the SDK-managed path. The deployment shape
     owns accelerator selection; set the accelerator via ``deployment_shape``.
@@ -240,8 +246,8 @@ class DeployConfig:
         return DeploymentConfig(
             deployment_id=self.deployment_id,
             base_model=base_model,
+            region=infra.region,
             deployment_shape=self.deployment_shape,
-            region=self.deployment_region or None,
             hot_load_bucket_type=self.hot_load_bucket_type if self.enable_hot_load else None,
             hot_load_trainer_job=self.hot_load_trainer_job if self.enable_hot_load else None,
             enable_hot_load=self.enable_hot_load,

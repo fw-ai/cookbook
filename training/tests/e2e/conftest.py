@@ -6,7 +6,7 @@ They default to the SDK-managed qwen3p5-9b single-shape port path.
 Requires FIREWORKS_API_KEY to be set.
 
 Override defaults via environment variables:
-  FIREWORKS_E2E_MODEL, FIREWORKS_E2E_REGION, FIREWORKS_E2E_TRAINING_SHAPE,
+  FIREWORKS_E2E_MODEL, FIREWORKS_E2E_TRAINING_SHAPE,
   FIREWORKS_E2E_DEPLOYMENT_SHAPE, FIREWORKS_E2E_TOKENIZER_MODEL,
   FIREWORKS_BASE_URL
 """
@@ -23,7 +23,6 @@ from fireworks.training.sdk.deployment import DeploymentManager
 
 DEFAULT_MODEL = "accounts/fireworks/models/qwen3p5-9b"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3.5-9B"
-DEFAULT_REGION = "US_OHIO_1"
 DEFAULT_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k"
 DEFAULT_REFERENCE_TRAINING_SHAPE = (
     "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only"
@@ -81,11 +80,6 @@ def sdk_managers():
         additional_headers=additional_headers or None,
     )
     return rlor_mgr, deploy_mgr
-
-
-@pytest.fixture(scope="module")
-def e2e_region() -> str:
-    return _get_env("FIREWORKS_E2E_REGION", DEFAULT_REGION)
 
 
 @pytest.fixture(scope="module")

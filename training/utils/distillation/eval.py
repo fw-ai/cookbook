@@ -191,9 +191,13 @@ def _span_nll(logprobs: list[float], start: int = 0, end: int | None = None) -> 
 def _resolve_eval_teacher(
     context: dict[str, Any],
     row: dict[str, Any],
-) -> tuple[DeploymentSampler, str]:
+) -> tuple[DeploymentSampler | None, str]:
+    teacher_messages_keys = context.get("teacher_messages_keys") or {}
     if not context.get("is_multi_teacher", False):
-        return context["teacher_sampler"], "teacher_messages"
+        teacher_messages_key = str(context.get("teacher_messages_key") or "teacher_messages")
+        if len(teacher_messages_keys) == 1:
+            teacher_messages_key = next(iter(teacher_messages_keys.values()))
+        return context["teacher_sampler"], teacher_messages_key
 
     route_key = context.get("teacher_route_key")
     if not isinstance(route_key, str) or not route_key:
@@ -201,16 +205,13 @@ def _resolve_eval_teacher(
 
     route_value = row.get(route_key)
     if not isinstance(route_value, str):
-        raise RuntimeError(f"row is missing string teacher route key {route_key!r}: {row!r}")
+        return None, ""
 
     teacher_samplers = context.get("teacher_samplers") or {}
     teacher_sampler = teacher_samplers.get(route_value)
     if teacher_sampler is None:
-        raise RuntimeError(
-            f"row route {route_key!r}={route_value!r} has no configured eval teacher"
-        )
+        return None, ""
 
-    teacher_messages_keys = context.get("teacher_messages_keys") or {}
     teacher_messages_key = teacher_messages_keys.get(route_value, "teacher_messages")
     return teacher_sampler, teacher_messages_key
 
@@ -287,14 +288,17 @@ async def _evaluate_teacher_trace_logprob_gap_async(
 
     records: list[dict[str, Any]] = []
     for row in rows:
-        expected = expected_final_answer(row)
-        if expected is None:
-            raise RuntimeError(f"row is missing an expected answer: {row!r}")
-
         student_messages = prepare_sampling_messages(row.get("messages", []))
         if not student_messages:
             raise RuntimeError(f"row is missing messages: {row!r}")
         routed_teacher_sampler, teacher_messages_key = _resolve_eval_teacher(context, row)
+        if routed_teacher_sampler is None:
+            continue
+
+        expected = expected_final_answer(row)
+        if expected is None:
+            raise RuntimeError(f"row is missing an expected answer: {row!r}")
+
         teacher_messages = _teacher_messages_for_row(
             row,
             student_messages,

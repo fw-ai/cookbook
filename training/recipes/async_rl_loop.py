@@ -117,7 +117,7 @@ class Config:
 
     learning_rate: float = 1e-5
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
-    """LR scheduler spec."""
+    """Per-step LR scheduler spec for managed and local async RL runs."""
 
     kl_beta: float = 0.001
     completions_per_prompt: int = 4
@@ -246,6 +246,27 @@ def _save_checkpoint(
             data_consumed=data_consumed,
         )
     logger.info("[%s] dcp_save: done (%.1fs)", name, span.elapsed)
+
+
+def _build_minibatch_wandb_metrics(
+    fwd_bwd_result: Any,
+    optim_result: Any,
+    *,
+    step: int,
+    minibatch_idx: int,
+    num_minibatches: int,
+    learning_rate: float,
+) -> dict[str, Any]:
+    metrics = compute_minibatch_metrics(fwd_bwd_result, optim_result)
+    metrics.update(
+        {
+            "train/step": step,
+            "train/minibatch_idx": minibatch_idx,
+            "train/num_minibatches": num_minibatches,
+            "train/lr": learning_rate,
+        }
+    )
+    return metrics
 
 
 def main(
@@ -662,12 +683,16 @@ def main(
 
                 # Per-minibatch train/* on train/step axis (each inner step
                 # is genuinely distinct data, not an average).
-                mb_metrics = compute_minibatch_metrics(fwd_bwd_result, optim_result)
-                if mb_metrics:
-                    mb_metrics["train/step"] = step
-                    mb_metrics["train/minibatch_idx"] = minibatch_idx + 1
-                    mb_metrics["train/num_minibatches"] = num_minibatches
-                    wandb_log(mb_metrics)
+                wandb_log(
+                    _build_minibatch_wandb_metrics(
+                        fwd_bwd_result,
+                        optim_result,
+                        step=step,
+                        minibatch_idx=minibatch_idx + 1,
+                        num_minibatches=num_minibatches,
+                        learning_rate=step_lr,
+                    )
+                )
 
             # ``step_wall_time`` covers the full step (queue wait + all K
             # minibatches), so ``perf/wait_time_ratio`` = wait / (wait + train).

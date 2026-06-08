@@ -362,6 +362,8 @@ the dataset and factory into `recipes.async_rl_loop.main`.
 - [`recipes.md`](../recipes.md) — sync `rl_loop.py` overview
 - [`hotload.md`](hotload.md) — weight sync internals (the version counter that
   `max_head_offpolicy_versions` budgets against)
+- [`sampling-timeouts.md`](sampling-timeouts.md) — diagnose sampler timeout
+  errors from hard evidence before changing capacity or concurrency
 - [`gradient-accumulation.md`](gradient-accumulation.md) — PPO minibatch
   gradient normalization
 - [`dynamic-filter.md`](dynamic-filter.md) — async runner accepts the same

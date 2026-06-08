@@ -133,8 +133,6 @@ class MultiHopQAIGPOConfig:
     training_shape: str = ""
     deployment_shape: str = ""
     deployment_id: str | None = None
-    region: str | None = None
-    deployment_region: str | None = None
     deployment_replica_count: int | None = None
 
     wandb_entity: str = field(
@@ -162,8 +160,6 @@ def parse_args() -> MultiHopQAIGPOConfig:
                         default=os.environ.get("TRAINING_SHAPE", ""))
     parser.add_argument("--deployment-shape", default="")
     parser.add_argument("--deployment-id", default=None)
-    parser.add_argument("--region", default="US_VIRGINIA_1")
-    parser.add_argument("--deployment-region", default=None)
     parser.add_argument("--deployment-replica-count", type=int, default=None)
 
     parser.add_argument("--max-rows", type=int, default=200)
@@ -296,7 +292,6 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
     deploy_cfg = DeployConfig(
         deployment_id=cfg.deployment_id,
         deployment_shape=cfg.deployment_shape or None,
-        deployment_region=cfg.deployment_region,
         replica_count=cfg.deployment_replica_count,
         tokenizer_model=cfg.tokenizer_model,
         sample_timeout=1200,
@@ -369,7 +364,6 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
             job_id=cfg.policy_job_id or None,
             training_shape_id=cfg.training_shape or None,
             reference_job_id=(cfg.reference_job_id if use_reference else None),
-            region=cfg.region,
         ),
         deployment=deploy_cfg,
         hotload_timeout_s=WEIGHT_SYNC_TIMEOUT_S,

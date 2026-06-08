@@ -62,7 +62,6 @@ def test_grpo_smoke(
     smoke_base_model,
     smoke_tokenizer_model,
     smoke_trainer_config,
-    smoke_region,
     port_lora_rank,
 ):
     """2-step async GRPO: train, weight sync, train again, cleanup."""
@@ -100,7 +99,6 @@ def test_grpo_smoke(
             lora_rank=port_lora_rank,
             trainer=trainer,
             deployment=DeployConfig(
-                deployment_region=smoke_region,
                 tokenizer_model=smoke_tokenizer_model,
             ),
             weight_sync_before_training=True,

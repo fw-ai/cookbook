@@ -62,7 +62,6 @@ class TestSFTResumeE2E:
     def test_sft_resume_from_checkpoint(
         self,
         sdk_managers,
-        e2e_region,
         e2e_model,
         e2e_training_accelerator,
         custom_image_tag,
@@ -77,7 +76,6 @@ class TestSFTResumeE2E:
             _make_chat_dataset(dataset_path, num_examples=20)
 
             shared_trainer = TrainerConfig(
-                region=e2e_region,
                 custom_image_tag=custom_image_tag or "0.33.0",
             )
 

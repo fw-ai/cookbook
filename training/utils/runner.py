@@ -115,6 +115,7 @@ class RunnerIO:
         self._accelerator_count: int | None = None
         self._last_step: int = 0
         self._last_total_steps: int = 0
+        self._serverless: bool = False
 
     # -- context manager -------------------------------------------------------
 
@@ -181,6 +182,18 @@ class RunnerIO:
         self._accelerator_type = accelerator_type
         self._accelerator_count = accelerator_count
 
+    def mark_serverless(self) -> None:
+        """Record that this run trained on the shared serverless pool.
+
+        Written into metadata.json so the control plane skips its own per-token
+        billing leg: the pooled trainer already bills these tokens per-token, and
+        billing them again on the CP side would double-charge the customer. Call
+        this only on the serverless execution path (after the session attaches to
+        the pool), never from the config request alone -- a run that falls back to
+        a dedicated trainer must still be billed by the control plane.
+        """
+        self._serverless = True
+
     def start_training(self) -> None:
         """Mark training start for accelerator-seconds calculation."""
         self._training_start = time.monotonic()
@@ -199,6 +212,10 @@ class RunnerIO:
             "metadata": {
                 "tokens": self._tokens_processed,
                 "accelerator_seconds": accel_seconds,
+                # When true, the serverless pool trainer already billed these
+                # tokens per-token; the control plane skips its token-billing
+                # leg to avoid double-charging.
+                "serverless": self._serverless,
             }
         }
         self._write_json(self._metadata_file, payload)
