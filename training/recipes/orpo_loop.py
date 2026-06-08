@@ -100,7 +100,7 @@ class Config:
     orpo_lambda: float = 1.0
     learning_rate: float = 1e-5
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
-    """LR scheduler spec. Legacy flat scheduler fields below remain accepted."""
+    """Per-step LR scheduler spec. Legacy flat scheduler fields below remain accepted."""
 
     epochs: int = 1
     batch_size: int = 4
@@ -461,7 +461,7 @@ def main(
                 tokens_per_sec,
                 step_elapsed,
             )
-            log_metrics_json(step, tokens_per_sec=tokens_per_sec, **metrics)
+            log_metrics_json(step, tokens_per_sec=tokens_per_sec, lr=current_lr, **metrics)
             step_metrics = {
                 "train/step": step,
                 "train/orpo_loss": metrics["orpo_loss"],
@@ -473,6 +473,7 @@ def main(
                 "train/step_time_sec": step_elapsed,
                 "train/step_tokens": step_tokens,
                 "train/epoch": epoch + 1,
+                "train/lr": current_lr,
             }
             wandb_log(step_metrics, step)
             write_running_step(

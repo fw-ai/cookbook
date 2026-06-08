@@ -26,6 +26,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "Custom loss for RL" | [`references/rl/custom-loss.md`](references/rl/custom-loss.md) |
 | "RL hotload / weight sync cadence, on-policy vs off-policy, `weight_sync_timeout`" | [`references/rl/hotload.md`](references/rl/hotload.md) |
 | "Concurrency control for RL rollouts — adaptive vs fixed?" | [`references/rl/concurrency.md`](references/rl/concurrency.md) |
+| `DeploymentSamplerTimeoutError` / repeated sampler HTTP 408 or 504 / `ReadTimeout` during rollout sampling | [`references/rl/sampling-timeouts.md`](references/rl/sampling-timeouts.md) |
 | "Async RL — overlap rollout with training, off-policy budget, PPO inner minibatches, `rollout_fn(sample_prompt)`" | [`references/rl/async-rl.md`](references/rl/async-rl.md) |
 | "Why is `perf/wait_time_ratio` high?" / `perf/sampler_wait_for_trainer_time` / `perf/trainer_wait_for_sampler_time` | [`references/rl/async-rl.md`](references/rl/async-rl.md#diagnosing-waits) |
 | "How do I size `max_head_offpolicy_versions` and `max_concurrency_rollout_sample`?" | [`references/rl/async-rl.md`](references/rl/async-rl.md#the-off-policy-gate-sample-level) |

@@ -58,7 +58,6 @@ def test_parse_args_applies_cli_overrides(monkeypatch):
     assert cfg.observation_mode == "image"
     assert cfg.allow_plaintext_action_fallback is True
     assert cfg.training_shape == "ts-qwen3-4b-smoke-v1"
-    assert cfg.deployment_region is None
     assert cfg.deployment_replica_count == 3
 
 

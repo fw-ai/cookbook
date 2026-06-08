@@ -53,7 +53,6 @@ class TestDPOResumeE2E:
     def test_dpo_resume_from_checkpoint(
         self,
         sdk_managers,
-        e2e_region,
         e2e_model,
         e2e_tokenizer_model,
         e2e_training_shape,
@@ -80,7 +79,6 @@ class TestDPOResumeE2E:
             shared_trainer = TrainerConfig(
                 training_shape_id=e2e_training_shape,
                 reference_training_shape_id=e2e_reference_training_shape,
-                region=e2e_region,
                 custom_image_tag=custom_image_tag,
             )
             track = port_track_state.load()

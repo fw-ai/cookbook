@@ -162,6 +162,25 @@ class TestRunnerIOMetadata:
         assert meta["tokens"] == 8000
         assert meta["accelerator_seconds"]["NVIDIA_H100_80GB"] >= 1
 
+    def test_metadata_serverless_flag(self, tmp_path):
+        # Default (dedicated): serverless=False -> control plane bills tokens.
+        path = str(tmp_path / "meta.json")
+        runner = RunnerIO(RunnerConfig(metadata_file=path))
+        runner.append_metrics(1, {}, tokens=5000)
+        runner.write_metadata()
+        assert json.loads(open(path).read())["metadata"]["serverless"] is False
+
+        # mark_serverless() -> serverless=True so the CP skips its token-billing
+        # leg (the pool trainer bills per-token); tokens are still recorded.
+        path2 = str(tmp_path / "meta2.json")
+        runner2 = RunnerIO(RunnerConfig(metadata_file=path2))
+        runner2.append_metrics(1, {}, tokens=5000)
+        runner2.mark_serverless()
+        runner2.write_metadata()
+        meta = json.loads(open(path2).read())["metadata"]
+        assert meta["serverless"] is True
+        assert meta["tokens"] == 5000
+
     def test_accelerator_seconds_scales_by_device_count(self, tmp_path):
         path = str(tmp_path / "meta.json")
         runner = RunnerIO(RunnerConfig(metadata_file=path))

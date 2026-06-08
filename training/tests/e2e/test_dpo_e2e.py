@@ -49,7 +49,6 @@ class TestDPOE2E:
     def test_dpo_trains_several_steps(
         self,
         sdk_managers,
-        e2e_region,
         e2e_model,
         e2e_training_accelerator,
         custom_image_tag,
@@ -70,7 +69,6 @@ class TestDPOE2E:
                 epochs=2,
                 max_pairs=10,
                 trainer=TrainerConfig(
-                    region=e2e_region,
                     accelerator_type=e2e_training_accelerator,
                     custom_image_tag=custom_image_tag,
                 ),

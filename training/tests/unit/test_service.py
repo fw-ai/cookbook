@@ -25,6 +25,7 @@ def _trainer_config(**overrides) -> TrainerConfig:
         replica_count=4,
         timeout_s=1800,
         purpose="PURPOSE_PILOT",
+        managed_by="parent-job",
         skip_validations=True,
     )
     fields.update(overrides)
@@ -35,7 +36,6 @@ def _deployment_config(**overrides) -> DeployConfig:
     fields = dict(
         deployment_shape="ds-x",
         deployment_id="dep-1",
-        deployment_region="US_OHIO_1",
         deployment_extra_args=["--enable-moe-stats"],
         extra_values={"devShmSize": "200Gi"},
         deployment_timeout_s=5400,
@@ -75,11 +75,11 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
 
     assert result == "service-sentinel"
     assert calls == [
-            {
-                "api_key": "k",
-                "base_url": "https://api",
-                "inference_url": None,
-                "additional_headers": {"X-Fireworks-Test": "1"},
+        {
+            "api_key": "k",
+            "base_url": "https://api",
+            "inference_url": None,
+            "additional_headers": {"X-Fireworks-Test": "1"},
             "base_model": "accounts/acct/models/base",
             "tokenizer_model": "Qwen/Qwen3-1.7B",
             "lora_rank": 16,
@@ -100,6 +100,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "trainer_replica_count": 4,
             "trainer_timeout_s": 1800,
             "purpose": "PURPOSE_PILOT",
+            "managed_by": "parent-job",
             "skip_validations": True,
             "cleanup_trainer_on_close": True,
             "cleanup_deployment_on_close": None,
@@ -107,7 +108,6 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "hotload_timeout_s": 600,
             "deployment_shape": "ds-x",
             "deployment_id": "dep-1",
-            "deployment_region": "US_OHIO_1",
             "deployment_extra_args": ["--enable-moe-stats"],
             "deployment_extra_values": {"devShmSize": "200Gi"},
             "deployment_timeout_s": 5400,
@@ -208,7 +208,7 @@ def test_build_service_client_forwards_inference_url(monkeypatch):
     assert calls[0]["inference_url"] == "https://gateway"
 
 
-def test_deployment_region_becomes_single_sdk_region():
+def test_trainer_region_becomes_sdk_region():
     client = build_service_client(
         api_key="k",
         base_url="https://api",
@@ -219,31 +219,14 @@ def test_deployment_region_becomes_single_sdk_region():
         max_context_length=None,
         learning_rate=1e-5,
         trainer=_trainer_config(
-            region=None,
+            region="US_OHIO_1",
             accelerator_type=None,
             accelerator_count=None,
         ),
-        deployment=_deployment_config(deployment_region="US_OHIO_1"),
+        deployment=_deployment_config(),
     )
 
     assert client._managed_config.region == "US_OHIO_1"
-    assert client._managed_config.deployment_region is None
-
-
-def test_conflicting_regions_raise_before_provisioning():
-    with pytest.raises(ValueError, match="colocated"):
-        build_service_client(
-            api_key="k",
-            base_url="https://api",
-            additional_headers=None,
-            base_model="accounts/acct/models/base",
-            tokenizer_model=None,
-            lora_rank=0,
-            max_context_length=None,
-            learning_rate=1e-5,
-            trainer=_trainer_config(region="US_OHIO_1"),
-            deployment=_deployment_config(deployment_region="US_VIRGINIA_1"),
-        )
 
 
 def test_deprecated_trainer_accelerator_fields_warn_and_are_ignored():

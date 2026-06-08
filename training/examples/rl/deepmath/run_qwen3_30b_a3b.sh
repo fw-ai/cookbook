@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# GRPO training for qwen3-30b-a3b-instruct-2507 on B200 (Ohio).
+# GRPO training for qwen3-30b-a3b-instruct-2507 on B200.
 #
 # Requires:
 #   FIREWORKS_API_KEY      - Fireworks API key
@@ -22,7 +22,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-REGION="US_OHIO_1"
 MAX_ROWS=200
 EPOCHS=1
 MAX_COMPLETION_TOKENS=122880
@@ -34,8 +33,6 @@ DEPLOYMENT_ID="${1:-}"
 cd "$HERE"
 
 ARGS=(
-    --region "$REGION"
-    --deployment-region "$REGION"
     --max-rows "$MAX_ROWS"
     --epochs "$EPOCHS"
     --max-completion-tokens "$MAX_COMPLETION_TOKENS"
@@ -57,7 +54,6 @@ fi
 echo "=== DeepMath qwen3-30b-a3b B200 Training ==="
 echo "  Training shape: auto (documented model default)"
 echo "  Ref shape:      auto (documented model default)"
-echo "  Region:         $REGION"
 echo "  Max rows:       $MAX_ROWS"
 echo "  Completions:    $COMPLETIONS_PER_PROMPT"
 echo "  Groups/step:    $PROMPT_GROUPS_PER_STEP"

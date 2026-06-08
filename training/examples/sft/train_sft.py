@@ -42,7 +42,6 @@ def parse_args():
         default=os.path.join(os.path.dirname(__file__), "text2sql_dataset.jsonl"),
     )
     parser.add_argument("--training-shape", default="")
-    parser.add_argument("--region", default="US_VIRGINIA_1")
     parser.add_argument("--max-examples", type=int, default=500)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -95,7 +94,6 @@ def main():
         dcp_save_interval=-1 if args.no_checkpoint else 0,
         trainer=TrainerConfig(
             training_shape_id=args.training_shape,
-            region=args.region,
         ),
         wandb=WandBConfig(
             project=args.wandb_project,

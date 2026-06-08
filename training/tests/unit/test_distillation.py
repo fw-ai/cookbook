@@ -1041,6 +1041,120 @@ def test_teacher_trace_logprob_eval_routes_multi_teacher_rows() -> None:
     assert code_sampler.sample_calls[0][0] == [{"role": "user", "content": "code"}]
 
 
+def test_teacher_trace_logprob_eval_uses_single_teacher_custom_messages_key() -> None:
+    tokenizer = _FakeTokenizer(
+        {
+            "student": [10, 11],
+            "generic": [12, 13],
+            "math": [20, 21],
+            "Trace\nFinal: ": [40, 41],
+            "Student\nFinal: ": [50, 51],
+            "5": [42],
+        }
+    )
+    teacher_sampler = _FakeScoringSampler(
+        response_logprob=-0.1,
+        tokenizer=tokenizer,
+        sample_text="Trace\nFinal: 5",
+        sample_completion_tokens=[40, 41, 42],
+    )
+    student_sampler = _FakeScoringSampler(
+        response_logprob=-0.5,
+        tokenizer=tokenizer,
+        sample_text="Student\nFinal: 5",
+        sample_completion_tokens=[50, 51, 42],
+    )
+
+    metrics = evaluate_teacher_trace_logprob_gap(
+        {
+            "config": _build_qwen_opd_config(),
+            "dataset": [
+                {
+                    "messages": [{"role": "user", "content": "student"}],
+                    "teacher_messages": [{"role": "user", "content": "generic"}],
+                    "math_teacher_messages": [{"role": "user", "content": "math"}],
+                    "expected_answer": "5",
+                }
+            ],
+            "teacher_sampler": teacher_sampler,
+            "teacher_messages_keys": {
+                "math-teacher": "math_teacher_messages",
+            },
+            "is_multi_teacher": False,
+            "student_sampler": student_sampler,
+            "tokenizer": tokenizer,
+            "max_seq_len": MAX_CONTEXT_LEN,
+        },
+        min_pre_final_tokens=2,
+    )
+
+    assert metrics["eval/opd_trace_examples"] == pytest.approx(1.0)
+    assert teacher_sampler.sample_calls[0][0] == [{"role": "user", "content": "math"}]
+
+
+def test_teacher_trace_logprob_eval_skips_unconfigured_multi_teacher_routes() -> None:
+    math_teacher = "accounts/fireworks/models/math-teacher"
+    tokenizer = _FakeTokenizer(
+        {
+            "student-a": [10, 11],
+            "math": [20, 21],
+            "Trace\nFinal: ": [40, 41],
+            "Student\nFinal: ": [50, 51],
+            "5": [42],
+        }
+    )
+    math_sampler = _FakeScoringSampler(
+        response_logprob=-0.1,
+        tokenizer=tokenizer,
+        sample_text="Trace\nFinal: 5",
+        sample_completion_tokens=[40, 41, 42],
+    )
+    student_sampler = _FakeScoringSampler(
+        response_logprob=-0.5,
+        tokenizer=tokenizer,
+        sample_text="Student\nFinal: 5",
+        sample_completion_tokens=[50, 51, 42],
+    )
+
+    metrics = evaluate_teacher_trace_logprob_gap(
+        {
+            "config": _build_qwen_opd_config(),
+            "dataset": [
+                {
+                    "messages": [{"role": "user", "content": "student-a"}],
+                    "math_teacher_messages": [{"role": "user", "content": "math"}],
+                    "teacher": math_teacher,
+                    "expected_answer": "5",
+                },
+                {
+                    "messages": [{"role": "user", "content": "student-b"}],
+                    "teacher": "accounts/fireworks/models/code-teacher",
+                },
+                {
+                    "messages": [{"role": "user", "content": "student-c"}],
+                },
+            ],
+            "teacher_sampler": math_sampler,
+            "teacher_samplers": {
+                math_teacher: math_sampler,
+            },
+            "teacher_messages_keys": {
+                math_teacher: "math_teacher_messages",
+            },
+            "teacher_route_key": "teacher",
+            "is_multi_teacher": True,
+            "student_sampler": student_sampler,
+            "tokenizer": tokenizer,
+            "max_seq_len": MAX_CONTEXT_LEN,
+        },
+        min_pre_final_tokens=2,
+    )
+
+    assert metrics["eval/opd_trace_examples"] == pytest.approx(1.0)
+    assert len(math_sampler.sample_calls) == 1
+    assert len(student_sampler.sample_calls) == 1
+
+
 def test_opd_trace_result_validation_requires_opd_signal(tmp_path) -> None:
     cfg = _build_qwen_opd_config(metrics_file=str(tmp_path / "metrics.jsonl"))
     cfg.epochs = 1
