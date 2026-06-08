@@ -21,7 +21,7 @@ import pytest
 RECIPE_MODULES = [
     "training.recipes.sft_loop",
     "training.recipes.rl_loop",
-    "training.recipes.distillation_loop",
+    "training.recipes.opd_loop",
     "training.recipes.dpo_loop",
     "training.recipes.orpo_loop",
 ]
@@ -57,9 +57,9 @@ UTIL_MODULES = [
     "training.utils.rl.metrics",
     "training.utils.rl.router_replay",
     "training.utils.rl.train",
-    "training.utils.distillation",
-    "training.utils.distillation.eval",
-    "training.utils.distillation.sampling",
+    "training.utils.opd",
+    "training.utils.opd.eval",
+    "training.utils.opd.sampling",
     "training.utils.runner",
 ]
 

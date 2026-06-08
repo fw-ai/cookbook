@@ -16,7 +16,6 @@ Optional env vars (CI script sets these):
   FROZEN_LAKE_POLICY_JOB_ID    (pre-created policy trainer job)
   FROZEN_LAKE_REFERENCE_JOB_ID (pre-created reference trainer job)
   FROZEN_LAKE_TRAINING_SHAPE   (default: qwen3-4b-b300)
-  FROZEN_LAKE_REGION           (default: EU_NETHERLANDS_1)
   FROZEN_LAKE_LORA_RANK        (default: 8, must match training shape)
 """
 
@@ -95,7 +94,6 @@ class TestFrozenLakeB300:
         if not deployment_id:
             pytest.skip("FROZEN_LAKE_DEPLOYMENT_ID not set")
 
-        region = _env("FROZEN_LAKE_REGION", "EU_NETHERLANDS_1")
         training_shape = _env("FROZEN_LAKE_TRAINING_SHAPE", "qwen3-4b-b300")
         # TODO(bennychen): LoRA weight sync has a loading perf bug that needs
         # fixing before re-enabling. Use full-parameter (rank=0) for now.
@@ -118,8 +116,6 @@ class TestFrozenLakeB300:
             tokenizer_model="Qwen/Qwen3-4B",
             training_shape=training_shape,
             deployment_id=deployment_id,
-            region=region,
-            deployment_region=region,
             lora_rank=lora_rank,
             epochs=3,
             max_seeds=20,

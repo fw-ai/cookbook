@@ -10,6 +10,8 @@ SDK, or a deployment:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from training.recipes import async_rl_loop
 from training.utils.runner_state import estimate_async_total_steps
 
@@ -126,6 +128,41 @@ class TestConfigRunnerField:
         assert cfg.runner.metrics_file == "gs://r/metrics.jsonl"
         assert cfg.runner.output_model_path == "gs://r/model.json"
         assert cfg.runner.enabled
+
+
+class TestMinibatchWandbMetrics:
+    def test_logs_lr_even_when_remote_metrics_are_empty(self) -> None:
+        metrics = async_rl_loop._build_minibatch_wandb_metrics(
+            SimpleNamespace(metrics={}),
+            SimpleNamespace(metrics={}),
+            step=3,
+            minibatch_idx=2,
+            num_minibatches=4,
+            learning_rate=5e-5,
+        )
+
+        assert metrics == {
+            "train/step": 3,
+            "train/minibatch_idx": 2,
+            "train/num_minibatches": 4,
+            "train/lr": 5e-5,
+        }
+
+    def test_scheduled_lr_overrides_remote_lr_metric(self) -> None:
+        metrics = async_rl_loop._build_minibatch_wandb_metrics(
+            SimpleNamespace(metrics={"loss": 1.25, "step": 99}),
+            SimpleNamespace(metrics={"lr": 1e-3, "grad_norm": 0.5}),
+            step=7,
+            minibatch_idx=1,
+            num_minibatches=2,
+            learning_rate=2e-5,
+        )
+
+        assert metrics["train/lr"] == 2e-5
+        assert metrics["train/loss"] == 1.25
+        assert metrics["train/grad_norm"] == 0.5
+        assert "train/step_id" not in metrics
+        assert metrics["train/step"] == 7
 
 
 # ---------------------------------------------------------------------------

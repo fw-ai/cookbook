@@ -95,7 +95,6 @@ class TestGRPOResumeE2E:
     def test_grpo_resume_from_checkpoint(
         self,
         sdk_managers,
-        e2e_region,
         e2e_model,
         e2e_tokenizer_model,
         e2e_training_shape,
@@ -121,7 +120,6 @@ class TestGRPOResumeE2E:
             training_shape_id=e2e_training_shape,
             reference_training_shape_id=e2e_reference_training_shape,
             cleanup_reference_on_close=False,
-            region=e2e_region,
             custom_image_tag=custom_image_tag,
         )
         rollout_fn_factory = make_message_rollout_fn_factory(gsm8k_numeric_reward)
@@ -142,7 +140,6 @@ class TestGRPOResumeE2E:
             lora_rank=port_lora_rank,
             trainer=shared_trainer,
             deployment=DeployConfig(
-                deployment_region=e2e_region,
                 tokenizer_model=e2e_tokenizer_model,
             ),
             weight_sync_before_training=True,
@@ -232,7 +229,6 @@ class TestGRPOResumeE2E:
                 ),
                 deployment=DeployConfig(
                     deployment_id=phase1_deployment_id,
-                    deployment_region=e2e_region,
                     tokenizer_model=e2e_tokenizer_model,
                 ),
                 weight_sync_before_training=True,

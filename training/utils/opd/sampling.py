@@ -1,4 +1,4 @@
-"""Shared distillation token alignment and teacher scoring helpers."""
+"""Shared OPD token alignment and teacher scoring helpers."""
 
 from __future__ import annotations
 
@@ -97,23 +97,12 @@ def _slice_response_logprobs(
 def _teacher_messages_for_row(
     row: dict[str, Any],
     fallback_messages: list[dict[str, Any]],
-    *,
-    teacher_messages_key: str = "teacher_messages",
 ) -> list[dict[str, Any]]:
     """Pick privileged teacher messages when the dataset provides them."""
-    if not teacher_messages_key:
-        raise ValueError("teacher_messages_key must be non-empty.")
-
-    messages = row.get(teacher_messages_key)
-    if messages:
-        return prepare_sampling_messages(messages)
-
-    if teacher_messages_key == "teacher_messages":
-        for key in ("privileged_messages", "teacher_prompt_messages"):
-            messages = row.get(key)
-            if messages:
-                return prepare_sampling_messages(messages)
-
+    for key in ("teacher_messages", "privileged_messages", "teacher_prompt_messages"):
+        messages = row.get(key)
+        if messages:
+            return prepare_sampling_messages(messages)
     return fallback_messages
 
 

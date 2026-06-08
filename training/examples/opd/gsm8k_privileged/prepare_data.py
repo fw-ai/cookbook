@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prepare GSM8K-style rows for privileged-context distillation.
+"""Prepare GSM8K-style rows for privileged-context OPD.
 
-The distillation loop consumes normalized rows:
+The OPD loop consumes normalized rows:
 
   {
     "messages": [...],          # student prompt, no privileged solution
@@ -114,7 +114,7 @@ def convert_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare GSM8K privileged distillation JSONL")
+    parser = argparse.ArgumentParser(description="Prepare GSM8K privileged OPD JSONL")
     parser.add_argument("--source", default=DEFAULT_SOURCE)
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--max-rows", type=int, default=0)

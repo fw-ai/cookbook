@@ -83,6 +83,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
+from training.utils.serverless import setup_serverless_training
 from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
@@ -486,7 +487,7 @@ class Config:
 
     learning_rate: float = 1e-4
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
-    """LR scheduler spec. Legacy ``warmup_steps`` is still accepted below."""
+    """Per-step LR scheduler spec. Legacy ``warmup_steps`` is still accepted below."""
 
     epochs: int = 3
     batch_size: int = 32
@@ -497,6 +498,18 @@ class Config:
     max_examples: int | None = None
     lora_rank: int = 0
     output_model_id: str | None = None
+
+    serverless: bool = False
+    """When True, train against an already-provisioned shared/pooled serverless
+    trainer reached via the tinker gateway intercept
+    (``{FIREWORKS_BASE_URL}/training/v1/serverless``) instead of the SDK-managed
+    dedicated-trainer path. Skips GPU provisioning, substitutes config values for
+    the managed-metadata reads, and promotes the final adapter through the
+    session-scoped ``PromoteTrainingSessionCheckpoint`` RPC. Set by the control
+    plane (``CookbookTrainingConfig.serverless``) when a routable pooled trainer
+    exists for the base model; requires ``lora_rank > 0`` and a concrete
+    ``max_seq_len`` (there is no training shape to resolve it from)."""
+
     save_final_checkpoint: bool = True
 
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
@@ -718,45 +731,61 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    runner.write_status(RunStatus.PENDING, message="provisioning")
+    runner.write_status(
+        RunStatus.PENDING,
+        message="attaching to serverless trainer pool" if cfg.serverless else "provisioning",
+    )
 
     with runner, ExitStack() as stack:
-        service = build_service_client(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-            base_model=cfg.base_model,
-            tokenizer_model=cfg.tokenizer_model,
-            lora_rank=cfg.lora_rank,
-            max_context_length=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            trainer=cfg.trainer,
-        )
-        stack.callback(service.close)
-        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
-        runner.set_accelerator_info(
-            service.accelerator_type,
-            service.accelerator_count,
-            profile=service.training_profile,
-        )
-        job_id = service.trainer_job_id
-        max_seq_len = service.max_context_length
-        client = ReconnectableClient.from_training_client(
-            training_client,
-            base_model=cfg.base_model,
-            lora_rank=cfg.lora_rank,
-            job_id=job_id,
-            default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
-            service=service,
-        )
+        if cfg.serverless:
+            # Attach to a shared, already-running pooled trainer through the
+            # serverless surface instead of provisioning a dedicated trainer.
+            service, client, ckpt, job_id, max_seq_len = setup_serverless_training(
+                cfg, api_key=api_key, base_url=base_url, additional_headers=additional_headers, stack=stack,
+            )
+            stack.callback(service.close)
+            # Per-token billed by the pool trainer; there is no dedicated
+            # accelerator to report, and the control plane must skip its own
+            # token-billing leg (mark_serverless) to avoid double-charging.
+            runner.set_accelerator_info(None, None, profile=None)
+            runner.mark_serverless()
+        else:
+            service = build_service_client(
+                api_key=api_key,
+                base_url=base_url,
+                additional_headers=additional_headers,
+                base_model=cfg.base_model,
+                tokenizer_model=cfg.tokenizer_model,
+                lora_rank=cfg.lora_rank,
+                max_context_length=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate,
+                trainer=cfg.trainer,
+            )
+            stack.callback(service.close)
+            training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+            runner.set_accelerator_info(
+                service.accelerator_type,
+                service.accelerator_count,
+                profile=service.training_profile,
+            )
+            job_id = service.trainer_job_id
+            max_seq_len = service.max_context_length
+            client = ReconnectableClient.from_training_client(
+                training_client,
+                base_model=cfg.base_model,
+                lora_rank=cfg.lora_rank,
+                job_id=job_id,
+                default_timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S,
+                service=service,
+            )
 
-        ckpt = TrainingCheckpoints(
-            client,
-            service,
-            trainer_id=job_id,
-            log_path=cfg.log_path,
-            lora_rank=cfg.lora_rank,
-        )
+            ckpt = TrainingCheckpoints(
+                client,
+                service,
+                trainer_id=job_id,
+                log_path=cfg.log_path,
+                lora_rank=cfg.lora_rank,
+            )
 
         # -- Prepare data ------------------------------------------------------
         # Render JSONL rows on the fly inside DataLoader workers so peak
@@ -952,15 +981,17 @@ def main(
             if response_tokens and response_tokens > 0:
                 avg_loss = loss_sum / response_tokens
                 ppl = torch.exp(torch.tensor(avg_loss)).item()
+                current_lr = _current_lr(s)
                 logger.info(
                     "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d | depth: %d",
                     s, total_steps_estimate, avg_loss, ppl, tps, tokens, cfg.pipeline_depth,
                 )
-                log_metrics_json(s, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tps)
+                log_metrics_json(s, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tps, lr=current_lr)
                 step_metrics.update({
                     "train/step": s, "train/ce_loss": avg_loss,
                     "train/loss": avg_loss, "train/ppl": ppl,
                 })
+                step_metrics["train/lr"] = current_lr
                 wandb_log(step_metrics, s)
 
             write_running_step(

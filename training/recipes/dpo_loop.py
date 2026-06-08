@@ -115,7 +115,7 @@ class Config:
     beta: float = 0.1
     learning_rate: float = 1e-5
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
-    """LR scheduler spec."""
+    """Per-step LR scheduler spec for managed and local DPO runs."""
 
     epochs: int = 1
     batch_size: int = 4
@@ -427,8 +427,9 @@ async def _train_loop(
             step, total_steps, avg_loss, avg_margin, avg_acc * 100,
             step_tokens, ref_tokens, tokens_per_sec, step_elapsed,
         )
+        current_lr = step_lr
         log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc,
-                         tokens_per_sec=tokens_per_sec)
+                         tokens_per_sec=tokens_per_sec, lr=current_lr)
         step_metrics.update({
             "train/step": step,
             "train/dpo_loss": avg_loss,
@@ -442,6 +443,7 @@ async def _train_loop(
             "train/ref_tokens": ref_tokens,
             "train/total_tokens": total_tokens,
         })
+        step_metrics["train/lr"] = current_lr
         wandb_log(step_metrics, step)
         write_running_step(
             runner,

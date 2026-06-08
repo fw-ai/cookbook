@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# ruff: noqa: E402
-"""Run privileged-context distillation on prepared GSM8K rows.
+"""Run privileged-context OPD on prepared GSM8K rows.
 
 Run prepare_data.py first, then:
 
@@ -26,9 +25,9 @@ _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-import training.recipes.distillation_loop as distillation_loop
+import training.recipes.opd_loop as opd_loop
 from training.utils import DeployConfig, RunnerConfig, TrainerConfig
-from training.utils.distillation.eval import (
+from training.utils.opd.eval import (
     make_teacher_trace_logprob_gap_eval,
     validate_opd_trace_result,
     validate_privileged_opd_dataset,
@@ -36,7 +35,7 @@ from training.utils.distillation.eval import (
 
 
 DATASET_PATH = Path(__file__).with_name("dataset.jsonl")
-LOG_ROOT = Path(__file__).resolve().parents[2] / "distillation_logs"
+LOG_ROOT = Path(__file__).resolve().parents[2] / "opd_logs"
 
 
 @dataclass
@@ -53,13 +52,13 @@ class TrainArgs:
     lora_rank: int = 0
     max_completion_tokens: int = 2048
     min_pre_final_tokens: int = 64
-    run_id: str = field(default_factory=lambda: f"gsm8k-distillation-{int(time.time())}")
+    run_id: str = field(default_factory=lambda: f"gsm8k-opd-{int(time.time())}")
     skip_cleanup: bool = False
 
 
 def parse_args() -> TrainArgs:
     defaults = TrainArgs()
-    parser = argparse.ArgumentParser(description="Privileged distillation on prepared GSM8K rows")
+    parser = argparse.ArgumentParser(description="Privileged OPD on prepared GSM8K rows")
     parser.add_argument("--base-model")
     parser.add_argument("--tokenizer-model")
     parser.add_argument("--dataset-path")
@@ -97,11 +96,11 @@ def main() -> None:
         min_pre_final_tokens=args.min_pre_final_tokens,
     )
 
-    cfg = distillation_loop.Config(
+    cfg = opd_loop.Config(
         log_path=str(log_dir),
         base_model=args.base_model,
         teacher_model=args.base_model,
-        teacher_deployment_id=f"distillation-teacher-{args.run_id}",
+        teacher_deployment_id=f"opd-teacher-{args.run_id}",
         dataset=str(dataset_path),
         trainer=TrainerConfig(training_shape_id=args.training_shape),
         deployment=DeployConfig(tokenizer_model=args.tokenizer_model),
@@ -122,7 +121,7 @@ def main() -> None:
         save_final_checkpoint=False,
     )
 
-    result = distillation_loop.main(cfg, cancel_on_exit=not args.skip_cleanup)
+    result = opd_loop.main(cfg, cancel_on_exit=not args.skip_cleanup)
     validate_opd_trace_result(
         cfg,
         result,

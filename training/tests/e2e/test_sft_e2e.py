@@ -41,7 +41,6 @@ class TestSFTE2E:
     def test_sft_trains_several_steps(
         self,
         sdk_managers,
-        e2e_region,
         e2e_model,
         e2e_training_accelerator,
         custom_image_tag,
@@ -62,7 +61,6 @@ class TestSFTE2E:
                 epochs=2,
                 max_examples=10,
                 trainer=TrainerConfig(
-                    region=e2e_region,
                     accelerator_type=e2e_training_accelerator,
                     custom_image_tag=custom_image_tag,
                 ),

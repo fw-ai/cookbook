@@ -200,6 +200,7 @@ class TrainingCheckpoints:
         trainer_id: str,
         log_path: str,
         lora_rank: int = 0,
+        serverless: bool = False,
         save_appear_timeout_s: float = 90.0,
         save_stabilize_s: float = 15.0,
         save_poll_s: float = 3.0,
@@ -209,6 +210,9 @@ class TrainingCheckpoints:
         self._trainer_id = trainer_id
         self._log_path = log_path
         self._lora_rank = lora_rank
+        # In serverless mode trainer_id is the TrainingSession id (not a job),
+        # which changes how resume refs are built — see resume().
+        self._serverless = serverless
         self._save_appear_timeout_s = save_appear_timeout_s
         self._save_stabilize_s = save_stabilize_s
         self._save_poll_s = save_poll_s
@@ -309,6 +313,22 @@ class TrainingCheckpoints:
 
         if init_from_checkpoint:
             source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
+            if self._serverless:
+                # The pooled trainer namespaces checkpoints under
+                # sessions/<session_id>/ and rejects cross_job://<id>/<name> refs
+                # (a session id is not a source job). Cross-session warm-start is
+                # not supported on the shared pool (checkpoints are session
+                # isolated), so a spec naming a different session is an error;
+                # otherwise resume from the bare name and let the trainer prepend
+                # the session prefix, mirroring the auto-resume path below.
+                if source_job_id and source_job_id != self._trainer_id:
+                    raise ValueError(
+                        f"serverless init_from_checkpoint cannot reference another "
+                        f"session ({source_job_id!r}); checkpoints on the shared pool "
+                        f"are isolated to session {self._trainer_id!r}. Use a bare "
+                        f"checkpoint name to resume within this session."
+                    )
+                source_job_id = None
             path = self._client.resolve_checkpoint_path(
                 dcp_name, source_job_id=source_job_id
             )
@@ -325,8 +345,15 @@ class TrainingCheckpoints:
         latest = self._latest_resumable()
         if latest:
             short = _short_name(latest["name"])
+            # In serverless mode the pooled multi-session trainer namespaces
+            # checkpoints under sessions/<session_id>/ itself and rejects a
+            # cross_job://<session_id>/<name> ref (session_id is not a source
+            # job, and that ref's name must already be session-scoped). Resume
+            # from the bare logical name so the trainer prepends the session
+            # prefix; the dedicated path keeps cross_job://<trainer_id>/<name>.
+            source_job_id = None if self._serverless else self._trainer_id
             path = self._client.resolve_checkpoint_path(
-                short, source_job_id=self._trainer_id
+                short, source_job_id=source_job_id
             )
             logger.info("Resuming from control-plane row: %s", short)
             t0 = time.time()
@@ -335,7 +362,7 @@ class TrainingCheckpoints:
             return ResumeInfo(
                 step=_step_from_name(short),
                 data_consumed=self._read_dataloader(short),
-                source_job_id=self._trainer_id,
+                source_job_id=source_job_id,
             )
 
         if warm_start_from_adapter:

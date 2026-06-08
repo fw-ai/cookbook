@@ -21,7 +21,6 @@ DEFAULT_SMOKE_REFERENCE_TRAINING_SHAPE = (
 )
 DEFAULT_SMOKE_LORA_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
 DEFAULT_SMOKE_DEPLOYMENT_SHAPE = "accounts/fireworks/deploymentShapes/rft-qwen3p5-9b-v2/versions/n864rzzy"
-DEFAULT_SMOKE_REGION = "US_OHIO_1"
 DEFAULT_SMOKE_MINIMAL_TRAINING_SHAPE = "qwen3-4b-minimum"
 DEFAULT_SMOKE_MINIMAL_REF_TRAINING_SHAPE = "qwen3-4b-minimum-forward-only"
 DEFAULT_SMOKE_BASE_URL = "https://api.fireworks.ai"
@@ -64,11 +63,6 @@ def smoke_deployment_shape() -> str:
 
 
 @pytest.fixture(scope="session")
-def smoke_region() -> str:
-    return _get_env("FIREWORKS_REGION", DEFAULT_SMOKE_REGION)
-
-
-@pytest.fixture(scope="session")
 def smoke_custom_image_tag() -> str | None:
     return _get_env("FIREWORKS_CUSTOM_IMAGE_TAG")
 
@@ -96,7 +90,6 @@ def smoke_reference_training_profile(smoke_sdk_managers, smoke_reference_trainin
 def smoke_trainer_config(
     smoke_training_shape,
     smoke_reference_training_shape,
-    smoke_region,
     smoke_custom_image_tag,
     smoke_training_profile,
     smoke_reference_training_profile,
@@ -104,15 +97,13 @@ def smoke_trainer_config(
     """Build the SDK-managed trainer config for the smoke environment."""
     _ = smoke_reference_training_profile
     logger.info(
-        "Smoke: SDK-managed trainer shape=%s version=%s region=%s",
+        "Smoke: SDK-managed trainer shape=%s version=%s",
         smoke_training_shape,
         smoke_training_profile.training_shape_version,
-        smoke_region,
     )
     return TrainerConfig(
         training_shape_id=smoke_training_shape,
         reference_training_shape_id=smoke_reference_training_shape,
-        region=smoke_region,
         custom_image_tag=smoke_custom_image_tag,
     )
 

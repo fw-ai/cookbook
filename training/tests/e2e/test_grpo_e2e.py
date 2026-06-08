@@ -41,7 +41,6 @@ class TestGRPOE2E:
     def test_grpo_full_pipeline(
         self,
         sdk_managers,
-        e2e_region,
         e2e_model,
         e2e_tokenizer_model,
         e2e_training_accelerator,
@@ -68,14 +67,12 @@ class TestGRPOE2E:
             router_replay=True,
             tis=TISConfig(cap=10.0),
             trainer=TrainerConfig(
-                region=e2e_region,
                 accelerator_type=e2e_training_accelerator,
                 custom_image_tag=custom_image_tag,
             ),
             deployment=DeployConfig(
                 deployment_id=f"grpo-e2e-{ts}",
                 deployment_shape=e2e_deployment_shape,
-                deployment_region=e2e_region,
                 tokenizer_model=e2e_tokenizer_model,
             ),
             weight_sync_interval=1,

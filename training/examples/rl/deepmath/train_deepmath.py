@@ -144,8 +144,6 @@ class TrainArgs:
     """Separate training shape for the forward-only reference model."""
     deployment_id: str | None = None
     """Omit to auto-create a new deployment; set to reuse an existing one."""
-    region: str = "US_OHIO_1"
-    deployment_region: str | None = None
     deployment_replica_count: int | None = None
     trainer_replica_count: int | None = None
     """Run-level data-parallel trainer replicas for HSDP launches."""
@@ -193,8 +191,6 @@ def parse_args() -> TrainArgs:
         "--deployment-id",
         help="Existing deployment ID to reuse; omit to auto-create",
     )
-    parser.add_argument("--region")
-    parser.add_argument("--deployment-region")
     parser.add_argument("--deployment-replica-count", type=int)
     parser.add_argument(
         "--trainer-replicas",
@@ -389,11 +385,9 @@ def main():
             reference_training_shape_id=args.ref_training_shape,
             reference_job_id=args.reference_job_id,
             replica_count=args.trainer_replica_count,
-            region=args.region,
         ),
         deployment=DeployConfig(
             deployment_id=args.deployment_id,
-            deployment_region=args.deployment_region,
             replica_count=args.deployment_replica_count,
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
@@ -413,10 +407,9 @@ def main():
     )
 
     logger.info(
-        "model=%s | training_shape=%s | deployment_shape=(parsed from training shape) | region=%s",
+        "model=%s | training_shape=%s | deployment_shape=(parsed from training shape)",
         args.base_model,
         args.training_shape or "auto",
-        args.region,
     )
     logger.info(
         "max_rows=%d | epochs=%d | completions_per_prompt=%d | temp=%.1f | lr=%g | kl_beta=%g",
