@@ -339,7 +339,7 @@ class TrainingCheckpoints:
             )
 
         if warm_start_from_adapter:
-            logger.info("Fresh start with HF adapter: %s", warm_start_from_adapter)
+            logger.info("Fresh start with HF adapter")
             t0 = time.time()
             self._client.load_adapter(warm_start_from_adapter)
             logger.info("Adapter loaded (%.1fs)", time.time() - t0)
