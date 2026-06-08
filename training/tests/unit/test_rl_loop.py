@@ -8,6 +8,10 @@ import training.recipes.rl_loop as module
 from training.utils.rl.losses import PromptGroup
 
 
+class _StopAfterProvisioning(RuntimeError):
+    pass
+
+
 def test_extract_answer_reads_digits_from_answer_block():
     assert module.extract_answer("<answer> 42 apples </answer>") == "42"
     assert module.extract_answer("no answer block") is None
@@ -87,3 +91,86 @@ def test_main_requires_deployment_tokenizer_model(monkeypatch):
     with pytest.raises(ValueError, match="deployment.tokenizer_model"):
         module.main(cfg)
 
+
+def _build_service_kwargs(monkeypatch, cfg):
+    calls = []
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "validate_warm_start_config", lambda *args, **kwargs: None)
+
+    def fake_build_service_client(**kwargs):
+        calls.append(kwargs)
+        raise _StopAfterProvisioning
+
+    monkeypatch.setattr(module, "build_service_client", fake_build_service_client)
+
+    with pytest.raises(_StopAfterProvisioning):
+        module.main(cfg)
+
+    assert len(calls) == 1
+    return calls[0]
+
+
+def test_main_requests_cleanup_for_sdk_created_resources(monkeypatch):
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["cleanup_trainer_on_close"] is True
+    assert (
+        kwargs["cleanup_deployment_on_close"]
+        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+    )
+
+
+def test_main_can_disable_cleanup_on_exit(monkeypatch):
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        cleanup_on_exit=False,
+        deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["cleanup_trainer_on_close"] is False
+    assert kwargs["cleanup_deployment_on_close"] is None
+
+
+def test_main_delegates_trainer_cleanup_for_existing_id_to_sdk(monkeypatch):
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        trainer=module.TrainerConfig(job_id="existing-job"),
+        deployment=module.DeployConfig(
+            deployment_id="requested-rollout-id",
+            tokenizer_model="Qwen/Qwen3-1.7B",
+        ),
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["cleanup_trainer_on_close"] is True
+    assert (
+        kwargs["cleanup_deployment_on_close"]
+        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+    )
+
+
+def test_main_requests_trainer_cleanup_for_empty_job_id(monkeypatch):
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        trainer=module.TrainerConfig(job_id=""),
+        deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["cleanup_trainer_on_close"] is True

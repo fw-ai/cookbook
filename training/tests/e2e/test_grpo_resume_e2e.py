@@ -145,6 +145,7 @@ class TestGRPOResumeE2E:
             weight_sync_before_training=True,
             weight_sync_timeout=600,
             dcp_save_interval=2,
+            cleanup_on_exit=False,
         )
 
         try:

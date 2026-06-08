@@ -165,6 +165,9 @@ class Config:
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
     runner: RunnerConfig = field(default_factory=RunnerConfig)
+    cleanup_on_exit: bool = True
+    """Clean up SDK-created trainer resources on close."""
+
     release_reference_after_cache: bool = True
     """Release SDK-owned separate references after reference logprobs are cached.
 
@@ -659,6 +662,7 @@ def main(
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
             reference_required=True,
+            cleanup_trainer_on_close=cfg.cleanup_on_exit,
         )
         stack.callback(service.close)
         training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)

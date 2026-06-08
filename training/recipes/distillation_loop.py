@@ -36,6 +36,7 @@ from fireworks.training.sdk import DeploymentConfig, DeploymentManager
 from fireworks.training.sdk.client import GradAccNormalization
 from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentSampler
 from training.utils import (
+    CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
     ConcurrencyConfig,
     DeployConfig,
@@ -525,7 +526,9 @@ def main(
             deployment=cfg.deployment,
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cancel_on_exit,
-            cleanup_deployment_on_close="scale_to_zero" if cancel_on_exit else None,
+            cleanup_deployment_on_close=(
+                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cancel_on_exit else None
+            ),
             reference_required=False,
         )
         stack.callback(service.close)

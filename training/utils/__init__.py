@@ -36,6 +36,7 @@ del _warnings
 
 __all__ = [
     "AdaptiveConcurrencyController",
+    "CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO",
     "GradAccNormalization",
     "AppendOnlyPickleLog",
     "DEFAULT_ADAM",
@@ -109,6 +110,7 @@ __all__ = [
     "wandb_log",
 ]
 
+from fireworks.training.sdk import CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
 from fireworks.training.sdk.deployment import AdaptiveConcurrencyController
 
 from training.utils.client import GradAccNormalization, ReconnectableClient
