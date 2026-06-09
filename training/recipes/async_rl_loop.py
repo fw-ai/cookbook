@@ -671,8 +671,25 @@ def main(
             # Capture the per-rollout reference KL for the human summary line
             # before the train/* stripping below removes it.
             ref_kl = metrics.get("train/ref_kl", 0.0)
-            # train/* already logged per-minibatch above; strip the averages.
+            # train/* averages are logged per-minibatch above; strip them to avoid
+            # double-logging. Preserve the KLD-family metrics, though, so they land
+            # in the metrics file and the CI run summary (graph + table) even when
+            # wandb is disabled -- which is the default for managed rl_train runs.
+            # (The synchronous rl_loop keeps these in its metrics file already; this
+            # closes the text-vs-vision gap where async runs surfaced no KLD.)
+            preserved_train_metrics = {
+                k: metrics[k]
+                for k in (
+                    "train/inference_kld",
+                    "train/inference_diff",
+                    "train/ppo_kl",
+                    "train/ref_kl",
+                    "train/mean_kl",
+                )
+                if isinstance(metrics.get(k), (int, float))
+            }
             metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
+            metrics.update(preserved_train_metrics)
             metrics["rollout/step"] = rollout_id
             metrics["train/step"] = step  # monotonic fallback for the wandb global step
             for k, v in ctx_metadata.items():
