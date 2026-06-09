@@ -1,0 +1,55 @@
+# Fireworks distillation provisioning.
+#
+#   uv run python provision.py --config-name fireworks_distillation
+#   uv run python provision.py --config fireworks_distillation.yaml
+
+common:
+  base_model: accounts/fireworks/models/qwen3p5-9b  # the student model to be trained on
+  tokenizer_model: Qwen/Qwen3.5-9B  # the tokenizer to be used for the student model
+  lora_rank: 16            # 0 = full-parameter training
+  learning_rate: 1e-5      # placeholder for fireworks managed flow. Should be overridden in the training codes.
+  max_seq_len: null        # null = use the training shape's default context length
+  step_timeout: 3600       # SDK default (3600s)
+  weight_sync_timeout: 600
+
+deployments:
+  rollout:
+    deployment_id: null # null = create a new deployment; set to reattach to an existing deployment
+    deployment_shape: null # Leave deployment_shape null so the SDK uses the shape linked to the training shape.
+    replica_count: 1
+    sample_timeout: 600
+    disable_speculative_decoding: false
+    extra_values: null
+
+trainers:
+  policy:
+    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora
+    base_model: accounts/fireworks/models/qwen3p5-9b
+    weight_sync_deployment: rollout # student rollout deployment that receives hot-loaded weights
+    job_id: null           # null = create a new job; set to reattach to an existing job
+    replica_count: 1
+    # Optional fields for admin users.
+    custom_image_tag: null
+    region: null           # optional explicit trainer region; prefer leaving unset
+    timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
+    extra_args: null
+    skip_validations: false
+
+  teacher_forward_only:
+    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only
+    base_model: accounts/fireworks/models/qwen3p5-9b
+    job_id: null           # null = create a new job; set to reattach to an existing job
+    replica_count: 1
+    # Optional fields for admin users.
+    custom_image_tag: null
+    region: null           # optional explicit trainer region; prefer leaving unset
+    timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
+    extra_args: null
+    skip_validations: false
+
+recipe:
+  distillation:
+    trainer: policy
+    deployment: rollout
+    teacher_trainers: 
+      - teacher_forward_only

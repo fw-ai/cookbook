@@ -1,0 +1,28 @@
+# Fireworks SFT (supervised fine-tuning) provisioning.
+#
+#   uv run python provision.py --config-name fireworks_sft
+#   uv run python provision.py --config fireworks_sft.yaml
+
+common:
+  base_model: accounts/fireworks/models/qwen3p5-9b
+  tokenizer_model: Qwen/Qwen3.5-9B
+  lora_rank: 16            # 0 = full-parameter training
+  learning_rate: 1e-5      # placeholder for fireworks managed flow. Should be overridden in the training codes.
+  max_seq_len: null        # null = use the training shape's default context length
+  step_timeout: 3600       # SDK default (3600s)
+
+trainers:
+  policy:
+    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora
+    job_id: null           # null = create a new job; set to reattach to an existing job
+    replica_count: 1
+    # Optional fields for admin users.
+    custom_image_tag: null
+    region: null           # optional explicit trainer region; prefer leaving unset
+    timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
+    extra_args: null
+    skip_validations: false
+
+recipe:
+  sft:
+    trainer: policy

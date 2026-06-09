@@ -92,6 +92,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "region": "US_OHIO_1",
             "max_context_length": 4096,
             "learning_rate": 1e-5,
+            "gradient_accumulation_steps": None,
             "node_count": 2,
             "accelerator_type": "NVIDIA_B200",
             "accelerator_count": 8,
