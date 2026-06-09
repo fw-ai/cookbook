@@ -718,11 +718,8 @@ def main(
                 loop_stats=loop_stats,
                 completions_per_prompt=cfg.completions_per_prompt,
             )
-            # Capture the per-rollout reference KL for the human summary line
-            # before the train/* stripping below removes it.
+            # Per-rollout reference KL for the human summary line below.
             ref_kl = metrics.get("train/ref_kl", 0.0)
-            # train/* already logged per-minibatch above; strip the averages.
-            metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
             metrics["rollout/step"] = rollout_id
             metrics["train/step"] = step  # monotonic fallback for the wandb global step
             for k, v in ctx_metadata.items():
@@ -739,7 +736,9 @@ def main(
                 metrics.get("rollout/accuracy", 0.0) * 100,
                 ref_kl,
             )
-            wandb_log(metrics)
+            wandb_metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
+            wandb_metrics["train/step"] = step
+            wandb_log(wandb_metrics)
             # Report the number of trained target tokens, not raw rollout length.
             write_running_step(
                 runner,
