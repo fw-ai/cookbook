@@ -399,6 +399,7 @@ def main():
         weight_sync_before_training=True,
         weight_sync_timeout=600,
         dcp_save_interval=20,
+        cleanup_on_exit=not args.skip_cleanup,
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fireworks.training.sdk import FiretitanServiceClient
+from fireworks.training.sdk import (
+    DeploymentCleanupOnClose,
+    FiretitanServiceClient,
+)
 
 from training.utils.config import DeployConfig, TrainerConfig
 
@@ -20,7 +23,7 @@ def _firetitan_service_kwargs(
     deployment: DeployConfig | None = None,
     hotload_timeout_s: float | None = None,
     cleanup_trainer_on_close: bool = False,
-    cleanup_deployment_on_close: str | None = None,
+    cleanup_deployment_on_close: DeploymentCleanupOnClose | None = None,
     reference_required: bool = False,
 ) -> dict[str, Any]:
     """Translate cookbook user config into SDK service kwargs."""
@@ -85,7 +88,7 @@ def build_service_client(
     deployment: DeployConfig | None = None,
     hotload_timeout_s: float | None = None,
     cleanup_trainer_on_close: bool = False,
-    cleanup_deployment_on_close: str | None = None,
+    cleanup_deployment_on_close: DeploymentCleanupOnClose | None = None,
     reference_required: bool = False,
 ) -> FiretitanServiceClient:
     """Create an SDK-managed service client from cookbook config."""

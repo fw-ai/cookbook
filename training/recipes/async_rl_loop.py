@@ -49,6 +49,7 @@ from fireworks.training.sdk.training_spec import (
 
 from training.utils.client import GradAccNormalization
 from training.utils import (
+    CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
     DeployConfig,
     TrainerConfig,
@@ -168,6 +169,9 @@ class Config:
     dcp_save_interval: int = 0
     weight_sync_timeout: int = 600
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
+    cleanup_on_exit: bool = True
+    """Clean up SDK-created trainer/deployment resources on close."""
+
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     """Optional orchestration outputs (status / metadata / metrics / output
     model). When unset the recipe still runs; the orchestration layer just
@@ -379,6 +383,10 @@ def main(
             trainer=cfg.trainer,
             deployment=cfg.deployment,
             hotload_timeout_s=cfg.weight_sync_timeout,
+            cleanup_trainer_on_close=cfg.cleanup_on_exit,
+            cleanup_deployment_on_close=(
+                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cfg.cleanup_on_exit else None
+            ),
             reference_required=cfg.kl_beta > 0,
         )
         stack.callback(service.close)

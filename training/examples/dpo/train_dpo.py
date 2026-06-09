@@ -83,6 +83,7 @@ def parse_args():
     )
     parser.add_argument("--custom-image-tag", type=str, default="")
     parser.add_argument("--purpose", type=str, default=None)
+    parser.add_argument("--skip-cleanup", action="store_true", default=False)
 
     # Wandb
     parser.add_argument("--wandb-project", type=str, default="dpo-tinker")
@@ -117,6 +118,7 @@ def main():
         max_pairs=args.max_pairs,
         output_model_id=args.output_model_id,
         init_from_checkpoint=args.init_from_checkpoint,
+        cleanup_on_exit=not args.skip_cleanup,
         ref_cache_concurrency=args.ref_cache_concurrency,
         ref_cache_batch_size=args.ref_cache_batch_size,
         dcp_save_interval=args.dcp_save_interval,

@@ -40,6 +40,82 @@ def _new_cursor(*, max_rows: int | None = None, persisted: int | None = None) ->
     return cursor
 
 
+class _StopAfterProvisioning(RuntimeError):
+    pass
+
+
+def _build_service_kwargs(monkeypatch, cfg: module.Config) -> dict:
+    calls = []
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "validate_warm_start_config", lambda *args, **kwargs: None)
+
+    def fake_build_service_client(**kwargs):
+        calls.append(kwargs)
+        raise _StopAfterProvisioning
+
+    monkeypatch.setattr(module, "build_service_client", fake_build_service_client)
+
+    with pytest.raises(_StopAfterProvisioning):
+        module.main(cfg)
+
+    assert len(calls) == 1
+    return calls[0]
+
+
+def test_main_requests_cleanup_for_sdk_created_trainer(monkeypatch, tmp_path):
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="/tmp/preferences.jsonl",
+        tokenizer_model="Qwen/Qwen3.5-9B",
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["cleanup_trainer_on_close"] is True
+
+
+def test_main_can_disable_cleanup_on_exit(monkeypatch, tmp_path):
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="/tmp/preferences.jsonl",
+        tokenizer_model="Qwen/Qwen3.5-9B",
+        cleanup_on_exit=False,
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["cleanup_trainer_on_close"] is False
+
+
+def test_main_delegates_trainer_cleanup_for_existing_id_to_sdk(monkeypatch, tmp_path):
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="/tmp/preferences.jsonl",
+        tokenizer_model="Qwen/Qwen3.5-9B",
+        trainer=module.TrainerConfig(job_id="existing-job"),
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["cleanup_trainer_on_close"] is True
+
+
+def test_main_requests_trainer_cleanup_for_empty_job_id(monkeypatch, tmp_path):
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="/tmp/preferences.jsonl",
+        tokenizer_model="Qwen/Qwen3.5-9B",
+        trainer=module.TrainerConfig(job_id=""),
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["cleanup_trainer_on_close"] is True
+
+
 # ---------------------------------------------------------------------------
 # _render_pair_worker
 # ---------------------------------------------------------------------------
