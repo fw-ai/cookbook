@@ -38,7 +38,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "I changed a renderer — how do I verify it matches HF / the live gateway?" | [`../verifier/SKILL.md`](../verifier/SKILL.md) |
 | "Why is my model emitting trailing tokens / hard-appends?" / token stream looks wrong | [`../verifier/SKILL.md`](../verifier/SKILL.md) |
 | "Where does checkpoint state live?" / CheckpointKind / `checkpoints.jsonl` | [`references/checkpoints.md`](references/checkpoints.md) |
-| "Continue LoRA training from a prior adapter" / `warm_start_from_adapter` | [`references/checkpoints.md`](references/checkpoints.md#warm-start-from-a-promoted-adapter-lora-only) |
+| "Continue LoRA training from a prior adapter" / deprecated `warm_start_from_adapter` | [`references/checkpoints.md`](references/checkpoints.md#deprecated-warm_start_from_adapter-compatibility-field) |
 | Error: `checkpoint "<name>" not found in GCS` | [`references/checkpoints.md`](references/checkpoints.md#when-promote-fails) — validate `output_model_id` first; reach out to Fireworks support if still failing |
 | Error: `Hotload failed for snapshot ...` | [`references/rl/hotload.md`](references/rl/hotload.md#self-check-when-hotload-fails) |
 | Error: `hotload flow mismatch: trainer wants deployment-first ... but deployment ... is trainer-first` | [`references/rl/hotload.md`](references/rl/hotload.md#server-side-validation) — the server still emits the old "trainer-first / deployment-first" wording; it maps to `PER_TRAINER` / `PER_DEPLOYMENT` bucket scope. Scopes crossed at `CreateRlorTrainerJob`; pick one scope. |

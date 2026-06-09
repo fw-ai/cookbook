@@ -253,7 +253,7 @@ def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
         tokenizer_model="Qwen/Qwen3-1.7B",
         max_seq_len=32,
         lora_rank=16,
-        warm_start_from_adapter="gs://bucket/adapter-dir",
+        warm_start_from_adapter="accounts/test-account/models/promoted-lora",
         init_from_checkpoint="gs://bucket/dcp-dir",
     )
 
@@ -275,7 +275,7 @@ def test_main_rejects_adapter_with_zero_lora_rank(tmp_path, monkeypatch):
         tokenizer_model="Qwen/Qwen3-1.7B",
         max_seq_len=32,
         lora_rank=0,
-        warm_start_from_adapter="gs://bucket/adapter-dir",
+        warm_start_from_adapter="accounts/test-account/models/promoted-lora",
     )
 
     with pytest.raises(ValueError, match="lora_rank > 0"):

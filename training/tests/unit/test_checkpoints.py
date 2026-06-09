@@ -1,6 +1,7 @@
 """Unit tests for ``training.utils.checkpoints``."""
 
 import json
+import logging
 import os
 import tempfile
 from unittest.mock import MagicMock
@@ -103,7 +104,7 @@ class TestValidateWarmStartConfig:
     def test_mutually_exclusive(self):
         with pytest.raises(ValueError, match="mutually exclusive"):
             validate_warm_start_config(
-                warm_start_from_adapter="some/adapter",
+                warm_start_from_adapter="accounts/test-account/models/promoted-lora",
                 init_from_checkpoint="job:step-5",
                 lora_rank=8,
             )
@@ -111,7 +112,7 @@ class TestValidateWarmStartConfig:
     def test_warm_start_requires_lora(self):
         with pytest.raises(ValueError, match="cfg.base_model"):
             validate_warm_start_config(
-                warm_start_from_adapter="some/adapter",
+                warm_start_from_adapter="accounts/test-account/models/promoted-lora",
                 init_from_checkpoint=None,
                 lora_rank=0,
             )
@@ -123,7 +124,7 @@ class TestValidateWarmStartConfig:
             lora_rank=0,
         )
         validate_warm_start_config(
-            warm_start_from_adapter="a",
+            warm_start_from_adapter="accounts/test-account/models/promoted-lora",
             init_from_checkpoint=None,
             lora_rank=8,
         )
@@ -182,11 +183,15 @@ class TestResume:
             "path://other-job/step-3"
         )
 
-    def test_warm_start_adapter_when_no_resume(self, log_dir):
+    def test_warm_start_adapter_when_no_resume(self, log_dir, caplog):
         ckpt, client, _ = _make(log_dir, fw_rows=[], lora_rank=8)
-        info = ckpt.resume(warm_start_from_adapter="hf/adapter")
+        adapter_ref = "accounts/test-account/models/promoted-lora"
+        with caplog.at_level(logging.WARNING, logger="training.utils.checkpoints"):
+            info = ckpt.resume(warm_start_from_adapter=adapter_ref)
+
         assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
-        client.load_adapter.assert_called_once_with("hf/adapter")
+        client.load_adapter.assert_called_once_with(adapter_ref)
+        assert "warm_start_from_adapter is deprecated" in caplog.text
 
     def test_list_failure_treated_as_fresh_start(self, log_dir):
         ckpt, client, fw = _make(log_dir)

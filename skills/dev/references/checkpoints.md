@@ -36,26 +36,26 @@ This is an SDK-level detail, surfaced when you call `save_weights_for_sampler_ex
 
 ---
 
-## Warm-start from a promoted adapter (LoRA only)
+## Deprecated `warm_start_from_adapter` compatibility field
 
-To continue LoRA training from a previously-trained adapter — typically a promoted Fireworks Model or any HF PEFT directory — set `warm_start_from_adapter` on the recipe `Config`:
+`warm_start_from_adapter` is deprecated and kept only for backward compatibility with existing LoRA recipes. It accepts a promoted PEFT adapter model resource, not a storage URI:
 
 ```python
 cfg = Config(
     base_model="accounts/fireworks/models/qwen3-8b",
     lora_rank=16,
-    warm_start_from_adapter="gs://bucket/path/to/adapter-dir",
+    warm_start_from_adapter="accounts/my-account/models/my-lora-adapter",
     ...
 )
 ```
 
-Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh.
+Semantics: weights-only load. LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. New public flows should use the unified load API once available instead of adding more usage of this field.
 
 Priority inside `TrainingCheckpoints.resume` (highest first):
 
 1. `init_from_checkpoint` — explicit cross-job DCP resume (weights + optimizer). Step counter resets.
 2. Newest resumable row on the control plane for the current trainer — auto-resume.
-3. `warm_start_from_adapter` — fresh start with adapter weights.
+3. Deprecated `warm_start_from_adapter` compatibility alias — fresh start with promoted adapter weights.
 4. None — fresh start from `base_model`.
 
 **Constraints (enforced by `validate_warm_start_config`):**

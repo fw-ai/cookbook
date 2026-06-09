@@ -51,6 +51,13 @@ _RESUMABLE_TYPE_SUFFIXES = ("TRAINING", "TRAINING_LORA")
 
 logger = logging.getLogger(__name__)
 
+_WARM_START_FROM_ADAPTER_DEPRECATION_WARNING = (
+    "warm_start_from_adapter is deprecated and kept only for backward "
+    "compatibility. New code should use the unified load API once available; "
+    "this compatibility path loads promoted PEFT adapter weights with fresh "
+    "optimizer state."
+)
+
 
 # -- Public types --------------------------------------------------------------
 
@@ -91,7 +98,7 @@ def validate_warm_start_config(
     """Validate cross-field constraints on warm-start inputs.
 
     Full-param warm-start is handled via ``cfg.base_model`` at session init,
-    not via this API — this helper only checks the LoRA adapter path.
+    not via this deprecated compatibility field.
     """
     if warm_start_from_adapter and init_from_checkpoint:
         raise ValueError(
@@ -298,7 +305,8 @@ class TrainingCheckpoints:
         1. ``init_from_checkpoint`` — explicit cross-job DCP load (weights
            and optimizer). Step counter resets to 0.
         2. Newest resumable row on the control plane — auto-resume.
-        3. ``warm_start_from_adapter`` — HF PEFT adapter (weights only).
+        3. Deprecated ``warm_start_from_adapter`` compatibility alias —
+           promoted HF PEFT adapter model resource (weights only).
         4. Fresh start (returns ``None``).
         """
         validate_warm_start_config(
@@ -339,7 +347,8 @@ class TrainingCheckpoints:
             )
 
         if warm_start_from_adapter:
-            logger.info("Fresh start with HF adapter")
+            logger.warning(_WARM_START_FROM_ADAPTER_DEPRECATION_WARNING)
+            logger.info("Fresh start with HF PEFT adapter")
             t0 = time.time()
             self._client.load_adapter(warm_start_from_adapter)
             logger.info("Adapter loaded (%.1fs)", time.time() - t0)

@@ -127,8 +127,8 @@ class Config:
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     init_from_checkpoint: str | None = None
     warm_start_from_adapter: str | None = None
-    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
-    weights from the adapter at training start (weights-only, fresh optimizer).
+    """Deprecated compatibility alias for loading a promoted HF PEFT adapter
+    model resource at training start. Weights-only with fresh optimizer state.
     Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
     output_model_id: str | None = None
     save_final_checkpoint: bool = True
