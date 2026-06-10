@@ -33,7 +33,7 @@ import signal
 import asyncio
 import logging
 from contextlib import ExitStack
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 from dataclasses import field, dataclass
 
 import tinker
@@ -91,6 +91,22 @@ from training.utils.runner_state import start_running, write_completed, write_ru
 
 logger = logging.getLogger(__name__)
 
+AdvantageNormalization = Literal["zscore", "mean_centered"]
+
+
+def _compute_group_advantages(
+    rewards: list[float],
+    normalization: AdvantageNormalization = "zscore",
+) -> list[float]:
+    if normalization == "zscore":
+        return compute_advantages(rewards)
+    if normalization == "mean_centered":
+        if not rewards:
+            return []
+        mean_reward = sum(float(r) for r in rewards) / len(rewards)
+        return [float(r) - mean_reward for r in rewards]
+    raise ValueError(f"Unsupported advantage_normalization: {normalization!r}")
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -108,6 +124,12 @@ class Config:
     learning_rate: float = 1e-5
     kl_beta: float = 0.001
     completions_per_prompt: int = 4
+    advantage_normalization: AdvantageNormalization = "zscore"
+    """How to normalize rewards within each prompt group.
+
+    ``"zscore"`` is the cookbook GRPO default. ``"mean_centered"`` matches
+    the original Countdown scripts, using ``reward - mean(group_rewards)``.
+    """
     max_completion_tokens: int = 1024
     temperature: float = 1.0
     epochs: int = 1
@@ -531,7 +553,7 @@ def main(
 
             completion_texts = [_completion_text_from_sample(s, tokenizer, reward_renderer) for s in sampled]
             rewards = [reward_fn(text, row) for text in completion_texts]
-            advantages = compute_advantages(rewards)
+            advantages = _compute_group_advantages(rewards, cfg.advantage_normalization)
 
             prompt_len = sampled[0].prompt_len
             policy_data: List[tinker.Datum] = []

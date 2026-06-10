@@ -28,6 +28,16 @@ def test_should_accept_requires_reward_variance():
     assert module.should_accept(varied_rewards) is True
 
 
+def test_compute_group_advantages_supports_countdown_mean_centering():
+    assert module._compute_group_advantages([1.0, 0.0], "mean_centered") == pytest.approx([0.5, -0.5])
+
+    zscore = module._compute_group_advantages([1.0, 0.0], "zscore")
+    assert zscore == pytest.approx([0.70710677, -0.70710677])
+
+    with pytest.raises(ValueError, match="Unsupported advantage_normalization"):
+        module._compute_group_advantages([1.0], "unknown")  # type: ignore[arg-type]
+
+
 def test_completion_text_uses_generated_tokens_not_echoed_text():
     class FakeRenderer:
         def __init__(self):
