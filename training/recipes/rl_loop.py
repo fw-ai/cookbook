@@ -37,6 +37,7 @@ from typing import Any, List, Optional
 from dataclasses import field, dataclass
 
 import tinker
+from tinker_cookbook.renderers import get_text_content
 
 from training.utils.client import GradAccNormalization
 from training.utils import (
@@ -62,6 +63,7 @@ from training.utils import (
     read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
+    build_renderer,
     ReconnectableClient,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
@@ -247,6 +249,30 @@ def should_accept(pg: PromptGroup) -> bool:
     return len(set(pg.rewards)) > 1
 
 
+def _completion_text_from_sample(sample: Any, tokenizer: Any, renderer: Any | None) -> str:
+    """Return generated completion text, excluding any echoed prompt prefix."""
+    tokens = list(getattr(sample, "full_tokens", []) or [])
+    prompt_len = int(getattr(sample, "prompt_len", 0) or 0)
+    response_tokens = tokens[prompt_len:] if tokens else []
+    if not response_tokens:
+        return str(getattr(sample, "text", "") or "")
+
+    if renderer is not None:
+        try:
+            parsed_message, _ = renderer.parse_response(response_tokens)
+            return get_text_content(parsed_message)
+        except Exception:
+            logger.debug(
+                "Failed to parse completion tokens; falling back to tokenizer.decode",
+                exc_info=True,
+            )
+
+    try:
+        return tokenizer.decode(response_tokens, skip_special_tokens=False)
+    except TypeError:
+        return tokenizer.decode(response_tokens)
+
+
 # ---------------------------------------------------------------------------
 # Trajectory logging
 # ---------------------------------------------------------------------------
@@ -394,6 +420,15 @@ def main(
             reference_job_id = service.reference_trainer_job_id
 
         tokenizer = load_deployment_tokenizer(cfg.deployment)
+        try:
+            reward_renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
+        except Exception:
+            reward_renderer = None
+            logger.info(
+                "Could not build reward renderer for tokenizer_model=%s; falling back to tokenizer.decode",
+                cfg.deployment.tokenizer_model,
+                exc_info=True,
+            )
         # Adaptive concurrency — window adjusts based on server-side prefill queue.
         # For fixed (no rate limiting), use FixedConcurrencyController instead.
         # Fallback scales with deployment replicas (see ConcurrencyConfig.initial_window).
@@ -494,7 +529,8 @@ def main(
             if not sampled or len(sampled) < completions_per_prompt:
                 return None
 
-            rewards = [reward_fn(s.text, row) for s in sampled]
+            completion_texts = [_completion_text_from_sample(s, tokenizer, reward_renderer) for s in sampled]
+            rewards = [reward_fn(text, row) for text in completion_texts]
             advantages = compute_advantages(rewards)
 
             prompt_len = sampled[0].prompt_len
@@ -566,7 +602,7 @@ def main(
                 completion_lens=comp_lens,
                 truncated=trunc,
                 prompt=input_messages if cfg.trajectory_dir else None,
-                completions=[s.text for s in sampled] if cfg.trajectory_dir else None,
+                completions=completion_texts if cfg.trajectory_dir else None,
                 row_meta={"ground_truth": row.get("ground_truth", "")} if cfg.trajectory_dir else None,
             )
 

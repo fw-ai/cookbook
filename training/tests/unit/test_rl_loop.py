@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +26,29 @@ def test_should_accept_requires_reward_variance():
 
     assert module.should_accept(same_rewards) is False
     assert module.should_accept(varied_rewards) is True
+
+
+def test_completion_text_uses_generated_tokens_not_echoed_text():
+    class FakeRenderer:
+        def __init__(self):
+            self.seen_tokens = []
+
+        def parse_response(self, tokens):
+            self.seen_tokens.append(tokens)
+            return {"role": "assistant", "content": "<answer>good</answer>"}, True
+
+    sample = SimpleNamespace(
+        full_tokens=[101, 102, 201, 202],
+        prompt_len=2,
+        text="PROMPT <answer>bad</answer>",
+    )
+    renderer = FakeRenderer()
+
+    assert (
+        module._completion_text_from_sample(sample, tokenizer=None, renderer=renderer)
+        == "<answer>good</answer>"
+    )
+    assert renderer.seen_tokens == [[201, 202]]
 
 
 def test_dump_trajectory_writes_one_record_per_completion(tmp_path):
@@ -86,4 +110,3 @@ def test_main_requires_deployment_tokenizer_model(monkeypatch):
 
     with pytest.raises(ValueError, match="deployment.tokenizer_model"):
         module.main(cfg)
-
