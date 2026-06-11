@@ -155,7 +155,7 @@ class TestResume:
         ckpt, client, _ = _make(log_dir, fw_rows=rows)
         info = ckpt.resume()
         assert info == ResumeInfo(step=10, data_consumed=80, source_job_id="job-1")
-        client.load_state_with_optimizer.assert_called_once_with("path://job-1/step-10")
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-10")
 
     def test_resume_picks_training_lora_too(self, log_dir):
         rows = [
@@ -168,7 +168,7 @@ class TestResume:
         info = ckpt.resume()
         assert info is not None
         assert info.step == 5
-        client.load_state_with_optimizer.assert_called_once_with("path://job-1/step-5")
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
     def test_init_from_checkpoint_takes_priority(self, log_dir):
         rows = [
@@ -181,6 +181,16 @@ class TestResume:
         client.load_state_with_optimizer.assert_called_once_with(
             "path://other-job/step-3"
         )
+
+    def test_same_trainer_init_from_checkpoint_resumes_cursor(self, log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-3": 24}, f)
+
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+        info = ckpt.resume(init_from_checkpoint="job-1:step-3")
+        assert info == ResumeInfo(step=3, data_consumed=24, source_job_id="job-1")
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-3")
 
     def test_warm_start_adapter_when_no_resume(self, log_dir):
         ckpt, client, _ = _make(log_dir, fw_rows=[], lora_rank=8)

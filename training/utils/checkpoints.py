@@ -295,8 +295,8 @@ class TrainingCheckpoints:
 
         Priority:
 
-        1. ``init_from_checkpoint`` — explicit cross-job DCP load (weights
-           and optimizer). Step counter resets to 0.
+        1. ``init_from_checkpoint`` — explicit DCP load. Same-trainer loads
+           resume the step/cursor; cross-job loads reset the step counter.
         2. Newest resumable row on the control plane — auto-resume.
         3. ``warm_start_from_adapter`` — HF PEFT adapter (weights only).
         4. Fresh start (returns ``None``).
@@ -309,6 +309,17 @@ class TrainingCheckpoints:
 
         if init_from_checkpoint:
             source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
+            if source_job_id == self._trainer_id:
+                path = self._client.resolve_checkpoint_path(dcp_name)
+                logger.info("Resuming from explicit same-trainer checkpoint: %s", dcp_name)
+                t0 = time.time()
+                self._client.load_state_with_optimizer(path)
+                logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
+                return ResumeInfo(
+                    step=_step_from_name(dcp_name),
+                    data_consumed=self._read_dataloader(dcp_name),
+                    source_job_id=source_job_id,
+                )
             path = self._client.resolve_checkpoint_path(
                 dcp_name, source_job_id=source_job_id
             )
@@ -325,9 +336,7 @@ class TrainingCheckpoints:
         latest = self._latest_resumable()
         if latest:
             short = _short_name(latest["name"])
-            path = self._client.resolve_checkpoint_path(
-                short, source_job_id=self._trainer_id
-            )
+            path = self._client.resolve_checkpoint_path(short)
             logger.info("Resuming from control-plane row: %s", short)
             t0 = time.time()
             self._client.load_state_with_optimizer(path)
