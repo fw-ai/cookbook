@@ -32,6 +32,9 @@ dev = [
     "pytest-timeout",
     "math-verify",
 ]
+coding-agent = [
+    "swebench @ git+https://github.com/SWE-Gym/SWE-Bench-Fork.git",
+]
 
 [tool.setuptools.packages.find]
 where = [".."]

@@ -1,6 +1,6 @@
 # Tools
 
-Four standalone scripts live in `training/examples/tools/`. Each does one operation; none needs an active trainer.
+Five standalone scripts live in `training/examples/tools/`. Each does one operation. Most need no active trainer; `merge_lora_and_promote.py` provisions its own short-lived trainer.
 
 For renderer work, see the dedicated skills under `cookbook/skills/`:
 - [`renderer/SKILL.md`](../../renderer/SKILL.md) — implementing a new renderer.
@@ -44,6 +44,26 @@ Source: `training/examples/tools/promote_checkpoint.py`. Hands the row's 4-segme
 from fireworks.training.sdk import validate_output_model_id
 errors = validate_output_model_id(output_model_id)
 ```
+
+## `merge_lora_and_promote.py`
+
+Turn an existing HF PEFT/LoRA adapter into a deployable full `HF_BASE_MODEL`. Provisions a short-lived service-mode LoRA trainer from the adapter's **base** model, explicitly loads the adapter with `load_adapter(<adapter gcs uri>)`, saves a merged-base sampler checkpoint with `save_weights_for_sampler(checkpoint_type="merged_base")`, then promotes and waits for `READY`.
+
+```bash
+python training/examples/tools/merge_lora_and_promote.py \
+    --base-model accounts/fireworks/models/qwen3-8b \
+    --adapter-gcs gs://my-bucket/adapters/my-lora \
+    --lora-rank 8 \
+    --training-shape accounts/<acct>/trainingShapes/<shape>:<version> \
+    --output-model-id my-merged-qwen3-8b
+```
+
+Key points:
+- **Do not** use `warmStartFrom` to merge a LoRA. RLOR `warmStartFrom` of a PEFT addon is not effective — the control plane downloads the adapter but the trainer session never loads it, so the save folds a zero-delta adapter and yields a base-identical checkpoint. The gateway rejects service-mode `warmStartFrom` of a LoRA addon. There is no shared base LoRA; every adapter is loaded explicitly.
+- `merged_base` is LoRA-only: it folds `W <- W + scaling*(B@A)` into the base, strips adapter metadata, and the result promotes as `INFERENCE_BASE` / `HF_BASE_MODEL`. Saving from a fresh LoRA session (without `load_adapter`) exports base-identical weights.
+- Resolve `--adapter-gcs` (the `gs://` dir with `adapter_config.json` + `adapter_model*.safetensors`) from a LoRA model resource via its `getDownloadEndpoint` API. See the script docstring.
+
+Source: `training/examples/tools/merge_lora_and_promote.py`.
 
 ## `reconnect_and_adjust_lr.py`
 

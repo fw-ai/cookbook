@@ -100,6 +100,19 @@ TEACHER_ID_HASH_CHARS = 10
 
 
 @dataclass
+class TeacherTrainerConfig:
+    """A forward-only teacher trainer used as a distillation supervision source.
+
+    ``base_model`` is the teacher model; ``trainer`` carries its launch settings
+    (training shape, region, reattach job id). Provisioned as a separate trainer
+    job from the student and scored via its endpoint.
+    """
+
+    base_model: str = ""
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+
+
+@dataclass
 class Config:
     log_path: str
     """Directory for checkpoints and logs. Required, no default."""
@@ -112,6 +125,12 @@ class Config:
 
     teacher_model: str = ""
     """Teacher base model or deployment ID on the same tokenizer as ``base_model``."""
+
+    teacher_trainers: list[TeacherTrainerConfig] = field(default_factory=list)
+    """Forward-only teacher trainers. Each entry is provisioned as its own trainer
+    job (its ``base_model`` is the teacher) alongside the student; the loop scores
+    sampled tokens against these trainers' endpoints rather than a teacher inference
+    deployment. One entry is single-teacher; multiple entries are multi-teacher."""
 
     teacher_deployment_id: str | None = None
     """Deployment ID to create/reuse when ``teacher_model`` is a base model."""

@@ -40,6 +40,12 @@ def _firetitan_service_kwargs(
         "region": trainer.region,
         "max_context_length": max_context_length,
         "learning_rate": learning_rate,
+        # Server-side gradient accumulation is deprecated on the Tinker/RLOR
+        # path (the managed config defaults this to 1, which logs a deprecation
+        # warning). Recipes express gradient accumulation as client-side control
+        # flow -- N forward_backward calls per optim_step -- so leave the
+        # server-side knob unset.
+        "gradient_accumulation_steps": None,
         "node_count": trainer.node_count,
         "accelerator_type": trainer.accelerator_type,
         "accelerator_count": trainer.accelerator_count,

@@ -142,6 +142,53 @@ def make_rollout_fn(setup: RolloutSetup) -> RolloutFn:
 `RolloutSetup.extras` carries arbitrary caller state (replaces the older
 `RolloutContext.ctx_extras` setattr injection).
 
+## Black-box coding-agent example
+
+Use `training/examples/rl/coding_agent/` when the user wants to train on an
+unmodified coding-agent harness.  The public example intentionally keeps one
+path: NVIDIA ProRL-Agent-Server SWE-Gym parity with local Docker runtimes,
+public SWE-Gym/SWE-bench images, and fresh-runtime SWE-bench grading.
+
+The flow is:
+
+1. `async_rl_loop` calls `rollout_fn(sample_prompt)` once per trajectory draw.
+2. The rollout opens a shim session and launches the real agent CLI in the
+   SWE-Gym Docker runtime named by the row metadata.
+3. The agent sends Anthropic `/v1/messages` traffic to the shim.  The shim
+   renders each turn, calls Fireworks `DeploymentSampler` token-in/token-out,
+   records prompt/output tokens plus per-token logprobs, and translates the
+   response back to Anthropic format.
+4. The rollout captures the produced `git diff`, grades it in a fresh copy of
+   the same SWE-Gym runtime, drains the session, and returns one `RolloutRun`
+   whose segments share the run reward.
+
+Comparison target checked for this example:
+
+- `NVIDIA-NeMo/ProRL-Agent-Server` `examples/swegym_slime_grpo/sample_tasks.py`
+  and `prepare_data.py` for the public `NovaSky-AI/SkyRL-v0-293-data` split,
+  prompt row shape, and image naming.
+- `examples/swegym_slime_grpo/polar_config.yaml` for SWE-bench harness grading,
+  patch filtering, and runtime layout.
+- `examples/swegym_slime_grpo/run.sh` for GRPO task/batch sizing.
+
+Fireworks-specific substitutions are intentional: `async_rl_loop` owns the
+trainer loop, Fireworks `DeploymentSampler` provides TITO sampling/logprobs,
+and the deployment tokenizer/renderer path is used instead of the ProRL
+Polar/Slime/SGLang serving stack.  Do not describe the cookbook example as
+infra-identical to ProRL; parity here means the public task, image, grader, and
+batch recipe.
+
+Public-facing guardrails:
+
+- Do not expose internal template IDs, team IDs, GCS service-account material,
+  private backend paths, or checked-in credentials.
+- Keep setup examples to user-provided `FIREWORKS_API_KEY`,
+  user-provided `WANDB_API_KEY` when needed, public Docker images, and public
+  dataset names.
+- For multi-turn cache reuse, forward the per-trajectory session id as the
+  completions `user` field and leave prompt caching enabled.
+- Keep docs and tests centered on the ProRL SWE-Gym path.
+
 ## The off-policy gate (sample-level)
 
 Bookkeeping is in samples (LLM calls), the same unit the deployment's

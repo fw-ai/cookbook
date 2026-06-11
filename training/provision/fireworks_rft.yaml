@@ -1,0 +1,56 @@
+# Fireworks RFT (reinforcement fine-tuning) provisioning.
+# RFT and RL are the same training mode.
+#
+#   uv run python provision.py --config-name fireworks_rft
+#   uv run python provision.py --config fireworks_rft.yaml
+
+common:
+  base_model: accounts/fireworks/models/qwen3p5-9b
+  tokenizer_model: Qwen/Qwen3.5-9B
+  lora_rank: 16            # 0 = full-parameter training
+  learning_rate: 1e-5      # placeholder for fireworks managed flow. Should be overridden in the training codes.
+  max_seq_len: null        # null = use the training shape's default context length
+  step_timeout: 3600       # SDK default (3600s)
+  weight_sync_timeout: 600
+
+deployments:
+  rollout:
+    deployment_id: null # null = create a new deployment; set to reattach to an existing deployment
+    deployment_shape: null # Leave deployment_shape null so the SDK uses the shape linked to the training shape.
+    replica_count: 1
+    sample_timeout: 600
+    disable_speculative_decoding: false
+    extra_values: null
+
+trainers:
+  policy:
+    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora
+    weight_sync_deployment: rollout # deployment that receives hot-loaded trainer weights
+    job_id: null           # null = create a new job; set to reattach to an existing job
+    replica_count: 1
+    # Optional fields for admin users.
+    custom_image_tag: null
+    region: null           # optional explicit trainer region; prefer leaving unset
+    timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
+    extra_args: null
+    skip_validations: false
+
+  # Only needed for full-parameter RFT with KL (kl_beta > 0).
+  # LoRA reuses the policy as its frozen reference, so leave it unwired otherwise.
+  reference:
+    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only
+    job_id: null           # null = create a new job; set to reattach
+    replica_count: 1
+    # Optional fields for admin users.
+    custom_image_tag: null
+    region: null           # optional explicit trainer region; prefer leaving unset
+    timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
+    extra_args: null
+    skip_validations: false
+
+recipe:
+  # `rft` is an alias for `rl` (same training mode).
+  rft:
+    trainer: policy
+    deployment: rollout
+    # reference_trainer: reference   # uncomment for full-param RFT with reference KL

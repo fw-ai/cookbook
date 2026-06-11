@@ -83,6 +83,18 @@ from training.utils.rl.rollout.trace import (
     analyze_token_turn_traces,
     analyze_turns,
 )
+from training.utils.rl.rollout.turn_matching import (
+    DEFAULT_TURN_MATCHING,
+    MessageHashFingerprinter,
+    TokenPrefixFingerprinter,
+    TurnDecision,
+    TurnFingerprinter,
+    TurnKind,
+    TurnRequest,
+    classify,
+    common_prefix_len,
+    make_fingerprinter,
+)
 from training.utils.rl.rollout.types import (
     Rollout,
     RolloutRun,
@@ -108,8 +120,10 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "DEFAULT_TURN_MATCHING",
     "InferenceCall",
     "GroupAssembler",
+    "MessageHashFingerprinter",
     "MessageTrajectoryAssembler",
     "MessageTrajectoryError",
     "MessageValidationError",
@@ -129,9 +143,17 @@ __all__ = [
     "TrajectoryAssembler",
     "TrajectoryIssue",
     "TrajectoryToken",
+    "TokenPrefixFingerprinter",
+    "TurnDecision",
+    "TurnFingerprinter",
+    "TurnKind",
     "TurnRecord",
+    "TurnRequest",
     "TokenizationError",
     "analyze_flat_sample",
+    "classify",
+    "common_prefix_len",
+    "make_fingerprinter",
     "analyze_token_turn_traces",
     "analyze_turns",
     "default_completion_params_factory",

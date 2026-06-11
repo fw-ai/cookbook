@@ -34,6 +34,13 @@ If `dcp_save_interval` is `0` (the default), mid-training saves are off — trai
 
 This is an SDK-level detail, surfaced when you call `save_weights_for_sampler_ext` directly. For full-parameter training, only `base` sampler saves are promotable; `delta` saves are not. LoRA always saves the full adapter, so every LoRA sampler checkpoint is promotable. The SDK-managed sampler backend records the base-then-delta chain for recipe hotload; recipe-level `ckpt.save(promotable=True)` always saves `base`.
 
+`checkpoint_type="merged_base"` is a third, LoRA-only value. Instead of saving the standalone adapter, the trainer folds the active adapter into the base weights (`W <- W + scaling*(B@A)`), strips the adapter metadata, and exports a full base checkpoint that promotes as `INFERENCE_BASE` / `HF_BASE_MODEL`. The session must have a non-trivial adapter — either trained in this run, or loaded via `load_adapter` / the recipe `warm_start_from_adapter`; a fresh LoRA session has zero-delta weights and would export base-identical output. It is a full standalone checkpoint, so — like `base` — it never participates in the delta chain. Note this client-side adapter load is the supported path; control-plane `warmStartFrom` of a LoRA addon is **not** effective and is rejected for service-mode RLOR jobs.
+
+Two ways to use it:
+
+- **During a LoRA training run** — to emit a full `HF_BASE_MODEL` instead of a `HF_PEFT_ADDON`, save the final promotable checkpoint directly with `client.save_weights_for_sampler("final-merged", checkpoint_type="merged_base")` rather than relying on `TrainingCheckpoints.save(promotable=True)` (which always saves `base`). The adapter is already loaded in-session, so no separate merge step is needed.
+- **Merge an existing adapter** (no further training) — the standalone `training/examples/tools/merge_lora_and_promote.py` script drives it end to end (provision → `load_adapter` → `merged_base` save → promote).
+
 ---
 
 ## Warm-start from a promoted adapter (LoRA only)
