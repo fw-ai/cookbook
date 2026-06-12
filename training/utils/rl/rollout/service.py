@@ -23,8 +23,7 @@ them (slime/AReaL convention).  The trainer never re-tokenizes text;
 re-tokenization silently misaligns the loss mask and inference
 logprobs.  Services that today only emit text (e.g. EP's
 ``RemoteRolloutProcessor``) must grow a token-native trace before they
-can drive RL training; see
-``https://github.com/fw-ai/fireworks/issues/23756``.
+can drive RL training.
 
 Use :class:`training.utils.rl.rollout.TrajectoryAssembler`
 to build :class:`RolloutPayload` from multi-turn engine calls.  It

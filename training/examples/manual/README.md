@@ -1,9 +1,8 @@
 # Manual infra tests
 
 Two scripts that drive `training/recipes/rl_loop.py` against real
-trainers + deployments to cover paths the unit tests can't and that the
-[single-shape e2e CI](https://github.com/fw-ai/fireworks/actions/runs/24703610604)
-does not hit.
+trainers + deployments to cover paths the unit tests and regular
+single-shape e2e CI do not hit.
 
 | Script | Scope under test | What it runs |
 |---|---|---|
