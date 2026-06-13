@@ -472,6 +472,12 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
+            # Full-distribution on-policy sampling. Without explicit top_p/top_k
+            # the serving stack applies the model's generation_config.json
+            # defaults (e.g. Qwen3.5: top_k=20/top_p=0.95), which truncate
+            # rollouts and bias the policy-gradient estimator.
+            top_p=1.0,
+            top_k=0,
             max_seq_len=max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
