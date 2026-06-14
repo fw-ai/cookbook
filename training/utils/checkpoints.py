@@ -250,9 +250,7 @@ class TrainingCheckpoints:
             # as "step-0") — and resume reads names from the control plane —
             # so ``dataloader.json`` must be keyed on whatever name ends up as
             # the newest resumable row (which is exactly what resume will pick).
-            t_save_iso = datetime.now(timezone.utc).isoformat().replace(
-                "+00:00", "Z"
-            )
+            t_save_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             logger.info("Saving DCP checkpoint '%s'...", name)
             self._client.save_state(name)
             logger.info("DCP checkpoint '%s' saved (%.1fs)", name, time.time() - t0)
@@ -269,7 +267,8 @@ class TrainingCheckpoints:
                     logger.info(
                         "DCP server-stored name %r differs from caller name %r; "
                         "dataloader.json keyed on server name for resume alignment.",
-                        actual_name, name,
+                        actual_name,
+                        name,
                     )
 
         if promotable:
@@ -299,8 +298,8 @@ class TrainingCheckpoints:
 
         Priority:
 
-        1. ``init_from_checkpoint`` — explicit cross-job DCP load (weights
-           and optimizer). Step counter resets to 0.
+        1. ``init_from_checkpoint`` — explicit DCP load. Same-trainer loads
+           resume the step/cursor; cross-job loads reset the step counter.
         2. Newest resumable row on the control plane — auto-resume.
         3. ``warm_start_from_adapter`` — HF PEFT adapter (weights only).
         4. Fresh start (returns ``None``).
@@ -329,6 +328,19 @@ class TrainingCheckpoints:
                         f"checkpoint name to resume within this session."
                     )
                 source_job_id = None
+            elif source_job_id == self._trainer_id:
+                path = self._client.resolve_checkpoint_path(dcp_name)
+                logger.info(
+                    "Resuming from explicit same-trainer checkpoint: %s", dcp_name
+                )
+                t0 = time.time()
+                self._client.load_state_with_optimizer(path)
+                logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
+                return ResumeInfo(
+                    step=_step_from_name(dcp_name),
+                    data_consumed=self._read_dataloader(dcp_name),
+                    source_job_id=source_job_id,
+                )
             path = self._client.resolve_checkpoint_path(
                 dcp_name, source_job_id=source_job_id
             )
@@ -350,11 +362,10 @@ class TrainingCheckpoints:
             # cross_job://<session_id>/<name> ref (session_id is not a source
             # job, and that ref's name must already be session-scoped). Resume
             # from the bare logical name so the trainer prepends the session
-            # prefix; the dedicated path keeps cross_job://<trainer_id>/<name>.
-            source_job_id = None if self._serverless else self._trainer_id
-            path = self._client.resolve_checkpoint_path(
-                short, source_job_id=source_job_id
-            )
+            # prefix; the dedicated path also uses the local trainer namespace
+            # because cross_job://<same-trainer>/<name> points at the global
+            # durable checkpoint prefix and can miss still-local trainer state.
+            path = self._client.resolve_checkpoint_path(short, source_job_id=None)
             logger.info("Resuming from control-plane row: %s", short)
             t0 = time.time()
             self._client.load_state_with_optimizer(path)
@@ -362,7 +373,7 @@ class TrainingCheckpoints:
             return ResumeInfo(
                 step=_step_from_name(short),
                 data_consumed=self._read_dataloader(short),
-                source_job_id=source_job_id,
+                source_job_id=None if self._serverless else self._trainer_id,
             )
 
         if warm_start_from_adapter:
@@ -407,7 +418,8 @@ class TrainingCheckpoints:
         full_name = rows[0]["name"]
         logger.info(
             "Promoting newest promotable checkpoint: %s -> %s",
-            _short_name(full_name), output_model_id,
+            _short_name(full_name),
+            output_model_id,
         )
         return self._fw_client.promote_checkpoint(
             name=full_name,
@@ -452,18 +464,19 @@ class TrainingCheckpoints:
                 logger.warning(
                     "list_checkpoints not implemented on control-plane client (%s); "
                     "falling back to caller name %r for dataloader.json.",
-                    e, fallback,
+                    e,
+                    fallback,
                 )
                 return fallback
             except Exception as e:
                 logger.debug(
-                    "list_checkpoints during save-resolution failed: %s; retrying.", e,
+                    "list_checkpoints during save-resolution failed: %s; retrying.",
+                    e,
                 )
                 time.sleep(poll_s)
                 continue
             surfaced = any(
-                _is_resumable_row(r)
-                and r.get("createTime", "") >= save_started_iso
+                _is_resumable_row(r) and r.get("createTime", "") >= save_started_iso
                 for r in rows
             )
             if surfaced:
@@ -473,7 +486,9 @@ class TrainingCheckpoints:
             logger.warning(
                 "Timed out after %.0fs waiting for CP to surface save (>= %s); "
                 "falling back to caller name %r for dataloader.json.",
-                appear_timeout_s, save_started_iso, fallback,
+                appear_timeout_s,
+                save_started_iso,
+                fallback,
             )
             return fallback
 
@@ -484,7 +499,8 @@ class TrainingCheckpoints:
         except Exception as e:
             logger.warning(
                 "list_checkpoints after stabilize failed (%s); falling back to %r.",
-                e, fallback,
+                e,
+                fallback,
             )
             return fallback
         resumable = [r for r in rows if _is_resumable_row(r)]
@@ -522,7 +538,8 @@ class TrainingCheckpoints:
             )
             return False
         return any(
-            r.get("promotable") and _logical_name(_short_name(r.get("name", ""))) == name
+            r.get("promotable")
+            and _logical_name(_short_name(r.get("name", ""))) == name
             for r in rows
         )
 
