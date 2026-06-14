@@ -166,6 +166,30 @@ class Config:
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
 
+    separate_tis: bool = False
+    """Train-inference correction strategy for ``policy_loss='importance_sampling'``.
+
+    - ``False`` (default — Tinker on-policy IS): anchor the ratio directly on the
+      inference/sampler logprobs, ``ratio = exp(pi - inf)`` (bounded only by
+      ``ratio_log_cap``). The train-inference gap is corrected *inside* the ratio,
+      two-sided and unclamped; the per-step old-policy forward is skipped and the
+      ``TISConfig`` (``cap``/``level``) has no effect. Requires
+      ``ppo_n_minibatches == 1``.
+    - ``True`` (separate TIS): snapshot old-policy logprobs from a trainer forward
+      so the ratio measures policy drift ``exp(pi - prox)``, and correct the
+      train-inference gap with a *separate, clamped* weight
+      ``clamp(exp(prox - inf), max=TISConfig.cap)`` applied per ``TISConfig.level``
+      (token or sequence). This is the only mode where ``TISConfig`` matters and
+      the only mode compatible with ``ppo_n_minibatches > 1``.
+
+    Note the two modes coincide exactly while the TIS clamp does not bind:
+    ``exp(pi - prox) * exp(prox - inf) == exp(pi - inf)``. They differ only when
+    ``|prox - inf|`` exceeds the cap, where the separate-TIS path clips the
+    correction (asymmetrically when ``cap <= 1``) and the default does not.
+
+    Ignored for non-IS losses (GRPO/DAPO/GSPO/CISPO), which always snapshot
+    old-policy logprobs for the PPO ratio and apply TIS as a composable weight."""
+
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     """Concurrency control for inference sampling.  ``"fixed"`` (default)
     uses a static semaphore; ``"adaptive"`` adjusts the window based on
@@ -315,6 +339,13 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    if cfg.policy_loss == "importance_sampling" and not cfg.separate_tis and cfg.ppo_n_minibatches > 1:
+        raise ValueError(
+            "importance_sampling with the default inference-anchored ratio requires "
+            "ppo_n_minibatches == 1 (the inference anchor cannot stand in for an old-policy "
+            "snapshot across drifting inner steps). Set separate_tis=True to use a trainer "
+            "old-policy snapshot with ppo_n_minibatches > 1."
+        )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -472,6 +503,12 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
+            # Full-distribution on-policy sampling. Without explicit top_p/top_k
+            # the serving stack applies the model's generation_config.json
+            # defaults (e.g. Qwen3.5: top_k=20/top_p=0.95), which truncate
+            # rollouts and bias the policy-gradient estimator.
+            top_p=1.0,
+            top_k=0,
             max_seq_len=max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
@@ -670,10 +707,18 @@ def main(
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
-            t0 = _time.time()
-            old_policy_fwd = policy.forward(data, "cross_entropy")
-            old_policy_logprobs = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("[step %d] old_policy_forward: done (%.1fs)", step + 1, _time.time() - t0)
+            # Old-policy anchor for the IS/PPO ratio. PPO-style losses always need
+            # a trainer snapshot; importance_sampling defaults to anchoring on the
+            # inference logprobs (ratio = exp(pi - inf), TIS weight = 1) and only
+            # snapshots when separate TIS is requested. See Config.separate_tis.
+            needs_old_policy_snapshot = cfg.policy_loss != "importance_sampling" or cfg.separate_tis
+            if needs_old_policy_snapshot:
+                t0 = _time.time()
+                old_policy_fwd = policy.forward(data, "cross_entropy")
+                old_policy_logprobs = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+                logger.info("[step %d] old_policy_forward: done (%.1fs)", step + 1, _time.time() - t0)
+            else:
+                old_policy_logprobs = inf_lp
 
             n = len(data)
             num_minibatches = max(1, cfg.ppo_n_minibatches)
