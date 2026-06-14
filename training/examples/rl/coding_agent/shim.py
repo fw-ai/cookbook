@@ -124,7 +124,7 @@ class Session:
     # Sticky-routing key: forwarded as the completions ``user`` field so every
     # turn of one trajectory lands on the same replica and reuses the KV /
     # prefix cache instead of re-prefilling the whole growing context each turn
-    # (needs deployment ``enableSessionAffinity=true``; see fw-ai issue #27333).
+    # (needs deployment ``enableSessionAffinity=true``).
     user_key: str = ""
 
 

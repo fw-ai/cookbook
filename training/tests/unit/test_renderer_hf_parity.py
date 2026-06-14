@@ -57,6 +57,16 @@ _MULTI_TURN_MSGS = [
     {"role": "assistant", "content": "4."},
     {"role": "user", "content": "And 3+3?"},
 ]
+_KIMI_REASONING_MSGS = [
+    {"role": "system", "content": "Answer briefly."},
+    {"role": "user", "content": "What is 2+2?"},
+    {
+        "role": "assistant",
+        "reasoning_content": "2+2 is basic arithmetic.",
+        "content": "4.",
+    },
+    {"role": "user", "content": "And 3+3?"},
+]
 
 
 _CASES: list[_Case] = [
@@ -136,6 +146,12 @@ _CASES: list[_Case] = [
         renderer="kimi_k25",
         tokenizer_model="moonshotai/Kimi-K2.5",
         messages=_SHORT_MSGS,
+    ),
+    _Case(
+        case_id="kimi_k27_code-preserve-thinking-multi-turn",
+        renderer="kimi_k27_code",
+        tokenizer_model="moonshotai/Kimi-K2.7-Code",
+        messages=_KIMI_REASONING_MSGS,
     ),
     _Case(
         case_id="minimax_m2-single-turn",

@@ -30,9 +30,7 @@ def _mock_fw_client(rows=None):
     codepath in ``TrainingCheckpoints``."""
     fw = MagicMock()
     fw._rows = list(rows or [])
-    fw.list_checkpoints = MagicMock(
-        side_effect=lambda job_id, **kw: list(fw._rows)
-    )
+    fw.list_checkpoints = MagicMock(side_effect=lambda job_id, **kw: list(fw._rows))
     fw.promote_checkpoint.return_value = {"state": "READY", "kind": "HF_BASE_MODEL"}
     return fw
 
@@ -59,12 +57,14 @@ def _mock_client(fw=None, save_state_renames_to: str | None = None):
         cp_name = save_state_renames_to or name
         if fw is not None:
             counter["n"] += 1
-            fw._rows.append({
-                "name": f"accounts/a/rlorTrainerJobs/job-1/checkpoints/{cp_name}",
-                "createTime": f"2099-01-01T00:00:{counter['n']:02d}Z",
-                "checkpointType": "CHECKPOINT_TYPE_TRAINING",
-                "promotable": False,
-            })
+            fw._rows.append(
+                {
+                    "name": f"accounts/a/rlorTrainerJobs/job-1/checkpoints/{cp_name}",
+                    "createTime": f"2099-01-01T00:00:{counter['n']:02d}Z",
+                    "checkpointType": "CHECKPOINT_TYPE_TRAINING",
+                    "promotable": False,
+                }
+            )
         result = MagicMock()
         result.path = f"tinker://policy/{cp_name}"
         return result
@@ -85,14 +85,27 @@ def _row(short_name, *, ctype, promotable, create_time):
     }
 
 
-def _make(log_dir, *, fw_rows=None, lora_rank=0, save_state_renames_to: str | None = None, serverless=False):
+def _make(
+    log_dir,
+    *,
+    fw_rows=None,
+    lora_rank=0,
+    save_state_renames_to: str | None = None,
+    serverless=False,
+):
     fw = _mock_fw_client(rows=fw_rows)
     client = _mock_client(fw=fw, save_state_renames_to=save_state_renames_to)
     ckpt = TrainingCheckpoints(
-        client, fw, trainer_id="job-1", log_path=log_dir, lora_rank=lora_rank,
+        client,
+        fw,
+        trainer_id="job-1",
+        log_path=log_dir,
+        lora_rank=lora_rank,
         serverless=serverless,
         # Disable stabilization + tighten timeouts so unit tests run instantly.
-        save_appear_timeout_s=5.0, save_stabilize_s=0.0, save_poll_s=0.01,
+        save_appear_timeout_s=5.0,
+        save_stabilize_s=0.0,
+        save_poll_s=0.01,
     )
     return ckpt, client, fw
 
@@ -141,12 +154,24 @@ class TestResume:
 
     def test_resume_newest_training_row(self, log_dir):
         rows = [
-            _row("step-5", ctype="CHECKPOINT_TYPE_TRAINING", promotable=False,
-                 create_time="2026-04-01T00:00:00Z"),
-            _row("step-10", ctype="CHECKPOINT_TYPE_TRAINING", promotable=False,
-                 create_time="2026-04-02T00:00:00Z"),
-            _row("step-7-sampler", ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
-                 promotable=True, create_time="2026-04-03T00:00:00Z"),
+            _row(
+                "step-5",
+                ctype="CHECKPOINT_TYPE_TRAINING",
+                promotable=False,
+                create_time="2026-04-01T00:00:00Z",
+            ),
+            _row(
+                "step-10",
+                ctype="CHECKPOINT_TYPE_TRAINING",
+                promotable=False,
+                create_time="2026-04-02T00:00:00Z",
+            ),
+            _row(
+                "step-7-sampler",
+                ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+                promotable=True,
+                create_time="2026-04-03T00:00:00Z",
+            ),
         ]
         # Pre-populate dataloader.json so resume can recover data_consumed.
         os.makedirs(log_dir, exist_ok=True)
@@ -156,20 +181,28 @@ class TestResume:
         ckpt, client, _ = _make(log_dir, fw_rows=rows)
         info = ckpt.resume()
         assert info == ResumeInfo(step=10, data_consumed=80, source_job_id="job-1")
-        client.load_state_with_optimizer.assert_called_once_with("path://job-1/step-10")
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-10")
 
     def test_resume_picks_training_lora_too(self, log_dir):
         rows = [
-            _row("step-5", ctype="CHECKPOINT_TYPE_TRAINING_LORA", promotable=False,
-                 create_time="2026-04-01T00:00:00Z"),
-            _row("step-5-hotload", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
-                 promotable=True, create_time="2026-04-01T00:05:00Z"),
+            _row(
+                "step-5",
+                ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                promotable=False,
+                create_time="2026-04-01T00:00:00Z",
+            ),
+            _row(
+                "step-5-hotload",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2026-04-01T00:05:00Z",
+            ),
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=rows, lora_rank=8)
         info = ckpt.resume()
         assert info is not None
         assert info.step == 5
-        client.load_state_with_optimizer.assert_called_once_with("path://job-1/step-5")
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
     def test_resume_serverless_uses_bare_name(self, log_dir):
         # Serverless: trainer_id is the TrainingSession id, not a job. Auto-resume
@@ -178,23 +211,32 @@ class TestResume:
         # not a source job). It must resume from the bare logical name
         # (source_job_id=None) so the trainer prepends sessions/<sid>/ itself.
         rows = [
-            _row("step-5", ctype="CHECKPOINT_TYPE_TRAINING_LORA", promotable=False,
-                 create_time="2026-04-01T00:00:00Z"),
+            _row(
+                "step-5",
+                ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                promotable=False,
+                create_time="2026-04-01T00:00:00Z",
+            ),
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=rows, lora_rank=8, serverless=True)
         info = ckpt.resume()
         assert info is not None
         assert info.step == 5
         assert info.source_job_id is None
-        client.resolve_checkpoint_path.assert_called_once_with("step-5", source_job_id=None)
-        # source_job_id=None => bare name (mock renders the absent job as 'self'),
-        # contrasting the dedicated path's "path://job-1/step-5".
+        client.resolve_checkpoint_path.assert_called_once_with(
+            "step-5", source_job_id=None
+        )
+        # source_job_id=None => bare name (mock renders the absent job as 'self').
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
     def test_init_from_checkpoint_takes_priority(self, log_dir):
         rows = [
-            _row("step-50", ctype="CHECKPOINT_TYPE_TRAINING", promotable=False,
-                 create_time="2026-04-02T00:00:00Z"),
+            _row(
+                "step-50",
+                ctype="CHECKPOINT_TYPE_TRAINING",
+                promotable=False,
+                create_time="2026-04-02T00:00:00Z",
+            ),
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=rows)
         info = ckpt.resume(init_from_checkpoint="other-job:step-3")
@@ -203,14 +245,29 @@ class TestResume:
             "path://other-job/step-3"
         )
 
+    def test_same_trainer_init_from_checkpoint_resumes_cursor(self, log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-3": 24}, f)
+
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+        info = ckpt.resume(init_from_checkpoint="job-1:step-3")
+        assert info == ResumeInfo(step=3, data_consumed=24, source_job_id="job-1")
+        client.resolve_checkpoint_path.assert_called_once_with("step-3")
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-3")
+
     def test_init_from_checkpoint_serverless_uses_bare_name(self, log_dir):
         # Serverless: init_from_checkpoint must resume from the bare name, not
         # cross_job://<session>/<name> (the pool trainer rejects that). A spec
         # naming THIS session is accepted with its prefix stripped.
-        ckpt, client, _ = _make(log_dir, serverless=True)  # trainer_id/session == "job-1"
+        ckpt, client, _ = _make(
+            log_dir, serverless=True
+        )  # trainer_id/session == "job-1"
         info = ckpt.resume(init_from_checkpoint="job-1:step-5")
         assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
-        client.resolve_checkpoint_path.assert_called_once_with("step-5", source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with(
+            "step-5", source_job_id=None
+        )
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
     def test_init_from_checkpoint_serverless_rejects_cross_session(self, log_dir):
@@ -269,8 +326,12 @@ class TestSave:
 
     def test_skip_if_promotable_already_exists(self, log_dir):
         existing = [
-            _row("step-1", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
-                 promotable=True, create_time="2026-04-01T00:00:00Z"),
+            _row(
+                "step-1",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2026-04-01T00:00:00Z",
+            ),
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
         ckpt.save("step-1", resumable=True, promotable=True, data_consumed=10)
@@ -279,8 +340,12 @@ class TestSave:
 
     def test_no_skip_when_existing_not_promotable(self, log_dir):
         existing = [
-            _row("step-1", ctype="CHECKPOINT_TYPE_TRAINING",
-                 promotable=False, create_time="2026-04-01T00:00:00Z"),
+            _row(
+                "step-1",
+                ctype="CHECKPOINT_TYPE_TRAINING",
+                promotable=False,
+                create_time="2026-04-01T00:00:00Z",
+            ),
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=existing)
         ckpt.save("step-1", resumable=False, promotable=True)
@@ -297,8 +362,12 @@ class TestSave:
         Skip should match on the logical name (pre-suffix) so callers passing
         ``step-1`` match a stored row ``step-1-abcd1234``."""
         existing = [
-            _row("step-1-abcd1234", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
-                 promotable=True, create_time="2026-04-01T00:00:00Z"),
+            _row(
+                "step-1-abcd1234",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2026-04-01T00:00:00Z",
+            ),
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
         ckpt.save("step-1", resumable=False, promotable=True)
@@ -306,8 +375,12 @@ class TestSave:
 
     def test_skip_does_not_match_different_step(self, log_dir):
         existing = [
-            _row("step-1-abcd1234", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
-                 promotable=True, create_time="2026-04-01T00:00:00Z"),
+            _row(
+                "step-1-abcd1234",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2026-04-01T00:00:00Z",
+            ),
         ]
         ckpt, client, _ = _make(log_dir, fw_rows=existing, lora_rank=8)
         ckpt.save("step-2", resumable=False, promotable=True)
@@ -336,15 +409,18 @@ class TestSave:
 
 
 class TestLogicalName:
-    @pytest.mark.parametrize("stored,logical", [
-        ("step-3", "step-3"),
-        ("step-3-abcd1234", "step-3"),
-        ("resume-3-base-45dda197", "resume-3-base"),
-        ("step-11-45dda197", "step-11"),
-        ("step-3-ABCD1234", "step-3-ABCD1234"),  # uppercase — not the pattern
-        ("step-3-12345", "step-3-12345"),         # 5 chars — not 8
-        ("step-3-abcdefghi", "step-3-abcdefghi"),  # 9 chars — not 8
-    ])
+    @pytest.mark.parametrize(
+        "stored,logical",
+        [
+            ("step-3", "step-3"),
+            ("step-3-abcd1234", "step-3"),
+            ("resume-3-base-45dda197", "resume-3-base"),
+            ("step-11-45dda197", "step-11"),
+            ("step-3-ABCD1234", "step-3-ABCD1234"),  # uppercase — not the pattern
+            ("step-3-12345", "step-3-12345"),  # 5 chars — not 8
+            ("step-3-abcdefghi", "step-3-abcdefghi"),  # 9 chars — not 8
+        ],
+    )
     def test_strip_session_suffix(self, stored, logical):
         assert _logical_name(stored) == logical
 
@@ -359,12 +435,24 @@ class TestPromoteLatest:
 
     def test_picks_newest_promotable_and_passes_full_name(self, log_dir):
         rows = [
-            _row("step-5", ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
-                 promotable=True, create_time="2026-04-01T00:00:00Z"),
-            _row("step-10", ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
-                 promotable=True, create_time="2026-04-02T00:00:00Z"),
-            _row("step-10-dcp", ctype="CHECKPOINT_TYPE_TRAINING",
-                 promotable=False, create_time="2026-04-02T00:05:00Z"),
+            _row(
+                "step-5",
+                ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+                promotable=True,
+                create_time="2026-04-01T00:00:00Z",
+            ),
+            _row(
+                "step-10",
+                ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+                promotable=True,
+                create_time="2026-04-02T00:00:00Z",
+            ),
+            _row(
+                "step-10-dcp",
+                ctype="CHECKPOINT_TYPE_TRAINING",
+                promotable=False,
+                create_time="2026-04-02T00:05:00Z",
+            ),
         ]
         ckpt, _, fw = _make(log_dir, fw_rows=rows)
         ckpt.promote_latest("my-model", "accounts/a/models/qwen3-1p7b-bf16")
@@ -377,10 +465,18 @@ class TestPromoteLatest:
 
     def test_skips_arc_v2_because_not_promotable(self, log_dir):
         rows = [
-            _row("step-5-arc", ctype="CHECKPOINT_TYPE_INFERENCE_ARC_V2",
-                 promotable=False, create_time="2026-04-02T00:00:00Z"),
-            _row("step-5-lora", ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
-                 promotable=True, create_time="2026-04-01T00:00:00Z"),
+            _row(
+                "step-5-arc",
+                ctype="CHECKPOINT_TYPE_INFERENCE_ARC_V2",
+                promotable=False,
+                create_time="2026-04-02T00:00:00Z",
+            ),
+            _row(
+                "step-5-lora",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2026-04-01T00:00:00Z",
+            ),
         ]
         ckpt, _, fw = _make(log_dir, fw_rows=rows)
         ckpt.promote_latest("out", "base")
@@ -390,8 +486,12 @@ class TestPromoteLatest:
 
     def test_errors_when_no_promotable(self, log_dir):
         rows = [
-            _row("step-1", ctype="CHECKPOINT_TYPE_TRAINING",
-                 promotable=False, create_time="2026-04-01T00:00:00Z"),
+            _row(
+                "step-1",
+                ctype="CHECKPOINT_TYPE_TRAINING",
+                promotable=False,
+                create_time="2026-04-01T00:00:00Z",
+            ),
         ]
         ckpt, _, _ = _make(log_dir, fw_rows=rows)
         with pytest.raises(RuntimeError, match="No promotable"):
