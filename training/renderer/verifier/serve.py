@@ -113,6 +113,7 @@ RENDERER_TOKENIZER_DEFAULTS: dict[str, str | None] = {
     "kimi_k25_disable_thinking":   "moonshotai/Kimi-K2.5",
     "kimi_k26":                    "moonshotai/Kimi-K2.6",
     "kimi_k26_disable_thinking":   "moonshotai/Kimi-K2.6",
+    "kimi_k27_code":               "moonshotai/Kimi-K2.7-Code",
     "nemotron3":                   "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
     "nemotron3_disable_thinking":  "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
     "gpt_oss_no_sysprompt":        "openai/gpt-oss-120b",
