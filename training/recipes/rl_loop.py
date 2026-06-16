@@ -117,6 +117,11 @@ class Config:
     ``max_supported_context_length``.  Must be set manually on the
     manual path (no training shape)."""
     lora_rank: int = 0
+    lora_alpha: int | None = 32
+    """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
+
+    Defaults to ``32`` to match Tinker and the Training SDK
+    ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
     prompt_groups_per_step: int = 1
     """Number of prompt groups per optimizer step.
 
@@ -379,6 +384,7 @@ def main(
             base_model=cfg.base_model,
             tokenizer_model=cfg.deployment.tokenizer_model,
             lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
@@ -391,7 +397,11 @@ def main(
             reference_required=cfg.kl_beta > 0,
         )
         stack.callback(service.close)
-        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        training_client = service.create_training_client(
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
+        )
         runner.set_accelerator_info(
             service.accelerator_type,
             service.accelerator_count,

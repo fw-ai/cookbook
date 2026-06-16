@@ -1015,7 +1015,7 @@ eval = [
 requires-dist = [
     { name = "datasets" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = ">=0.3.23" },
-    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.0a70,<2" },
+    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.0a81,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "math-verify", marker = "extra == 'dev'" },
     { name = "numpy" },

@@ -118,6 +118,35 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
     ]
 
 
+def test_build_service_client_forwards_lora_alpha(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_from_firetitan_config(**kwargs):
+        calls.append(kwargs)
+        return "service-sentinel"
+
+    class FakeServiceClient:
+        from_firetitan_config = staticmethod(fake_from_firetitan_config)
+
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    build_service_client(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        lora_rank=32,
+        lora_alpha=128,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-x"),
+        deployment=DeployConfig(deployment_id="dep-1"),
+    )
+
+    assert calls[0]["lora_alpha"] == 128
+
+
 def test_build_service_client_defaults_speculative_decoding_enabled(monkeypatch):
     calls: list[dict] = []
 
