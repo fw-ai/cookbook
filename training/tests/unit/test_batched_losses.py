@@ -64,7 +64,7 @@ class TestLossBuilder:
     def test_client_only_loss_registration_uses_custom_path(self, monkeypatch):
         events: dict[str, object] = {}
 
-        def fake_factory(args, advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs):
+        def fake_factory(args, advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs):
             events["call"] = {
                 "advantages": advantages,
                 "prompt_lens": prompt_lens,
@@ -170,7 +170,7 @@ class TestKLBetaRoutesToClientSide:
         rl_datums = build_builtin_loss_datums(
             data=[datum],
             advantages=[1.0],
-            prox_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
+            old_policy_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
             inf_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
             prompt_lens=[2],
             policy_loss="grpo",

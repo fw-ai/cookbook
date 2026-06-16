@@ -19,7 +19,7 @@ class TestGRPOMetrics:
             ref_logprobs=[ref_vals],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            prox_logprobs=[pi_vals],
+            old_policy_logprobs=[pi_vals],
             kl_beta=0.0,
         )
 

@@ -673,7 +673,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     ref_logprobs=ref_lp,
                     prompt_lens=prompt_lens,
                     inf_logprobs=inf_lp,
-                    prox_logprobs=None,
+                    old_policy_logprobs=None,
                     kl_beta=cfg.kl_beta,
                     eps_clip=cfg.eps_clip,
                 )

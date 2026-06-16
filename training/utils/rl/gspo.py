@@ -1,7 +1,7 @@
 """GSPO (Group Sequence Policy Optimization) loss for GRPO training.
 
 Implements PPO-style clipping with a **sequence-level importance ratio**
-(geometric mean of per-token ratios) against pre-computed proximal
+(geometric mean of per-token ratios) against pre-computed old-policy
 logprobs, with behavioral TIS weight correction.
 
 Example::
@@ -40,7 +40,7 @@ def make_gspo_loss_fn(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
-    prox_logprobs: List[List[float]],
+    old_policy_logprobs: List[List[float]],
     gspo_config: GSPOConfig | None = None,
     tis_config: TISConfig | None = None,
 ) -> ...:
@@ -54,7 +54,7 @@ def make_gspo_loss_fn(
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
 
     def policy_fn(ctx):
-        log_ratio = ctx.resp_pi - ctx.resp_prox
+        log_ratio = ctx.resp_pi - ctx.resp_old_policy
         seq_log_ratio = log_ratio.mean()
         log_seq_ratio = ctx.resp_pi - ctx.resp_pi.detach() + seq_log_ratio.detach()
         log_seq_ratio = torch.clamp(log_seq_ratio, max=gspo_config.seq_ratio_log_cap)
@@ -75,7 +75,7 @@ def make_gspo_loss_fn(
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
             advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            prox_logprobs, tis_config, data, logprobs_list, "gspo", policy_fn,
+            old_policy_logprobs, tis_config, data, logprobs_list, "gspo", policy_fn,
         )
         metrics = dict(result.base_metrics)
         ns = result.n_samples
@@ -84,5 +84,4 @@ def make_gspo_loss_fn(
         return result.total_loss, metrics
 
     return loss_fn
-
 

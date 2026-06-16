@@ -2,7 +2,7 @@
 
 Corrects for the numerical gap between the training model and the
 inference deployment (FP8, quantization, different parallelism, etc.)
-by weighting each token with ``clamp(exp(prox - inf), max=cap)``.
+by weighting each token with ``clamp(exp(old_policy - inf), max=cap)``.
 
 Composable with any policy loss (GRPO, DAPO, GSPO, CISPO, IS, DRO).
 """
@@ -29,12 +29,12 @@ class TISConfig:
 
 
 def compute_tis_weight(
-    resp_prox: torch.Tensor,
+    resp_old_policy: torch.Tensor,
     resp_inf: torch.Tensor,
     config: TISConfig,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Compute TIS weight: clamp(exp(prox - inf), max=cap)."""
-    tis_log = torch.clamp(resp_prox - resp_inf, min=-SAFETY_CLAMP, max=SAFETY_CLAMP)
+    """Compute TIS weight: clamp(exp(old_policy - inf), max=cap)."""
+    tis_log = torch.clamp(resp_old_policy - resp_inf, min=-SAFETY_CLAMP, max=SAFETY_CLAMP)
 
     if config.level == "sequence":
         tis_raw = torch.exp(tis_log.mean()).expand_as(tis_log)

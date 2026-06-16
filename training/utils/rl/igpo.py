@@ -261,7 +261,7 @@ def make_igpo_loss_fn(
     ref_logprobs: List[List[float]],
     prompt_lens: List[int],
     inf_logprobs: List[List[float]],
-    prox_logprobs: List[List[float]] | None = None,
+    old_policy_logprobs: List[List[float]] | None = None,
     kl_beta: float = 0.001,
     eps_clip: float = 0.2,
 ):
@@ -269,8 +269,8 @@ def make_igpo_loss_fn(
 
     Compatible with ``policy.forward_backward_custom(data, loss_fn)``.
 
-    When ``prox_logprobs`` is ``None``, the forward-pass logprobs are used as
-    the proximity baseline (ratio=1, clipping is a no-op).
+    When ``old_policy_logprobs`` is ``None``, the current forward-pass logprobs
+    are used as the old-policy baseline (ratio=1, clipping is a no-op).
     """
     from training.utils.rl.common import _get_loss_mask
 
@@ -313,12 +313,12 @@ def make_igpo_loss_fn(
                 device=resp_pi.device,
             )
 
-            if prox_logprobs is not None:
-                prox_lp = prox_logprobs[i] if i < len(prox_logprobs) else []
-                resp_prox = torch.tensor(
+            if old_policy_logprobs is not None:
+                old_policy_lp = old_policy_logprobs[i] if i < len(old_policy_logprobs) else []
+                resp_old_policy = torch.tensor(
                     [
-                        prox_lp[response_start + j]
-                        if (response_start + j) < len(prox_lp)
+                        old_policy_lp[response_start + j]
+                        if (response_start + j) < len(old_policy_lp)
                         else 0.0
                         for j in range(resp_len)
                     ],
@@ -326,7 +326,7 @@ def make_igpo_loss_fn(
                     device=resp_pi.device,
                 )
             else:
-                resp_prox = resp_pi.detach()
+                resp_old_policy = resp_pi.detach()
 
             inf_lp = inf_logprobs[i] if i < len(inf_logprobs) else []
             resp_inf = torch.tensor(
@@ -352,13 +352,13 @@ def make_igpo_loss_fn(
             )
 
             log_ratio = torch.clamp(
-                resp_pi - resp_prox, min=-_SAFETY_CLAMP, max=_SAFETY_CLAMP
+                resp_pi - resp_old_policy, min=-_SAFETY_CLAMP, max=_SAFETY_CLAMP
             )
             ratio = torch.exp(log_ratio)
             clipped = torch.clamp(ratio, min=1.0 - eps_clip, max=1.0 + eps_clip)
 
             tis_log = torch.clamp(
-                resp_prox.detach() - resp_inf, min=-_SAFETY_CLAMP, max=_SAFETY_CLAMP
+                resp_old_policy.detach() - resp_inf, min=-_SAFETY_CLAMP, max=_SAFETY_CLAMP
             )
             tis_weight = torch.exp(tis_log)
 

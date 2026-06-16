@@ -181,15 +181,15 @@ class Config:
       ``TISConfig`` (``cap``/``level``) has no effect. Requires
       ``ppo_n_minibatches == 1``.
     - ``True`` (separate TIS): snapshot old-policy logprobs from a trainer forward
-      so the ratio measures policy drift ``exp(pi - prox)``, and correct the
+      so the ratio measures policy drift ``exp(pi - old_policy)``, and correct the
       train-inference gap with a *separate, clamped* weight
-      ``clamp(exp(prox - inf), max=TISConfig.cap)`` applied per ``TISConfig.level``
+      ``clamp(exp(old_policy - inf), max=TISConfig.cap)`` applied per ``TISConfig.level``
       (token or sequence). This is the only mode where ``TISConfig`` matters and
       the only mode compatible with ``ppo_n_minibatches > 1``.
 
     Note the two modes coincide exactly while the TIS clamp does not bind:
-    ``exp(pi - prox) * exp(prox - inf) == exp(pi - inf)``. They differ only when
-    ``|prox - inf|`` exceeds the cap, where the separate-TIS path clips the
+    ``exp(pi - old_policy) * exp(old_policy - inf) == exp(pi - inf)``. They differ only when
+    ``|old_policy - inf|`` exceeds the cap, where the separate-TIS path clips the
     correction (asymmetrically when ``cap <= 1``) and the default does not.
 
     Ignored for non-IS losses (GRPO/DAPO/GSPO/CISPO), which always snapshot
