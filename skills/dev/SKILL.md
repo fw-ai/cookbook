@@ -65,7 +65,7 @@ The requirement lives in the cookbook's `training/pyproject.toml` — look for t
 
 ```bash
 grep 'fireworks-ai\[training\]' cookbook/training/pyproject.toml
-# e.g. "fireworks-ai[training]>=1.2.0a70,<2"
+# e.g. "fireworks-ai[training]>=1.2.0a82,<2"
 
 pip show fireworks-ai | grep -i version
 ```
