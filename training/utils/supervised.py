@@ -21,7 +21,6 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import torch
 import tinker
-from tinker_cookbook.model_info import get_recommended_renderer_name
 from tinker_cookbook.renderers import (
     Message,
     Renderer,
@@ -38,6 +37,7 @@ import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers r
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
+from training.renderer_resolution import resolve_renderer_name
 from training.utils.tokenizers import load_tokenizer
 
 
@@ -66,87 +66,6 @@ def parse_train_on_what(value: str | TrainOnWhat) -> TrainOnWhat:
     if isinstance(value, TrainOnWhat):
         return value
     return TrainOnWhat(value.lower())
-
-
-def resolve_renderer_name(
-    tokenizer_model: str,
-    renderer_name: str = "",
-) -> str:
-    """Choose the renderer used for message -> token rendering."""
-    if renderer_name:
-        return renderer_name
-    normalized_model_name = tokenizer_model.lower()
-    if "moonshotai/kimi-k2.5" in normalized_model_name:
-        return "kimi_k25"
-    # Kimi-K2.6 ships the same tiktoken vocab and special tokens as K2.5, and its
-    # default chat template output is identical to K2.5's (K2.6 only adds an
-    # opt-in preserve_thinking flag). Reuse the kimi_k25 renderer until a
-    # dedicated kimi_k26 renderer is registered in tinker_cookbook.
-    if "moonshotai/kimi-k2.6" in normalized_model_name:
-        return "kimi_k25"
-    # Kimi-K2.7-Code keeps the K2.6 tokenizer/vocab/tool format, but flips the
-    # HF chat-template default to preserve historical thinking and no longer
-    # injects Kimi's default system prompt when none is provided.
-    if "moonshotai/kimi-k2.7-code" in normalized_model_name:
-        return "kimi_k27_code"
-    if "nemotron" in normalized_model_name:
-        return "nemotron"
-    if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
-        return "minimax_m2"
-    if "qwen3-vl" in normalized_model_name:
-        return "qwen3_vl_instruct"
-    # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
-    # adds an opt-in `preserve_thinking` flag (renders historical thinking
-    # for ALL assistant turns when true). Default invocation produces output
-    # byte-identical to Qwen3.5's template, so the qwen3_5 renderer family
-    # is correct for non-interleave-thinking workflows on Qwen3.6 checkpoints.
-    # Same alias pattern as the kimi-k25 → Kimi-K2.6 case above.
-    if "qwen3.6" in normalized_model_name or "qwen3_6" in normalized_model_name:
-        return "qwen3_6"
-    if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name:
-        return "qwen3_5"
-    if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
-        return "gemma4"
-    # DeepSeek-V4 ships a custom non-Jinja encoder (see encoding_dsv4.py upstream)
-    # with thinking blocks and DSML tool calls. Match the V4 family explicitly so
-    # we don't accidentally claim V3 (which routes through tinker_cookbook's
-    # built-in deepseekv3_thinking renderer via get_recommended_renderer_name).
-    if (
-        "deepseek-v4" in normalized_model_name
-        or "deepseek_v4" in normalized_model_name
-        or "deepseekv4" in normalized_model_name
-    ):
-        return "deepseek_v4"
-    # ZhipuAI GLM-5.1 chat template (`[gMASK]<sop>`, `<|user|>`,
-    # `<|assistant|>`, `<think>...</think>`, `<|endoftext|>`). Validated
-    # end-to-end via SFT training. Other GLM versions are out of scope;
-    # opt in explicitly with `renderer_name="glm5"` if you want to try.
-    if (
-        "glm-5p1" in normalized_model_name
-        or "glm-5.1" in normalized_model_name
-        or "glm5" in normalized_model_name
-    ):
-        return "glm5"
-    # Mistral / Ministral Tekken-style chat (`[SYSTEM_PROMPT]`, `[INST]…[/INST]`,
-    # `[TOOL_CALLS]…[ARGS]…`, `[TOOL_RESULTS]…[/TOOL_RESULTS]`). Covers
-    # Ministral 3 / 8B, Mistral 7B Instruct v0.3+, Mistral Small 3 Instruct, and
-    # any other ``mistralai/...`` checkpoint that ships the same template.
-    # Validated end-to-end via SFT training on Ministral-3-3B-Instruct-2512.
-    if (
-        normalized_model_name.startswith("mistralai/")
-        or "ministral-" in normalized_model_name
-        or "mistral-7b-instruct-v0.3" in normalized_model_name
-        or "mistral-7b-instruct-v0.4" in normalized_model_name
-        or "mistral-small" in normalized_model_name
-    ):
-        return "mistral"
-    try:
-        return get_recommended_renderer_name(tokenizer_model)
-    except Exception as exc:  # pragma: no cover - message only
-        raise ValueError(
-            f"Could not infer a renderer for tokenizer_model={tokenizer_model!r}. "
-            "Set Config.renderer_name explicitly."
-        ) from exc
 
 
 def build_renderer(
