@@ -117,6 +117,11 @@ class Config:
     ``max_supported_context_length``.  Must be set manually on the
     manual path (no training shape)."""
     lora_rank: int = 0
+    lora_alpha: int | None = 32
+    """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
+
+    Defaults to ``32`` to match Tinker and the Training SDK
+    ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
     prompt_groups_per_step: int = 1
     """Number of prompt groups per optimizer step.
 
@@ -176,15 +181,15 @@ class Config:
       ``TISConfig`` (``cap``/``level``) has no effect. Requires
       ``ppo_n_minibatches == 1``.
     - ``True`` (separate TIS): snapshot old-policy logprobs from a trainer forward
-      so the ratio measures policy drift ``exp(pi - prox)``, and correct the
+      so the ratio measures policy drift ``exp(pi - old_policy)``, and correct the
       train-inference gap with a *separate, clamped* weight
-      ``clamp(exp(prox - inf), max=TISConfig.cap)`` applied per ``TISConfig.level``
+      ``clamp(exp(old_policy - inf), max=TISConfig.cap)`` applied per ``TISConfig.level``
       (token or sequence). This is the only mode where ``TISConfig`` matters and
       the only mode compatible with ``ppo_n_minibatches > 1``.
 
     Note the two modes coincide exactly while the TIS clamp does not bind:
-    ``exp(pi - prox) * exp(prox - inf) == exp(pi - inf)``. They differ only when
-    ``|prox - inf|`` exceeds the cap, where the separate-TIS path clips the
+    ``exp(pi - old_policy) * exp(old_policy - inf) == exp(pi - inf)``. They differ only when
+    ``|old_policy - inf|`` exceeds the cap, where the separate-TIS path clips the
     correction (asymmetrically when ``cap <= 1``) and the default does not.
 
     Ignored for non-IS losses (GRPO/DAPO/GSPO/CISPO), which always snapshot
@@ -379,6 +384,7 @@ def main(
             base_model=cfg.base_model,
             tokenizer_model=cfg.deployment.tokenizer_model,
             lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
@@ -391,7 +397,11 @@ def main(
             reference_required=cfg.kl_beta > 0,
         )
         stack.callback(service.close)
-        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        training_client = service.create_training_client(
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
+        )
         runner.set_accelerator_info(
             service.accelerator_type,
             service.accelerator_count,

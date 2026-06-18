@@ -594,8 +594,8 @@ def main(
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
             t0 = _time.time()
-            prox_fwd = policy.forward(data, "cross_entropy")
-            prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+            old_policy_fwd = policy.forward(data, "cross_entropy")
+            old_policy_lp = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
             logger.info("policy_forward: done (%.1fs)", _time.time() - t0)
 
             # Collect per-token advantages from all groups
@@ -616,7 +616,7 @@ def main(
                 ref_logprobs=ref_lp,
                 prompt_lens=prompt_lens,
                 inf_logprobs=inf_lp,
-                prox_logprobs=prox_lp,
+                old_policy_logprobs=old_policy_lp,
                 kl_beta=cfg.kl_beta,
                 eps_clip=cfg.eps_clip,
             )

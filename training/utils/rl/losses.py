@@ -248,16 +248,16 @@ def combine_prompt_groups(
 def build_builtin_loss_datums(
     data: List[tinker.Datum],
     advantages: List[float],
-    prox_logprobs: List[List[float]],
+    old_policy_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
     tis_config: TISConfig | None = None,
     policy_loss: str = "rl_loss",
 ) -> List[tinker.Datum]:
-    """Build datums with per-token sampling_logprobs and advantages for server-side built-in loss.
+    """Build datums with old-policy logprobs and advantages for server-side built-in loss.
 
-    Folds the TIS weight ``exp(prox - inf)`` into per-token advantages so the
-    server only sees ``sampling_logprobs`` (= prox_lp) and ``advantages``
+    Folds the TIS weight ``exp(old_policy - inf)`` into per-token advantages so the
+    server only sees ``logprobs`` (= old_policy_lp) and ``advantages``
     (= advantage * tis_weight * loss_mask).
 
     Uses ``compute_tis_weight`` for behavioral TIS correction and
@@ -277,7 +277,7 @@ def build_builtin_loss_datums(
         target_tokens = list(target_data.data)
         n_tokens = len(target_tokens)
         response_start = max(0, prompt_lens[i] - 1)
-        prox_lp = list(prox_logprobs[i])
+        old_policy_lp = list(old_policy_logprobs[i])
         inf_lp = list(inf_logprobs[i]) if i < len(inf_logprobs) else []
 
         resp_len = max(0, n_tokens - response_start)
@@ -290,13 +290,13 @@ def build_builtin_loss_datums(
             validate_inference_logprobs_for_sample(
                 policy_loss, i, inf_lp, response_start + resp_len,
             )
-            resp_prox = torch.tensor(prox_lp[response_start:response_start + resp_len], dtype=torch.float32)
+            resp_old_policy = torch.tensor(old_policy_lp[response_start:response_start + resp_len], dtype=torch.float32)
             resp_inf = torch.tensor(inf_lp[response_start:response_start + resp_len], dtype=torch.float32)
             # Active-only filter mirrors common.py: keep masked bridge tokens
             # out of the sequence-level TIS weight.
             active = loss_mask > 0.5
             tis_weight_active, _ = compute_tis_weight(
-                resp_prox[active], resp_inf[active], tis_config,
+                resp_old_policy[active], resp_inf[active], tis_config,
             )
             tis_weight = torch.ones(resp_len, dtype=torch.float32)
             tis_weight[active] = tis_weight_active.to(torch.float32)
@@ -308,7 +308,11 @@ def build_builtin_loss_datums(
         for r in range(resp_len):
             per_token_adv.append(float(adv_val * tis_weight[r].item() * loss_mask[r].item()))
 
-        slp_padded = prox_lp[:n_tokens] if len(prox_lp) >= n_tokens else prox_lp + [0.0] * (n_tokens - len(prox_lp))
+        old_policy_lp_padded = (
+            old_policy_lp[:n_tokens]
+            if len(old_policy_lp) >= n_tokens
+            else old_policy_lp + [0.0] * (n_tokens - len(old_policy_lp))
+        )
         new_datum = tinker.Datum(
             model_input=datum.model_input,
             loss_fn_inputs={
@@ -316,7 +320,7 @@ def build_builtin_loss_datums(
                     data=target_tokens, dtype="int64", shape=[n_tokens],
                 ),
                 "logprobs": tinker.TensorData(
-                    data=slp_padded, dtype="float32", shape=[n_tokens],
+                    data=old_policy_lp_padded, dtype="float32", shape=[n_tokens],
                 ),
                 "advantages": tinker.TensorData(
                     data=per_token_adv, dtype="float32", shape=[n_tokens],
@@ -347,7 +351,7 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
     and per-loss config fields at the top level.
 
     Returns a callable:
-    ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs) -> loss_fn``
+    ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs) -> loss_fn``
     """
     factory = CLIENT_LOSSES.get(args.policy_loss)
 
@@ -356,7 +360,7 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
         ref_logprobs: List[List[float]],
         prompt_lens: List[int],
         inf_logprobs: List[List[float]],
-        prox_logprobs: List[List[float]],
+        old_policy_logprobs: List[List[float]],
     ) -> Any:
         if factory is None:
             supported = _supported_policy_losses_text()
@@ -365,7 +369,7 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
                 f"Expected one of: {supported}."
             )
         return factory(
-            args, advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
+            args, advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
         )
 
     return build

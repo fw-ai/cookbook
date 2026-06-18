@@ -143,6 +143,21 @@ def test_main_can_disable_cleanup_on_exit(monkeypatch):
     assert kwargs["cleanup_deployment_on_close"] is None
 
 
+def test_main_forwards_lora_alpha_to_service_client(monkeypatch):
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        lora_rank=64,
+        lora_alpha=128,
+        deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["lora_rank"] == 64
+    assert kwargs["lora_alpha"] == 128
+
+
 def test_main_delegates_trainer_cleanup_for_existing_id_to_sdk(monkeypatch):
     cfg = module.Config(
         log_path="/tmp/rl_test_logs",

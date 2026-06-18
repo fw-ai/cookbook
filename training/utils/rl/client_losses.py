@@ -48,7 +48,7 @@ ClientLossFactory = Callable[
         List[List[float]],    # ref_logprobs
         List[int],            # prompt_lens
         List[List[float]],    # inf_logprobs
-        List[List[float]],    # prox_logprobs
+        List[List[float]],    # old_policy_logprobs
     ],
     Any,
 ]
@@ -60,14 +60,14 @@ the per-step rollout tensors. The returned closure is what
 
 def _grpo_client_factory(
     args: "LossArgs",
-    advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
+    advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
 ):
     return make_grpo_loss_fn(
         advantages,
         ref_logprobs,
         prompt_lens,
         inf_logprobs=inf_logprobs,
-        prox_logprobs=prox_logprobs,
+        old_policy_logprobs=old_policy_logprobs,
         kl_beta=args.kl_beta,
         eps_clip=args.eps_clip,
         eps_clip_high=args.eps_clip_high,
@@ -77,14 +77,14 @@ def _grpo_client_factory(
 
 def _is_client_factory(
     args: "LossArgs",
-    advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
+    advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
 ):
     return make_is_loss_fn(
         advantages,
         ref_logprobs,
         inf_logprobs,
         prompt_lens,
-        prox_logprobs,
+        old_policy_logprobs,
         ratio_log_cap=args.ratio_log_cap,
         tis_config=args.tis,
     )
@@ -92,14 +92,14 @@ def _is_client_factory(
 
 def _dapo_client_factory(
     args: "LossArgs",
-    advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
+    advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
 ):
     return make_dapo_loss_fn(
         advantages,
         ref_logprobs,
         inf_logprobs,
         prompt_lens,
-        prox_logprobs,
+        old_policy_logprobs,
         args.dapo,
         tis_config=args.tis,
     )
@@ -107,14 +107,14 @@ def _dapo_client_factory(
 
 def _dro_client_factory(
     args: "LossArgs",
-    advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
+    advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
 ):
     return make_dro_loss_fn(
         advantages,
         ref_logprobs,
         inf_logprobs,
         prompt_lens,
-        prox_logprobs,
+        old_policy_logprobs,
         args.dro,
         tis_config=args.tis,
     )
@@ -122,14 +122,14 @@ def _dro_client_factory(
 
 def _gspo_client_factory(
     args: "LossArgs",
-    advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
+    advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
 ):
     return make_gspo_loss_fn(
         advantages,
         ref_logprobs,
         inf_logprobs,
         prompt_lens,
-        prox_logprobs,
+        old_policy_logprobs,
         args.gspo,
         tis_config=args.tis,
     )
@@ -137,14 +137,14 @@ def _gspo_client_factory(
 
 def _cispo_client_factory(
     args: "LossArgs",
-    advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
+    advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
 ):
     return make_cispo_loss_fn(
         advantages,
         ref_logprobs,
         inf_logprobs,
         prompt_lens,
-        prox_logprobs,
+        old_policy_logprobs,
         args.cispo,
         tis_config=args.tis,
     )
@@ -152,14 +152,14 @@ def _cispo_client_factory(
 
 def _reinforce_client_factory(
     args: "LossArgs",
-    advantages, ref_logprobs, prompt_lens, inf_logprobs, prox_logprobs,
+    advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
 ):
     return make_reinforce_loss_fn(
         advantages,
         ref_logprobs,
         prompt_lens,
         inf_logprobs=inf_logprobs,
-        prox_logprobs=prox_logprobs,
+        old_policy_logprobs=old_policy_logprobs,
         kl_beta=args.kl_beta,
         tis_config=args.tis,
     )

@@ -46,7 +46,7 @@ class TestCISPOClipping:
             ref_logprobs=[ref_lp],
             inf_logprobs=[inf_lp],
             prompt_len=prompt_len,
-            prox_logprobs=[inf_lp],
+            old_policy_logprobs=[inf_lp],
             cispo_config=cfg,
         )
         loss, metrics = fn([], [pi_logprobs])
@@ -91,9 +91,9 @@ class TestCISPOBatched:
         lp0 = _make_logprobs(20, seed=42)
         lp1 = _make_logprobs(20, seed=43)
 
-        prox = [[0.05] * 20, [0.15] * 20]
-        fn_int = make_cispo_loss_fn(adv, ref, inf, prompt_len=10, prox_logprobs=prox)
-        fn_list = make_cispo_loss_fn(adv, ref, inf, prompt_len=[10, 10], prox_logprobs=prox)
+        old_policy = [[0.05] * 20, [0.15] * 20]
+        fn_int = make_cispo_loss_fn(adv, ref, inf, prompt_len=10, old_policy_logprobs=old_policy)
+        fn_list = make_cispo_loss_fn(adv, ref, inf, prompt_len=[10, 10], old_policy_logprobs=old_policy)
 
         loss_int, met_int = fn_int([], [lp0.detach().requires_grad_(True), lp1.detach().requires_grad_(True)])
         loss_list, met_list = fn_list([], [lp0.detach().requires_grad_(True), lp1.detach().requires_grad_(True)])
@@ -108,9 +108,9 @@ class TestCISPOBatched:
         inf = [[0.0] * 10]
         lp = _make_logprobs(10, seed=0)
 
-        prox = [[0.0] * 10]
-        fn_short = make_cispo_loss_fn(adv, ref, inf, prompt_len=2, prox_logprobs=prox)
-        fn_long = make_cispo_loss_fn(adv, ref, inf, prompt_len=8, prox_logprobs=prox)
+        old_policy = [[0.0] * 10]
+        fn_short = make_cispo_loss_fn(adv, ref, inf, prompt_len=2, old_policy_logprobs=old_policy)
+        fn_long = make_cispo_loss_fn(adv, ref, inf, prompt_len=8, old_policy_logprobs=old_policy)
 
         loss_short, _ = fn_short([], [lp.detach().requires_grad_(True)])
         loss_long, _ = fn_long([], [lp.detach().requires_grad_(True)])
@@ -125,8 +125,8 @@ class TestCISPOBatched:
         lp = _make_logprobs(5, seed=0)
         lp_grad = lp.detach().requires_grad_(True)
 
-        prox = [[0.0] * 5]
-        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, prox_logprobs=prox)
+        old_policy = [[0.0] * 5]
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
         loss, _ = fn([], [lp_grad])
         loss.backward()
 
@@ -139,10 +139,10 @@ class TestCISPOMetrics:
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[0.0] * 5]
-        prox = [[0.0] * 5]
+        old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
-        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, prox_logprobs=prox)
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
         _, metrics = fn([], [lp])
 
         assert "mean_kl" in metrics
@@ -153,10 +153,10 @@ class TestCISPOMetrics:
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[0.0] * 5]
-        prox = [[0.0] * 5]
+        old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
-        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, prox_logprobs=prox)
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
         _, metrics = fn([], [lp])
 
         assert "inference_diff" in metrics
@@ -167,10 +167,10 @@ class TestCISPOMetrics:
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[]]
-        prox = [[0.0] * 5]
+        old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
-        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, prox_logprobs=prox)
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
         with pytest.raises(ValueError, match="CISPO requires inference logprobs"):
             fn([], [lp])
 
@@ -179,9 +179,9 @@ class TestCISPOMetrics:
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[0.0] * 2]
-        prox = [[0.0] * 5]
+        old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
-        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, prox_logprobs=prox)
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
         with pytest.raises(ValueError, match="CISPO requires at least"):
             fn([], [lp])

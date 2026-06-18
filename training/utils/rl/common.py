@@ -90,8 +90,8 @@ class SampleContext:
     """Detached policy logprobs."""
     resp_ref: torch.Tensor
     """Reference model logprobs for response tokens."""
-    resp_prox: torch.Tensor
-    """Proximal forward-pass logprobs for response tokens."""
+    resp_old_policy: torch.Tensor
+    """Old-policy forward-pass logprobs for response tokens."""
     resp_inf: torch.Tensor
     """Inference deployment logprobs for response tokens."""
     resp_mask: torch.Tensor
@@ -129,7 +129,7 @@ def run_loss_loop(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
-    prox_logprobs: List[List[float]],
+    old_policy_logprobs: List[List[float]],
     tis_config: TISConfig,
     data: List[tinker.Datum],
     logprobs_list: List[torch.Tensor],
@@ -197,9 +197,9 @@ def run_loss_loop(
             dtype=resp_pi.dtype,
             device=resp_pi.device,
         )
-        prox_lp = prox_logprobs[i]
-        resp_prox = torch.tensor(
-            [prox_lp[response_start + j] if (response_start + j) < len(prox_lp) else 0.0 for j in range(resp_len)],
+        old_policy_lp = old_policy_logprobs[i]
+        resp_old_policy = torch.tensor(
+            [old_policy_lp[response_start + j] if (response_start + j) < len(old_policy_lp) else 0.0 for j in range(resp_len)],
             dtype=resp_pi.dtype,
             device=resp_pi.device,
         )
@@ -209,12 +209,12 @@ def run_loss_loop(
         active_pi = pi_detached[active]
         active_ref = resp_ref[active]
         active_inf = resp_inf[active]
-        active_prox = resp_prox[active]
+        active_old_policy = resp_old_policy[active]
 
         inf_log_diff = active_pi - active_inf
         total_inf_diff += inf_log_diff.abs().mean().item()
         total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
-        ppo_log_diff = active_pi - active_prox
+        ppo_log_diff = active_pi - active_old_policy
         total_ppo_kl += (torch.exp(ppo_log_diff) - ppo_log_diff - 1.0).mean().item()
         if ref_lp:
             ref_log_diff = active_ref - active_pi
@@ -222,7 +222,7 @@ def run_loss_loop(
             ref_num_samples += 1
         inf_num_samples += 1
 
-        tis_weight_active, bm = compute_tis_weight(active_prox, active_inf, tis_config)
+        tis_weight_active, bm = compute_tis_weight(active_old_policy, active_inf, tis_config)
         # Identity (1.0) at masked positions: zeroes under ``resp_mask`` for
         # masked-multiplied losses, no-op weight for ``dro``.
         tis_weight = torch.ones(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
@@ -236,7 +236,7 @@ def run_loss_loop(
             resp_pi=resp_pi,
             pi_detached=pi_detached,
             resp_ref=resp_ref,
-            resp_prox=resp_prox,
+            resp_old_policy=resp_old_policy,
             resp_inf=resp_inf,
             resp_mask=resp_mask,
             adv=adv_t,

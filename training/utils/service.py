@@ -11,12 +11,15 @@ from fireworks.training.sdk import (
 
 from training.utils.config import DeployConfig, TrainerConfig
 
+_MISSING = object()
+
 
 def _firetitan_service_kwargs(
     *,
     base_model: str,
     tokenizer_model: str | None,
     lora_rank: int | None,
+    lora_alpha: int | None | object = _MISSING,
     max_context_length: int | None,
     learning_rate: float,
     trainer: TrainerConfig,
@@ -61,6 +64,8 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
+    if lora_alpha is not _MISSING:
+        service_kwargs["lora_alpha"] = lora_alpha
     if deployment is None:
         service_kwargs["replica_count"] = 1
         return service_kwargs
@@ -88,6 +93,7 @@ def build_service_client(
     base_model: str,
     tokenizer_model: str | None,
     lora_rank: int | None,
+    lora_alpha: int | None | object = _MISSING,
     max_context_length: int | None,
     learning_rate: float,
     trainer: TrainerConfig,
@@ -102,6 +108,7 @@ def build_service_client(
         base_model=base_model,
         tokenizer_model=tokenizer_model,
         lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
         max_context_length=max_context_length,
         learning_rate=learning_rate,
         trainer=trainer,

@@ -2,7 +2,7 @@
 
 Uses PPO-style clipped surrogate objective with asymmetric clipping bounds
 and behavioral TIS weight correction.  The PPO ratio is computed against
-pre-computed proximal logprobs.
+pre-computed old-policy logprobs.
 
 Reference: https://arxiv.org/abs/2503.14476
 """
@@ -41,7 +41,7 @@ def make_dapo_loss_fn(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
-    prox_logprobs: List[List[float]],
+    old_policy_logprobs: List[List[float]],
     dapo_config: DAPOConfig | None = None,
     tis_config: TISConfig | None = None,
 ) -> ...:
@@ -54,7 +54,7 @@ def make_dapo_loss_fn(
 
     def policy_fn(ctx):
         log_ratio = torch.clamp(
-            ctx.resp_pi - ctx.resp_prox,
+            ctx.resp_pi - ctx.resp_old_policy,
             min=-dapo_config.ratio_log_cap,
             max=dapo_config.ratio_log_cap,
         )
@@ -85,7 +85,7 @@ def make_dapo_loss_fn(
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
             advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            prox_logprobs, tis_config, data, logprobs_list, "dapo", policy_fn,
+            old_policy_logprobs, tis_config, data, logprobs_list, "dapo", policy_fn,
         )
         metrics = dict(result.base_metrics)
         ns = result.n_samples
@@ -94,5 +94,4 @@ def make_dapo_loss_fn(
         return result.total_loss, metrics
 
     return loss_fn
-
 

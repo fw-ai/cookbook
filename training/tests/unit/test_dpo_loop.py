@@ -40,6 +40,16 @@ def _new_cursor(*, max_rows: int | None = None, persisted: int | None = None) ->
     return cursor
 
 
+def test_validate_dpo_beta_accepts_valid_range():
+    module._validate_dpo_beta(0.25)
+
+
+@pytest.mark.parametrize("beta", [0, 0.5])
+def test_validate_dpo_beta_rejects_outside_range(beta):
+    with pytest.raises(ValueError, match=r"Config\.beta must be > 0 and < 0\.5"):
+        module._validate_dpo_beta(beta)
+
+
 class _StopAfterProvisioning(RuntimeError):
     pass
 

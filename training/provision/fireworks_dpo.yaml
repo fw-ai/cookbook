@@ -43,5 +43,5 @@ trainers:
 recipe:
   dpo:
     trainer: policy
-    beta: 0.1              # DPO preference temperature (KL strength)
+    beta: 0.1              # DPO preference temperature (KL strength), must be >0 and <0.5
     # reference: reference # uncomment for full-param DPO; LoRA reuses policy as reference

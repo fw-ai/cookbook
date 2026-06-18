@@ -666,14 +666,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
-                prox_fwd = policy.forward(data, "cross_entropy")
-                prox_lp = [prox_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+                old_policy_fwd = policy.forward(data, "cross_entropy")
+                old_policy_lp = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
                 if builtin_loss is not None:
                     loss_name, loss_cfg = builtin_loss
                     rl_datums = build_builtin_loss_datums(
                         data,
                         adv,
-                        prox_lp,
+                        old_policy_lp,
                         inf_lp,
                         prompt_lens,
                         policy_loss=cfg.policy_loss,
@@ -682,7 +682,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         rl_datums, loss_name, loss_fn_config=loss_cfg,
                     )
                 return policy.forward_backward_custom(
-                    data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, prox_lp),
+                    data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, old_policy_lp),
                 )
 
             def train_step(

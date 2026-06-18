@@ -178,6 +178,11 @@ class Config:
     """
 
 
+def _validate_dpo_beta(beta: float) -> None:
+    if not 0 < beta < 0.5:
+        raise ValueError("Config.beta must be > 0 and < 0.5")
+
+
 # ---------------------------------------------------------------------------
 # Per-worker render: tokenizer + renderer cached in module-level state
 # ---------------------------------------------------------------------------
@@ -605,6 +610,7 @@ def main(
     config: Config,
 ):
     cfg = config
+    _validate_dpo_beta(cfg.beta)
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name

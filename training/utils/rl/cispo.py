@@ -1,6 +1,6 @@
 """CISPO (Clipped Importance Sampling Policy Optimization) loss.
 
-Clips the importance-sampling ratio ``pi/pi_prox`` to ``[1-eps_low,
+Clips the importance-sampling ratio ``pi/pi_old_policy`` to ``[1-eps_low,
 1+eps_high]`` and uses the clipped ratio as a *detached* weight on the
 log-probability.  This matches the Tinker kernel formula::
 
@@ -9,7 +9,7 @@ log-probability.  This matches the Tinker kernel formula::
 
 Gradient flows through ``logprob`` (not through ``ratio``), and the
 clipped ratio caps the effective learning signal for tokens whose
-policy has already moved far from the proximal checkpoint.  TIS weight
+policy has already moved far from the old-policy snapshot.  TIS weight
 corrects for the train-inference gap.
 """
 
@@ -29,7 +29,7 @@ from training.utils.rl.tis import TISConfig
 class CISPOConfig:
     """CISPO clipping thresholds.
 
-    The ratio ``pi/pi_prox`` is clamped to ``[1 - eps_low, 1 + eps_high]``.
+    The ratio ``pi/pi_old_policy`` is clamped to ``[1 - eps_low, 1 + eps_high]``.
     ``ratio_log_cap`` clamps log-ratio before exp() for numerical stability.
     """
 
@@ -43,7 +43,7 @@ def make_cispo_loss_fn(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
-    prox_logprobs: List[List[float]],
+    old_policy_logprobs: List[List[float]],
     cispo_config: CISPOConfig | None = None,
     tis_config: TISConfig | None = None,
 ) -> ...:
@@ -56,7 +56,7 @@ def make_cispo_loss_fn(
 
     def policy_fn(ctx):
         log_ratio = torch.clamp(
-            ctx.resp_pi - ctx.resp_prox,
+            ctx.resp_pi - ctx.resp_old_policy,
             min=-cispo_config.ratio_log_cap,
             max=cispo_config.ratio_log_cap,
         )
@@ -77,7 +77,7 @@ def make_cispo_loss_fn(
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
             advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            prox_logprobs, tis_config, data, logprobs_list, "cispo", policy_fn,
+            old_policy_logprobs, tis_config, data, logprobs_list, "cispo", policy_fn,
         )
         metrics = dict(result.base_metrics)
         ns = result.n_samples
@@ -86,5 +86,4 @@ def make_cispo_loss_fn(
         return result.total_loss, metrics
 
     return loss_fn
-
 
