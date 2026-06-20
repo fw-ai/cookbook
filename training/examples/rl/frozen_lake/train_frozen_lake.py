@@ -64,7 +64,7 @@ from training.utils.rl.rollout import (
     load_eval_protocol_input_rows,
     make_eval_protocol_rollout_fn_factory,
 )
-from training.utils.rl.train import TrainStepFns
+from training.train_loop import TrainStepFns
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.dro import DROConfig

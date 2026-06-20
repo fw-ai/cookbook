@@ -73,7 +73,7 @@ mode is taken from an explicit `mode:` key, else inferred from the recipe name
 | `sft` | policy trainer (no deployment) |
 | `rl` / `rft` | policy trainer + rollout deployment + sampler (reference trainer when `kl_beta > 0`) |
 | `dpo` | policy trainer + frozen reference (no deployment) |
-| `distillation` | policy trainer + rollout deployment + teacher (frozen teacher deployment) |
+| `distillation` | policy trainer + rollout deployment + teacher inference deployment |
 
 `rft` is an alias for `rl` (same training mode).
 

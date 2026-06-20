@@ -74,7 +74,7 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.dro import DROConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
+from training.train_loop import TrainStepFns, raw_rows_from_stats, run_batched_training_loop
 from training.utils.rl.losses import (
     LossPath,
     PolicyLoss,
@@ -847,7 +847,7 @@ def main(
         start_running(runner, total_steps=total_rl_steps)
 
         global_step = asyncio.run(
-            run_rl_loop(
+            run_batched_training_loop(
                 sample_fns=(sample_one_prompt(row) for row in remaining_rows),
                 train_fns=train_fns,
                 prompt_groups_per_step=prompt_groups_per_step,

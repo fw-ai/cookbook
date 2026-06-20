@@ -35,21 +35,8 @@ trainers:
     extra_args: null
     skip_validations: false
 
-  teacher_forward_only:
-    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only
-    base_model: accounts/fireworks/models/qwen3p5-9b
-    job_id: null           # null = create a new job; set to reattach to an existing job
-    replica_count: 1
-    # Optional fields for admin users.
-    custom_image_tag: null
-    region: null           # optional explicit trainer region; prefer leaving unset
-    timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
-    extra_args: null
-    skip_validations: false
-
 recipe:
   distillation:
     trainer: policy
     deployment: rollout
-    teacher_trainers: 
-      - teacher_forward_only
+    teacher_model: accounts/fireworks/models/qwen3p5-9b

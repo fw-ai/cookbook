@@ -86,11 +86,10 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | --- | --- |
 | `teacher_model` | Fireworks teacher model or deployment ID using the same tokenizer as the student |
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for student rollouts |
-| `weight_sync_interval` | Set to `1` for strict on-policy updates |
 
 If `teacher_model` is a base model resource such as
 `accounts/fireworks/models/qwen3p5-9b`, the distillation recipe creates or reuses a
-separate frozen teacher deployment for scoring during provisioning. Set
+separate teacher inference deployment for scoring during provisioning. Set
 `teacher_deployment_id` to pin that deployment name. If `teacher_model` is
 already a deployment/deployed model resource, the recipe uses it directly.
 
@@ -99,6 +98,12 @@ student samples from `messages`; the frozen teacher scores the sampled response
 under `teacher_messages`. If `teacher_messages` is absent, the recipe falls
 back to the student prompt. The aliases `privileged_messages` and
 `teacher_prompt_messages` are also accepted.
+
+For multi-teacher SDFT (`distill_mode="topk_forward_kl"`), every teacher scores
+the same sampled response and the recipe blends teacher top-K probability mass
+over the union of token ids. Set `TeacherConfig.blend_weight` to weight a
+teacher in that blend; omitted weights default to `1.0`. Sampled reverse-KL OPD
+still routes each row to one teacher and does not blend.
 
 The recipes create SDK-managed training and sampling clients directly.
 They do not require explicit trainer-job, deployment, or sampler setup.

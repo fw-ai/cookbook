@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402
-"""Run routed two-teacher distillation with a Qwen3.5 35B-A3B LoRA student.
+"""Run routed two-teacher distillation with a Qwen3.6 35B-A3B LoRA student.
 
 This is a smoke example for the multi-teacher routing path:
 
@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -33,11 +34,11 @@ from training.utils import DeployConfig, RunnerConfig, TrainerConfig, WandBConfi
 from training.utils.distillation import MultiTeacherConfig, TeacherConfig
 
 
-DEFAULT_BASE_MODEL = "accounts/fireworks/models/qwen3p5-35b-a3b"
+DEFAULT_BASE_MODEL = "accounts/fireworks/models/qwen3p6-35b-a3b"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3.5-35B-A3B"
-DEFAULT_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-35b-a3b-256k-lora"
-DEFAULT_TEACHER_A = "accounts/fireworks/models/qwen3p5-35b-a3b"
-DEFAULT_TEACHER_B = "accounts/fireworks/models/qwen3p5-35b-a3b"
+DEFAULT_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p6-35b-a3b-256k-lora"
+DEFAULT_TEACHER_A = "accounts/fireworks/models/qwen3p6-35b-a3b"
+DEFAULT_TEACHER_B = "accounts/fireworks/models/qwen3p6-35b-a3b"
 DEFAULT_TEACHER_A_ROUTE = "math-teacher"
 DEFAULT_TEACHER_B_ROUTE = "arithmetic-teacher"
 DEFAULT_LORA_RANK = 8
@@ -47,6 +48,7 @@ DEFAULT_PROMPT_GROUPS_PER_STEP = 2
 DEFAULT_COMPLETIONS_PER_PROMPT = 1
 DEFAULT_MAX_COMPLETION_TOKENS = 64
 DEFAULT_LEARNING_RATE = 2e-5
+MAX_DEPLOYMENT_ID_LENGTH = 63
 MIN_TEACHER_COUNT = 2
 LOG_ROOT = Path(__file__).resolve().parents[2] / "distillation_logs"
 
@@ -146,6 +148,13 @@ def _write_jsonl(output_path: Path, routed_rows: list[dict[str, Any]]) -> None:
             output_handle.write(json.dumps(routed_row, separators=(",", ":")) + "\n")
 
 
+def _teacher_deployment_id(run_id: str, teacher_suffix: str) -> str:
+    safe_run_id = re.sub(r"[^a-z0-9-]+", "-", run_id.lower()).strip("-")
+    base_id = f"distillation-teacher-{safe_run_id}"
+    max_base_length = MAX_DEPLOYMENT_ID_LENGTH - len(teacher_suffix) - 1
+    return f"{base_id[:max_base_length].rstrip('-')}-{teacher_suffix}"
+
+
 def _latest_metrics(metrics_file: Path) -> dict[str, Any]:
     metrics_records = [
         json.loads(line)
@@ -179,11 +188,13 @@ def _build_config(args: TrainArgs, dataset_path: Path, metrics_file: Path) -> di
                     model=args.teacher_a,
                     route_value=args.teacher_a_route,
                     tokenizer_model=args.tokenizer_model,
+                    deployment_id=_teacher_deployment_id(args.run_id, "a"),
                 ),
                 TeacherConfig(
                     model=args.teacher_b,
                     route_value=args.teacher_b_route,
                     tokenizer_model=args.tokenizer_model,
+                    deployment_id=_teacher_deployment_id(args.run_id, "b"),
                 ),
             ],
             route_key="teacher",
@@ -192,7 +203,6 @@ def _build_config(args: TrainArgs, dataset_path: Path, metrics_file: Path) -> di
         deployment=DeployConfig(tokenizer_model=args.tokenizer_model),
         runner=RunnerConfig(metrics_file=str(metrics_file)),
         wandb=WandBConfig(project="distillation-tinker"),
-        weight_sync_interval=0,
         lora_rank=args.lora_rank,
         learning_rate=args.learning_rate,
         max_rows=args.max_rows,

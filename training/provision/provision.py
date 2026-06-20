@@ -16,18 +16,13 @@ import logging
 import os
 import signal
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType, UnionType
 from typing import Any, Callable, Literal, Union, get_args, get_origin, get_type_hints
 
 import yaml
-from fireworks.training.sdk import (
-    FiretitanServiceClient,
-    TrainerJobConfig,
-    TrainerJobManager,
-)
+from fireworks.training.sdk import FiretitanServiceClient
 from fireworks.training.sdk.client import FiretitanTrainingClient
 
 from training.utils import (
@@ -407,8 +402,6 @@ def _init_distillation_infra(
 ) -> FireworksProvisionInfra:
     if not cfg.deployment.tokenizer_model:
         raise ValueError("deployment.tokenizer_model is required for distillation provisioning.")
-    if not cfg.teacher_trainers:
-        raise ValueError("Config.teacher_trainers is required for distillation provisioning.")
     service = _build_managed_service(
         cfg,
         api_key=api_key,
@@ -425,15 +418,6 @@ def _init_distillation_infra(
     try:
         training_client, policy = _make_policy(service, cfg)
         sampler, concurrency_controller = _create_sampler(service, cfg)
-        teachers = _provision_teacher_trainers(
-            cfg,
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-            cleanup_on_close=cleanup_on_close,
-            cleanup_existing=cleanup_existing,
-            cleanup_callbacks=cleanup_callbacks,
-        )
         return _infra_from_service(
             mode="distillation",
             service=service,
@@ -441,9 +425,9 @@ def _init_distillation_infra(
             policy=policy,
             sampler=sampler,
             concurrency_controller=concurrency_controller,
-            teacher_models=[base_model for base_model, _ in teachers],
-            teacher_job_ids=[endpoint.job_id for _, endpoint in teachers],
-            teacher_base_urls=[endpoint.base_url for _, endpoint in teachers],
+            teacher_models=[cfg.teacher_model] if getattr(cfg, "teacher_model", "") else [],
+            teacher_job_ids=[],
+            teacher_base_urls=[],
             cleanup_callbacks=cleanup_callbacks,
         )
     except BaseException:
@@ -521,77 +505,6 @@ def _create_sampler(service: FiretitanServiceClient, cfg: Any) -> tuple[Any, Any
         concurrency_controller=concurrency_controller,
     )
     return sampler, concurrency_controller
-
-
-def _provision_teacher_trainers(
-    cfg: Any,
-    *,
-    api_key: str,
-    base_url: str,
-    additional_headers: dict[str, str] | None,
-    cleanup_on_close: bool,
-    cleanup_existing: bool,
-    cleanup_callbacks: list[Callable[[], None]],
-) -> list[tuple[str, Any]]:
-    """Provision the forward-only teacher trainer(s) for distillation.
-
-    Each teacher is a separate trainer job with its own ``base_model`` and
-    forward-only training shape, launched from the same account as the student
-    through one ``TrainerJobManager``. This mirrors the student trainer launch
-    but with ``forward_only=True`` and no deployment; the recipe scores sampled
-    tokens against the returned endpoints. Multiple teachers are launched in
-    parallel. Returns ``(base_model, endpoint)`` pairs in config order.
-    """
-    trainer_mgr = TrainerJobManager(
-        api_key=api_key,
-        base_url=base_url,
-        additional_headers=additional_headers,
-    )
-
-    def _provision_one(spec: Any) -> tuple[str, Any]:
-        teacher = spec.trainer
-        timeout_s = teacher.timeout_s or 3600
-        if teacher.job_id:
-            endpoint = trainer_mgr.wait_for_existing(teacher.job_id, timeout_s=timeout_s)
-            if cleanup_on_close and cleanup_existing:
-                cleanup_callbacks.append(lambda job_id=endpoint.job_id: trainer_mgr.delete(job_id))
-            return spec.base_model, endpoint
-
-        config = TrainerJobConfig(
-            base_model=spec.base_model,
-            lora_rank=0,
-            learning_rate=cfg.learning_rate,
-            forward_only=True,
-            region=teacher.region,
-            display_name=f"teacher-{spec.base_model.rsplit('/', 1)[-1]}"[:_DISPLAY_NAME_MAX_LENGTH],
-            skip_validations=teacher.skip_validations,
-            extra_args=teacher.extra_args,
-        )
-        if teacher.training_shape_id:
-            # Shape path: the backend owns accelerator/image/node-count from the shape.
-            profile = trainer_mgr.resolve_training_profile(teacher.training_shape_id)
-            config.training_shape_ref = profile.training_shape_version
-            config.max_context_length = cfg.max_seq_len or profile.max_supported_context_length
-        else:
-            # Manual path: forward the explicit infra fields as-is.
-            config.max_context_length = cfg.max_seq_len
-            config.node_count = teacher.node_count
-            config.custom_image_tag = teacher.custom_image_tag
-        created = trainer_mgr.create(config)
-        # Register cleanup right after create (before the ready wait) so a teacher
-        # that fails to become ready is still torn down on unwind.
-        if cleanup_on_close:
-            cleanup_callbacks.append(lambda job_id=created.job_id: trainer_mgr.delete(job_id))
-        endpoint = trainer_mgr.wait_for_ready(
-            created.job_id, job_name=created.job_name, timeout_s=timeout_s
-        )
-        return spec.base_model, endpoint
-
-    specs = cfg.teacher_trainers
-    if len(specs) == 1:
-        return [_provision_one(specs[0])]
-    with ThreadPoolExecutor(max_workers=len(specs)) as pool:
-        return list(pool.map(_provision_one, specs))
 
 
 def _check_trainer_status(manager: Any | None, job_id: str) -> ResourceStatus:
@@ -988,32 +901,12 @@ def _build_recipe_config(
     elif mode == "distillation":
         from training.recipes import distillation_loop
 
-        teacher_trainer_refs = merged.get("teacher_trainers")
-        if not teacher_trainer_refs:
-            raise ValueError(
-                "recipe.distillation requires 'teacher_trainers': a list of forward-only "
-                "trainer references; each teacher's base_model comes from its trainer block."
-            )
-        if not isinstance(teacher_trainer_refs, list):
-            teacher_trainer_refs = [teacher_trainer_refs]
-        teacher_trainers = []
-        for teacher_ref in teacher_trainer_refs:
-            teacher_trainer, _, teacher_base_model = _resolve_trainer_config(
-                doc,
-                teacher_ref,
-                default_base_model=base_model,
-            )
-            teacher_trainers.append(
-                distillation_loop.TeacherTrainerConfig(
-                    base_model=teacher_base_model,
-                    trainer=teacher_trainer,
-                )
-            )
+        teacher_model = _required_value(merged.get("teacher_model"), "teacher_model")
         return _make_dataclass_config(
             distillation_loop.Config,
             {
                 **values,
-                "teacher_trainers": teacher_trainers,
+                "teacher_model": teacher_model,
                 "deployment": deployment,
                 "concurrency": _resolve_concurrency_config(merged.get("concurrency")),
                 "weight_sync_timeout": merged.get("weight_sync_timeout", 600),
