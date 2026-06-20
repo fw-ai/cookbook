@@ -81,10 +81,11 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
 | `weight_sync` | `WeightSyncConfig(weight_sync_interval=1)` to sync weights to the deployment |
 
-When `training_shape_id` is not set, the cookbook auto-selects validated
-trainer shapes at runtime from Fireworks control-plane data. RL-family
-recipes also auto-select a validated deployment shape, and DPO / KL
-flows request a validated forward-only reference shape. Explicit
+When `training_shape_id` is not set, backend trainer creation selects a
+validated trainer shape from Fireworks control-plane data. RL-family recipes
+also use a validated deployment shape, and DPO / KL flows request reference
+trainers that run forward-only on LoRA-capable validated shapes.
+Explicit
 `training_shape_id`, `ref_training_shape_id`, and deployment-shape
 overrides still take precedence.
 
@@ -115,7 +116,7 @@ It applies to trainer jobs the recipe creates for that run; pre-created
 When `kl_beta > 0` the RL loop provisions a separate forward-only
 reference trainer (with `lora_rank=0`, full-param frozen base) in
 addition to the LoRA policy trainer. Auto-selection picks an
-appropriate validated reference shape unless `ref_training_shape_id`
+appropriate LoRA-capable validated shape unless `ref_training_shape_id`
 is set explicitly.
 
 **DPO / ORPO** -- also requires:

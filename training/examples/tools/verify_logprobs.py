@@ -2,9 +2,9 @@
 """Verify train-inference logprob alignment.
 
 Creates an inference deployment and a policy trainer (plus an optional
-forward-only reference trainer) from training shapes, samples completions,
-runs training forward passes, and compares per-token logprobs on completion
-tokens.
+reference trainer that runs forward-only) from LoRA-capable training shapes,
+samples completions, runs training forward passes, and compares per-token
+logprobs on completion tokens.
 
 Usage:
     export FIREWORKS_API_KEY=...

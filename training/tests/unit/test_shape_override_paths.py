@@ -82,7 +82,8 @@ class TestShapePath:
 
         assert c.training_shape_ref == PROFILE.training_shape_version
         assert c.base_model == BASE_MODEL
-        assert c.gradient_accumulation_steps is None
+        assert c.gradient_accumulation_steps == 1
+        assert c.auto_select_training_shape is False
         assert c.region == "US_VIRGINIA_1"
 
         assert c.accelerator_type is None

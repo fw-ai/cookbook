@@ -66,7 +66,6 @@ from training.utils import (
     create_trainer_job,
     build_datum_from_token_mask,
     validate_config,
-    auto_select_training_shape,
 )
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_train import RowRequest, run_async_rl_loop
@@ -494,23 +493,13 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         len(seed_contexts), os.path.abspath(cfg.seed_jsonl_path),
     )
 
-    if not infra.training_shape_id:
-        infra.training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="policy",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        cfg.training_shape = infra.training_shape_id
-        logger.info(
-            "Auto-selected policy training shape for %s: %s",
-            cfg.base_model, infra.training_shape_id,
-        )
+    # -- Resolve explicit training shapes -----------------------------------
 
-    # -- Resolve training shapes --------------------------------------------
-
-    profile = rlor_mgr.resolve_training_profile(infra.training_shape_id)
+    profile = (
+        rlor_mgr.resolve_training_profile(infra.training_shape_id)
+        if infra.training_shape_id
+        else None
+    )
     if not deploy_cfg.deployment_shape and getattr(profile, "deployment_shape_version", None):
         deploy_cfg.deployment_shape = profile.deployment_shape_version
         cfg.deployment_shape = profile.deployment_shape_version
@@ -528,31 +517,28 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             pp_rec.recommended_prompts_per_step, prompt_groups_per_step,
         )
 
-    if profile and cfg.max_seq_len is None:
-        cfg.max_seq_len = profile.max_supported_context_length
-        logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
+    if cfg.max_seq_len is None:
+        if profile:
+            cfg.max_seq_len = profile.max_supported_context_length
+            logger.info("max_seq_len from training shape: %d", cfg.max_seq_len)
+        else:
+            cfg.max_seq_len = 32768
+            logger.info("Training shape will be selected by backend trainer creation")
 
     ref_profile = None
     reference_infra = infra
     reference_launch_profile = None
     reference_needed = cfg.kl_beta > 0 or infra.ref_training_shape_id is not None
     if reference_needed:
-        if not infra.ref_training_shape_id:
-            infra.ref_training_shape_id = auto_select_training_shape(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                trainer_role="reference",
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-            )
+        if infra.ref_training_shape_id:
+            ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
+            reference_launch_profile = ref_profile
+        else:
             logger.info(
-                "Auto-selected reference training shape for %s: %s",
-                cfg.base_model, infra.ref_training_shape_id,
+                "Reference training shape will be selected by backend trainer creation"
             )
-        ref_profile = rlor_mgr.resolve_training_profile(infra.ref_training_shape_id)
         reference_infra = infra
-        reference_launch_profile = ref_profile
-    use_reference = ref_profile is not None
+    use_reference = reference_needed
     if not use_reference:
         logger.info("No ref_training_shape_id set, skipping reference model")
 

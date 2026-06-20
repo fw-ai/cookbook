@@ -56,7 +56,6 @@ from fireworks.training.sdk.deployment import (
 
 from training.utils.client import DEFAULT_TIMEOUT_S, ReconnectableClient
 from training.utils.config import DeployConfig, InfraConfig, WeightSyncScope
-from training.utils.training_shapes import auto_select_training_shape
 
 TrainerHandle = CreatedTrainerJob | TrainerServiceEndpoint
 """Return type of :func:`request_trainer_job`.
@@ -76,6 +75,9 @@ _TRAINER_JOB_CONFIG_SUPPORTS_SKIP_VALIDATIONS = (
 )
 _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF = (
     "training_shape_ref" in inspect.signature(TrainerJobConfig).parameters
+)
+_TRAINER_JOB_CONFIG_SUPPORTS_AUTO_SELECT_SHAPE = (
+    "auto_select_training_shape" in inspect.signature(TrainerJobConfig).parameters
 )
 _TRAINER_JOB_CONFIG_SUPPORTS_TRAINER_REPLICA_COUNT = (
     "trainer_replica_count" in inspect.signature(TrainerJobConfig).parameters
@@ -122,6 +124,16 @@ def read_api_extra_headers_env() -> dict[str, str] | None:
         )
         return None
     return parsed or None
+
+
+def _uses_manual_training_infra(infra: InfraConfig) -> bool:
+    """Return True when caller-provided infra should bypass shape selection."""
+    return bool(
+        infra.skip_validations
+        or infra.accelerator_type
+        or infra.accelerator_count
+        or infra.node_count
+    )
 
 
 def _default_trainer_cancel_grace_period_s() -> float:
@@ -302,13 +314,16 @@ def request_trainer_job(
     ``TrainerServiceEndpoint`` for the reuse path (already polled by
     ``_reuse_or_resume_job``, so :func:`wait_trainer_job` is a no-op).
 
-    Two launch paths:
+    Three launch paths:
 
-    * **Shape path** (profile provided): sends ``training_shape_ref``
+    * **Explicit shape path** (profile provided): sends ``training_shape_ref``
       plus algorithm fields only.  The backend populates accelerator,
       image tag, node count, sharding, etc. from the validated shape.
-    * **Manual path** (no profile): sends all ``InfraConfig`` fields
-      as-is; the server skips shape validation.
+    * **Backend auto shape path** (no profile and no manual infra): the
+      backend chooses a validated shape from base model, context length,
+      LoRA rank, and ``forward_only``.
+    * **Manual path** (no profile with manual infra): sends all
+      ``InfraConfig`` fields as-is; the server skips shape validation.
 
     *cleanup*, when provided, registers the created job for cancellation
     on scope exit. Thread-safe: ``ResourceCleanup.trainer`` uses a lock.
@@ -326,11 +341,15 @@ def request_trainer_job(
         _emit(f"reusing existing {trainer_role} trainer {job_id}")
         return _reuse_or_resume_job(rlor_mgr, job_id)
 
+    auto_select_training_shape = profile is None and not _uses_manual_training_infra(infra)
+
     extra_trainer_args: dict[str, Any] = {}
     if _TRAINER_JOB_CONFIG_SUPPORTS_SKIP_VALIDATIONS:
         extra_trainer_args["skip_validations"] = infra.skip_validations
     if profile is not None and _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF:
         extra_trainer_args["training_shape_ref"] = profile.training_shape_version
+    if auto_select_training_shape and _TRAINER_JOB_CONFIG_SUPPORTS_AUTO_SELECT_SHAPE:
+        extra_trainer_args["auto_select_training_shape"] = True
     if infra.trainer_replica_count is not None:
         if infra.trainer_replica_count < 0:
             raise ValueError("trainer_replica_count must be non-negative")
@@ -359,16 +378,19 @@ def request_trainer_job(
             lora_rank=lora_rank,
             max_context_length=max_seq_len,
             learning_rate=learning_rate,
-            node_count=infra.node_count,
+            node_count=None if auto_select_training_shape else infra.node_count,
             display_name=display_name,
             hot_load_deployment_id=hot_load_deployment_id,
             region=infra.region,
             custom_image_tag=infra.custom_image_tag,
             extra_args=extra_args or infra.extra_args,
-            accelerator_type=infra.accelerator_type,
-            accelerator_count=infra.accelerator_count,
+            accelerator_type=None if auto_select_training_shape else infra.accelerator_type,
+            accelerator_count=None if auto_select_training_shape else infra.accelerator_count,
             forward_only=forward_only,
+            **extra_trainer_args,
         )
+        if auto_select_training_shape and not _TRAINER_JOB_CONFIG_SUPPORTS_AUTO_SELECT_SHAPE:
+            config.auto_select_training_shape = True
         if not _TRAINER_JOB_CONFIG_SUPPORTS_TRAINING_SHAPE_REF:
             config.training_shape_ref = None
 
@@ -929,11 +951,12 @@ def _create_trainer_job_with_replica_count(
         query_params.append(("deploymentId", config.hot_load_deployment_id))
 
     is_shape_path = bool(config.training_shape_ref)
+    is_auto_shape_path = bool(getattr(config, "auto_select_training_shape", False))
     if is_shape_path:
         query_params.append(("trainingShape", config.training_shape_ref))
         if config.skip_validations:
             query_params.append(("skipValidations", "true"))
-    else:
+    elif not is_auto_shape_path:
         query_params.append(("skipValidations", "true"))
 
     if query_params:
@@ -953,9 +976,10 @@ def _create_trainer_job_with_replica_count(
         "trainerReplicaCount": trainer_replica_count,
     }
 
-    if not is_shape_path:
-        if config.max_context_length is not None:
-            training_config["maxContextLength"] = config.max_context_length
+    if not is_shape_path and config.max_context_length is not None:
+        training_config["maxContextLength"] = config.max_context_length
+
+    if not is_shape_path and not is_auto_shape_path:
         payload["nodeCount"] = config.node_count if config.node_count is not None else 1
         if config.custom_image_tag:
             training_config["customImageTag"] = config.custom_image_tag
@@ -1086,7 +1110,9 @@ def setup_infra(
     """Build all training-side infrastructure in one call.
 
     Generic across loop types (RL, DPO, SFT). Neither ``infra_cfg`` nor
-    ``deploy_cfg`` is mutated; both are shape-resolved into local copies.
+    ``deploy_cfg`` is mutated; explicit shape IDs are resolved into local
+    copies, and omitted trainer shapes are selected by the backend when each
+    service-mode trainer is created.
 
     Args:
         rlor_mgr: Trainer job manager.
@@ -1095,7 +1121,9 @@ def setup_infra(
         infra_cfg: Infrastructure config (shape IDs, region, etc.).
         deploy_cfg: Deployment config. Required when ``needs_inference=True``.
         lora_rank: LoRA rank; 0 means full-parameter.
-        max_seq_len: Max sequence length. Auto-populated from shape when ``None``.
+        max_seq_len: Max sequence length. When no explicit training shape is
+            provided, this is sent to the backend shape selector as the
+            requested context length.
         learning_rate: Optimizer learning rate forwarded to trainer jobs.
         step_timeout: Per-step RPC timeout. Falls back to SDK default when ``None``.
         policy_job_id: Reuse an existing policy trainer job instead of creating one.
@@ -1172,7 +1200,8 @@ def setup_infra(
         lora_rank=lora_rank, max_seq_len=resolved_max_seq_len,
         learning_rate=learning_rate,
         policy_job_id=policy_job_id, reference_job_id=reference_job_id,
-        role_prefix=role_prefix, cleanup=cleanup, on_status=emit,
+        role_prefix=role_prefix, needs_reference=needs_reference,
+        cleanup=cleanup, on_status=emit,
     )
 
     dep_info: DeploymentInfo | _ReattachHandle | None = None
@@ -1287,14 +1316,15 @@ def _resolve_policy_shape(
 ) -> tuple[Any, int, str | None, str | None]:
     """Return (profile, resolved_max_seq_len, resolved_shape_id, resolved_deploy_shape)."""
     if training_shape_id is None:
-        training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=base_model,
-            trainer_role="policy",
-            lora_rank=lora_rank,
-            max_seq_len=max_seq_len,
-        )
-        logger.info("Auto-selected policy training shape: %s", training_shape_id)
+        if max_seq_len is None:
+            max_seq_len = 32768
+        if needs_inference and not deploy_shape:
+            raise ValueError(
+                "deployment.deployment_shape is required when training shapes "
+                "are selected by the backend. Set deployment_shape or provide "
+                "infra.training_shape_id."
+            )
+        return None, max_seq_len, None, deploy_shape
     profile = rlor_mgr.resolve_training_profile(training_shape_id)
 
     resolved_deploy_shape = deploy_shape
@@ -1331,17 +1361,7 @@ def _resolve_reference_shape(
                 ref_training_shape_id, lora_rank,
             )
         return rlor_mgr.resolve_training_profile(ref_training_shape_id), ref_training_shape_id
-    if not (needs_reference and lora_rank == 0):
-        return None, None
-    ref_training_shape_id = auto_select_training_shape(
-        rlor_mgr,
-        base_model=base_model,
-        trainer_role="reference",
-        lora_rank=lora_rank,
-        max_seq_len=max_seq_len,
-    )
-    logger.info("Auto-selected reference training shape: %s", ref_training_shape_id)
-    return rlor_mgr.resolve_training_profile(ref_training_shape_id), ref_training_shape_id
+    return None, None
 
 
 def _strip_args(infra: InfraConfig, flags: set[str]) -> InfraConfig:
@@ -1367,6 +1387,7 @@ def _request_trainers(
     policy_job_id: str | None,
     reference_job_id: str | None,
     role_prefix: str,
+    needs_reference: bool,
     hot_load_deployment_id: str | None,
     cleanup: ResourceCleanup | None,
     on_status: Callable[[str], None],
@@ -1389,7 +1410,8 @@ def _request_trainers(
     )
 
     ref_handle = None
-    if ref_profile is not None:
+    create_separate_reference = needs_reference and (lora_rank == 0 or ref_profile is not None)
+    if create_separate_reference:
         on_status("provisioning reference trainer")
         # Reference trainer runs forward-only: strip --full-oom-check, which
         # triggers a backward warmup that OOMs on smaller reference shapes.
@@ -1397,12 +1419,9 @@ def _request_trainers(
             _strip_args(infra, {"--full-oom-check"}),
             trainer_replica_count=None,
         )
-        # Propagate lora_rank so the gateway infers the correct trainer_mode:
-        #   lora_rank > 0  -> LORA_TRAINER (matches LoRA-capable ref shape)
-        #   lora_rank == 0 -> FORWARD_ONLY (full-param base-weight forward)
-        # A forward-only LoRA ref still loads the adapter on top of base
-        # weights; the adapter is configured upstream and only the forward
-        # pass runs here.
+        # Propagate lora_rank so client/server LoRA configuration stays aligned.
+        # The backend shape selector owns the mapping from forward_only + lora_rank
+        # to a validated service-mode shape.
         ref_handle = request_trainer_job(
             rlor_mgr,
             base_model=base_model,

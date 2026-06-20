@@ -41,7 +41,6 @@ from training.utils import (
     RunnerIO,
     RunStatus,
     WandBConfig,
-    auto_select_training_shape,
     create_trainer_job,
     log_metrics_json,
     make_render_dataloader,
@@ -466,15 +465,15 @@ def main(
             "(trainer_job_id is set). The auto-selected training shape may not "
             "match the trainer's actual context length."
         )
-    if (
+    uses_manual_infra = (
         not cfg.infra.training_shape_id
         and (
-            cfg.infra.accelerator_type
+            cfg.infra.skip_validations
+            or cfg.infra.accelerator_type
             or cfg.infra.node_count
-            or cfg.infra.custom_image_tag
-            or cfg.infra.extra_args
         )
-    ):
+    )
+    if uses_manual_infra:
         # Manual infra path: caller has supplied explicit infra fields and
         # no validated training shape exists (e.g. a brand-new base model).
         # create_trainer_job supports this path; we just skip the shape
@@ -496,20 +495,15 @@ def main(
             cfg.max_seq_len,
             cfg.infra.extra_args,
         )
-    else:
-        if not cfg.infra.training_shape_id:
-            cfg.infra.training_shape_id = auto_select_training_shape(
-                rlor_mgr,
-                base_model=cfg.base_model,
-                trainer_role="policy",
-                lora_rank=cfg.lora_rank,
-                max_seq_len=cfg.max_seq_len,
-            )
-            logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
-
+    elif cfg.infra.training_shape_id:
         trainer_profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
         if cfg.max_seq_len is None:
             cfg.max_seq_len = trainer_profile.max_supported_context_length
+    else:
+        if cfg.max_seq_len is None:
+            cfg.max_seq_len = 32768
+        trainer_profile = None
+        logger.info("Training shape will be selected by backend trainer creation")
 
     runner.set_accelerator_info(profile=trainer_profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")

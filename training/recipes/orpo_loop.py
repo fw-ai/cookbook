@@ -57,7 +57,6 @@ from training.utils import (
     RunnerIO,
     RunStatus,
     WandBConfig,
-    auto_select_training_shape,
     build_renderer,
     create_trainer_job,
     load_preference_dataset,
@@ -243,21 +242,17 @@ def main(
             additional_headers=additional_headers,
         )
 
-    if not cfg.infra.training_shape_id:
-        cfg.infra.training_shape_id = auto_select_training_shape(
-            rlor_mgr,
-            base_model=cfg.base_model,
-            trainer_role="policy",
-            lora_rank=cfg.lora_rank,
-            max_seq_len=cfg.max_seq_len,
-        )
-        logger.info("Auto-selected training shape: %s", cfg.infra.training_shape_id)
-
-    profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
-    trainer_profile = profile
-
-    if cfg.max_seq_len is None:
-        cfg.max_seq_len = profile.max_supported_context_length
+    if cfg.infra.training_shape_id:
+        profile = rlor_mgr.resolve_training_profile(cfg.infra.training_shape_id)
+        trainer_profile = profile
+        if cfg.max_seq_len is None:
+            cfg.max_seq_len = profile.max_supported_context_length
+    else:
+        profile = None
+        trainer_profile = None
+        if cfg.max_seq_len is None:
+            cfg.max_seq_len = 32768
+        logger.info("Training shape will be selected by backend trainer creation")
 
     runner.set_accelerator_info(profile=profile)
     runner.write_status(RunStatus.PENDING, message="provisioning")

@@ -194,11 +194,6 @@ def test_main_raises_when_all_examples_are_filtered(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
-    monkeypatch.setattr(
-        module,
         "render_messages_to_datums",
         lambda *args, **kwargs: SimpleNamespace(token_ids=[1], token_weights=[1.0], datum={"id": "too-short"}),
     )
@@ -279,11 +274,6 @@ def test_main_reduces_batch_size_when_examples_fewer_than_batch_size(tmp_path, m
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(
-        module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
     monkeypatch.setattr(
         module,
         "render_messages_to_datums",
@@ -386,7 +376,6 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(module, "auto_select_training_shape", _record_auto_select)
     monkeypatch.setattr(
         module,
         "render_messages_to_datums",
@@ -419,10 +408,11 @@ def test_main_infers_documented_training_shape_for_supported_model(tmp_path, mon
     result = module.main(cfg, rlor_mgr=FakeMgr())
 
     assert result["steps"] == 1
-    assert cfg.max_seq_len == 48
-    assert cfg.infra.training_shape_id == "accounts/test/trainingShapes/sft"
-    assert len(events["selection_requests"]) == 1
-    assert events["created_config"].training_shape_ref == "accounts/test/trainingShapes/sft/versions/1"
+    assert cfg.max_seq_len == 32768
+    assert cfg.infra.training_shape_id is None
+    assert len(events["selection_requests"]) == 0
+    assert events["created_config"].auto_select_training_shape is True
+    assert events["created_config"].training_shape_ref is None
     assert events["created_config"].custom_image_tag is None
     assert events["created_config"].accelerator_type is None
     assert events["created_config"].accelerator_count is None
@@ -509,11 +499,6 @@ def test_main_uses_real_renderer_and_trains(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state(renderer=renderer))
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(
-        module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
     cfg = module.Config(
@@ -606,11 +591,6 @@ def test_each_batch_triggers_its_own_optim_step(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(
-        module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     def _fake_render(messages, **kwargs):
         content = messages[-1]["content"]
@@ -714,11 +694,6 @@ def test_main_resume_preserves_epoch_zero_batch_order(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
     monkeypatch.setattr(
         module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
-    monkeypatch.setattr(
-        module,
         "render_messages_to_datums",
         lambda messages, **kwargs: SimpleNamespace(
             token_ids=[1, 2],
@@ -818,11 +793,6 @@ def test_main_resume_uses_raw_row_cursor_when_filtering_shrinks_batches(tmp_path
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(
-        module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
     monkeypatch.setattr(module, "make_render_dataloader", lambda *args, **kwargs: raw_batches)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
 
@@ -911,11 +881,6 @@ def test_completed_status_reports_actual_steps_when_filtering_drops_raw_batches(
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(
-        module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
     monkeypatch.setattr(module, "make_render_dataloader", lambda *args, **kwargs: raw_batches)
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     _patch_resume(monkeypatch, None)
@@ -1055,11 +1020,6 @@ def test_eval_auto_carveout_splits_data_and_runs_eval(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(
-        module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(
         module,
@@ -1188,11 +1148,6 @@ def test_eval_auto_carveout_eval_set_is_stable_across_epochs(tmp_path, monkeypat
     monkeypatch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
-    monkeypatch.setattr(
-        module,
-        "auto_select_training_shape",
-        lambda *args, **kwargs: "accounts/test/trainingShapes/sft",
-    )
     monkeypatch.setattr(module, "ReconnectableClient", FakeClient)
     monkeypatch.setattr(
         module,

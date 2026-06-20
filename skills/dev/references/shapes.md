@@ -4,8 +4,8 @@ Shapes are the required entry point for both trainer and deployment. Never hand-
 
 ## Training shape
 
-By default, recipes auto-select the smallest validated training shape that can
-fit the configured model and context length:
+By default, backend trainer creation selects the smallest validated training
+shape that can fit the configured model and context length:
 
 ```python
 cfg.infra.training_shape_id = None
@@ -27,7 +27,7 @@ profile = rlor_mgr.resolve_training_profile(resolved_training_shape_id)
 # profile.accelerator_type, profile.node_count, ...  (read, do not copy to cfg)
 ```
 
-See `training/recipes/sft_loop.py` (search `auto_select_training_shape`) and `training/utils/infra.py` for the shared RL / DPO infra path.
+See `training/recipes/sft_loop.py` and `training/utils/infra.py` for the shared RL / DPO infra path.
 
 ## Deployment shape
 
@@ -42,11 +42,11 @@ That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123
 
 ## Reference-model shape (RL / DPO)
 
-For **full-parameter** training with a frozen reference, leave `ref_training_shape_id` unset to auto-select a compatible validated shape. Set it explicitly only when you need an override; it can share the same shape as the policy, and the control plane appends `--forward-only` automatically.
+For **full-parameter** training with a frozen reference, leave `ref_training_shape_id` unset so trainer creation selects a compatible LoRA-capable validated shape. Set it explicitly only when you need an override; it can share the same shape as the policy, and the control plane appends `--forward-only` automatically.
 
 For **LoRA** (`lora_rank > 0`), two valid options:
 - **Shared session (recommended, saves GPUs)**: leave `ref_training_shape_id` unset. `setup_infra` uses `policy.create_base_reference()` on the policy trainer for reference logprobs — no separate trainer, no extra GPUs.
-- **Separate LoRA-capable ref trainer**: set `ref_training_shape_id` to a `LORA_TRAINER` shape (typically the same as the policy shape). `setup_infra` provisions a forward-only LoRA ref trainer (its own GPUs) and forwards `lora_rank` to both the trainer request and the ref client so the gateway infers `trainer_mode=LORA_TRAINER` and matches the shape. CP's V2 DPO auto-resolver picks this path by default for LoRA DPO.
+- **Separate LoRA-capable ref trainer**: set `ref_training_shape_id` to a `LORA_TRAINER` shape (typically the same as the policy shape). `setup_infra` provisions a forward-only ref trainer (its own GPUs); the gateway matches `forwardOnly=true` against `trainer_mode=LORA_TRAINER`.
 
 The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 else <explicit shape>`.
 

@@ -143,7 +143,7 @@ class TrainArgs:
     )
     training_shape: str = field(default_factory=lambda: os.environ.get("TRAINING_SHAPE", ""))
     ref_training_shape: str | None = None
-    """Separate training shape for the forward-only reference model."""
+    """LoRA-capable training shape for the separate reference trainer."""
     deployment_id: str | None = None
     """Omit to auto-create a new deployment; set to reuse an existing one."""
     region: str = "US_OHIO_1"
@@ -160,9 +160,8 @@ class TrainArgs:
     max_completion_tokens: int = 30 * 1024
     prompt_groups_per_step: int = 32
     lora_rank: int = 0
-    """LoRA rank (0 = full-param).  When > 0, auto_select_training_shape
-    picks a LoRA training shape and the reference model reuses the policy
-    trainer (no extra GPUs)."""
+    """LoRA rank (0 = full-param).  Backend trainer creation selects a
+    LoRA-capable shape; LoRA references reuse the policy trainer (no extra GPUs)."""
     router_replay: bool = False
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files."""
@@ -190,7 +189,7 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--dataset-path")
     parser.add_argument("--training-shape")
     parser.add_argument("--ref-training-shape",
-                        help="Separate training shape for the forward-only reference model")
+                        help="LoRA-capable training shape for the separate reference trainer")
     parser.add_argument(
         "--deployment-id",
         help="Existing deployment ID to reuse; omit to auto-create",

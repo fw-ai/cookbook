@@ -128,6 +128,7 @@ def patch_sdk(monkeypatch):
                 "lora_rank": kwargs.get("lora_rank"),
                 "job_id_arg": kwargs.get("job_id"),
                 "trainer_replica_count": getattr(trainer_infra, "trainer_replica_count", None),
+                "profile": kwargs.get("profile"),
             }
         )
         return _trainer_handle(job_id)
@@ -140,11 +141,6 @@ def patch_sdk(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
     monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
     monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        infra_setup_mod, "auto_select_training_shape",
-        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
-    )
-
     return SimpleNamespace(trainer_calls=trainer_calls)
 
 
@@ -346,7 +342,7 @@ def test_setup_infra_dpo_full_param_provisions_separate_reference(patch_sdk):
     assert display_names == ["dpo-policy", "dpo-reference"]
     assert infra.reference_job_id == "ref-job"
     assert isinstance(infra.reference, _FakeClient)
-    # Full-param DPO: ref trainer + client both lora_rank=0 (FORWARD_ONLY shape).
+    # Full-param DPO: ref trainer + client both lora_rank=0; backend picks shape.
     ref_call = next(c for c in patch_sdk.trainer_calls if c["display_name"] == "dpo-reference")
     assert ref_call["forward_only"] is True
     assert ref_call["lora_rank"] == 0
@@ -388,7 +384,7 @@ def test_setup_infra_dpo_lora_propagates_lora_rank_to_reference(patch_sdk):
     auto-resolver picks a LORA_TRAINER shape for the ref of a LoRA DPO,
     so the cookbook must request the ref trainer with lora_rank>0 to
     match the shape; otherwise the CreateRlorTrainerJob call is rejected
-    with a 400 (trainer_mode=FORWARD_ONLY vs shape LORA_TRAINER).
+    with a 400 if the backend shape selector and request mode disagree.
     """
     rlor, _ = _make_mgrs()
     cfg = _make_cfg(lora_rank=8, ref_training_shape_id="shape-ref")
@@ -422,9 +418,10 @@ def test_setup_infra_dpo_lora_propagates_lora_rank_to_reference(patch_sdk):
 # ---------------------------------------------------------------------------
 
 
-def test_setup_infra_auto_selects_policy_shape_when_unset(patch_sdk):
+def test_setup_infra_delegates_policy_shape_to_backend_when_unset(patch_sdk):
     rlor, deploy = _make_mgrs()
     cfg = _make_cfg(training_shape_id=None)
+    cfg.deployment.deployment_shape = "accounts/test/deploymentShapes/ds/versions/v1"
 
     infra = setup_infra(
         rlor_mgr=rlor, deploy_mgr=deploy,
@@ -441,11 +438,13 @@ def test_setup_infra_auto_selects_policy_shape_when_unset(patch_sdk):
         role_prefix="grpo", api_key="key",
     )
 
-    assert infra.training_shape_id == "auto-policy"
-    assert infra.policy_profile is not None
+    assert infra.training_shape_id is None
+    assert infra.policy_profile is None
+    policy_call = next(c for c in patch_sdk.trainer_calls if c["display_name"] == "grpo-policy")
+    assert policy_call["profile"] is None
 
 
-def test_setup_infra_auto_selects_reference_shape_for_full_param_with_kl(patch_sdk):
+def test_setup_infra_delegates_full_param_reference_shape_to_backend(patch_sdk):
     rlor, deploy = _make_mgrs()
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id=None)
 
@@ -464,11 +463,15 @@ def test_setup_infra_auto_selects_reference_shape_for_full_param_with_kl(patch_s
         role_prefix="grpo", api_key="key",
     )
 
-    assert infra.ref_training_shape_id == "auto-reference"
+    assert infra.ref_training_shape_id is None
+    assert infra.reference_job_id == "ref-job"
+    ref_call = next(c for c in patch_sdk.trainer_calls if c["display_name"] == "grpo-reference")
+    assert ref_call["profile"] is None
+    assert ref_call["forward_only"] is True
 
 
 def test_setup_infra_does_not_auto_select_ref_for_lora(patch_sdk):
-    """LoRA path skips auto-select — uses shared session instead."""
+    """LoRA path skips separate reference — uses shared session instead."""
     rlor, deploy = _make_mgrs()
     cfg = _make_cfg(lora_rank=64, ref_training_shape_id=None)
 
@@ -561,11 +564,6 @@ def test_parallel_request_phase_precedes_wait_phase(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
     monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
     monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        infra_setup_mod, "auto_select_training_shape",
-        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
-    )
-
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
     setup_infra(
@@ -611,11 +609,6 @@ def test_parallel_wait_timing(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
     monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
     monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        infra_setup_mod, "auto_select_training_shape",
-        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
-    )
-
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
     setup_infra(
@@ -658,11 +651,6 @@ def test_failure_cleanup_registers_both_resources(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
     monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
     monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        infra_setup_mod, "auto_select_training_shape",
-        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
-    )
-
     rlor = MagicMock()
     rlor.resolve_training_profile.return_value = _profile()
     deploy = MagicMock()
@@ -712,11 +700,6 @@ def test_lora_shared_ref_no_ref_trainer_created(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
     monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
     monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        infra_setup_mod, "auto_select_training_shape",
-        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
-    )
-
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=64)
 
@@ -765,11 +748,6 @@ def test_reuse_path_policy_job_id_set(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
     monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: None)
     monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        infra_setup_mod, "auto_select_training_shape",
-        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
-    )
-
     rlor, deploy = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=0, policy_job_id="pre-created-policy")
 
@@ -808,11 +786,6 @@ def test_dpo_full_param_no_deployment(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "request_trainer_job", fake_request_trainer)
     monkeypatch.setattr(infra_setup_mod, "wait_trainer_job", fake_wait_trainer)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
-    monkeypatch.setattr(
-        infra_setup_mod, "auto_select_training_shape",
-        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
-    )
-
     rlor, _ = _make_mgrs(profile=_profile())
     cfg = _make_cfg(lora_rank=0, ref_training_shape_id="shape-ref")
 
@@ -859,11 +832,6 @@ def test_reattach_patch_issued_before_trainer_ready(monkeypatch):
     monkeypatch.setattr(infra_setup_mod, "_read_replica_identity", lambda *a, **kw: "old-pod-id")
     monkeypatch.setattr(infra_setup_mod, "_wait_for_reattach_settled", fake_settle)
     monkeypatch.setattr(infra_setup_mod, "ReconnectableClient", _FakeClient)
-    monkeypatch.setattr(
-        infra_setup_mod, "auto_select_training_shape",
-        lambda _rlor, **kw: f"auto-{kw['trainer_role']}",
-    )
-
     rlor, deploy = _make_mgrs(profile=_profile())
     # Existing live deployment → triggers re-attach path.
     deploy.get.return_value = SimpleNamespace(
