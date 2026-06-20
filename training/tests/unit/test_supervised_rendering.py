@@ -710,6 +710,15 @@ def test_resolve_renderer_name_prefers_deepseek_v4() -> None:
     assert resolve_renderer_name("custom/DeepSeekV4-finetune") == "deepseek_v4"
 
 
+def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
+    """GLM-5.x tokenizers should resolve to versioned GLM renderers."""
+    assert resolve_renderer_name("zai-org/GLM-5.1") == "glm5"
+    assert resolve_renderer_name("zai-org/GLM-5.1-FP8") == "glm5"
+    assert resolve_renderer_name("zai-org/GLM-5.2") == "glm_moe_dsa"
+    assert resolve_renderer_name("zai-org/GLM-5.2-FP8") == "glm_moe_dsa"
+    assert resolve_renderer_name("custom/glm-5p2-finetune") == "glm_moe_dsa"
+
+
 def test_build_renderer_resolves_minimax_m2(monkeypatch) -> None:
     """build_renderer should resolve minimax_m2 and dispatch to get_renderer."""
     calls: list[tuple[str, object]] = []

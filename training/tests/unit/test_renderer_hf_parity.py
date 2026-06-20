@@ -83,6 +83,20 @@ _CASES: list[_Case] = [
         messages=_MULTI_TURN_MSGS,
     ),
     _Case(
+        case_id="glm_moe_dsa-single-turn",
+        renderer="glm_moe_dsa",
+        tokenizer_model="zai-org/GLM-5.2",
+        messages=_SHORT_MSGS,
+        apply_chat_template_kwargs={"reasoning_effort": "max"},
+    ),
+    _Case(
+        case_id="glm_moe_dsa-multi-turn",
+        renderer="glm_moe_dsa",
+        tokenizer_model="zai-org/GLM-5.2",
+        messages=_MULTI_TURN_MSGS,
+        apply_chat_template_kwargs={"reasoning_effort": "max"},
+    ),
+    _Case(
         case_id="qwen3-thinking-single-turn",
         renderer="qwen3",
         tokenizer_model="Qwen/Qwen3-8B",
