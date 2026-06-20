@@ -379,7 +379,7 @@ recipe:
     assert cfg.dapo.eps_clip_high == 0.35
 
 
-def test_load_yaml_provision_hydrates_teacher_trainers_distillation(tmp_path: Path) -> None:
+def test_load_yaml_provision_hydrates_distillation_teacher_model(tmp_path: Path) -> None:
     config_path = tmp_path / "fireworks.yaml"
     config_path.write_text(
         """
@@ -389,13 +389,6 @@ common:
 trainers:
   policy:
     training_shape_id: accounts/test/trainingShapes/policy
-  math_teacher:
-    base_model: accounts/test/models/math-teacher
-    training_shape_id: accounts/test/trainingShapes/math-forward-only
-  code_teacher:
-    base_model: accounts/test/models/code-teacher
-    training_shape_id: accounts/test/trainingShapes/code-forward-only
-    region: us-central1
 deployments:
   rollout:
     tokenizer_model: Qwen/Test
@@ -405,9 +398,7 @@ recipe:
     trainer: policy
     deployment: rollout
     max_completion_tokens: 256
-    teacher_trainers:
-      - math_teacher
-      - code_teacher
+    teacher_model: accounts/test/models/math-teacher
 """,
         encoding="utf-8",
     )
@@ -416,17 +407,10 @@ recipe:
 
     assert mode == "distillation"
     assert cfg.max_completion_tokens == 256
-    assert [t.base_model for t in cfg.teacher_trainers] == [
-        "accounts/test/models/math-teacher",
-        "accounts/test/models/code-teacher",
-    ]
-    assert cfg.teacher_trainers[0].trainer.training_shape_id == (
-        "accounts/test/trainingShapes/math-forward-only"
-    )
-    assert cfg.teacher_trainers[1].trainer.region == "us-central1"
+    assert cfg.teacher_model == "accounts/test/models/math-teacher"
 
 
-def test_load_yaml_provision_requires_teacher_trainers_for_distillation(tmp_path: Path) -> None:
+def test_load_yaml_provision_requires_distillation_teacher_model(tmp_path: Path) -> None:
     config_path = tmp_path / "fireworks.yaml"
     config_path.write_text(
         """
@@ -448,7 +432,7 @@ recipe:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="teacher_trainers"):
+    with pytest.raises(ValueError, match="teacher_model"):
         module._load_yaml_provision(mode=None, recipe="distillation_no_teacher", path=config_path)
 
 

@@ -123,6 +123,7 @@ RENDERER_TOKENIZER_DEFAULTS: dict[str, str | None] = {
     # cookbook-local (training/renderer/)
     "gemma4":      "google/gemma-4-E2B-it",
     "glm5":        "zai-org/GLM-5.1",
+    "glm_moe_dsa":      "zai-org/GLM-5.2",
     "minimax_m2":  "MiniMaxAI/MiniMax-M2",
     "nemotron":    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
 }

@@ -384,7 +384,12 @@ async def _train_loop(
     pipe: asyncio.Queue = asyncio.Queue()
     sem = asyncio.Semaphore(cfg.ref_cache_concurrency)
 
-    def _run_train_step(epoch: int, step_pairs: list[dict[str, Any]]) -> None:
+    def _run_train_step(
+        epoch: int,
+        step_pairs: list[dict[str, Any]],
+        *,
+        data_consumed: int | None = None,
+    ) -> None:
         nonlocal step
         step_t0 = time.monotonic()
         step_tokens = sum(
@@ -418,7 +423,9 @@ async def _train_loop(
                     f"step-{step}",
                     resumable=True,
                     promotable=False,
-                    data_consumed=cursor.value,
+                    data_consumed=(
+                        cursor.value if data_consumed is None else data_consumed
+                    ),
                 )
 
         step_elapsed = time.monotonic() - step_t0
@@ -494,7 +501,11 @@ async def _train_loop(
         batches_consumed = 0
         pending_pairs: list[dict[str, Any]] = []
 
-        async def _emit_enriched(chunk: list[dict[str, Any]]) -> None:
+        async def _emit_enriched(
+            chunk: list[dict[str, Any]],
+            *,
+            data_consumed: int,
+        ) -> None:
             nonlocal pairs_per_epoch
             enriched = await _ref_forward_batch(
                 chunk, reference, sem, cfg.ref_cache_batch_size,
@@ -503,7 +514,7 @@ async def _train_loop(
             if multi_epoch:
                 for pair in enriched:
                     ref_cache_log.append(pair)
-            await pipe.put(enriched)
+            await pipe.put((enriched, data_consumed))
 
         while True:
             batch = await asyncio.to_thread(next, loader_iter, sentinel)
@@ -537,12 +548,15 @@ async def _train_loop(
                     break
             pending_pairs.extend(batch)
             while len(pending_pairs) >= batch_size:
-                await _emit_enriched(pending_pairs[:batch_size])
+                await _emit_enriched(
+                    pending_pairs[:batch_size],
+                    data_consumed=cursor.value,
+                )
                 pending_pairs = pending_pairs[batch_size:]
             if cfg.max_pairs is not None and pairs_per_epoch + len(pending_pairs) >= cfg.max_pairs:
                 break
         if pending_pairs:
-            await _emit_enriched(pending_pairs)
+            await _emit_enriched(pending_pairs, data_consumed=cursor.value)
         await pipe.put(_DONE)
 
     async def _trainer() -> None:
@@ -550,7 +564,13 @@ async def _train_loop(
             item = await pipe.get()
             if item is _DONE:
                 break
-            await asyncio.to_thread(_run_train_step, 0, item)
+            step_pairs, data_consumed = item
+            await asyncio.to_thread(
+                _run_train_step,
+                0,
+                step_pairs,
+                data_consumed=data_consumed,
+            )
             pbar.update(1)
 
     producer = asyncio.create_task(_ref_producer())

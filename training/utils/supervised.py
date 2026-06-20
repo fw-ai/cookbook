@@ -117,10 +117,13 @@ def resolve_renderer_name(
         or "deepseekv4" in normalized_model_name
     ):
         return "deepseek_v4"
+    # ZhipuAI GLM-5.2 keeps GLM-5 role/tool tags, but its shipped template
+    # adds a default Reasoning Effort system prefix and slightly different
+    # stripped-thinking blocks. Route it to the dedicated variant.
+    if "glm-5p2" in normalized_model_name or "glm-5.2" in normalized_model_name:
+        return "glm_moe_dsa"
     # ZhipuAI GLM-5.1 chat template (`[gMASK]<sop>`, `<|user|>`,
-    # `<|assistant|>`, `<think>...</think>`, `<|endoftext|>`). Validated
-    # end-to-end via SFT training. Other GLM versions are out of scope;
-    # opt in explicitly with `renderer_name="glm5"` if you want to try.
+    # `<|assistant|>`, `<think>...</think>`, `<|endoftext|>`).
     if (
         "glm-5p1" in normalized_model_name
         or "glm-5.1" in normalized_model_name

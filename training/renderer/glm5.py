@@ -1,4 +1,4 @@
-"""Renderer for ZhipuAI GLM-5.1 chat template.
+"""Renderers for ZhipuAI GLM-5.x chat templates.
 
 Handles the GLM-5.1 chat format as shipped with ``zai-org/GLM-5.1``
 (and its FP8 variant ``zai-org/GLM-5.1-FP8``, which ships an identical
@@ -69,6 +69,12 @@ contribute to loss):
 - ``arguments`` is the JSON-string form Tinker's ``ToolCall`` schema uses;
   string values are emitted raw, anything else is JSON-encoded with
   ``ensure_ascii=False`` (matches the shipped Jinja's ``v | tojson`` branch).
+
+GLM-5.2 reuses the same role tags, stop tags, and tool-call layout, but its
+upstream template injects a default ``Reasoning Effort: Max`` system line and
+uses ``<think></think>`` for stripped historical reasoning. The
+``glm_moe_dsa`` renderer id selects that template variant while sharing the
+same renderer implementation.
 
 Multimodal content is left for a future extension.
 """
@@ -245,6 +251,9 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
     ``apply_chat_template`` produces for the same prefix.
     """
 
+    _initial_prompt_text = ""
+    _historical_stripped_think_block = "</think>"
+
     def __init__(self, tokenizer: Tokenizer) -> None:
         super().__init__(tokenizer)
 
@@ -272,6 +281,15 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
     @property
     def _think_open_token(self) -> int:
         return self._encode_single_special("<think>")
+
+    @property
+    def _initial_prompt_tokens(self) -> list[int]:
+        if not self._initial_prompt_text:
+            return []
+        return self.tokenizer.encode(
+            self._initial_prompt_text,
+            add_special_tokens=False,
+        )
 
     def get_stop_sequences(self) -> list[int]:
         return [self._user_token, self._observation_token]
@@ -408,6 +426,15 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             model_input_chunks_weights.append(
                 (tinker.types.EncodedTextChunk(tokens=self._bos_tokens), 0.0)
             )
+        if self._initial_prompt_tokens:
+            model_input_chunks_weights.append(
+                (
+                    tinker.types.EncodedTextChunk(
+                        tokens=self._initial_prompt_tokens
+                    ),
+                    0.0,
+                )
+            )
 
         last_user_idx = max(
             (idx for idx, message in enumerate(messages) if message["role"] == "user"),
@@ -475,6 +502,61 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         model_input_chunks = [chunk for chunk, _ in model_input_chunks_weights]
         return tinker.ModelInput(chunks=model_input_chunks), weights_tensor
 
+    def build_generation_prompt(
+        self,
+        messages: list[Message],
+        role: Role = "assistant",
+        prefill: str | None = None,
+    ) -> tinker.ModelInput:
+        chunks: list[tinker.ModelInputChunk] = []
+        if self._bos_tokens:
+            chunks.append(tinker.types.EncodedTextChunk(tokens=self._bos_tokens))
+        if self._initial_prompt_tokens:
+            chunks.append(
+                tinker.types.EncodedTextChunk(tokens=self._initial_prompt_tokens)
+            )
+
+        last_user_idx = max(
+            (idx for idx, message in enumerate(messages) if message["role"] == "user"),
+            default=-1,
+        )
+
+        for idx, message in enumerate(messages):
+            ctx = RenderContext(
+                idx=idx,
+                is_last=(idx == len(messages) - 1),
+                prev_message=messages[idx - 1] if idx > 0 else None,
+                last_user_index=last_user_idx,
+            )
+            rendered_message = self.render_message(message, ctx)
+            if rendered_message.header:
+                chunks.append(rendered_message.header)
+            chunks.extend(
+                [
+                    output
+                    for output in rendered_message.output
+                    if not isinstance(output, tinker.EncodedTextChunk) or output.tokens
+                ]
+            )
+
+        suffix_ctx = RenderContext(
+            idx=len(messages),
+            is_last=True,
+            prev_message=messages[-1] if messages else None,
+            last_user_index=last_user_idx,
+        )
+        suffix_tokens = self._get_generation_suffix(role, suffix_ctx)
+        if suffix_tokens:
+            chunks.append(tinker.types.EncodedTextChunk(tokens=suffix_tokens))
+
+        if prefill:
+            chunks.append(
+                tinker.types.EncodedTextChunk(
+                    tokens=self.tokenizer.encode(prefill, add_special_tokens=False)
+                )
+            )
+        return tinker.ModelInput(chunks=chunks)
+
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
         role = message["role"]
         if role == "assistant":
@@ -523,21 +605,10 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
 
         reasoning, visible = _extract_reasoning_and_text(message["content"])
 
-        # Match the shipped HF chat template thinking-block logic:
-        #
-        # 1. Historical turn with strip_thinking=True:
-        #    always ``</think>`` (drops any reasoning).
-        # 2. Historical turn (always stripped to match HF
-        #    ``apply_chat_template`` default): ``</think>``.
-        # 3. Terminal turn with reasoning: ``<think>{reasoning}</think>``.
-        # 4. Terminal turn without reasoning (thinking-mode default):
-        #    ``<think></think>``.
-        if before_last_user:
-            think_block = "</think>"
-        elif reasoning:
-            think_block = f"<think>{reasoning.strip()}</think>"
-        else:
-            think_block = "<think></think>"
+        think_block = self._assistant_think_block(
+            before_last_user=before_last_user,
+            reasoning=reasoning,
+        )
 
         visible_stripped = visible.strip()
         output_str = think_block + visible_stripped
@@ -561,6 +632,21 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 self._assistant_stop_overlap(message) if ctx.is_last else None
             ),
         )
+
+    def _assistant_think_block(
+        self,
+        *,
+        before_last_user: bool,
+        reasoning: str,
+    ) -> str:
+        # Historical turns strip reasoning using the renderer family's collapse
+        # marker; terminal turns either preserve reasoning or emit an empty
+        # think block.
+        if before_last_user:
+            return self._historical_stripped_think_block
+        if reasoning:
+            return f"<think>{reasoning.strip()}</think>"
+        return "<think></think>"
 
     def _get_generation_suffix(self, role: Role, ctx: RenderContext) -> list[int]:
         del ctx
@@ -603,9 +689,25 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         return assistant_message, True
 
 
+class GLMMoeDsaRenderer(GLM5Renderer):
+    """Renderer for GLM-5.2 / ``glm_moe_dsa`` chat-template differences."""
+
+    _initial_prompt_text = "<|system|>Reasoning Effort: Max"
+    _historical_stripped_think_block = "<think></think>"
+
+
 def _glm5_factory(tokenizer: Tokenizer, image_processor=None) -> GLM5Renderer:
     del image_processor
     return GLM5Renderer(tokenizer)
 
 
+def _glm_moe_dsa_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLMMoeDsaRenderer:
+    del image_processor
+    return GLMMoeDsaRenderer(tokenizer)
+
+
 register_renderer("glm5", _glm5_factory)
+register_renderer("glm_moe_dsa", _glm_moe_dsa_factory)

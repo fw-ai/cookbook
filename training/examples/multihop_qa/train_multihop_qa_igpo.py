@@ -58,7 +58,7 @@ from training.utils import (
     build_datum_from_token_mask,
 )
 from training.utils.rl import PromptGroup
-from training.utils.rl.train import TrainStepFns, run_rl_loop
+from training.train_loop import TrainStepFns, run_batched_training_loop
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.igpo import (
@@ -796,7 +796,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                 wandb_log(loop_metrics, step=_wandb_step[0])
 
             global_step = asyncio.run(
-                run_rl_loop(
+                run_batched_training_loop(
                     sample_fns=(
                         sample_one_prompt(row) for row in all_prompts
                     ),

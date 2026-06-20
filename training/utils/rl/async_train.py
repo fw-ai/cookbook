@@ -35,7 +35,7 @@ from training.utils.rl.rollout.group_assembler import (
     RowResolution,
 )
 from training.utils.rl.rollout.types import RolloutRun
-from training.utils.rl.train import DynamicFilterFn, TrainStepFns
+from training.train_loop import DynamicFilterFn, TrainStepFns
 
 logger = logging.getLogger(__name__)
 

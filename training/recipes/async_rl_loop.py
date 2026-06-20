@@ -84,7 +84,7 @@ from training.utils.rl.losses import (
 )
 from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics, total_target_tokens
 from training.utils.rl.tis import TISConfig
-from training.utils.rl.train import DynamicFilterFn, TrainStepFns
+from training.train_loop import DynamicFilterFn, TrainStepFns
 from training.utils.rl.rollout import RolloutRun
 from training.utils.runner_state import (
     estimate_async_total_steps,

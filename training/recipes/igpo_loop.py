@@ -62,7 +62,7 @@ from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
-from training.utils.rl.train import TrainStepFns, raw_rows_from_stats, run_rl_loop
+from training.train_loop import TrainStepFns, raw_rows_from_stats, run_batched_training_loop
 from training.utils.rl.losses import (
     PolicyLoss,
     combine_prompt_groups,
@@ -726,7 +726,7 @@ def main(
 
         with runner:
             global_step = asyncio.run(
-                run_rl_loop(
+                run_batched_training_loop(
                     sample_fns=(sample_one_prompt(row) for row in remaining_rows),
                     train_fns=train_fns,
                     prompt_groups_per_step=prompt_groups_per_step,
