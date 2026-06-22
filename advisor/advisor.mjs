@@ -53,13 +53,16 @@ function parseArgs(argv) {
   return out;
 }
 
-// Ground truth: the working git diff at cwd. Returns "" outside a git repo.
+// Ground truth: the working git diff at cwd. The diff is what this tool is built
+// around, so if it can't be read — missing git, not a repo, or a diff larger than
+// execFileSync's 1MB default — warn loudly instead of silently dropping it.
 function worktree() {
-  const git = (a) => execFileSync("git", a, { encoding: "utf8", timeout: 15000 });
+  const git = (a) => execFileSync("git", a, { encoding: "utf8", timeout: 15000, maxBuffer: 64 * 1024 * 1024 });
   try {
     return `## git status\n${git(["status", "--porcelain"]).trimEnd() || "(clean)"}\n\n` +
            `## git diff HEAD\n${git(["diff", "HEAD", "--no-color"]).trimEnd() || "(none)"}`;
-  } catch {
+  } catch (e) {
+    console.error(`advisor: WARNING — no git diff attached (${e.message.split("\n")[0].slice(0, 140)}); reviewing without it.`);
     return "";
   }
 }
