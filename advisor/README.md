@@ -98,14 +98,6 @@ where your harness reads project instructions:
 Keep it to **one review before finishing** — in our ablations, consulting the
 advisor more (e.g. a planning call too) didn't improve results and cost more.
 
-## Choosing the reviewer model
-
-The advisor talks to any Anthropic-compatible `/v1/messages` endpoint, so you can
-swap the reviewer — but it should be a **frontier** model. Pointing it at the same
-(or a weaker) model than your worker gave little lift in our tests; the gains come
-from the reviewer being genuinely stronger. Claude Opus is the default and the
-report's headline reviewer.
-
 ## What it sends
 
 For full transparency, each call sends the reviewer: your `<question>` and
