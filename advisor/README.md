@@ -41,10 +41,18 @@ API key:
 3. Click **Create API Key**, give it a name, and copy it (Fireworks shows the full
    key only once). It looks like `fw_...`.
 
-Then point your harness's Anthropic-compatible base URL at
-`https://api.fireworks.ai/inference` and its model at
-`accounts/fireworks/models/glm-5p2`, using that `fw_` key. This is your cheap,
-fast worker.
+Then route your agent through Fireworks GLM-5.2. Fireworks serves an
+Anthropic-compatible endpoint, so for Claude Code that's three env vars:
+
+```bash
+export ANTHROPIC_BASE_URL=https://api.fireworks.ai/inference
+export ANTHROPIC_API_KEY=fw_...                              # your Fireworks key
+export ANTHROPIC_MODEL=accounts/fireworks/models/glm-5p2
+```
+
+Other harnesses (Codex, Cursor, …) have their own base-URL / key / model settings —
+point them at the same endpoint and model. This `fw_` key powers the **worker**;
+it's separate from the **advisor's** Anthropic key in the next step.
 
 ## 2. Advisor — add the frontier reviewer (Claude)
 
