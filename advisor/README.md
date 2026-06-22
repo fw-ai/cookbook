@@ -84,3 +84,5 @@ where your harness reads project instructions:
 
 Keep it to **one review before finishing** — in our ablations, consulting the
 advisor more (e.g. a planning call too) didn't improve results and cost more.
+
+That's it — your agent now has an advisor to talk to. 🎉
