@@ -86,7 +86,12 @@ async function review({ question, files }) {
     .join("\n");
 
   const body = { model: MODEL, max_tokens: 8192, system: SYSTEM_PROMPT, messages: [{ role: "user", content: userMessage }] };
-  if (/^claude/i.test(MODEL)) body.thinking = { type: "adaptive" }; // Anthropic-only field
+  // Adaptive thinking + medium effort are Anthropic-only fields (the benchmarked
+  // setting); skip them for non-Claude reviewers, which reject them.
+  if (/^claude/i.test(MODEL)) {
+    body.thinking = { type: "adaptive" };
+    body.output_config = { effort: "medium" };
+  }
 
   const res = await fetch(`${BASE_URL}/v1/messages`, {
     method: "POST",
