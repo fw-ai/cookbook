@@ -78,12 +78,6 @@ not your Fireworks worker.
 Tell your agent (the GLM-5.2 worker) *when* to call the advisor — add one line
 where your harness reads project instructions:
 
-| Agent | File |
-|---|---|
-| Claude Code | `CLAUDE.md` |
-| Codex · OpenCode | `AGENTS.md` |
-| Cursor | `.cursor/rules/advisor.md` |
-
 > Before declaring any non-trivial change complete, run
 > `node advisor.mjs review` with a focused `--question`, fix any **critical**
 > issues it raises, then re-run your tests. Skip it for trivial edits.
