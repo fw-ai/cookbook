@@ -53,6 +53,7 @@ class RunStatus(str, Enum):
 
 
 _GRPC_OK = 0
+_GRPC_INVALID_ARGUMENT = 3
 _GRPC_FAILED_PRECONDITION = 9
 _JOB_PROGRESS_TYPE_URL = "type.googleapis.com/gateway.JobProgress"
 
@@ -62,6 +63,20 @@ _STATUS_TO_GRPC_CODE: dict[RunStatus, int] = {
     RunStatus.COMPLETED: _GRPC_OK,
     RunStatus.FAILED: _GRPC_FAILED_PRECONDITION,
 }
+
+
+class UserConfigError(Exception):
+    """Base class for user-actionable configuration errors raised inside a recipe.
+
+    When a recipe raises one of these inside a ``RunnerIO`` context, the runner
+    records the failure as ``INVALID_ARGUMENT`` (user-fixable) instead of the
+    generic ``FAILED_PRECONDITION``, so the control plane preserves the
+    actionable message and category (FIR2-1774).
+    """
+
+
+class WandbConfigError(UserConfigError):
+    """Raised when Weights & Biases auth/config is invalid (bad key, entity, or project)."""
 
 
 @dataclass
@@ -124,11 +139,17 @@ class RunnerIO:
 
     def __exit__(self, exc_type: object, exc_val: object, tb: object) -> bool:
         if exc_type is not None:
+            # User-config errors (bad W&B credentials, etc.) are user-actionable;
+            # surface them as INVALID_ARGUMENT instead of the generic
+            # FAILED_PRECONDITION so the control plane preserves the actionable
+            # message and category (FIR2-1774).
+            error_code = _GRPC_INVALID_ARGUMENT if isinstance(exc_val, UserConfigError) else None
             self.write_status(
                 RunStatus.FAILED,
                 step=self._last_step,
                 total_steps=self._last_total_steps,
                 error=str(exc_val),
+                error_code=error_code,
             )
             self.write_metadata()
         return False  # never suppress the exception
@@ -143,12 +164,13 @@ class RunnerIO:
         total_steps: int = 0,
         message: str = "",
         error: str | None = None,
+        error_code: int | None = None,
     ) -> None:
         self._last_step = step
         self._last_total_steps = total_steps
         if not self._status_file:
             return
-        grpc_code = _STATUS_TO_GRPC_CODE.get(status, _GRPC_OK)
+        grpc_code = error_code if error_code is not None else _STATUS_TO_GRPC_CODE.get(status, _GRPC_OK)
         status_message = error or message or status.value
         payload: dict[str, Any] = {
             "code": grpc_code,
