@@ -6,22 +6,24 @@
 // Run it from inside your project repo (your agent runs this, or you do):
 //   node advisor.mjs review --question "..." [--focus "..."] [--files a.ts,b.ts]
 //
-// Configure the reviewer (defaults to Fireworks serverless inference):
-//   ADVISOR_API_KEY    Fireworks API key, fw_...                    [required]
-//   ADVISOR_BASE_URL   Anthropic-compatible endpoint   [default: Fireworks serverless]
-//   ADVISOR_MODEL      reviewer model                  [default: a strong Fireworks model]
+// The ADVISOR is the reviewer — a FRONTIER model (Claude), which the report
+// found gives the clearest lift. These vars configure the reviewer:
+//   ADVISOR_API_KEY    Anthropic API key, sk-ant-...                [required]
+//   ADVISOR_BASE_URL   Anthropic-compatible endpoint   [default: api.anthropic.com]
+//   ADVISOR_MODEL      reviewer model                  [default: claude-opus-4-8]
 //
-// To use a frontier reviewer instead (the report's headline setup), point
-// ADVISOR_BASE_URL at https://api.anthropic.com with an Anthropic key and
-// ADVISOR_MODEL=claude-opus-4-8. See README.md.
+// The reviewer is SEPARATE from your worker model. Run your coding agent on a
+// Fireworks open model (e.g. GLM-5.2) — cheap and fast — and have it consult
+// this frontier reviewer. Your worker's Fireworks key lives in your agent
+// harness, not here. See README.md.
 
 import { readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import process from "node:process";
 
 const API_KEY = process.env.ADVISOR_API_KEY;
-const BASE_URL = (process.env.ADVISOR_BASE_URL || "https://api.fireworks.ai/inference").replace(/\/+$/, "");
-const MODEL = process.env.ADVISOR_MODEL || "accounts/fireworks/models/glm-5p2";
+const BASE_URL = (process.env.ADVISOR_BASE_URL || "https://api.anthropic.com").replace(/\/+$/, "");
+const MODEL = process.env.ADVISOR_MODEL || "claude-opus-4-8";
 
 // ---------------------------------------------------------------------------
 // The system prompt IS the design: a skeptic, not a cheerleader. It distrusts
@@ -130,7 +132,7 @@ async function review({ question, focus, files, context }) {
 
 async function main() {
   if (!API_KEY) {
-    console.error("advisor not configured - set ADVISOR_API_KEY (your Fireworks key). See README.md.");
+    console.error("advisor not configured - set ADVISOR_API_KEY (your Anthropic key for the Claude reviewer). See README.md.");
     process.exit(2);
   }
   const args = parseArgs(process.argv.slice(3)); // argv[2] is the subcommand "review"

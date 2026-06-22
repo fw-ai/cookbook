@@ -5,10 +5,19 @@ second opinion** before it finishes. Your agent does the work; the advisor reads
 the **working git diff** and returns scored issues + fixes. It cannot edit files.
 
 This is the harness from our report **"Open-source agents with a frontier
-reviewer"** ([Fireworks blog](https://fireworks.ai/blog)) — an open-source worker
-model checked by a stronger reviewer matched frontier-only quality at a fraction
-of the cost. Here it's packaged as **one file** (`advisor.mjs`) you can drop into
-your own agent, using **Fireworks serverless inference** for the reviewer.
+reviewer"** ([Fireworks blog](https://fireworks.ai/blog)). The result: a cheap
+**open-source worker on Fireworks** (e.g. GLM-5.2), checked by a **frontier
+reviewer** (Claude), matches frontier-only quality at a fraction of the cost.
+
+**Two models, two roles:**
+
+| Role | Model | Runs on | Key |
+|---|---|---|---|
+| **Worker** (does the task) | open-source, e.g. **GLM-5.2** | **Fireworks** serverless | `fw_...` (in your agent harness) |
+| **Advisor** (reviews the diff) | **frontier, Claude Opus** | Anthropic | `sk-ant-...` (this tool, `ADVISOR_API_KEY`) |
+
+The advisor must be the **stronger** model — that's the finding. This tool only
+sets up the advisor; your worker is configured in your own agent.
 
 ## How it works
 
@@ -24,25 +33,30 @@ That calibrated, evidence-gated prompt (the full text is `SYSTEM_PROMPT` in
 `advisor.mjs`) is what makes it useful instead of noisy. It's anchored on the
 diff, so it works the same in **any** harness.
 
-## 1. Setup
+## 1. Worker — run your agent on Fireworks (GLM-5.2)
 
-You need [Node.js](https://nodejs.org) (18+) and a **Fireworks API key**
-([get one](https://app.fireworks.ai)). Point the advisor at Fireworks serverless
-inference:
+Point your coding agent's model at a Fireworks open model. With
+[FireConnect](https://github.com/fw-ai/fireconnect) this is one command; or set
+your harness's Anthropic-compatible base URL to `https://api.fireworks.ai/inference`
+and model to `accounts/fireworks/models/glm-5p2`, with your Fireworks `fw_` key.
+This is your cheap, fast worker.
 
-```bash
-export ADVISOR_API_KEY=fw_...                                  # your Fireworks key
-export ADVISOR_BASE_URL=https://api.fireworks.ai/inference     # (this is the default)
-export ADVISOR_MODEL=accounts/fireworks/models/glm-5p2         # the reviewer model
-```
+## 2. Advisor — add the frontier reviewer (Claude)
 
-Grab the one file:
+You need [Node.js](https://nodejs.org) 18+ and an **Anthropic API key** (the
+reviewer is Claude). Grab the one file and set the key:
 
 ```bash
 curl -O https://raw.githubusercontent.com/fw-ai/cookbook/main/advisor/advisor.mjs
+
+export ADVISOR_API_KEY=sk-ant-...        # Anthropic key for the Claude reviewer
+# defaults: ADVISOR_BASE_URL=https://api.anthropic.com, ADVISOR_MODEL=claude-opus-4-8
 ```
 
-## 2. Try it standalone
+`ADVISOR_API_KEY` is the **advisor's** key — it pays for the Claude review calls,
+not your Fireworks worker.
+
+## 3. Try it standalone
 
 From inside any git repo with uncommitted changes:
 
@@ -53,18 +67,10 @@ node advisor.mjs review --question "are there race conditions in the token refre
 It prints a ~300-word critique: critical issues (≥80 confidence) → suggested
 fixes → low-confidence notes → what it could and couldn't verify.
 
-## 3. Wire it into your agent
+## 4. Wire it into your agent
 
-Two steps — give the agent the command, and tell it *when* to use it.
-
-**Command** the agent runs (from the repo root):
-
-```bash
-node advisor.mjs review --question "<what to check>" --files "<key files>"
-```
-
-**Nudge** — add one line to your agent's instructions so it actually calls the
-advisor. Put it where your harness reads project instructions:
+Tell your agent (the GLM-5.2 worker) *when* to call the advisor — add one line
+where your harness reads project instructions:
 
 | Agent | File |
 |---|---|
@@ -81,18 +87,11 @@ advisor more (e.g. a planning call too) didn't improve results and cost more.
 
 ## Choosing the reviewer model
 
-The advisor talks to any Anthropic-compatible `/v1/messages` endpoint, so the
-reviewer is your choice:
-
-| Reviewer | Set | Notes |
-|---|---|---|
-| **Fireworks serverless** (default) | `ADVISOR_MODEL=accounts/fireworks/models/<model>` | one key, all-Fireworks. Use a **large, capable** model — the reviewer should be at least as strong as your worker. |
-| **Frontier (Opus)** | `ADVISOR_BASE_URL=https://api.anthropic.com`, `ADVISOR_MODEL=claude-opus-4-8`, `ADVISOR_API_KEY=sk-ant-...` | the report's headline setup — the strongest results. |
-
-**Tip:** the advisor helps most when the *reviewer is stronger than the worker*.
-Pointing a model at its own output (same model as worker and reviewer) gave little
-lift in our tests — pick a bigger reviewer, or the frontier option, for the
-clearest gains.
+The advisor talks to any Anthropic-compatible `/v1/messages` endpoint, so you can
+swap the reviewer — but it should be a **frontier** model. Pointing it at the same
+(or a weaker) model than your worker gave little lift in our tests; the gains come
+from the reviewer being genuinely stronger. Claude Opus is the default and the
+report's headline reviewer.
 
 ## What it sends
 
