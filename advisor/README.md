@@ -84,10 +84,3 @@ where your harness reads project instructions:
 
 Keep it to **one review before finishing** — in our ablations, consulting the
 advisor more (e.g. a planning call too) didn't improve results and cost more.
-
-## What it sends
-
-For full transparency, each call sends the reviewer: your `<question>` and
-`<focus>`, any `<sources>` you pass via `--files`, optional `<context>` (e.g. a
-short note on what you did), and the `<worktree>` — `git status` + `git log` +
-`git diff HEAD`. Nothing else. Read `advisor.mjs` end to end in two minutes.
