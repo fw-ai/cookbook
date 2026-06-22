@@ -32,11 +32,19 @@ diff, so it works the same in **any** harness.
 
 ## 1. Worker — run your agent on Fireworks (GLM-5.2)
 
-Point your coding agent's model at a Fireworks open model. With
-[FireConnect](https://github.com/fw-ai/fireconnect) this is one command; or set
-your harness's Anthropic-compatible base URL to `https://api.fireworks.ai/inference`
-and model to `accounts/fireworks/models/glm-5p2`, with your Fireworks `fw_` key.
-This is your cheap, fast worker.
+Point your coding agent's model at a Fireworks open model. First, get a Fireworks
+API key:
+
+1. Sign up or log in at [app.fireworks.ai](https://app.fireworks.ai) and verify
+   your account.
+2. Open your profile menu → **Settings** → **API Keys**.
+3. Click **Create API Key**, give it a name, and copy it (Fireworks shows the full
+   key only once). It looks like `fw_...`.
+
+Then point your harness's Anthropic-compatible base URL at
+`https://api.fireworks.ai/inference` and its model at
+`accounts/fireworks/models/glm-5p2`, using that `fw_` key. This is your cheap,
+fast worker.
 
 ## 2. Advisor — add the frontier reviewer (Claude)
 
