@@ -16,9 +16,6 @@ reviewer** (Claude), matches frontier-only quality at a fraction of the cost.
 | **Worker** (does the task) | open-source, e.g. **GLM-5.2** | **Fireworks** serverless | `fw_...` (in your agent harness) |
 | **Advisor** (reviews the diff) | **frontier, Claude Opus** | Anthropic | `sk-ant-...` (this tool, `ADVISOR_API_KEY`) |
 
-The advisor must be the **stronger** model — that's the finding. This tool only
-sets up the advisor; your worker is configured in your own agent.
-
 ## How it works
 
 One model call with one carefully-worded prompt. The whole design is that the
