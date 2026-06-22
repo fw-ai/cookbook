@@ -73,18 +73,7 @@ export ADVISOR_API_KEY=sk-ant-...        # Anthropic key for the Claude reviewer
 `ADVISOR_API_KEY` is the **advisor's** key — it pays for the Claude review calls,
 not your Fireworks worker.
 
-## 3. Try it standalone
-
-From inside any git repo with uncommitted changes:
-
-```bash
-node advisor.mjs review --question "are there race conditions in the token refresh?"
-```
-
-It prints a ~300-word critique: critical issues (≥80 confidence) → suggested
-fixes → low-confidence notes → what it could and couldn't verify.
-
-## 4. Wire it into your agent
+## 3. Wire it into your agent
 
 Tell your agent (the GLM-5.2 worker) *when* to call the advisor — add one line
 where your harness reads project instructions:
