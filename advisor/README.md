@@ -41,18 +41,22 @@ API key:
 3. Click **Create API Key**, give it a name, and copy it (Fireworks shows the full
    key only once). It looks like `fw_...`.
 
-Then route your agent through Fireworks GLM-5.2. Fireworks serves an
-Anthropic-compatible endpoint, so for Claude Code that's three env vars:
+GLM-5.2 is served at `accounts/fireworks/models/glm-5p2`. A call looks like:
 
 ```bash
-export ANTHROPIC_BASE_URL=https://api.fireworks.ai/inference
-export ANTHROPIC_API_KEY=fw_...                              # your Fireworks key
-export ANTHROPIC_MODEL=accounts/fireworks/models/glm-5p2
+curl https://api.fireworks.ai/inference/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $FIREWORKS_API_KEY" \
+  -d '{
+    "model": "accounts/fireworks/models/glm-5p2",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
 ```
 
-Other harnesses (Codex, Cursor, …) have their own base-URL / key / model settings —
-point them at the same endpoint and model. This `fw_` key powers the **worker**;
-it's separate from the **advisor's** Anthropic key in the next step.
+Wire that into your coding agent however your harness configures its model (see the
+[Fireworks quickstart](https://docs.fireworks.ai/getting-started/quickstart) for
+SDK examples). This `fw_` key powers the **worker** — separate from the
+**advisor's** Anthropic key in the next step.
 
 ## 2. Advisor — add the frontier reviewer (Claude)
 
