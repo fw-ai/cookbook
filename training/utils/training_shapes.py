@@ -33,7 +33,6 @@ _TRAINING_SHAPE_VERSION_RE = re.compile(r"/versions/[^/]+$")
 
 _TRAINER_MODE_BY_CODE = {
     1: "POLICY_TRAINER",
-    2: "FORWARD_ONLY",
     3: "LORA_TRAINER",
 }
 
@@ -104,9 +103,7 @@ def auto_select_training_shape(
     if candidates:
         return _pick_best(candidates, max_seq_len)
 
-    mode_label = {"LORA_TRAINER": "LoRA", "FORWARD_ONLY": "reference"}.get(
-        expected_mode, "full-tune"
-    )
+    mode_label = "LoRA" if expected_mode == "LORA_TRAINER" else "full-tune"
     raise ValueError(
         f"No validated training shape matched base_model={base_model!r}, "
         f"mode={mode_label!r}, max_seq_len={max_seq_len!r}. "
@@ -126,7 +123,7 @@ def _expected_trainer_mode(
     if lora_rank > 0:
         return "LORA_TRAINER"
     if trainer_role == "reference":
-        return "FORWARD_ONLY"
+        return "LORA_TRAINER"
     return "POLICY_TRAINER"
 
 

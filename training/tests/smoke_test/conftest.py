@@ -17,12 +17,12 @@ DEFAULT_SMOKE_BASE_MODEL = "accounts/fireworks/models/qwen3p5-9b"
 DEFAULT_SMOKE_TOKENIZER_MODEL = "Qwen/Qwen3.5-9B"
 DEFAULT_SMOKE_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k"
 DEFAULT_SMOKE_REFERENCE_TRAINING_SHAPE = (
-    "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only"
+    "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
 )
 DEFAULT_SMOKE_LORA_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
 DEFAULT_SMOKE_DEPLOYMENT_SHAPE = "accounts/fireworks/deploymentShapes/rft-qwen3p5-9b-v2/versions/n864rzzy"
 DEFAULT_SMOKE_MINIMAL_TRAINING_SHAPE = "qwen3-4b-minimum"
-DEFAULT_SMOKE_MINIMAL_REF_TRAINING_SHAPE = "qwen3-4b-minimum-forward-only"
+DEFAULT_SMOKE_MINIMAL_REF_TRAINING_SHAPE = "qwen3-4b-minimum-lora"
 DEFAULT_SMOKE_BASE_URL = "https://api.fireworks.ai"
 
 
@@ -79,7 +79,7 @@ def smoke_training_profile(smoke_sdk_managers, smoke_training_shape, port_lora_r
 
 @pytest.fixture(scope="session")
 def smoke_reference_training_profile(smoke_sdk_managers, smoke_reference_training_shape):
-    """Resolve the full-param forward-only reference shape before provisioning."""
+    """Resolve the full-param reference shape before provisioning."""
     if smoke_reference_training_shape is None:
         return None
     rlor_mgr, _deploy_mgr = smoke_sdk_managers
@@ -130,7 +130,7 @@ def smoke_minimal_grpo_trainer(
     smoke_minimal_ref_training_shape,
     smoke_custom_image_tag,
 ) -> TrainerConfig:
-    """Two minimal 1xGPU training shapes (policy + forward-only reference)."""
+    """Two minimal 1xGPU training shapes (policy + frozen reference)."""
     if smoke_custom_image_tag:
         return TrainerConfig(custom_image_tag=smoke_custom_image_tag)
     return TrainerConfig(

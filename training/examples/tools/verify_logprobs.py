@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Verify train-inference logprob alignment.
 
-Creates an inference deployment and a policy trainer (plus an optional
-forward-only reference trainer) from training shapes, samples completions,
-runs training forward passes, and compares per-token logprobs on completion
-tokens.
+Creates an inference deployment and a policy trainer (plus an optional frozen
+reference runtime) from LoRA-capable training shapes, samples completions, runs
+training forward passes, and compares per-token logprobs on completion tokens.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -199,9 +198,9 @@ def main():
     # -- Provision via the single SDK seam ------------------------------------
     #
     # build_service_client owns trainer + deployment provisioning; for the
-    # reference it spins up a separate forward-only trainer (full-param) on the
-    # reference shape. The profile above only supplied deployment_shape and
-    # max_seq_len for logging/config.
+    # reference it spins up a separate frozen runtime (full-param) on a
+    # LoRA-capable reference shape. The profile above only supplied
+    # deployment_shape and max_seq_len for logging/config.
 
     dep_id = args.deployment_id or f"verify-{args.base_model.split('/')[-1]}-{int(time.time())}"
     service = build_service_client(

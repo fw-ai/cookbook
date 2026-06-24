@@ -81,13 +81,12 @@ class InfraConfig:
     When set, infra config is auto-derived from the shape."""
 
     ref_training_shape_id: str | None = None
-    """Training shape ID for a **separate** forward-only reference trainer.
+    """Training shape ID for a **separate** frozen reference trainer.
     Only relevant for **full-parameter** training — LoRA runs reuse the
     policy session as their frozen reference (adapter disabled), so leave
     this ``None`` when ``lora_rank > 0``. For
     full-param, when set, a second trainer is provisioned; when not set,
-    no reference is created. Can be the same value as ``training_shape_id``
-    — the control plane auto-appends ``--forward-only``."""
+    the backend auto-selects a LoRA-capable shape for the second trainer."""
 
     custom_image_tag: str | None = None
     region: str | None = None
@@ -131,10 +130,15 @@ class TrainerConfig:
     """Training shape ID for the policy trainer."""
 
     reference_training_shape_id: str | None = None
-    """Training shape ID for a separate forward-only reference trainer."""
+    """Training shape ID for a separate frozen reference trainer.
+
+    Leave unset for full-parameter KL/DPO runs unless you need to pin a
+    specific LoRA-capable reference shape; backend trainer creation
+    auto-selects one by default.
+    """
 
     reference_job_id: str | None = None
-    """Existing forward-only reference trainer job ID to reattach to."""
+    """Existing frozen reference trainer job ID to reattach to."""
 
     cleanup_reference_on_close: bool = True
     """Delete SDK-created separate reference trainers when the service closes."""

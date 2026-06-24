@@ -35,10 +35,10 @@ trainers:
     extra_args: null
     skip_validations: false
 
-  # Only needed for full-parameter RFT with KL (kl_beta > 0).
+  # Optional override for full-parameter RFT with KL (kl_beta > 0).
   # LoRA reuses the policy as its frozen reference, so leave it unwired otherwise.
   reference:
-    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only
+    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora
     job_id: null           # null = create a new job; set to reattach
     replica_count: 1
     # Optional fields for admin users.

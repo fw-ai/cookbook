@@ -425,9 +425,10 @@ def main(
         # The KL reference is optional in RL (only needed when kl_beta > 0).
         # The SDK owns the shared-vs-separate decision: LoRA without an explicit
         # reference shape reuses the policy session; full-param (or an explicit
-        # reference_training_shape_id) provisions a separate forward-only
-        # reference trainer that `service` owns. reference_job_id mirrors the
-        # policy job when shared, else the separate reference trainer's id.
+        # reference_training_shape_id) provisions a separate frozen reference
+        # trainer that `service` owns. Backend trainer creation selects a
+        # LoRA-capable shape unless pinned. reference_job_id mirrors the policy
+        # job when shared, else the separate reference trainer's id.
         reference = None
         reference_job_id = None
         if cfg.kl_beta > 0:

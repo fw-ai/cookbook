@@ -2,7 +2,7 @@
 #
 # DPO is offline preference training: a policy trainer plus a frozen reference
 # (no rollout deployment). LoRA reuses the policy as its reference; full-param
-# wires a separate forward-only reference trainer.
+# wires a separate frozen reference trainer and uses a LoRA-capable shape.
 #
 #   uv run python provision.py --config-name fireworks_dpo
 #   uv run python provision.py --config fireworks_dpo.yaml
@@ -19,7 +19,7 @@ trainers:
   policy:
     training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora
     # reference: reference # uncomment for full-param DPO; LoRA reuses policy as reference
-    job_id: null    
+    job_id: null
     replica_count: 1 # null = create a new job; set to reattach to an existing job
     # Optional fields for admin users.
     custom_image_tag: null
@@ -28,9 +28,9 @@ trainers:
     extra_args: null
     skip_validations: false
 
-  # Only needed for full-parameter DPO. LoRA reuses the policy as its reference.
+  # Optional override for full-parameter DPO. LoRA reuses the policy as its reference.
   reference:
-    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only
+    training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora
     job_id: null           # null = create a new job; set to reattach
     replica_count: 1
     # Optional fields for admin users.
@@ -44,4 +44,4 @@ recipe:
   dpo:
     trainer: policy
     beta: 0.1              # DPO preference temperature (KL strength), must be >0 and <0.5
-    # reference: reference # uncomment for full-param DPO; LoRA reuses policy as reference
+    # reference: reference # optional full-param DPO override; LoRA reuses policy as reference
