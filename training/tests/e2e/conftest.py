@@ -109,7 +109,7 @@ def e2e_training_shape(port_lora_rank) -> str | None:
 
 @pytest.fixture(scope="module")
 def e2e_reference_training_shape(port_lora_rank) -> str | None:
-    """LoRA-capable reference shape for full-param SDK-managed jobs."""
+    """Explicit reference shape for full-param SDK-managed jobs."""
     if port_lora_rank:
         return None
     return _get_env(

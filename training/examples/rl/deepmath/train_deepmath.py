@@ -184,8 +184,10 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--tokenizer-model")
     parser.add_argument("--dataset-path")
     parser.add_argument("--training-shape")
-    parser.add_argument("--ref-training-shape",
-                        help="LoRA-capable training shape for the separate reference trainer")
+    parser.add_argument(
+        "--ref-training-shape",
+        help="LoRA-capable training shape for the separate reference trainer",
+    )
     parser.add_argument(
         "--deployment-id",
         help="Existing deployment ID to reuse; omit to auto-create",

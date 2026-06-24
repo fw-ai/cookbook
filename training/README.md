@@ -137,8 +137,8 @@ It applies to trainer jobs the recipe creates for that run; a pre-created
 
 When `kl_beta > 0` the RL loop uses a separate frozen reference client for
 full-parameter policy runs. Backend trainer creation auto-selects a
-LoRA-capable reference shape unless `reference_training_shape_id` is set
-explicitly.
+LoRA-capable reference shape unless `reference_training_shape_id` explicitly
+pins a LoRA-capable shape.
 
 **DPO / ORPO** -- also requires:
 

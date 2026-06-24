@@ -130,7 +130,7 @@ def parse_args():
     p.add_argument(
         "--ref-training-shape", default=None,
         help=(
-            "Forward-only reference training shape ID. "
+            "LoRA-capable reference training shape ID. "
             "When set, a second trainer is created to provide reference "
             "logprobs for KL comparison."
         ),
@@ -198,8 +198,9 @@ def main():
     # -- Provision via the single SDK seam ------------------------------------
     #
     # build_service_client owns trainer + deployment provisioning; for the
-    # reference it spins up a separate frozen runtime (full-param) on a
-    # LoRA-capable reference shape. The profile above only supplied
+    # reference it spins up a separate frozen runtime (full-param) on the
+    # explicit LoRA-capable reference shape when provided, or a backend-selected
+    # compatible shape otherwise. The profile above only supplied
     # deployment_shape and max_seq_len for logging/config.
 
     dep_id = args.deployment_id or f"verify-{args.base_model.split('/')[-1]}-{int(time.time())}"

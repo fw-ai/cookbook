@@ -713,7 +713,7 @@ def main(
         # session; full-param (or an explicit reference_training_shape_id)
         # provisions a separate frozen reference trainer that `service` owns.
         # Backend trainer creation selects a LoRA-capable shape unless
-        # cfg.trainer.reference_training_shape_id pins one.
+        # cfg.trainer.reference_training_shape_id pins a LoRA-capable shape.
         reference = ReconnectableClient.from_training_client(
             service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
             base_model=cfg.base_model,
