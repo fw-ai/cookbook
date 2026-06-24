@@ -13,6 +13,8 @@ from training.utils.checkpoints import (
     TrainingCheckpoints,
     _logical_name,
     _newest_first,
+    _logical_name_for_run,
+    _public_logical_name,
     validate_warm_start_config,
 )
 
@@ -45,8 +47,8 @@ def _mock_client(fw=None, save_state_renames_to: str | None = None):
     renamed row. Default (None) honors the caller name.
     """
     client = MagicMock()
-    client.resolve_checkpoint_path.side_effect = (
-        lambda name, source_job_id=None: f"path://{source_job_id or 'self'}/{name}"
+    client.resolve_checkpoint_path.side_effect = lambda name, source_job_id=None: (
+        f"path://{source_job_id or 'self'}/{name}"
     )
 
     # Use a counter so appended rows have monotonically-increasing createTime
@@ -70,8 +72,8 @@ def _mock_client(fw=None, save_state_renames_to: str | None = None):
         return result
 
     client.save_state.side_effect = _save_state
-    client.save_weights_for_sampler.side_effect = (
-        lambda name, checkpoint_type="base": MagicMock(snapshot_name=f"{name}-snap")
+    client.save_weights_for_sampler.side_effect = lambda name, checkpoint_type="base": (
+        MagicMock(snapshot_name=f"{name}-snap")
     )
     return client
 
@@ -92,6 +94,7 @@ def _make(
     lora_rank=0,
     save_state_renames_to: str | None = None,
     serverless=False,
+    current_run_id: str | None = None,
 ):
     fw = _mock_fw_client(rows=fw_rows)
     client = _mock_client(fw=fw, save_state_renames_to=save_state_renames_to)
@@ -106,6 +109,7 @@ def _make(
         save_appear_timeout_s=5.0,
         save_stabilize_s=0.0,
         save_poll_s=0.01,
+        current_run_id=current_run_id,
     )
     return ckpt, client, fw
 
@@ -227,6 +231,70 @@ class TestResume:
             "step-5", source_job_id=None
         )
         # source_job_id=None => bare name (mock renders the absent job as 'self').
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
+
+    def test_resume_serverless_strips_current_run_prefix(self, log_dir):
+        current_run_id = "run-abcdef"
+        rows = [
+            _row(
+                "run-oldrun-step-9",
+                ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                promotable=False,
+                create_time="2026-04-03T00:00:00Z",
+            ),
+            _row(
+                f"{current_run_id}-step-5",
+                ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                promotable=False,
+                create_time="2026-04-01T00:00:00Z",
+            ),
+        ]
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-5": 40, "run-abcdef-step-5": 999}, f)
+
+        ckpt, client, _ = _make(
+            log_dir,
+            fw_rows=rows,
+            lora_rank=8,
+            serverless=True,
+            current_run_id=current_run_id,
+        )
+        info = ckpt.resume()
+
+        assert info == ResumeInfo(step=5, data_consumed=40, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with(
+            "step-5", source_job_id=None
+        )
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
+
+    def test_resume_serverless_without_run_id_ignores_run_scoped_rows(self, log_dir):
+        rows = [
+            _row(
+                "run-0123456789abcdef0123456789abcdef-step-99",
+                ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                promotable=False,
+                create_time="2099-01-01T00:00:00Z",
+            ),
+            _row(
+                "step-5",
+                ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                promotable=False,
+                create_time="2026-04-01T00:00:00Z",
+            ),
+        ]
+        ckpt, client, _ = _make(
+            log_dir,
+            fw_rows=rows,
+            lora_rank=8,
+            serverless=True,
+        )
+        info = ckpt.resume()
+
+        assert info == ResumeInfo(step=5, data_consumed=0, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with(
+            "step-5", source_job_id=None
+        )
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
     def test_init_from_checkpoint_takes_priority(self, log_dir):
@@ -373,6 +441,82 @@ class TestSave:
         ckpt.save("step-1", resumable=False, promotable=True)
         client.save_weights_for_sampler.assert_not_called()
 
+    def test_skip_matches_run_scoped_suffixed_server_name(self, log_dir):
+        """Serverless session checkpoints surface as ``run-id-checkpoint``.
+
+        The cookbook caller only knows the checkpoint leaf it passed to the
+        trainer, so skip matching must ignore the public run prefix and the
+        trainer's 8-hex sampler suffix.
+        """
+        current_run_id = "run-0123456789abcdef0123456789abcdef"
+        existing = [
+            _row(
+                f"{current_run_id}-step-1-abcd1234",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2026-04-01T00:00:00Z",
+            ),
+        ]
+        ckpt, client, _ = _make(
+            log_dir,
+            fw_rows=existing,
+            lora_rank=8,
+            serverless=True,
+            current_run_id=current_run_id,
+        )
+        ckpt.save("step-1", resumable=False, promotable=True)
+        client.save_weights_for_sampler.assert_not_called()
+
+    def test_skip_without_run_id_ignores_run_scoped_promotable_checkpoint(
+        self, log_dir
+    ):
+        existing = [
+            _row(
+                "run-0123456789abcdef0123456789abcdef-step-1-abcd1234",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2099-01-01T00:00:00Z",
+            ),
+        ]
+        ckpt, client, _ = _make(
+            log_dir,
+            fw_rows=existing,
+            lora_rank=8,
+            serverless=True,
+        )
+        ckpt.save("step-1", resumable=False, promotable=True)
+        client.save_weights_for_sampler.assert_called_once_with(
+            "step-1", checkpoint_type="base"
+        )
+
+    def test_skip_ignores_other_run_promotable_checkpoint(self, log_dir):
+        current_run_id = "run-current"
+        existing = [
+            _row(
+                "run-previous-step-1-abcd1234",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2099-01-01T00:00:00Z",
+            ),
+            _row(
+                f"{current_run_id}-step-2-abcd1234",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2099-01-01T00:00:01Z",
+            ),
+        ]
+        ckpt, client, _ = _make(
+            log_dir,
+            fw_rows=existing,
+            lora_rank=8,
+            serverless=True,
+            current_run_id=current_run_id,
+        )
+        ckpt.save("step-1", resumable=False, promotable=True)
+        client.save_weights_for_sampler.assert_called_once_with(
+            "step-1", checkpoint_type="base"
+        )
+
     def test_skip_does_not_match_different_step(self, log_dir):
         existing = [
             _row(
@@ -407,6 +551,44 @@ class TestSave:
         with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
             assert json.load(f) == {"step-5": 50}
 
+    def test_promotable_save_waits_for_run_scoped_cp_row(self, log_dir):
+        current_run_id = "run-f7bd5935b27b46d2ac21c90ac7a19cd5"
+        row = _row(
+            f"{current_run_id}-step-8-c42a35e8",
+            ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+            promotable=True,
+            create_time="2099-01-01T00:00:05Z",
+        )
+        old_row = _row(
+            "run-oldrun-step-8-c42a35e8",
+            ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+            promotable=True,
+            create_time="2099-01-01T00:00:10Z",
+        )
+        ckpt, client, fw = _make(
+            log_dir,
+            lora_rank=8,
+            serverless=True,
+            current_run_id=current_run_id,
+        )
+
+        calls = {"n": 0}
+
+        def _list_after_delay(job_id, **kwargs):
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                return [old_row, row]
+            return [old_row]
+
+        fw.list_checkpoints.side_effect = _list_after_delay
+
+        ckpt.save("step-8", resumable=False, promotable=True)
+
+        client.save_weights_for_sampler.assert_called_once_with(
+            "step-8", checkpoint_type="base"
+        )
+        assert calls["n"] >= 3
+
 
 class TestLogicalName:
     @pytest.mark.parametrize(
@@ -423,6 +605,31 @@ class TestLogicalName:
     )
     def test_strip_session_suffix(self, stored, logical):
         assert _logical_name(stored) == logical
+
+    @pytest.mark.parametrize(
+        "stored,logical",
+        [
+            ("step-3-abcd1234", "step-3"),
+            ("run-0123456789abcdef0123456789abcdef-step-3-abcd1234", "step-3"),
+            (
+                "run-0123456789abcdef0123456789abcdef-resume-3-base-45dda197",
+                "resume-3-base",
+            ),
+            ("run-0123456789abcdef0123456789abcdef:step-3-abcd1234", "step-3"),
+        ],
+    )
+    def test_public_logical_name_ignores_run_prefix(self, stored, logical):
+        assert _public_logical_name(stored) == logical
+
+    def test_logical_name_for_current_run_accepts_short_run_id(self):
+        assert (
+            _logical_name_for_run("run-abcdef-step-3-abcd1234", "run-abcdef")
+            == "step-3"
+        )
+        assert (
+            _logical_name_for_run("run-other-step-3-abcd1234", "run-abcdef")
+            == "run-other-step-3"
+        )
 
 
 # -- promote_latest ------------------------------------------------------------
@@ -462,6 +669,50 @@ class TestPromoteLatest:
             base_model="accounts/a/models/qwen3-1p7b-bf16",
             hot_load_deployment_id=None,
         )
+
+    def test_serverless_promote_latest_uses_current_run_only(self, log_dir):
+        current_run_id = "run-current"
+        rows = [
+            _row(
+                "run-previous-step-99",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2099-01-01T00:00:00Z",
+            ),
+            _row(
+                f"{current_run_id}-step-5",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2026-04-01T00:00:00Z",
+            ),
+        ]
+        ckpt, _, fw = _make(
+            log_dir,
+            fw_rows=rows,
+            lora_rank=8,
+            serverless=True,
+            current_run_id=current_run_id,
+        )
+        ckpt.promote_latest("my-model", "accounts/a/models/qwen3-1p7b-bf16")
+        fw.promote_checkpoint.assert_called_once()
+        _, kwargs = fw.promote_checkpoint.call_args
+        assert kwargs["name"].endswith(f"/checkpoints/{current_run_id}-step-5")
+
+    def test_serverless_promote_latest_without_run_id_ignores_run_scoped_rows(
+        self, log_dir
+    ):
+        rows = [
+            _row(
+                "run-0123456789abcdef0123456789abcdef-step-99",
+                ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+                promotable=True,
+                create_time="2099-01-01T00:00:00Z",
+            ),
+        ]
+        ckpt, _, fw = _make(log_dir, fw_rows=rows, lora_rank=8, serverless=True)
+        with pytest.raises(RuntimeError, match="No promotable"):
+            ckpt.promote_latest("my-model", "accounts/a/models/qwen3-1p7b-bf16")
+        fw.promote_checkpoint.assert_not_called()
 
     def test_skips_arc_v2_because_not_promotable(self, log_dir):
         rows = [
