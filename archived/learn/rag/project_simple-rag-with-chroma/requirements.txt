@@ -109,7 +109,7 @@ langchain-core==0.1.52
 langchain-openai==0.1.7
 langchain-text-splitters==0.0.2
 langdetect==1.0.9
-langsmith==0.1.125
+langsmith==0.8.18
 llama-cloud==0.0.6
 llama-index-core==0.10.50.post1
 llama-index-readers-file==0.1.25
