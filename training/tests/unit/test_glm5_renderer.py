@@ -29,7 +29,7 @@ from training.tests.glm5_serverless_cases import (
     GLM5_SERVERLESS_PROMPT_TOKEN_CASES,
     GLM5_SERVERLESS_STOP_TOKEN_IDS,
 )
-from training.utils.supervised import normalize_messages
+from training.utils.supervised import normalize_messages, render_messages_to_datums
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
 
@@ -213,6 +213,37 @@ def test_generation_prompt_system_user(tokenizer, renderer):
     ]
     hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
     ours = _renderer_generation_tokens(renderer, messages)
+    assert ours == hf
+
+
+def test_generation_prompt_with_top_level_tools_matches_hf(tokenizer, renderer):
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Look up weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+                "strict": True,
+            },
+        }
+    ]
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "weather in SF?"},
+    ]
+    prefix = renderer.create_conversation_prefix_with_tools(
+        [tools[0]["function"]],
+        system_prompt="You are helpful.",
+    )
+
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True, tools=tools)
+    ours = _renderer_generation_tokens(renderer, prefix + messages[1:])
+
     assert ours == hf
 
 
@@ -716,6 +747,39 @@ def test_interleaved_tool_reasoning_and_params_are_trained(tokenizer, renderer):
     assert "Need current weather.</think>" in trained_text
     assert "<tool_call>get_weather" in trained_text
     assert "<arg_value>SF</arg_value>" in trained_text
+
+
+def test_render_messages_to_datums_accepts_top_level_tools(tokenizer, renderer):
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Look up weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+    rendered = render_messages_to_datums(
+        [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "weather in SF?"},
+            {"role": "assistant", "content": "I can check that."},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+        tools=tools,
+    )
+
+    decoded = tokenizer.decode(rendered[0].token_ids)
+
+    assert "# Tools" in decoded
+    assert "<tools>" in decoded
+    assert '"name": "get_weather"' in decoded
 
 
 # ── build_supervised_examples split behaviour ───────────────────────────────

@@ -38,12 +38,15 @@ def _hf_tokens(
     messages: list[dict[str, Any]],
     *,
     add_generation_prompt: bool,
+    tools: list[dict[str, Any]] | None = None,
 ) -> list[int]:
-    result = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=add_generation_prompt,
-    )
+    kwargs: dict[str, Any] = {
+        "tokenize": True,
+        "add_generation_prompt": add_generation_prompt,
+    }
+    if tools is not None:
+        kwargs["tools"] = tools
+    result = tokenizer.apply_chat_template(messages, **kwargs)
     if hasattr(result, "input_ids"):
         return [int(t) for t in list(result.input_ids)]
     return [int(t) for t in list(result)]
@@ -126,6 +129,43 @@ _REASONING_CONTENT_MESSAGES = [
 def test_generation_prompt_matches_hf_chat_template(tokenizer, renderer, messages):
     expected = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
     actual = _renderer_generation_tokens(renderer, messages)
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
+@pytest.mark.timeout(180)
+def test_generation_prompt_with_top_level_tools_matches_hf(tokenizer, renderer):
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Look up weather for a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {"type": "string", "description": "City name."},
+                    },
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Weather in SF?"},
+    ]
+    prefix = renderer.create_conversation_prefix_with_tools(
+        [tools[0]["function"]],
+        system_prompt="You are helpful.",
+    )
+
+    expected = _hf_tokens(
+        tokenizer,
+        messages,
+        add_generation_prompt=True,
+        tools=tools,
+    )
+    actual = _renderer_generation_tokens(renderer, prefix + messages[1:])
     _assert_tokens_match(tokenizer, expected, actual)
 
 

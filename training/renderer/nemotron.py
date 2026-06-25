@@ -15,6 +15,7 @@ but with different thinking-tag handling:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 import tinker
 import torch
@@ -23,6 +24,7 @@ from tinker_cookbook.renderers.base import (
     RenderContext,
     RenderedMessage,
     Role,
+    ToolSpec,
     TrainOnWhat,
 )
 from tinker_cookbook.renderers import register_renderer
@@ -61,6 +63,61 @@ def _format_nemotron_tool_call(tool_call) -> str:
         parts.append(f"<parameter={key}>\n{formatted}\n</parameter>\n")
     parts.append("</function>\n</tool_call>\n")
     return "".join(parts)
+
+
+def _render_extra_keys(obj: Mapping[str, object], handled_keys: set[str]) -> list[str]:
+    """Render extra dict keys as XML, mirroring the HF template macro."""
+    lines: list[str] = []
+    for key, value in obj.items():
+        if key in handled_keys:
+            continue
+        if isinstance(value, (dict, list)):
+            lines.append(f"<{key}>{json.dumps(value)}</{key}>")
+        else:
+            lines.append(f"<{key}>{value!s}</{key}>")
+    return lines
+
+
+def _description_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return str(value)
+
+
+def _format_nemotron_tool_declaration(tool: ToolSpec) -> str:
+    """Format a single tool declaration in Nemotron's XML format."""
+    lines = [
+        "<function>",
+        f"<name>{tool['name']}</name>",
+    ]
+    if description := _description_text(tool.get("description", "")):
+        lines.append(f"<description>{description}</description>")
+    lines.append("<parameters>")
+    params = tool.get("parameters") or {}
+    if isinstance(params, dict) and "properties" in params:
+        for param_name, param_fields in params["properties"].items():
+            lines.append("<parameter>")
+            lines.append(f"<name>{param_name}</name>")
+            if "type" in param_fields:
+                lines.append(f"<type>{param_fields['type']!s}</type>")
+            if "description" in param_fields:
+                lines.append(
+                    f"<description>{_description_text(param_fields['description'])}</description>"
+                )
+            if "enum" in param_fields:
+                lines.append(f"<enum>{json.dumps(param_fields['enum'])}</enum>")
+            lines.extend(
+                _render_extra_keys(param_fields, {"name", "type", "description", "enum"})
+            )
+            lines.append("</parameter>")
+    if isinstance(params, dict):
+        lines.extend(_render_extra_keys(params, {"type", "properties", "required"}))
+    if isinstance(params, dict) and "required" in params:
+        lines.append(f"<required>{json.dumps(params['required'])}</required>")
+    lines.append("</parameters>")
+    lines.extend(_render_extra_keys(tool, {"type", "name", "description", "parameters"}))
+    lines.append("</function>")
+    return "\n".join(lines)
 
 
 def _truncate_thinking(content: str) -> str:
@@ -166,6 +223,57 @@ class NemotronRenderer(Qwen3Renderer):
         return super().build_supervised_example(
             self._preprocess_messages(messages), train_on_what=train_on_what,
         )
+
+    def create_conversation_prefix_with_tools(
+        self, tools: list[ToolSpec], system_prompt: str = ""
+    ) -> list[Message]:
+        """Create the Nemotron XML tool system block from top-level tools.
+
+        Mirrors the tools branch in the Nemotron HF tokenizer chat template.
+        """
+        tools_text = ""
+        if tools:
+            tool_declarations = "\n".join(
+                _format_nemotron_tool_declaration(tool) for tool in tools
+            )
+            tools_text = (
+                "# Tools\n\n"
+                "You have access to the following functions:\n\n"
+                "<tools>\n"
+                f"{tool_declarations}\n"
+                "</tools>\n\n"
+                "If you choose to call a function ONLY reply in the following format with NO suffix:\n\n"
+                "<tool_call>\n"
+                "<function=example_function_name>\n"
+                "<parameter=example_parameter_1>\n"
+                "value_1\n"
+                "</parameter>\n"
+                "<parameter=example_parameter_2>\n"
+                "This is the value for the second parameter\n"
+                "that can span\n"
+                "multiple lines\n"
+                "</parameter>\n"
+                "</function>\n"
+                "</tool_call>\n\n"
+                "<IMPORTANT>\n"
+                "Reminder:\n"
+                "- Function calls MUST follow the specified format: "
+                "an inner <function=...></function> block must be nested within "
+                "<tool_call></tool_call> XML tags\n"
+                "- Required parameters MUST be specified\n"
+                "- You may provide optional reasoning for your function call in natural language "
+                "BEFORE the function call, but NOT after\n"
+                "- If there is no function call available, answer the question like normal with "
+                "your current knowledge and do not tell the user about function calls\n"
+                "</IMPORTANT>"
+            )
+
+        if tools_text:
+            content = system_prompt + "\n\n" + tools_text if system_prompt else tools_text
+        else:
+            content = system_prompt
+
+        return [Message(role="system", content=content)]
 
     def _render_tool_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
         """Render a tool response, grouping consecutive tool messages.

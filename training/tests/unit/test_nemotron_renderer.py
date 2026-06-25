@@ -118,6 +118,80 @@ def test_empty_system_message(tokenizer, renderer):
     assert hf == ours, f"Token mismatch:\nHF:   {hf}\nOurs: {ours}"
 
 
+@pytest.mark.parametrize(
+    "tool_function",
+    [
+        pytest.param(
+            {
+                "name": "get_weather",
+                "description": "Look up weather for a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "City name.",
+                        },
+                        "unit": {
+                            "type": "string",
+                            "enum": ["celsius", "fahrenheit"],
+                        },
+                    },
+                    "required": ["city"],
+                },
+            },
+            id="string_descriptions",
+        ),
+        pytest.param(
+            {
+                "name": "get_weather",
+                "description": None,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": None,
+                        },
+                    },
+                    "required": ["city"],
+                },
+            },
+            id="null_descriptions",
+        ),
+    ],
+)
+def test_generation_prompt_with_top_level_tools_matches_hf(
+    tokenizer,
+    renderer,
+    tool_function,
+):
+    """Top-level tools should render exactly like HF apply_chat_template(tools=...)."""
+    tools = [
+        {
+            "type": "function",
+            "function": tool_function,
+        }
+    ]
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Weather in SF?"},
+    ]
+    prefix = renderer.create_conversation_prefix_with_tools(
+        [tool_function],
+        system_prompt="You are helpful.",
+    )
+
+    hf = _hf_tokens(tokenizer, messages, enable_thinking=True, tools=tools)
+    ours = _renderer_tokens(renderer, prefix + messages[1:])
+
+    hf_text = tokenizer.decode(hf)
+    our_text = tokenizer.decode(ours)
+    print(f"\n--- HF ---\n{hf_text}")
+    print(f"\n--- Ours ---\n{our_text}")
+    assert hf == ours, f"Token mismatch:\nHF:   {hf}\nOurs: {ours}"
+
+
 # ── Multi-turn with history truncation ───────────────────────────────────────
 
 

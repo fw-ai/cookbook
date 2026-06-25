@@ -5,7 +5,14 @@ import os
 import pytest
 import torch
 import tinker
-from tinker_cookbook.renderers import TrainOnWhat
+from tinker_cookbook.renderers import (
+    Message,
+    ParseTermination,
+    RenderContext,
+    Renderer,
+    TrainOnWhat,
+)
+from tinker_cookbook.renderers.base import RenderedMessage
 
 from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.data import prepare_sampling_messages
@@ -100,6 +107,30 @@ class SplitRenderer:
 
     def build_supervised_example(self, messages, train_on_what):
         raise AssertionError("render_messages_to_datums should use split examples")
+
+
+class BaseToolPrefixRenderer(Renderer):
+    def __init__(self):
+        super().__init__(tokenizer=None)
+        self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+    def get_stop_sequences(self):
+        return []
+
+    def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
+        raise AssertionError("test uses build_supervised_example directly")
+
+    def parse_response(self, response: list[int]) -> tuple[Message, ParseTermination]:
+        return Message(role="assistant", content=""), ParseTermination.EOS
+
+    def build_supervised_example(
+        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    ):
+        self.calls.append((messages, train_on_what))
+        return (
+            torch.tensor([10, 11, 12], dtype=torch.int64),
+            torch.tensor([0, 1, 1], dtype=torch.float32),
+        )
 
 
 def test_render_messages_to_datum_preserves_multi_turn_weights():
@@ -281,6 +312,38 @@ def test_render_messages_to_datums_fails_fast_without_split_implementation():
             renderer=UnimplementedSplitRenderer(),
             train_on_what="all_assistant_messages",
         )
+
+
+def test_render_messages_to_datums_skips_unimplemented_base_tool_prefix():
+    renderer = BaseToolPrefixRenderer()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    rendered = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "lookup",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+    )
+
+    assert len(rendered) == 1
+    assert [m["role"] for m in renderer.calls[0][0]] == [
+        "system",
+        "user",
+        "assistant",
+    ]
 
 
 def test_normalize_messages_supports_openai_tool_call_shape():

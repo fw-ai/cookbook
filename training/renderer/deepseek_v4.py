@@ -81,6 +81,7 @@ from tinker_cookbook.renderers.base import (
     Renderer,
     Role,
     ToolCall,
+    ToolSpec,
     TrainOnWhat,
     UnparsedToolCall,
 )
@@ -262,6 +263,20 @@ def _render_tools_section(tools: list[Mapping[str, Any]]) -> str:
         think_close=_THINK_CLOSE,
         tool_schemas="\n".join(_to_json(t) for t in function_dicts),
     )
+
+
+def _wrap_tool_specs(tools: list[ToolSpec]) -> list[dict[str, Any]]:
+    # render_messages_to_datums passes inner function specs; _render_tools_section
+    # expects OpenAI-wrapped {"type": "function", "function": ...} objects.
+    wrapped: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, Mapping):
+            raise TypeError(f"DeepseekV4Renderer expected tool mapping, got {type(tool)!r}")
+        if isinstance(tool.get("function"), Mapping):
+            wrapped.append(dict(tool))
+        else:
+            wrapped.append({"type": "function", "function": dict(tool)})
+    return wrapped
 
 
 def _has_any_tools(messages: list[Message]) -> bool:
@@ -568,6 +583,20 @@ class DeepseekV4Renderer(Renderer):
 
     def _encode(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
+
+    def create_conversation_prefix_with_tools(
+        self,
+        tools: list[ToolSpec],
+        system_prompt: str = "",
+    ) -> list[Message]:
+        """Attach top-level OpenAI tool schemas to the leading system message."""
+        return [
+            Message(
+                role="system",
+                content=system_prompt,
+                tools=_wrap_tool_specs(tools),
+            )
+        ]
 
     # ---- render_message branches ---------------------------------------------
 

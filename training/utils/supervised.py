@@ -68,6 +68,17 @@ def parse_train_on_what(value: str | TrainOnWhat) -> TrainOnWhat:
     return TrainOnWhat(value.lower())
 
 
+def _tool_prefix_builder(renderer: Renderer):
+    """Return the renderer's tool-prefix hook if it is actually implemented."""
+    prefix_builder = getattr(renderer, "create_conversation_prefix_with_tools", None)
+    if prefix_builder is None:
+        return None
+    class_builder = getattr(type(renderer), "create_conversation_prefix_with_tools", None)
+    if class_builder is Renderer.create_conversation_prefix_with_tools:
+        return None
+    return prefix_builder
+
+
 def resolve_renderer_name(
     tokenizer_model: str,
     renderer_name: str = "",
@@ -918,16 +929,16 @@ def render_messages_to_datums(
 
     When ``tools`` is provided (top-level OpenAI function-calling array
     with ``{"type": "function", "function": {...}}`` items) and the
-    renderer exposes ``create_conversation_prefix_with_tools``, the tool
-    definitions are encoded as a ``tool_declare``-role message and
+    renderer implements ``create_conversation_prefix_with_tools``, the
+    tool definitions are encoded as renderer-specific prefix messages and
     prepended to the conversation. An existing leading system message's
     content is preserved as the system prompt passed to the renderer.
-    Renderers without tool support silently drop the field.
+    Renderers without tool-prefix support silently drop the field.
     """
     normalized_messages = list(normalize_messages(messages))
 
     if tools:
-        prefix_builder = getattr(renderer, "create_conversation_prefix_with_tools", None)
+        prefix_builder = _tool_prefix_builder(renderer)
         if prefix_builder is not None:
             tool_specs = [
                 t["function"]

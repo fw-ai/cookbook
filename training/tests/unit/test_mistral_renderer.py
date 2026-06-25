@@ -217,6 +217,43 @@ def test_generation_prompt_after_user(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
+def test_generation_prompt_with_top_level_tools_matches_hf(
+    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
+) -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Look up weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+    messages = [
+        {"role": "system", "content": "Be terse."},
+        {"role": "user", "content": "weather in SF?"},
+    ]
+    prefix = renderer.create_conversation_prefix_with_tools(
+        [tools[0]["function"]],
+        system_prompt="Be terse.",
+    )
+
+    expected = _hf_tokens(
+        tokenizer,
+        messages,
+        add_generation_prompt=True,
+        tools=tools,
+    )
+    actual = _renderer_tokens(renderer, prefix + messages[1:])
+
+    _assert_tokens_match(tokenizer, expected, actual)
+
+
 # --- Tool calls / tool responses ------------------------------------
 
 

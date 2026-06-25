@@ -529,6 +529,43 @@ def test_system_with_tools_matches_oracle(tokenizer, renderer_thinking_keep):
     assert ours == expected_ids, tokenizer.decode(ours)
 
 
+def test_top_level_tool_prefix_matches_system_tools_oracle(
+    tokenizer,
+    renderer_thinking_keep,
+):
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Look up weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+    messages = [
+        {"role": "system", "content": "You are an assistant."},
+        {"role": "user", "content": "weather in SF?"},
+    ]
+    prefixed = renderer_thinking_keep.create_conversation_prefix_with_tools(
+        [tools[0]["function"]],
+        system_prompt="You are an assistant.",
+    ) + [messages[1]]
+
+    expected_ids = _oracle_ids(
+        tokenizer,
+        [{**messages[0], "tools": tools}, messages[1]],
+        thinking_mode="thinking",
+    )
+    ours = _renderer_generation(renderer_thinking_keep, prefixed)
+
+    assert ours == expected_ids, tokenizer.decode(ours)
+
+
 def test_drop_thinking_auto_disable_when_tools_present(
     tokenizer,
     renderer_thinking_strip,

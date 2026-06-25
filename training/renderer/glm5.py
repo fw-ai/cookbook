@@ -96,6 +96,7 @@ from tinker_cookbook.renderers.base import (
     Renderer,
     Role,
     ToolCall,
+    ToolSpec,
     TrainOnWhat,
     UnparsedToolCall,
     parse_think_blocks,
@@ -111,6 +112,25 @@ _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _TOOL_ARG_RE = re.compile(
     r"<arg_key>(.*?)</arg_key><arg_value>(.*?)</arg_value>",
     re.DOTALL,
+)
+# Mirrors the tools branch in zai-org/GLM-5.1's tokenizer chat_template.
+_TOOL_DECLARATION_PREFIX = """\
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+"""
+_TOOL_DECLARATION_SUFFIX = """\
+</tools>
+
+For each function call, output the function name and arguments within the following XML format:
+""" + (
+    "<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key>"
+    "<arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key>"
+    "<arg_value>{arg-value-2}</arg_value>...</tool_call>"
 )
 
 
@@ -155,6 +175,23 @@ def _format_tool_calls(tool_calls: list[ToolCall]) -> str:
         )
         parts.append(f"<tool_call>{tc.function.name}{kv}</tool_call>")
     return "".join(parts)
+
+
+def _format_tool_declarations(tools: list[ToolSpec]) -> str:
+    rendered_tools: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, Mapping):
+            raise TypeError(f"GLM5Renderer expected tool mapping, got {type(tool)!r}")
+        tool_spec = tool.get("function") if isinstance(tool.get("function"), Mapping) else tool
+        if tool_spec.get("defer_loading"):
+            continue
+        filtered = {
+            key: value
+            for key, value in tool_spec.items()
+            if key not in {"defer_loading", "strict"}
+        }
+        rendered_tools.append(json.dumps(filtered, ensure_ascii=False))
+    return "\n".join(rendered_tools)
 
 
 def _parse_arg_value(value: str) -> Any:
@@ -659,6 +696,27 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         else:
             suffix_str = f"<|{role}|>"
         return self.tokenizer.encode(suffix_str, add_special_tokens=False)
+
+    def create_conversation_prefix_with_tools(
+        self,
+        tools: list[ToolSpec],
+        system_prompt: str = "",
+    ) -> list[Message]:
+        """Render top-level OpenAI tool schemas in GLM's system tool block."""
+        prefix_messages = [
+            Message(
+                role="system",
+                content=(
+                    _TOOL_DECLARATION_PREFIX
+                    + _format_tool_declarations(tools)
+                    + "\n"
+                    + _TOOL_DECLARATION_SUFFIX
+                ),
+            )
+        ]
+        if system_prompt:
+            prefix_messages.append(Message(role="system", content=system_prompt))
+        return prefix_messages
 
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
         end_idx = len(response)
