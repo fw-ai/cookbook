@@ -32,7 +32,6 @@ from tinker_cookbook.renderers import (
 
 from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
-import training.renderer.nemotron as _nemotron_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
@@ -101,7 +100,14 @@ def resolve_renderer_name(
     if "moonshotai/kimi-k2.7-code" in normalized_model_name:
         return "kimi_k27_code"
     if "nemotron" in normalized_model_name:
-        return "nemotron"
+        # Route the Nemotron family to tinker_cookbook's upstream Nemotron-3
+        # renderer ("nemotron3"), which restores the prompt-prefilled <think>
+        # in parse_response via _normalize_response_tokens. The retired
+        # cookbook "nemotron" renderer inherited Qwen3Renderer's identity
+        # normalize and left the prefilled think unrestored, so sampled
+        # completions (which start inside the think block: </think> with no
+        # opening <think>) were graded with the reasoning still attached.
+        return "nemotron3"
     if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
         return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
