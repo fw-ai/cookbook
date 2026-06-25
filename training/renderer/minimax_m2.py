@@ -447,7 +447,24 @@ class MiniMaxM2Renderer(Renderer):
             train_on_what=train_on_what,
         )
 
+    def _normalize_response_tokens(self, response: list[int]) -> list[int]:
+        """Restore the prefilled ``<think>\\n`` opener before parsing.
+
+        ``_get_generation_suffix`` prefills ``<think>\\n``, so sampled tokens
+        start INSIDE the think block: they contain ``</think>`` but no opening
+        ``<think>``. Without restoring the opener, ``parse_think_blocks`` can't
+        split the block and the reasoning leaks into the graded content.
+        Mirrors ``tinker_cookbook.renderers.qwen3_5.Qwen3_5Renderer``.
+        """
+        think_prefix = self.tokenizer.encode("<think>\n", add_special_tokens=False)
+        if response[: len(think_prefix)] == think_prefix:
+            return response
+        if "</think>" in str(self.tokenizer.decode(response)):
+            return think_prefix + response
+        return response
+
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
+        response = self._normalize_response_tokens(response)
         assistant_message, parse_success = parse_response_for_stop_token(
             response=response,
             tokenizer=self.tokenizer,

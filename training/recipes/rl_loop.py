@@ -63,8 +63,10 @@ from training.utils import (
     read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
+    build_renderer,
     ReconnectableClient,
 )
+from tinker_cookbook.renderers import get_text_content
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup
 from training.utils.rl.tis import TISConfig
@@ -269,6 +271,24 @@ def reward_fn(completion: str, row: dict) -> float:
     return 1.0 if predicted == truth else 0.0
 
 
+def _response_text_for_grading(renderer, sampled) -> str:
+    """Return the model's response-channel text for reward grading.
+
+    Parses the completion TOKENS through the renderer's ``parse_response``
+    (which restores the prompt-prefilled ``<think>`` via
+    ``_normalize_response_tokens`` and splits off the think block) and returns
+    ``get_text_content`` -- the post-think answer, matching how the chat
+    template structures generations. This grades the model's response channel
+    rather than the raw completion text (which, for thinking models, still
+    contains the reasoning because the prefilled ``<think>`` lives in the
+    prompt).
+    """
+    message, _termination = renderer.parse_response(
+        sampled.full_tokens[sampled.prompt_len :]
+    )
+    return get_text_content(message)
+
+
 # ---------------------------------------------------------------------------
 # Rollout filter -- customise this for your task
 # ---------------------------------------------------------------------------
@@ -448,6 +468,10 @@ def main(
             reference_job_id = service.reference_trainer_job_id
 
         tokenizer = load_deployment_tokenizer(cfg.deployment)
+        # Renderer used to grade the model's response channel (see
+        # _response_text_for_grading): restores the prompt-prefilled <think>
+        # and strips the think block so reward sees the post-think answer.
+        response_renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
         # Adaptive concurrency — window adjusts based on server-side prefill queue.
         # For fixed (no rate limiting), use FixedConcurrencyController instead.
         # Fallback scales with deployment replicas (see ConcurrencyConfig.initial_window).
@@ -556,7 +580,7 @@ def main(
             if not sampled or len(sampled) < completions_per_prompt:
                 return None
 
-            rewards = [reward_fn(s.text, row) for s in sampled]
+            rewards = [reward_fn(_response_text_for_grading(response_renderer, s), row) for s in sampled]
             advantages = compute_advantages(rewards)
 
             prompt_len = sampled[0].prompt_len

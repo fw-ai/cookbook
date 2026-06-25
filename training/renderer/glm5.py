@@ -718,7 +718,24 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             prefix_messages.append(Message(role="system", content=system_prompt))
         return prefix_messages
 
+    def _normalize_response_tokens(self, response: list[int]) -> list[int]:
+        """Restore the prefilled ``<think>`` opener before parsing.
+
+        ``_get_generation_suffix`` prefills ``<|assistant|><think>``, so sampled
+        tokens start INSIDE the think block: they contain ``</think>`` but no
+        opening ``<think>``. Without restoring the opener, ``parse_think_blocks``
+        can't split the block and the reasoning leaks into the graded content.
+        Mirrors ``tinker_cookbook.renderers.qwen3_5.Qwen3_5Renderer``.
+        """
+        think_prefix = self.tokenizer.encode("<think>", add_special_tokens=False)
+        if response[: len(think_prefix)] == think_prefix:
+            return response
+        if "</think>" in str(self.tokenizer.decode(response)):
+            return think_prefix + response
+        return response
+
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
+        response = self._normalize_response_tokens(response)
         end_idx = len(response)
         for stop_token in self.get_stop_sequences():
             try:
