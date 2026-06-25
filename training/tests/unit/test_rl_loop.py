@@ -1,15 +1,69 @@
 from __future__ import annotations
 
+import importlib
+import inspect
 import json
+import pkgutil
+from types import SimpleNamespace
 
 import pytest
 
 import training.recipes.rl_loop as module
 from training.utils.rl.losses import PromptGroup
+from tinker_cookbook.renderers import get_text_content
+from tinker_cookbook.renderers.base import Message, Renderer
 
 
 class _StopAfterProvisioning(RuntimeError):
     pass
+
+
+def test_response_text_for_grading_uses_renderer_parse_response():
+    class _Renderer:
+        def parse_response(self, tokens):
+            assert tokens == [10, 11, 12]
+            return Message(role="assistant", content="<answer>42</answer>"), True
+
+    sampled = SimpleNamespace(
+        full_tokens=[1, 2, 3, 10, 11, 12],
+        prompt_len=3,
+        text="raw completion with reasoning",
+    )
+    assert module._response_text_for_grading(_Renderer(), sampled) == "<answer>42</answer>"
+
+
+def test_response_text_for_grading_does_not_fallback_on_parse_failure():
+    class _Renderer:
+        def parse_response(self, tokens):
+            raise ValueError("parse failed")
+
+    sampled = SimpleNamespace(full_tokens=[1, 2, 3], prompt_len=1, text="fallback text")
+    with pytest.raises(ValueError, match="parse failed"):
+        module._response_text_for_grading(_Renderer(), sampled)
+
+
+def test_all_cookbook_renderer_classes_implement_parse_response():
+    import training.renderer
+
+    assert callable(get_text_content)
+    get_text_content(Message(role="assistant", content="hello"))
+
+    missing: list[str] = []
+    for modinfo in pkgutil.walk_packages(
+        training.renderer.__path__, training.renderer.__name__ + "."
+    ):
+        if ".verifier" in modinfo.name:
+            continue
+        mod = importlib.import_module(modinfo.name)
+        for _, obj in inspect.getmembers(mod, inspect.isclass):
+            if not issubclass(obj, Renderer) or obj is Renderer:
+                continue
+            if inspect.isabstract(obj):
+                continue
+            if not callable(getattr(obj, "parse_response", None)):
+                missing.append(f"{modinfo.name}.{obj.__name__}")
+
+    assert missing == []
 
 
 def test_extract_answer_reads_digits_from_answer_block():
