@@ -101,6 +101,23 @@ def _strip_think_block(text: str) -> str:
     return text.strip()
 
 
+def _append_turn_suffix(core_ids: List[int], suffix_ids: List[int]) -> List[int]:
+    """Append the end-of-turn suffix, dropping any server-emitted trailing copy.
+
+    The model may finish a turn by emitting the end-of-turn marker itself, in
+    which case the server returns it inside ``core_ids``. Appending the suffix
+    unconditionally would duplicate it (e.g. ``<|im_end|><|im_end|>\\n``), so we
+    strip the longest tail of ``core_ids`` that overlaps the head of the suffix.
+    """
+    core = [int(x) for x in core_ids]
+    suffix = [int(x) for x in suffix_ids]
+    for overlap in range(min(len(core), len(suffix)), 0, -1):
+        if core[-overlap:] == suffix[:overlap]:
+            core = core[:-overlap]
+            break
+    return core + suffix
+
+
 def _build_tool_call_parser():
     """Build a tool call parser for search/submit_answer tools."""
     valid_names = {TOOL_NAME_SEARCH, TOOL_NAME_SUBMIT}
@@ -380,9 +397,7 @@ class MultiHopQARolloutProcessor(RolloutProcessor):
                         int(x) for x in list(completion.get("completion_ids") or [])
                     ]
                     assistant_suffix_ids = text_client.encode_special_suffix()
-                    completion_ids = list(raw_completion_ids) + [
-                        int(x) for x in list(assistant_suffix_ids)
-                    ]
+                    completion_ids = _append_turn_suffix(raw_completion_ids, assistant_suffix_ids)
                     completion_text = shared_tokenizer.decode(
                         raw_completion_ids, skip_special_tokens=False,
                     ) if raw_completion_ids else str(completion.get("completion_text") or "")

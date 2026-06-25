@@ -211,6 +211,23 @@ def _strip_trailing_token_suffix(token_ids: List[int], suffix_ids: List[int]) ->
     return normalized_token_ids, 0
 
 
+def _append_turn_suffix(core_ids: List[int], suffix_ids: List[int]) -> List[int]:
+    """Append the end-of-turn suffix, dropping any server-emitted trailing copy.
+
+    The model may finish a turn by emitting the end-of-turn marker itself, in
+    which case the server returns it inside ``core_ids``. Appending the suffix
+    unconditionally would duplicate it (e.g. ``<|im_end|><|im_end|>\\n``), so we
+    strip the longest tail of ``core_ids`` that overlaps the head of the suffix.
+    """
+    core = [int(x) for x in core_ids]
+    suffix = [int(x) for x in suffix_ids]
+    for overlap in range(min(len(core), len(suffix)), 0, -1):
+        if core[-overlap:] == suffix[:overlap]:
+            core = core[:-overlap]
+            break
+    return core + suffix
+
+
 def _build_kimi_toolcall_generation_prefill_token_ids(tokenizer_name_or_path: str) -> List[int]:
     if not _is_kimi_tokenizer_name(tokenizer_name_or_path):
         return []
@@ -1072,11 +1089,9 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                         assistant_suffix_ids = image_client.encode_assistant_turn_suffix()
                     else:
                         assistant_suffix_ids = text_client.encode_special_suffix()
-                    completion_ids = (
-                        [int(x) for x in list(assistant_toolcall_prefill_ids)]
-                        + list(raw_completion_ids)
-                        + [int(x) for x in list(assistant_suffix_ids)]
-                    )
+                    completion_ids = [
+                        int(x) for x in list(assistant_toolcall_prefill_ids)
+                    ] + _append_turn_suffix(raw_completion_ids, assistant_suffix_ids)
                     completion_text = str(completion.get("completion_text") or "")
                     all_prompt_ids.extend(prompt_ids)
                     all_completion_ids.extend(completion_ids)
