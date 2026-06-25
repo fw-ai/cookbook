@@ -79,15 +79,19 @@ MULTI_TURN_3 = [
     },
 ]
 
+# Trained spans exclude the synthesized end-of-turn close. Turn 1's trained
+# completion is [prefill=99, raw tool-call token=10]; the close (90) is appended
+# only into turn 2's prompt as loss-masked framing and must NOT be trained.
 KIMI_STYLE_MULTI_TURN = [
     {
         "prompt_ids": [1, 2, 3],
-        "completion_ids": [99, 10, 90],  # prefill, raw tool call token(s), im_end
-        "assistant_turn_len": 3,
+        "completion_ids": [99, 10],  # prefill, raw tool call token(s) -- no close
+        "assistant_turn_len": 2,
     },
     {
+        # prompt = turn1 prompt + framed assistant turn [99, 10, 90] + tool [20, 21]
         "prompt_ids": [1, 2, 3, 99, 10, 90, 20, 21],
-        "completion_ids": [99, 30, 90],
+        "completion_ids": [99, 30],
     },
 ]
 
@@ -198,18 +202,24 @@ def test_fallback_when_assistant_turn_len_missing():
     assert spans_with_mrt[0] == spans_no_mrt[0]
 
 
-def test_kimi_style_mask_includes_prefill_and_im_end_tokens():
-    """Assistant framing tokens should be masked as model output too."""
+def test_kimi_style_prefill_trained_but_close_is_framing():
+    """Tool-call prefill is trained; the inter-turn close is framing (loss=0).
+
+    The synthesized end-of-turn close that bridges turn 1 to turn 2 (token 90 at
+    position 5) lives in turn 2's prompt and must be excluded from every span, so
+    neither the UI mask nor the training mask marks it as model output.
+    """
     ttt, mrt = _make_traces(KIMI_STYLE_MULTI_TURN)
     spans = compute_model_output_spans(ttt, mrt)
 
-    assert spans == [(3, 3, 1), (8, 3, 2)]
+    assert spans == [(3, 2, 1), (8, 2, 2)]
 
-    ui_mask = build_ui_token_mask(spans, 11)
-    assert ui_mask == [0, 0, 0, 1, 1, 1, 0, 0, 2, 2, 2]
+    ui_mask = build_ui_token_mask(spans, 10)
+    assert ui_mask == [0, 0, 0, 1, 1, 0, 0, 0, 2, 2]
+    assert ui_mask[5] == 0, "inter-turn close must not be trained as model output"
 
-    train_mask = build_training_loss_mask(spans, 10)
-    assert train_mask == [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    train_mask = build_training_loss_mask(spans, 9)
+    assert train_mask == [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0]
 
 
 def test_shared_weighted_datum_matches_training_loss_mask():
