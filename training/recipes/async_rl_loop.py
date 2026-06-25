@@ -140,9 +140,12 @@ class Config:
     must be ``>= completions_per_prompt`` or the gate stalls."""
     min_group_size: int = 1
     """Minimum surviving rollout runs per row to emit a PromptGroup."""
-    grad_accumulation_normalization: GradAccNormalization | str | None = (
-        GradAccNormalization.NUM_LOSS_TOKENS
-    )
+    grad_accumulation_normalization: GradAccNormalization | str | None = None
+    """Optional server-side normalization for accumulated gradients.
+    ``None`` leaves accumulated gradients unchanged."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 disables clipping."""
 
     policy_loss: PolicyLoss = "grpo"
     """One of the registered RL policy losses (see :data:`PolicyLoss`).
@@ -682,7 +685,9 @@ def main(
                     base_lr=cfg.learning_rate,
                     total_steps=total_steps_estimate,
                 )
-                adam_params = tinker.AdamParams(learning_rate=step_lr, **DEFAULT_ADAM)
+                adam_kwargs = dict(DEFAULT_ADAM)
+                adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+                adam_params = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
                 with elapsed_timer("optim_step") as span:
                     optim_result = policy.optim_step(
                         adam_params,

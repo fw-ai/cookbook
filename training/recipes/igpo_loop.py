@@ -105,9 +105,12 @@ class Config:
     router_replay: bool = False
     router_replay_completion_only: bool = True
 
-    grad_accumulation_normalization: GradAccNormalization | str | None = (
-        GradAccNormalization.NUM_LOSS_TOKENS
-    )
+    grad_accumulation_normalization: GradAccNormalization | str | None = None
+    """Optional server-side normalization for accumulated gradients.
+    ``None`` leaves accumulated gradients unchanged."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 disables clipping."""
 
     policy_loss: PolicyLoss = "grpo"
     tis: TISConfig = field(default_factory=TISConfig)
@@ -369,7 +372,9 @@ def main(
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         cursor = RawRowCursor(max_rows=len(all_rows))
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
