@@ -22,7 +22,7 @@ Optimisations:
 
 Architecture:
     - Policy RLOR job:    forward_backward_custom + optim_step (trainable)
-    - Reference RLOR job: forward only (frozen base model, for KL baseline)
+    - Reference RLOR job: frozen base model runtime for KL baseline
     - Epoch 0: DataLoader → ref forward → train via unbounded asyncio.Queue
     - Epochs 1+: ref logprobs streamed from AppendOnlyPickleLog, no ref GPU
 
@@ -711,8 +711,9 @@ def main(
         # DPO always needs a reference. The SDK owns the shared-vs-separate
         # decision: LoRA without an explicit reference shape reuses the policy
         # session; full-param (or an explicit reference_training_shape_id)
-        # provisions a separate forward-only reference trainer that `service`
-        # owns. `reference_job_id` is that trainer's id, or None when shared.
+        # provisions a separate frozen reference trainer that `service` owns.
+        # Backend trainer creation selects a LoRA-capable shape unless
+        # cfg.trainer.reference_training_shape_id pins a LoRA-capable shape.
         reference = ReconnectableClient.from_training_client(
             service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
             base_model=cfg.base_model,

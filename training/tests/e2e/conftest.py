@@ -25,7 +25,7 @@ DEFAULT_MODEL = "accounts/fireworks/models/qwen3p5-9b"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3.5-9B"
 DEFAULT_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k"
 DEFAULT_REFERENCE_TRAINING_SHAPE = (
-    "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-forward-only"
+    "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
 )
 DEFAULT_LORA_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
 DEFAULT_TRAINING_ACCELERATOR = None
@@ -109,7 +109,7 @@ def e2e_training_shape(port_lora_rank) -> str | None:
 
 @pytest.fixture(scope="module")
 def e2e_reference_training_shape(port_lora_rank) -> str | None:
-    """Forward-only reference shape for full-param SDK-managed jobs."""
+    """Explicit reference shape for full-param SDK-managed jobs."""
     if port_lora_rank:
         return None
     return _get_env(
@@ -130,7 +130,7 @@ def e2e_training_profile(sdk_managers, e2e_training_shape, port_lora_rank):
 
 @pytest.fixture(scope="module")
 def e2e_reference_training_profile(sdk_managers, e2e_reference_training_shape):
-    """Resolve the full-param forward-only reference shape before provisioning."""
+    """Resolve the full-param reference shape before provisioning."""
     if e2e_reference_training_shape is None:
         return None
     rlor_mgr, _deploy_mgr = sdk_managers

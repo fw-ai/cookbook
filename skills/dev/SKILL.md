@@ -1,6 +1,6 @@
 ---
 name: fireworks-training
-description: Debug and migrate training work on Fireworks via the cookbook. Covers greenfield work (pick a recipe, fork it, resolve training + deployment shape from a profile), user-level recovery (promote a checkpoint, list promotable checkpoints on a trainer, self-check a `WeightSyncScope.PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up), and migrating deprecated managed-infra scripts (port `InfraConfig` / `setup_infra` / `ResourceCleanup` to `TrainerConfig` + the recipe's SDK-managed provisioning path). The cookbook is the reference implementation of `fireworks.training.sdk`; fork a recipe or run an example instead of reimplementing. Trigger when the user wants to start, resume, promote, migrate off deprecated infra APIs, or do a first-line diagnosis on a training run; for deeper recovery the skill routes users to Fireworks support.
+description: Debug and migrate training work on Fireworks via the cookbook. Covers greenfield work (pick a recipe, fork it, resolve training + deployment shape from a profile), distillation / OPD / SDFT recipe work, user-level recovery (promote a checkpoint, list promotable checkpoints on a trainer, self-check a `WeightSyncScope.PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up), and migrating deprecated managed-infra scripts (port `InfraConfig` / `setup_infra` / `ResourceCleanup` to `TrainerConfig` + the recipe's SDK-managed provisioning path). The cookbook is the reference implementation of `fireworks.training.sdk`; fork a recipe or run an example instead of reimplementing. Trigger when the user wants to start, resume, promote, distill, migrate off deprecated infra APIs, or do a first-line diagnosis on a training run; for deeper recovery the skill routes users to Fireworks support.
 ---
 
 # Fireworks training
@@ -16,6 +16,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "How do I set up / install the cookbook?" | [`references/setup.md`](references/setup.md) |
 | "I want to run something out of the box" | [`references/examples.md`](references/examples.md) |
 | "I want to fork a recipe and edit the Config" | [`references/recipes.md`](references/recipes.md) |
+| "Distillation" / "OPD" / "SDFT" / `distillation_loop.py` / `topk_forward_kl` / `teacher_messages` | [`references/distillation.md`](references/distillation.md) |
 | "Migrate off `InfraConfig` / `setup_infra` / `ResourceCleanup`" / `TypeError: ... unexpected keyword argument 'infra'` / `ImportError: cannot import name 'setup_infra'` | [`references/migrate.md`](references/migrate.md) |
 | "How do I set the training / deployment shape?" | [`references/shapes.md`](references/shapes.md) |
 | `RuntimeError: Failed to resolve latest validated training shape` | [`references/shapes.md`](references/shapes.md#when-resolve_training_profile-raises-failed-to-resolve-latest-validated-training-shape) — don't pin a version; retry or reach out |

@@ -61,7 +61,7 @@ cfg = rl_loop.Config(
     ...,
     infra=InfraConfig(
         training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200",
-        ref_training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200-forward",
+        ref_training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200-lora",
         trainer_replica_count=2,
     ),
     weight_sync=WeightSyncConfig(weight_sync_interval=1, dcp_save_interval=10),
@@ -73,7 +73,7 @@ cfg = rl_loop.Config(
     ...,
     trainer=TrainerConfig(
         training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200",
-        reference_training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200-forward",
+        reference_training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200-lora",
         replica_count=2,
     ),
     weight_sync_interval=1,   # top-level (RL family)
@@ -128,8 +128,9 @@ finally:
 
 The SDK owns the reference strategy: LoRA without an explicit
 `reference_training_shape_id` reuses the policy session; full-param (or an
-explicit reference shape) provisions a separate forward-only reference trainer
-that `service` owns. The reference trainer is torn down per
+explicit reference shape) provisions a separate frozen reference trainer that
+`service` owns. When no full-param reference shape is pinned, backend trainer
+creation auto-selects a LoRA-capable shape. The reference trainer is torn down per
 `TrainerConfig.cleanup_reference_on_close` (default `True`).
 
 ## Verify the port

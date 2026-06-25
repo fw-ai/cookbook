@@ -21,10 +21,10 @@ class ServerlessCheckpointClient:
     """Adapts the SDK's session-scoped checkpoint endpoints to the control-plane
     client protocol that ``TrainingCheckpoints`` expects (``_CheckpointLister``).
 
-    In serverless mode the "trainer job" is a ``TrainingSession``, so list/promote
-    target ``accounts/{a}/trainingSessions/{s}/checkpoints`` rather than the
-    ``rlorTrainerJobs`` path. Save/load still go through the live training client
-    to the pooled trainer — only list + promote diverge here.
+    In serverless mode checkpoint list/promote target the owning
+    ``TrainingSession`` (``accounts/{a}/trainingSessions/{s}/checkpoints``)
+    rather than the ``rlorTrainerJobs`` path. Save/load still go through the
+    live training client to the pooled trainer; only list + promote diverge.
     """
 
     def __init__(self, fw_client: FireworksClient, account_id: str) -> None:
@@ -35,8 +35,8 @@ class ServerlessCheckpointClient:
         return f"accounts/{self._account_id}/trainingSessions/{session_id}"
 
     def list_checkpoints(self, job_id: str, *, page_size: int = 200) -> list[dict]:
-        # ``job_id`` is the TrainingCheckpoints trainer_id, which in serverless
-        # mode is the TrainingSession id.
+        # ``job_id`` is the TrainingCheckpoints trainer_id, which is the
+        # owning TrainingSession id in serverless mode.
         return self._fw.list_training_session_checkpoints(
             self._session_name(job_id), page_size=page_size
         )
@@ -74,7 +74,9 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
     shape to resolve sequence length from on this path).
     """
     if cfg.lora_rank <= 0:
-        raise ValueError("serverless mode requires lora_rank > 0 (the pool is LoRA-only).")
+        raise ValueError(
+            "serverless mode requires lora_rank > 0 (the pool is LoRA-only)."
+        )
     if not cfg.max_seq_len:
         raise ValueError(
             "serverless mode requires Config.max_seq_len to be set "
@@ -85,16 +87,18 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         api_key=api_key,
         default_headers=additional_headers or None,
     )
-    training_client = service.create_lora_training_client(cfg.base_model, rank=cfg.lora_rank)
-    # The gateway encodes model_id as "{session_id}:{trainer_id}"; recover the
-    # TrainingSession id for the session-scoped checkpoint promote.
-    model_id = training_client.model_id
-    if ":" not in model_id:
+    training_client = service.create_lora_training_client(
+        cfg.base_model, rank=cfg.lora_rank
+    )
+    # The API gateway now returns run-scoped model ids
+    # ("{run_id}:train:{seq}"). The owning CP TrainingSession remains on the
+    # service holder and is the resource used for checkpoint list/promote.
+    session_id = getattr(service, "training_session_id", None)
+    if not session_id:
         raise RuntimeError(
-            f"serverless model_id {model_id!r} is not session-prefixed; "
+            "serverless service did not expose a training_session_id; "
             "cannot resolve the training session id for checkpoint promotion."
         )
-    session_id = model_id.split(":", 1)[0]
     client = ReconnectableClient.from_training_client(
         training_client,
         base_model=cfg.base_model,
@@ -107,7 +111,9 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
     # gateway (not the serverless surface base_url). cp_client holds a persistent
     # sync httpx client, so register its close on teardown like the dedicated
     # path closes its service client.
-    cp_client = FireworksClient(api_key=api_key, base_url=base_url, additional_headers=additional_headers)
+    cp_client = FireworksClient(
+        api_key=api_key, base_url=base_url, additional_headers=additional_headers
+    )
     stack.callback(cp_client.close)
     ckpt = TrainingCheckpoints(
         client,
@@ -116,5 +122,6 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         log_path=cfg.log_path,
         lora_rank=cfg.lora_rank,
         serverless=True,
+        current_run_id=getattr(training_client, "run_id", None),
     )
     return service, client, ckpt, session_id, cfg.max_seq_len

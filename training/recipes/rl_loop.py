@@ -131,9 +131,12 @@ class Config:
     router_replay: bool = False
     router_replay_completion_only: bool = True
 
-    grad_accumulation_normalization: GradAccNormalization | str | None = GradAccNormalization.NUM_LOSS_TOKENS
-    """Normalization mode for accumulated gradients at optim_step.
-    Defaults to ``GradAccNormalization.NUM_LOSS_TOKENS`` (per-token mean)."""
+    grad_accumulation_normalization: GradAccNormalization | str | None = None
+    """Optional server-side normalization for accumulated gradients.
+    ``None`` leaves accumulated gradients unchanged."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 disables clipping."""
 
     policy_loss: PolicyLoss = "grpo"
     """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
@@ -425,9 +428,11 @@ def main(
         # The KL reference is optional in RL (only needed when kl_beta > 0).
         # The SDK owns the shared-vs-separate decision: LoRA without an explicit
         # reference shape reuses the policy session; full-param (or an explicit
-        # reference_training_shape_id) provisions a separate forward-only
-        # reference trainer that `service` owns. reference_job_id mirrors the
-        # policy job when shared, else the separate reference trainer's id.
+        # reference_training_shape_id) provisions a separate frozen reference
+        # trainer that `service` owns. Backend trainer creation selects a
+        # LoRA-capable shape unless a LoRA-capable shape is pinned.
+        # reference_job_id mirrors the policy job when shared, else the
+        # separate reference trainer's id.
         reference = None
         reference_job_id = None
         if cfg.kl_beta > 0:
@@ -504,7 +509,9 @@ def main(
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         cursor = RawRowCursor(max_rows=len(all_rows))
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
         # Client-side fallback: build the Python loss closure used by
         # forward_backward_custom(...) when no eligible builtin kernel exists.
         # ``cfg`` satisfies the LossArgs Protocol via its top-level loss fields.

@@ -135,10 +135,10 @@ It applies to trainer jobs the recipe creates for that run; a pre-created
 | --- | --- |
 | `lora_rank` | Rank of the LoRA adapter (e.g. `64`, `128`) |
 
-When `kl_beta > 0` the RL loop uses a separate forward-only reference
-client for the full-param frozen base in addition to the LoRA policy
-trainer. Auto-selection picks an appropriate validated reference shape
-unless `reference_training_shape_id` is set explicitly.
+When `kl_beta > 0` the RL loop uses a separate frozen reference client for
+full-parameter policy runs. Backend trainer creation auto-selects a
+LoRA-capable reference shape unless `reference_training_shape_id` explicitly
+pins a LoRA-capable shape.
 
 **DPO / ORPO** -- also requires:
 

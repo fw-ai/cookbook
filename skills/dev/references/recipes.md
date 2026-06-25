@@ -10,6 +10,7 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | **RL (primary)** — write a rollout function; recipe owns the loop. Async by default, sync via `synchronous_training=True` | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
 | RL (simpler, synchronous GRPO scaffold) | `training/recipes/rl_loop.py` |
 | Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
+| Distillation / OPD / SDFT | `training/recipes/distillation_loop.py` — see [`distillation.md`](distillation.md) |
 
 ## "Reference loop" means these files
 
@@ -26,6 +27,8 @@ Always required on `Config` (with `trainer=TrainerConfig(...)`):
 - `trainer.training_shape_id` — optional override; leave unset for auto-selection. Do not set manual `accelerator_type` / `node_count` (see [`shapes.md`](shapes.md))
 
 RL-specific: for the primary `async_rl_loop.py`, you write a `rollout_fn` (typically a `rollout.py`) and a `train.py` that sets the `Config` (policy loss, reward wiring, deployment) and calls `main(cfg, rollout_fn_factory=..., rows=...)`; the recipe owns the loop. The simpler synchronous `rl_loop.py` takes a reward function, rollout batch sizes, and a deployment config directly. See [`rl/async-rl.md`](rl/async-rl.md).
+
+Distillation-specific: use `distillation_loop.py` for OPD/SDFT. Open [`distillation.md`](distillation.md) before changing its config, dataset format, teacher routing, or top-K objective plumbing.
 
 ## Resume
 

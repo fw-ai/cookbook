@@ -165,8 +165,12 @@ class Config:
     prompt_groups_per_step: int = 1
     """Number of prompt groups per optimizer step."""
 
-    grad_accumulation_normalization: GradAccNormalization | str | None = GradAccNormalization.NUM_LOSS_TOKENS
-    """Normalization mode for accumulated gradients at optim_step."""
+    grad_accumulation_normalization: GradAccNormalization | str | None = None
+    """Optional server-side normalization for accumulated gradients.
+    ``None`` leaves accumulated gradients unchanged."""
+
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 disables clipping."""
 
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     """Concurrency control for inference sampling."""
@@ -685,7 +689,9 @@ def main(
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
         server_loss_config = {"ratio_log_cap": cfg.ratio_log_cap}
 
         objective = create_distillation_objective(

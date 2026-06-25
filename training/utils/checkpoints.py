@@ -39,7 +39,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 import training.utils.fileio as fileio
@@ -111,6 +111,8 @@ def _short_name(resource_name: str) -> str:
 
 
 _SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
+_RUN_SCOPED_NAME_RE = re.compile(r"^run-[0-9a-f]{32}[:-](.+)$")
+_PROMOTABLE_FRESHNESS_TOLERANCE_S = 10.0
 
 
 def _logical_name(short: str) -> str:
@@ -122,6 +124,47 @@ def _logical_name(short: str) -> str:
     skip-if-exists the caller's logical name is what should match.
     """
     return _SESSION_SUFFIX_RE.sub("", short)
+
+
+def _public_logical_name(short: str) -> str:
+    """Return the caller-visible logical name for a CP checkpoint id.
+
+    Serverless training-session checkpoints are surfaced as
+    ``<run_id>-<checkpoint_id>`` to keep multiple source runs unique. The
+    cookbook caller only knows the trainer-side ``<checkpoint_id>`` it passed
+    to ``save()``, so skip/wait checks compare against the suffix after the
+    public run prefix. Accept the legacy ``<run_id>:<checkpoint_id>`` form too
+    so in-flight jobs from older control planes still skip duplicate saves.
+    """
+    m = _RUN_SCOPED_NAME_RE.match(short)
+    if m:
+        short = m.group(1)
+    return _logical_name(short)
+
+
+def _logical_name_for_run(short: str, current_run_id: str | None = None) -> str:
+    if current_run_id:
+        for sep in ("-", ":"):
+            prefix = f"{current_run_id}{sep}"
+            if short.startswith(prefix):
+                return _logical_name(short[len(prefix) :])
+    return _public_logical_name(short)
+
+
+def _is_run_scoped_name(short: str) -> bool:
+    return _RUN_SCOPED_NAME_RE.match(short) is not None
+
+
+def _belongs_to_run(short: str, current_run_id: str | None = None) -> bool:
+    if current_run_id is None:
+        # Without the owning run id, only legacy unscoped rows are safe to use.
+        # A run-scoped row belongs to a specific source run under the shared
+        # TrainingSession; treating it as eligible would let resume/promote/skip
+        # pick another run's checkpoint.
+        return not _is_run_scoped_name(short)
+    return short.startswith(f"{current_run_id}-") or short.startswith(
+        f"{current_run_id}:"
+    )
 
 
 def _is_resumable_row(row: dict) -> bool:
@@ -204,6 +247,7 @@ class TrainingCheckpoints:
         save_appear_timeout_s: float = 90.0,
         save_stabilize_s: float = 15.0,
         save_poll_s: float = 3.0,
+        current_run_id: str | None = None,
     ) -> None:
         self._client = client
         self._fw_client = fw_client
@@ -213,6 +257,7 @@ class TrainingCheckpoints:
         # In serverless mode trainer_id is the TrainingSession id (not a job),
         # which changes how resume refs are built — see resume().
         self._serverless = serverless
+        self._current_run_id = current_run_id if serverless else None
         self._save_appear_timeout_s = save_appear_timeout_s
         self._save_stabilize_s = save_stabilize_s
         self._save_poll_s = save_poll_s
@@ -280,11 +325,25 @@ class TrainingCheckpoints:
                 )
             else:
                 t1 = time.time()
+                sampler_save_started = datetime.now(timezone.utc)
                 logger.info("Saving sampler checkpoint '%s'...", name)
                 self._client.save_weights_for_sampler(name, checkpoint_type="base")
                 logger.info(
                     "Sampler checkpoint '%s' saved (%.1fs)", name, time.time() - t1
                 )
+                actual_name = self._wait_for_promotable_after_save(
+                    name=name,
+                    save_started=sampler_save_started,
+                    appear_timeout_s=self._save_appear_timeout_s,
+                    poll_s=self._save_poll_s,
+                )
+                if actual_name and actual_name != name:
+                    logger.info(
+                        "Sampler server-stored name %r differs from caller name %r; "
+                        "using control-plane row for subsequent promotion.",
+                        actual_name,
+                        name,
+                    )
 
     # -- Resume ------------------------------------------------------------
 
@@ -357,22 +416,23 @@ class TrainingCheckpoints:
         latest = self._latest_resumable()
         if latest:
             short = _short_name(latest["name"])
+            logical = self._trainer_logical_name(short)
             # In serverless mode the pooled multi-session trainer namespaces
-            # checkpoints under sessions/<session_id>/ itself and rejects a
+            # checkpoints under the current run/session itself and rejects a
             # cross_job://<session_id>/<name> ref (session_id is not a source
-            # job, and that ref's name must already be session-scoped). Resume
-            # from the bare logical name so the trainer prepends the session
+            # job, and CP rows are public run-scoped ids). Resume from the
+            # trainer-side logical name so the trainer prepends its current run
             # prefix; the dedicated path also uses the local trainer namespace
             # because cross_job://<same-trainer>/<name> points at the global
             # durable checkpoint prefix and can miss still-local trainer state.
-            path = self._client.resolve_checkpoint_path(short, source_job_id=None)
+            path = self._client.resolve_checkpoint_path(logical, source_job_id=None)
             logger.info("Resuming from control-plane row: %s", short)
             t0 = time.time()
             self._client.load_state_with_optimizer(path)
             logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
             return ResumeInfo(
-                step=_step_from_name(short),
-                data_consumed=self._read_dataloader(short),
+                step=_step_from_name(logical),
+                data_consumed=self._read_dataloader(logical),
                 source_job_id=None if self._serverless else self._trainer_id,
             )
 
@@ -403,7 +463,11 @@ class TrainingCheckpoints:
         sampler save.
         """
         rows = _newest_first(
-            [r for r in self._list_checkpoints() if r.get("promotable")]
+            [
+                r
+                for r in self._list_checkpoints()
+                if r.get("promotable") and self._row_matches_current_run(r)
+            ]
         )
         if not rows:
             raise RuntimeError(
@@ -476,7 +540,9 @@ class TrainingCheckpoints:
                 time.sleep(poll_s)
                 continue
             surfaced = any(
-                _is_resumable_row(r) and r.get("createTime", "") >= save_started_iso
+                _is_resumable_row(r)
+                and self._row_matches_current_run(r)
+                and r.get("createTime", "") >= save_started_iso
                 for r in rows
             )
             if surfaced:
@@ -503,15 +569,68 @@ class TrainingCheckpoints:
                 fallback,
             )
             return fallback
-        resumable = [r for r in rows if _is_resumable_row(r)]
+        resumable = [
+            r for r in rows if _is_resumable_row(r) and self._row_matches_current_run(r)
+        ]
         if not resumable:
             return fallback
         newest = _newest_first(resumable)[0]
-        return _short_name(newest["name"])
+        return self._trainer_logical_name(_short_name(newest["name"]))
+
+    def _wait_for_promotable_after_save(
+        self,
+        *,
+        name: str,
+        save_started: datetime,
+        appear_timeout_s: float,
+        poll_s: float,
+    ) -> str | None:
+        """Wait until a freshly-saved sampler row is visible on the CP.
+
+        Fast-checkpoint sampler saves are discovered through a regional scan,
+        which can lag the trainer RPC return briefly. Without this wait the
+        next ``promote_latest`` call can observe an empty checkpoint list even
+        though the sampler bytes were written successfully.
+        """
+        deadline = time.time() + appear_timeout_s
+        while time.time() < deadline:
+            try:
+                row = self._promotable_row(name, min_create_time=save_started)
+            except AttributeError as e:
+                logger.warning(
+                    "list_checkpoints not implemented on control-plane client (%s); "
+                    "cannot confirm sampler checkpoint %r surfaced.",
+                    e,
+                    name,
+                )
+                return None
+            except Exception as e:
+                logger.debug(
+                    "list_checkpoints during sampler save-resolution failed: %s; retrying.",
+                    e,
+                )
+                time.sleep(poll_s)
+                continue
+            if row:
+                return _short_name(row["name"])
+            time.sleep(poll_s)
+
+        logger.warning(
+            "Timed out after %.0fs waiting for sampler checkpoint %r to surface "
+            "as promotable; continuing and letting promote_latest perform the "
+            "final control-plane check.",
+            appear_timeout_s,
+            name,
+        )
+        return None
 
     def _latest_resumable(self) -> dict | None:
         try:
-            rows = [r for r in self._list_checkpoints() if _is_resumable_row(r)]
+            rows = [
+                r
+                for r in self._list_checkpoints()
+                if _is_resumable_row(r) and self._row_matches_current_run(r)
+            ]
         except Exception as e:
             logger.warning(
                 "Control-plane list_checkpoints failed (%s); treating as fresh start. "
@@ -522,6 +641,16 @@ class TrainingCheckpoints:
         rows = _newest_first(rows)
         return rows[0] if rows else None
 
+    def _row_matches_current_run(self, row: dict) -> bool:
+        if not self._serverless:
+            return True
+        return _belongs_to_run(_short_name(row.get("name", "")), self._current_run_id)
+
+    def _trainer_logical_name(self, short: str) -> str:
+        if self._serverless:
+            return _logical_name_for_run(short, self._current_run_id)
+        return _logical_name(short)
+
     def _promotable_exists(self, name: str) -> bool:
         """Check if ``name`` is already on the control plane as promotable.
 
@@ -529,7 +658,7 @@ class TrainingCheckpoints:
         overwrite is safe), trading dedup for forward progress.
         """
         try:
-            rows = self._list_checkpoints()
+            row = self._promotable_row(name)
         except Exception as e:
             logger.warning(
                 "Control-plane list_checkpoints failed during skip-check (%s); "
@@ -537,11 +666,33 @@ class TrainingCheckpoints:
                 e,
             )
             return False
-        return any(
-            r.get("promotable")
-            and _logical_name(_short_name(r.get("name", ""))) == name
-            for r in rows
+        return row is not None
+
+    def _promotable_row(
+        self,
+        name: str,
+        *,
+        min_create_time: datetime | None = None,
+    ) -> dict | None:
+        rows = _newest_first(
+            [r for r in self._list_checkpoints() if r.get("promotable")]
         )
+        freshness_floor = None
+        if min_create_time is not None:
+            freshness_floor = min_create_time - timedelta(
+                seconds=_PROMOTABLE_FRESHNESS_TOLERANCE_S
+            )
+        for row in rows:
+            if not self._row_matches_current_run(row):
+                continue
+            if self._trainer_logical_name(_short_name(row.get("name", ""))) != name:
+                continue
+            if freshness_floor is not None:
+                create_time = _parse_iso_time(row.get("createTime"))
+                if create_time is not None and create_time < freshness_floor:
+                    continue
+            return row
+        return None
 
     def _dataloader_path(self) -> str:
         return fileio.join(self._log_path, DATALOADER_BASE_NAME)

@@ -74,9 +74,9 @@ class ReconnectableClient:
     (``service.create_reference_client``) and wrapped inline by each recipe
     via :meth:`from_training_client` (``base_only=True``). The SDK decides
     whether the reference reuses the policy session (LoRA) or runs on a
-    separate forward-only trainer (full-parameter / explicit reference shape),
-    and owns that trainer's lifecycle — the cookbook never manages a second
-    service.
+    separate frozen reference trainer (full-parameter / explicit reference
+    shape), and owns that trainer's lifecycle — the cookbook never manages a
+    second service.
     """
 
     def __init__(
