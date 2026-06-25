@@ -1,18 +1,24 @@
 """Renderer registration for Moonshot Kimi K2.7 Code.
 
-Kimi K2.7 Code keeps the K2.6 tokenizer, special tokens, and tool declaration
-format, but its official chat template differs in two important ways:
+Kimi K2.7 Code keeps the K2.6 tokenizer and special tokens, but its official
+chat template differs in three important ways:
 
 * historical thinking is preserved by default and cannot be disabled by the
   tokenizer's ``apply_chat_template`` wrapper;
 * no default system message is injected when the input starts with a user turn.
+* different tokenizer backends may either auto-populate the template-only
+  ``tools_ts_str`` variable or fall back to compact OpenAI JSON in
+  ``tool_declare``.
 
 This local renderer reuses the upstream K2.6 preserve-thinking implementation
-and only removes the default-system insertion so tokenization matches the
-official K2.7 Code template.
+and overrides those K2.7-specific pieces so tokenization matches the official
+K2.7 Code template.
 """
 
 from __future__ import annotations
+
+import json
+from typing import Any
 
 from tinker_cookbook.image_processing_utils import ImageProcessor
 from tinker_cookbook.renderers import register_renderer
@@ -22,6 +28,36 @@ from tinker_cookbook.renderers.kimi_k2_5_tool_declaration_ts import (
 )
 from tinker_cookbook.renderers.kimi_k26 import KimiK26PreserveThinkingRenderer
 from tinker_cookbook.tokenizer_utils import Tokenizer
+
+
+_KIMI_TOOL_STYLE_PROBE = [
+    {
+        "type": "function",
+        "function": {
+            "name": "probe",
+            "description": "probe",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    }
+]
+
+
+def _tokenizer_tools_branch_uses_typescript(tokenizer: Any) -> bool:
+    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+    if apply_chat_template is None:
+        return False
+
+    try:
+        rendered = apply_chat_template(
+            [{"role": "user", "content": "probe"}],
+            tools=_KIMI_TOOL_STYLE_PROBE,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+    except Exception:
+        return False
+
+    return isinstance(rendered, str) and "namespace functions" in rendered
 
 
 class KimiK27CodeRenderer(KimiK26PreserveThinkingRenderer):
@@ -39,8 +75,15 @@ class KimiK27CodeRenderer(KimiK26PreserveThinkingRenderer):
 
         if tools:
             tools_payload = [{"type": "function", "function": tool} for tool in tools]
-            tools_ts_str = encode_tools_to_typescript_style(tools_payload)
-            messages.append(Message(role="tool_declare", content=tools_ts_str))
+            if _tokenizer_tools_branch_uses_typescript(self.tokenizer):
+                content = encode_tools_to_typescript_style(tools_payload)
+            else:
+                content = json.dumps(
+                    tools_payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            messages.append(Message(role="tool_declare", content=content))
 
         if system_prompt:
             messages.append(Message(role="system", content=system_prompt))

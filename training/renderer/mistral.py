@@ -132,6 +132,18 @@ def _format_tools_block(tools: list[ToolSpec | Mapping[str, Any]]) -> str:
     return _AVAILABLE_TOOLS_OPEN + json.dumps(list(tools)) + _AVAILABLE_TOOLS_CLOSE
 
 
+def _wrap_tool_specs(tools: list[ToolSpec]) -> list[dict[str, Any]]:
+    wrapped: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, Mapping):
+            raise TypeError(f"MistralRenderer expected tool mapping, got {type(tool)!r}")
+        if isinstance(tool.get("function"), Mapping):
+            wrapped.append(dict(tool))
+        else:
+            wrapped.append({"type": "function", "function": dict(tool)})
+    return wrapped
+
+
 class MistralRenderer(Renderer):
     """Renderer for Mistral / Ministral Tekken-style chat models.
 
@@ -358,7 +370,7 @@ class MistralRenderer(Renderer):
         right position. This matches the Jinja template, where tools are
         rendered immediately after the system block and before any user turn.
         """
-        self._pending_tools = list(tools)
+        self._pending_tools = _wrap_tool_specs(tools)
         if system_prompt:
             return [Message(role="system", content=system_prompt)]
         return [Message(role="system", content=_DEFAULT_SYSTEM_SENTINEL)]
