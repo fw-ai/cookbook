@@ -101,6 +101,26 @@ def _strip_think_block(text: str) -> str:
     return text.strip()
 
 
+def _append_turn_suffix(core_ids: List[int], suffix_ids: List[int]) -> List[int]:
+    """Close an assistant turn for *framing* (next-prompt) purposes.
+
+    Used to build the next turn's prompt, NOT the trained completion span. The
+    model may finish a turn by emitting the end-of-turn marker itself, in which
+    case the marker is already inside ``core_ids``. Appending the suffix
+    unconditionally would duplicate it (e.g. ``<|im_end|><|im_end|>\\n``), so we
+    strip the longest tail of ``core_ids`` that overlaps the head of the suffix
+    before appending. The appended close lives in the next turn's prompt as
+    loss-masked context; it is never part of the loss-bearing completion span.
+    """
+    core = [int(x) for x in core_ids]
+    suffix = [int(x) for x in suffix_ids]
+    for overlap in range(min(len(core), len(suffix)), 0, -1):
+        if core[-overlap:] == suffix[:overlap]:
+            core = core[:-overlap]
+            break
+    return core + suffix
+
+
 def _build_tool_call_parser():
     """Build a tool call parser for search/submit_answer tools."""
     valid_names = {TOOL_NAME_SEARCH, TOOL_NAME_SUBMIT}
@@ -380,9 +400,12 @@ class MultiHopQARolloutProcessor(RolloutProcessor):
                         int(x) for x in list(completion.get("completion_ids") or [])
                     ]
                     assistant_suffix_ids = text_client.encode_special_suffix()
-                    completion_ids = list(raw_completion_ids) + [
-                        int(x) for x in list(assistant_suffix_ids)
-                    ]
+                    # Trained completion = engine tokens verbatim. The end-of-turn
+                    # close is NOT trained here: on a clean stop the model's own close
+                    # is already inside raw_completion_ids; on a length-truncated stop
+                    # nothing synthetic is added. The canonical close is re-attached
+                    # only as loss-masked framing when building the next prompt below.
+                    completion_ids = list(raw_completion_ids)
                     completion_text = shared_tokenizer.decode(
                         raw_completion_ids, skip_special_tokens=False,
                     ) if raw_completion_ids else str(completion.get("completion_text") or "")
@@ -464,9 +487,12 @@ class MultiHopQARolloutProcessor(RolloutProcessor):
                     clean_assistant_ids = shared_tokenizer.encode(
                         clean_completion_text, add_special_tokens=False
                     )
-                    clean_turn_ids = clean_assistant_ids + [
-                        int(x) for x in list(assistant_suffix_ids)
-                    ]
+                    # Framing bridge only (loss_mask=0 context for the next prompt):
+                    # dedup-append the canonical close to the (think-stripped) assistant
+                    # text so the turn is byte-exactly closed before the tool turn.
+                    clean_turn_ids = _append_turn_suffix(
+                        [int(x) for x in clean_assistant_ids], assistant_suffix_ids
+                    )
                     current_prompt_ids = (
                         list(prompt_ids)
                         + list(clean_turn_ids)

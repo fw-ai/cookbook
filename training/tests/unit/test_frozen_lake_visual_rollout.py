@@ -252,9 +252,13 @@ async def test_visual_rollout_preserves_prior_completion_tokens(monkeypatch):
 
     assert len(token_turn_traces) == 2
     assert token_turn_traces[0]["prompt_ids"] == [10, 11, 12]
-    assert token_turn_traces[0]["completion_ids"] == [tool_prefill_id, 101, 90]
+    # Trained completion = prefill + engine tokens, WITHOUT the end-of-turn close
+    # (90). The close is appended only into the next turn's prompt as loss-masked
+    # framing, which is why it appears in turn 1's prompt_ids but not its
+    # completion_ids.
+    assert token_turn_traces[0]["completion_ids"] == [tool_prefill_id, 101]
     assert token_turn_traces[1]["prompt_ids"] == [10, 11, 12, tool_prefill_id, 101, 90, 91, 92]
-    assert token_turn_traces[1]["completion_ids"] == [tool_prefill_id, 102, 90]
+    assert token_turn_traces[1]["completion_ids"] == [tool_prefill_id, 102]
 
     assert _FakeImageClient.requested_prompt_ids == [
         [10, 11, 12, tool_prefill_id],
@@ -265,8 +269,10 @@ async def test_visual_rollout_preserves_prior_completion_tokens(monkeypatch):
         "prompt:initial<|tool_calls_section_begin|>action:RIGHT<|im_end|>suffix:tool<|tool_calls_section_begin|>",
     ]
     assert _FakeImageClient.requested_image_counts == [1, 2]
-    assert extra["model_request_traces"][0]["assistant_turn_len"] == 3
-    assert extra["model_request_traces"][1]["assistant_turn_len"] == 3
+    # assistant_turn_len is the trained span length (prefill + engine tokens),
+    # excluding the framing close that bridges to the next turn.
+    assert extra["model_request_traces"][0]["assistant_turn_len"] == 2
+    assert extra["model_request_traces"][1]["assistant_turn_len"] == 2
     assert extra["observation_mode"] == "image"
     assert extra["tool_call_generation_mode"] == "prompt_only"
     assert [message.role for message in result.messages] == [
