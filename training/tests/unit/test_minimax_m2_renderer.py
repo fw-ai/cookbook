@@ -14,6 +14,7 @@ import pytest
 import transformers
 
 from training.renderer.minimax_m2 import MiniMaxM2Renderer
+from tinker_cookbook.renderers import get_text_content
 from tinker_cookbook.renderers.base import RenderContext, ToolCall, TrainOnWhat
 
 _LOCAL_PATH = "/shared/MiniMax-M2"
@@ -233,6 +234,37 @@ def test_generation_prompt_suffix(
     expected = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
     actual = _renderer_tokens(renderer, messages)
     _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_parse_response_restores_prefilled_think(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: MiniMaxM2Renderer,
+) -> None:
+    """Sampled tokens start inside the generation-prefilled ``<think>`` block."""
+    prompt_ids = _renderer_tokens(renderer, [{"role": "user", "content": "Hello"}])
+    assert tokenizer.decode(prompt_ids).endswith("]~b]ai\n<think>\n")
+
+    simulated = "reasoning\n</think>\nfinal answer"
+    assert "<think>" not in simulated
+    ids = tokenizer.encode(simulated, add_special_tokens=False) + [
+        renderer._end_message_token
+    ]
+
+    message, ok = renderer.parse_response(ids)
+
+    assert ok is True
+    content = message["content"]
+    assert isinstance(content, list)
+    thinking = "".join(
+        part.get("thinking", "")
+        for part in content
+        if part.get("type") == "thinking"
+    )
+    text = get_text_content(message)
+    assert "reasoning" in thinking
+    assert "final answer" in text
+    assert "reasoning" not in text
+    assert "</think>" not in text
 
 
 def test_tool_call_multiple_params(
