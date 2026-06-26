@@ -8,43 +8,80 @@ from math import comb
 from typing import Any
 
 from training.utils.config import WandBConfig
+from training.utils.runner import WandbConfigError
 
 logger = logging.getLogger(__name__)
+
+
+def _is_wandb_auth_error(exc: BaseException) -> bool:
+    """Heuristically classify a W&B exception as an auth/permission/config error.
+
+    Recognizes ``wandb.errors`` auth/usage types when available, and falls back
+    to message inspection (401 / unauthorized / api key / permission) so the
+    classification is robust across wandb versions.
+    """
+    try:
+        import wandb
+
+        auth_types = tuple(
+            t
+            for t in (
+                getattr(wandb.errors, "AuthenticationError", None),
+                getattr(wandb.errors, "UsageError", None),
+            )
+            if isinstance(t, type)
+        )
+        if auth_types and isinstance(exc, auth_types):
+            return True
+    except Exception:
+        pass
+    msg = str(exc).lower()
+    return any(token in msg for token in ("401", "unauthorized", "permission", "api key", "api_key", "authentication"))
 
 
 def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
     """Initialize WandB if entity is provided. Returns True if active.
 
     If ``WANDB_API_KEY`` is not set, falls back to offline mode so runs
-    are logged locally without requiring authentication.
+    are logged locally without requiring authentication. Auth/permission/config
+    failures from ``wandb.init`` are re-raised as :class:`WandbConfigError` so
+    the orchestration layer surfaces them as a user-actionable error
+    (FIR2-1774).
     """
     if not wb.entity:
         return False
     try:
         import os
         import wandb
-
-        if not os.environ.get("WANDB_API_KEY"):
-            logger.warning(
-                "WANDB_API_KEY not set; running wandb in offline mode. "
-                "Set the key to sync runs to the dashboard."
-            )
-            os.environ["WANDB_MODE"] = "offline"
-
-        wandb.init(entity=wb.entity, project=wb.project, name=wb.run_name, config=config)
-        if wandb.run is not None:
-            wandb.define_metric("train/step")
-            wandb.define_metric("train/*", step_metric="train/step")
-            wandb.define_metric("perf/*", step_metric="train/step")
-            wandb.define_metric("rollout/*", step_metric="train/step")
-            wandb.define_metric("batch/*", step_metric="train/step")
-            wandb.define_metric("infra/*", step_metric="train/step")
-            wandb.define_metric("ctx/*", step_metric="train/step")
-            logger.info("WandB: %s", wandb.run.url)
-        return True
     except ImportError:
         logger.warning("wandb not installed; metrics will only be logged to console")
         return False
+
+    if not os.environ.get("WANDB_API_KEY"):
+        logger.warning(
+            "WANDB_API_KEY not set; running wandb in offline mode. " "Set the key to sync runs to the dashboard."
+        )
+        os.environ["WANDB_MODE"] = "offline"
+
+    try:
+        wandb.init(entity=wb.entity, project=wb.project, name=wb.run_name, config=config)
+    except Exception as exc:
+        if _is_wandb_auth_error(exc):
+            raise WandbConfigError(
+                f"Weights & Biases authentication/configuration failed: {exc}. "
+                "Check your W&B API key, entity, and project."
+            ) from exc
+        raise
+    if wandb.run is not None:
+        wandb.define_metric("train/step")
+        wandb.define_metric("train/*", step_metric="train/step")
+        wandb.define_metric("perf/*", step_metric="train/step")
+        wandb.define_metric("rollout/*", step_metric="train/step")
+        wandb.define_metric("batch/*", step_metric="train/step")
+        wandb.define_metric("infra/*", step_metric="train/step")
+        wandb.define_metric("ctx/*", step_metric="train/step")
+        logger.info("WandB: %s", wandb.run.url)
+    return True
 
 
 def compute_pass_at_k(
