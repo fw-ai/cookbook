@@ -4,7 +4,7 @@
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
 names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intentionally minimal-surface: the
 only thing most users need to write is the rollout function; everything
-else (gate, advantage, ref forward, weight sync, KL/TIS, PPO inner loop,
+else (gate, advantage, ref forward, weight sync, KL/TIS, pipeline chunking,
 checkpoints) is handled by ``main()``.  See
 ``skills/dev/references/rl/async-rl.md`` for the full contract.
 
@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import math
 import os
 import signal
 import time
@@ -69,6 +68,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.dataloader import CursorDataLoader
+from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_train import RowRequest, run_async_rl_loop
 from training.utils.rl.cispo import CISPOConfig
@@ -82,9 +82,14 @@ from training.utils.rl.losses import (
     combine_prompt_groups,
     validate_loss_path,
 )
-from training.utils.rl.metrics import compute_minibatch_metrics, compute_step_metrics, total_target_tokens
+from training.utils.rl.metrics import (
+    build_accumulated_async_loop_stats,
+    build_train_chunk_metrics,
+    compute_step_metrics,
+    total_target_tokens,
+)
 from training.utils.rl.tis import TISConfig
-from training.train_loop import DynamicFilterFn, TrainStepFns
+from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
 from training.utils.runner_state import (
     estimate_async_total_steps,
@@ -158,12 +163,12 @@ class Config:
     eps_clip: float = 0.2
     eps_clip_high: float | None = None
     ratio_log_cap: float = 20.0
-    ppo_n_minibatches: int = 1
-    """Inner PPO steps per rollout batch sharing one ``old_policy_logprobs``
-    snapshot; ``1`` uses the default 1:1 behavior."""
-    synchronous_training: bool = False
-    """Drain rollouts before each train step (no overlap); baseline knob
-    for measuring async savings."""
+    pipeline_chunks_per_step: int = 1
+    """Scheduler chunk cap per global optimizer batch.
+
+    The loop sends ready prompt groups without waiting to fill a chunk; trainer
+    continuous batching owns execution-level coalescing/microbatching.
+    """
     tis: TISConfig = field(default_factory=TISConfig)
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -255,27 +260,6 @@ def _save_checkpoint(
     logger.info("[%s] dcp_save: done (%.1fs)", name, span.elapsed)
 
 
-def _build_minibatch_wandb_metrics(
-    fwd_bwd_result: Any,
-    optim_result: Any,
-    *,
-    step: int,
-    minibatch_idx: int,
-    num_minibatches: int,
-    learning_rate: float,
-) -> dict[str, Any]:
-    metrics = compute_minibatch_metrics(fwd_bwd_result, optim_result)
-    metrics.update(
-        {
-            "train/step": step,
-            "train/minibatch_idx": minibatch_idx,
-            "train/num_minibatches": num_minibatches,
-            "train/lr": learning_rate,
-        }
-    )
-    return metrics
-
-
 def main(
     config: Config,
     *,
@@ -330,9 +314,10 @@ def main(
             "without ever training.  Set completions_per_prompt >= 2 (the "
             f"default is 4); got {cfg.completions_per_prompt}."
         )
-    if cfg.ppo_n_minibatches < 1:
+    if cfg.pipeline_chunks_per_step < 1:
         raise ValueError(
-            f"ppo_n_minibatches must be >= 1; got {cfg.ppo_n_minibatches}."
+            "pipeline_chunks_per_step must be >= 1; got "
+            f"{cfg.pipeline_chunks_per_step}."
         )
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     setup_wandb(
@@ -341,7 +326,7 @@ def main(
             "completions_per_prompt": cfg.completions_per_prompt,
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
-            "ppo_n_minibatches": cfg.ppo_n_minibatches,
+            "pipeline_chunks_per_step": cfg.pipeline_chunks_per_step,
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
@@ -349,22 +334,8 @@ def main(
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
         },
+        metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
     )
-    # Dual axis: train/* per inner PPO minibatch, rollout/* per outer batch.
-    try:
-        import wandb as _wandb  # noqa: WPS433 (deliberate local import)
-
-        if _wandb.run is not None:
-            _wandb.define_metric("rollout/step")
-            _wandb.define_metric("rollout/*", step_metric="rollout/step")
-            _wandb.define_metric("perf/*", step_metric="rollout/step")
-            _wandb.define_metric("infra/*", step_metric="rollout/step")
-            _wandb.define_metric("ctx/*", step_metric="rollout/step")
-            _wandb.define_metric("batch/*", step_metric="rollout/step")
-            _wandb.define_metric("async/*", step_metric="rollout/step")
-            _wandb.define_metric("version/*", step_metric="rollout/step")
-    except ImportError:
-        pass
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -388,13 +359,16 @@ def main(
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cfg.cleanup_on_exit,
             cleanup_deployment_on_close=(
-                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cfg.cleanup_on_exit else None
+                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+                if cfg.cleanup_on_exit
+                else None
             ),
             reference_required=cfg.kl_beta > 0,
         )
         stack.callback(service.close)
         training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
+        rollout_model = sampler.model
         runner.set_accelerator_info(
             service.accelerator_type,
             service.accelerator_count,
@@ -441,9 +415,8 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         if step_offset:
             logger.info("Resuming from step %d", step_offset)
-            rollout_offset = step_offset // max(1, cfg.ppo_n_minibatches)
             wandb_log(
-                {"train/step": step_offset, "rollout/step": rollout_offset},
+                {"train/step": step_offset, "rollout/step": step_offset},
             )
 
         if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
@@ -474,7 +447,6 @@ def main(
             total_items=row_loader.total_items,
             prior_rows_consumed=prior_rows_consumed,
             prompt_groups_per_step=cfg.prompt_groups_per_step,
-            ppo_n_minibatches=cfg.ppo_n_minibatches,
         )
 
         # This recipe is client-side only.  ``LossConfig`` adapts the cfg
@@ -514,9 +486,9 @@ def main(
             tokenizer=tokenizer,
             tokenizer_id=cfg.deployment.tokenizer_model,
             sample_kwargs=sample_kwargs,
-            inference_base_url=sampler.base_url,
+            inference_base_url="" if sampler is None else sampler.base_url,
             api_key=api_key,
-            model=sampler.model,
+            model=rollout_model,
             completions_per_prompt=cfg.completions_per_prompt,
             extras=dict(rollout_extras or {}),
         )
@@ -527,7 +499,7 @@ def main(
             "completions_per_prompt": cfg.completions_per_prompt,
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
-            "ppo_n_minibatches": cfg.ppo_n_minibatches,
+            "pipeline_chunks_per_step": cfg.pipeline_chunks_per_step,
             "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
             "weight_sync_interval": _WEIGHT_SYNC_INTERVAL,
             "max_completion_tokens": cfg.max_completion_tokens,
@@ -535,7 +507,7 @@ def main(
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
             "tokenizer_id": cfg.deployment.tokenizer_model,
-            "model": sampler.model,
+            "model": rollout_model,
         }
 
         def make_row_requests():
@@ -594,46 +566,63 @@ def main(
                 ]
                 idx += n
 
-        def fwd_bwd_minibatch(
+        def fwd_bwd_batch(
             data, adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs,
         ):
-            """One inner PPO minibatch.
-
-            Callers pre-compute ``old_policy_logprobs`` once per rollout
-            batch and pass a slice of the flattened rollout tensors for
-            this minibatch.
-            """
             return policy.forward_backward_custom(
                 data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs),
             )
 
+        train_accum: dict[str, Any] = {
+            "prompt_groups": [],
+            "fwd_bwd_results": [],
+            "latest_loop_stats": None,
+            "train_start": None,
+            "trainer_wait_for_sampler_time": 0.0,
+            "sampler_wait_for_trainer_time": 0.0,
+        }
+
         def train_step(
-            step: int, prompt_groups: list[PromptGroup], loop_stats: dict | None = None,
+            step: int,
+            prompt_groups: list[PromptGroup],
+            loop_stats: dict | None,
+            run_optimizer_step: bool,
         ) -> tuple[int, dict]:
-            """ref_forward + old_policy_logprobs snapshot + num_minibatches x (fwd_bwd + optim_step) + metrics.
+            """ref_forward + old_policy_logprobs snapshot + train chunks + metrics.
 
-            ``num_minibatches = cfg.ppo_n_minibatches``.  ``old_policy_logprobs``
-            is snapshotted once per rollout batch and reused across every
-            inner optim step so the PPO ratio measures genuine policy drift.
-            DCP checkpoints fire only at rollout boundaries (cadence in
-            rollout batches, not optim steps) so resume accounting is
-            independent of the minibatch count.
+            Each chunk runs fwd/bwd. ``run_optimizer_step`` controls
+            whether the chunk also runs ``optim_step``. In default mode the
+            chunk is the full rollout batch. In pipeline mode only the final
+            accumulated chunk steps it.
 
-            Slime-aligned dual-axis logging: per-minibatch ``train/*`` lands
-            on the ``train/step`` axis (one point per inner PPO step);
-            per-batch ``rollout/*`` / ``perf/*`` / ``async/*`` / ``version/*``
-            land on ``rollout/step`` (one point per outer rollout batch).
+            Slime-aligned dual-axis logging: ``train/*`` lands on the
+            ``train/step`` axis (one point per optimizer step); ``rollout/*`` /
+            ``perf/*`` / ``async/*`` / ``version/*`` land on ``rollout/step``
+            (one point per outer rollout batch).
             checkpoint identities remain optimizer-step labels (resume math is
             in optim steps); the off-policy budget is accounted in
             weight-sync versions inside ``_StalenessController`` and is
             independent of those labels.
             """
             train_start = time.monotonic()
-            num_minibatches = max(1, cfg.ppo_n_minibatches)
-            # 1-indexed outer-batch counter.  ``step`` here is the optim-step
-            # count carried over from prior batches, which is always a
-            # multiple of num_minibatches at batch boundaries.
-            rollout_id = step // num_minibatches + 1
+            num_chunks = int(
+                (loop_stats or {}).get(
+                    "pipeline/chunks_per_step",
+                    max(1, cfg.pipeline_chunks_per_step),
+                )
+            )
+            rollout_id = step + 1
+            if train_accum["train_start"] is None:
+                train_accum["train_start"] = train_start
+            train_accum["prompt_groups"].extend(prompt_groups)
+            if loop_stats is not None:
+                train_accum["latest_loop_stats"] = dict(loop_stats)
+                train_accum["trainer_wait_for_sampler_time"] += float(
+                    loop_stats.get("trainer_wait_for_sampler_time", 0.0)
+                )
+                train_accum["sampler_wait_for_trainer_time"] += float(
+                    loop_stats.get("sampler_wait_for_trainer_time", 0.0)
+                )
 
             with elapsed_timer("ref_forward") as span:
                 ref_forward(prompt_groups)
@@ -653,73 +642,84 @@ def main(
                 rollout_id, span.elapsed,
             )
 
-            n = len(data)
-            minibatch_size = max(1, math.ceil(n / num_minibatches))
-            fwd_bwd_results: list = []
             optim_result: Any = None
-            for minibatch_idx in range(num_minibatches):
-                mb_start = minibatch_idx * minibatch_size
-                mb_end = min(mb_start + minibatch_size, n)
-                if mb_start >= mb_end:
-                    break
+            chunk_idx = int((loop_stats or {}).get("pipeline/chunk_idx", 1))
 
-                with elapsed_timer("fwd_bwd") as span:
-                    fwd_bwd_result = fwd_bwd_minibatch(
-                        data[mb_start:mb_end],
-                        adv[mb_start:mb_end],
-                        ref_lp[mb_start:mb_end],
-                        prompt_lens[mb_start:mb_end],
-                        inf_lp[mb_start:mb_end],
-                        old_policy_logprobs[mb_start:mb_end],
-                    )
-                    fwd_bwd_results.append(fwd_bwd_result)
-                logger.info(
-                    "[rollout %d step %d] fwd_bwd (mb %d/%d) (%.1fs)",
-                    rollout_id, step + 1, minibatch_idx + 1, num_minibatches,
-                    span.elapsed,
+            with elapsed_timer("fwd_bwd") as span:
+                fwd_bwd_result = fwd_bwd_batch(
+                    data,
+                    adv,
+                    ref_lp,
+                    prompt_lens,
+                    inf_lp,
+                    old_policy_logprobs,
                 )
+                train_accum["fwd_bwd_results"].append(fwd_bwd_result)
+            logger.info(
+                "[rollout %d step %d] fwd_bwd (chunk %d/%d) (%.1fs)",
+                rollout_id, step + 1, chunk_idx, num_chunks, span.elapsed,
+            )
 
-                step_lr = compute_lr(
-                    lr_scheduler,
-                    step=step + 1,
-                    base_lr=cfg.learning_rate,
-                    total_steps=total_steps_estimate,
-                )
-                adam_kwargs = dict(DEFAULT_ADAM)
-                adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
-                adam_params = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
-                with elapsed_timer("optim_step") as span:
-                    optim_result = policy.optim_step(
-                        adam_params,
-                        grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-                    )
-                step += 1
-                logger.info(
-                    "[rollout %d step %d] optim_step (mb %d/%d) (%.1fs)",
-                    rollout_id, step, minibatch_idx + 1, num_minibatches,
-                    span.elapsed,
-                )
-
-                # Per-minibatch train/* on train/step axis (each inner step
-                # is genuinely distinct data, not an average).
+            step_lr = compute_lr(
+                lr_scheduler,
+                step=step + 1,
+                base_lr=cfg.learning_rate,
+                total_steps=total_steps_estimate,
+            )
+            if not run_optimizer_step:
                 wandb_log(
-                    _build_minibatch_wandb_metrics(
+                    build_train_chunk_metrics(
                         fwd_bwd_result,
-                        optim_result,
-                        step=step,
-                        minibatch_idx=minibatch_idx + 1,
-                        num_minibatches=num_minibatches,
+                        None,
+                        step=step + 1,
+                        chunk_idx=chunk_idx,
+                        num_chunks=num_chunks,
                         learning_rate=step_lr,
+                        run_optimizer_step=False,
                     )
                 )
+                return step, {}
 
-            # ``step_wall_time`` covers the full step (queue wait + all K
-            # minibatches), so ``perf/wait_time_ratio`` = wait / (wait + train).
-            if loop_stats is not None:
-                train_wall = time.monotonic() - train_start
-                loop_stats["step_wall_time"] = (
-                    loop_stats.get("trainer_wait_for_sampler_time", 0.0) + train_wall
+            adam_kwargs = dict(DEFAULT_ADAM)
+            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+            adam_params = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
+            with elapsed_timer("optim_step") as span:
+                optim_result = policy.optim_step(
+                    adam_params,
+                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
                 )
+            step += 1
+            logger.info(
+                "[rollout %d step %d] optim_step (chunk %d/%d) (%.1fs)",
+                rollout_id, step, chunk_idx, num_chunks, span.elapsed,
+            )
+
+            wandb_log(
+                build_train_chunk_metrics(
+                    fwd_bwd_result,
+                    optim_result,
+                    step=step,
+                    chunk_idx=chunk_idx,
+                    num_chunks=num_chunks,
+                    learning_rate=step_lr,
+                    run_optimizer_step=True,
+                )
+            )
+
+            prompt_groups = list(train_accum["prompt_groups"])
+            fwd_bwd_results = list(train_accum["fwd_bwd_results"])
+            train_start = train_accum["train_start"] or train_start
+            loop_stats = build_accumulated_async_loop_stats(
+                prompt_groups=prompt_groups,
+                latest_loop_stats=train_accum["latest_loop_stats"],
+                trainer_wait_for_sampler_time=train_accum[
+                    "trainer_wait_for_sampler_time"
+                ],
+                sampler_wait_for_trainer_time=train_accum[
+                    "sampler_wait_for_trainer_time"
+                ],
+                train_wall_time=time.monotonic() - train_start,
+            )
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
                 fwd_bwd_results=fwd_bwd_results,
@@ -758,9 +758,9 @@ def main(
                 metrics=metrics,
                 tokens=total_target_tokens(prompt_groups),
             )
-            # DCP cadence is in rollout batches, not optim steps, so
-            # ppo_n_minibatches doesn't change save frequency.
-            rollouts_completed = (step - step_offset) // num_minibatches
+            # DCP cadence is in rollout batches. Async has one optimizer step
+            # per rollout batch; pipeline chunks do not multiply it.
+            rollouts_completed = step - step_offset
             interval = cfg.dcp_save_interval
             if (
                 loop_stats is not None
@@ -779,7 +779,18 @@ def main(
                     # The final save (after the loop) is allowed to propagate
                     # so orchestration sees terminal save problems.
                     logger.warning("[step %d] dcp_save failed: %s", step, e)
+            train_accum["prompt_groups"] = []
+            train_accum["fwd_bwd_results"] = []
+            train_accum["latest_loop_stats"] = None
+            train_accum["train_start"] = None
+            train_accum["trainer_wait_for_sampler_time"] = 0.0
+            train_accum["sampler_wait_for_trainer_time"] = 0.0
             return step, metrics
+
+        def log_post_train_metrics(metrics: dict[str, Any]) -> None:
+            wandb_log(metrics)
+            train_step_value = int(metrics.get("train/step", 0))
+            runner.append_metrics(train_step_value, metrics)
 
         start_running(
             runner,
@@ -790,7 +801,7 @@ def main(
         global_step, final_stats = asyncio.run(
             run_async_rl_loop(
                 rows=make_row_requests(),
-                train_fns=TrainStepFns(train_step=train_step),
+                train_step_fn=train_step,
                 completions_per_prompt=cfg.completions_per_prompt,
                 prompt_groups_per_step=cfg.prompt_groups_per_step,
                 max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
@@ -802,7 +813,8 @@ def main(
                 weight_sync_interval=_WEIGHT_SYNC_INTERVAL,
                 max_concurrent=cfg.max_concurrency_rollout_sample,
                 dynamic_filter_fn=dynamic_filter_fn,
-                synchronous_training=cfg.synchronous_training,
+                pipeline_chunks_per_step=cfg.pipeline_chunks_per_step,
+                post_train_metrics_fn=log_post_train_metrics,
                 global_step=step_offset,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
                 return_final_stats=True,
@@ -834,7 +846,7 @@ def main(
                 job_id=service.trainer_job_id,
             )
 
-        # Clamp progress at 100% when dynamic filtering shortens the run.
+        # Clamp progress at 100% when filtering/partial final batches shorten the run.
         final_step = max(global_step, total_steps_estimate)
         write_completed(
             runner,

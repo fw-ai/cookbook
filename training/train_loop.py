@@ -129,7 +129,7 @@ async def _run_pipeline_window(
             "filter_drops": filter_drops,
             "sample_fails": sample_fails,
             "trainer_wait_for_sampler_time": 0.0,
-            "step_wall_time": wall,
+            "rollout_batch_wall_time": wall,
             "all_raw_rewards": list(all_raw_rewards),
         }
 

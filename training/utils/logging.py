@@ -12,14 +12,43 @@ from training.utils.runner import WandbConfigError
 
 logger = logging.getLogger(__name__)
 
+_MetricSteps = dict[str, str | None]
+
+_DEFAULT_WANDB_METRIC_STEPS: _MetricSteps = {
+    "train/step": None,
+    "train/*": "train/step",
+    "perf/*": "train/step",
+    "rollout/*": "train/step",
+    "batch/*": "train/step",
+    "infra/*": "train/step",
+    "ctx/*": "train/step",
+}
+
+ASYNC_RL_WANDB_METRIC_STEPS: _MetricSteps = {
+    "train/step": None,
+    "train/*": "train/step",
+    "rollout/step": None,
+    "rollout/*": "rollout/step",
+    "perf/*": "rollout/step",
+    "infra/*": "rollout/step",
+    "ctx/*": "rollout/step",
+    "batch/*": "rollout/step",
+    "async/*": "rollout/step",
+    "pipeline/*": "rollout/step",
+    "version/*": "rollout/step",
+}
+
+
+def _define_wandb_metrics(wandb_module: Any, metric_steps: _MetricSteps) -> None:
+    for metric, step_metric in metric_steps.items():
+        if step_metric is None:
+            wandb_module.define_metric(metric)
+        else:
+            wandb_module.define_metric(metric, step_metric=step_metric)
+
 
 def _is_wandb_auth_error(exc: BaseException) -> bool:
-    """Heuristically classify a W&B exception as an auth/permission/config error.
-
-    Recognizes ``wandb.errors`` auth/usage types when available, and falls back
-    to message inspection (401 / unauthorized / api key / permission) so the
-    classification is robust across wandb versions.
-    """
+    """Heuristically classify a W&B exception as an auth/config error."""
     try:
         import wandb
 
@@ -35,11 +64,27 @@ def _is_wandb_auth_error(exc: BaseException) -> bool:
             return True
     except Exception:
         pass
+
     msg = str(exc).lower()
-    return any(token in msg for token in ("401", "unauthorized", "permission", "api key", "api_key", "authentication"))
+    return any(
+        token in msg
+        for token in (
+            "401",
+            "unauthorized",
+            "permission",
+            "api key",
+            "api_key",
+            "authentication",
+        )
+    )
 
 
-def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
+def setup_wandb(
+    wb: WandBConfig,
+    config: dict[str, Any],
+    *,
+    metric_steps: _MetricSteps | None = None,
+) -> bool:
     """Initialize WandB if entity is provided. Returns True if active.
 
     If ``WANDB_API_KEY`` is not set, falls back to offline mode so runs
@@ -59,7 +104,8 @@ def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
 
     if not os.environ.get("WANDB_API_KEY"):
         logger.warning(
-            "WANDB_API_KEY not set; running wandb in offline mode. " "Set the key to sync runs to the dashboard."
+            "WANDB_API_KEY not set; running wandb in offline mode. "
+            "Set the key to sync runs to the dashboard."
         )
         os.environ["WANDB_MODE"] = "offline"
 
@@ -73,13 +119,7 @@ def setup_wandb(wb: WandBConfig, config: dict[str, Any]) -> bool:
             ) from exc
         raise
     if wandb.run is not None:
-        wandb.define_metric("train/step")
-        wandb.define_metric("train/*", step_metric="train/step")
-        wandb.define_metric("perf/*", step_metric="train/step")
-        wandb.define_metric("rollout/*", step_metric="train/step")
-        wandb.define_metric("batch/*", step_metric="train/step")
-        wandb.define_metric("infra/*", step_metric="train/step")
-        wandb.define_metric("ctx/*", step_metric="train/step")
+        _define_wandb_metrics(wandb, metric_steps or _DEFAULT_WANDB_METRIC_STEPS)
         logger.info("WandB: %s", wandb.run.url)
     return True
 
