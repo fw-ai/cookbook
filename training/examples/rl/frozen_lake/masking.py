@@ -20,6 +20,17 @@ def compute_model_output_spans(
 
     Both the training loss mask and the UI visualization mask derive from
     this same set of spans so they stay aligned by construction.
+
+    Contract: ``length`` is the *trained* span — the tool-call prefill plus the
+    engine's completion tokens verbatim (``assistant_turn_len`` for intermediate
+    turns, ``len(completion_ids)`` for the last turn). It deliberately does NOT
+    include the synthesized end-of-turn close that bridges one turn to the next.
+    The rollout appends that close only into the *next* turn's prompt, so it sits
+    just after this span and is left unmasked (loss_mask=0). This implements the
+    TITO/renderer rule: never compute loss on a close token the model did not
+    actually emit (e.g. a synthesized close after a length-truncated turn). A
+    close the model *did* emit on a clean stop is part of ``completion_ids`` and
+    stays inside the span with its real logprob.
     """
     spans: List[Tuple[int, int, int]] = []
     num_turns = len(token_turn_traces)

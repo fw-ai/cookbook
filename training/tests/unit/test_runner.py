@@ -101,6 +101,16 @@ class TestRunnerIOStatus:
         assert data["message"] == "OOM"
         assert "details" not in data
 
+    def test_write_status_error_code_override(self, tmp_path):
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        runner.write_status(RunStatus.FAILED, error="bad config", error_code=3)
+
+        data = json.loads(open(path).read())
+        assert data["code"] == 3  # INVALID_ARGUMENT overrides the FAILED default (9)
+        assert data["message"] == "bad config"
+
     def test_write_status_overwrites(self, tmp_path):
         path = str(tmp_path / "status.json")
         runner = RunnerIO(RunnerConfig(status_file=path))
@@ -356,6 +366,34 @@ class TestRunnerIOContextManager:
         assert data["code"] == 9
         assert data["message"] == "boom"
         assert data["details"][0]["percent"] == 50
+
+    def test_user_config_error_writes_invalid_argument(self, tmp_path):
+        """User-actionable errors raised inside the context surface as INVALID_ARGUMENT."""
+        from training.utils.runner import WandbConfigError
+
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        with pytest.raises(WandbConfigError, match="bad key"):
+            with runner:
+                raise WandbConfigError("bad key")
+
+        data = json.loads(open(path).read())
+        assert data["code"] == 3  # INVALID_ARGUMENT, not the generic FAILED_PRECONDITION
+        assert data["message"] == "bad key"
+
+    def test_generic_exception_writes_failed_precondition(self, tmp_path):
+        """Non-user-config errors keep the default FAILED_PRECONDITION code."""
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        with pytest.raises(RuntimeError):
+            with runner:
+                raise RuntimeError("boom")
+
+        data = json.loads(open(path).read())
+        assert data["code"] == 9  # FAILED_PRECONDITION
+        assert data["message"] == "boom"
 
     def test_exception_flushes_metadata(self, tmp_path):
         meta = str(tmp_path / "meta.json")

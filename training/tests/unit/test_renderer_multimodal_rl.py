@@ -255,6 +255,60 @@ def test_multimodal_inf_logprobs_match_datum_weight_index_space():
 
 
 @pytest.mark.asyncio
+async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
+    """Prompt-prefilled tokens are sliced off before renderer.parse_response."""
+    captured: dict[str, object] = {}
+    prompt_tokens = [10, 20, 30]
+    completion_tokens = [40, 50]
+
+    class _Renderer:
+        def build_generation_prompt(
+            self, messages: object, **kwargs: object
+        ) -> tinker.ModelInput:
+            del messages, kwargs
+            return tinker.ModelInput(
+                chunks=[tinker.types.EncodedTextChunk(tokens=prompt_tokens)]
+            )
+
+        def parse_response(self, tokens: list[int]) -> tuple[dict[str, str], bool]:
+            captured["parse_tokens"] = list(tokens)
+            return ({"content": "x"}, True)
+
+        def get_stop_sequences(self) -> list[int]:
+            return []
+
+    async def sample_with_prompt_tokens(
+        prompt_token_ids: list[int], **kwargs: object
+    ) -> list[SampledCompletion]:
+        captured["prompt_token_ids"] = list(prompt_token_ids)
+        captured["kwargs"] = kwargs
+        return [
+            SampledCompletion(
+                text="gen",
+                full_tokens=prompt_tokens + completion_tokens,
+                prompt_len=len(prompt_tokens),
+                finish_reason="stop",
+                inference_logprobs=[-0.3, -0.4],
+            )
+        ]
+
+    run = await single_turn_renderer_rollout(
+        {"id": 1},
+        renderer=_Renderer(),
+        sample_with_prompt_tokens=sample_with_prompt_tokens,
+        message_builder=_test_messages,
+        reward_fn=_test_reward,
+    )
+
+    assert run is not None
+    assert captured["prompt_token_ids"] == prompt_tokens
+    assert captured["parse_tokens"] == completion_tokens
+    assert captured["kwargs"]["n"] == 1
+    segment = run.segments[0]
+    assert segment.tokens == prompt_tokens + completion_tokens
+
+
+@pytest.mark.asyncio
 async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions():
     captured: dict[str, object] = {}
 

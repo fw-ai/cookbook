@@ -744,6 +744,12 @@ def test_resolve_renderer_name_prefers_minimax_m2() -> None:
     assert resolve_renderer_name("MiniMaxAI/MiniMax-M2") == "minimax_m2"
 
 
+def test_resolve_renderer_name_prefers_upstream_nemotron3() -> None:
+    """Nemotron models use Tinker's upstream renderer with parse normalization."""
+    assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3-Super-120B") == "nemotron3"
+    assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-H-8B") == "nemotron3"
+
+
 def test_resolve_renderer_name_prefers_qwen3_5() -> None:
     """Qwen3.5 models should resolve to the qwen3_5 renderer."""
     assert resolve_renderer_name("Qwen/Qwen3.5-9B") == "qwen3_5"

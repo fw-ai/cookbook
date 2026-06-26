@@ -211,6 +211,27 @@ def _strip_trailing_token_suffix(token_ids: List[int], suffix_ids: List[int]) ->
     return normalized_token_ids, 0
 
 
+def _append_turn_suffix(core_ids: List[int], suffix_ids: List[int]) -> List[int]:
+    """Close an assistant turn for *framing* (next-prompt) purposes.
+
+    Used to build the next turn's prompt, NOT the trained completion span. The
+    model may finish a turn by emitting the end-of-turn marker itself, in which
+    case the server returns it inside ``core_ids``. Appending the suffix
+    unconditionally would duplicate it (e.g. ``<|im_end|><|im_end|>\\n``), so we
+    strip the longest tail of ``core_ids`` that overlaps the head of the suffix
+    before appending. The appended close lives in the next turn's prompt as
+    loss-masked context; it is never part of the loss-bearing completion span
+    (see the rollout loop and ``masking.compute_model_output_spans``).
+    """
+    core = [int(x) for x in core_ids]
+    suffix = [int(x) for x in suffix_ids]
+    for overlap in range(min(len(core), len(suffix)), 0, -1):
+        if core[-overlap:] == suffix[:overlap]:
+            core = core[:-overlap]
+            break
+    return core + suffix
+
+
 def _build_kimi_toolcall_generation_prefill_token_ids(tokenizer_name_or_path: str) -> List[int]:
     if not _is_kimi_tokenizer_name(tokenizer_name_or_path):
         return []
@@ -1072,11 +1093,21 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                         assistant_suffix_ids = image_client.encode_assistant_turn_suffix()
                     else:
                         assistant_suffix_ids = text_client.encode_special_suffix()
-                    completion_ids = (
-                        [int(x) for x in list(assistant_toolcall_prefill_ids)]
-                        + list(raw_completion_ids)
-                        + [int(x) for x in list(assistant_suffix_ids)]
-                    )
+                    # Trained completion = tool-call prefill + engine tokens verbatim.
+                    # The end-of-turn close is deliberately NOT part of the trained
+                    # span: on a clean stop the model's own close already sits inside
+                    # raw_completion_ids and stays trained with its real logprob; on a
+                    # length-truncated stop nothing synthetic is added, so we never
+                    # teach the model to stop at a forced cutoff. The canonical close is
+                    # re-attached below only as loss-masked framing for the next prompt.
+                    completion_ids = [
+                        int(x) for x in list(assistant_toolcall_prefill_ids)
+                    ] + list(raw_completion_ids)
+                    # Framing bridge for the next turn's prompt (loss_mask=0 context):
+                    # dedup-append the canonical close so the assistant turn is
+                    # byte-exactly closed before the tool turn, without duplicating a
+                    # close the engine already emitted.
+                    assistant_turn_ids = _append_turn_suffix(completion_ids, assistant_suffix_ids)
                     completion_text = str(completion.get("completion_text") or "")
                     all_prompt_ids.extend(prompt_ids)
                     all_completion_ids.extend(completion_ids)
@@ -1153,7 +1184,6 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                     if observation_mode == "image":
                         model_request_traces[-1]["assistant_turn_len"] = len(completion_ids)
                         if not done:
-                            assistant_turn_ids = list(completion_ids)
                             assistant_turn_text = (
                                 str(assistant_toolcall_prefill_text or "")
                                 + str(completion_text or "")
@@ -1183,7 +1213,6 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                             current_prompt_ids = []
                             current_prompt_text = ""
                     else:
-                        assistant_turn_ids = list(completion_ids)
                         tool_suffix_ids = text_client.build_tool_response_suffix_token_ids(
                             tool_message=tool_message_payload
                         )

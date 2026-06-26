@@ -30,7 +30,7 @@ from training.tests.glm5_serverless_cases import (
     GLM5_SERVERLESS_STOP_TOKEN_IDS,
 )
 from training.utils.supervised import normalize_messages, render_messages_to_datums
-from tinker_cookbook.renderers import get_renderer
+from tinker_cookbook.renderers import get_renderer, get_text_content
 from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
 
 
@@ -1256,6 +1256,39 @@ def test_parse_response_roundtrip(tokenizer, renderer):
         assert "hello" in "".join(texts)
     else:
         assert "hello" in content
+
+
+def test_parse_response_restores_prefilled_think(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer: GLM5Renderer,
+) -> None:
+    """Sampled tokens start inside the generation-prefilled ``<think>`` block."""
+    prompt_ids = _renderer_generation_tokens(
+        renderer, [{"role": "user", "content": "Hello"}]
+    )
+    assert tokenizer.decode(prompt_ids).endswith("<|assistant|><think>")
+
+    simulated = "reason</think>\nhello"
+    assert "<think>" not in simulated
+    ids = tokenizer.encode(simulated, add_special_tokens=False) + [
+        _user_token(tokenizer)
+    ]
+
+    message, ok = renderer.parse_response(ids)
+
+    assert ok is True
+    content = message["content"]
+    assert isinstance(content, list)
+    thinking = "".join(
+        part.get("thinking", "")
+        for part in content
+        if part.get("type") == "thinking"
+    )
+    text = get_text_content(message)
+    assert thinking == "reason"
+    assert "hello" in text
+    assert "reason" not in text
+    assert "</think>" not in text
 
 
 def test_parse_response_stops_at_user_role(tokenizer, renderer):
