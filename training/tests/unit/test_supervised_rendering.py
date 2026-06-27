@@ -233,7 +233,7 @@ def test_render_messages_to_datum_supports_multimodal_model_input():
     )
 
     normalized_messages, train_on_what = renderer.calls[0]
-    assert train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+    assert train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN
     assert normalized_messages[0]["content"] == [
         {"type": "text", "text": "look at this"},
         {"type": "image", "image": "https://example.com/cat.png"},
@@ -298,6 +298,37 @@ def test_render_messages_to_datums_suppresses_fake_single_target_warning(caplog)
     messages = [
         {"role": "user", "content": "u1"},
         {"role": "assistant", "content": "a1"},
+    ]
+
+    expected = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="last_assistant_turn",
+    )
+    caplog.clear()
+
+    actual = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    assert [example.token_ids for example in actual] == [
+        example.token_ids for example in expected
+    ]
+    assert [example.token_weights for example in actual] == [
+        example.token_weights for example in expected
+    ]
+    assert renderer.calls[-1] == TrainOnWhat.LAST_ASSISTANT_TURN
+    assert "does not satisfy the extension property" not in caplog.text
+
+
+def test_render_messages_to_datums_preserves_last_turn_with_multiple_assistants(caplog):
+    renderer = BaseWarningRenderer()
+    messages = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "assistant", "content": "a2"},
     ]
 
     expected = render_messages_to_datums(
@@ -673,33 +704,67 @@ def test_render_messages_to_datum_auto_switches_to_customized_when_weight_set():
     assert resolved_train_on_what == TrainOnWhat.CUSTOMIZED
 
 
-def test_render_messages_to_datum_keeps_default_train_on_what_without_weight():
-    """Without ``weight``/``trainable`` anywhere in the conversation, the
-    caller-specified ``train_on_what`` must flow through unchanged — this
-    preserves back-compat for datasets that don't use the V1 field."""
+def test_render_messages_to_datum_uses_equivalent_single_example_mode():
+    renderer = BaseWarningRenderer()
+    messages = [
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "assistant", "content": "a2"},
+    ]
 
-    class RecordingRenderer:
-        def __init__(self):
-            self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+    expected = render_messages_to_datum(
+        messages,
+        renderer=renderer,
+        train_on_what="last_assistant_turn",
+    )
+    actual = render_messages_to_datum(
+        messages,
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
 
-        def build_supervised_example(self, messages, train_on_what):
-            self.calls.append((list(messages), train_on_what))
-            return (
-                torch.tensor([1, 2, 3, 4], dtype=torch.int64),
-                torch.tensor([0, 0, 1, 1], dtype=torch.float32),
-            )
+    assert actual.token_ids == expected.token_ids
+    assert actual.token_weights == expected.token_weights
+    assert renderer.calls[-1] == TrainOnWhat.LAST_ASSISTANT_TURN
 
-    renderer = RecordingRenderer()
+
+def test_render_messages_to_datum_keeps_non_equivalent_train_on_what():
+    renderer = BaseWarningRenderer()
     render_messages_to_datum(
         [
+            {"role": "assistant", "content": "a0"},
             {"role": "user", "content": "u"},
-            {"role": "assistant", "content": "a"},
+            {"role": "assistant", "content": "a1"},
         ],
         renderer=renderer,
         train_on_what="all_assistant_messages",
     )
-    _, resolved_train_on_what = renderer.calls[0]
-    assert resolved_train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+    assert renderer.calls[-1] == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+
+def test_render_preference_pair_uses_equivalent_single_example_mode(caplog):
+    renderer = BaseWarningRenderer()
+    item = {
+        "messages": [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ]
+    }
+
+    rendered = render_preference_pair(
+        item,
+        item,
+        renderer=renderer,
+        tokenizer=object(),
+    )
+
+    assert rendered is not None
+    assert renderer.calls == [
+        TrainOnWhat.LAST_ASSISTANT_TURN,
+        TrainOnWhat.LAST_ASSISTANT_TURN,
+    ]
+    assert "does not satisfy the extension property" not in caplog.text
 
 
 def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):

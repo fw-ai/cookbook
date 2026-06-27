@@ -834,7 +834,11 @@ def render_messages_to_datum(
         effective_train_on_what = TrainOnWhat.CUSTOMIZED
     rendered_input, weights = renderer.build_supervised_example(
         normalized_messages,
-        train_on_what=effective_train_on_what,
+        train_on_what=_equivalent_single_example_train_on_what(
+            renderer,
+            normalized_messages,
+            effective_train_on_what,
+        ),
     )
     return _build_rendered_supervised_datum(
         rendered_input,
@@ -894,17 +898,19 @@ def _requires_renderer_supervised_examples(
     return sum(1 for message in messages if message["role"] == "user") > 1
 
 
-def _single_example_train_on_what(
+def _equivalent_single_example_train_on_what(
     renderer: Renderer,
     messages: list[Message],
     train_on_what: TrainOnWhat,
 ) -> TrainOnWhat:
-    """Use an equivalent mode for single-example renders when possible.
+    """Use an equivalent mode for a singular render when possible.
 
-    Upstream Tinker warns on ALL_ASSISTANT_MESSAGES for non-extension
-    renderers even when every assistant message is in the last user turn. In
-    that case LAST_ASSISTANT_TURN assigns identical weights and avoids a noisy
-    warning without changing the rendered training example.
+    Upstream Tinker warns on ALL_ASSISTANT_MESSAGES for every non-extension
+    renderer, but for a singular render where every assistant message is after
+    the last user message, ALL_ASSISTANT_MESSAGES and LAST_ASSISTANT_TURN
+    assign identical token weights. Passing the narrower equivalent mode avoids
+    the false-positive warning while preserving true warnings for non-equivalent
+    conversations.
     """
     if (
         train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES
@@ -948,7 +954,7 @@ def _build_renderer_supervised_examples(
     return [
         renderer.build_supervised_example(
             messages,
-            train_on_what=_single_example_train_on_what(
+            train_on_what=_equivalent_single_example_train_on_what(
                 renderer,
                 messages,
                 train_on_what,
