@@ -158,6 +158,7 @@ class TrainArgs:
     lora_rank: int = 0
     """LoRA rank (0 = full-param).  Backend trainer creation selects a
     LoRA-capable shape; LoRA references reuse the policy trainer (no extra GPUs)."""
+    router_replay: bool = False
     trajectory_dir: str | None = None
     """Directory to save per-step trajectory JSONL files."""
     deployment_extra_values: dict[str, str] | None = None
@@ -214,6 +215,7 @@ def parse_args() -> TrainArgs:
 
     parser.add_argument("--trajectory-dir",
                         help="Directory to save per-step trajectory JSONL files")
+    parser.add_argument("--router-replay", action="store_true")
     parser.add_argument(
         "--deployment-extra-values",
         nargs="*",
@@ -375,6 +377,8 @@ def main():
         prompt_groups_per_step=args.prompt_groups_per_step,
         trajectory_dir=args.trajectory_dir,
         tis=TISConfig(cap=2.0),
+        router_replay=args.router_replay,
+        router_replay_completion_only=args.router_replay,
         output_model_id=args.output_model_id,
         trainer=TrainerConfig(
             job_id=args.policy_job_id,

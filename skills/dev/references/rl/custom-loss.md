@@ -35,12 +35,8 @@ All live on `rl_loop.Config`:
 | `prompt_groups_per_step` | `1` | Number of prompt groups per `forward_backward + optim_step` pair. |
 | `kl_beta` | `0.001` | KL-to-reference coefficient. For full-param, the SDK provisions a separate frozen reference trainer and lets backend trainer creation auto-select a LoRA-capable shape unless `cfg.trainer.reference_training_shape_id` pins a LoRA-capable shape. For LoRA, leave it unset — `service.create_reference_client(...)` reuses the policy session with the adapter disabled (the base is the reference). |
 | `eps_clip`, `eps_clip_high` | `0.2`, `None` | PPO clip for GRPO. |
+| `router_replay` | `False` | Record routing at rollout time and replay during training (MoE models). |
 | `grad_accumulation_normalization` | `None` | No server-side normalization by default. Use `NUM_LOSS_TOKENS` for raw-sum losses. See [`gradient-accumulation.md`](gradient-accumulation.md). |
-
-Router Replay (R3) is no longer a config knob. The rollout loop always requests
-per-token routing matrices (`include_routing_matrix=True, echo=True`) and replays
-completion-token routing during training. The server only emits routing for MoE
-models, so this is automatic for MoE and a no-op for dense models.
 
 Shape-owned fields (`accelerator_type` / `node_count` / `custom_image_tag`) are always populated from the training profile — never hand-set.
 

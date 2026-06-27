@@ -102,6 +102,8 @@ class Config:
     max_seq_len: int | None = None
     lora_rank: int = 0
     prompt_groups_per_step: int = 1
+    router_replay: bool = False
+    router_replay_completion_only: bool = True
 
     grad_accumulation_normalization: GradAccNormalization | str | None = None
     """Optional server-side normalization for accumulated gradients.
@@ -380,10 +382,9 @@ def main(
             max_seq_len=max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
-        # Router Replay (R3) is always requested: the server returns per-token
-        # expert routing only for MoE models, so this replays inference routing
-        # at training time for MoE and is a no-op for dense models.
-        sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
+        if cfg.router_replay:
+            sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
+        sample_kwargs["logprobs"] = True
 
         # Scoring executor for async IG scoring
         scoring_executor = ThreadPoolExecutor(max_workers=cfg.scoring_workers)
@@ -428,12 +429,12 @@ def main(
                     continue
                 model_input_len = len(tokens) - 1
 
-                # Returns None (no-op) for dense models that carry no routing
-                # matrices; replays completion-token routing for MoE models.
-                rm = build_r3_routing_matrices(
-                    s.routing_matrices, s.prompt_len, model_input_len,
-                    completion_only=True,
-                )
+                rm = None
+                if cfg.router_replay:
+                    rm = build_r3_routing_matrices(
+                        s.routing_matrices, s.prompt_len, model_input_len,
+                        completion_only=cfg.router_replay_completion_only,
+                    )
 
                 policy_data.append(tinker.Datum(
                     model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),

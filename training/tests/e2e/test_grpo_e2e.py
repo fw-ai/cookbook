@@ -64,6 +64,7 @@ class TestGRPOE2E:
             completions_per_prompt=4,
             max_rows=10,
             epochs=1,
+            router_replay=True,
             tis=TISConfig(cap=10.0),
             trainer=TrainerConfig(
                 accelerator_type=e2e_training_accelerator,

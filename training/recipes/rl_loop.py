@@ -130,6 +130,9 @@ class Config:
     All groups are collected before a single ``forward_backward_custom`` +
     ``optim_step`` pair fires (1:1 ratio)."""
 
+    router_replay: bool = False
+    router_replay_completion_only: bool = True
+
     grad_accumulation_normalization: GradAccNormalization | str | None = None
     """Optional server-side normalization for accumulated gradients.
     ``None`` leaves accumulated gradients unchanged."""
@@ -560,10 +563,9 @@ def main(
             max_seq_len=max_seq_len,
             http_timeout=cfg.deployment.sample_timeout,
         )
-        # Router Replay (R3) is always requested: the server returns per-token
-        # expert routing only for MoE models, so this replays inference routing
-        # at training time for MoE and is a no-op for dense models.
-        sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
+        if cfg.router_replay:
+            sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
+        sample_kwargs["logprobs"] = True
 
         # -- Sample one prompt (VISIBLE -- customise this) ----------------------
 
@@ -607,14 +609,14 @@ def main(
                     continue
                 model_input_len = len(tokens) - 1
 
-                # Returns None (no-op) for dense models that carry no routing
-                # matrices; replays completion-token routing for MoE models.
-                rm = build_r3_routing_matrices(
-                    s.routing_matrices,
-                    s.prompt_len,
-                    model_input_len,
-                    completion_only=True,
-                )
+                rm = None
+                if cfg.router_replay:
+                    rm = build_r3_routing_matrices(
+                        s.routing_matrices,
+                        s.prompt_len,
+                        model_input_len,
+                        completion_only=cfg.router_replay_completion_only,
+                    )
 
                 policy_datum = tinker.Datum(
                     model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),
