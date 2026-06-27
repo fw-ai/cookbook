@@ -675,6 +675,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         old_policy_lp,
                         inf_lp,
                         prompt_lens,
+                        cfg.tis,
                         policy_loss=cfg.policy_loss,
                     )
                     return policy.forward_backward(
