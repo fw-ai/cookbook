@@ -894,6 +894,37 @@ def _requires_renderer_supervised_examples(
     return sum(1 for message in messages if message["role"] == "user") > 1
 
 
+def _single_example_train_on_what(
+    renderer: Renderer,
+    messages: list[Message],
+    train_on_what: TrainOnWhat,
+) -> TrainOnWhat:
+    """Use an equivalent mode for single-example renders when possible.
+
+    Upstream Tinker warns on ALL_ASSISTANT_MESSAGES for non-extension
+    renderers even when every assistant message is in the last user turn. In
+    that case LAST_ASSISTANT_TURN assigns identical weights and avoids a noisy
+    warning without changing the rendered training example.
+    """
+    if (
+        train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES
+        or getattr(renderer, "has_extension_property", False)
+    ):
+        return train_on_what
+
+    last_user_idx = max(
+        (idx for idx, message in enumerate(messages) if message["role"] == "user"),
+        default=-1,
+    )
+    assistant_idxs = [
+        idx for idx, message in enumerate(messages) if message["role"] == "assistant"
+    ]
+    if assistant_idxs and all(idx > last_user_idx for idx in assistant_idxs):
+        return TrainOnWhat.LAST_ASSISTANT_TURN
+
+    return train_on_what
+
+
 def _build_renderer_supervised_examples(
     renderer: Renderer,
     messages: list[Message],
@@ -917,7 +948,11 @@ def _build_renderer_supervised_examples(
     return [
         renderer.build_supervised_example(
             messages,
-            train_on_what=train_on_what,
+            train_on_what=_single_example_train_on_what(
+                renderer,
+                messages,
+                train_on_what,
+            ),
         )
     ]
 
