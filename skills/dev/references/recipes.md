@@ -34,6 +34,10 @@ Distillation-specific: use `distillation_loop.py` for OPD/SDFT. Open [`distillat
 
 Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes; the reference trainer is SDK-managed, so there is no separate reference job id to pin), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`checkpoints.md`](checkpoints.md) for the full priority order and constraints.
 
+## Cleanup lifecycle
+
+Managed recipes that create a sampler deployment delete it when trainer cleanup is enabled. For RL/IGPO/async RL this is the default `Config.cleanup_on_exit=True`; for distillation it is `main(..., cancel_on_exit=True)` as used by the example entry points. Set cleanup off only when you deliberately want both trainer/deployment resources to survive for manual inspection or reuse.
+
 ## Init from another job
 
 ```python

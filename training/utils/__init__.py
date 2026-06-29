@@ -36,6 +36,7 @@ del _warnings
 
 __all__ = [
     "AdaptiveConcurrencyController",
+    "CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE",
     "CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO",
     "GradAccNormalization",
     "AppendOnlyPickleLog",
@@ -112,6 +113,10 @@ __all__ = [
 
 from fireworks.training.sdk import CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
 from fireworks.training.sdk.deployment import AdaptiveConcurrencyController
+
+# The SDK accepts "delete" for deployment close cleanup. Keep the cookbook
+# default explicit so trainer cleanup tears down associated serving resources.
+CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE = "delete"
 
 from training.utils.client import GradAccNormalization, ReconnectableClient
 from training.utils.config import (

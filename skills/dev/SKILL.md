@@ -78,7 +78,8 @@ If the installed version doesn't satisfy the pin, upgrade first and retry. Only 
 1. **Shape first.** Prefer leaving `cfg.trainer.training_shape_id` unset so recipes auto-select the smallest validated shape that fits; set it only when you need an explicit override. The deployment shape comes from the profile. Manual infra fields are a mistake; the backend will reject or ignore them. See [`references/shapes.md`](references/shapes.md).
 2. **`WeightSyncScope.PER_TRAINER` is the default.** Set `DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER)` (the default). Do not combine it with `hot_load_deployment_id` — that field belongs to `PER_DEPLOYMENT`. Pick one bucket scope. See [`references/rl/hotload.md`](references/rl/hotload.md#weight-sync-scope-per_trainer-vs-per_deployment).
 3. **Fork, don't reinvent.** Training loop plumbing lives in `training/recipes/`. Fork the file that matches the task; do not rewire `FiretitanServiceClient` / `FiretitanTrainingClient` / deployment hotload from scratch.
-4. **Validate `output_model_id` before promote.** Server cap is 63 chars, charset `[a-z0-9-]`. A rejected promote orphans the sampler blob; the same `checkpoint_id` returns "not found in GCS" after GC. See [`references/checkpoints.md`](references/checkpoints.md#output_model_id-validation).
+4. **Cleanup deletes deployments by default.** Recipe `cleanup_on_exit=True` / distillation `cancel_on_exit=True` closes the trainer and deletes SDK-created deployments. Set cleanup off only when you deliberately want resources to survive. See [`references/recipes.md`](references/recipes.md#cleanup-lifecycle).
+5. **Validate `output_model_id` before promote.** Server cap is 63 chars, charset `[a-z0-9-]`. A rejected promote orphans the sampler blob; the same `checkpoint_id` returns "not found in GCS" after GC. See [`references/checkpoints.md`](references/checkpoints.md#output_model_id-validation).
 
 ---
 

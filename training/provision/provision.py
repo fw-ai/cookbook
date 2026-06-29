@@ -27,6 +27,7 @@ from fireworks.training.sdk.client import FiretitanTrainingClient
 
 from training.utils import (
     AdaptiveConcurrencyController,
+    CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE,
     ConcurrencyConfig,
     DeployConfig,
     ReconnectableClient,
@@ -456,7 +457,7 @@ def _build_managed_service(
     )
     resolved_deployment_cleanup = None
     if should_cleanup_deployment:
-        resolved_deployment_cleanup = cleanup_deployment_on_close or "scale_to_zero"
+        resolved_deployment_cleanup = cleanup_deployment_on_close or CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE
     return build_service_client(
         api_key=api_key,
         base_url=base_url,

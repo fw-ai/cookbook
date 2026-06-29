@@ -40,7 +40,7 @@ import tinker
 
 from training.utils.client import GradAccNormalization
 from training.utils import (
-    CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
+    CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE,
     DEFAULT_ADAM,
     AdaptiveConcurrencyController,
     ConcurrencyConfig,
@@ -415,7 +415,7 @@ def main(
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cfg.cleanup_on_exit,
             cleanup_deployment_on_close=(
-                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cfg.cleanup_on_exit else None
+                CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE if cfg.cleanup_on_exit else None
             ),
             reference_required=cfg.kl_beta > 0,
         )

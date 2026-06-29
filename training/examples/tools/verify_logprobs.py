@@ -40,6 +40,7 @@ from fireworks.training.sdk import (
     DeploymentManager,
 )
 from training.utils import (
+    CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE,
     TrainerConfig,
     DeployConfig,
     ReconnectableClient,
@@ -223,6 +224,9 @@ def main():
             tokenizer_model=args.tokenizer,
         ),
         cleanup_trainer_on_close=args.cleanup,
+        cleanup_deployment_on_close=(
+            CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE if args.cleanup and not args.deployment_id else None
+        ),
         reference_required=use_reference,
     )
 
@@ -411,10 +415,8 @@ def main():
         else:
             logger.error("  No valid comparisons completed!")
 
-        # Trainers are deleted by service.close() (cleanup_trainer_on_close);
-        # scale the deployment we created to zero on cleanup.
-        if args.cleanup and not args.deployment_id:
-            deploy_mgr.scale_to_zero(dep_id)
+        # Trainers and generated deployments are deleted by service.close()
+        # when cleanup is enabled. User-supplied deployments are left alone.
 
 
 if __name__ == "__main__":

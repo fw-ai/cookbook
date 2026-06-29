@@ -35,7 +35,7 @@ import tinker
 from fireworks.training.sdk.client import GradAccNormalization
 from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentConfig
 from training.utils import (
-    CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
+    CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE,
     DEFAULT_ADAM,
     ConcurrencyConfig,
     DeployConfig,
@@ -371,7 +371,7 @@ def _resolve_teacher_runtime(
                 for_training=True,
             ),
             timeout_s=cfg.teacher_deployment_timeout_s,
-            cleanup_on_close=CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cancel_on_exit else None,
+            cleanup_on_close=CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE if cancel_on_exit else None,
             tokenizer=tokenizer,
         )
         resolved_models[spec.model] = sampler.model
@@ -518,7 +518,7 @@ def main(
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cancel_on_exit,
             cleanup_deployment_on_close=(
-                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cancel_on_exit else None
+                CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE if cancel_on_exit else None
             ),
             reference_required=False,
         )

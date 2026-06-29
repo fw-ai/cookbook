@@ -42,6 +42,7 @@ from training.examples.multihop_qa.multihop_qa_rollout import (
 from fireworks.training.sdk.client import GradAccNormalization
 
 from training.utils import (
+    CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE,
     DEFAULT_ADAM,
     TrainerConfig,
     WandBConfig,
@@ -368,6 +369,9 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
         deployment=deploy_cfg,
         hotload_timeout_s=WEIGHT_SYNC_TIMEOUT_S,
         cleanup_trainer_on_close=not cfg.policy_job_id,
+        cleanup_deployment_on_close=(
+            CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE if not cfg.deployment_id else None
+        ),
         reference_required=use_reference,
     )
 
