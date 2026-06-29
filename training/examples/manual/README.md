@@ -27,8 +27,8 @@ Flags worth knowing:
 
 - `--deployment-id <id>` — reuse a warmed deployment across invocations
   (e.g. inspect the pod after the second run).
-- `--keep-resources` — skip trainer cancellation + deployment
-  scale-to-zero on exit. Default is to clean up.
+- `--keep-resources` — skip trainer cancellation + deployment cleanup on exit.
+  Default is to clean up.
 
 ## What to look for in the logs
 

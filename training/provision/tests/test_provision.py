@@ -97,7 +97,7 @@ def test_init_enables_cleanup_for_fresh_resources(monkeypatch: pytest.MonkeyPatc
     )
 
     assert calls[0]["cleanup_trainer_on_close"] is True
-    assert calls[0]["cleanup_deployment_on_close"] == "scale_to_zero"
+    assert calls[0]["cleanup_deployment_on_close"] == "delete"
 
 
 def test_init_does_not_cleanup_existing_resources_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,7 +130,7 @@ def test_init_can_cleanup_existing_resources_when_requested(monkeypatch: pytest.
     )
 
     assert calls[0]["cleanup_trainer_on_close"] is True
-    assert calls[0]["cleanup_deployment_on_close"] == "scale_to_zero"
+    assert calls[0]["cleanup_deployment_on_close"] == "delete"
 
 
 def test_progress_line_includes_resource_ids(monkeypatch: pytest.MonkeyPatch) -> None:

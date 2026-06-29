@@ -113,6 +113,8 @@ The structural / reachability errors (`invalid FW_HOSTED hot_load_bucket_url`, `
 
 `DeleteRlorTrainerJob` no longer hard-deletes the trainer row immediately — it transitions the row to `JOB_STATE_DELETED` and marks `DeletionTime`. A background GC hard-deletes rows after **30 days**, aligned with the RL-checkpoints GCS bucket lifecycle.
 
+Cookbook-managed RL recipes also request deployment deletion when `cleanup_on_exit=True` (the default), so sampler deployments created for a run are torn down with the trainer. Disable cleanup only when you intentionally want both resources left alive for inspection or reuse.
+
 During the 30-day retention window:
 - `list_checkpoints` on the deleted trainer keeps working.
 - `promote_checkpoint` keeps working — just pass `name` as usual.

@@ -24,7 +24,7 @@ from training.recipes.distillation_loop import (
     main as run_opd_main,
 )
 from training.utils import (
-    CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
+    CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE,
     DeployConfig,
     RunnerConfig,
     TrainerConfig,
@@ -1190,7 +1190,7 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
     assert len(service.deployment_calls) == 1
     call = service.deployment_calls[0]
     assert call["timeout_s"] == 123
-    assert call["cleanup_on_close"] == CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+    assert call["cleanup_on_close"] == CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE
     assert call["tokenizer"] == "tok"
     assert call["config"].base_model == teacher_model
     assert call["config"].min_replica_count == 2

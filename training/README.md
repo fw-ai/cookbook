@@ -110,6 +110,9 @@ They do not require explicit trainer-job, deployment, or sampler setup.
 When `training_shape_id` is not set, the SDK selects validated runtime
 defaults. Explicit `training_shape_id`, `reference_training_shape_id`, and
 deployment-shape overrides still take precedence.
+When recipe cleanup is enabled (the default for RL-family recipes), the SDK
+closes the trainer and deletes SDK-created sampler deployments on exit. Disable
+cleanup only when you intentionally want resources to remain alive.
 
 To launch trainers with replicated HSDP, set the run-level replica count on
 `TrainerConfig`; it is not part of the validated training shape:

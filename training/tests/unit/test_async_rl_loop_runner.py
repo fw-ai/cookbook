@@ -177,7 +177,7 @@ def test_main_requests_cleanup_for_sdk_created_resources(monkeypatch: pytest.Mon
     assert kwargs["cleanup_trainer_on_close"] is True
     assert (
         kwargs["cleanup_deployment_on_close"]
-        == async_rl_loop.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+        == async_rl_loop.CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE
     )
 
 

@@ -99,8 +99,9 @@ uv run python provision.py --config /path/to/my_fireworks.yaml --recipe rl
 
 ### Lifecycle and flags
 
-- Resources the script creates are cleaned up on exit; resources you reattach to
-  (by setting `job_id` / `deployment_id` in the YAML) are left running.
+- Resources the script creates are cleaned up on exit; trainer jobs are closed
+  and SDK-created deployments are deleted. Resources you reattach to (by setting
+  `job_id` / `deployment_id` in the YAML) are left running.
 - `--cleanup-existing` also tears down reattached resources on exit.
 - `--progress-interval-s` (default 15) controls heartbeat cadence.
 - `--health-check-interval-s` (default 60) controls how often resources are

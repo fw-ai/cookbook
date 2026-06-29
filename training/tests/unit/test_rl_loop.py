@@ -179,7 +179,7 @@ def test_main_requests_cleanup_for_sdk_created_resources(monkeypatch):
     assert kwargs["cleanup_trainer_on_close"] is True
     assert (
         kwargs["cleanup_deployment_on_close"]
-        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE
     )
 
 
@@ -228,7 +228,7 @@ def test_main_delegates_trainer_cleanup_for_existing_id_to_sdk(monkeypatch):
     assert kwargs["cleanup_trainer_on_close"] is True
     assert (
         kwargs["cleanup_deployment_on_close"]
-        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_DELETE
     )
 
 
