@@ -8,6 +8,7 @@ PromptGroups.  No GPU / network / fireworks SDK required.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -17,7 +18,6 @@ from training.utils.rl.async_train import (
     run_async_rl_loop,
 )
 from training.utils.rl.rollout import RolloutRun, RolloutSample
-from training.utils.rl.train import TrainStepFns
 
 
 def _run(coro):
@@ -71,6 +71,18 @@ def _noop_train_step(step, groups, extra):
     return step + 1, {}
 
 
+def _train_step_fn(fn):
+    def train_step(
+        step: int,
+        groups,
+        extra,
+        run_optimizer_step: bool,
+    ):
+        return fn(step, groups, extra)
+
+    return train_step
+
+
 # Sensible defaults for tests that don't care about the new knobs.
 _DEFAULTS = dict(
     completions_per_prompt=1,
@@ -83,7 +95,7 @@ class TestArgValidation:
         with pytest.raises(ValueError, match="prompt_groups_per_step"):
             _run(run_async_rl_loop(
                 rows=iter([]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=0,
                 max_head_offpolicy_versions=0,
                 **_DEFAULTS,
@@ -93,7 +105,7 @@ class TestArgValidation:
         with pytest.raises(ValueError, match="completions_per_prompt"):
             _run(run_async_rl_loop(
                 rows=iter([]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=1,
                 max_head_offpolicy_versions=0,
                 completions_per_prompt=0,
@@ -104,7 +116,7 @@ class TestArgValidation:
         with pytest.raises(ValueError, match="min_group_size"):
             _run(run_async_rl_loop(
                 rows=iter([]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=1,
                 max_head_offpolicy_versions=0,
                 completions_per_prompt=2,
@@ -116,7 +128,7 @@ class TestArgValidation:
         with pytest.raises(ValueError, match="max_head_offpolicy_versions"):
             _run(run_async_rl_loop(
                 rows=iter([]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=1,
                 max_head_offpolicy_versions=-1,
                 **_DEFAULTS,
@@ -126,7 +138,7 @@ class TestArgValidation:
         with pytest.raises(ValueError, match="weight_sync_interval"):
             _run(run_async_rl_loop(
                 rows=iter([]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=1,
                 max_head_offpolicy_versions=0,
                 weight_sync_interval=0,
@@ -137,7 +149,7 @@ class TestArgValidation:
         with pytest.raises(ValueError, match="max_concurrent"):
             _run(run_async_rl_loop(
                 rows=iter([]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=1,
                 max_head_offpolicy_versions=0,
                 max_concurrent=0,
@@ -150,7 +162,7 @@ class TestArgValidation:
         with pytest.raises(ValueError, match="max_head_offpolicy_versions"):
             _run(run_async_rl_loop(
                 rows=iter([]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=1,
                 max_head_offpolicy_versions=0,
                 weight_sync_interval=5,
@@ -160,13 +172,35 @@ class TestArgValidation:
     def test_accepts_balanced_weight_sync_interval_and_offpolicy(self):
         result = _run(run_async_rl_loop(
             rows=iter([]),
-            train_fns=TrainStepFns(train_step=_noop_train_step),
+            train_step_fn=_train_step_fn(_noop_train_step),
             prompt_groups_per_step=1,
             max_head_offpolicy_versions=2,
             weight_sync_interval=3,
             **_DEFAULTS,
         ))
         assert isinstance(result, int)
+
+    def test_pipeline_chunks_are_independent_of_staleness_budget(self):
+        result = _run(run_async_rl_loop(
+            rows=iter([]),
+            train_step_fn=_train_step_fn(_noop_train_step),
+            prompt_groups_per_step=2,
+            max_head_offpolicy_versions=1,
+            pipeline_chunks_per_step=2,
+            **_DEFAULTS,
+        ))
+        assert isinstance(result, int)
+
+    def test_rejects_invalid_pipeline_chunks_per_step(self):
+        with pytest.raises(ValueError, match="pipeline_chunks_per_step"):
+            _run(run_async_rl_loop(
+                rows=iter([]),
+                train_step_fn=_train_step_fn(_noop_train_step),
+                prompt_groups_per_step=2,
+                max_head_offpolicy_versions=0,
+                pipeline_chunks_per_step=0,
+                **_DEFAULTS,
+            ))
 
 
 class TestStalenessController:
@@ -215,13 +249,19 @@ class TestHappyPath:
         n_rows = 4
         calls = []
 
-        def train_step(step, groups, extra):
-            calls.append((step, len(groups), extra.get("async/version_offset_max")))
+        def train_step(step, groups, extra, run_optimizer_step):
+            calls.append((
+                step,
+                len(groups),
+                extra.get("async/version_offset_max"),
+                run_optimizer_step,
+                "train/run_optimizer_step" in extra,
+            ))
             return step + 1, {}
 
         result = _run(run_async_rl_loop(
             rows=(_row(i, reward=float(i)) for i in range(n_rows)),
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=train_step,
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             weight_sync_fn=lambda _step: None,
@@ -229,7 +269,9 @@ class TestHappyPath:
         ))
         assert result == 2
         assert len(calls) == 2
-        assert all(offset == 0 for _, _, offset in calls)
+        assert all(offset == 0 for _, _, offset, _, _ in calls)
+        assert all(run_step for _, _, _, run_step, _ in calls)
+        assert not any(in_metrics for _, _, _, _, in_metrics in calls)
 
     def test_sample_failures_skip_batch_not_charge_gate(self):
         """Run factory returning None drops the row from training."""
@@ -248,7 +290,7 @@ class TestHappyPath:
 
         _run(run_async_rl_loop(
             rows=rows,
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=2,
             **_DEFAULTS,
@@ -270,7 +312,7 @@ class TestHappyPath:
 
         _run(run_async_rl_loop(
             rows=(_row(i, reward=float(i)) for i in range(n_rows)),
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=3,
             max_head_offpolicy_versions=2,
             dynamic_filter_fn=filter_fn,
@@ -288,7 +330,7 @@ class TestHappyPath:
 
         final_step = _run(run_async_rl_loop(
             rows=(_row(i) for i in range(5)),
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             weight_sync_fn=lambda _step: None,
@@ -306,13 +348,139 @@ class TestHappyPath:
 
         _run(run_async_rl_loop(
             rows=(_row(i) for i in range(2)),
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=4,
             max_head_offpolicy_versions=0,
             weight_sync_fn=lambda _step: None,
             **_DEFAULTS,
         ))
         assert sizes == [2]
+
+    def test_pipeline_dispatches_before_global_batch_done(self):
+        calls = []
+        sync_calls = []
+
+        def train_step(step, groups, extra, run_optimizer_step):
+            calls.append((
+                step,
+                len(groups),
+                run_optimizer_step,
+                extra["async/in_flight"],
+                "train/run_optimizer_step" in extra,
+            ))
+            return (step + 1 if run_optimizer_step else step), {}
+
+        def make_row(row_id: int) -> RowRequest:
+            async def factory(_sub_index: int):
+                if row_id >= 2:
+                    await asyncio.sleep(0.05)
+                return _rollout_run(reward=float(row_id))
+
+            return RowRequest(row_id=row_id, run_factory=factory)
+
+        final_step = _run(run_async_rl_loop(
+            rows=(make_row(i) for i in range(4)),
+            train_step_fn=train_step,
+            prompt_groups_per_step=4,
+            max_head_offpolicy_versions=0,
+            pipeline_chunks_per_step=2,
+            weight_sync_fn=sync_calls.append,
+            **_DEFAULTS,
+        ))
+
+        assert final_step == 1
+        assert sync_calls == [1]
+        assert calls[0][0:3] == (0, 2, False)
+        assert calls[1][0:3] == (0, 2, True)
+        assert calls[0][3] > 0
+        assert not any(call[-1] for call in calls)
+
+    def test_post_train_metrics_reports_rollouts_completed_during_train(self):
+        metrics = []
+
+        def train_step(step, _groups, _extra, run_optimizer_step):
+            time.sleep(0.05)
+            return (step + 1 if run_optimizer_step else step), {}
+
+        def make_row(row_id: int) -> RowRequest:
+            async def factory(_sub_index: int):
+                if row_id >= 2:
+                    await asyncio.sleep(0.01)
+                return _rollout_run(reward=float(row_id))
+
+            return RowRequest(row_id=row_id, run_factory=factory)
+
+        final_step = _run(run_async_rl_loop(
+            rows=(make_row(i) for i in range(4)),
+            train_step_fn=train_step,
+            prompt_groups_per_step=4,
+            max_head_offpolicy_versions=0,
+            pipeline_chunks_per_step=2,
+            weight_sync_fn=lambda _step: None,
+            post_train_metrics_fn=metrics.append,
+            **_DEFAULTS,
+        ))
+
+        assert final_step == 1
+        assert metrics[0]["async/in_flight_at_train_start"] == 2
+        assert metrics[0]["async/rollout_tasks_available_during_train"] == 2
+        assert metrics[0]["async/rollout_tasks_completed_during_train"] == 2
+        assert metrics[0]["perf/train_rollout_overlap_completion_ratio"] == 1.0
+
+    def test_pipeline_flushes_final_partial_global_batch(self):
+        calls = []
+
+        def train_step(step, groups, extra, run_optimizer_step):
+            calls.append((
+                len(groups),
+                run_optimizer_step,
+                extra["pipeline/prompt_groups_accumulated"],
+                extra["pipeline/chunks_per_step"],
+            ))
+            return (step + 1 if run_optimizer_step else step), {}
+
+        final_step = _run(run_async_rl_loop(
+            rows=(_row(i) for i in range(3)),
+            train_step_fn=train_step,
+            prompt_groups_per_step=4,
+            max_head_offpolicy_versions=0,
+            pipeline_chunks_per_step=2,
+            weight_sync_fn=lambda _step: None,
+            **_DEFAULTS,
+        ))
+
+        assert final_step == 1
+        assert calls == [(2, False, 2, 2), (1, True, 3, 2)]
+
+    def test_pipeline_reports_actual_chunks_when_request_exceeds_groups(self):
+        calls = []
+
+        def train_step(step, groups, extra, run_optimizer_step):
+            calls.append((
+                len(groups),
+                run_optimizer_step,
+                extra["pipeline/chunk_idx"],
+                extra["pipeline/chunks_per_step"],
+                extra["pipeline/configured_chunks_per_step"],
+                extra["pipeline/requested_chunks_per_step"],
+            ))
+            return (step + 1 if run_optimizer_step else step), {}
+
+        final_step = _run(run_async_rl_loop(
+            rows=(_row(i) for i in range(2)),
+            train_step_fn=train_step,
+            prompt_groups_per_step=2,
+            max_head_offpolicy_versions=0,
+            pipeline_chunks_per_step=8,
+            weight_sync_fn=lambda _step: None,
+            **_DEFAULTS,
+        ))
+
+        assert final_step == 1
+        assert calls == [
+            (1, False, 1, 2, 2, 8),
+            (1, True, 2, 2, 2, 8),
+        ]
 
     def test_stalled_gate_does_not_consume_remaining_iterator(self):
         """A stalled strict-on-policy loop must not drain a lazy row iterator
@@ -334,7 +502,7 @@ class TestHappyPath:
         rows = Rows()
         _run(run_async_rl_loop(
             rows=rows,
-            train_fns=TrainStepFns(train_step=_noop_train_step),
+            train_step_fn=_train_step_fn(_noop_train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             weight_sync_fn=None,
@@ -352,7 +520,7 @@ class TestVersionTracking:
 
         _run(run_async_rl_loop(
             rows=(_row(i) for i in range(6)),
-            train_fns=TrainStepFns(train_step=_noop_train_step),
+            train_step_fn=_train_step_fn(_noop_train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             weight_sync_fn=weight_sync,
@@ -369,7 +537,7 @@ class TestVersionTracking:
 
         _run(run_async_rl_loop(
             rows=(_row(i) for i in range(8)),
-            train_fns=TrainStepFns(train_step=_noop_train_step),
+            train_step_fn=_train_step_fn(_noop_train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=2,
             weight_sync_fn=weight_sync,
@@ -387,7 +555,7 @@ class TestVersionTracking:
 
         _run(run_async_rl_loop(
             rows=(_row(i) for i in range(4)),
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             weight_sync_fn=lambda _step: None,
@@ -421,7 +589,7 @@ class TestMaxConcurrent:
 
         _run(run_async_rl_loop(
             rows=rows,
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=5,
             max_head_offpolicy_versions=10,
             max_concurrent=2,
@@ -453,7 +621,7 @@ class TestMaxConcurrent:
 
         _run(run_async_rl_loop(
             rows=rows,
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=10,
             completions_per_prompt=4,
@@ -468,7 +636,7 @@ class TestMaxConcurrent:
         with pytest.raises(ValueError, match="max_concurrent"):
             _run(run_async_rl_loop(
                 rows=iter([]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=1,
                 max_head_offpolicy_versions=2,
                 completions_per_prompt=4,
@@ -490,7 +658,7 @@ class TestTaskExceptions:
         with pytest.raises(RuntimeError, match="boom"):
             _run(run_async_rl_loop(
                 rows=iter([_row(0), bad_row, _row(2), _row(3)]),
-                train_fns=TrainStepFns(train_step=_noop_train_step),
+                train_step_fn=_train_step_fn(_noop_train_step),
                 prompt_groups_per_step=1,
                 max_head_offpolicy_versions=2,
                 **_DEFAULTS,
@@ -506,7 +674,7 @@ class TestRowResolutionHooks:
 
         final_step, final = _run(run_async_rl_loop(
             rows=(make_row(i) for i in range(3)),
-            train_fns=TrainStepFns(train_step=_noop_train_step),
+            train_step_fn=_train_step_fn(_noop_train_step),
             prompt_groups_per_step=1,
             max_head_offpolicy_versions=0,
             weight_sync_fn=lambda _step: None,
@@ -527,7 +695,7 @@ class TestRowResolutionHooks:
 
         final_step, final = _run(run_async_rl_loop(
             rows=rows,
-            train_fns=TrainStepFns(train_step=_noop_train_step),
+            train_step_fn=_train_step_fn(_noop_train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             weight_sync_fn=lambda _step: None,
@@ -546,7 +714,7 @@ class TestRowResolutionHooks:
 
         final_step, final = _run(run_async_rl_loop(
             rows=(_row(i) for i in range(3)),
-            train_fns=TrainStepFns(train_step=_noop_train_step),
+            train_step_fn=_train_step_fn(_noop_train_step),
             prompt_groups_per_step=1,
             max_head_offpolicy_versions=0,
             dynamic_filter_fn=filter_fn,
@@ -567,7 +735,7 @@ class TestRowResolutionHooks:
 
         final_step, final = _run(run_async_rl_loop(
             rows=(_row(i) for i in range(2)),
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=1,
             max_head_offpolicy_versions=1,
             resolved_rows_offset=10,
@@ -592,7 +760,7 @@ class TestPerRunFanout:
         # Two rows -> 1 step at gpb=2.  Each row fans out to 4 runs.
         _run(run_async_rl_loop(
             rows=iter([_row(0, reward=1.0), _row(1, reward=2.0)]),
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             completions_per_prompt=4,
@@ -616,7 +784,7 @@ class TestPerRunFanout:
 
         _run(run_async_rl_loop(
             rows=iter([RowRequest(row_id=0, run_factory=run_factory)]),
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=1,
             max_head_offpolicy_versions=0,
             completions_per_prompt=2,
@@ -645,7 +813,7 @@ class TestPerRunFanout:
         ])
         _run(run_async_rl_loop(
             rows=rows,
-            train_fns=TrainStepFns(train_step=train_step),
+            train_step_fn=_train_step_fn(train_step),
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             completions_per_prompt=4,
@@ -663,9 +831,13 @@ class TestPerRunFanout:
             _row(1),                              # all succeed
             _row(2),
         ])
+
+        def train_step(step, groups, extra, run_optimizer_step):
+            return (step + 1 if run_optimizer_step else step), {}
+
         final_step, final = _run(run_async_rl_loop(
             rows=rows,
-            train_fns=TrainStepFns(train_step=_noop_train_step),
+            train_step_fn=train_step,
             prompt_groups_per_step=2,
             max_head_offpolicy_versions=0,
             completions_per_prompt=4,

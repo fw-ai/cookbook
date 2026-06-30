@@ -12,6 +12,27 @@ from training.utils.rl.losses import PromptGroup
 logger = logging.getLogger(__name__)
 
 _SKIP_REMOTE_KEYS = {"step_id", "step"}
+_LOOP_STAT_PASSTHROUGH_KEYS = (
+    "async/version_offset_mean",
+    "async/version_offset_max",
+    "async/version_offset_min",
+    "async/in_flight",
+    "async/in_flight_at_train_start",
+    "async/in_flight_done_at_train_start",
+    "async/running_samples",
+    "async/accepted_samples",
+    "async/staleness_capacity_at_step",
+    "async/concurrency_capacity_at_step",
+    "pipeline/chunk_idx",
+    "pipeline/chunk_prompt_groups",
+    "pipeline/prompt_groups_accumulated",
+    "pipeline/prompt_groups_per_step",
+    "pipeline/prompt_groups_per_chunk",
+    "pipeline/chunks_per_step",
+    "pipeline/configured_chunks_per_step",
+    "pipeline/requested_chunks_per_step",
+    "batch/optimizer_prompt_groups",
+)
 
 
 def median(values: Sequence[int]) -> float:
@@ -106,6 +127,54 @@ def compute_minibatch_metrics(
             if k not in _SKIP_REMOTE_KEYS:
                 metrics[f"train/{k}"] = v
     return metrics
+
+
+def build_train_chunk_metrics(
+    fwd_bwd_result: Any,
+    optim_result: Any,
+    *,
+    step: int,
+    chunk_idx: int,
+    num_chunks: int,
+    learning_rate: float,
+    run_optimizer_step: bool,
+) -> dict[str, Any]:
+    """Per-dispatch train metrics for async pipeline chunks."""
+    metrics = compute_minibatch_metrics(fwd_bwd_result, optim_result)
+    metrics.update(
+        {
+            "train/step": step,
+            "train/chunk_idx": chunk_idx,
+            "train/num_chunks": num_chunks,
+            "train/lr": learning_rate,
+            "train/run_optimizer_step": int(run_optimizer_step),
+        }
+    )
+    return metrics
+
+
+def build_accumulated_async_loop_stats(
+    *,
+    prompt_groups: Sequence[PromptGroup],
+    latest_loop_stats: dict[str, Any] | None,
+    trainer_wait_for_sampler_time: float,
+    sampler_wait_for_trainer_time: float,
+    train_wall_time: float,
+) -> dict[str, Any] | None:
+    """Merge per-chunk scheduler stats into one optimizer-step stats payload."""
+    if latest_loop_stats is None:
+        return None
+
+    loop_stats = dict(latest_loop_stats)
+    loop_stats["valid_prompt_groups"] = len(prompt_groups)
+    loop_stats["all_raw_rewards"] = [
+        reward for pg in prompt_groups for reward in pg.rewards
+    ]
+    loop_stats["trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
+    loop_stats["sampler_wait_for_trainer_time"] = sampler_wait_for_trainer_time
+    loop_stats["train_wall_time"] = train_wall_time
+    loop_stats["scheduler_step_wall_time"] = trainer_wait_for_sampler_time + train_wall_time
+    return loop_stats
 
 
 def build_loop_metrics(
@@ -221,30 +290,46 @@ def compute_step_metrics(
         metrics["rollout/filter_reject_ratio"] = filter_ratio
         metrics["rollout/sample_fail_count"] = loop_stats["sample_fails"]
         metrics["rollout/fwd_bwd_count"] = n_accum
+        for key in _LOOP_STAT_PASSTHROUGH_KEYS:
+            if key in loop_stats:
+                metrics[key] = loop_stats[key]
 
-        # Gap between successive train_steps; folds in weight_sync wall time
-        # (``last_step_end`` is set before ``weight_sync_fn`` runs), so subtract
-        # ``perf/weight_sync_time`` to back out the pure-starvation portion.
+        rollout_wall_time = float(loop_stats.get("rollout_batch_wall_time", 0.0))
+        if rollout_wall_time > 0:
+            metrics["perf/rollout_batch_wall_time"] = rollout_wall_time
+
+        train_wall_time = float(loop_stats.get("train_wall_time", 0.0))
+        if train_wall_time > 0:
+            metrics["perf/train_step_wall_time"] = train_wall_time
+
         trainer_wait_for_sampler_time = float(loop_stats.get("trainer_wait_for_sampler_time", 0.0))
-        metrics["perf/trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
-        # Should be ~0 in healthy async (concurrency cap binds before staleness);
-        # large values mean the staleness budget is throttling the rollout side.
-        metrics["perf/sampler_wait_for_trainer_time"] = float(
+        if trainer_wait_for_sampler_time > 0:
+            metrics["perf/trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
+        sampler_wait_for_trainer_time = float(
             loop_stats.get("sampler_wait_for_trainer_time", 0.0)
         )
-        # = wait / (wait + train_wall).  When rollouts are structurally slower
-        # than train+sync the ratio is Amdahl-bound -- not a pipeline bug.
-        step_wall_time = float(loop_stats.get("step_wall_time", 0.0))
-        if step_wall_time > 0:
-            wait_ratio = trainer_wait_for_sampler_time / step_wall_time
-            metrics["perf/wait_time_ratio"] = wait_ratio
-            metrics["perf/overlap_ratio"] = 1.0 - wait_ratio
+        if sampler_wait_for_trainer_time > 0:
+            metrics["perf/sampler_wait_for_trainer_time"] = sampler_wait_for_trainer_time
 
-        throughput_time = step_wall_time
-        if throughput_time > 0:
-            metrics["perf/step_wall_time"] = throughput_time
-            metrics["perf/rollout_samples_per_s"] = total_samples / throughput_time
-            metrics["perf/rollout_tokens_per_s"] = sum(all_comp_lens) / throughput_time
+        scheduler_step_wall_time = float(loop_stats.get("scheduler_step_wall_time", 0.0))
+        if scheduler_step_wall_time <= 0:
+            scheduler_step_wall_time = (
+                rollout_wall_time + trainer_wait_for_sampler_time + train_wall_time
+            )
+        if scheduler_step_wall_time > 0:
+            metrics["perf/scheduler_step_wall_time"] = scheduler_step_wall_time
+            metrics["perf/step_samples_per_s"] = total_samples / scheduler_step_wall_time
+            metrics["perf/step_tokens_per_s"] = sum(all_comp_lens) / scheduler_step_wall_time
+            if rollout_wall_time > 0:
+                metrics["perf/rollout_batch_wall_ratio"] = rollout_wall_time / scheduler_step_wall_time
+            if trainer_wait_for_sampler_time > 0:
+                metrics["perf/trainer_idle_ratio"] = trainer_wait_for_sampler_time / scheduler_step_wall_time
+            if train_wall_time > 0:
+                metrics["perf/train_step_wall_ratio"] = train_wall_time / scheduler_step_wall_time
+
+        if rollout_wall_time > 0:
+            metrics["perf/rollout_batch_samples_per_s"] = total_samples / rollout_wall_time
+            metrics["perf/rollout_batch_tokens_per_s"] = sum(all_comp_lens) / rollout_wall_time
 
         raw_rewards = loop_stats["all_raw_rewards"]
         if raw_rewards:

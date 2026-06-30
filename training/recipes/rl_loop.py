@@ -33,7 +33,7 @@ import signal
 import asyncio
 import logging
 from contextlib import ExitStack
-from typing import Any, List, Optional
+from typing import Any, Awaitable, Callable, List, Optional
 from dataclasses import field, dataclass
 
 import tinker
@@ -343,9 +343,12 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
 
 def main(
     config: Config,
+    *,
+    sample_prompt_fn: Callable[..., Awaitable[PromptGroup | None]] | None = None,
 ):
     cfg = config
     runner = RunnerIO(cfg.runner)
+    uses_recipe_sampler = sample_prompt_fn is None
 
     # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
     def _signal_handler(signum, frame):
@@ -415,7 +418,9 @@ def main(
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cfg.cleanup_on_exit,
             cleanup_deployment_on_close=(
-                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cfg.cleanup_on_exit else None
+                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+                if cfg.cleanup_on_exit
+                else None
             ),
             reference_required=cfg.kl_beta > 0,
         )
@@ -472,26 +477,31 @@ def main(
         # _response_text_for_grading): restores the prompt-prefilled <think>
         # and strips the think block so reward sees the post-think answer.
         response_renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
-        # Adaptive concurrency — window adjusts based on server-side prefill queue.
-        # For fixed (no rate limiting), use FixedConcurrencyController instead.
-        # Fallback scales with deployment replicas (see ConcurrencyConfig.initial_window).
-        initial_window = cfg.concurrency.initial_window or (8 * (cfg.deployment.replica_count or 1))
-        concurrency_controller = AdaptiveConcurrencyController(
-            initial_window=initial_window,
-            min_window=cfg.concurrency.min_window,
-            max_window=cfg.concurrency.max_window,
-            prefill_queue_target=cfg.concurrency.prefill_queue_target,
-        )
-        logger.info(
-            "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
-            initial_window,
-            cfg.concurrency.min_window,
-            cfg.concurrency.max_window,
-            cfg.concurrency.prefill_queue_target,
-        )
-        sampler = service.create_deployment_sampler(
-            tokenizer=tokenizer, concurrency_controller=concurrency_controller,
-        )
+        concurrency_controller = None
+        sampler = None
+        if uses_recipe_sampler:
+            # Adaptive concurrency — window adjusts based on server-side prefill queue.
+            # For fixed (no rate limiting), use FixedConcurrencyController instead.
+            # Fallback scales with deployment replicas (see ConcurrencyConfig.initial_window).
+            initial_window = cfg.concurrency.initial_window or (
+                8 * (cfg.deployment.replica_count or 1)
+            )
+            concurrency_controller = AdaptiveConcurrencyController(
+                initial_window=initial_window,
+                min_window=cfg.concurrency.min_window,
+                max_window=cfg.concurrency.max_window,
+                prefill_queue_target=cfg.concurrency.prefill_queue_target,
+            )
+            logger.info(
+                "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
+                initial_window,
+                cfg.concurrency.min_window,
+                cfg.concurrency.max_window,
+                cfg.concurrency.prefill_queue_target,
+            )
+            sampler = service.create_deployment_sampler(
+                tokenizer=tokenizer, concurrency_controller=concurrency_controller,
+            )
 
         ckpt = TrainingCheckpoints(
             policy,
@@ -559,8 +569,12 @@ def main(
 
         # -- Sample one prompt (VISIBLE -- customise this) ----------------------
 
-        async def sample_one_prompt(row: dict) -> PromptGroup | None:
+        async def sample_one_prompt(row: dict, *, cursor_index: int) -> PromptGroup | None:
             """Sample completions for one prompt and return a PromptGroup."""
+            if sample_prompt_fn is not None:
+                return await sample_prompt_fn(row, cursor_index=cursor_index)
+            if sampler is None:
+                raise RuntimeError("live sampling requires a deployment sampler")
             messages = row.get("messages", [])
             input_messages = prepare_sampling_messages(messages)
             if not input_messages:
@@ -743,6 +757,7 @@ def main(
             if not prompt_groups:
                 raise ValueError("train_step requires at least one prompt group")
 
+            train_step_start = _time.time()
             t0 = _time.time()
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
@@ -812,6 +827,12 @@ def main(
                 )
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
+            if loop_stats is not None:
+                train_wall_time = _time.time() - train_step_start
+                loop_stats["train_wall_time"] = train_wall_time
+                rollout_wall_time = float(loop_stats.get("rollout_batch_wall_time", 0.0))
+                loop_stats["scheduler_step_wall_time"] = rollout_wall_time + train_wall_time
+
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
                 fwd_bwd_results=fwd_bwd_results,
@@ -879,7 +900,10 @@ def main(
 
         global_step = asyncio.run(
             run_batched_training_loop(
-                sample_fns=(sample_one_prompt(row) for row in remaining_rows),
+                sample_fns=(
+                    sample_one_prompt(row, cursor_index=cursor.value + offset)
+                    for offset, row in enumerate(remaining_rows)
+                ),
                 train_fns=train_fns,
                 prompt_groups_per_step=prompt_groups_per_step,
                 dynamic_filter_fn=should_accept,

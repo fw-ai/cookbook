@@ -45,12 +45,11 @@ def estimate_async_total_steps(
     total_items: int,
     prior_rows_consumed: int,
     prompt_groups_per_step: int,
-    ppo_n_minibatches: int,
 ) -> int:
     """Estimate async RL optimizer steps for status reporting."""
     remaining = max(0, total_items - prior_rows_consumed)
     rollout_batches = math.ceil(remaining / max(1, prompt_groups_per_step))
-    return step_offset + rollout_batches * max(1, ppo_n_minibatches)
+    return step_offset + rollout_batches
 
 
 def write_running_step(

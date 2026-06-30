@@ -133,6 +133,34 @@ class BaseToolPrefixRenderer(Renderer):
         )
 
 
+class BaseWarningRenderer(Renderer):
+    def __init__(self):
+        super().__init__(tokenizer=None)
+        self.calls: list[TrainOnWhat] = []
+
+    def get_stop_sequences(self):
+        return []
+
+    def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
+        role_token = 10 if message["role"] == "user" else 20
+        return RenderedMessage(
+            output=[
+                tinker.EncodedTextChunk(
+                    tokens=[role_token + (ctx.idx * 2), role_token + (ctx.idx * 2) + 1]
+                )
+            ]
+        )
+
+    def parse_response(self, response: list[int]) -> tuple[Message, ParseTermination]:
+        return Message(role="assistant", content=""), ParseTermination.EOS
+
+    def build_supervised_example(
+        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    ):
+        self.calls.append(train_on_what)
+        return super().build_supervised_example(messages, train_on_what=train_on_what)
+
+
 def test_render_messages_to_datum_preserves_multi_turn_weights():
     renderer = StubRenderer(
         tokens=[10, 11, 12, 13, 14, 15, 16, 17, 18],
@@ -205,7 +233,7 @@ def test_render_messages_to_datum_supports_multimodal_model_input():
     )
 
     normalized_messages, train_on_what = renderer.calls[0]
-    assert train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+    assert train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN
     assert normalized_messages[0]["content"] == [
         {"type": "text", "text": "look at this"},
         {"type": "image", "image": "https://example.com/cat.png"},
@@ -263,6 +291,93 @@ def test_render_messages_to_datums_uses_renderer_split_for_all_assistant_message
     assert len(rendered) == 2
     assert [example.token_ids for example in rendered] == [[10, 11, 12], [20, 21, 22]]
     assert renderer.calls[0][1] == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+
+def test_render_messages_to_datums_suppresses_fake_single_target_warning(caplog):
+    renderer = BaseWarningRenderer()
+    messages = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+
+    expected = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="last_assistant_turn",
+    )
+    caplog.clear()
+
+    actual = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    assert [example.token_ids for example in actual] == [
+        example.token_ids for example in expected
+    ]
+    assert [example.token_weights for example in actual] == [
+        example.token_weights for example in expected
+    ]
+    assert renderer.calls[-1] == TrainOnWhat.LAST_ASSISTANT_TURN
+    assert "does not satisfy the extension property" not in caplog.text
+
+
+def test_render_messages_to_datums_preserves_last_turn_with_multiple_assistants(caplog):
+    renderer = BaseWarningRenderer()
+    messages = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "assistant", "content": "a2"},
+    ]
+
+    expected = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="last_assistant_turn",
+    )
+    caplog.clear()
+
+    actual = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    assert [example.token_ids for example in actual] == [
+        example.token_ids for example in expected
+    ]
+    assert [example.token_weights for example in actual] == [
+        example.token_weights for example in expected
+    ]
+    assert renderer.calls[-1] == TrainOnWhat.LAST_ASSISTANT_TURN
+    assert "does not satisfy the extension property" not in caplog.text
+
+
+def test_render_messages_to_datums_keeps_real_extension_warning(caplog):
+    renderer = BaseWarningRenderer()
+    messages = [
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+
+    all_assistant = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+    last_turn = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what="last_assistant_turn",
+    )
+
+    assert [example.token_weights for example in all_assistant] != [
+        example.token_weights for example in last_turn
+    ]
+    assert renderer.calls[0] == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+    assert "does not satisfy the extension property" in caplog.text
 
 
 def test_render_messages_to_datums_uses_renderer_split_for_weighted_rows():
@@ -589,33 +704,67 @@ def test_render_messages_to_datum_auto_switches_to_customized_when_weight_set():
     assert resolved_train_on_what == TrainOnWhat.CUSTOMIZED
 
 
-def test_render_messages_to_datum_keeps_default_train_on_what_without_weight():
-    """Without ``weight``/``trainable`` anywhere in the conversation, the
-    caller-specified ``train_on_what`` must flow through unchanged — this
-    preserves back-compat for datasets that don't use the V1 field."""
+def test_render_messages_to_datum_uses_equivalent_single_example_mode():
+    renderer = BaseWarningRenderer()
+    messages = [
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "assistant", "content": "a2"},
+    ]
 
-    class RecordingRenderer:
-        def __init__(self):
-            self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+    expected = render_messages_to_datum(
+        messages,
+        renderer=renderer,
+        train_on_what="last_assistant_turn",
+    )
+    actual = render_messages_to_datum(
+        messages,
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
 
-        def build_supervised_example(self, messages, train_on_what):
-            self.calls.append((list(messages), train_on_what))
-            return (
-                torch.tensor([1, 2, 3, 4], dtype=torch.int64),
-                torch.tensor([0, 0, 1, 1], dtype=torch.float32),
-            )
+    assert actual.token_ids == expected.token_ids
+    assert actual.token_weights == expected.token_weights
+    assert renderer.calls[-1] == TrainOnWhat.LAST_ASSISTANT_TURN
 
-    renderer = RecordingRenderer()
+
+def test_render_messages_to_datum_keeps_non_equivalent_train_on_what():
+    renderer = BaseWarningRenderer()
     render_messages_to_datum(
         [
+            {"role": "assistant", "content": "a0"},
             {"role": "user", "content": "u"},
-            {"role": "assistant", "content": "a"},
+            {"role": "assistant", "content": "a1"},
         ],
         renderer=renderer,
         train_on_what="all_assistant_messages",
     )
-    _, resolved_train_on_what = renderer.calls[0]
-    assert resolved_train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+    assert renderer.calls[-1] == TrainOnWhat.ALL_ASSISTANT_MESSAGES
+
+
+def test_render_preference_pair_uses_equivalent_single_example_mode(caplog):
+    renderer = BaseWarningRenderer()
+    item = {
+        "messages": [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ]
+    }
+
+    rendered = render_preference_pair(
+        item,
+        item,
+        renderer=renderer,
+        tokenizer=object(),
+    )
+
+    assert rendered is not None
+    assert renderer.calls == [
+        TrainOnWhat.LAST_ASSISTANT_TURN,
+        TrainOnWhat.LAST_ASSISTANT_TURN,
+    ]
+    assert "does not satisfy the extension property" not in caplog.text
 
 
 def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):

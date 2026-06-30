@@ -5,7 +5,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.metrics import build_loop_metrics, compute_step_metrics
+from training.utils.rl.metrics import (
+    build_accumulated_async_loop_stats,
+    build_loop_metrics,
+    build_train_chunk_metrics,
+    compute_step_metrics,
+)
 
 
 def _make_prompt_group() -> PromptGroup:
@@ -37,13 +42,65 @@ class TestBuildLoopMetrics:
         assert "rollout/sample_fail_ratio" not in loop_metrics
         assert "rollout/raw_reward" not in loop_metrics
         assert "perf/trainer_wait_for_sampler_time" not in loop_metrics
-        assert "perf/wait_time_ratio" not in loop_metrics
-        assert "perf/overlap_ratio" not in loop_metrics
-        assert "perf/step_wall_time" not in loop_metrics
-        assert "perf/rollout_samples_per_s" not in loop_metrics
-        assert "perf/rollout_tokens_per_s" not in loop_metrics
+        assert "perf/trainer_idle_ratio" not in loop_metrics
+        assert "perf/scheduler_step_wall_time" not in loop_metrics
+        assert "perf/rollout_batch_wall_time" not in loop_metrics
+        assert "perf/rollout_batch_samples_per_s" not in loop_metrics
+        assert "perf/rollout_batch_tokens_per_s" not in loop_metrics
+        assert "perf/step_samples_per_s" not in loop_metrics
+        assert "perf/step_tokens_per_s" not in loop_metrics
         assert "rollout/filter_drop_ratio" not in loop_metrics
         assert "rollout/zero_std_ratio" not in loop_metrics
+
+
+class TestAsyncMetricHelpers:
+    def test_build_train_chunk_metrics_uses_chunk_axis(self):
+        metrics = build_train_chunk_metrics(
+            SimpleNamespace(metrics={"loss": 0.5, "step": 99}),
+            SimpleNamespace(metrics={"grad_norm": 1.25}),
+            step=3,
+            chunk_idx=2,
+            num_chunks=4,
+            learning_rate=1e-5,
+            run_optimizer_step=False,
+        )
+
+        assert metrics["train/loss"] == 0.5
+        assert metrics["train/grad_norm"] == 1.25
+        assert metrics["train/step"] == 3
+        assert metrics["train/chunk_idx"] == 2
+        assert metrics["train/num_chunks"] == 4
+        assert metrics["train/lr"] == 1e-5
+        assert metrics["train/run_optimizer_step"] == 0
+        assert "train/step_id" not in metrics
+
+    def test_build_accumulated_async_loop_stats_merges_chunk_stats(self):
+        pg1 = _make_prompt_group()
+        pg2 = _make_prompt_group()
+        latest = {
+            "filter_drops": 1,
+            "sample_fails": 2,
+            "total_sampled": 3,
+            "resolved_rows": 4,
+        }
+
+        loop_stats = build_accumulated_async_loop_stats(
+            prompt_groups=[pg1, pg2],
+            latest_loop_stats=latest,
+            trainer_wait_for_sampler_time=0.7,
+            sampler_wait_for_trainer_time=0.2,
+            train_wall_time=1.3,
+        )
+
+        assert loop_stats is not None
+        assert loop_stats is not latest
+        assert loop_stats["valid_prompt_groups"] == 2
+        assert loop_stats["all_raw_rewards"] == [1.0, 1.0]
+        assert loop_stats["trainer_wait_for_sampler_time"] == 0.7
+        assert loop_stats["sampler_wait_for_trainer_time"] == 0.2
+        assert loop_stats["train_wall_time"] == 1.3
+        assert loop_stats["scheduler_step_wall_time"] == 2.0
+        assert loop_stats["resolved_rows"] == 4
 
 
 class TestComputeStepMetrics:
@@ -60,8 +117,14 @@ class TestComputeStepMetrics:
                 "filter_drops": 1,
                 "sample_fails": 2,
                 "trainer_wait_for_sampler_time": 3.0,
-                "step_wall_time": 4.0,
+                "rollout_batch_wall_time": 2.0,
+                "train_wall_time": 1.0,
+                "scheduler_step_wall_time": 6.0,
                 "all_raw_rewards": [1.0, 0.0],
+                "async/in_flight_at_train_start": 3,
+                "async/rollout_tasks_completed_during_train": 2,
+                "pipeline/chunk_idx": 1,
+                "pipeline/chunks_per_step": 4,
             },
             completions_per_prompt=8,
         )
@@ -71,11 +134,25 @@ class TestComputeStepMetrics:
         assert metrics["rollout/filter_reject_ratio"] == 1 / 7
         assert metrics["rollout/sample_fail_count"] == 2
         assert metrics["perf/trainer_wait_for_sampler_time"] == 3.0
-        assert metrics["perf/wait_time_ratio"] == 0.75
-        assert metrics["perf/overlap_ratio"] == 0.25
-        assert metrics["perf/step_wall_time"] == 4.0
-        assert metrics["perf/rollout_samples_per_s"] == 0.25
-        assert metrics["perf/rollout_tokens_per_s"] == 0.5
+        assert metrics["perf/rollout_batch_wall_time"] == 2.0
+        assert metrics["perf/train_step_wall_time"] == 1.0
+        assert metrics["perf/scheduler_step_wall_time"] == 6.0
+        assert metrics["perf/trainer_idle_ratio"] == 0.5
+        assert metrics["perf/rollout_batch_wall_ratio"] == 1 / 3
+        assert metrics["perf/train_step_wall_ratio"] == 1 / 6
+        assert metrics["perf/step_samples_per_s"] == 1 / 6
+        assert metrics["perf/step_tokens_per_s"] == 1 / 3
+        assert metrics["perf/rollout_batch_samples_per_s"] == 0.5
+        assert metrics["perf/rollout_batch_tokens_per_s"] == 1.0
+        assert metrics["async/in_flight_at_train_start"] == 3
+        assert "async/rollout_tasks_completed_during_train" not in metrics
+        assert metrics["pipeline/chunk_idx"] == 1
+        assert metrics["pipeline/chunks_per_step"] == 4
+        assert "perf/wait_time_ratio" not in metrics
+        assert "perf/overlap_ratio" not in metrics
+        assert "perf/step_wall_time" not in metrics
+        assert "perf/rollout_samples_per_s" not in metrics
+        assert "perf/rollout_tokens_per_s" not in metrics
 
         assert "rollout/pass@1" not in metrics
         assert "rollout/pass@2" not in metrics

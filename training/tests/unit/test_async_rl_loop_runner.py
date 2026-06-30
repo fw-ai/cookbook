@@ -4,7 +4,7 @@ Covers the deterministic pieces that don't require tinker, the Fireworks
 SDK, or a deployment:
 
 * ``estimate_async_total_steps`` -- the progress-bar total formula
-  (batching, PPO inner minibatches, resume offset, clamping).
+  (batching, resume offset, clamping).
 * ``Config.runner`` -- the RunnerConfig default + user override plumbing.
 """
 
@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from training.recipes import async_rl_loop
+from training.utils.rl.metrics import build_train_chunk_metrics
 from training.utils.runner_state import estimate_async_total_steps
 
 
@@ -25,14 +26,13 @@ class _StopAfterProvisioning(RuntimeError):
 class TestEstimateAsyncTotalSteps:
     """``estimate_async_total_steps`` mirrors the async progress formula."""
 
-    def test_fresh_run_single_minibatch(self) -> None:
-        """No resume, one minibatch per rollout -> one step per row."""
+    def test_fresh_run_single_optimizer_batch(self) -> None:
+        """No resume, one optimizer batch per rollout batch."""
         total = estimate_async_total_steps(
             step_offset=0,
             total_items=10,
             prior_rows_consumed=0,
             prompt_groups_per_step=1,
-            ppo_n_minibatches=1,
         )
         assert total == 10
 
@@ -43,21 +43,19 @@ class TestEstimateAsyncTotalSteps:
             total_items=10,
             prior_rows_consumed=0,
             prompt_groups_per_step=4,
-            ppo_n_minibatches=1,
         )
         assert total == 3
 
-    def test_ppo_inner_minibatches_multiply_steps(self) -> None:
-        """Each rollout batch fans out into ``ppo_n_minibatches`` optim steps."""
+    def test_pipeline_chunks_do_not_multiply_optimizer_steps(self) -> None:
+        """Pipeline chunks stay inside one optimizer step."""
         total = estimate_async_total_steps(
             step_offset=0,
             total_items=10,
             prior_rows_consumed=0,
             prompt_groups_per_step=2,
-            ppo_n_minibatches=3,
         )
-        # ceil(10/2) = 5 rollout batches, each 3 optim steps -> 15
-        assert total == 15
+        # ceil(10/2) = 5 rollout batches, each one optimizer step.
+        assert total == 5
 
     def test_resume_adds_step_offset(self) -> None:
         """Resume from step N -> total includes N + remaining estimate."""
@@ -66,7 +64,6 @@ class TestEstimateAsyncTotalSteps:
             total_items=10,
             prior_rows_consumed=6,
             prompt_groups_per_step=2,
-            ppo_n_minibatches=1,
         )
         # remaining = 10 - 6 = 4 rows; ceil(4/2) = 2 rollouts; 4 + 2 = 6
         assert total == 6
@@ -78,7 +75,6 @@ class TestEstimateAsyncTotalSteps:
             total_items=10,
             prior_rows_consumed=12,
             prompt_groups_per_step=1,
-            ppo_n_minibatches=1,
         )
         assert total == 7
 
@@ -89,7 +85,6 @@ class TestEstimateAsyncTotalSteps:
             total_items=5,
             prior_rows_consumed=0,
             prompt_groups_per_step=0,
-            ppo_n_minibatches=1,
         )
         assert total == 5
 
@@ -100,7 +95,6 @@ class TestEstimateAsyncTotalSteps:
             total_items=0,
             prior_rows_consumed=0,
             prompt_groups_per_step=1,
-            ppo_n_minibatches=2,
         )
         assert total == 3
 
@@ -139,6 +133,11 @@ class TestConfigRunnerField:
         cfg = async_rl_loop.Config(log_path="gs://logs")
 
         assert cfg.cleanup_on_exit is True
+
+    def test_config_pipeline_chunks_default_to_one(self) -> None:
+        cfg = async_rl_loop.Config(log_path="gs://logs")
+
+        assert cfg.pipeline_chunks_per_step == 1
 
 
 def _build_service_kwargs(monkeypatch: pytest.MonkeyPatch, cfg: async_rl_loop.Config) -> dict:
@@ -206,37 +205,41 @@ def test_main_requests_trainer_cleanup_for_empty_job_id(monkeypatch: pytest.Monk
     assert kwargs["cleanup_trainer_on_close"] is True
 
 
-class TestMinibatchWandbMetrics:
+class TestTrainChunkMetrics:
     def test_logs_lr_even_when_remote_metrics_are_empty(self) -> None:
-        metrics = async_rl_loop._build_minibatch_wandb_metrics(
+        metrics = build_train_chunk_metrics(
             SimpleNamespace(metrics={}),
             SimpleNamespace(metrics={}),
             step=3,
-            minibatch_idx=2,
-            num_minibatches=4,
+            chunk_idx=2,
+            num_chunks=4,
             learning_rate=5e-5,
+            run_optimizer_step=False,
         )
 
         assert metrics == {
             "train/step": 3,
-            "train/minibatch_idx": 2,
-            "train/num_minibatches": 4,
+            "train/chunk_idx": 2,
+            "train/num_chunks": 4,
             "train/lr": 5e-5,
+            "train/run_optimizer_step": 0,
         }
 
     def test_scheduled_lr_overrides_remote_lr_metric(self) -> None:
-        metrics = async_rl_loop._build_minibatch_wandb_metrics(
+        metrics = build_train_chunk_metrics(
             SimpleNamespace(metrics={"loss": 1.25, "step": 99}),
             SimpleNamespace(metrics={"lr": 1e-3, "grad_norm": 0.5}),
             step=7,
-            minibatch_idx=1,
-            num_minibatches=2,
+            chunk_idx=1,
+            num_chunks=2,
             learning_rate=2e-5,
+            run_optimizer_step=True,
         )
 
         assert metrics["train/lr"] == 2e-5
         assert metrics["train/loss"] == 1.25
         assert metrics["train/grad_norm"] == 0.5
+        assert metrics["train/run_optimizer_step"] == 1
         assert "train/step_id" not in metrics
         assert metrics["train/step"] == 7
 

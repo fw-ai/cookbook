@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Hashable, Iterable, Iterator, List
@@ -35,14 +36,19 @@ from training.utils.rl.rollout.group_assembler import (
     RowResolution,
 )
 from training.utils.rl.rollout.types import RolloutRun
-from training.train_loop import DynamicFilterFn, TrainStepFns
+from training.train_loop import DynamicFilterFn
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["RowRequest", "run_async_rl_loop"]
+__all__ = ["AsyncTrainStepFn", "RowRequest", "run_async_rl_loop"]
 
 
 RunFactory = Callable[[int], Awaitable[RolloutRun | None]]
+AsyncTrainStepFn = Callable[
+    [int, list[PromptGroup], dict | None, bool],
+    tuple[int, dict],
+]
+PostTrainMetricsFn = Callable[[dict[str, Any]], None]
 
 
 @dataclass
@@ -78,9 +84,9 @@ class _StalenessController:
     ``accepted_samples`` on accept, freed on reject).
     """
 
-    batch_size_samples: int            # = prompt_groups_per_step * completions_per_prompt
-    completions_per_prompt: int        # samples per prompt
-    max_staleness: int                 # versions
+    batch_size_samples: int  # = prompt_groups_per_step * completions_per_prompt
+    completions_per_prompt: int  # samples per prompt
+    max_staleness: int  # versions
     max_concurrent_samples: int | None
     version: int = 0
     accepted_samples: int = 0
@@ -162,10 +168,91 @@ class _RowState:
     run_tasks: List[asyncio.Task] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _TrainBatchPlan:
+    run_optimizer_step: bool
+    chunk_idx: int
+    chunks_per_step: int
+    accumulated_groups: int
+    optimizer_target_groups: int
+
+
+@dataclass
+class _PipelineChunkState:
+    """Scheduler-level optimizer-window state.
+
+    This loop never waits to fill a scheduler chunk. It drains completed
+    prompt groups as they arrive, capped by ``prompt_groups_per_chunk`` and the
+    remaining groups in the current optimizer window. API/trainer continuous
+    batching owns execution-level coalescing and microbatching.
+    """
+
+    prompt_groups_per_step: int
+    requested_chunks_per_step: int
+    prompt_groups_per_chunk: int = field(init=False)
+    configured_chunks_per_step: int = field(init=False)
+    accumulated_groups: int = 0
+    chunk_idx: int = 0
+
+    def __post_init__(self) -> None:
+        requested = max(1, self.requested_chunks_per_step)
+        self.prompt_groups_per_chunk = max(
+            1,
+            math.ceil(self.prompt_groups_per_step / requested),
+        )
+        self.configured_chunks_per_step = max(
+            1,
+            math.ceil(self.prompt_groups_per_step / self.prompt_groups_per_chunk),
+        )
+
+    def ready_batch_size(self, *, buffer_len: int) -> int | None:
+        if buffer_len == 0:
+            return None
+        remaining = max(0, self.prompt_groups_per_step - self.accumulated_groups)
+        if remaining == 0:
+            return None
+        return min(buffer_len, self.prompt_groups_per_chunk, remaining)
+
+    def plan_dispatch(
+        self,
+        *,
+        batch_size: int,
+        draining: bool,
+    ) -> _TrainBatchPlan:
+        self.chunk_idx += 1
+        accumulated_groups = self.accumulated_groups + batch_size
+        run_optimizer_step = (
+            accumulated_groups >= self.prompt_groups_per_step or draining
+        )
+        optimizer_batch_groups = (
+            accumulated_groups
+            if run_optimizer_step and accumulated_groups < self.prompt_groups_per_step
+            else self.prompt_groups_per_step
+        )
+        chunks_per_step = max(
+            self.chunk_idx,
+            math.ceil(optimizer_batch_groups / self.prompt_groups_per_chunk),
+        )
+        return _TrainBatchPlan(
+            run_optimizer_step=run_optimizer_step,
+            chunk_idx=self.chunk_idx,
+            chunks_per_step=max(1, chunks_per_step),
+            accumulated_groups=accumulated_groups,
+            optimizer_target_groups=optimizer_batch_groups,
+        )
+
+    def mark_dispatched(self, plan: _TrainBatchPlan) -> None:
+        if plan.run_optimizer_step:
+            self.accumulated_groups = 0
+            self.chunk_idx = 0
+            return
+        self.accumulated_groups = plan.accumulated_groups
+
+
 async def run_async_rl_loop(
     rows: Iterable[RowRequest],
     *,
-    train_fns: TrainStepFns,
+    train_step_fn: AsyncTrainStepFn,
     completions_per_prompt: int,
     prompt_groups_per_step: int,
     max_head_offpolicy_versions: int,
@@ -181,7 +268,8 @@ async def run_async_rl_loop(
     resolved_rows_offset: int = 0,
     resolved_rows_fn: Callable[[], int] | None = None,
     return_final_stats: bool = False,
-    synchronous_training: bool = False,
+    pipeline_chunks_per_step: int = 1,
+    post_train_metrics_fn: PostTrainMetricsFn | None = None,
 ) -> int | tuple[int, dict[str, Any]]:
     """Run the per-run async RL loop.
 
@@ -189,7 +277,8 @@ async def run_async_rl_loop(
         rows: Iterable of :class:`RowRequest`, one per dataset row.  The
             loop calls each row's ``run_factory`` ``completions_per_prompt``
             times to materialize the per-run coroutines.
-        train_fns: Training callbacks (see :class:`TrainStepFns`).
+        train_step_fn: Training callback.  The final bool is control-plane
+            data: whether this dispatch should also run an optimizer step.
         completions_per_prompt: Number of rollout runs drawn per row.
         prompt_groups_per_step: Number of accepted rows that form one
             optimizer step.
@@ -225,6 +314,13 @@ async def run_async_rl_loop(
         resolved_rows_offset: Resume cursor offset.
         resolved_rows_fn: Optional durable cursor provider.
         return_final_stats: When ``True``, return ``(global_step, stats)``.
+        pipeline_chunks_per_step: Pipeline-mode scheduler chunks
+            per global optimizer batch.  The scheduler does not wait to fill
+            these chunks; it sends ready prompt groups immediately and leaves
+            execution-level coalescing/microbatching to the trainer.
+        post_train_metrics_fn: Optional logging callback called after each
+            train dispatch returns.  The loop uses this only to expose
+            scheduler/trainer overlap data; it does not read callback output.
 
     Returns:
         Final ``global_step``, optionally with a stats dict.
@@ -237,6 +333,8 @@ async def run_async_rl_loop(
         raise ValueError("max_head_offpolicy_versions must be >= 0")
     if weight_sync_interval < 1:
         raise ValueError("weight_sync_interval must be >= 1")
+    if pipeline_chunks_per_step < 1:
+        raise ValueError("pipeline_chunks_per_step must be >= 1")
     if max_concurrent is not None and max_concurrent < completions_per_prompt:
         # Sample-level cap: must fit at least one row's worth (cpp samples).
         # Anything smaller would deadlock the gate.
@@ -287,6 +385,10 @@ async def run_async_rl_loop(
 
     rows_iter: Iterator[RowRequest] = iter(rows)
     iterator_exhausted = False
+    chunk_state = _PipelineChunkState(
+        prompt_groups_per_step=prompt_groups_per_step,
+        requested_chunks_per_step=pipeline_chunks_per_step,
+    )
 
     def _resolved_rows(fallback: int) -> int:
         if resolved_rows_fn is not None:
@@ -336,11 +438,9 @@ async def run_async_rl_loop(
             _submit_row(request)
 
     def _can_make_batch() -> bool:
-        if len(buffer) >= prompt_groups_per_step:
-            return True
-        if iterator_exhausted and not in_flight and buffer:
-            return True
-        return False
+        return chunk_state.ready_batch_size(
+            buffer_len=len(buffer),
+        ) is not None
 
     def _has_outstanding_work() -> bool:
         return bool(in_flight) or _can_make_batch() or not iterator_exhausted
@@ -366,6 +466,9 @@ async def run_async_rl_loop(
     # Gap from here to the next ``step_start`` is ``trainer_wait_for_sampler_time``.
     last_step_end = time.monotonic()
     prev_sampler_wait_for_trainer_total = staleness.sampler_wait_for_trainer_total
+    rollout_tasks_completed_during_train_total = 0
+    rollout_tasks_available_during_train_total = 0
+    train_dispatch_wall_time_total = 0.0
 
     while _has_outstanding_work():
         if not _can_make_batch():
@@ -405,11 +508,19 @@ async def run_async_rl_loop(
             _refill()
             continue
 
-        batch_pairs = buffer[:prompt_groups_per_step]
-        buffer = buffer[prompt_groups_per_step:]
+        batch_size = chunk_state.ready_batch_size(
+            buffer_len=len(buffer),
+        )
+        assert batch_size is not None
+        batch_pairs = buffer[:batch_size]
+        buffer = buffer[batch_size:]
         batch = [pg for pg, _, _ in batch_pairs]
         versions = [v for _, v, _ in batch_pairs]
         offsets = [staleness.version - v for v in versions]
+        batch_plan = chunk_state.plan_dispatch(
+            batch_size=len(batch),
+            draining=iterator_exhausted and not in_flight and not buffer,
+        )
 
         step_start = time.monotonic()
         for _, _, request in batch_pairs:
@@ -420,36 +531,16 @@ async def run_async_rl_loop(
             else staleness.resolved_count(resolved_rows_offset)
         )
 
-        # Sync mode: drain in-flight rollouts before train_step (kills overlap)
-        # and explicitly open the wait window so the trainer's wall time lands
-        # in ``perf/sampler_wait_for_trainer_time``.
-        if synchronous_training and in_flight:
-            while in_flight:
-                done, _ = await asyncio.wait(
-                    set(in_flight), return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in done:
-                    row_id, _sub = in_flight.pop(task)
-                    exc = task.exception()
-                    if exc is not None:
-                        for other in in_flight:
-                            other.cancel()
-                        in_flight.clear()
-                        raise exc
-                    run = task.result()
-                    if run is None:
-                        resolution = assembler.note_dropped(row_id)
-                    else:
-                        resolution = assembler.add_run(row_id, run)
-                    if resolution is not None:
-                        _on_row_resolved(row_id, resolution)
-        if synchronous_training:
-            staleness.mark_sampler_wait_for_trainer_start(time.monotonic())
-
-        sampler_wait_for_trainer_time = staleness.sampler_wait_for_trainer_total - prev_sampler_wait_for_trainer_total
+        sampler_wait_for_trainer_time = (
+            staleness.sampler_wait_for_trainer_total
+            - prev_sampler_wait_for_trainer_total
+        )
         prev_sampler_wait_for_trainer_total = staleness.sampler_wait_for_trainer_total
         trainer_wait_for_sampler_time = step_start - last_step_end
         cc = staleness.concurrency_capacity()
+        train_start_tasks = list(in_flight)
+        train_in_flight_at_start = len(train_start_tasks)
+        train_done_at_start = sum(1 for task in train_start_tasks if task.done())
         logger.info(
             "[batch-ready v=%d] in_flight=%d running=%d accepted=%d buffer=%d "
             "staleness_cap=%d concurrency_cap=%s "
@@ -471,12 +562,17 @@ async def run_async_rl_loop(
             "async/version_offset_max": max(offsets),
             "async/version_offset_min": min(offsets),
             "async/in_flight": len(in_flight),
+            "async/in_flight_at_train_start": train_in_flight_at_start,
+            "async/in_flight_done_at_train_start": train_done_at_start,
             "async/sample_fails": staleness.sample_fails,
             "async/filter_drops": staleness.filter_drops,
             "async/stale_drops": 0,
             "all_raw_rewards": [r for pg in batch for r in pg.rewards],
             "valid_prompt_groups": len(batch),
-            "total_sampled": staleness.accepted_samples + staleness.rejected_count * completions_per_prompt,
+            "total_sampled": (
+                staleness.accepted_samples
+                + staleness.rejected_count * completions_per_prompt
+            ),
             "filter_drops": staleness.filter_drops,
             "sample_fails": staleness.sample_fails,
             "stale_drops": 0,
@@ -490,14 +586,80 @@ async def run_async_rl_loop(
             "async/concurrency_capacity_at_step": (
                 -1 if cc is None else cc
             ),
+            "pipeline/chunk_idx": batch_plan.chunk_idx,
+            "pipeline/chunk_prompt_groups": len(batch),
+            "pipeline/prompt_groups_accumulated": batch_plan.accumulated_groups,
+            "pipeline/prompt_groups_per_step": prompt_groups_per_step,
+            "pipeline/prompt_groups_per_chunk": chunk_state.prompt_groups_per_chunk,
+            "pipeline/chunks_per_step": batch_plan.chunks_per_step,
+            "pipeline/configured_chunks_per_step": (
+                chunk_state.configured_chunks_per_step
+            ),
+            "pipeline/requested_chunks_per_step": pipeline_chunks_per_step,
+            "batch/optimizer_prompt_groups": batch_plan.optimizer_target_groups,
         }
 
+        prev_global_step = global_step
+        train_dispatch_start = time.monotonic()
         global_step, _step_metrics = await asyncio.to_thread(
-            train_fns.train_step, global_step, batch, extra_metrics,
+            train_step_fn,
+            global_step,
+            batch,
+            extra_metrics,
+            batch_plan.run_optimizer_step,
         )
         last_step_end = time.monotonic()
+        train_dispatch_wall_time = last_step_end - train_dispatch_start
+        train_done_after = sum(1 for task in train_start_tasks if task.done())
+        completed_during_train = max(0, train_done_after - train_done_at_start)
+        available_during_train = max(0, train_in_flight_at_start - train_done_at_start)
+        completion_ratio = (
+            completed_during_train / available_during_train
+            if available_during_train > 0
+            else 0.0
+        )
+        rollout_tasks_completed_during_train_total += completed_during_train
+        rollout_tasks_available_during_train_total += available_during_train
+        train_dispatch_wall_time_total += train_dispatch_wall_time
+        overlap_metrics: dict[str, Any] = {
+            "rollout/step": prev_global_step + 1,
+            "train/step": global_step if batch_plan.run_optimizer_step else prev_global_step + 1,
+            "train/run_optimizer_step": int(batch_plan.run_optimizer_step),
+            "pipeline/chunk_idx": batch_plan.chunk_idx,
+            "pipeline/chunks_per_step": batch_plan.chunks_per_step,
+            "async/in_flight_at_train_start": train_in_flight_at_start,
+            "async/in_flight_done_at_train_start": train_done_at_start,
+            "async/in_flight_done_after_train": train_done_after,
+            "async/rollout_tasks_available_during_train": available_during_train,
+            "async/rollout_tasks_completed_during_train": completed_during_train,
+            "perf/train_dispatch_wall_time": train_dispatch_wall_time,
+            "perf/train_rollout_overlap_completion_ratio": completion_ratio,
+        }
+        logger.info(
+            "[train-overlap v=%d] chunk=%d/%d in_flight_start=%d "
+            "done_start=%d done_after=%d completed_during_train=%d "
+            "ratio=%.3f train_wall=%.1fs",
+            staleness.version,
+            batch_plan.chunk_idx,
+            batch_plan.chunks_per_step,
+            train_in_flight_at_start,
+            train_done_at_start,
+            train_done_after,
+            completed_during_train,
+            completion_ratio,
+            train_dispatch_wall_time,
+        )
+        if post_train_metrics_fn is not None:
+            post_train_metrics_fn(overlap_metrics)
 
-        if weight_sync_fn is not None and global_step % weight_sync_interval == 0:
+        chunk_state.mark_dispatched(batch_plan)
+
+        if (
+            weight_sync_fn is not None
+            and global_step > prev_global_step
+            and batch_plan.run_optimizer_step
+            and global_step % weight_sync_interval == 0
+        ):
             await asyncio.to_thread(weight_sync_fn, global_step)
             staleness.advance_version()
 
@@ -529,6 +691,9 @@ async def run_async_rl_loop(
         "total_accepted": accepted_prompts,
         "resolved_rows": _resolved_rows(resolved_this_run),
         "sampler_wait_for_trainer_time_total": staleness.sampler_wait_for_trainer_total,
+        "rollout_tasks_available_during_train_total": rollout_tasks_available_during_train_total,
+        "rollout_tasks_completed_during_train_total": rollout_tasks_completed_during_train_total,
+        "train_dispatch_wall_time_total": train_dispatch_wall_time_total,
     }
     if return_final_stats:
         return global_step, final_stats

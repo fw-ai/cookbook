@@ -7,7 +7,7 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | SFT | `training/recipes/sft_loop.py` |
 | DPO | `training/recipes/dpo_loop.py` |
 | ORPO | `training/recipes/orpo_loop.py` |
-| **RL (primary)** — write a rollout function; recipe owns the loop. Async by default, sync via `synchronous_training=True` | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
+| **RL (primary)** — write a rollout function; recipe owns the loop. Async by default; strict on-policy scheduling via `max_head_offpolicy_versions=0` | `training/recipes/async_rl_loop.py` — see [`rl/async-rl.md`](rl/async-rl.md) |
 | RL (simpler, synchronous GRPO scaffold) | `training/recipes/rl_loop.py` |
 | Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
 | Distillation / OPD / SDFT | `training/recipes/distillation_loop.py` — see [`distillation.md`](distillation.md) |
@@ -57,6 +57,6 @@ RL has its own skill folder. Open [`rl/`](rl/) when working with `rl_loop.py`:
 - [`rl/hotload.md`](rl/hotload.md) — weight-sync cadence, `weight_sync_timeout`, on-policy vs off-policy, base/delta chain
 - [`rl/concurrency.md`](rl/concurrency.md) — rollout concurrency control for the **sync** `rl_loop.py` (adaptive is the default)
 - [`rl/sampling-timeouts.md`](rl/sampling-timeouts.md) — diagnose `DeploymentSamplerTimeoutError` from request shape and serving metrics
-- [`rl/async-rl.md`](rl/async-rl.md) — `async_rl_loop.py` overlap recipe: sample-level cap, off-policy budget, PPO inner minibatches
+- [`rl/async-rl.md`](rl/async-rl.md) — `async_rl_loop.py` overlap recipe: sample-level cap, off-policy budget, pipeline chunks
 
 SFT / DPO / ORPO users do not need these.

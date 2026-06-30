@@ -64,7 +64,6 @@ from training.utils.rl.rollout import (
     load_eval_protocol_input_rows,
     make_eval_protocol_rollout_fn_factory,
 )
-from training.train_loop import TrainStepFns
 from training.utils.rl.cispo import CISPOConfig
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.dro import DROConfig
@@ -676,6 +675,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         old_policy_lp,
                         inf_lp,
                         prompt_lens,
+                        cfg.tis,
                         policy_loss=cfg.policy_loss,
                     )
                     return policy.forward_backward(
@@ -688,9 +688,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             def train_step(
                 step: int,
                 prompt_groups: list[PromptGroup],
-                loop_stats: dict | None = None,
+                loop_stats: dict | None,
+                run_optimizer_step: bool,
             ) -> tuple[int, dict]:
                 """ref_forward + fwd_bwd + optim_step + metrics (1:1)."""
+                if not run_optimizer_step:
+                    raise ValueError("frozen_lake async train_step only supports optimizer steps")
                 t0 = time.time()
                 ref_forward_batch(prompt_groups)
                 logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
@@ -759,8 +762,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     service.hotload_sampler_snapshot(saved.snapshot_name)
                 logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
 
-            train_fns = TrainStepFns(train_step=train_step)
-
             def should_accept(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
 
@@ -813,7 +814,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             global_step, final_stats = asyncio.run(run_async_rl_loop(
                 rows=make_row_requests(),
-                train_fns=train_fns,
+                train_step_fn=train_step,
                 completions_per_prompt=completions_per_prompt,
                 prompt_groups_per_step=prompt_groups_per_step,
                 max_head_offpolicy_versions=max_head_offpolicy_versions,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from training.utils.rl.tis import (
@@ -27,6 +28,46 @@ class TestComputeTISWeight:
         weight, _ = compute_tis_weight(old_policy, inf, TISConfig(cap=2.0))
 
         assert weight.max().item() <= 2.0 + 1e-6
+
+    def test_icepop_threshold_masks_token_ratio_outside_band(self):
+        old_policy = torch.tensor([-2.0, -0.5, 2.0])
+        inf = torch.tensor([0.0, 0.0, 0.0])
+
+        weight, metrics = compute_tis_weight(
+            old_policy,
+            inf,
+            TISConfig(level="token", cap=100.0, icepop_threshold=2.0),
+        )
+
+        expected = torch.tensor([
+            0.0,
+            torch.exp(torch.tensor(-0.5)).item(),
+            0.0,
+        ])
+        torch.testing.assert_close(weight, expected)
+        assert metrics["tis/icepop_clip_frac"] == pytest.approx(2 / 3)
+
+    def test_icepop_threshold_rejects_sequence_level_tis(self):
+        old_policy = torch.tensor([-0.5, -0.3])
+        inf = torch.tensor([-0.6, -0.4])
+
+        with pytest.raises(ValueError, match="only supported for token-level TIS"):
+            compute_tis_weight(
+                old_policy,
+                inf,
+                TISConfig(level="sequence", icepop_threshold=2.0),
+            )
+
+    def test_icepop_threshold_rejects_threshold_below_one(self):
+        old_policy = torch.tensor([-0.5, -0.3])
+        inf = torch.tensor([-0.6, -0.4])
+
+        with pytest.raises(ValueError, match="must be >= 1.0"):
+            compute_tis_weight(
+                old_policy,
+                inf,
+                TISConfig(icepop_threshold=0.5),
+            )
 
 
 class TestSequenceLevelTIS:

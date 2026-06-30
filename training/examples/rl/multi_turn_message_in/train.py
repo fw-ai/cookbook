@@ -68,10 +68,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--kl-beta", type=float, default=0.0)
     p.add_argument("--max-head-offpolicy-versions", type=int, default=0,
                    help="Off-policy staleness budget in weight-sync (policy) versions; "
-                        "one weight-sync per outer rollout batch, regardless of ppo-n-minibatches "
+                        "one weight-sync per optimizer batch "
                         "(0 = strict on-policy).")
-    p.add_argument("--ppo-n-minibatches", type=int, default=1,
-                   help="Inner PPO minibatches per rollout batch (1 = legacy 1:1).")
+    p.add_argument("--pipeline-chunks-per-step", type=int, default=1,
+                   help="Pipeline-mode scheduler chunks per global optimizer batch.")
     p.add_argument("--filter-constant-reward", action="store_true",
                    help="Drop prompt groups whose samples all share the same reward (zero GRPO advantage).")
     p.add_argument("--max-turns", type=int, default=2,
@@ -83,11 +83,6 @@ def parse_args() -> argparse.Namespace:
                    help="Full training shape resource name (accounts/.../trainingShapes/...).")
     p.add_argument("--lora-rank", type=int, default=0,
                    help="LoRA rank (0 = full-parameter training).")
-    p.add_argument("--synchronous-training", action="store_true",
-                   help="Force fully-synchronous mode (no rollout/train overlap). "
-                        "Drains in-flight rollouts before each train_step and "
-                        "marks the rollout side blocked-on-trainer; "
-                        "perf/sampler_wait_for_trainer_time then reflects train+sync wall time.")
     p.add_argument("--max-concurrency-rollout-sample", type=int, default=None,
                    help="Cap in-flight LLM calls against the inference deployment "
                         "(maps to deployment max_batch_size; e.g. 64 for a 64-slot "
@@ -125,9 +120,8 @@ def run():
         lora_rank=args.lora_rank,
         prompt_groups_per_step=args.prompt_groups_per_step,
         max_head_offpolicy_versions=args.max_head_offpolicy_versions,
-        ppo_n_minibatches=args.ppo_n_minibatches,
+        pipeline_chunks_per_step=args.pipeline_chunks_per_step,
         max_concurrency_rollout_sample=args.max_concurrency_rollout_sample,
-        synchronous_training=args.synchronous_training,
         output_model_id=args.output_model_id,
         trainer=TrainerConfig(training_shape_id=args.training_shape_id),
         deployment=DeployConfig(

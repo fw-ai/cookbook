@@ -5,13 +5,15 @@
 > commit if you depend on the current shape.  The recipe also emits a
 > runtime `WARNING` at `main()` start.
 
-The async recipe runs rollout sampling and training as concurrent tasks behind a
-gate that controls **submission headroom**.  Be precise about the two separate
-ideas:
+The async recipe runs rollout sampling and training through one pipelined
+scheduler loop behind a gate that controls **submission headroom**.  Be precise
+about the separate ideas:
 
-- **Fully synchronous execution** means `synchronous_training=True`: once a
-  train batch is ready, the runner drains outstanding rollout tasks before
-  entering `train_step`.  This removes rollout/trainer wall-time overlap.
+- **Scheduler pipeline chunking** means ready GRPO prompt groups are dispatched
+  to the trainer as soon as they arrive, but the trainer runs one `optim_step`
+  only after the full `prompt_groups_per_step` global batch is accumulated.
+  `pipeline_chunks_per_step` controls the maximum scheduler chunk size; trainer
+  continuous batching owns execution-level coalescing/microbatching.
 - **On-policy training** means the behavior policy that generated the trained
   tokens matches the policy being updated.  AReaL tracks this with per-token
   `versions` in rollout outputs.  Our async recipe currently tracks the row's
@@ -22,20 +24,26 @@ ideas:
   weight syncs happen.  Once a request is submitted, the network/model runtime
   can still make it finish before or after later syncs.
 
-For a conservative synchronous baseline, use `synchronous_training=True` and
-`max_head_offpolicy_versions=0`.  Raising `O` permits more head-of-line
-submission and can create useful overlap, but actual policy staleness must be
-validated with behavior-policy metadata when available and policy-drift metrics
-such as `train/inference_kld` / `train/inference_diff`.
+For strict on-policy training, use `max_head_offpolicy_versions=0`.  Raising
+`O` permits more head-of-line submission and can create useful overlap, but
+actual policy staleness must be validated with behavior-policy metadata when
+available and policy-drift metrics such as `train/inference_kld` /
+`train/inference_diff`.
 
 `rl_loop.py` is the older synchronous recipe (always strict on-policy, drains
-rollouts before each step).  The async recipe is a strict superset of that
-behavior and is the recommended starting point for new RL work.
+rollouts before each step).  The async recipe is the recommended starting
+point for new RL work because it supports both strict on-policy scheduling
+(`O=0`) and off-policy overlap (`O>0`) without a separate mode flag.
 
-**Sync RL is the same recipe.** Set `synchronous_training=True` to force the
-drain-before-train behavior.  Do not use `max_head_offpolicy_versions=0` as a
-synonym for sync mode: `O=0` constrains new submissions, while
-`synchronous_training=True` changes when the runner is allowed to train.
+`prompt_groups_per_step` is the global optimizer batch size.
+`pipeline_chunks_per_step` caps the number of scheduler chunks inside that
+global batch.  Internally the runner passes each dispatch a
+`run_optimizer_step` control flag; intermediate chunks run forward/backward
+only, while the optimizer step runs at the global batch boundary.  Do not force
+`max_concurrency_rollout_sample` to the global batch size for on-policy runs:
+with `max_head_offpolicy_versions=0`, the staleness gate is already the
+on-policy admission cap.  Keep the recipe default or any explicit user-provided
+concurrency cap.
 
 **Two-file layout.** A run is typically a `rollout.py` (the rollout function,
 `make_rollout_fn(setup) -> rollout_fn`) plus a `train.py` (the `Config` —
@@ -49,15 +57,15 @@ recipe owns everything between.
 
 The recipe is intentionally minimal-surface: **the only thing most users need
 to write is the rollout function**.  Everything else — gate, advantage
-computation, reference-model forwards, weight sync, KL/TIS metrics, PPO inner
-loop, checkpoint plumbing — is handled by `recipes/async_rl_loop.py::main`.
+computation, reference-model forwards, weight sync, KL/TIS metrics, pipeline
+chunking, checkpoint plumbing — is handled by `recipes/async_rl_loop.py::main`.
 
 | You write | The recipe handles |
 |---|---|
 | `rollout_fn_factory(setup) -> rollout_fn` (one trajectory per call) | Async fan-out / GroupAssembler / off-policy gate |
 | (optional) `dynamic_filter_fn(pg)` for batch-level filtering | Reference model forwards, KL, TIS, drift metrics |
 | Dataset rows (or pass `rows=` to `main()`) | Weight sync cadence, checkpoint save/promote, WandB axes |
-| `Config(...)` knobs (LR, gate sizes, deployment shape) | PPO inner minibatching, gradient accumulation, advantage z-score |
+| `Config(...)` knobs (LR, gate sizes, deployment shape) | Pipeline chunking, gradient accumulation, advantage z-score |
 
 This is the design intent — extend the rollout, not the loop.  If you find
 yourself forking the recipe, file an issue first; it usually means a knob
@@ -65,17 +73,16 @@ should exist on `Config`.
 
 | | `rl_loop.py` (sync) | `async_rl_loop.py` (async) |
 |---|---|---|
-| Sampler/trainer overlap | None — drains rollouts before each step | Concurrent by default; `synchronous_training=True` disables train/rollout overlap |
+| Sampler/trainer overlap | None — drains rollouts before each step | Concurrent by default; ready prompt groups can overlap rollout with trainer fwd/bwd while delaying `optim_step` to the global batch boundary |
 | Rollout API | `make_rollout_fn(rl_cfg, deploy_mgr) -> rollout_fn` | `rollout_fn_factory(setup) -> rollout_fn` |
 | Per-call signature | `rollout_fn(prompt, n)` returns N samples | `rollout_fn(sample_prompt) -> RolloutRun \| None` (one trajectory per call) |
 | Concurrency | `ConcurrencyConfig` (adaptive AIMD) | Sample-level cap on the async runner (`max_concurrency_rollout_sample`) |
 | On-/off-policy | Strict on-policy only | `async/version_offset_*` measures submit-version lag; true behavior-policy staleness requires generation-version metadata |
-| PPO inner steps | One `fwd_bwd + optim_step` per rollout | `ppo_n_minibatches` × inner steps per rollout |
+| Optimizer boundary | Can run multiple inner optimizer steps | One optimizer step per rollout batch. Pipeline: `pipeline_chunks_per_step` fwd/bwd chunks + one `optim_step` |
 
-Prefer the async recipe for new work.  Use `synchronous_training=True` for a
-fully synchronous baseline, and tune `max_head_offpolicy_versions` separately
-when you want overlap.  The sync recipe stays for users who already depend on
-it.
+Prefer the async recipe for new work.  Use `max_head_offpolicy_versions=0` for
+strict on-policy scheduling, and raise it only when you want off-policy overlap.
+The sync recipe stays for users who already depend on it.
 
 ## The rollout API
 
@@ -214,16 +221,15 @@ many rows are submitted in the current admission tick.
 | `completions_per_prompt` | samples/prompt | `cpp`: GRPO group size per prompt |
 | `max_head_offpolicy_versions` | weight-sync versions | `O`: headroom for submitting rows ahead of future sampler versions.  This is an admission budget, not a guarantee that every request finishes within `O` versions |
 | `max_concurrency_rollout_sample` | samples | `C_s`: hard cap on in-flight LLM calls; map to `deployment.max_batch_size`.  Must be `>= cpp` or the gate deadlocks |
-| `ppo_n_minibatches` | minibatches | `K`: inner PPO steps per rollout batch (each with `old_policy_logprobs` snapshot reused) |
+| `pipeline_chunks_per_step` | scheduler chunks | Caps how many fwd/bwd chunks feed one optimizer step; these are not trainer/executor microbatches |
 
 Derived: `B_s = B_p × cpp` (samples per outer batch), `R = C_s / B_s` (active set
 relative to one batch).
 
 **Version semantics.** `version` increments once per `weight_sync_fn` call
-(once per outer rollout batch when `weight_sync_interval=1`, which the recipe
-pins).  It is **not** an optimizer-step counter — with `K>1` the same version
-spans `K` optim steps.  Each row records the version at submission time; the
-train step reports `current_version - submit_version` as
+(once per optimizer batch when `weight_sync_interval=1`, which the recipe
+pins).  Each row records the version at submission time; the train step reports
+`current_version - submit_version` as
 `async/version_offset_*`.
 
 That metric is **submit-version lag**, not token-generation lag.  AReaL's
@@ -250,16 +256,20 @@ policy drift with:
 Treat the `async/version_offset_*` values as admission/submission diagnostics.
 Treat `train/inference_kld` and `train/inference_diff` as the policy-drift
 checks.  If drift is too high, lower `max_head_offpolicy_versions`, reduce
-`max_concurrency_rollout_sample`, or force `synchronous_training=True` for the
-baseline.
+`max_concurrency_rollout_sample`, or set `max_head_offpolicy_versions=0` for
+the strict on-policy baseline.
 
 **Sizing rule of thumb.**  For sustained overlap you usually need `O >= R - 1`.
 Treat this as an admission-sizing heuristic, not an on-policy guarantee.  At
 `O = 0`, the runner stops submitting new rows once the current version's batch
-budget is full, but only `synchronous_training=True` explicitly drains
-outstanding rollout tasks before training.  AReaL's GSM8K example uses `R=1`
-with `O=2`; we've tested `R=4` with `O=4` (one margin step over the minimum)
-and found it healthy.  See `## Metrics` below for tuning from a live run.
+budget is full.  Pipeline mode can still dispatch trainer fwd/bwd chunks before
+the whole global batch has landed, but it does not advance weights until the
+batch boundary.  This is why strict on-policy pipeline runs do not need a
+separate concurrency override to the global batch size;
+`max_concurrency_rollout_sample` remains only an optional serving/backpressure
+cap.  AReaL's GSM8K example uses `R=1` with `O=2`; we've tested
+`R=4` with `O=4` (one margin step over the minimum) and found it healthy.  See
+`## Metrics` below for tuning from a live run.
 
 ## Metrics: tuning staleness and the trainer/sampler GPU split
 
@@ -282,9 +292,9 @@ the wait pair to decide what to change.
 > At `max_head_offpolicy_versions=0`, `sampler_wait_for_trainer_time` can be
 > structurally non-zero because the gate refuses to admit the next batch once
 > the current version's submission budget is full.  That is correct behavior,
-> not a bug.  For the true fully synchronous baseline, also set
-> `synchronous_training=True`; then sampler wait includes the explicit
-> drain-before-train period.
+> not a bug.  In strict on-policy runs, this wait reflects the budget while
+> trainer fwd/bwd chunks may still overlap with outstanding rollouts from the
+> same global batch.
 
 ### Reading a run (off-policy regime, `O > 0`)
 
@@ -295,7 +305,7 @@ the wait pair to decide what to change.
      and reversible; KL/PPO-clip will absorb modest extra drift.
    - If `O` is already at the sizing rule (`O ≥ R−1`) and the wait persists,
      the trainer step itself is too long.  Add training replicas /
-     pipeline-parallel ranks, or lower `ppo_n_minibatches`.
+     pipeline-parallel ranks, or reduce the optimizer batch size.
 2. **`trainer_wait_for_sampler_time` >> 0 and `sampler_wait` ≈ 0** → the
    intended sampler-bound regime.  Check whether the wait is *minimized*:
    - If the wait is small and `wait_time_ratio < ~0.1`, you're done.
@@ -321,21 +331,21 @@ Same metrics, in aggregate:
   `max_concurrency_rollout_sample`.
 - **Trainer-bound run, large `sampler_wait_for_trainer` after maxing out `O`**
   → shift GPUs from inference to trainer: more training replicas, raise
-  pipeline parallelism, or accept lower `ppo_n_minibatches`.
+  pipeline parallelism, or reduce the optimizer batch size.
 
 In the off-policy regime, tune until `sampler_wait_for_trainer_time ≈ 0` *and*
 `trainer_wait_for_sampler_time` is small — the trainer is the marginal-cost
 resource and is fully utilized; the sampler always has work queued
-just-in-time.  In the synchronous baseline, only the second condition is
-achievable; `sampler_wait_for_trainer_time` is bounded below by the train +
-sync wall time because the runner intentionally stops overlap.
+just-in-time.  In strict on-policy pipeline mode, sampler wait can remain
+non-zero because the gate cannot admit the next policy version's rows until
+the current global batch reaches its optimizer boundary.
 
 ### Other useful metrics
 
-- `train/ppo_kl` — intra-step KL between the current policy and the
-  `old_policy_logprobs` snapshot.  Large with `ppo_n_minibatches > 1` means
-  the inner loop is genuinely doing work; a near-zero value means
-  `ppo_n_minibatches=1` would have the same effect at lower cost.
+- `train/ppo_kl` — KL between the current policy and the `old_policy_logprobs`
+  snapshot for the current optimizer batch.  In async pipeline mode it helps
+  check whether delayed optimizer boundaries are seeing meaningful policy
+  movement.
 - `train/inference_kld`, `train/inference_diff` — drift between rollout-time
   inference logprobs and train-time policy logprobs.  These are the best
   available signal for behavior-policy drift in this recipe because
@@ -358,7 +368,6 @@ cfg = Config(
     prompt_groups_per_step=8,            # B_s = 64 samples per batch
     max_head_offpolicy_versions=4,       # O = 4 weight-sync versions of slack
     max_concurrency_rollout_sample=256,  # C_s = 256 -> R = 4x batch in flight
-    ppo_n_minibatches=2,                 # K = 2 inner PPO steps per rollout
     max_completion_tokens=16384,
     deployment=DeployConfig(tokenizer_model="Qwen/Qwen2.5-1.5B-Instruct"),
     trainer=TrainerConfig(training_shape_id="..."),
@@ -367,10 +376,9 @@ cfg = Config(
 main(cfg, rollout_fn_factory=make_rollout_fn, rows=rows)
 ```
 
-`synchronous_training=True` forces the loop to drain rollouts before every
-train step; useful as a baseline for measuring async overlap savings.  Pair it
-with `max_head_offpolicy_versions=0` when you want the most conservative
-on-policy baseline.
+For strict on-policy training, set `max_head_offpolicy_versions=0`.
+`pipeline_chunks_per_step` controls how many forward/backward chunks feed one
+global optimizer step; it does not change the optimizer batch size.
 
 ## Loss path
 
@@ -411,7 +419,7 @@ the dataset and factory into `recipes.async_rl_loop.main`.
   `max_head_offpolicy_versions` budgets against)
 - [`sampling-timeouts.md`](sampling-timeouts.md) — diagnose sampler timeout
   errors from hard evidence before changing capacity or concurrency
-- [`gradient-accumulation.md`](gradient-accumulation.md) — PPO minibatch
+- [`gradient-accumulation.md`](gradient-accumulation.md) — optimizer-step
   gradient normalization
 - [`dynamic-filter.md`](dynamic-filter.md) — async runner accepts the same
   `dynamic_filter_fn` signature

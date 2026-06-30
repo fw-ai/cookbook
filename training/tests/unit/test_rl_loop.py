@@ -146,7 +146,11 @@ def test_main_requires_deployment_tokenizer_model(monkeypatch):
         module.main(cfg)
 
 
-def _build_service_kwargs(monkeypatch, cfg):
+async def _external_sample_prompt_fn(_row, *, cursor_index: int):
+    return None
+
+
+def _build_service_kwargs(monkeypatch, cfg, *, sample_prompt_fn=None):
     calls = []
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
@@ -161,7 +165,7 @@ def _build_service_kwargs(monkeypatch, cfg):
     monkeypatch.setattr(module, "build_service_client", fake_build_service_client)
 
     with pytest.raises(_StopAfterProvisioning):
-        module.main(cfg)
+        module.main(cfg, sample_prompt_fn=sample_prompt_fn)
 
     assert len(calls) == 1
     return calls[0]
@@ -243,3 +247,23 @@ def test_main_requests_trainer_cleanup_for_empty_job_id(monkeypatch):
     kwargs = _build_service_kwargs(monkeypatch, cfg)
 
     assert kwargs["cleanup_trainer_on_close"] is True
+
+
+def test_main_sample_prompt_fn_defaults_to_rollout_deployment(monkeypatch):
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+
+    kwargs = _build_service_kwargs(
+        monkeypatch,
+        cfg,
+        sample_prompt_fn=_external_sample_prompt_fn,
+    )
+
+    assert kwargs["deployment"] is cfg.deployment
+    assert (
+        kwargs["cleanup_deployment_on_close"]
+        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+    )
