@@ -1,0 +1,5 @@
+{"messages": [{"role": "user", "content": "What is 47 times 83? Show your reasoning step by step."}]}
+{"messages": [{"role": "user", "content": "I have meetings at 9am, 11am, and 2pm, each 45 minutes long. When is my first free slot after 2pm?"}]}
+{"messages": [{"role": "user", "content": "Search my inbox for emails from Alice about the Q3 roadmap and summarize the key action items."}]}
+{"messages": [{"role": "user", "content": "Convert 18 degrees Celsius to Fahrenheit and explain the formula you used."}]}
+{"messages": [{"role": "user", "content": "Draft a short reply to a customer who wants a refund for order #48201, asking for the reason before processing."}]}
