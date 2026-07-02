@@ -1,28 +1,27 @@
 """Verify ``Gemma4Renderer`` matches the official Gemma 4 chat template.
 
-Two layers of verification:
+Test tiers (see also ``test_supervised_rendering.py`` for resolver coverage):
 
-1. **Token-level parity** vs ``tokenizer.apply_chat_template`` for a
-   battery of conversation shapes. This catches the kinds of bugs the
-   previous implementation had (wrong role name, wrong generation
-   suffix, missing trim) without ever loading the model.
+**Tier 1 — tokenizer only** (skipped unless ``GEMMA4_MODEL_PATH`` is set):
 
-2. **End-to-end model parity** on GPU: load the actual Gemma 4 model,
-   render the same prompt via (a) ``Gemma4Renderer.build_generation_prompt``
-   and (b) HuggingFace ``apply_chat_template``, then greedy-decode with
-   both. The two outputs MUST be byte-identical. This is the test that
-   would have caught the original "wrong role name" bug instantly —
-   the model would emit garbage for an `assistant` role token because
-   it was trained on `model`.
+* Token-level parity vs ``tokenizer.apply_chat_template`` for conversation,
+  tool, thinking, and reasoning shapes.
+* ``test_reasoning_parity_with_hf`` — SFT byte parity for ``reasoning`` /
+  ``reasoning_content`` labels (default ``gemma4`` vs ``gemma4_thinking``).
 
-To run, set ``GEMMA4_MODEL_PATH`` to a directory containing the official
-``google/gemma-4-*-it`` files (must include ``chat_template.jinja``,
-``tokenizer.json``, ``tokenizer_config.json``, and the safetensors
-weights for the GPU test). All tests are skipped automatically if the
-path is unset.
+**Tier 2 — GPU model** (skipped without weights + CUDA):
 
-    GEMMA4_MODEL_PATH=/path/to/gemma-4-E2B-it \
-        PYTHONPATH=../.. python -m pytest tests/unit/test_gemma4_renderer.py -v
+* Greedy-decode parity and tool-call e2e loops.
+
+Quick commands::
+
+    # Resolver override (CI-safe, no checkpoint)
+    cd public-repos/cookbook
+    python3 -m pytest training/tests/unit/test_supervised_rendering.py::test_resolve_renderer_name_supports_gemma4_thinking_override -v
+
+    # Full file (Tier 1–2; skips when GEMMA4_MODEL_PATH / CUDA unavailable)
+    GEMMA4_MODEL_PATH=/path/to/gemma-4-E2B-it \\
+        python3 -m pytest training/tests/unit/test_gemma4_renderer.py -v
 """
 
 from __future__ import annotations
@@ -32,7 +31,17 @@ import os
 import pytest
 import transformers
 
-from training.renderer.gemma4 import Gemma4Renderer
+import training.renderer  # noqa: F401 — installs Gemma4SplitRenderer override
+from tinker_cookbook.renderers import get_renderer
+from tinker_cookbook.renderers.base import TrainOnWhat
+
+from training.renderer.gemma4 import (
+    Gemma4Renderer,
+    _get_reasoning_text,
+    _split_thinking_and_text,
+)
+from training.renderer._gemma4_split import Gemma4SplitRenderer
+from training.utils.supervised import render_messages_to_datum, render_messages_to_datums
 
 _MODEL_PATH_ENV = "GEMMA4_MODEL_PATH"
 
@@ -57,6 +66,11 @@ def tokenizer():
 @pytest.fixture(scope="module")
 def renderer(tokenizer):
     return Gemma4Renderer(tokenizer)
+
+
+@pytest.fixture(scope="module")
+def thinking_renderer(tokenizer):
+    return Gemma4Renderer(tokenizer, enable_thinking=True)
 
 
 def _hf_tokens(
@@ -184,8 +198,198 @@ def test_parse_response_plain_text_roundtrip(tokenizer, renderer):
     assert (ok, msg["role"], msg["content"]) == (True, "assistant", sample)
 
 
+# ── normalize_messages → renderer integration (CI-safe) ───────────────────────
+
+
+def test_get_reasoning_text_reads_normalized_reasoning_content():
+    """After ``normalize_messages``, ``reasoning_content`` lives in ThinkingPart only."""
+    normalized = {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "need to call get_weather"},
+        ],
+        "tool_calls": [
+            {
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": {}},
+            }
+        ],
+    }
+    assert _get_reasoning_text(normalized) == "need to call get_weather"
+
+
+def test_get_reasoning_text_reads_normalized_reasoning_field():
+    """``reasoning`` (jinja field) is also promoted into ThinkingPart before render."""
+    normalized = {
+        "role": "assistant",
+        "content": [{"type": "thinking", "thinking": "from reasoning field"}],
+        "tool_calls": [
+            {"type": "function", "function": {"name": "fn", "arguments": {}}},
+        ],
+    }
+    assert _get_reasoning_text(normalized) == "from reasoning field"
+
+
+def test_get_reasoning_text_empty_reasoning_falls_back_to_reasoning_content():
+    message = {
+        "role": "assistant",
+        "reasoning": "",
+        "reasoning_content": "fallback thought",
+        "content": "",
+        "tool_calls": [{"type": "function", "function": {"name": "fn", "arguments": {}}}],
+    }
+    assert _get_reasoning_text(message) == "fallback thought"
+
+
+def test_split_thinking_and_text_handles_open_thought_fragment():
+    parts = _split_thinking_and_text(
+        "<|channel>thought\nstep by step\n <|tool_call>call:fn{}<tool_call|>"
+    )
+    assert parts[0]["type"] == "thinking"
+    assert parts[0]["thinking"] == "step by step"
+    assert parts[1]["text"] == "<|tool_call>call:fn{}<tool_call|>"
+
+
+# ── reasoning / reasoning_content SFT (HF parity) ─────────────────────────────
+
+
+_REASONING_SFT_MESSAGES = [
+    {"role": "user", "content": "What is 17 * 23?"},
+    {
+        "role": "assistant",
+        "content": "391",
+        "reasoning_content": "multiply 17 and 23",
+    },
+]
+
+_TOOL_CALL_WITH_REASONING = [
+    {"role": "user", "content": "weather in paris?"},
+    {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "need to call get_weather",
+        "tool_calls": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": {"location": "paris", "unit": "c"},
+                },
+            }
+        ],
+    },
+]
+
+_REASONING_FIELD_PRECEDENCE = [
+    {"role": "user", "content": "go"},
+    {
+        "role": "assistant",
+        "content": "",
+        "reasoning": "from reasoning field",
+        "reasoning_content": "from reasoning_content field",
+        "tool_calls": [
+            {"type": "function", "function": {"name": "fn", "arguments": {}}}
+        ],
+    },
+]
+
+_TWO_ASSISTANTS_AFTER_USER = [
+    {"role": "user", "content": "help"},
+    {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "first thought",
+        "tool_calls": [
+            {"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}
+        ],
+    },
+    {
+        "role": "assistant",
+        "content": "continuing",
+        "reasoning_content": "second thought",
+        "tool_calls": [
+            {"type": "function", "function": {"name": "step2", "arguments": {"y": 2}}}
+        ],
+    },
+]
+
+_REASONING_BEFORE_LAST_USER = [
+    {"role": "user", "content": "first"},
+    {
+        "role": "assistant",
+        "content": "draft",
+        "reasoning_content": "should not render",
+        "tool_calls": [
+            {"type": "function", "function": {"name": "draft", "arguments": {}}}
+        ],
+    },
+    {"role": "user", "content": "second"},
+    {"role": "assistant", "content": "final"},
+]
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        _REASONING_SFT_MESSAGES,
+        _TOOL_CALL_WITH_REASONING,
+        _REASONING_FIELD_PRECEDENCE,
+        _TWO_ASSISTANTS_AFTER_USER,
+        _REASONING_BEFORE_LAST_USER,
+    ],
+    ids=[
+        "reasoning_without_tools_ignored",
+        "tool_call_with_reasoning_content",
+        "reasoning_field_precedence",
+        "two_assistants_after_user",
+        "reasoning_before_last_user",
+    ],
+)
+def test_reasoning_parity_with_hf(tokenizer, renderer, messages):
+    """Reasoning labels must match HF ``apply_chat_template`` byte-for-byte."""
+    hf_ids = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    model_input, _weights = renderer.build_supervised_example(messages)
+    _assert_match(tokenizer, hf_ids, list(model_input.to_ints()))
+
+
+def test_supervised_example_reasoning_content_thinking_renderer(
+    tokenizer, thinking_renderer
+):
+    """``gemma4_thinking``: same assistant body plus HF ``enable_thinking`` system."""
+    hf_ids = _hf_tokens(
+        tokenizer,
+        _REASONING_SFT_MESSAGES,
+        add_generation_prompt=False,
+        enable_thinking=True,
+    )
+    model_input, _weights = thinking_renderer.build_supervised_example(
+        _REASONING_SFT_MESSAGES
+    )
+    _assert_match(tokenizer, hf_ids, list(model_input.to_ints()))
+
+
+def test_gemma4_vs_gemma4_thinking_differs_only_by_system_think(
+    tokenizer, renderer, thinking_renderer
+):
+    """Both renderers emit identical assistant tokens; only the system block differs."""
+    default_ids = list(
+        renderer.build_supervised_example(_REASONING_SFT_MESSAGES)[0].to_ints()
+    )
+    thinking_ids = list(
+        thinking_renderer.build_supervised_example(_REASONING_SFT_MESSAGES)[0].to_ints()
+    )
+    default_text = tokenizer.decode(default_ids)
+    thinking_text = tokenizer.decode(thinking_ids)
+    assert "<|think|>" not in default_text
+    assert "<|think|>" in thinking_text
+    user_marker = "<|turn>user"
+    assert default_text[default_text.index(user_marker) :] == thinking_text[
+        thinking_text.index(user_marker) :
+    ]
+
+
 def test_parse_response_extracts_thinking(tokenizer, renderer):
-    """A model turn containing a `<|channel>thought<channel|>` block parses
+    """A model turn containing a closed ``<|channel>thought<channel|>`` block parses
     out into separate ThinkingPart + TextPart content."""
     body = "<|channel>I'm thinking<channel|>The answer is 4.<turn|>"
     encoded = tokenizer.encode(body, add_special_tokens=False)
@@ -195,6 +399,18 @@ def test_parse_response_extracts_thinking(tokenizer, renderer):
     types = [p["type"] for p in msg["content"]]
     assert types == ["thinking", "text"]
     assert msg["content"][0]["thinking"] == "I'm thinking"
+    assert msg["content"][1]["text"] == "The answer is 4."
+
+
+def test_parse_response_extracts_open_thought_channel(tokenizer, renderer):
+    """Open jinja thought fragments (no ``<channel|>``) parse into ThinkingPart."""
+    body = "<|channel>thought\nstep by step\n The answer is 4.<turn|>"
+    encoded = tokenizer.encode(body, add_special_tokens=False)
+    msg, ok = renderer.parse_response(encoded)
+    assert ok
+    assert isinstance(msg["content"], list)
+    assert msg["content"][0]["type"] == "thinking"
+    assert msg["content"][0]["thinking"] == "step by step"
     assert msg["content"][1]["text"] == "The answer is 4."
 
 
@@ -222,21 +438,89 @@ def test_supervised_example_matches_hf_no_generation_prompt(tokenizer, renderer)
     _assert_match(tokenizer, hf_ids, our_ids)
 
 
+_MULTI_TURN_TOOL_REASONING = [
+    {"role": "user", "content": "first"},
+    {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "REASON_A1",
+        "tool_calls": [
+            {"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}
+        ],
+    },
+    {"role": "user", "content": "second"},
+    {
+        "role": "assistant",
+        "content": "done",
+        "reasoning_content": "REASON_A2",
+        "tool_calls": [
+            {"type": "function", "function": {"name": "step2", "arguments": {"y": 2}}}
+        ],
+    },
+]
+
+
+def test_disaggregate_preserves_tool_reasoning_on_earlier_assistant(tokenizer):
+    """Multi-turn ``ALL_ASSISTANT_MESSAGES`` must not drop a1's thought channel.
+
+    Full-transcript rendering strips reasoning before the final user (HF
+    default). Per-user-turn disaggregation trains each prefix independently.
+    """
+    split_renderer = get_renderer("gemma4", tokenizer)
+    assert split_renderer.has_extension_property is False
+    assert type(split_renderer).__name__ == "Gemma4SplitRenderer"
+
+    datums = render_messages_to_datums(
+        _MULTI_TURN_TOOL_REASONING,
+        renderer=split_renderer,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    assert len(datums) == 2
+
+    def _trained_text(datum) -> str:
+        ids = [t for t, w in zip(datum.token_ids, datum.token_weights) if w > 0]
+        return tokenizer.decode(ids)
+
+    assert "REASON_A1" in _trained_text(datums[0])
+    assert "REASON_A2" not in _trained_text(datums[0])
+    assert "REASON_A2" in _trained_text(datums[1])
+    assert "REASON_A1" not in _trained_text(datums[1])
+
+    # Full-transcript render strips reasoning before the final user (HF default).
+    base_renderer = Gemma4Renderer(tokenizer)
+    assert base_renderer.has_extension_property is False
+    full_datum = render_messages_to_datum(
+        _MULTI_TURN_TOOL_REASONING,
+        renderer=base_renderer,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    full_trained = _trained_text(full_datum)
+    assert "step1" in full_trained
+    assert "REASON_A1" not in full_trained
+
+
 # ── Sequence-extension property ─────────────────────────────────────────────
 
 
-def test_sequence_extension_property_holds_across_assistant_turns(renderer):
-    """``Gemma4Renderer.has_extension_property`` returns True, claiming
-    that successive **observations at assistant-turn boundaries** are
-    prefix extensions of each other. Concretely: for a multi-turn
-    transcript, ``build_generation_prompt(messages[:k])`` for each k
-    where ``messages[k]`` is the next assistant turn must be a strict
-    prefix of the same call at the next such k.
+def test_gemma4_split_renderer_disables_extension_property_for_sft():
+    """Registered ``gemma4`` uses the split subclass for multi-turn SFT."""
+    from unittest.mock import MagicMock
 
-    This is the property RL training relies on for KV-cache reuse and
-    O(T) compute scaling across multi-turn rollouts. If it breaks,
-    multi-turn RL recomputes from scratch on every assistant step.
+    tok = MagicMock()
+    tok.encode = lambda text, add_special_tokens=False: [1]
+    renderer = Gemma4SplitRenderer(tok)
+    assert isinstance(renderer, Gemma4Renderer)
+    assert renderer.has_extension_property is False
+
+
+def test_plain_text_observations_remain_prefix_extensions(renderer):
+    """Plain-text multi-turn prompts still satisfy observation prefix extension.
+
+    ``has_extension_property`` is False on ``Gemma4Renderer`` because
+    tool-call + reasoning transcripts do not (see next test).
     """
+    assert renderer.has_extension_property is False
+
     messages = [
         {"role": "system", "content": "Be terse."},
         {"role": "user", "content": "first question"},
@@ -246,10 +530,8 @@ def test_sequence_extension_property_holds_across_assistant_turns(renderer):
         {"role": "user", "content": "third question"},
         {"role": "assistant", "content": "third answer"},
     ]
-    # Indices where the NEXT message is an assistant turn — i.e. the
-    # observations the model gets right before generating its response.
     boundaries = [i for i, m in enumerate(messages) if m["role"] == "assistant"]
-    assert len(boundaries) >= 2, "need at least two assistant turns to test extension"
+    assert len(boundaries) >= 2
 
     prev: list[int] = []
     for k in boundaries:
@@ -261,6 +543,30 @@ def test_sequence_extension_property_holds_across_assistant_turns(renderer):
             f"observation; len(prev)={len(prev)} len(cur)={len(cur)}"
         )
         prev = cur
+
+
+def test_tool_reasoning_observations_are_not_prefix_extensions(renderer):
+    """History-gated thought channels break prefix reuse across assistant turns."""
+    u1 = {"role": "user", "content": "step one"}
+    a1 = {
+        "role": "assistant",
+        "reasoning_content": "REASON_A1",
+        "tool_calls": [
+            {"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}
+        ],
+    }
+    u2 = {"role": "user", "content": "step two"}
+
+    after_first_assistant = list(
+        renderer.build_generation_prompt([u1, a1], role="assistant").to_ints()
+    )
+    before_second_assistant = list(
+        renderer.build_generation_prompt([u1, a1, u2], role="assistant").to_ints()
+    )
+    assert before_second_assistant[: len(after_first_assistant)] != after_first_assistant, (
+        "re-rendering the first assistant after a later user is appended must change "
+        "tokens (thought channel stripped), so observations are not prefix extensions"
+    )
 
 
 # ── Tool-call / tool-response parity ────────────────────────────────────────
@@ -556,11 +862,6 @@ def test_tool_response_parity(tokenizer, renderer, messages):
 
 
 # ── enable_thinking parity ──────────────────────────────────────────────────
-
-
-@pytest.fixture(scope="module")
-def thinking_renderer(tokenizer):
-    return Gemma4Renderer(tokenizer, enable_thinking=True)
 
 
 @pytest.mark.parametrize(

@@ -104,6 +104,11 @@ class Config:
     prompt_groups_per_step: int = 1
     router_replay: bool = False
     router_replay_completion_only: bool = True
+    """Keep R3 on completion-only replay by default.
+
+    Full-sequence replay requires echo=True, which currently causes a
+    significant serving slowdown. Do not set this to False until the echo
+    performance bug is fixed."""
 
     grad_accumulation_normalization: GradAccNormalization | str | None = None
     """Optional server-side normalization for accumulated gradients.
@@ -383,7 +388,11 @@ def main(
             http_timeout=cfg.deployment.sample_timeout,
         )
         if cfg.router_replay:
-            sample_kwargs.update(include_routing_matrix=True, echo=True, logprobs=True)
+            sample_kwargs.update(
+                include_routing_matrix=True,
+                echo=not cfg.router_replay_completion_only,
+                logprobs=True,
+            )
         sample_kwargs["logprobs"] = True
 
         # Scoring executor for async IG scoring
