@@ -70,6 +70,17 @@ paths byte-for-byte. The pieces:
   at the very start of the first system turn. If the conversation has no
   system message, an empty one is synthesized just to carry the marker —
   matching the template's behavior.
+* **Reasoning labels** (``reasoning`` / ``reasoning_content``): the official
+  template injects ``<|channel>thought\\n{text}\\n `` only when the assistant
+  turn is after the final user message **and** carries ``tool_calls``. Plain
+  text SFT without tools ignores these fields; content is passed through
+  ``strip_thinking`` instead.
+* **Registered aliases** (``renderer_name`` / SFT ``jinja_template``):
+
+  * ``gemma4`` — default tool-call SFT renderer.
+  * ``gemma4_thinking`` — same rendering plus ``enable_thinking=True``
+    (``<|think|>`` system marker). Use for reasoning SFT aligned with inference
+    ``reasoning_effort``.
 
 Special-token IDs (Gemma 4 tokenizer)::
 
@@ -83,6 +94,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import tinker
@@ -104,6 +117,7 @@ _TURN_OPEN = "<|turn>"
 _TURN_CLOSE = "<turn|>"
 _CHANNEL_OPEN = "<|channel>"
 _CHANNEL_CLOSE = "<channel|>"
+_THINKING_CHANNEL_PREFIX = "thought\n"
 _TOOL_OPEN = "<|tool>"
 _TOOL_CLOSE = "<tool|>"
 _TOOL_CALL_OPEN = "<|tool_call>"
@@ -114,6 +128,8 @@ _THINK_TOKEN = "<|think|>"
 _STRING_DELIM = '<|"|>'
 _MODEL_ROLE = "model"
 
+_render_messages_local = threading.local()
+
 # Pattern matching the template's strip_thinking macro: remove every
 # `<|channel>...<channel|>` block from a string and `.strip()` what's left.
 _THINKING_BLOCK_RE = re.compile(
@@ -121,7 +137,13 @@ _THINKING_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
-# Tool-call extraction. Brace-balanced via lookahead anchor on the close tag.
+# Open thought-channel fragment from jinja/training (no ``<channel|>`` close tag).
+_OPEN_THOUGHT_RE = re.compile(
+    re.escape(_CHANNEL_OPEN)
+    + re.escape(_THINKING_CHANNEL_PREFIX)
+    + r"(.*?)\n ",
+    re.DOTALL,
+)
 _TOOL_CALL_RE = re.compile(
     re.escape(_TOOL_CALL_OPEN)
     + r"call:([^{]+)\{(.*?)\}"
@@ -137,7 +159,44 @@ _STANDARD_PARAM_KEYS = frozenset({"description", "type", "properties", "required
 def _strip_thinking(text: str) -> str:
     """Match the template's ``strip_thinking`` macro: drop ``<|channel>...<channel|>``
     blocks and ``.strip()`` the result."""
-    return _THINKING_BLOCK_RE.sub("", text).strip()
+    stripped = _THINKING_BLOCK_RE.sub("", text)
+    stripped = _OPEN_THOUGHT_RE.sub("", stripped)
+    return stripped.strip()
+
+
+def _split_thinking_and_text(text: str) -> list[ThinkingPart | TextPart]:
+    """Split assistant body text into alternating thinking/text parts."""
+    parts: list[ThinkingPart | TextPart] = []
+    cursor = 0
+    while cursor < len(text):
+        closed = _THINKING_BLOCK_RE.search(text, cursor)
+        open_thought = _OPEN_THOUGHT_RE.search(text, cursor)
+        next_match = None
+        if closed and open_thought:
+            next_match = closed if closed.start() <= open_thought.start() else open_thought
+        else:
+            next_match = closed or open_thought
+
+        if next_match is None:
+            break
+
+        before = text[cursor : next_match.start()]
+        if before:
+            parts.append(TextPart(type="text", text=before))
+
+        if next_match.re is _THINKING_BLOCK_RE:
+            inner = next_match.group(0)[len(_CHANNEL_OPEN) : -len(_CHANNEL_CLOSE)]
+            if inner.startswith(_THINKING_CHANNEL_PREFIX):
+                inner = inner[len(_THINKING_CHANNEL_PREFIX) :]
+            parts.append(ThinkingPart(type="thinking", thinking=inner))
+        else:
+            parts.append(ThinkingPart(type="thinking", thinking=next_match.group(1)))
+        cursor = next_match.end()
+
+    tail = text[cursor:]
+    if tail:
+        parts.append(TextPart(type="text", text=tail))
+    return parts
 
 
 # ---------------------------------------------------------------------------
@@ -386,24 +445,90 @@ def _format_tool_response(tr: dict) -> str:
     return "".join(out)
 
 
-def _render_text_content(message: Message) -> str:
-    """Apply the per-role text transformation to a message's content.
+def _reasoning_from_thinking_parts(content: Any) -> str | None:
+    """Read reasoning promoted into ``ThinkingPart`` by ``normalize_messages``."""
+    if not isinstance(content, list):
+        return None
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, Mapping) and part.get("type") == "thinking":
+            thinking = part.get("thinking")
+            if isinstance(thinking, str):
+                parts.append(thinking)
+    if not parts:
+        return None
+    return "".join(parts)
 
-    For ``role=assistant`` (== ``model``), every text chunk is passed through
-    ``strip_thinking``. For all other roles every text chunk is plain
-    ``str.strip()``-ed. The result is the joined text.
+
+def _get_reasoning_text(message: Message) -> str | None:
+    """Return reasoning text for thought-channel injection.
+
+    Precedence mirrors jinja (``reasoning`` then ``reasoning_content``), then
+    falls back to Tinker ``thinking`` / ``ThinkingPart`` content after
+    ``normalize_messages`` has promoted OpenAI-style labels.
     """
-    is_model = message["role"] == "assistant"
-    transform = _strip_thinking if is_model else str.strip
+    reasoning = message.get("reasoning")
+    if reasoning is not None:
+        if not isinstance(reasoning, str):
+            raise TypeError(f"Unsupported reasoning value type: {type(reasoning)!r}")
+        if reasoning:
+            return reasoning
+    reasoning_content = message.get("reasoning_content")
+    if reasoning_content is not None:
+        if not isinstance(reasoning_content, str):
+            raise TypeError(
+                f"Unsupported reasoning_content value type: {type(reasoning_content)!r}"
+            )
+        if reasoning_content:
+            return reasoning_content
+    thinking = message.get("thinking")
+    if thinking is not None:
+        if not isinstance(thinking, str):
+            raise TypeError(f"Unsupported thinking value type: {type(thinking)!r}")
+        if thinking:
+            return thinking
+    return _reasoning_from_thinking_parts(message.get("content"))
+
+
+def _should_emit_reasoning_channel(message: Message, ctx: RenderContext) -> bool:
+    """Mirror jinja: inject thought channel only after the last user and with tool calls."""
+    after_last_user = ctx.last_user_index == -1 or ctx.idx > ctx.last_user_index
+    return after_last_user and bool(message.get("tool_calls"))
+
+
+def _format_reasoning_channel(reasoning: str) -> str:
+    """Emit the open thought-channel fragment from the official template."""
+    return f"{_CHANNEL_OPEN}{_THINKING_CHANNEL_PREFIX}{reasoning}\n "
+
+
+def _render_assistant_content(message: Message) -> str:
+    """Render assistant/model visible content via ``strip_thinking``."""
     content = message.get("content")
     if content is None:
         return ""
     if isinstance(content, str):
-        return transform(content)
+        return _strip_thinking(content)
+    parts: list[str] = []
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, Mapping) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(_strip_thinking(text))
+    return "".join(parts)
+
+
+def _render_text_content(message: Message) -> str:
+    """Render non-assistant message text with per-role trimming."""
+    content = message.get("content")
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
     parts: list[str] = []
     for part in content:
         if part["type"] == "text":
-            parts.append(transform(part["text"]))
+            parts.append(part["text"].strip())
     return "".join(parts)
 
 
@@ -450,10 +575,14 @@ class Gemma4Renderer(Renderer):
 
     @property
     def has_extension_property(self) -> bool:
-        # No history rewriting beyond the per-message strip_thinking, which
-        # only ever shortens content, so the prefix-extension property holds
-        # at the conversation-prefix level used by build_supervised_example.
-        return True
+        # Thought-channel injection is gated on ``ctx.idx > ctx.last_user_index``
+        # and ``tool_calls``, so re-rendering an earlier assistant after a later
+        # user is appended changes its tokens. Multi-turn RL observations at
+        # successive assistant boundaries are therefore not guaranteed prefix
+        # extensions when tool-call turns carry reasoning. Plain-text transcripts
+        # still happen to satisfy prefix extension, but we report False so
+        # callers (SFT disaggregation, rollout prefix checks) stay conservative.
+        return False
 
     @property
     def _bos_tokens(self) -> list[int]:
@@ -534,30 +663,74 @@ class Gemma4Renderer(Renderer):
             result.insert(0, Message(role="system", content=_THINK_TOKEN))
         return result
 
+    def _with_render_messages(self, messages: list[Message], fn: Callable[[], Any]) -> Any:
+        _render_messages_local.messages = messages
+        try:
+            return fn()
+        finally:
+            _render_messages_local.messages = None
+
+    def _current_render_messages(self) -> list[Message] | None:
+        return getattr(_render_messages_local, "messages", None)
+
     def build_generation_prompt(
         self, messages: list[Message], role: Role = "assistant", prefill: str | None = None
     ) -> tinker.ModelInput:
-        return super().build_generation_prompt(self._preprocess_messages(messages), role=role, prefill=prefill)
+        processed = self._preprocess_messages(messages)
+
+        def _build() -> tinker.ModelInput:
+            return Renderer.build_generation_prompt(
+                self, processed, role=role, prefill=prefill
+            )
+
+        return self._with_render_messages(processed, _build)
 
     def build_supervised_example(self, messages, train_on_what=None):  # type: ignore[override]
         from tinker_cookbook.renderers.base import TrainOnWhat
 
         if train_on_what is None:
             train_on_what = TrainOnWhat.LAST_ASSISTANT_MESSAGE
-        return super().build_supervised_example(
-            self._preprocess_messages(messages), train_on_what=train_on_what
-        )
+        processed = self._preprocess_messages(messages)
+
+        def _build():
+            return Renderer.build_supervised_example(
+                self, processed, train_on_what=train_on_what
+            )
+
+        return self._with_render_messages(processed, _build)
+
+    def _continue_same_model_turn(self, message: Message, ctx: RenderContext) -> bool:
+        """Suppress ``<|turn>model\\n`` only for immediately consecutive assistants.
+
+        A ``tool`` turn (or any other role) between two assistant messages starts
+        a fresh model header, matching HF ``apply_chat_template`` for cases like
+        ``tool_role_verbatim``. Consecutive assistant messages without an intervening
+        turn still share one model header per jinja.
+        """
+        if message["role"] != "assistant" or ctx.idx == 0:
+            return False
+        messages = self._current_render_messages()
+        if messages is not None:
+            return messages[ctx.idx - 1]["role"] == "assistant"
+        if ctx.prev_message is not None:
+            return ctx.prev_message["role"] == "assistant"
+        return False
 
     # ------------------------------------------------------------------
     # render_message: tool_calls + tool_responses + content
     # ------------------------------------------------------------------
 
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
-        del ctx
         role = self._gemma_role_for(message)
-        header_str = f"{_TURN_OPEN}{role}\n"
+        suppress_header = self._continue_same_model_turn(message, ctx)
+        header_str = "" if suppress_header else f"{_TURN_OPEN}{role}\n"
 
         body_parts: list[str] = []
+
+        if message["role"] == "assistant":
+            reasoning = _get_reasoning_text(message)
+            if reasoning and _should_emit_reasoning_channel(message, ctx):
+                body_parts.append(_format_reasoning_channel(reasoning))
 
         tool_calls = message.get("tool_calls")
         if tool_calls:
@@ -569,7 +742,10 @@ class Gemma4Renderer(Renderer):
             for tr in tool_responses:
                 body_parts.append(_format_tool_response(tr))
 
-        text = _render_text_content(message)
+        if message["role"] == "assistant":
+            text = _render_assistant_content(message)
+        else:
+            text = _render_text_content(message)
         if text:
             body_parts.append(text)
 
@@ -580,8 +756,11 @@ class Gemma4Renderer(Renderer):
             body_parts.append(f"{_TURN_CLOSE}\n")
         body_str = "".join(body_parts)
 
-        header = tinker.types.EncodedTextChunk(
-            tokens=self.tokenizer.encode(header_str, add_special_tokens=False),
+        header_tokens = (
+            self.tokenizer.encode(header_str, add_special_tokens=False) if header_str else []
+        )
+        header = (
+            tinker.types.EncodedTextChunk(tokens=header_tokens) if header_tokens else None
         )
         output: list[tinker.ModelInputChunk] = [
             tinker.types.EncodedTextChunk(
@@ -666,19 +845,7 @@ class Gemma4Renderer(Renderer):
             assistant_message["content"] = text
             return assistant_message, True
 
-        # Split into alternating text / thinking parts in order.
-        parts: list[ThinkingPart | TextPart] = []
-        cursor = 0
-        for match in _THINKING_BLOCK_RE.finditer(text):
-            before = text[cursor : match.start()]
-            if before:
-                parts.append(TextPart(type="text", text=before))
-            inner = match.group(0)[len(_CHANNEL_OPEN) : -len(_CHANNEL_CLOSE)]
-            parts.append(ThinkingPart(type="thinking", thinking=inner))
-            cursor = match.end()
-        tail = text[cursor:]
-        if tail:
-            parts.append(TextPart(type="text", text=tail))
+        parts = _split_thinking_and_text(text)
         assistant_message["content"] = parts
         return assistant_message, True
 
@@ -686,7 +853,14 @@ class Gemma4Renderer(Renderer):
 def _gemma4_factory(tokenizer: Tokenizer, image_processor=None) -> Gemma4Renderer:
     # ``image_processor`` is part of the register_renderer factory contract
     # but Gemma 4 text-only does not use it.
+    del image_processor
     return Gemma4Renderer(tokenizer)
 
 
+def _gemma4_thinking_factory(tokenizer: Tokenizer, image_processor=None) -> Gemma4Renderer:
+    del image_processor
+    return Gemma4Renderer(tokenizer, enable_thinking=True)
+
+
 register_renderer("gemma4", _gemma4_factory)
+register_renderer("gemma4_thinking", _gemma4_thinking_factory)

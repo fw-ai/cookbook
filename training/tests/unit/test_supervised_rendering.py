@@ -537,6 +537,60 @@ def test_normalize_messages_promotes_reasoning_content_to_thinking_part():
     ]
 
 
+def test_normalize_messages_promotes_reasoning_to_thinking_part():
+    """Gemma 4 jinja ``reasoning`` field should become a ThinkingPart."""
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "reasoning": "step by step",
+                "content": "The answer is 4",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "step by step"},
+        {"type": "text", "text": "The answer is 4"},
+    ]
+
+
+def test_normalize_messages_reasoning_wins_over_reasoning_content():
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "reasoning": "jinja reasoning",
+                "reasoning_content": "openai reasoning",
+                "content": "answer",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "jinja reasoning"},
+        {"type": "text", "text": "answer"},
+    ]
+
+
+def test_normalize_messages_empty_reasoning_falls_back_to_reasoning_content():
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "reasoning": "",
+                "reasoning_content": "openai reasoning",
+                "content": "answer",
+            },
+        ]
+    )
+
+    assert normalized[0]["content"] == [
+        {"type": "thinking", "thinking": "openai reasoning"},
+        {"type": "text", "text": "answer"},
+    ]
+
+
 def test_normalize_messages_reasoning_content_with_no_text_content():
     """``reasoning_content`` alone should still produce a ThinkingPart.
 
@@ -919,6 +973,12 @@ def test_resolve_renderer_name_prefers_gemma4() -> None:
     """Gemma 4 models should resolve to the gemma4 renderer."""
     assert resolve_renderer_name("google/gemma-4-12b-it") == "gemma4"
     assert resolve_renderer_name("google/gemma-4-27b-it") == "gemma4"
+
+
+def test_resolve_renderer_name_supports_gemma4_thinking_override() -> None:
+    assert resolve_renderer_name("google/gemma-4-12b-it", "gemma4_thinking") == (
+        "gemma4_thinking"
+    )
 
 
 def test_resolve_renderer_name_prefers_deepseek_v4() -> None:

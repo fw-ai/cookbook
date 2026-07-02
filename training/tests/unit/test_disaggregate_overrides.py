@@ -80,6 +80,16 @@ _PARITY_CASES = [
         "openai/gpt-oss-120b",
         "GptOssSplitRenderer",
     ),
+    (
+        "gemma4",
+        "google/gemma-4-12b-it",
+        "Gemma4SplitRenderer",
+    ),
+    (
+        "gemma4_thinking",
+        "google/gemma-4-12b-it",
+        "Gemma4ThinkingSplitRenderer",
+    ),
 ]
 
 

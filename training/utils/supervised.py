@@ -34,6 +34,7 @@ from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
@@ -471,29 +472,42 @@ def normalize_messages(
             ]
 
         # OpenAI/Fireworks chat convention: assistant turns carry their
-        # chain-of-thought in a top-level ``reasoning_content`` string
-        # (rather than Tinker's ``thinking`` field). Without this branch,
-        # reasoning traces in training datasets are silently dropped here
-        # before they ever reach a renderer, so ``<think>`` blocks show
-        # up empty in the training tokens and the fine-tuned model never
-        # learns to emit a CoT. Treat ``reasoning_content`` as an alias
-        # for ``thinking`` so both keys flow through every renderer that
-        # understands ThinkingPart (qwen3*, kimi_k2*, kimi_k25*,
-        # kimi_k26*, deepseekv3_thinking, nemotron3*, gpt_oss_*).
-        # ``reasoning_content`` takes precedence only when no ``thinking``
-        # field is present; if both are set the ``thinking`` value is
-        # preserved and ``reasoning_content`` is ignored to keep a single
-        # source of truth per message.
+        # chain-of-thought in top-level ``reasoning`` / ``reasoning_content``
+        # strings (rather than Tinker's ``thinking`` field). Without these
+        # branches, reasoning traces in training datasets are silently dropped
+        # here before they ever reach a renderer, so thought blocks show up
+        # empty in the training tokens and the fine-tuned model never learns
+        # to emit a CoT. Promote both into ``ThinkingPart`` for renderers that
+        # understand structured thinking (qwen3*, kimi_k2*, kimi_k25*,
+        # kimi_k26*, deepseekv3_thinking, gemma4, gemma4_thinking, nemotron3*,
+        # gpt_oss_*).
+        # Precedence: ``thinking`` > ``reasoning`` > ``reasoning_content``.
+        # Empty strings are treated as absent, matching jinja truthiness.
+        reasoning = message.get("reasoning")
+        if thinking is None and reasoning is not None:
+            if not isinstance(reasoning, str):
+                raise TypeError(f"Unsupported reasoning value type: {type(reasoning)!r}")
+            if reasoning:
+                normalized_message["content"] = [
+                    {"type": "thinking", "thinking": reasoning},
+                    *_ensure_content_parts(normalized_message["content"]),
+                ]
+
         reasoning_content = message.get("reasoning_content")
-        if thinking is None and reasoning_content is not None:
+        if (
+            thinking is None
+            and not (isinstance(reasoning, str) and reasoning)
+            and reasoning_content is not None
+        ):
             if not isinstance(reasoning_content, str):
                 raise TypeError(
                     f"Unsupported reasoning_content value type: {type(reasoning_content)!r}"
                 )
-            normalized_message["content"] = [
-                {"type": "thinking", "thinking": reasoning_content},
-                *_ensure_content_parts(normalized_message["content"]),
-            ]
+            if reasoning_content:
+                normalized_message["content"] = [
+                    {"type": "thinking", "thinking": reasoning_content},
+                    *_ensure_content_parts(normalized_message["content"]),
+                ]
 
         if use_per_message_trainable:
             normalized_message["trainable"] = _resolve_trainable(
