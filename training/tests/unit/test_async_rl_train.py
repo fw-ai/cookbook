@@ -242,6 +242,20 @@ class TestStalenessController:
         assert ctl.sample_fails == 1
         assert ctl.capacity() == 1
 
+    def test_recovered_version_offsets_prior_accepted_samples(self):
+        ctl = _StalenessController(
+            batch_size_samples=4,
+            completions_per_prompt=1,
+            max_staleness=2,
+            max_concurrent_samples=None,
+            version=5,
+            accepted_samples_offset=5 * 4,
+        )
+
+        assert ctl.staleness_capacity() == 12
+        ctl.advance_version()
+        assert ctl.staleness_capacity() == 16
+
 
 class TestHappyPath:
     def test_strict_onpolicy_runs_all_steps(self):
@@ -482,9 +496,9 @@ class TestHappyPath:
             (1, True, 2, 2, 2, 8),
         ]
 
-    def test_stalled_gate_does_not_consume_remaining_iterator(self):
-        """A stalled strict-on-policy loop must not drain a lazy row iterator
-        just to report how many rows remain."""
+    def test_stalled_gate_probes_but_does_not_drain_remaining_iterator(self):
+        """A stalled strict-on-policy loop may probe one row to distinguish
+        starvation from exhaustion, but must not drain the lazy iterator."""
 
         class Rows:
             def __init__(self):
@@ -500,15 +514,16 @@ class TestHappyPath:
                 return _row(self.consumed)
 
         rows = Rows()
-        _run(run_async_rl_loop(
-            rows=rows,
-            train_step_fn=_train_step_fn(_noop_train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            weight_sync_fn=None,
-            **_DEFAULTS,
-        ))
-        assert rows.consumed == 2
+        with pytest.raises(RuntimeError, match="scheduler starvation"):
+            _run(run_async_rl_loop(
+                rows=rows,
+                train_step_fn=_train_step_fn(_noop_train_step),
+                prompt_groups_per_step=2,
+                max_head_offpolicy_versions=0,
+                weight_sync_fn=None,
+                **_DEFAULTS,
+            ))
+        assert rows.consumed == 3
 
 
 class TestVersionTracking:
@@ -545,6 +560,57 @@ class TestVersionTracking:
             **_DEFAULTS,
         ))
         assert sync_calls == [2, 4]
+
+    def test_weight_sync_interval_uses_optimizer_step_versions(self):
+        sync_calls = []
+        versions_at_train = []
+
+        def weight_sync(step):
+            sync_calls.append(step)
+
+        def train_step(step, groups, extra):
+            versions_at_train.append(extra["ctx/current_version"])
+            return step + 1, {}
+
+        result = _run(run_async_rl_loop(
+            rows=(_row(i) for i in range(20)),
+            train_step_fn=_train_step_fn(train_step),
+            prompt_groups_per_step=2,
+            max_head_offpolicy_versions=2,
+            weight_sync_fn=weight_sync,
+            weight_sync_interval=2,
+            **_DEFAULTS,
+        ))
+
+        assert result == 10
+        assert sync_calls == [2, 4, 6, 8, 10]
+        assert versions_at_train == [0, 0, 2, 2, 4, 4, 6, 6, 8, 8]
+
+    def test_weight_sync_interval_resume_uses_absolute_versions(self):
+        sync_calls = []
+        versions_at_train = []
+
+        def weight_sync(step):
+            sync_calls.append(step)
+
+        def train_step(step, groups, extra):
+            versions_at_train.append(extra["ctx/current_version"])
+            return step + 1, {}
+
+        result = _run(run_async_rl_loop(
+            rows=(_row(i) for i in range(8)),
+            train_step_fn=_train_step_fn(train_step),
+            prompt_groups_per_step=2,
+            max_head_offpolicy_versions=2,
+            weight_sync_fn=weight_sync,
+            weight_sync_interval=2,
+            global_step=20,
+            **_DEFAULTS,
+        ))
+
+        assert result == 24
+        assert sync_calls == [22, 24]
+        assert versions_at_train == [20, 20, 22, 22]
 
     def test_version_offset_emitted(self):
         metric_snapshots = []

@@ -86,9 +86,10 @@ class _StalenessController:
 
     batch_size_samples: int  # = prompt_groups_per_step * completions_per_prompt
     completions_per_prompt: int  # samples per prompt
-    max_staleness: int  # versions
+    max_staleness: int  # optimizer-step policy versions
     max_concurrent_samples: int | None
     version: int = 0
+    accepted_samples_offset: int = 0
     accepted_samples: int = 0
     running_samples: int = 0
     sample_fails: int = 0
@@ -99,9 +100,12 @@ class _StalenessController:
     _sampler_wait_for_trainer_start: float | None = field(default=None, repr=False)
 
     def staleness_capacity(self) -> int:
+        accounted_samples = (
+            self.accepted_samples_offset + self.accepted_samples + self.running_samples
+        )
         return (
             (self.max_staleness + self.version + 1) * self.batch_size_samples
-            - (self.accepted_samples + self.running_samples)
+            - accounted_samples
         )
 
     def concurrency_capacity(self) -> int | None:
@@ -153,8 +157,17 @@ class _StalenessController:
         elif reason == "filter":
             self.filter_drops += 1
 
-    def advance_version(self) -> None:
-        self.version += 1
+    def set_version(self, version: int) -> None:
+        if version < self.version:
+            raise ValueError(
+                f"staleness version cannot move backwards: {version} < {self.version}",
+            )
+        self.version = version
+
+    def advance_version(self, steps: int = 1) -> None:
+        if steps < 1:
+            raise ValueError("steps must be >= 1")
+        self.set_version(self.version + steps)
 
     def resolved_count(self, offset: int) -> int:
         # Resolved prompts since start = accepted (in prompts) + rejected.
@@ -282,10 +295,12 @@ async def run_async_rl_loop(
         completions_per_prompt: Number of rollout runs drawn per row.
         prompt_groups_per_step: Number of accepted rows that form one
             optimizer step.
-        max_head_offpolicy_versions: Off-policy budget in sampler
-            (policy) versions; the gate's version increments once per
-            ``weight_sync_fn`` call, not per optimizer step. ``0`` is
-            strict on-policy.
+        max_head_offpolicy_versions: Off-policy budget in optimizer-step
+            policy versions. The capacity gate uses the AReaL accounting form:
+            policy versions and accepted samples are both cumulative from step
+            0. When ``weight_sync_interval > 1``, sampler weights sync less
+            often but the synced policy version still jumps to the optimizer
+            step that produced those weights. ``0`` is strict on-policy.
         advantage_fn: Group-level advantage computation.  Default is
             GRPO z-score normalization.  Output is validated for
             non-finite values; a row producing NaN/inf advantages is
@@ -298,8 +313,9 @@ async def run_async_rl_loop(
         min_group_size: Minimum surviving runs for a row to emit a
             PromptGroup.  Rows with fewer surviving runs are dropped.
         weight_sync_fn: Called after every ``weight_sync_interval``
-            optimizer steps.  Must bump the sampler version; the
-            loop increments its internal version counter on return.
+            optimizer steps.  Must install sampler weights for the supplied
+            optimizer step; the loop records that synced optimizer-step
+            version on return.
         weight_sync_interval: Fire ``weight_sync_fn`` every N steps.
         max_concurrent: Hard cap on **samples (LLM calls)** in flight --
             this is the same unit the deployment's ``max_batch_size``
@@ -350,17 +366,18 @@ async def run_async_rl_loop(
             f"min_group_size ({min_group_size}) must be "
             f"<= completions_per_prompt ({completions_per_prompt})",
         )
-    if weight_sync_interval > max_head_offpolicy_versions + 1:
+    initial_global_step = global_step
+    steps_until_next_weight_sync = weight_sync_interval - (
+        initial_global_step % weight_sync_interval
+    )
+    if steps_until_next_weight_sync > max_head_offpolicy_versions + 1:
         raise ValueError(
-            f"weight_sync_interval ({weight_sync_interval}) must be "
-            f"<= max_head_offpolicy_versions + 1 "
-            f"({max_head_offpolicy_versions + 1}); otherwise the async "
-            "gate stalls before the next weight sync because all rollouts at "
-            "the current version are exhausted.  Either lower "
-            "weight_sync_interval to <= max_head_offpolicy_versions + 1 "
-            "(so a weight sync arrives before capacity hits zero), or raise "
-            "max_head_offpolicy_versions to >= weight_sync_interval - 1 "
-            "(so the head budget covers every step between weight syncs)."
+            f"next weight sync is {steps_until_next_weight_sync} optimizer "
+            f"step(s) away, but max_head_offpolicy_versions + 1 only allows "
+            f"{max_head_offpolicy_versions + 1} step(s) of initial staleness "
+            "budget. The async gate would exhaust rollout capacity before the "
+            "first sync. Either lower weight_sync_interval, start from a step "
+            "closer to the next sync, or raise max_head_offpolicy_versions."
         )
 
     staleness = _StalenessController(
@@ -368,6 +385,10 @@ async def run_async_rl_loop(
         completions_per_prompt=completions_per_prompt,
         max_staleness=max_head_offpolicy_versions,
         max_concurrent_samples=max_concurrent,
+        version=initial_global_step,
+        accepted_samples_offset=(
+            initial_global_step * prompt_groups_per_step * completions_per_prompt
+        ),
     )
     assembler = GroupAssembler(
         completions_per_prompt=completions_per_prompt,
@@ -477,14 +498,19 @@ async def run_async_rl_loop(
                     break
                 _refill()
                 if not in_flight:
-                    logger.warning(
+                    try:
+                        next(rows_iter)
+                    except StopIteration:
+                        iterator_exhausted = True
+                        break
+                    raise RuntimeError(
                         "Async loop stalled: capacity=0 with no in-flight "
-                        "tasks and the row iterator still open. Increase "
-                        "max_head_offpolicy_versions or supply a "
-                        "weight_sync_fn so versions advance.",
+                        "tasks and at least one row still available. This is "
+                        "scheduler starvation, not normal completion. "
+                        "Increase max_head_offpolicy_versions, lower "
+                        "weight_sync_interval, or ensure weight_sync_fn "
+                        "advances the synced policy version."
                     )
-                    iterator_exhausted = True
-                    break
                 continue
 
             done, _ = await asyncio.wait(
@@ -661,7 +687,7 @@ async def run_async_rl_loop(
             and global_step % weight_sync_interval == 0
         ):
             await asyncio.to_thread(weight_sync_fn, global_step)
-            staleness.advance_version()
+            staleness.set_version(global_step)
 
         _refill()
 
