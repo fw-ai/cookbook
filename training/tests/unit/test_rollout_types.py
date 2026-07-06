@@ -17,7 +17,6 @@ def _sample(
     tokens=(1, 2, 3, 4, 5),
     loss_mask=(0, 0, 1, 1, 1),
     logprobs=None,
-    raw_logprobs=None,
     reward=0.0,
     finish_reason="stop",
     text="x",
@@ -31,7 +30,6 @@ def _sample(
         reward=float(reward),
         finish_reason=finish_reason,
         text=text,
-        raw_logprobs=list(raw_logprobs) if raw_logprobs is not None else None,
     )
 
 
@@ -60,11 +58,6 @@ class TestValidation:
             reward=1.0,
         )
         with pytest.raises(ValueError, match="length mismatch"):
-            rollout_to_prompt_group(Rollout(runs=[_run(s)]))
-
-    def test_rejects_raw_logprobs_length_mismatch(self):
-        s = _sample(raw_logprobs=[0.0, -0.1])
-        with pytest.raises(ValueError, match="raw_logprobs length mismatch"):
             rollout_to_prompt_group(Rollout(runs=[_run(s)]))
 
     def test_rejects_tokens_too_short(self):
@@ -304,45 +297,6 @@ class TestInferenceLogprobs:
         assert pg.inf_logprobs == [
             [0.0, -0.1, -0.2, -0.3],
             [0.0, -0.1, -0.2, -0.3],
-        ]
-
-    def test_raw_inf_logprobs_shifted_by_one_when_present(self):
-        """raw_inf_logprobs are observability-only and target-aligned."""
-        def mk(reward: float):
-            return _sample(
-                tokens=[1, 2, 3, 4, 5],
-                loss_mask=[0, 0, 1, 1, 1],
-                logprobs=[0.0, 0.0, -0.1, -0.2, -0.3],
-                raw_logprobs=[0.0, 0.0, -1.1, -1.2, -1.3],
-                reward=reward,
-            )
-
-        pg = rollout_to_prompt_group(Rollout(runs=_solo(mk(1.0), mk(0.0))))
-
-        assert pg is not None
-        assert pg.inf_logprobs == [
-            [0.0, -0.1, -0.2, -0.3],
-            [0.0, -0.1, -0.2, -0.3],
-        ]
-        assert pg.raw_inf_logprobs == [
-            [0.0, -1.1, -1.2, -1.3],
-            [0.0, -1.1, -1.2, -1.3],
-        ]
-
-    def test_combine_prompt_groups_includes_raw_inf_logprobs(self):
-        from training.utils.rl.losses import combine_prompt_groups
-
-        r = Rollout(runs=_solo(
-            _sample(raw_logprobs=[0.0, 0.0, -1.1, -1.2, -1.3], reward=1.0),
-            _sample(raw_logprobs=[0.0, 0.0, -2.1, -2.2, -2.3], reward=0.0),
-        ))
-
-        pg = rollout_to_prompt_group(r)
-        *_, raw_inf_logprobs = combine_prompt_groups([pg], include_raw=True)
-
-        assert raw_inf_logprobs == [
-            [0.0, -1.1, -1.2, -1.3],
-            [0.0, -2.1, -2.2, -2.3],
         ]
 
 

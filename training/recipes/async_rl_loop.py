@@ -76,12 +76,10 @@ from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.dro import DROConfig
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.losses import (
-    LossPath,
+    LossConfig,
     PolicyLoss,
-    build_builtin_loss_datums,
     build_loss_fn,
     combine_prompt_groups,
-    get_builtin_loss_config,
     validate_loss_path,
 )
 from training.utils.rl.metrics import (
@@ -155,19 +153,8 @@ class Config:
     """Max gradient norm for clipping. 0 disables clipping."""
 
     policy_loss: PolicyLoss = "grpo"
-    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
-
-    loss_path: LossPath = "client"
-    """Which forward/backward path to use.
-
-    - ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
-      kernel. Faster, but cannot apply KL (``kl_beta`` must be 0).
-    - ``"client"`` -- client-side ``forward_backward_custom(...)``. Always
-      works; slower because the client evaluates the Python loss closure.
-
-    Validated at startup by :func:`validate_loss_path`; mismatches raise
-    instead of silently falling back.
-    """
+    """One of the registered RL policy losses (see :data:`PolicyLoss`).
+    Client-side only -- ``loss_path`` is not exposed, see skill doc."""
 
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     dro: DROConfig = field(default_factory=DROConfig)
@@ -183,15 +170,6 @@ class Config:
     continuous batching owns execution-level coalescing/microbatching.
     """
     tis: TISConfig = field(default_factory=TISConfig)
-
-    use_rollout_logprobs: bool = False
-    """Use rollout-time logprobs as the PPO/IS old-policy anchor.
-
-    Mirrors Slime's ``use_rollout_logprobs`` flag. ``False`` preserves the
-    historical async behavior by recomputing old-policy logprobs on the trainer.
-    Set ``True`` when the sampler/policy gap is known to be negligible and you
-    want to skip the old-policy forward pass.
-    """
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -353,8 +331,6 @@ def main(
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
             "kl_beta": cfg.kl_beta,
-            "loss_path": cfg.loss_path,
-            "use_rollout_logprobs": int(cfg.use_rollout_logprobs),
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
         },
@@ -473,26 +449,24 @@ def main(
             prompt_groups_per_step=cfg.prompt_groups_per_step,
         )
 
-        validate_loss_path(cfg, service.training_profile)
-        if cfg.loss_path == "builtin":
-            builtin_loss = get_builtin_loss_config(cfg)
-            client_loss_builder = None
-            logger.info(
-                "policy_loss=%s loss_path=builtin (server-side loss=%s)",
-                cfg.policy_loss,
-                builtin_loss[0],
-            )
-        else:
-            builtin_loss = None
-            client_loss_builder = build_loss_fn(cfg)
-            logger.info(
-                "policy_loss=%s loss_path=client (forward_backward_custom)",
-                cfg.policy_loss,
-            )
-        logger.info(
-            "use_rollout_logprobs=%s",
-            cfg.use_rollout_logprobs,
+        # This recipe is client-side only.  ``LossConfig`` adapts the cfg
+        # fields to the ``LossArgs`` Protocol that ``build_loss_fn`` reads;
+        # ``loss_path="client"`` is fixed (no builtin server-side path).
+        loss_args = LossConfig(
+            policy_loss=cfg.policy_loss,
+            loss_path="client",
+            kl_beta=cfg.kl_beta,
+            eps_clip=cfg.eps_clip,
+            eps_clip_high=cfg.eps_clip_high,
+            ratio_log_cap=cfg.ratio_log_cap,
+            dapo=cfg.dapo,
+            dro=cfg.dro,
+            gspo=cfg.gspo,
+            cispo=cfg.cispo,
+            tis=cfg.tis,
         )
+        validate_loss_path(loss_args)
+        client_loss_builder = build_loss_fn(loss_args)
 
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
@@ -532,8 +506,6 @@ def main(
             "temperature": cfg.temperature,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
-            "loss_path": cfg.loss_path,
-            "use_rollout_logprobs": cfg.use_rollout_logprobs,
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "model": rollout_model,
         }
@@ -595,42 +567,10 @@ def main(
                 idx += n
 
         def fwd_bwd_batch(
-            data,
-            adv,
-            ref_lp,
-            prompt_lens,
-            inf_lp,
-            raw_inf_lp,
-            old_policy_logprobs,
+            data, adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs,
         ):
-            if builtin_loss is not None:
-                loss_name, loss_cfg = builtin_loss
-                rl_datums = build_builtin_loss_datums(
-                    data,
-                    adv,
-                    old_policy_logprobs,
-                    inf_lp,
-                    prompt_lens,
-                    cfg.tis,
-                    policy_loss=cfg.policy_loss,
-                )
-                return policy.forward_backward(
-                    rl_datums,
-                    loss_name,
-                    loss_fn_config=loss_cfg,
-                )
-
-            assert client_loss_builder is not None
             return policy.forward_backward_custom(
-                data,
-                client_loss_builder(
-                    adv,
-                    ref_lp,
-                    prompt_lens,
-                    inf_lp,
-                    old_policy_logprobs,
-                    raw_inf_lp,
-                ),
+                data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs),
             )
 
         train_accum: dict[str, Any] = {
@@ -690,36 +630,17 @@ def main(
                 "[rollout %d] ref_forward (%.1fs)", rollout_id, span.elapsed,
             )
 
-            data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combine_prompt_groups(
-                prompt_groups,
-                include_raw=True,
+            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
+            with elapsed_timer("old_policy_forward") as span:
+                old_policy_fwd = policy.forward(data, "cross_entropy")
+                old_policy_logprobs = [
+                    old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
+                    for i in range(len(data))
+                ]
+            logger.info(
+                "[rollout %d] old_policy_forward (%.1fs)",
+                rollout_id, span.elapsed,
             )
-            if cfg.use_rollout_logprobs:
-                if len(inf_lp) != len(data):
-                    raise ValueError(
-                        "use_rollout_logprobs=True requires one rollout_logprobs "
-                        f"row per datum; got {len(inf_lp)} rows for {len(data)} datums."
-                    )
-                if any(not row for row in inf_lp):
-                    raise ValueError(
-                        "use_rollout_logprobs=True requires non-empty rollout_logprobs."
-                    )
-                old_policy_logprobs = inf_lp
-                logger.info(
-                    "[rollout %d] old_policy_logprobs: using rollout_logprobs",
-                    rollout_id,
-                )
-            else:
-                with elapsed_timer("old_policy_forward") as span:
-                    old_policy_fwd = policy.forward(data, "cross_entropy")
-                    old_policy_logprobs = [
-                        old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
-                        for i in range(len(data))
-                    ]
-                logger.info(
-                    "[rollout %d] old_policy_forward (%.1fs)",
-                    rollout_id, span.elapsed,
-                )
 
             optim_result: Any = None
             chunk_idx = int((loop_stats or {}).get("pipeline/chunk_idx", 1))
@@ -731,7 +652,6 @@ def main(
                     ref_lp,
                     prompt_lens,
                     inf_lp,
-                    raw_inf_lp,
                     old_policy_logprobs,
                 )
                 train_accum["fwd_bwd_results"].append(fwd_bwd_result)

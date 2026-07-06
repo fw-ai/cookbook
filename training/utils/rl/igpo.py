@@ -57,10 +57,10 @@ def score_prefix_via_inference(
 ) -> float:
     """Compute mean log P(answer | prefix) via the inference deployment.
 
-    Uses the completions API with ``echo=True`` and ``logprobs=True`` to
-    retrieve structured raw per-token logprobs, then averages over
-    answer-token positions.  This routes through the serving path, avoiding
-    any interference with the trainer's ``forward_backward`` pipeline.
+    Uses the completions API with ``echo=True`` and ``logprobs=1`` to retrieve
+    per-token logprobs, then averages over answer-token positions.  This routes
+    through the serving path, avoiding any interference with the trainer's
+    ``forward_backward`` pipeline.
     """
     import httpx
 
@@ -74,7 +74,7 @@ def score_prefix_via_inference(
             "prompt": prompt_text,
             "max_tokens": 0,
             "echo": True,
-            "logprobs": True,
+            "logprobs": 1,
         },
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=60,
@@ -82,24 +82,15 @@ def score_prefix_via_inference(
     resp.raise_for_status()
     data = resp.json()
 
-    logprob_content = data["choices"][0].get("logprobs", {}).get("content") or []
-    if not isinstance(logprob_content, list) or not logprob_content:
-        raise ValueError(
-            "IGPO inference scoring requires structured logprobs.content[].logprob"
-        )
-    structured_logprobs = [item.get("logprob") for item in logprob_content]
+    token_logprobs = data["choices"][0].get("logprobs", {}).get("token_logprobs", [])
 
     n_prefix = len(prefix_tokens)
     n_answer = len(answer_tokens)
 
-    if len(structured_logprobs) < n_prefix + n_answer:
-        available = (
-            structured_logprobs[n_prefix:]
-            if len(structured_logprobs) > n_prefix
-            else []
-        )
+    if len(token_logprobs) < n_prefix + n_answer:
+        available = token_logprobs[n_prefix:] if len(token_logprobs) > n_prefix else []
     else:
-        available = structured_logprobs[n_prefix : n_prefix + n_answer]
+        available = token_logprobs[n_prefix : n_prefix + n_answer]
 
     valid = [lp for lp in available if lp is not None]
     if not valid:
@@ -176,6 +167,8 @@ def compute_turn_advantages(
     G = len(ig_rewards)
     if G == 0:
         return []
+
+    max_T = max(len(r) for r in ig_rewards)
 
     all_ig_flat: List[float] = []
     all_outcome_flat: List[float] = []

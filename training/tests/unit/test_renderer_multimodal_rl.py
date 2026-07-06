@@ -20,7 +20,7 @@ from training.utils.rl.rollout.renderer import (
     single_turn_renderer_rollout,
 )
 from fireworks.training.sdk.sampling import SampledCompletion
-from training.utils.rl.rollout.types import rollout_to_prompt_group, Rollout
+from training.utils.rl.rollout.types import rollout_to_prompt_group, Rollout, RolloutRun
 from training.utils.supervised import build_multimodal_policy_datum, has_non_text_chunks
 
 _BASE64_PNG = "data:image/png;base64,iVBORw0KGgo="
@@ -156,12 +156,7 @@ def test_parse_vision_completions_payload():
                 "text": "ok",
                 "prompt_token_ids": [1, 2, 3],
                 "token_ids": [4, 5],
-                "logprobs": {
-                    "content": [
-                        {"logprob": -0.11, "sampling_logprob": -0.1},
-                        {"logprob": -0.22, "sampling_logprob": -0.2},
-                    ],
-                },
+                "logprobs": {"token_logprobs": [-0.1, -0.2]},
             }
         ]
     }
@@ -173,28 +168,6 @@ def test_parse_vision_completions_payload():
         finish_reason="stop",
         text="ok",
     )
-
-
-def test_parse_vision_completions_requires_sampling_logprob():
-    payload = {
-        "choices": [
-            {
-                "finish_reason": "stop",
-                "text": "ok",
-                "prompt_token_ids": [1, 2, 3],
-                "token_ids": [4, 5],
-                "logprobs": {
-                    "content": [
-                        {"logprob": -0.11},
-                        {"logprob": -0.22},
-                    ],
-                    "token_logprobs": [-0.11, -0.22],
-                },
-            }
-        ]
-    }
-    with pytest.raises(RuntimeError, match="sampling_logprob"):
-        _parse_vision_completions_payload(payload)
 
 
 def test_build_multimodal_policy_datum_preserves_image_chunk():
@@ -214,7 +187,6 @@ def test_multimodal_rollout_sample_packs_prompt_group():
         prompt_model_input=prompt,
         completion_tokens=[30, 31],
         completion_logprobs=[-0.1, -0.2],
-        raw_completion_logprobs=[-1.1, -1.2],
         reward=1.0,
         finish_reason="stop",
         text="hi",
@@ -237,7 +209,6 @@ def test_multimodal_reference_datum_mask_shape_matches_weights():
         prompt_model_input=prompt,
         completion_tokens=[30, 31],
         completion_logprobs=[-0.1, -0.2],
-        raw_completion_logprobs=[-1.1, -1.2],
         reward=1.0,
         finish_reason="stop",
         text="hi",
@@ -262,7 +233,6 @@ def test_multimodal_inf_logprobs_match_datum_weight_index_space():
         prompt_model_input=prompt,
         completion_tokens=[30, 31],
         completion_logprobs=[-0.1, -0.2],
-        raw_completion_logprobs=[-1.1, -1.2],
         reward=1.0,
         finish_reason="stop",
         text="hi",
@@ -274,14 +244,10 @@ def test_multimodal_inf_logprobs_match_datum_weight_index_space():
     assert pg is not None
     weights = [float(w) for w in pg.data[0].loss_fn_inputs["weights"].data]
     inf_lp = pg.inf_logprobs[0]
-    raw_inf_lp = pg.raw_inf_logprobs[0]
     assert len(inf_lp) == len(weights)
-    assert len(raw_inf_lp) == len(weights)
     active = [i for i, w in enumerate(weights) if w > 0]
     assert [inf_lp[i] for i in active] == [-0.1, -0.2]
-    assert [raw_inf_lp[i] for i in active] == [-1.1, -1.2]
     assert all(inf_lp[i] == 0.0 for i in range(len(weights)) if i not in active)
-    assert all(raw_inf_lp[i] == 0.0 for i in range(len(weights)) if i not in active)
     assert pg.prompt_lens[0] == active[0] + 1
     response_start = pg.prompt_lens[0] - 1
     assert response_start == active[0]
@@ -323,7 +289,6 @@ async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
                 prompt_len=len(prompt_tokens),
                 finish_reason="stop",
                 inference_logprobs=[-0.3, -0.4],
-                sampling_logprobs=[-0.31, -0.41],
             )
         ]
 
@@ -341,9 +306,6 @@ async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
     assert captured["kwargs"]["n"] == 1
     segment = run.segments[0]
     assert segment.tokens == prompt_tokens + completion_tokens
-    assert segment.logprobs[-2:] == [-0.31, -0.41]
-    assert segment.raw_logprobs is not None
-    assert segment.raw_logprobs[-2:] == [-0.3, -0.4]
 
 
 @pytest.mark.asyncio
@@ -371,7 +333,6 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
                 prompt_len=len(expanded_prompt),
                 finish_reason="stop",
                 inference_logprobs=[-0.3, -0.4],
-                sampling_logprobs=[-0.31, -0.41],
             )
         ]
 
@@ -395,7 +356,6 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
     segment = run.segments[0]
     assert segment.prompt_model_input is not None
     assert segment.tokens[-2:] == [99, 100]
-    assert segment.logprobs[-2:] == [-0.31, -0.41]
 
 
 @pytest.mark.asyncio

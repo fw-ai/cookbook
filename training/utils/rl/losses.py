@@ -14,7 +14,7 @@ unaware of the registries and the path-selection logic.
 
 from __future__ import annotations
 
-from typing import Any, List, Literal, Protocol, Callable
+from typing import Any, List, Literal, Protocol, Tuple, Callable
 from dataclasses import field, dataclass
 
 import tinker
@@ -25,8 +25,8 @@ from training.utils.rl.client_losses import CLIENT_LOSSES
 from training.utils.rl.dapo import DAPOConfig
 from training.utils.rl.dro import DROConfig
 from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.observability import compute_inference_observability_metrics
 from training.utils.rl.tis import TISConfig
+
 
 PolicyLoss = Literal[
     "grpo",
@@ -64,13 +64,13 @@ to the client path -- a behavior that broke once anyone reordered the gate
 or introduced a new builtin loss that consumed ref logprobs.
 """
 
+
 SUPPORTED_POLICY_LOSSES: tuple[str, ...] = tuple(CLIENT_LOSSES)
 
 # Drift guard: PolicyLoss Literal must list every client-registered loss,
 # and every builtin must also be in CLIENT_LOSSES (a builtin without a
 # client fallback is a footgun -- there's no way to apply KL.
 import typing as _typing  # noqa: E402
-
 assert set(_typing.get_args(PolicyLoss)) == set(CLIENT_LOSSES), (
     "PolicyLoss Literal is out of sync with CLIENT_LOSSES. "
     f"Literal={set(_typing.get_args(PolicyLoss))!r}, "
@@ -199,16 +199,6 @@ class PromptGroup:
     ref_data: List[tinker.Datum] = field(default_factory=list)
     """Reference-only datums (no routing matrices)."""
     inf_logprobs: List[List[float]] = field(default_factory=list)
-    """``rollout_logprobs`` aligned to ``target_tokens``.
-
-    These are sampled-token logprobs after rollout temperature and sampling masks.
-    They feed direct rollout-logprob reuse and TIS denominators.
-    """
-    raw_inf_logprobs: List[List[float]] = field(default_factory=list)
-    """Raw model logprobs aligned to ``target_tokens`` for observability only.
-
-    They drive ``train/inference_*`` drift metrics, never loss/TIS ratios.
-    """
     completion_lens: List[int] = field(default_factory=list)
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
@@ -230,21 +220,16 @@ class PromptGroup:
 
 def combine_prompt_groups(
     groups: List[PromptGroup],
-    *,
-    include_raw: bool = False,
-):
+) -> Tuple[List[tinker.Datum], List[float], List[List[float]], List[int], List[List[float]]]:
     """Flatten a list of PromptGroups into combined arrays for a fwd_bwd call.
 
-    Returns ``(data, advantages, ref_logprobs, prompt_lens, inf_logprobs)``.
-    With ``include_raw=True``, appends observability-only ``raw_inf_logprobs``
-    for ``train/inference_*`` drift metrics.
+    Returns (data, advantages, ref_logprobs, prompt_lens, inf_logprobs).
     """
     data: List[tinker.Datum] = []
     advantages: List[float] = []
     ref_logprobs: List[List[float]] = []
     prompt_lens: List[int] = []
     inf_logprobs: List[List[float]] = []
-    raw_inf_logprobs: List[List[float]] = []
 
     for pg in groups:
         data.extend(pg.data)
@@ -256,21 +241,7 @@ def combine_prompt_groups(
         else:
             prompt_lens.extend([pg.prompt_len] * len(pg.data))
         inf_logprobs.extend(pg.inf_logprobs)
-        if include_raw:
-            if pg.raw_inf_logprobs:
-                raw_inf_logprobs.extend(pg.raw_inf_logprobs)
-            else:
-                raw_inf_logprobs.extend([[] for _ in pg.data])
 
-    if include_raw:
-        return (
-            data,
-            advantages,
-            ref_logprobs,
-            prompt_lens,
-            inf_logprobs,
-            raw_inf_logprobs,
-        )
     return data, advantages, ref_logprobs, prompt_lens, inf_logprobs
 
 
@@ -285,19 +256,15 @@ def build_builtin_loss_datums(
 ) -> List[tinker.Datum]:
     """Build datums with old-policy logprobs and advantages for server-side built-in loss.
 
-    Folds the TIS weight ``exp(old_policy - behavior)`` into per-token
-    advantages so the server only sees ``logprobs`` (= old_policy_lp) and
-    ``advantages`` (= advantage * tis_weight * loss_mask).
+    Folds the TIS weight ``exp(old_policy - inf)`` into per-token advantages so the
+    server only sees ``logprobs`` (= old_policy_lp) and ``advantages``
+    (= advantage * tis_weight * loss_mask).
 
     Uses ``compute_tis_weight`` for behavioral TIS correction and
     ``_get_loss_mask`` for multi-turn tool-call masking.
     """
     import torch
-    from training.utils.rl.common import (
-        _coerce_response_logprobs,
-        _get_loss_mask,
-        validate_inference_logprobs_for_sample,
-    )
+    from training.utils.rl.common import _get_loss_mask, validate_inference_logprobs_for_sample
     from training.utils.rl.tis import compute_tis_weight
 
     if tis_config is None:
@@ -315,41 +282,21 @@ def build_builtin_loss_datums(
 
         resp_len = max(0, n_tokens - response_start)
         loss_mask = _get_loss_mask(
-            datum,
-            response_start,
-            resp_len,
-            dtype=torch.float32,
-            device=torch.device("cpu"),
+            datum, response_start, resp_len, dtype=torch.float32, device=torch.device("cpu"),
         )
         active_count = int((loss_mask > 0.5).sum().item())
 
         if resp_len > 0 and active_count > 0:
             validate_inference_logprobs_for_sample(
-                policy_loss,
-                i,
-                inf_lp,
-                response_start + resp_len,
-                source="rollout_logprobs",
+                policy_loss, i, inf_lp, response_start + resp_len,
             )
-            resp_old_policy = torch.tensor(
-                old_policy_lp[response_start : response_start + resp_len],
-                dtype=torch.float32,
-            )
+            resp_old_policy = torch.tensor(old_policy_lp[response_start:response_start + resp_len], dtype=torch.float32)
+            resp_inf = torch.tensor(inf_lp[response_start:response_start + resp_len], dtype=torch.float32)
             # Active-only filter mirrors common.py: keep masked bridge tokens
             # out of the sequence-level TIS weight.
             active = loss_mask > 0.5
-            resp_inf_values = _coerce_response_logprobs(
-                inf_lp[response_start : response_start + resp_len],
-                active,
-                policy_loss=policy_loss,
-                sample_idx=i,
-                source="rollout_logprobs",
-            )
-            resp_inf = torch.tensor(resp_inf_values, dtype=torch.float32)
             tis_weight_active, _ = compute_tis_weight(
-                resp_old_policy[active],
-                resp_inf[active],
-                tis_config,
+                resp_old_policy[active], resp_inf[active], tis_config,
             )
             tis_weight = torch.ones(resp_len, dtype=torch.float32)
             tis_weight[active] = tis_weight_active.to(torch.float32)
@@ -359,9 +306,7 @@ def build_builtin_loss_datums(
         per_token_adv = [0.0] * response_start
         adv_val = advantages[adv_idx] if adv_idx < len(advantages) else 0.0
         for r in range(resp_len):
-            per_token_adv.append(
-                float(adv_val * tis_weight[r].item() * loss_mask[r].item())
-            )
+            per_token_adv.append(float(adv_val * tis_weight[r].item() * loss_mask[r].item()))
 
         old_policy_lp_padded = (
             old_policy_lp[:n_tokens]
@@ -372,19 +317,13 @@ def build_builtin_loss_datums(
             model_input=datum.model_input,
             loss_fn_inputs={
                 "target_tokens": tinker.TensorData(
-                    data=target_tokens,
-                    dtype="int64",
-                    shape=[n_tokens],
+                    data=target_tokens, dtype="int64", shape=[n_tokens],
                 ),
                 "logprobs": tinker.TensorData(
-                    data=old_policy_lp_padded,
-                    dtype="float32",
-                    shape=[n_tokens],
+                    data=old_policy_lp_padded, dtype="float32", shape=[n_tokens],
                 ),
                 "advantages": tinker.TensorData(
-                    data=per_token_adv,
-                    dtype="float32",
-                    shape=[n_tokens],
+                    data=per_token_adv, dtype="float32", shape=[n_tokens],
                 ),
             },
         )
@@ -412,10 +351,7 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
     and per-loss config fields at the top level.
 
     Returns a callable:
-    ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
-    raw_inf_logprobs) -> loss_fn``.  ``raw_inf_logprobs`` is attached here as
-    observability-only metrics; losses use ``inf_logprobs`` /
-    ``old_policy_logprobs`` for ratios.
+    ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs) -> loss_fn``
     """
     factory = CLIENT_LOSSES.get(args.policy_loss)
 
@@ -425,7 +361,6 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
         prompt_lens: List[int],
         inf_logprobs: List[List[float]],
         old_policy_logprobs: List[List[float]],
-        raw_inf_logprobs: List[List[float]] | None = None,
     ) -> Any:
         if factory is None:
             supported = _supported_policy_losses_text()
@@ -433,31 +368,8 @@ def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
                 f"Unsupported policy_loss '{args.policy_loss}'. "
                 f"Expected one of: {supported}."
             )
-        loss_fn = factory(
-            args,
-            advantages,
-            ref_logprobs,
-            prompt_lens,
-            inf_logprobs,
-            old_policy_logprobs,
+        return factory(
+            args, advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
         )
-        if not raw_inf_logprobs:
-            return loss_fn
-
-        def loss_fn_with_inference_metrics(data, logprobs_list):
-            loss, metrics = loss_fn(data, logprobs_list)
-            inference_metrics = compute_inference_observability_metrics(
-                data,
-                logprobs_list,
-                raw_inf_logprobs,
-                prompt_lens,
-                args.policy_loss,
-            )
-            if inference_metrics:
-                metrics = dict(metrics)
-                metrics.update(inference_metrics)
-            return loss, metrics
-
-        return loss_fn_with_inference_metrics
 
     return build

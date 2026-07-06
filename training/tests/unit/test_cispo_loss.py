@@ -14,7 +14,6 @@ import torch
 import pytest
 
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
-from training.utils.rl.losses import LossConfig, build_loss_fn
 
 
 def _make_logprobs(seq_len: int, seed: int = 0) -> torch.Tensor:
@@ -127,13 +126,7 @@ class TestCISPOBatched:
         lp_grad = lp.detach().requires_grad_(True)
 
         old_policy = [[0.0] * 5]
-        fn = make_cispo_loss_fn(
-            adv,
-            ref,
-            inf,
-            prompt_len=1,
-            old_policy_logprobs=old_policy,
-        )
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
         loss, _ = fn([], [lp_grad])
         loss.backward()
 
@@ -149,35 +142,21 @@ class TestCISPOMetrics:
         old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
-        fn = make_cispo_loss_fn(
-            adv,
-            ref,
-            inf,
-            prompt_len=1,
-            old_policy_logprobs=old_policy,
-        )
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
         _, metrics = fn([], [lp])
 
         assert "mean_kl" in metrics
         assert "cispo_clip_frac" in metrics
 
     def test_reports_inference_metrics(self):
-        """Client builder should report inference_diff and inference_kld."""
+        """CISPO should report inference_diff and inference_kld."""
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[0.0] * 5]
         old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
-        builder = build_loss_fn(LossConfig(policy_loss="cispo"))
-        fn = builder(
-            adv,
-            ref,
-            [1],
-            inf,
-            old_policy,
-            inf,
-        )
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
         _, metrics = fn([], [lp])
 
         assert "inference_diff" in metrics
@@ -192,7 +171,7 @@ class TestCISPOMetrics:
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
         fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
-        with pytest.raises(ValueError, match="CISPO requires rollout_logprobs"):
+        with pytest.raises(ValueError, match="CISPO requires inference logprobs"):
             fn([], [lp])
 
     def test_requires_sufficient_inf_logprobs(self):

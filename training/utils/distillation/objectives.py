@@ -169,12 +169,12 @@ class SampledReverseKLObjective:
                 continue
             if not _is_float_list(teacher_logprobs):
                 raise TypeError("SAMPLED_REVERSE_KL teacher scores must be scalar logprobs.")
-            if not sample.sampling_logprobs:
-                warning("Skipping OPD sample without student sampling logprobs")
+            if not sample.inference_logprobs:
+                warning("Skipping OPD sample without student inference logprobs")
                 continue
 
             aligned_sampling_logprobs = _align_completion_logprobs(
-                list(sample.sampling_logprobs),
+                list(sample.inference_logprobs),
                 prompt_len=sample.prompt_len,
                 target_len=sample_inputs.target_len,
                 echoed=getattr(sample, "logprobs_echoed", False),

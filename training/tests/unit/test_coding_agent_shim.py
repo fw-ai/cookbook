@@ -166,7 +166,7 @@ class _QueueRenderer:
 def _fake_app(parsed_messages, *, strategy="message_hash"):
     """Minimal aiohttp-app-shaped dict for driving ``_run_turn`` with fakes."""
     comp = _FakeCompletion(
-        full_tokens=[0, 1, 2, 10, 11], prompt_len=3, sampling_logprobs=[-0.1, -0.2], logprobs_echoed=False,
+        full_tokens=[0, 1, 2, 10, 11], prompt_len=3, inference_logprobs=[-0.1, -0.2], logprobs_echoed=False,
     )
     return {
         "tokenizer": _FakeTok(),
@@ -297,18 +297,9 @@ def test_anthropic_blocks_subagent_tool_sets_dispatch_id():
 # shim: TITO logprob slicing in _generate                                      #
 # --------------------------------------------------------------------------- #
 class _FakeCompletion:
-    def __init__(
-        self,
-        full_tokens,
-        prompt_len,
-        sampling_logprobs,
-        logprobs_echoed,
-        finish_reason="stop",
-        inference_logprobs=None,
-    ):
+    def __init__(self, full_tokens, prompt_len, inference_logprobs, logprobs_echoed, finish_reason="stop"):
         self.full_tokens = full_tokens
         self.prompt_len = prompt_len
-        self.sampling_logprobs = sampling_logprobs
         self.inference_logprobs = inference_logprobs
         self.logprobs_echoed = logprobs_echoed
         self.finish_reason = finish_reason
@@ -331,7 +322,7 @@ def _run(coro):
 
 def test_generate_completion_only_logprobs():
     prompt = [1, 2, 3]
-    comp = _FakeCompletion(full_tokens=prompt + [10, 11], prompt_len=3, sampling_logprobs=[-0.5, -0.6], logprobs_echoed=False)
+    comp = _FakeCompletion(full_tokens=prompt + [10, 11], prompt_len=3, inference_logprobs=[-0.5, -0.6], logprobs_echoed=False)
     sampler = _FakeSampler(comp)
     app = {"sampler": sampler, "sample_kwargs": {"max_tokens": 100, "logprobs": True}, "stop": []}
     s = shim.Session()
@@ -348,7 +339,7 @@ def test_generate_echoed_logprobs_sliced():
     prompt = [1, 2, 3]
     # echoed: logprobs cover prompt+output (prompt_len + 2)
     comp = _FakeCompletion(full_tokens=prompt + [10, 11], prompt_len=3,
-                           sampling_logprobs=[-9, -9, -9, -0.5, -0.6], logprobs_echoed=True)
+                           inference_logprobs=[-9, -9, -9, -0.5, -0.6], logprobs_echoed=True)
     app = {"sampler": _FakeSampler(comp), "sample_kwargs": {"max_tokens": 100}, "stop": []}
     turn = _run(shim._generate(prompt, shim.Session(), {}, app))
     assert turn.output_ids == [10, 11]
@@ -357,7 +348,7 @@ def test_generate_echoed_logprobs_sliced():
 
 def test_generate_mismatch_zeroes_logprobs():
     prompt = [1, 2, 3]
-    comp = _FakeCompletion(full_tokens=prompt + [10, 11, 12], prompt_len=3, sampling_logprobs=[-0.5], logprobs_echoed=False)
+    comp = _FakeCompletion(full_tokens=prompt + [10, 11, 12], prompt_len=3, inference_logprobs=[-0.5], logprobs_echoed=False)
     app = {"sampler": _FakeSampler(comp), "sample_kwargs": {"max_tokens": 100}, "stop": []}
     turn = _run(shim._generate(prompt, shim.Session(), {}, app))
     assert turn.output_ids == [10, 11, 12]
@@ -366,7 +357,7 @@ def test_generate_mismatch_zeroes_logprobs():
 
 def test_generate_context_budget_length_stop():
     prompt = list(range(50))
-    comp = _FakeCompletion(full_tokens=prompt + [99], prompt_len=50, sampling_logprobs=[-0.1], logprobs_echoed=False)
+    comp = _FakeCompletion(full_tokens=prompt + [99], prompt_len=50, inference_logprobs=[-0.1], logprobs_echoed=False)
     app = {"sampler": _FakeSampler(comp), "sample_kwargs": {"max_tokens": 100}, "stop": []}
     s = shim.Session()
     s.max_context_tokens = 40  # prompt already over budget
@@ -391,7 +382,7 @@ class _MetricsSampler(_FakeSampler):
 def test_generate_kv_metrics_drained_when_enabled(monkeypatch=None):
     import os
     prompt = [1, 2, 3]
-    comp = _FakeCompletion(full_tokens=prompt + [10], prompt_len=3, sampling_logprobs=[-0.5], logprobs_echoed=False)
+    comp = _FakeCompletion(full_tokens=prompt + [10], prompt_len=3, inference_logprobs=[-0.5], logprobs_echoed=False)
     metric = types.SimpleNamespace(prompt_tokens=3, cached_prompt_tokens=2)
     sampler = _MetricsSampler(comp, [metric])
     app = {"sampler": sampler, "sample_kwargs": {"max_tokens": 100}, "stop": []}
@@ -407,7 +398,7 @@ def test_generate_kv_metrics_drained_when_enabled(monkeypatch=None):
 
 def test_generate_kv_metrics_not_drained_by_default():
     prompt = [1, 2, 3]
-    comp = _FakeCompletion(full_tokens=prompt + [10], prompt_len=3, sampling_logprobs=[-0.5], logprobs_echoed=False)
+    comp = _FakeCompletion(full_tokens=prompt + [10], prompt_len=3, inference_logprobs=[-0.5], logprobs_echoed=False)
     sampler = _MetricsSampler(comp, [types.SimpleNamespace(prompt_tokens=3, cached_prompt_tokens=2)])
     app = {"sampler": sampler, "sample_kwargs": {"max_tokens": 100}, "stop": []}
     _run(shim._generate(prompt, shim.Session(), {}, app))

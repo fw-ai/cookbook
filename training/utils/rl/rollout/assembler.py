@@ -150,6 +150,7 @@ class TrajectoryAssembler:
                 f"output_logprobs length ({len(call.output_logprobs)}) "
                 f"!= output_tokens length ({len(call.output_tokens)})",
             )
+
         if max_trim_tokens < 0:
             raise ValueError("max_trim_tokens must be >= 0")
 
@@ -319,9 +320,9 @@ def extract_completion(
     Expects Fireworks/OpenAI-shaped fields:
 
     * ``token_ids``: list of int, the engine's output token IDs.
-    * ``logprobs.content[].sampling_logprob``: list of rollout logprobs aligned
-      1:1 with ``token_ids``. These are after rollout temperature and sampling
-      masks and are required for training.
+    * ``logprobs.token_logprobs``: list of float aligned 1:1 with
+      ``token_ids``.  ``None`` entries are coerced to ``0.0`` (some
+      providers omit the logprob for the first token).
     * ``finish_reason``: str (default ``"stop"``).
 
     Raises:
@@ -338,45 +339,28 @@ def extract_completion(
             "``token_ids`` from the Fireworks Completions API).",
         )
 
-    logprobs_data = choice.get("logprobs")
-    if isinstance(logprobs_data, Mapping):
-        content = logprobs_data.get("content")
-        if isinstance(content, list) and content:
-            rollout_logprobs: Iterable[Any] = [
-                item.get("sampling_logprob") for item in content
-            ]
-        else:
-            rollout_logprobs = []
+    raw_logprobs = choice.get("logprobs")
+    if isinstance(raw_logprobs, Mapping):
+        token_logprobs: Iterable[Any] = raw_logprobs.get("token_logprobs") or []
     else:
-        rollout_logprobs = []
-    rollout_logprobs_list: List[Any] = list(rollout_logprobs)
-    if not rollout_logprobs_list:
-        raise ValueError(
-            "completion choice is missing logprobs.content[].sampling_logprob; "
-            "rollout training requires rollout_logprobs after "
-            "temperature and sampling masks.",
-        )
+        token_logprobs = []
+    raw_logprobs_list: List[Any] = list(token_logprobs)
 
-    # Filter token_ids/logprobs in lockstep so a None placeholder
+    # Filter token_ids/token_logprobs in lockstep so a None placeholder
     # in tokens drops its paired logprob; otherwise the remaining logprobs
     # would shift onto the wrong tokens and corrupt the PPO/GRPO ratio.
     output_tokens: List[int] = []
     output_logprobs: List[float] = []
-    if len(rollout_logprobs_list) == len(raw_token_ids):
-        for tok, lp in zip(raw_token_ids, rollout_logprobs_list):
+    if len(raw_logprobs_list) == len(raw_token_ids):
+        for tok, lp in zip(raw_token_ids, raw_logprobs_list):
             if tok is None:
                 continue
             output_tokens.append(int(tok))
-            if lp is None:
-                raise ValueError(
-                    "completion logprobs.content[].sampling_logprob is required "
-                    "for generated tokens used in rollout training."
-                )
-            output_logprobs.append(float(lp))
+            output_logprobs.append(float(lp) if lp is not None else 0.0)
     else:
         output_tokens = [int(t) for t in raw_token_ids if t is not None]
         output_logprobs = [
-            float(lp) for lp in rollout_logprobs_list if lp is not None
+            float(lp) if lp is not None else 0.0 for lp in raw_logprobs_list
         ]
         if len(output_logprobs) > len(output_tokens):
             output_logprobs = output_logprobs[: len(output_tokens)]
@@ -388,6 +372,7 @@ def extract_completion(
             f"return per-token logprobs aligned with token_ids "
             f"(slime/AReaL convention).",
         )
+
     finish_reason = choice.get("finish_reason") or "stop"
 
     return InferenceCall(

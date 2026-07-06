@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple, Union
+from typing import TYPE_CHECKING, Callable, Dict, List, Tuple, Union
 from dataclasses import dataclass
 
 import torch
@@ -55,109 +55,25 @@ def _format_policy_loss_label(policy_loss: str) -> str:
     return policy_loss.upper()
 
 
-def _coerce_logprobs_to_float(
-    values: List[Any],
-    *,
-    expected_len: int,
-    source: str,
-    sample_idx: int,
-    coordinates: str,
-) -> List[float]:
-    if len(values) != expected_len:
-        raise RuntimeError(
-            f"{source} for sample {sample_idx} has {coordinates} length {len(values)}, "
-            f"expected {expected_len} {coordinates} logprobs."
-        )
-    if any(value is None for value in values):
-        raise RuntimeError(f"{source} for sample {sample_idx} has null {coordinates} logprob.")
-    return [float(value) for value in values]
-
-
-def align_sample_logprobs_to_target_tokens(
-    sampled: Any,
-    *,
-    attr: str,
-    source: str,
-    sample_idx: int,
-    required: bool,
-) -> List[float] | None:
-    """Normalize sampler logprobs into ``target_tokens`` coordinates.
-
-    Echoed samples are already target-aligned. Non-echo samples are
-    completion-only and need prompt-prefix padding.
-    """
-    values = getattr(sampled, attr, None)
-    if values is None or not values:
-        if required:
-            raise RuntimeError(f"{source} required but sample {sample_idx} has none.")
-        return None
-    target_len = max(0, len(sampled.full_tokens) - 1)
-    values = list(values)
-    if getattr(sampled, "logprobs_echoed", False):
-        return _coerce_logprobs_to_float(
-            values,
-            expected_len=target_len,
-            source=source,
-            sample_idx=sample_idx,
-            coordinates="target-aligned",
-        )
-
-    response_start = min(max(0, int(sampled.prompt_len) - 1), target_len)
-    response_len = target_len - response_start
-    completion_logprobs = _coerce_logprobs_to_float(
-        values,
-        expected_len=response_len,
-        source=source,
-        sample_idx=sample_idx,
-        coordinates="completion",
-    )
-    return [0.0] * response_start + completion_logprobs
-
-
 def validate_inference_logprobs_for_sample(
     policy_loss: str,
     sample_idx: int,
-    inf_lp: List[Any],
+    inf_lp: List[float],
     required: int,
-    *,
-    source: str = "rollout_logprobs",
 ) -> None:
-    """Ensure one sample has logprobs for response tokens."""
+    """Ensure one sample has inference logprobs for all active response tokens."""
     policy_label = _format_policy_loss_label(policy_loss)
     if not inf_lp:
         raise ValueError(
-            f"{policy_label} requires {source} for sample {sample_idx} but got empty list. "
+            f"{policy_label} requires inference logprobs for sample {sample_idx} but got empty list. "
             f"Ensure logprobs=True is set when using policy_loss='{policy_loss}'."
         )
 
     if len(inf_lp) < required:
         raise ValueError(
-            f"{policy_label} requires at least {required} values in {source} "
+            f"{policy_label} requires at least {required} inference logprobs "
             f"for sample {sample_idx}, got {len(inf_lp)}."
         )
-
-
-def _coerce_response_logprobs(
-    values: List[Any],
-    active: torch.Tensor,
-    *,
-    policy_loss: str,
-    sample_idx: int,
-    source: str,
-) -> List[float]:
-    policy_label = _format_policy_loss_label(policy_loss)
-    result: List[float] = []
-    for pos, value in enumerate(values):
-        if value is None:
-            if bool(active[pos].item()):
-                raise ValueError(
-                    f"{policy_label} requires a non-null value in {source} for "
-                    f"sample {sample_idx} active response position {pos}."
-                )
-            result.append(0.0)
-        else:
-            result.append(float(value))
-    return result
 
 
 @dataclass
@@ -177,7 +93,7 @@ class SampleContext:
     resp_old_policy: torch.Tensor
     """Old-policy forward-pass logprobs for response tokens."""
     resp_inf: torch.Tensor
-    """Rollout logprobs for response tokens."""
+    """Inference deployment logprobs for response tokens."""
     resp_mask: torch.Tensor
     """Per-token loss mask (1.0 = active, 0.0 = masked)."""
     adv: torch.Tensor
@@ -220,20 +136,21 @@ def run_loss_loop(
     policy_loss: str,
     policy_fn: PolicyFn,
 ) -> LossLoopResult:
-    """Shared loss loop: tensor setup, TIS weight, loss metrics, KL.
+    """Shared loss loop: tensor setup, TIS weight, inference metrics, KL.
 
     Iterates over ``logprobs_list``, builds a :class:`SampleContext` for each
     sample, and delegates per-token loss computation to ``policy_fn``.
-    loss/TIS ratios use ``inf_logprobs`` and ``old_policy_logprobs``.
     """
     from training.utils.rl.tis import compute_tis_weight
 
     total_loss = torch.tensor(0.0, requires_grad=True)
     total_kl = 0.0
+    total_inf_diff = 0.0
+    total_inf_kld = 0.0
     total_ppo_kl = 0.0
     total_ref_kl = 0.0
     ref_num_samples = 0
-    behavior_num_samples = 0
+    inf_num_samples = 0
     num_tokens = 0
     tis_metrics_agg: Dict[str, float] = {}
     extra_sums: Dict[str, float] = {}
@@ -274,17 +191,9 @@ def run_loss_loop(
             i,
             inf_lp,
             response_start + resp_len,
-            source="rollout_logprobs",
-        )
-        resp_inf_values = _coerce_response_logprobs(
-            inf_lp[response_start : response_start + resp_len],
-            active,
-            policy_loss=policy_loss,
-            sample_idx=i,
-            source="rollout_logprobs",
         )
         resp_inf = torch.tensor(
-            resp_inf_values,
+            inf_lp[response_start : response_start + resp_len],
             dtype=resp_pi.dtype,
             device=resp_pi.device,
         )
@@ -302,13 +211,16 @@ def run_loss_loop(
         active_inf = resp_inf[active]
         active_old_policy = resp_old_policy[active]
 
+        inf_log_diff = active_pi - active_inf
+        total_inf_diff += inf_log_diff.abs().mean().item()
+        total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
         ppo_log_diff = active_pi - active_old_policy
         total_ppo_kl += (torch.exp(ppo_log_diff) - ppo_log_diff - 1.0).mean().item()
         if ref_lp:
             ref_log_diff = active_ref - active_pi
             total_ref_kl += (torch.exp(ref_log_diff) - ref_log_diff - 1.0).mean().item()
             ref_num_samples += 1
-        behavior_num_samples += 1
+        inf_num_samples += 1
 
         tis_weight_active, bm = compute_tis_weight(active_old_policy, active_inf, tis_config)
         # Identity (1.0) at masked positions: zeroes under ``resp_mask`` for
@@ -338,12 +250,14 @@ def run_loss_loop(
         for k, v in extra.items():
             extra_sums[k] = extra_sums.get(k, 0.0) + v
 
-    n_samples = max(behavior_num_samples, 1)
+    n_samples = max(inf_num_samples, 1)
     base_metrics: Dict[str, float] = {
         "mean_kl": total_kl / num_tokens if num_tokens > 0 else 0.0,
     }
-    if behavior_num_samples > 0:
-        base_metrics["ppo_kl"] = total_ppo_kl / behavior_num_samples
+    if inf_num_samples > 0:
+        base_metrics["inference_diff"] = total_inf_diff / inf_num_samples
+        base_metrics["inference_kld"] = total_inf_kld / inf_num_samples
+        base_metrics["ppo_kl"] = total_ppo_kl / inf_num_samples
     if ref_num_samples > 0:
         base_metrics["ref_kl"] = total_ref_kl / ref_num_samples
     for k, v in tis_metrics_agg.items():

@@ -60,7 +60,6 @@ from training.utils import (
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup
-from training.utils.rl.common import align_sample_logprobs_to_target_tokens
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
 from training.train_loop import TrainStepFns, raw_rows_from_stats, run_batched_training_loop
@@ -464,14 +463,12 @@ def main(
                         },
                     ))
 
-                rollout_logprobs = align_sample_logprobs_to_target_tokens(
-                    s,
-                    attr="sampling_logprobs",
-                    source="rollout_logprobs",
-                    sample_idx=idx,
-                    required=True,
-                )
-                inf_logprobs_aligned.append(rollout_logprobs)
+                if not s.inference_logprobs:
+                    raise RuntimeError(f"Inference logprobs required but sample {idx} has none.")
+                response_start = max(0, prompt_len - 1)
+                echoed = getattr(s, "logprobs_echoed", False)
+                aligned = list(s.inference_logprobs) if echoed else [0.0] * response_start + list(s.inference_logprobs)
+                inf_logprobs_aligned.append(aligned)
 
             if not policy_data:
                 return None

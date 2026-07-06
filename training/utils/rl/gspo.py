@@ -11,7 +11,7 @@ Example::
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 from dataclasses import dataclass
 
 import torch
@@ -84,3 +84,4 @@ def make_gspo_loss_fn(
         return result.total_loss, metrics
 
     return loss_fn
+

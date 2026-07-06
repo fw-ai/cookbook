@@ -83,24 +83,6 @@ _MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _MAX_CLOSED_SESSIONS = 10_000
 
 
-def _completion_logprobs(completion: Any) -> list[float] | None:
-    values = getattr(completion, "sampling_logprobs", None)
-    if values is None:
-        return None
-    values = list(values)
-    prompt_len = int(completion.prompt_len)
-    output_len = len(completion.full_tokens) - prompt_len
-    if getattr(completion, "logprobs_echoed", False):
-        full_len = len(completion.full_tokens)
-        if len(values) == full_len:
-            values = values[prompt_len:]
-        elif len(values) == max(0, full_len - 1):
-            values = values[max(0, prompt_len - 1):]
-    if len(values) != output_len or any(v is None for v in values):
-        return None
-    return [float(v) for v in values]
-
-
 # =============================================================================
 # 1. Session / chain state
 # =============================================================================
@@ -396,10 +378,14 @@ async def _generate(prompt_ids: list[int], s: Session, body: dict, app) -> TurnR
     c = completions[0]
     prompt_len = int(c.prompt_len)
     out_tokens = list(c.full_tokens[prompt_len:])
-    out_lp = _completion_logprobs(c)
-    if out_lp is None:
+    out_lp_raw = getattr(c, "inference_logprobs", None)
+    out_lp = list(out_lp_raw) if out_lp_raw is not None else []
+    if getattr(c, "logprobs_echoed", False) and len(out_lp) == prompt_len + len(out_tokens):
+        out_lp = out_lp[prompt_len:]
+    if len(out_lp) != len(out_tokens):
         logger.warning(
-            "[shim] sampling_logprobs/token mismatch; zeroing turn logprobs",
+            "[shim] logprob/token mismatch (%d vs %d); zeroing turn logprobs",
+            len(out_lp), len(out_tokens),
         )
         out_lp = [0.0] * len(out_tokens)
     finish = getattr(c, "finish_reason", "stop") or "stop"
