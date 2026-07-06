@@ -3,7 +3,7 @@
 Locks in the token / logprob alignment contract:
 
   * ``token_ids`` is required; missing or empty raises.
-  * ``token_ids`` and ``token_logprobs`` are filtered IN LOCKSTEP
+  * ``token_ids`` and structured ``sampling_logprob`` values are filtered IN LOCKSTEP
     when the provider emits a null placeholder, so a leading or
     middle ``None`` token doesn't shift every remaining logprob
     onto the wrong token (which would silently corrupt PPO/GRPO
@@ -17,12 +17,17 @@ import pytest
 from training.utils.rl.rollout import extract_completion
 
 
-def _choice(token_ids, token_logprobs=None, finish_reason="stop"):
+def _choice(token_ids, sampling_logprobs=None, finish_reason="stop"):
     return {
         "token_ids": token_ids,
         "logprobs": (
-            {"token_logprobs": token_logprobs}
-            if token_logprobs is not None
+            {
+                "content": [
+                    {"sampling_logprob": lp}
+                    for lp in sampling_logprobs
+                ]
+            }
+            if sampling_logprobs is not None
             else None
         ),
         "finish_reason": finish_reason,
@@ -59,7 +64,7 @@ def test_null_token_at_start_filters_logprobs_in_lockstep():
     call = extract_completion(
         _choice(
             token_ids=[None, 11, 12, 13],
-            token_logprobs=[-9.0, -0.1, -0.2, -0.3],
+            sampling_logprobs=[-9.0, -0.1, -0.2, -0.3],
         ),
         input_tokens=[1],
     )
@@ -74,7 +79,7 @@ def test_null_token_in_middle_filters_logprobs_in_lockstep():
     call = extract_completion(
         _choice(
             token_ids=[10, None, 12, 13],
-            token_logprobs=[-0.1, -9.0, -0.2, -0.3],
+            sampling_logprobs=[-0.1, -9.0, -0.2, -0.3],
         ),
         input_tokens=[1],
     )
@@ -86,7 +91,7 @@ def test_no_null_tokens_unchanged():
     call = extract_completion(
         _choice(
             token_ids=[10, 11, 12],
-            token_logprobs=[-0.1, -0.2, -0.3],
+            sampling_logprobs=[-0.1, -0.2, -0.3],
         ),
         input_tokens=[1],
     )
@@ -101,7 +106,7 @@ def test_logprob_list_padded_by_one_truncates_to_token_count():
     call = extract_completion(
         _choice(
             token_ids=[10, 11, 12],
-            token_logprobs=[-0.1, -0.2, -0.3, -0.4],  # 1 too many
+            sampling_logprobs=[-0.1, -0.2, -0.3, -0.4],  # 1 too many
         ),
         input_tokens=[1],
     )
@@ -114,7 +119,7 @@ def test_logprob_list_too_short_raises():
         extract_completion(
             _choice(
                 token_ids=[10, 11, 12],
-                token_logprobs=[-0.1],  # 2 too few
+                sampling_logprobs=[-0.1],  # 2 too few
             ),
             input_tokens=[1],
         )

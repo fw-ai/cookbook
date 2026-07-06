@@ -139,6 +139,12 @@ class TestConfigRunnerField:
 
         assert cfg.pipeline_chunks_per_step == 1
 
+    def test_config_uses_conservative_loss_defaults(self) -> None:
+        cfg = async_rl_loop.Config(log_path="gs://logs")
+
+        assert cfg.loss_path == "client"
+        assert cfg.use_rollout_logprobs is False
+
 
 def _build_service_kwargs(monkeypatch: pytest.MonkeyPatch, cfg: async_rl_loop.Config) -> dict:
     calls = []

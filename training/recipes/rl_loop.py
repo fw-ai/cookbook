@@ -10,7 +10,7 @@ then runs a single training update + ``optim_step`` (1:1 ratio).
 
 RL losses can execute in two places, picked **explicitly** by ``cfg.loss_path``:
 - ``"builtin"``: ``forward_backward(...)`` with a server-side fused kernel,
-  configured via :func:`training.utils.rl.losses.get_builtin_kernel_config`.
+  configured via :func:`training.utils.rl.losses.get_builtin_loss_config`.
 - ``"client"``: ``forward_backward_custom(...)`` with a Python loss closure
   built by :func:`training.utils.rl.losses.build_loss_fn`.
 
@@ -69,6 +69,7 @@ from training.utils import (
 from tinker_cookbook.renderers import get_text_content
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup
+from training.utils.rl.common import align_sample_logprobs_to_target_tokens
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
 import time as _time
@@ -395,6 +396,7 @@ def main(
             "completions_per_prompt": completions_per_prompt,
             "prompt_groups_per_step": prompt_groups_per_step,
             "kl_beta": cfg.kl_beta,
+            "loss_path": cfg.loss_path,
             "lr": cfg.learning_rate,
         },
     )
@@ -551,11 +553,6 @@ def main(
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
-        # Client-side fallback: build the Python loss closure used by
-        # forward_backward_custom(...) when no eligible builtin kernel exists.
-        # ``cfg`` satisfies the LossArgs Protocol via its top-level loss fields.
-        client_loss_builder = build_loss_fn(cfg)
-
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
@@ -611,6 +608,7 @@ def main(
             reference_data: List[tinker.Datum] = []
             adv_filtered: List[float] = []
             inf_logprobs_aligned: List[List[float]] = []
+            raw_inf_logprobs_aligned: List[List[float]] = []
 
             for idx, s in enumerate(sampled):
                 tokens = s.full_tokens
@@ -648,15 +646,22 @@ def main(
 
                 adv_filtered.append(advantages[idx])
 
-                if not s.inference_logprobs:
-                    raise RuntimeError(
-                        f"Inference logprobs required but sample {idx} has none. "
-                        f"Ensure the deployment returns logprobs."
-                    )
-                response_start = max(0, prompt_len - 1)
-                echoed = getattr(s, "logprobs_echoed", False)
-                aligned = list(s.inference_logprobs) if echoed else [0.0] * response_start + list(s.inference_logprobs)
-                inf_logprobs_aligned.append(aligned)
+                rollout_logprobs = align_sample_logprobs_to_target_tokens(
+                    s,
+                    attr="sampling_logprobs",
+                    source="rollout_logprobs",
+                    sample_idx=idx,
+                    required=True,
+                )
+                raw_logprobs = align_sample_logprobs_to_target_tokens(
+                    s,
+                    attr="inference_logprobs",
+                    source="raw inference logprobs",
+                    sample_idx=idx,
+                    required=False,
+                )
+                inf_logprobs_aligned.append(rollout_logprobs)
+                raw_inf_logprobs_aligned.append(raw_logprobs or [])
 
             if not policy_data:
                 return None
@@ -672,6 +677,7 @@ def main(
                 prompt_len=prompt_len,
                 rewards=rewards,
                 inf_logprobs=inf_logprobs_aligned,
+                raw_inf_logprobs=raw_inf_logprobs_aligned,
                 completion_lens=comp_lens,
                 truncated=trunc,
                 prompt=input_messages if cfg.trajectory_dir else None,
@@ -701,27 +707,40 @@ def main(
                 pg.ref_logprobs = [ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)]
                 idx += n
 
-        # Validate the user's loss_path choice against this run's config and
-        # training profile. Raises (no silent fallback) if builtin was picked
-        # in a configuration that forbids it (kl_beta > 0 or a client-only
-        # loss).
         validate_loss_path(cfg, policy_profile)
         if cfg.loss_path == "builtin":
             builtin_loss = get_builtin_loss_config(cfg)
+            client_loss_builder = None
             logger.info(
                 "policy_loss=%s loss_path=builtin (server-side loss=%s)",
-                cfg.policy_loss, builtin_loss[0],
+                cfg.policy_loss,
+                builtin_loss[0],
             )
         else:
             builtin_loss = None
+            client_loss_builder = build_loss_fn(cfg)
             logger.info(
-                "policy_loss=%s loss_path=client (forward_backward_custom; "
-                "extra forward pass for old-policy logprobs)",
+                "policy_loss=%s loss_path=client (forward_backward_custom)",
                 cfg.policy_loss,
             )
+        use_rollout_logprobs = (
+            cfg.policy_loss == "importance_sampling" and not cfg.separate_tis
+        )
+        logger.info(
+            "use_rollout_logprobs=%s (derived from policy_loss=%s separate_tis=%s)",
+            use_rollout_logprobs,
+            cfg.policy_loss,
+            cfg.separate_tis,
+        )
 
         def fwd_bwd_minibatch(
-            data, adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs,
+            data,
+            adv,
+            ref_lp,
+            prompt_lens,
+            inf_lp,
+            raw_inf_lp,
+            old_policy_logprobs,
         ):
             """One inner PPO minibatch using builtin or client-side loss path.
 
@@ -744,9 +763,18 @@ def main(
                     loss_name,
                     loss_fn_config=loss_cfg,
                 )
+
+            assert client_loss_builder is not None
             return policy.forward_backward_custom(
                 data,
-                client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, old_policy_logprobs),
+                client_loss_builder(
+                    adv,
+                    ref_lp,
+                    prompt_lens,
+                    inf_lp,
+                    old_policy_logprobs,
+                    raw_inf_lp,
+                ),
             )
 
         def train_step(
@@ -771,19 +799,26 @@ def main(
             ref_forward(prompt_groups)
             logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
 
-            data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
-            # Old-policy anchor for the IS/PPO ratio. PPO-style losses always need
-            # a trainer snapshot; importance_sampling defaults to anchoring on the
-            # inference logprobs (ratio = exp(pi - inf), TIS weight = 1) and only
-            # snapshots when separate TIS is requested. See Config.separate_tis.
-            needs_old_policy_snapshot = cfg.policy_loss != "importance_sampling" or cfg.separate_tis
-            if needs_old_policy_snapshot:
+            data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combine_prompt_groups(
+                prompt_groups,
+                include_raw=True,
+            )
+            # Historical sync-loop behavior: IS without separate TIS uses
+            # rollout_logprobs; other modes snapshot on the trainer.
+            if use_rollout_logprobs:
+                old_policy_logprobs = inf_lp
+                logger.info(
+                    "[step %d] old_policy_logprobs: using rollout_logprobs",
+                    step + 1,
+                )
+            else:
                 t0 = _time.time()
                 old_policy_fwd = policy.forward(data, "cross_entropy")
-                old_policy_logprobs = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+                old_policy_logprobs = [
+                    old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
+                    for i in range(len(data))
+                ]
                 logger.info("[step %d] old_policy_forward: done (%.1fs)", step + 1, _time.time() - t0)
-            else:
-                old_policy_logprobs = inf_lp
 
             n = len(data)
             num_minibatches = max(1, cfg.ppo_n_minibatches)
@@ -803,6 +838,7 @@ def main(
                     ref_lp[minibatch_start:minibatch_end],
                     prompt_lens[minibatch_start:minibatch_end],
                     inf_lp[minibatch_start:minibatch_end],
+                    raw_inf_lp[minibatch_start:minibatch_end],
                     old_policy_logprobs[minibatch_start:minibatch_end],
                 ))
                 logger.info(

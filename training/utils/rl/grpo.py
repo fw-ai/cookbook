@@ -8,7 +8,7 @@ corrects for the train-inference gap.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import torch
 import tinker
@@ -85,4 +85,3 @@ def make_grpo_loss_fn(
         return result.total_loss, metrics
 
     return loss_fn
-
