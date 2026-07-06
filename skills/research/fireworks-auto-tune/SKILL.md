@@ -60,10 +60,13 @@ or secret manager.
 
 ## Workflow Scope
 
-This skill covers public `firectl` account/resource help and supervised
-fine-tuning workflows. For DPO, RL/RFT/GRPO, RLHF reward-model training,
-continued pretraining, native distillation, or other training modes, say that
-the workflow needs separate guidance or Fireworks Support before execution.
+This skill covers public `firectl` account/resource help, supervised
+fine-tuning workflows, and the deployment lifecycle needed to serve, scale,
+observe, and tear down a model. For DPO, RL/RFT/GRPO, RLHF reward-model
+training, continued pretraining, native distillation, or other training modes,
+route to separate guidance or Fireworks Support. Routers, reservations, and
+deployment-shape management are outside the paved path; use the relevant
+`firectl ... --help` surface or route to Fireworks Support.
 
 ## Account And Resource Questions
 
@@ -256,6 +259,25 @@ target until HTTP 200 before running eval or reporting serving readiness.
 Choose the chat or completions endpoint to match the dataset/output shape.
 Treat early routing errors after deployment creation as transient within the
 planned readiness window. Run the readiness wait in the foreground.
+
+Inspect deployments read-only with `firectl deployment list` and
+`firectl deployment get <deployment>`.
+
+Set replica count with `firectl deployment scale <deployment>
+--replica-count N`. Set autoscaling at create or update time:
+`--min-replica-count` and `--max-replica-count` bound load-based scaling, and
+`--max-with-revocable-replica-count` fills spare capacity with revocable
+replicas the platform reclaims when it is needed elsewhere. Tune with
+`--scale-up-window`, `--scale-down-window`, `--scale-to-zero-window`, and
+`--scaling-schedules`.
+
+Read serving behavior with `firectl deployment-metrics list --metric <name>`
+(for example `load` or `latency`) before reporting readiness or scaling
+decisions.
+
+Tear down with `firectl deployment delete <deployment>`, or leave a
+scale-to-zero deployment in place. Keep teardown a foreground step and record
+the final state.
 
 ## Customer Report
 
