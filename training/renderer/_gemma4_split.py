@@ -1,7 +1,8 @@
 """Local Gemma 4 renderers with multi-turn SFT disaggregate support.
 
 Reasoning emission is history-gated (only after the final user in the
-rendered prefix, and only with ``tool_calls``), matching the official jinja.
+rendered prefix). ``gemma4`` matches official jinja (``tool_calls`` required);
+``gemma4_thinking`` also supervises plain ``reasoning_content`` turns.
 A naive full-transcript render therefore drops reasoning for earlier assistant
 tool turns while still weighting their tokens — the same failure mode Qwen3/GLM5
 hit before ``DisaggregateMultiTurnMixin``.
