@@ -234,6 +234,26 @@ def compute_step_metrics(
         for k, v in accum.items():
             metrics[f"train/{k}"] = v / n
 
+        # Per-step KLD diagnostics on a clean one-point-per-optimizer-step
+        # axis.  In async pipeline mode each optimizer step accumulates a
+        # variable number of fwd/bwd chunks (the scheduler flushes ready
+        # prompt groups instead of waiting to fill a chunk), and the
+        # per-chunk ``train/inference_kld`` lands many noisy partial-batch
+        # points on the ``train/step`` axis.  These ``kld/*`` keys are not
+        # ``train/``-prefixed so they survive the recipe's ``train/`` wandb
+        # filter and let us separate a real per-step drift (mean rising)
+        # from a single-chunk spike artifact (max >> mean).
+        kld_chunk_vals = [
+            r.metrics["inference_kld"]
+            for r in fwd_bwd_results
+            if getattr(r, "metrics", None) and "inference_kld" in r.metrics
+        ]
+        if kld_chunk_vals:
+            metrics["kld/inference_step_mean"] = sum(kld_chunk_vals) / len(kld_chunk_vals)
+            metrics["kld/inference_step_max"] = max(kld_chunk_vals)
+            metrics["kld/inference_step_min"] = min(kld_chunk_vals)
+            metrics["kld/chunks_per_step"] = len(kld_chunk_vals)
+
     all_rewards: list[float] = []
     all_comp_lens: list[int] = []
     all_truncated: list[bool] = []
