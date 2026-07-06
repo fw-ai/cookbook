@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from typing import TYPE_CHECKING, Callable, Dict, List, Tuple, Union
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 import torch
 import tinker
@@ -214,6 +218,34 @@ def run_loss_loop(
         inf_log_diff = active_pi - active_inf
         total_inf_diff += inf_log_diff.abs().mean().item()
         total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
+        # KLD-debug: per-token divergence dump. Zero-KLD chases need to know
+        # WHICH tokens diverged (position vs the indexer top-k boundary at
+        # 2048, spread vs localized) to attribute the mechanism; the aggregate
+        # k3 can't. Fires only when a datum actually diverges, so healthy runs
+        # log nothing. Positions are absolute (prompt + response offset).
+        if inf_log_diff.abs().max().item() > 1e-9:
+            bad = (inf_log_diff.abs() > 1e-9).nonzero(as_tuple=True)[0]
+            active_positions = active.nonzero(as_tuple=True)[0]
+            n_show = min(64, bad.numel())
+            details = []
+            for t in bad[:n_show].tolist():
+                rpos = int(active_positions[t].item())
+                details.append(
+                    f"(resp_pos={rpos} abs_pos={response_start + rpos} "
+                    f"pi={active_pi[t].item():.6f} inf={active_inf[t].item():.6f} "
+                    f"d={inf_log_diff[t].item():+.6f})"
+                )
+            logger.warning(
+                "[KLD_TOKEN_DUMP] datum=%d resp_len=%d response_start=%d "
+                "divergent_tokens=%d/%d max|d|=%.3e first64=%s",
+                i,
+                resp_len,
+                response_start,
+                bad.numel(),
+                active_count,
+                inf_log_diff.abs().max().item(),
+                " ".join(details),
+            )
         ppo_log_diff = active_pi - active_prox
         total_ppo_kl += (torch.exp(ppo_log_diff) - ppo_log_diff - 1.0).mean().item()
         if ref_lp:
