@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -12,7 +14,10 @@ from training.utils.losses import (
     make_orpo_loss_fn,
     make_sft_loss_fn,
 )
-from training.utils.rl.common import _normalize_prompt_lens
+from training.utils.rl.common import (
+    _normalize_prompt_lens,
+    align_sample_logprobs_to_target_tokens,
+)
 from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.client_losses import CLIENT_LOSSES
 from training.utils.rl.losses import (
@@ -46,6 +51,72 @@ class TestNormalizePromptLens:
             _normalize_prompt_lens([1, 2], 3)
 
 
+class TestAlignSampleLogprobs:
+    def test_pads_completion_logprobs_to_target_tokens(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            sampling_logprobs=[-0.5, -0.6],
+        )
+
+        assert align_sample_logprobs_to_target_tokens(
+            sampled,
+            attr="sampling_logprobs",
+            source="rollout_logprobs",
+            sample_idx=0,
+            required=True,
+        ) == [0.0, 0.0, -0.5, -0.6]
+
+    def test_accepts_echoed_logprobs_already_target_aligned(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            sampling_logprobs=[-1.0, -1.1, -0.5, -0.6],
+            logprobs_echoed=True,
+        )
+
+        assert align_sample_logprobs_to_target_tokens(
+            sampled,
+            attr="sampling_logprobs",
+            source="rollout_logprobs",
+            sample_idx=0,
+            required=True,
+        ) == [-1.0, -1.1, -0.5, -0.6]
+
+    def test_rejects_non_completion_only_logprobs(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            sampling_logprobs=[-9.0, -9.0, -9.0, -0.5, -0.6],
+        )
+
+        with pytest.raises(RuntimeError, match="expected 2 completion logprobs"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="sampling_logprobs",
+                source="rollout_logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
+    def test_rejects_misaligned_echoed_logprobs(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            sampling_logprobs=[-0.5, -0.6],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="expected 4 target-aligned logprobs"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="sampling_logprobs",
+                source="rollout_logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
+
 class TestLossBuilder:
     def test_rejects_unknown_policy_loss(self):
         # ``LossConfig`` is typed against the ``PolicyLoss`` Literal; cast to
@@ -58,13 +129,20 @@ class TestLossBuilder:
         builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.01))
         loss_fn = builder([1.0], [_zeros(4)], [2], [[]], [_zeros(4)])
 
-        with pytest.raises(ValueError, match="GRPO requires inference logprobs"):
+        with pytest.raises(ValueError, match="GRPO requires rollout_logprobs"):
             loss_fn([], [_make_dummy_logprobs(4, seed=0)])
 
     def test_client_only_loss_registration_uses_custom_path(self, monkeypatch):
         events: dict[str, object] = {}
 
-        def fake_factory(args, advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs):
+        def fake_factory(
+            args,
+            advantages,
+            ref_logprobs,
+            prompt_lens,
+            inf_logprobs,
+            old_policy_logprobs,
+        ):
             events["call"] = {
                 "advantages": advantages,
                 "prompt_lens": prompt_lens,
@@ -92,8 +170,9 @@ class TestLossBuilder:
 class TestBuiltinLossConfig:
     def test_grpo_preserves_zero_upper_clip_bound(self):
         kernel, config = get_builtin_loss_config(
-            LossConfig(policy_loss="grpo", loss_path="builtin",
-                       eps_clip=0.2, eps_clip_high=0.0),
+            LossConfig(
+                policy_loss="grpo", loss_path="builtin", eps_clip=0.2, eps_clip_high=0.0
+            ),
         )
 
         assert kernel == "ppo"
@@ -103,7 +182,8 @@ class TestBuiltinLossConfig:
     def test_gspo_preserves_zero_clip_bounds(self):
         kernel, config = get_builtin_loss_config(
             LossConfig(
-                policy_loss="gspo", loss_path="builtin",
+                policy_loss="gspo",
+                loss_path="builtin",
                 gspo=GSPOConfig(clip_ratio_low=0.0, clip_ratio_high=0.0),
             ),
         )
@@ -114,8 +194,11 @@ class TestBuiltinLossConfig:
 
     def test_importance_sampling_uses_ratio_log_cap(self):
         kernel, config = get_builtin_loss_config(
-            LossConfig(policy_loss="importance_sampling", loss_path="builtin",
-                       ratio_log_cap=7.5),
+            LossConfig(
+                policy_loss="importance_sampling",
+                loss_path="builtin",
+                ratio_log_cap=7.5,
+            ),
         )
 
         assert kernel == "importance_sampling"
@@ -133,7 +216,7 @@ class TestBuiltinLossConfig:
             token_mask=[0, 1, 1, 1],
         ).datum
 
-        with pytest.raises(ValueError, match="GRPO requires inference logprobs"):
+        with pytest.raises(ValueError, match="GRPO requires rollout_logprobs"):
             build_builtin_loss_datums(
                 [datum],
                 [1.0],
@@ -142,6 +225,28 @@ class TestBuiltinLossConfig:
                 [2],
                 policy_loss="grpo",
             )
+
+    def test_raw_logprobs_drive_inference_kld_observability_only(self):
+        datum = build_datum_from_token_mask(
+            token_ids=[10, 11, 12, 13],
+            token_mask=[0, 1, 1, 1],
+        ).datum
+        builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.0))
+        loss_fn = builder(
+            [1.0],
+            [[0.0, 0.0, 0.0]],
+            [2],
+            [[-9.0, -9.0, -9.0]],
+            [[-0.1, -0.2, -0.3]],
+            [[-1.0, -2.0, -3.0]],
+        )
+        _loss, metrics = loss_fn(
+            [datum],
+            [torch.tensor([-1.0, -2.0, -3.0], requires_grad=True)],
+        )
+
+        assert metrics["inference_kld"] == pytest.approx(0.0)
+        assert metrics["inference_diff"] == pytest.approx(0.0)
 
 
 class TestKLBetaRoutesToClientSide:
@@ -246,10 +351,14 @@ class TestBatchDPOLoss:
         expected_avg = (loss0 + loss1) / 2
 
         fn_batch = make_batch_dpo_loss_fn(
-            [ref_c0, ref_c1], [ref_r0, ref_r1], [rs0, rs1], beta,
+            [ref_c0, ref_c1],
+            [ref_r0, ref_r1],
+            [rs0, rs1],
+            beta,
         )
         loss_b, met_b = fn_batch(
-            [], [lp_c0.clone(), lp_r0.clone(), lp_c1.clone(), lp_r1.clone()],
+            [],
+            [lp_c0.clone(), lp_r0.clone(), lp_c1.clone(), lp_r1.clone()],
         )
 
         assert torch.allclose(expected_avg, loss_b, atol=1e-5)
@@ -374,7 +483,10 @@ class TestDPOResponseStartOffByOne:
         response_start = 2
 
         loss_fn = make_batch_dpo_loss_fn(
-            [ref_chosen], [ref_rejected], [response_start], beta=0.1,
+            [ref_chosen],
+            [ref_rejected],
+            [response_start],
+            beta=0.1,
         )
         _, metrics = loss_fn([None, None], [chosen_logprobs, rejected_logprobs])
 
@@ -396,20 +508,25 @@ class TestDPOResponseStartOffByOne:
         response_start = 2
 
         dpo_loss = make_batch_dpo_loss_fn(
-            [ref_chosen], [ref_rejected], [response_start], beta=0.1,
+            [ref_chosen],
+            [ref_rejected],
+            [response_start],
+            beta=0.1,
         )
         _, dpo_metrics = dpo_loss(
-            [None, None], [chosen_logprobs.clone(), rejected_logprobs.clone()],
+            [None, None],
+            [chosen_logprobs.clone(), rejected_logprobs.clone()],
         )
 
         orpo_loss = make_batch_orpo_loss_fn([response_start], orpo_lambda=1.0)
         _, orpo_metrics = orpo_loss(
-            [None, None], [chosen_logprobs.clone(), rejected_logprobs.clone()],
+            [None, None],
+            [chosen_logprobs.clone(), rejected_logprobs.clone()],
         )
 
-        assert orpo_metrics["log_odds_ratio"] > 0.0, (
-            "Sanity check: ORPO should prefer chosen; if this fails, the test setup is wrong."
-        )
+        assert (
+            orpo_metrics["log_odds_ratio"] > 0.0
+        ), "Sanity check: ORPO should prefer chosen; if this fails, the test setup is wrong."
         assert dpo_metrics["accuracy"] == orpo_metrics["accuracy"], (
             f"DPO and ORPO disagree on preferred direction "
             f"(dpo_acc={dpo_metrics['accuracy']}, orpo_acc={orpo_metrics['accuracy']}). "

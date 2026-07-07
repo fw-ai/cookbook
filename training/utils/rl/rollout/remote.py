@@ -264,7 +264,7 @@ def _pack_token_native(
                     f"assistant turn needs per-token logprobs aligned with "
                     f"token_ids (got {0 if t.logprobs is None else len(t.logprobs)} "
                     f"for {n} tokens)",
-                )
+            )
             lp = [float(x) for x in t.logprobs]
             mask = [1] * n
         else:

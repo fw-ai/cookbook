@@ -737,7 +737,8 @@ def _sample_kwargs(
         "prompt_len": prompt_len,
         "completion_len": max(0, len(tokens) - prompt_len),
         "finish_reason": "stop",
-        "inference_logprobs": [-0.1] * max(0, len(tokens) - prompt_len),
+        "sampling_logprobs": [-0.1] * max(0, len(tokens) - prompt_len),
+        "inference_logprobs": None,
         "logprobs_echoed": False,
     }
 
@@ -811,6 +812,7 @@ class _FakeScoringSampler:
                 completion_len=len(completion_tokens),
                 finish_reason="stop",
                 inference_logprobs=None,
+                sampling_logprobs=None,
                 logprobs_echoed=False,
             )
         ]

@@ -950,7 +950,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.0a83"
+version = "1.2.0a87"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -962,9 +962,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4d/ec/65abe0d3805cb1d3772b9d5056045aa7c58e11968727a96c66a5fb01b195/fireworks_ai-1.2.0a83.tar.gz", hash = "sha256:00dff422804114e99aed35090593cdd3d73e73a8ab4b99eed6b3972303278591", size = 437669 }
+sdist = { url = "https://files.pythonhosted.org/packages/c2/79/0c36da1401aa9ea056f57e4458a02656a5135a98aa432144a4fbae3e4ead/fireworks_ai-1.2.0a87.tar.gz", hash = "sha256:e079ea5b593579b7488688c9eab281355a4b3cacf07e1a8253fab7e62d55b0a9", size = 454697 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/21/80/90599e1ae0f1b305376ca5d2b47365cab398b8c274b34a2995f5f3da1e93/fireworks_ai-1.2.0a83-py3-none-any.whl", hash = "sha256:e1f8cafe3ef25eb9a28d4720c589627562dde1d52a44861ca12e7191cd63f823", size = 517478 },
+    { url = "https://files.pythonhosted.org/packages/b5/78/c0aa9d548a23565ae935e56f247709ba22bef09bde728330b1f8a2ce91a3/fireworks_ai-1.2.0a87-py3-none-any.whl", hash = "sha256:9e808be0efe4f34cf1f2be76835a2bbf7761188c19eb5c56c6d6c7aefc663fb4", size = 536109 },
 ]
 
 [package.optional-dependencies]
@@ -976,6 +976,7 @@ training = [
     { name = "tinker" },
     { name = "torch" },
     { name = "transformers" },
+    { name = "urllib3" },
     { name = "wandb" },
 ]
 
@@ -1015,7 +1016,7 @@ eval = [
 requires-dist = [
     { name = "datasets" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = ">=0.3.23" },
-    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.0a83,<2" },
+    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.0a87,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "math-verify", marker = "extra == 'dev'" },
     { name = "numpy" },
@@ -3563,7 +3564,7 @@ wheels = [
 
 [[package]]
 name = "tinker"
-version = "0.22.2"
+version = "0.22.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -3581,9 +3582,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ec/4c/e0b17d8f61f476305dd6f0191da10df03a960b54cf6eab48e36f41cf0285/tinker-0.22.2.tar.gz", hash = "sha256:bbff1b9f6b89883670324c5f60723dc1aaafdb03816a316d58596cd8564261c2", size = 245907 }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/82/885106bfbd0167990421d6e8ea8e8dac65ba4e1cde202d839f6d26a15fc0/tinker-0.22.7.tar.gz", hash = "sha256:6c89029cb2dda35113d477f6ddec6f92ad7220801b851928a20e40722c7d97c5", size = 250032 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/df/81ad472a1b684f0844ff247a304ce9f492eee894df5b4416adbcc3277692/tinker-0.22.2-py3-none-any.whl", hash = "sha256:471844d48ea683b1d8410e48e0c221ac259def6dcd6f9b713c2f45dca4d0ab7e", size = 232062 },
+    { url = "https://files.pythonhosted.org/packages/dd/48/0e6b4c4e7e2865dd42bda807f579eff302e8b2d4185d59aab6091afdba24/tinker-0.22.7-py3-none-any.whl", hash = "sha256:82248aec9575d95c4f12c82884e285659af891ef8565f0f92da80710f17d9ae2", size = 234982 },
 ]
 
 [[package]]

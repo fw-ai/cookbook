@@ -37,7 +37,6 @@ from training.examples.rl.frozen_lake.frozen_lake_schema import (
     FROZEN_LAKE_TOOLS,
     TOOL_NAME_LAKE_MOVE,
     normalize_parsed_tool_call,
-    parse_first_frozen_lake_tool_call,
     parse_first_frozen_lake_tool_call_with_content,
     parse_tool_call_with_fallback,
 )
@@ -535,9 +534,28 @@ class FireworksV1ImageCompletionsClient:
         completion_logprobs: List[float] = []
         choice_logprobs = choice.get("logprobs")
         if isinstance(choice_logprobs, dict):
-            token_logprobs = choice_logprobs.get("token_logprobs") or []
-            completion_logprobs = [float(lp) if lp is not None else 0.0 for lp in token_logprobs]
+            content = choice_logprobs.get("content")
+            if isinstance(content, list) and content:
+                sampling_logprobs = [
+                    item.get("sampling_logprob") for item in content
+                ]
+                if any(lp is None for lp in sampling_logprobs):
+                    raise ValueError(
+                        "Fireworks /v1/completions response included null "
+                        "sampling_logprob for generated tokens"
+                    )
+                completion_logprobs = [float(lp) for lp in sampling_logprobs]
+            else:
+                raise ValueError(
+                    "Fireworks /v1/completions response missing "
+                    "logprobs.content[].sampling_logprob"
+                )
             completion_logprobs = completion_logprobs[: len(completion_token_ids)]
+        elif completion_token_ids:
+            raise ValueError(
+                "Fireworks /v1/completions response missing logprobs for "
+                "generated tokens"
+            )
 
         if self.tool_call_parser is not None:
             parsed_output = self.tool_call_parser(completion_text, completion_token_ids, active_tools)
