@@ -296,7 +296,7 @@ def evaluation_row_to_training_data(
     datum = rendered.datum
     model_input_len = len(rendered.token_ids) - 1
 
-    # Reconstruct inference logprobs aligned to the full sequence.
+    # Reconstruct rollout_logprobs aligned to the full sequence.
     # Pad prompt positions with 0.0, then fill in per-turn completion logprobs.
     inf_logprobs = [0.0] * model_input_len
 
@@ -335,21 +335,22 @@ def evaluation_row_to_rollout_sample(row: EvaluationRow) -> RolloutSample | None
     ui_token_mask = build_ui_token_mask(spans, len(full_tokens))
     loss_mask = [1 if int(m) > 0 else 0 for m in ui_token_mask]
 
-    # RolloutSample.logprobs are token-aligned. Non-generated tokens keep 0.0;
-    # generated token logprobs are copied from each turn's completion payload.
-    token_logprobs = [0.0] * len(full_tokens)
+    # RolloutSample.logprobs are token-aligned rollout_logprobs.
+    # Non-generated tokens keep 0.0; generated token logprobs are copied from
+    # each turn's completion payload.
+    rollout_logprobs = [0.0] * len(full_tokens)
     for trace in token_turn_traces:
         turn_prompt_len = len(trace.get("prompt_ids") or [])
         turn_completion_logprobs = trace.get("completion_logprobs") or []
         for i, lp in enumerate(turn_completion_logprobs):
             pos = turn_prompt_len + i
-            if pos < len(token_logprobs):
-                token_logprobs[pos] = float(lp)
+            if pos < len(rollout_logprobs):
+                rollout_logprobs[pos] = float(lp)
 
     episode_reward = 1.0 if step_rewards and float(step_rewards[-1]) > 0 else 0.0
     return RolloutSample(
         tokens=full_tokens,
-        logprobs=token_logprobs,
+        logprobs=rollout_logprobs,
         loss_mask=loss_mask,
         reward=episode_reward,
         finish_reason=str(row.execution_metadata.finish_reason or "stop"),

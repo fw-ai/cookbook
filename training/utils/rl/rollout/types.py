@@ -53,9 +53,10 @@ class RolloutSample:
     The three parallel lists MUST have identical length.  ``loss_mask``
     is ``1`` on assistant-generated positions (trained on) and ``0``
     everywhere else (prompt, user messages, tool responses, env feedback
-    injected between turns).  ``logprobs`` is the per-token inference
-    logprob aligned with ``tokens``; use ``0.0`` on non-generated
-    positions since they carry no training signal.
+    injected between turns).  ``logprobs`` carries per-token
+    ``rollout_logprobs`` after sampling temperature/masks, aligned with
+    ``tokens``; use ``0.0`` on non-generated positions since they carry no
+    training signal.
     """
 
     tokens: List[int]
@@ -79,6 +80,13 @@ class RolloutSample:
     text: str = ""
     """Decoded assistant output.  For logging only; not consumed by the
     adapter or the trainer."""
+    raw_logprobs: List[float] | None = None
+    """Optional raw model logprobs aligned with ``tokens`` for observability.
+
+    ``logprobs`` remains the rollout/sampling logprob source used by loss
+    ratios and TIS.  When present, ``raw_logprobs`` is packed into
+    ``PromptGroup.raw_inf_logprobs`` for ``train/inference_*`` metrics only.
+    """
 
 
 @dataclass
@@ -110,12 +118,19 @@ def _completion_tokens_from_sample(sample: RolloutSample) -> List[int]:
 
 
 def _completion_logprobs_from_sample(sample: RolloutSample) -> List[float]:
-    """Return per-completion inference logprobs (``loss_mask==1``)."""
+    """Return per-completion ``rollout_logprobs`` (``loss_mask==1``)."""
     return [float(lp) for lp, m in zip(sample.logprobs, sample.loss_mask) if m > 0]
 
 
+def _completion_raw_logprobs_from_sample(sample: RolloutSample) -> List[float] | None:
+    """Return per-completion raw logprobs when present."""
+    if sample.raw_logprobs is None:
+        return None
+    return [float(lp) for lp, m in zip(sample.raw_logprobs, sample.loss_mask) if m > 0]
+
+
 def _align_multimodal_inf_logprobs(
-    sample: RolloutSample,
+    completion_lps: List[float],
     shifted_weights: List[float],
 ) -> List[float]:
     """Map text-only inference logprobs into datum ``weights`` index space.
@@ -125,7 +140,6 @@ def _align_multimodal_inf_logprobs(
     ``prompt_lens`` in that same index space, so the parallel text-only
     ``sample.logprobs[1:]`` must be scattered onto weight==1 positions.
     """
-    completion_lps = _completion_logprobs_from_sample(sample)
     active_indices = [i for i, w in enumerate(shifted_weights) if w > 0]
     if len(completion_lps) != len(active_indices):
         raise ValueError(
@@ -168,6 +182,15 @@ def _validate_segment(
     segment_index: int,
     segment: RolloutSample,
 ) -> None:
+    def _validate_optional_logprobs(values: List[float] | None, *, n: int) -> None:
+        if values is not None and len(values) != n:
+            raise ValueError(
+                f"Run {run_index} segment {segment_index}: "
+                "raw_logprobs length mismatch "
+                f"({len(values)} / {n}). When set, raw_logprobs must align "
+                "with tokens."
+            )
+
     if segment.prompt_model_input is not None:
         n = len(segment.tokens)
         if len(segment.logprobs) != n or len(segment.loss_mask) != n:
@@ -176,6 +199,7 @@ def _validate_segment(
                 "tokens/logprobs/loss_mask mismatch "
                 f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)})."
             )
+        _validate_optional_logprobs(segment.raw_logprobs, n=n)
         if n < 2:
             raise ValueError(
                 f"Run {run_index} segment {segment_index}: tokens must have "
@@ -201,6 +225,7 @@ def _validate_segment(
             f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)}). "
             "All three lists must be the same length.",
         )
+    _validate_optional_logprobs(segment.raw_logprobs, n=n)
     if n < 2:
         raise ValueError(
             f"Run {run_index} segment {segment_index}: tokens must have "
@@ -272,6 +297,7 @@ def rollout_to_prompt_group(
     policy_data: List[tinker.Datum] = []
     reference_data: List[tinker.Datum] = []
     inf_logprobs_aligned: List[List[float]] = []
+    raw_inf_logprobs_aligned: List[List[float]] = []
     completion_lens: List[int] = []
     truncated: List[bool] = []
     per_sample_prompt_lens: List[int] = []
@@ -296,7 +322,15 @@ def rollout_to_prompt_group(
                 target_mask = [
                     float(x) for x in datum.loss_fn_inputs["weights"].data
                 ]
-                target_logprobs = _align_multimodal_inf_logprobs(s, target_mask)
+                target_logprobs = _align_multimodal_inf_logprobs(
+                    _completion_logprobs_from_sample(s), target_mask,
+                )
+                completion_raw_logprobs = _completion_raw_logprobs_from_sample(s)
+                target_raw_logprobs = (
+                    _align_multimodal_inf_logprobs(completion_raw_logprobs, target_mask)
+                    if completion_raw_logprobs is not None
+                    else []
+                )
 
                 # ``run_loss_loop`` uses ``response_start = prompt_len - 1`` on
                 # shifted datum weights.  The text path records the first active
@@ -329,6 +363,7 @@ def rollout_to_prompt_group(
                     ))
 
                 inf_logprobs_aligned.append(target_logprobs)
+                raw_inf_logprobs_aligned.append(target_raw_logprobs)
                 completion_lens.append(sum(1 for w in target_mask if w > 0))
                 truncated.append(s.finish_reason == "length")
                 continue
@@ -339,6 +374,7 @@ def rollout_to_prompt_group(
             target_tokens = s.tokens[1:]
             target_mask = s.loss_mask[1:]
             target_logprobs = s.logprobs[1:]
+            target_raw_logprobs = s.raw_logprobs[1:] if s.raw_logprobs is not None else []
 
             # Per-segment prompt boundary: index of the first assistant
             # (loss_mask=1) token.  Heterogeneous rollouts (multi-turn,
@@ -387,6 +423,7 @@ def rollout_to_prompt_group(
                 ))
 
             inf_logprobs_aligned.append(target_logprobs)
+            raw_inf_logprobs_aligned.append(target_raw_logprobs)
             completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
             truncated.append(s.finish_reason == "length")
 
@@ -400,6 +437,7 @@ def rollout_to_prompt_group(
         prompt_len=per_sample_prompt_lens[0],
         rewards=rewards,
         inf_logprobs=inf_logprobs_aligned,
+        raw_inf_logprobs=raw_inf_logprobs_aligned,
         completion_lens=completion_lens,
         truncated=truncated,
         prompt=None,

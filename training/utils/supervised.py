@@ -111,6 +111,11 @@ def resolve_renderer_name(
         return "nemotron3"
     if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
         return "minimax_m2"
+    # MiniMax-M3 keeps M2's chat template / tool format (the shape CI passes
+    # renderer_name=minimax_m2 for it); reuse the minimax_m2 renderer -- same
+    # alias pattern as kimi-k2.5 -> Kimi-K2.6 above.
+    if "minimax-m3" in normalized_model_name or "minimax_m3" in normalized_model_name:
+        return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only

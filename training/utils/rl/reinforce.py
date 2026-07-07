@@ -6,7 +6,7 @@ without PPO-style clipping or TIS decomposition.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import torch
 import tinker
@@ -35,7 +35,7 @@ def make_reinforce_loss_fn(
         advantages: Per-sample advantage values.
         ref_logprobs: Per-sample reference log-probability sequences.
         prompt_lens: Prompt token length(s); scalar broadcasts to all samples.
-        inf_logprobs: Per-sample inference deployment log-probabilities.
+        inf_logprobs: Per-sample ``rollout_logprobs``.
         old_policy_logprobs: Per-sample old-policy forward-pass log-probabilities.
         kl_beta: KL penalty coefficient (0 disables KL term).
         tis_config: TIS weight configuration.
@@ -91,4 +91,3 @@ def make_reinforce_loss_fn(
         return result.total_loss, metrics
 
     return loss_fn
-

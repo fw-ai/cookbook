@@ -351,25 +351,33 @@ def _normalize_completions_api_base(inference_base_url: str) -> str:
     return f"{base}/inference/v1"
 
 
-def _extract_structured_choice_logprobs(choice: dict[str, Any]) -> List[float] | None:
+def _extract_structured_choice_logprobs(
+    choice: dict[str, Any],
+    *,
+    field: str,
+) -> List[float] | None:
     lp_data = choice.get("logprobs")
     if not lp_data or not isinstance(lp_data, dict):
         return None
     content = lp_data.get("content")
     if isinstance(content, list) and content:
-        return [float(tok.get("logprob", 0.0)) for tok in content]
+        values: List[float] = []
+        for tok in content:
+            value = tok.get(field)
+            if value is None:
+                return None
+            else:
+                values.append(float(value))
+        return values
     return None
 
 
 def _extract_completions_choice_logprobs(choice: dict[str, Any]) -> List[float] | None:
-    """Extract completion logprobs from a ``/v1/completions`` choice."""
-    lp_data = choice.get("logprobs")
-    if not isinstance(lp_data, dict):
-        return None
-    token_logprobs = lp_data.get("token_logprobs")
-    if isinstance(token_logprobs, list) and token_logprobs:
-        return [float(lp) if lp is not None else 0.0 for lp in token_logprobs]
-    return _extract_structured_choice_logprobs(choice)
+    """Extract completion rollout logprobs from a ``/v1/completions`` choice."""
+    return _extract_structured_choice_logprobs(
+        choice,
+        field="sampling_logprob",
+    )
 
 
 def _parse_vision_completions_payload(payload: dict[str, Any]) -> VisionCompletionsResult:
@@ -405,7 +413,7 @@ def _parse_vision_completions_payload(payload: dict[str, Any]) -> VisionCompleti
         raise RuntimeError("completions response missing completion token_ids")
     if completion_logprobs is None:
         raise RuntimeError(
-            "completions response missing per-token logprobs; pass logprobs=True"
+            "completions response missing per-token sampling_logprob; pass logprobs=True"
         )
 
     prompt_token_ids = [int(x) for x in prompt_ids]
@@ -415,7 +423,7 @@ def _parse_vision_completions_payload(payload: dict[str, Any]) -> VisionCompleti
         completion_logprobs = completion_logprobs[-len(completion_token_ids) :]
     if len(completion_logprobs) != len(completion_token_ids):
         raise RuntimeError(
-            "completions logprobs misaligned with completion_token_ids "
+            "completions sampling_logprobs misaligned with completion_token_ids "
             f"(got {len(completion_logprobs)} logprobs, "
             f"{len(completion_token_ids)} tokens)"
         )
@@ -423,10 +431,57 @@ def _parse_vision_completions_payload(payload: dict[str, Any]) -> VisionCompleti
     return VisionCompletionsResult(
         prompt_token_ids=prompt_token_ids,
         completion_token_ids=completion_token_ids,
-        completion_logprobs=completion_logprobs,
+        completion_logprobs=[float(lp) for lp in completion_logprobs],
         finish_reason=finish_reason,
         text=text,
     )
+
+
+def _completion_logprobs_from_sampled_completion(
+    completion: Any,
+    *,
+    prompt_len: int,
+    completion_len: int,
+    attr: str,
+    source: str,
+    required: bool,
+) -> List[float] | None:
+    """Return completion-only logprobs from a SDK ``SampledCompletion``."""
+    raw_values = getattr(completion, attr, None)
+    if raw_values is None or not raw_values:
+        if required:
+            logger.warning(
+                "single_turn_renderer_rollout: dropping completion with no %s. "
+                "Configure logprobs=True.",
+                source,
+            )
+        return None
+
+    values = list(raw_values)
+    if bool(getattr(completion, "logprobs_echoed", False)):
+        full_len = prompt_len + completion_len
+        if len(values) == full_len:
+            values = values[prompt_len:]
+        elif len(values) == max(0, full_len - 1):
+            values = values[max(0, prompt_len - 1):]
+
+    if len(values) != completion_len:
+        logger.warning(
+            "single_turn_renderer_rollout: dropping %s logprobs with "
+            "misaligned length (got %d, expected %d assistant tokens).",
+            source,
+            len(values),
+            completion_len,
+        )
+        return None
+    if any(v is None for v in values):
+        logger.warning(
+            "single_turn_renderer_rollout: dropping completion with null %s "
+            "for generated tokens.",
+            source,
+        )
+        return None
+    return [float(v) for v in values]
 
 
 async def sample_vision_completion(
@@ -481,6 +536,7 @@ def _build_text_only_rollout_sample(
     prompt_token_ids: List[int],
     completion_tokens: List[int],
     completion_logprobs: List[float],
+    raw_completion_logprobs: List[float] | None = None,
     logprobs_echoed: bool,
     reward: float,
     finish_reason: str,
@@ -496,6 +552,11 @@ def _build_text_only_rollout_sample(
         reward=float(reward),
         finish_reason=finish_reason,
         text=text,
+        raw_logprobs=(
+            [0.0] * len(prompt_token_ids) + raw_completion_logprobs
+            if raw_completion_logprobs is not None
+            else None
+        ),
     )
     return RolloutRun(segments=[sample])
 
@@ -505,6 +566,7 @@ def _build_multimodal_rollout_sample(
     prompt_model_input: tinker.ModelInput,
     completion_tokens: List[int],
     completion_logprobs: List[float],
+    raw_completion_logprobs: List[float] | None = None,
     reward: float,
     finish_reason: str,
     text: str,
@@ -517,6 +579,11 @@ def _build_multimodal_rollout_sample(
             "multimodal completion logprobs misaligned "
             f"(got {len(completion_logprobs)}, expected {len(completion)})"
         )
+    if raw_completion_logprobs is not None and len(raw_completion_logprobs) != len(completion):
+        raise ValueError(
+            "multimodal raw completion logprobs misaligned "
+            f"(got {len(raw_completion_logprobs)}, expected {len(completion)})"
+        )
     sample = RolloutSample(
         tokens=text_tokens,
         logprobs=[0.0] * len(prompt_text_ids) + list(completion_logprobs),
@@ -525,6 +592,11 @@ def _build_multimodal_rollout_sample(
         finish_reason=finish_reason,
         text=text,
         prompt_model_input=prompt_model_input,
+        raw_logprobs=(
+            [0.0] * len(prompt_text_ids) + list(raw_completion_logprobs)
+            if raw_completion_logprobs is not None
+            else None
+        ),
     )
     return RolloutRun(segments=[sample])
 
@@ -681,36 +753,35 @@ async def single_turn_renderer_rollout(
         out_tokens: List[int] = list(c.full_tokens[prompt_len:])
         if not out_tokens:
             return None
-        out_logprobs_raw = getattr(c, "inference_logprobs", None)
-        if out_logprobs_raw is None:
-            logger.warning(
-                "single_turn_renderer_rollout: dropping multimodal completion "
-                "with no inference_logprobs (got None). Configure logprobs=True."
-            )
+        out_logprobs = _completion_logprobs_from_sampled_completion(
+            c,
+            prompt_len=prompt_len,
+            completion_len=len(out_tokens),
+            attr="sampling_logprobs",
+            source="sampling_logprobs",
+            required=True,
+        )
+        if out_logprobs is None:
             return None
+        raw_out_logprobs = _completion_logprobs_from_sampled_completion(
+            c,
+            prompt_len=prompt_len,
+            completion_len=len(out_tokens),
+            attr="inference_logprobs",
+            source="raw inference logprobs",
+            required=False,
+        )
 
         parsed_message, parse_success = renderer.parse_response(out_tokens)
         reward = await _maybe_await(reward_fn(row, parsed_message, bool(parse_success)))
         if reward is None:
             return None
 
-        out_logprobs = list(out_logprobs_raw)
-        if bool(getattr(c, "logprobs_echoed", False)) and len(out_logprobs) == (
-            prompt_len + len(out_tokens)
-        ):
-            out_logprobs = out_logprobs[prompt_len:]
-        if len(out_logprobs) != len(out_tokens):
-            logger.warning(
-                "single_turn_renderer_rollout: dropping multimodal completion with "
-                "misaligned logprobs (got %d, expected %d for assistant tokens).",
-                len(out_logprobs), len(out_tokens),
-            )
-            return None
-
         return _build_multimodal_rollout_sample(
             prompt_model_input=model_input,
             completion_tokens=out_tokens,
             completion_logprobs=out_logprobs,
+            raw_completion_logprobs=raw_out_logprobs,
             reward=reward,
             finish_reason=getattr(c, "finish_reason", "stop"),
             text=getattr(c, "text", ""),
@@ -728,38 +799,35 @@ async def single_turn_renderer_rollout(
     out_tokens: List[int] = list(c.full_tokens[prompt_len:])
     if not out_tokens:
         return None
-    out_logprobs_raw = getattr(c, "inference_logprobs", None)
-    if out_logprobs_raw is None:
-        logger.warning(
-            "single_turn_renderer_rollout: dropping completion with "
-            "no inference_logprobs (got None).  Configure the sampler "
-            "with logprobs=True so PPO/GRPO ratio/KL math sees real "
-            "behavior-policy probabilities."
-        )
+    out_logprobs = _completion_logprobs_from_sampled_completion(
+        c,
+        prompt_len=prompt_len,
+        completion_len=len(out_tokens),
+        attr="sampling_logprobs",
+        source="sampling_logprobs",
+        required=True,
+    )
+    if out_logprobs is None:
         return None
+    raw_out_logprobs = _completion_logprobs_from_sampled_completion(
+        c,
+        prompt_len=prompt_len,
+        completion_len=len(out_tokens),
+        attr="inference_logprobs",
+        source="raw inference logprobs",
+        required=False,
+    )
 
     parsed_message, parse_success = renderer.parse_response(out_tokens)
     reward = await _maybe_await(reward_fn(row, parsed_message, bool(parse_success)))
     if reward is None:
         return None
 
-    out_logprobs = list(out_logprobs_raw)
-    if bool(getattr(c, "logprobs_echoed", False)) and len(out_logprobs) == (
-        prompt_len + len(out_tokens)
-    ):
-        out_logprobs = out_logprobs[prompt_len:]
-    if len(out_logprobs) != len(out_tokens):
-        logger.warning(
-            "single_turn_renderer_rollout: dropping completion with "
-            "misaligned logprobs (got %d, expected %d for assistant tokens).",
-            len(out_logprobs), len(out_tokens),
-        )
-        return None
-
     return _build_text_only_rollout_sample(
         prompt_token_ids=prompt_token_ids,
         completion_tokens=out_tokens,
         completion_logprobs=out_logprobs,
+        raw_completion_logprobs=raw_out_logprobs,
         logprobs_echoed=False,
         reward=reward,
         finish_reason=getattr(c, "finish_reason", "stop"),

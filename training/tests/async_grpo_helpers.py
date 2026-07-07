@@ -65,8 +65,8 @@ def make_message_rollout_fn_factory(
             if not output_tokens:
                 return None
 
-            full_logprobs = _full_token_logprobs(
-                completion_logprobs=list(completion.inference_logprobs or []),
+            full_logprobs = _full_aligned_logprobs(
+                completion_logprobs=list(completion.sampling_logprobs or []),
                 token_count=len(tokens),
                 prompt_len=prompt_len,
                 is_echoed=bool(getattr(completion, "logprobs_echoed", False)),
@@ -89,21 +89,34 @@ def make_message_rollout_fn_factory(
     return make_rollout_fn
 
 
-def _full_token_logprobs(
+def _full_aligned_logprobs(
     *,
-    completion_logprobs: list[float],
+    completion_logprobs: list[float | None],
     token_count: int,
     prompt_len: int,
     is_echoed: bool,
 ) -> list[float] | None:
+    def _coerce(values: list[float | None], *, active_start: int = 0) -> list[float] | None:
+        out: list[float] = []
+        for idx, value in enumerate(values):
+            if value is None:
+                if idx >= active_start:
+                    return None
+                out.append(0.0)
+            else:
+                out.append(float(value))
+        return out
+
     if is_echoed:
         if len(completion_logprobs) == token_count:
-            return completion_logprobs
+            return _coerce(completion_logprobs, active_start=prompt_len)
         if len(completion_logprobs) == token_count - 1:
-            return [0.0] + completion_logprobs
+            coerced = _coerce(completion_logprobs, active_start=max(0, prompt_len - 1))
+            return [0.0] + coerced if coerced is not None else None
         return None
 
     output_len = token_count - prompt_len
     if len(completion_logprobs) != output_len:
         return None
-    return [0.0] * prompt_len + completion_logprobs
+    coerced = _coerce(completion_logprobs)
+    return [0.0] * prompt_len + coerced if coerced is not None else None

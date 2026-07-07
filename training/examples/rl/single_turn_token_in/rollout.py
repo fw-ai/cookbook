@@ -17,6 +17,24 @@ if TYPE_CHECKING:
     from training.recipes.async_rl_loop import RolloutFn, RolloutSetup
 
 
+def _completion_logprobs(completion, *, attr: str) -> list[float] | None:
+    values = getattr(completion, attr, None)
+    if values is None:
+        return None
+    values = list(values)
+    prompt_len = int(completion.prompt_len)
+    output_len = len(completion.full_tokens) - prompt_len
+    if getattr(completion, "logprobs_echoed", False):
+        full_len = len(completion.full_tokens)
+        if len(values) == full_len:
+            values = values[prompt_len:]
+        elif len(values) == max(0, full_len - 1):
+            values = values[max(0, prompt_len - 1):]
+    if len(values) != output_len or any(v is None for v in values):
+        return None
+    return [float(v) for v in values]
+
+
 def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
     sampler = build_deployment_sampler(setup)
     sample_kwargs = dict(setup.sample_kwargs)
@@ -35,10 +53,10 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
         prompt_len = int(completion.prompt_len)
         tokens = list(completion.full_tokens)
         output_tokens = tokens[prompt_len:]
-        output_logprobs = list(completion.inference_logprobs or [])
-        if getattr(completion, "logprobs_echoed", False) and len(output_logprobs) == len(tokens):
-            output_logprobs = output_logprobs[prompt_len:]
-        if not output_tokens or len(output_logprobs) != len(output_tokens):
+        output_logprobs = _completion_logprobs(
+            completion, attr="sampling_logprobs",
+        )
+        if not output_tokens or output_logprobs is None:
             return None
         sample = RolloutSample(
             tokens=tokens,
