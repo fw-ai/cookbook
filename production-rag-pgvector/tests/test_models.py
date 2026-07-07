@@ -7,7 +7,9 @@ from app.models import Citation, IngestRequest, QueryRequest, RAGResponse
 
 
 def test_citation_similarity_valid():
-    c = Citation(doc_id="doc-1", title="Test Doc", chunk_text="Some text.", similarity=0.85)
+    c = Citation(
+        doc_id="doc-1", title="Test Doc", chunk_text="Some text.", similarity=0.85
+    )
     assert c.similarity == 0.85
     assert c.doc_id == "doc-1"
 

@@ -75,8 +75,7 @@ class FireworksEmbedder:
 
         n_batches = math.ceil(len(texts) / batch_size)
         batches = [
-            texts[i * batch_size : (i + 1) * batch_size]
-            for i in range(n_batches)
+            texts[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)
         ]
 
         async with httpx.AsyncClient() as client:
