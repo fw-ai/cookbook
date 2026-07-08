@@ -314,3 +314,37 @@ def test_registered_names(tokenizer):
 
 def test_stop_sequences(renderer):
     assert renderer.get_stop_sequences() == [_EOM]
+
+
+def test_generation_suffix_non_assistant_role(renderer, tokenizer):
+    # build_generation_prompt for a non-assistant role emits that role's header
+    # (no response/think section) — exercises the non-assistant suffix branch.
+    ids = renderer.build_generation_prompt(_USER_ONLY, role="user")
+    text = tokenizer.decode(list(ids.to_ints()))
+    assert text.endswith(f'{_OPEN}message role="user"{_SEP}')
+    assert f"{_OPEN}think{_SEP}" not in text.split(f'{_OPEN}message role="user"{_SEP}')[-1]
+
+
+def test_encode_falls_back_without_allowed_special(tokenizer):
+    # Renderer must still work with tokenizers whose encode() rejects
+    # ``allowed_special`` (HF fast/slow) by falling back to a plain encode.
+    class _NoAllowedSpecial:
+        name_or_path = "fake"
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.calls = []
+
+        def encode(self, text, add_special_tokens=False, **kwargs):
+            self.calls.append(kwargs)
+            if "allowed_special" in kwargs:
+                raise TypeError("encode() got an unexpected keyword 'allowed_special'")
+            return self._inner.encode(text, add_special_tokens=add_special_tokens)
+
+    fake = _NoAllowedSpecial(tokenizer)
+    r = KimiK3Renderer(fake)
+    out = r._encode("hello")
+    # Fell back to the no-allowed_special path and matches a plain encode.
+    assert out == tokenizer.encode("hello", add_special_tokens=False)
+    assert any("allowed_special" in c for c in fake.calls)  # tried the fast path first
+    assert any("allowed_special" not in c for c in fake.calls)  # then fell back
