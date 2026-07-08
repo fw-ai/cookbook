@@ -125,20 +125,60 @@ class KimiK3Renderer(Renderer):
             )
         return self._encode(f'{_OPEN}message role="{role}"{_SEP}')
 
+    def _normalize_response_tokens(self, response: list[int]) -> list[int]:
+        """Restore the prefilled section opener so parsing is self-describing.
+
+        Sampling starts *inside* the generation suffix's section (``think`` for
+        the default renderer, ``response`` for the disable-thinking variant), so
+        the sampled tokens begin with the section body rather than its
+        ``<|open|>...<|sep|>`` opener. Prepend that opener (unless the caller
+        already included one) so ``parse_response`` can distinguish the ``think``
+        channel from the ``response`` channel and never return raw reasoning as
+        ``content``.
+        """
+        if not response:
+            return response
+        decoded = self.tokenizer.decode(response)
+        if decoded.startswith(f"{_OPEN}think{_SEP}") or decoded.startswith(
+            f"{_OPEN}response{_SEP}"
+        ):
+            return response
+        return [*self._encode(f"{_OPEN}{self._assistant_gen_section}{_SEP}"), *response]
+
     def parse_response(self, response: list[int]) -> tuple[Message, ParseTermination]:
         text = self.tokenizer.decode(self._normalize_response_tokens(response))
-        termination = ParseTermination.EOS
-        for marker in (f"{_CLOSE}response", _EOM, f"{_CLOSE}message"):
-            if marker in text:
-                text = text.split(marker, 1)[0]
-                termination = ParseTermination.STOP_SEQUENCE
-                break
-        # Drop a leading think and/or response section opener if present so the
-        # returned content is just the assistant's response text.
-        for opener in (f"{_OPEN}think{_SEP}", f"{_OPEN}response{_SEP}"):
-            if opener in text:
-                text = text.split(opener, 1)[1]
-        return Message(role="assistant", content=text.strip()), termination
+        think_open = f"{_OPEN}think{_SEP}"
+        think_close = f"{_CLOSE}think{_SEP}"
+        response_open = f"{_OPEN}response{_SEP}"
+
+        # Peel off the think channel (if any). Everything before the response
+        # channel is reasoning, never response content.
+        reasoning = ""
+        if think_open in text:
+            after_think = text.split(think_open, 1)[1]
+            if think_close in after_think:
+                reasoning, _, text = after_think.partition(think_close)
+            else:
+                # Still thinking (truncated / stopped before closing think):
+                # there is no response yet, so content must stay empty.
+                reasoning, text = after_think, ""
+            reasoning = reasoning.strip()
+
+        content = ""
+        terminated = False
+        if response_open in text:
+            content = text.split(response_open, 1)[1]
+            for marker in (f"{_CLOSE}response", f"{_CLOSE}message", _EOM):
+                if marker in content:
+                    content = content.split(marker, 1)[0]
+                    terminated = True
+            content = content.strip()
+
+        termination = ParseTermination.STOP_SEQUENCE if terminated else ParseTermination.EOS
+        message = Message(role="assistant", content=content)
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        return message, termination
 
 
 class KimiK3DisableThinkingRenderer(KimiK3Renderer):

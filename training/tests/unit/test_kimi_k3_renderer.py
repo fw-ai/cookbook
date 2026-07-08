@@ -258,6 +258,51 @@ def test_parse_response_unterminated(renderer):
     assert termination == ParseTermination.EOS
 
 
+def test_parse_response_full_thinking_splits_channels(renderer):
+    # Sampling prefills ``<|open|>think<|sep|>``, so the returned tokens begin in
+    # the think channel (opener not included). Reasoning must go to
+    # ``reasoning_content`` and only the response channel to ``content``.
+    completion = (
+        f"secret chain of thought{_CLOSE}think{_SEP}"
+        f"{_OPEN}response{_SEP}The answer is 42{_CLOSE}response{_SEP}"
+        f"{_CLOSE}message{_SEP}{_EOM}"
+    )
+    msg, termination = renderer.parse_response(renderer._encode(completion))
+    assert msg["content"] == "The answer is 42"
+    assert msg.get("reasoning_content") == "secret chain of thought"
+    assert "secret chain of thought" not in msg["content"]
+    assert termination == ParseTermination.STOP_SEQUENCE
+
+
+def test_parse_response_think_only_does_not_leak_reasoning(renderer):
+    # Truncated completion still inside the think section: NO response channel
+    # was emitted, so content must be empty (regression: chain-of-thought was
+    # being returned as content).
+    msg, termination = renderer.parse_response(renderer._encode("still reasoning, not done"))
+    assert msg["content"] == ""
+    assert "still reasoning" not in msg["content"]
+    assert msg.get("reasoning_content") == "still reasoning, not done"
+    assert termination == ParseTermination.EOS
+
+
+def test_parse_response_stopped_after_think_close_no_leak(renderer):
+    # Closed the think channel but stopped before the response channel.
+    completion = f"my reasoning{_CLOSE}think{_SEP}"
+    msg, _ = renderer.parse_response(renderer._encode(completion))
+    assert msg["content"] == ""
+    assert msg.get("reasoning_content") == "my reasoning"
+
+
+def test_parse_response_disable_thinking(renderer_disable):
+    # The disable-thinking variant prefills the response channel, so a plain
+    # completion is response content with no reasoning.
+    completion = f"direct answer{_CLOSE}response{_SEP}{_CLOSE}message{_SEP}{_EOM}"
+    msg, termination = renderer_disable.parse_response(renderer_disable._encode(completion))
+    assert msg["content"] == "direct answer"
+    assert "reasoning_content" not in msg
+    assert termination == ParseTermination.STOP_SEQUENCE
+
+
 # ── registration + factory wiring ────────────────────────────────────────────
 
 
