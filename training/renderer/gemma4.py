@@ -73,14 +73,17 @@ paths byte-for-byte. The pieces:
 * **Reasoning labels** (``reasoning`` / ``reasoning_content``): the official
   template injects ``<|channel>thought\\n{text}\\n `` only when the assistant
   turn is after the final user message **and** carries ``tool_calls``. Plain
-  text SFT without tools ignores these fields; content is passed through
-  ``strip_thinking`` instead.
+  text SFT without tools ignores these fields on the default ``gemma4``
+  renderer; ``gemma4_thinking`` supervises them on post-final-user assistant
+  turns. Historical assistant content is still passed through ``strip_thinking``.
 * **Registered aliases** (``renderer_name`` / SFT ``jinja_template``):
 
   * ``gemma4`` — default tool-call SFT renderer.
   * ``gemma4_thinking`` — same rendering plus ``enable_thinking=True``
-    (``<|think|>`` system marker). Use for reasoning SFT aligned with inference
-    ``reasoning_effort``.
+    (``<|think|>`` system marker). Also supervises ``reasoning`` /
+    ``reasoning_content`` on plain assistant turns after the final user
+    (no ``tool_calls`` required), so Qwen-style reasoning datasets train
+    ``<|channel>thought\\n...`` emission at inference.
 
 Special-token IDs (Gemma 4 tokenizer)::
 
@@ -490,10 +493,22 @@ def _get_reasoning_text(message: Message) -> str | None:
     return _reasoning_from_thinking_parts(message.get("content"))
 
 
-def _should_emit_reasoning_channel(message: Message, ctx: RenderContext) -> bool:
-    """Mirror jinja: inject thought channel only after the last user and with tool calls."""
+def _should_emit_reasoning_channel(
+    message: Message, ctx: RenderContext, *, enable_thinking: bool
+) -> bool:
+    """Return whether to inject the open ``<|channel>thought\\n`` fragment.
+
+    Official HF jinja gates on post-final-user assistant turns that carry
+    ``tool_calls``. When ``enable_thinking`` is True (``gemma4_thinking``),
+    also supervise plain ``reasoning`` / ``reasoning_content`` labels so
+    Qwen-style datasets teach the model to emit thought channels at inference.
+    """
     after_last_user = ctx.last_user_index == -1 or ctx.idx > ctx.last_user_index
-    return after_last_user and bool(message.get("tool_calls"))
+    if not after_last_user:
+        return False
+    if enable_thinking:
+        return True
+    return bool(message.get("tool_calls"))
 
 
 def _format_reasoning_channel(reasoning: str) -> str:
@@ -576,12 +591,14 @@ class Gemma4Renderer(Renderer):
     @property
     def has_extension_property(self) -> bool:
         # Thought-channel injection is gated on ``ctx.idx > ctx.last_user_index``
-        # and ``tool_calls``, so re-rendering an earlier assistant after a later
-        # user is appended changes its tokens. Multi-turn RL observations at
+        # (and ``tool_calls`` for the default renderer). Re-rendering an earlier
+        # assistant after a later user is appended changes its tokens when that
+        # turn carried supervised reasoning. Multi-turn RL observations at
         # successive assistant boundaries are therefore not guaranteed prefix
-        # extensions when tool-call turns carry reasoning. Plain-text transcripts
-        # still happen to satisfy prefix extension, but we report False so
-        # callers (SFT disaggregation, rollout prefix checks) stay conservative.
+        # extensions when reasoning turns are present. Plain-text transcripts
+        # without reasoning still happen to satisfy prefix extension, but we
+        # report False so callers (SFT disaggregation, rollout prefix checks)
+        # stay conservative.
         return False
 
     @property
@@ -729,7 +746,9 @@ class Gemma4Renderer(Renderer):
 
         if message["role"] == "assistant":
             reasoning = _get_reasoning_text(message)
-            if reasoning and _should_emit_reasoning_channel(message, ctx):
+            if reasoning and _should_emit_reasoning_channel(
+                message, ctx, enable_thinking=self.enable_thinking
+            ):
                 body_parts.append(_format_reasoning_channel(reasoning))
 
         tool_calls = message.get("tool_calls")

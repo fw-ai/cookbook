@@ -7,7 +7,9 @@ Test tiers (see also ``test_supervised_rendering.py`` for resolver coverage):
 * Token-level parity vs ``tokenizer.apply_chat_template`` for conversation,
   tool, thinking, and reasoning shapes.
 * ``test_reasoning_parity_with_hf`` — SFT byte parity for ``reasoning`` /
-  ``reasoning_content`` labels (default ``gemma4`` vs ``gemma4_thinking``).
+  ``reasoning_content`` labels on the default ``gemma4`` renderer (HF jinja).
+* ``test_thinking_renderer_*`` — ``gemma4_thinking`` plain-reasoning SFT
+  (intentionally deviates from HF for Qwen-style datasets).
 
 **Tier 2 — GPU model** (skipped without weights + CUDA):
 
@@ -33,14 +35,15 @@ import transformers
 
 import training.renderer  # noqa: F401 — installs Gemma4SplitRenderer override
 from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import TrainOnWhat
+from tinker_cookbook.renderers.base import TrainOnWhat, RenderContext
 
 from training.renderer.gemma4 import (
     Gemma4Renderer,
     _get_reasoning_text,
+    _should_emit_reasoning_channel,
     _split_thinking_and_text,
 )
-from training.renderer._gemma4_split import Gemma4SplitRenderer
+from training.renderer._gemma4_split import Gemma4SplitRenderer, Gemma4ThinkingSplitRenderer
 from training.utils.supervised import render_messages_to_datum, render_messages_to_datums
 
 _MODEL_PATH_ENV = "GEMMA4_MODEL_PATH"
@@ -253,6 +256,40 @@ def test_split_thinking_and_text_handles_open_thought_fragment():
 # ── reasoning / reasoning_content SFT (HF parity) ─────────────────────────────
 
 
+def test_should_emit_reasoning_channel_matrix() -> None:
+    """Gate matrix for plain vs tool-call reasoning emission."""
+    post_user_ctx = RenderContext(
+        idx=1, is_last=True, prev_message=None, last_user_index=0
+    )
+    pre_user_ctx = RenderContext(
+        idx=1, is_last=False, prev_message=None, last_user_index=2
+    )
+    plain_assistant = {"role": "assistant", "content": "answer"}
+    tool_assistant = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"type": "function", "function": {"name": "fn", "arguments": {}}}
+        ],
+    }
+
+    assert not _should_emit_reasoning_channel(
+        plain_assistant, pre_user_ctx, enable_thinking=False
+    )
+    assert not _should_emit_reasoning_channel(
+        plain_assistant, post_user_ctx, enable_thinking=False
+    )
+    assert _should_emit_reasoning_channel(
+        tool_assistant, post_user_ctx, enable_thinking=False
+    )
+    assert _should_emit_reasoning_channel(
+        plain_assistant, post_user_ctx, enable_thinking=True
+    )
+    assert not _should_emit_reasoning_channel(
+        plain_assistant, pre_user_ctx, enable_thinking=True
+    )
+
+
 _REASONING_SFT_MESSAGES = [
     {"role": "user", "content": "What is 17 * 23?"},
     {
@@ -355,23 +392,20 @@ def test_reasoning_parity_with_hf(tokenizer, renderer, messages):
 def test_supervised_example_reasoning_content_thinking_renderer(
     tokenizer, thinking_renderer
 ):
-    """``gemma4_thinking``: same assistant body plus HF ``enable_thinking`` system."""
-    hf_ids = _hf_tokens(
-        tokenizer,
-        _REASONING_SFT_MESSAGES,
-        add_generation_prompt=False,
-        enable_thinking=True,
-    )
+    """``gemma4_thinking`` supervises plain ``reasoning_content`` (HF does not)."""
     model_input, _weights = thinking_renderer.build_supervised_example(
         _REASONING_SFT_MESSAGES
     )
-    _assert_match(tokenizer, hf_ids, list(model_input.to_ints()))
+    text = tokenizer.decode(list(model_input.to_ints()))
+    assert "<|think|>" in text
+    assert "<|channel>thought\nmultiply 17 and 23\n " in text
+    assert "391" in text
 
 
-def test_gemma4_vs_gemma4_thinking_differs_only_by_system_think(
+def test_gemma4_vs_gemma4_thinking_differs_by_system_and_plain_reasoning(
     tokenizer, renderer, thinking_renderer
 ):
-    """Both renderers emit identical assistant tokens; only the system block differs."""
+    """``gemma4`` drops plain reasoning; ``gemma4_thinking`` supervises it."""
     default_ids = list(
         renderer.build_supervised_example(_REASONING_SFT_MESSAGES)[0].to_ints()
     )
@@ -382,10 +416,115 @@ def test_gemma4_vs_gemma4_thinking_differs_only_by_system_think(
     thinking_text = tokenizer.decode(thinking_ids)
     assert "<|think|>" not in default_text
     assert "<|think|>" in thinking_text
-    user_marker = "<|turn>user"
-    assert default_text[default_text.index(user_marker) :] == thinking_text[
-        thinking_text.index(user_marker) :
-    ]
+    assert "<|channel>thought\nmultiply 17 and 23\n " not in default_text
+    assert "<|channel>thought\nmultiply 17 and 23\n " in thinking_text
+
+
+_PLAIN_REASONING_BEFORE_LAST_USER = [
+    {"role": "user", "content": "first"},
+    {
+        "role": "assistant",
+        "content": "draft",
+        "reasoning_content": "should not render",
+    },
+    {"role": "user", "content": "second"},
+    {"role": "assistant", "content": "final"},
+]
+
+_TWO_PLAIN_ASSISTANTS_AFTER_USER = [
+    {"role": "user", "content": "help"},
+    {
+        "role": "assistant",
+        "content": "step one",
+        "reasoning_content": "first thought",
+    },
+    {
+        "role": "assistant",
+        "content": "step two",
+        "reasoning_content": "second thought",
+    },
+]
+
+
+def test_thinking_renderer_plain_reasoning_before_last_user_ignored(
+    tokenizer, thinking_renderer
+):
+    """Historical plain reasoning is still gated before the final user."""
+    model_input, _weights = thinking_renderer.build_supervised_example(
+        _PLAIN_REASONING_BEFORE_LAST_USER
+    )
+    text = tokenizer.decode(list(model_input.to_ints()))
+    assert "should not render" not in text
+    assert "final" in text
+
+
+def test_thinking_renderer_two_plain_assistants_after_user(
+    tokenizer, thinking_renderer
+):
+    """Consecutive post-user assistants each supervise their reasoning label."""
+    model_input, _weights = thinking_renderer.build_supervised_example(
+        _TWO_PLAIN_ASSISTANTS_AFTER_USER
+    )
+    text = tokenizer.decode(list(model_input.to_ints()))
+    assert "<|channel>thought\nfirst thought\n " in text
+    assert "<|channel>thought\nsecond thought\n " in text
+    assert "step one" in text
+    assert "step two" in text
+
+
+def test_thinking_renderer_plain_reasoning_has_trainable_weights(
+    tokenizer, thinking_renderer
+):
+    """Plain reasoning tokens are included in the supervised loss mask."""
+    datum = render_messages_to_datum(
+        _REASONING_SFT_MESSAGES,
+        renderer=thinking_renderer,
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    )
+    trained_ids = [t for t, w in zip(datum.token_ids, datum.token_weights) if w > 0]
+    trained_text = tokenizer.decode(trained_ids)
+    assert "multiply 17 and 23" in trained_text
+    assert "391" in trained_text
+
+
+_MULTI_TURN_PLAIN_REASONING = [
+    {"role": "user", "content": "step one"},
+    {
+        "role": "assistant",
+        "content": "answer one",
+        "reasoning_content": "REASON_A1",
+    },
+    {"role": "user", "content": "step two"},
+    {
+        "role": "assistant",
+        "content": "answer two",
+        "reasoning_content": "REASON_A2",
+    },
+]
+
+
+def test_thinking_disaggregate_preserves_plain_reasoning_on_earlier_assistant(
+    tokenizer,
+):
+    """``gemma4_thinking`` disaggregation supervises each turn's reasoning."""
+    split_renderer = get_renderer("gemma4_thinking", tokenizer)
+    assert type(split_renderer).__name__ == "Gemma4ThinkingSplitRenderer"
+
+    datums = render_messages_to_datums(
+        _MULTI_TURN_PLAIN_REASONING,
+        renderer=split_renderer,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    assert len(datums) == 2
+
+    def _trained_text(datum) -> str:
+        ids = [t for t, w in zip(datum.token_ids, datum.token_weights) if w > 0]
+        return tokenizer.decode(ids)
+
+    assert "REASON_A1" in _trained_text(datums[0])
+    assert "REASON_A2" not in _trained_text(datums[0])
+    assert "REASON_A2" in _trained_text(datums[1])
+    assert "REASON_A1" not in _trained_text(datums[1])
 
 
 def test_parse_response_extracts_thinking(tokenizer, renderer):
