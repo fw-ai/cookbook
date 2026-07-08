@@ -611,6 +611,64 @@ def test_status_check_reports_unhealthy_resources() -> None:
     report = module._format_unhealthy_report(unhealthy)
     assert "trainer trainer-1: state=JOB_STATE_FAILED" in report
     assert "deployment deployment-1: state=FAILED" in report
+    assert "Continuing to monitor remaining resources." in report
+
+
+def test_run_until_interrupted_keeps_monitoring_after_unhealthy_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    infra = module.FireworksProvisionInfra(
+        mode="distillation",
+        service=object(),
+        training_client=object(),
+        policy=object(),
+        policy_job_id="policy-1",
+        deployment_id="deployment-1",
+        teacher_job_ids=["teacher-1"],
+        max_seq_len=4096,
+        accelerator_type="NVIDIA_B200",
+        accelerator_count=8,
+        training_profile=object(),
+        trainer_manager=_FakeTrainerManager({
+            "policy-1": "JOB_STATE_RUNNING",
+            "teacher-1": "JOB_STATE_COMPLETED",
+        }),
+        deployment_manager=_FakeDeploymentManager({
+            "deployment-1": "READY",
+        }),
+    )
+    slept = False
+    cleaned_up = False
+
+    def fake_sleep(_seconds: float) -> None:
+        nonlocal slept
+        slept = True
+        raise KeyboardInterrupt
+
+    def fake_cleanup(
+        _infra: object,
+        *,
+        started_at: float,
+        progress_interval_s: float,
+    ) -> None:
+        nonlocal cleaned_up
+        cleaned_up = True
+
+    monkeypatch.setattr(module, "init_fireworks_infra", lambda *_args, **_kwargs: infra)
+    monkeypatch.setattr(module.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(module, "_cleanup_until_complete", fake_cleanup)
+
+    result = module.run_until_interrupted("distillation", object(), progress_interval_s=1.0)
+
+    assert result is infra
+    assert slept is True
+    assert cleaned_up is True
+    output = capsys.readouterr().out
+    assert "trainer teacher-1: state=JOB_STATE_COMPLETED" in output
+    assert "Continuing to monitor remaining resources." in output
+    assert "Exiting provision monitor." not in output
 
 
 def test_cleanup_until_complete_keeps_polling_until_resources_are_gone(
