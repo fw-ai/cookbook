@@ -32,6 +32,7 @@ trainers:
     custom_image_tag: null
     region: null           # optional explicit trainer region; prefer leaving unset
     timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
+    disable_inactivity_cleanup: false # keep provision-only trainers from auto-stopping while idle
     extra_args: null
     skip_validations: false
 
