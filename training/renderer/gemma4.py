@@ -71,10 +71,13 @@ paths byte-for-byte. The pieces:
   system message, an empty one is synthesized just to carry the marker —
   matching the template's behavior.
 * **Reasoning labels** (``reasoning`` / ``reasoning_content``): the official
-  template injects ``<|channel>thought\\n{text}\\n `` only when the assistant
-  turn is after the final user message **and** carries ``tool_calls``. Plain
-  text SFT without tools ignores these fields; content is passed through
-  ``strip_thinking`` instead.
+  template injects ``<|channel>thought\\n{text}\\n<channel|>`` (a CLOSED thought
+  channel) only when the assistant turn is after the final user message **and**
+  carries ``tool_calls``. Plain text SFT without tools ignores these fields;
+  content is passed through ``strip_thinking`` instead. The channel MUST close
+  with ``<channel|>`` before the tool call — the serving reasoning parser
+  delimits ``reasoning_content`` on ``<channel|>``, so an unclosed channel
+  causes reasoning to be dropped on reasoning->tool turns.
 * **Registered aliases** (``renderer_name`` / SFT ``jinja_template``):
 
   * ``gemma4`` — default tool-call SFT renderer.
@@ -497,8 +500,18 @@ def _should_emit_reasoning_channel(message: Message, ctx: RenderContext) -> bool
 
 
 def _format_reasoning_channel(reasoning: str) -> str:
-    """Emit the open thought-channel fragment from the official template."""
-    return f"{_CHANNEL_OPEN}{_THINKING_CHANNEL_PREFIX}{reasoning}\n "
+    """Emit the thought-channel fragment matching the official ``chat_template.jinja``:
+    ``<|channel>thought\n{reasoning}\n<channel|>`` — the channel is CLOSED with
+    ``<channel|>`` before the tool call.
+
+    Previously this emitted an *unclosed* fragment (``...{reasoning}\n ``), which
+    diverged from the template. Models SFT'd on the unclosed form learned to emit
+    reasoning that runs straight into ``<|tool_call>`` with no ``<channel|>``, so
+    the serving reasoning parser (which delimits reasoning on ``<channel|>``)
+    dropped ``reasoning_content`` on every reasoning->tool turn. Closing the
+    channel here matches the template, the base model, and the serving parser.
+    """
+    return f"{_CHANNEL_OPEN}{_THINKING_CHANNEL_PREFIX}{reasoning}\n{_CHANNEL_CLOSE}"
 
 
 def _render_assistant_content(message: Message) -> str:
