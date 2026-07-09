@@ -160,6 +160,14 @@ class TrainerConfig:
     extra_args: list[str] | None = None
     replica_count: int | None = None
     """Data-parallel trainer replica count for service-mode HSDP launches."""
+    inactivity_timeout: str | None = None
+    """Trainer inactivity timeout as a protobuf duration string, e.g. ``"7200s"``.
+
+    Leave unset to use the backend default. Set ``disable_inactivity_cleanup``
+    to keep a provisioned trainer alive while idle.
+    """
+    disable_inactivity_cleanup: bool = False
+    """Disable automatic trainer cleanup after inactivity."""
 
     purpose: str | None = None
     """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""

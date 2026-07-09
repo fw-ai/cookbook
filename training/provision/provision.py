@@ -217,7 +217,6 @@ def run_until_interrupted(
                 unhealthy = infra.unhealthy_statuses()
                 if unhealthy:
                     print(_format_unhealthy_report(unhealthy), flush=True)
-                    return infra
                 next_health_check_at = now + health_check_interval_s
             time.sleep(min(progress_interval_s, max(0.1, next_health_check_at - time.monotonic())))
     except KeyboardInterrupt:
@@ -617,7 +616,7 @@ def _format_unhealthy_report(statuses: list[ResourceStatus]) -> str:
         if status.detail:
             line = f"{line} ({status.detail})"
         lines.append(line)
-    lines.append("Exiting provision monitor.")
+    lines.append("Continuing to monitor remaining resources.")
     return "\n".join(lines)
 
 
