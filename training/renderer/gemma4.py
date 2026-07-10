@@ -58,18 +58,28 @@ paths byte-for-byte. The pieces:
   JSON strings are parsed and re-emitted as a dict so that round-trips
   via tinker's ``ToolCall`` (which always carries a JSON string) match
   HF parity.
-* **Tool responses**: Pass ``message["tool_responses"] = [{"name": ...,
-  "response": <dict or scalar>}]`` on a regular turn. The renderer
-  emits ``<|tool_response>response:name{...}<tool_response|>`` and
-  follows the template's quirk of suppressing the trailing ``<turn|>\\n``
-  when the message is purely a tool response with no other content.
-  After such a message, the generation suffix ``<|turn>model\\n`` is
-  also suppressed (the model is expected to keep filling the same turn).
+* **Tool responses (OpenAI ``role:tool``)**: The standard OpenAI shape —
+  ``{"role": "tool", "content": ..., "tool_call_id": ...}`` following an
+  assistant-with-``tool_calls`` — is folded (in ``_preprocess_messages``) into
+  an inline ``<|tool_response>response:name{...}<tool_response|>`` envelope
+  inside the *same* open model turn, exactly like the template's forward-scan.
+  The following assistant answer continues that turn with no new
+  ``<|turn>model`` header (continuation). A ``role:tool`` message with no
+  preceding tool_call is dropped, matching the template.
+* **Tool responses (legacy)**: You may also pass
+  ``message["tool_responses"] = [{"name": ..., "response": <dict or scalar>}]``
+  directly on a turn; it renders the same envelope. When a message is purely a
+  tool response with no other content the trailing ``<turn|>\\n`` and the next
+  generation suffix ``<|turn>model\\n`` are suppressed (the turn stays open).
 * **Thinking mode**: Construct the renderer with ``enable_thinking=True``
-  to inject the ``<|think|>`` system-level marker that the template adds
+  to inject the ``<|think|>\\n`` system-level marker that the template adds
   at the very start of the first system turn. If the conversation has no
   system message, an empty one is synthesized just to carry the marker —
   matching the template's behavior.
+* **Non-thinking generation prompt**: when ``enable_thinking`` is False the
+  generation prompt ends with an empty closed ``<|channel>thought\\n<channel|>``
+  block after ``<|turn>model\\n``, forcing a non-reasoning answer (matching the
+  template's ``add_generation_prompt`` branch).
 * **Reasoning labels** (``reasoning`` / ``reasoning_content``): the official
   template injects ``<|channel>thought\\n{text}\\n<channel|>`` (a CLOSED thought
   channel) only when the assistant turn is after the final user message **and**
@@ -131,6 +141,12 @@ _THINK_TOKEN = "<|think|>"
 _STRING_DELIM = '<|"|>'
 _MODEL_ROLE = "model"
 
+# Private message key carrying the ``<|think|>\n`` system marker. It is a flag
+# rather than injected content so the marker's trailing newline is not eaten by
+# the per-message ``| trim`` when the system body is empty (see the template,
+# which emits ``<|think|>\n`` separately from the trimmed system content).
+_THINK_PREFIX_KEY = "_gemma4_think_prefix"
+
 _render_messages_local = threading.local()
 
 # Pattern matching the template's strip_thinking macro: remove every
@@ -157,6 +173,19 @@ _TOOL_CALL_RE = re.compile(
 # Property keys consumed structurally by format_parameters and therefore
 # never emitted as their own field. Mirrors `standard_keys` in the jinja.
 _STANDARD_PARAM_KEYS = frozenset({"description", "type", "properties", "required", "nullable"})
+
+
+def _dictsort(items: Any) -> list:
+    """Mirror Jinja's ``dictsort`` filter, which (with its default
+    ``case_sensitive=False``) sorts keys case-INSENSITIVELY.
+
+    Python's built-in ``sorted`` is case-sensitive — uppercase sorts before
+    lowercase — so a bare ``sorted(d.items())`` diverges from the template on
+    mixed-case schemas/arguments (e.g. ``hasInstantTour`` must sort before
+    ``hasInUnitLaundry``). ``sorted`` is stable, so keys colliding
+    case-insensitively keep their original relative order, matching Jinja.
+    """
+    return sorted(items, key=lambda kv: str(kv[0]).lower())
 
 
 def _strip_thinking(text: str) -> str:
@@ -227,13 +256,106 @@ def _format_argument(value: Any, escape_keys: bool = True) -> str:
         return f"{_STRING_DELIM}{value}{_STRING_DELIM}"
     if isinstance(value, dict):
         parts = []
-        for k, v in sorted(value.items()):
+        for k, v in _dictsort(value.items()):
             key_str = f"{_STRING_DELIM}{k}{_STRING_DELIM}" if escape_keys else str(k)
             parts.append(f"{key_str}:{_format_argument(v, escape_keys=escape_keys)}")
         return "{" + ",".join(parts) + "}"
     if isinstance(value, (list, tuple)):
         return "[" + ",".join(_format_argument(item, escape_keys=escape_keys) for item in value) + "]"
     return str(value)
+
+
+def _format_array_items(items: dict) -> str:
+    """Render the ``items:{...}`` body of an ARRAY property (jinja's inner loop)."""
+    parts: list[str] = ["items:{"]
+    items_first = True
+    for item_key, item_value in _dictsort(items.items()):
+        if item_value is None:
+            continue
+        if not items_first:
+            parts.append(",")
+        items_first = False
+        if item_key == "properties":
+            parts.append("properties:{")
+            if isinstance(item_value, dict):
+                parts.append(_format_parameters(item_value, items.get("required") or []))
+            parts.append("}")
+        elif item_key == "required":
+            parts.append("required:[")
+            for i, req_item in enumerate(item_value):
+                if i:
+                    parts.append(",")
+                parts.append(f"{_STRING_DELIM}{req_item}{_STRING_DELIM}")
+            parts.append("]")
+        elif item_key == "type":
+            if isinstance(item_value, str):
+                parts.append(f"type:{_format_argument(item_value.upper())}")
+            else:
+                parts.append(f"type:{_format_argument([str(s).upper() for s in item_value])}")
+        else:
+            parts.append(f"{item_key}:{_format_argument(item_value)}")
+    parts.append("}")
+    return "".join(parts)
+
+
+def _format_property(key: str, value: dict) -> str:
+    """Render a single ``key:{...}`` property, mirroring the jinja macro's field
+    order and its single ``add_comma`` gate.
+
+    Emission order (identical to ``format_parameters`` in the template):
+    ``description`` → (STRING ``enum`` | ARRAY ``items``) → ``nullable`` →
+    (OBJECT ``properties`` then ``required``) → trailing ``type``. The FIRST
+    field emitted carries no leading comma and arms the gate; every later field
+    emits a comma first. The previous version hard-coded commas on the
+    OBJECT/ARRAY branches without arming the gate, which produced a spurious
+    leading comma before ``properties:``/``items:`` and dropped the comma before
+    the trailing ``type:``.
+    """
+    parts: list[str] = [f"{key}:{{"]
+    armed = False
+
+    def comma() -> str:
+        # Emit a leading comma iff a prior field armed the gate; then arm it.
+        nonlocal armed
+        prefix = "," if armed else ""
+        armed = True
+        return prefix
+
+    if value.get("description"):
+        parts.append(f'description:{_STRING_DELIM}{value["description"]}{_STRING_DELIM}')
+        armed = True
+
+    type_upper = (value.get("type") or "").upper()
+    if type_upper == "STRING":
+        if value.get("enum"):
+            parts.append(f"{comma()}enum:{_format_argument(value['enum'])}")
+    elif type_upper == "ARRAY":
+        items = value.get("items")
+        if isinstance(items, dict) and items:
+            parts.append(f"{comma()}{_format_array_items(items)}")
+
+    if value.get("nullable"):
+        parts.append(f"{comma()}nullable:true")
+
+    if type_upper == "OBJECT":
+        inner_props = value.get("properties")
+        if isinstance(inner_props, dict):
+            parts.append(
+                f"{comma()}properties:{{{_format_parameters(inner_props, value.get('required') or [])}}}"
+            )
+        else:
+            # OBJECT schema with properties inlined at the top level: recurse on
+            # the value itself, filtering out the structural standard keys.
+            parts.append(
+                f"{comma()}properties:{{{_format_parameters(value, value.get('required') or [])}}}"
+            )
+        req = value.get("required")
+        if req:
+            reqs = ",".join(f"{_STRING_DELIM}{item}{_STRING_DELIM}" for item in req)
+            parts.append(f"{comma()}required:[{reqs}]")
+
+    parts.append(f"{comma()}type:{_STRING_DELIM}{type_upper}{_STRING_DELIM}}}")
+    return "".join(parts)
 
 
 def _format_parameters(properties: dict, required: list) -> str:
@@ -245,88 +367,12 @@ def _format_parameters(properties: dict, required: list) -> str:
     """
     del required  # unused; carried for signature parity with the jinja macro
     chunks: list[str] = []
-    for key, value in sorted(properties.items()):
+    for key, value in _dictsort(properties.items()):
         if key in _STANDARD_PARAM_KEYS:
             continue
         if not isinstance(value, dict):
             continue
-        prop_chunks: list[str] = [f"{key}:{{"]
-        add_comma = False
-        if value.get("description"):
-            prop_chunks.append(f'description:{_STRING_DELIM}{value["description"]}{_STRING_DELIM}')
-            add_comma = True
-        if value.get("nullable"):
-            if add_comma:
-                prop_chunks.append(",")
-            else:
-                add_comma = True
-            prop_chunks.append("nullable:true")
-
-        type_upper = (value.get("type") or "").upper()
-        if type_upper == "STRING":
-            if value.get("enum"):
-                if add_comma:
-                    prop_chunks.append(",")
-                else:
-                    add_comma = True
-                prop_chunks.append(f"enum:{_format_argument(value['enum'])}")
-        elif type_upper == "OBJECT":
-            prop_chunks.append(",properties:{")
-            inner_props = value.get("properties")
-            if isinstance(inner_props, dict):
-                prop_chunks.append(_format_parameters(inner_props, value.get("required") or []))
-            elif isinstance(value, dict):
-                prop_chunks.append(_format_parameters(value, value.get("required") or []))
-            prop_chunks.append("}")
-            req = value.get("required")
-            if req:
-                prop_chunks.append(",required:[")
-                for i, item in enumerate(req):
-                    if i:
-                        prop_chunks.append(",")
-                    prop_chunks.append(f"{_STRING_DELIM}{item}{_STRING_DELIM}")
-                prop_chunks.append("]")
-        elif type_upper == "ARRAY":
-            items = value.get("items")
-            if isinstance(items, dict) and items:
-                prop_chunks.append(",items:{")
-                items_first = True
-                for item_key, item_value in sorted(items.items()):
-                    if item_value is None:
-                        continue
-                    if not items_first:
-                        prop_chunks.append(",")
-                    items_first = False
-                    if item_key == "properties":
-                        prop_chunks.append("properties:{")
-                        if isinstance(item_value, dict):
-                            prop_chunks.append(
-                                _format_parameters(item_value, items.get("required") or [])
-                            )
-                        prop_chunks.append("}")
-                    elif item_key == "required":
-                        prop_chunks.append("required:[")
-                        for i, req_item in enumerate(item_value):
-                            if i:
-                                prop_chunks.append(",")
-                            prop_chunks.append(f"{_STRING_DELIM}{req_item}{_STRING_DELIM}")
-                        prop_chunks.append("]")
-                    elif item_key == "type":
-                        if isinstance(item_value, str):
-                            prop_chunks.append(f"type:{_format_argument(item_value.upper())}")
-                        else:
-                            prop_chunks.append(
-                                f"type:{_format_argument([str(s).upper() for s in item_value])}"
-                            )
-                    else:
-                        prop_chunks.append(f"{item_key}:{_format_argument(item_value)}")
-                prop_chunks.append("}")
-
-        # Trailing `type:` field. Always emitted; comma logic mirrors the macro.
-        if add_comma:
-            prop_chunks.append(",")
-        prop_chunks.append(f"type:{_STRING_DELIM}{type_upper}{_STRING_DELIM}}}")
-        chunks.append("".join(prop_chunks))
+        chunks.append(_format_property(key, value))
     return ",".join(chunks)
 
 
@@ -417,7 +463,7 @@ def _format_tool_call(tc: Any) -> str:
     out = [f"{_TOOL_CALL_OPEN}call:{fn_name}{{"]
     if isinstance(args, dict):
         items = []
-        for k, v in sorted(args.items()):
+        for k, v in _dictsort(args.items()):
             items.append(f"{k}:{_format_argument(v, escape_keys=False)}")
         out.append(",".join(items))
     elif isinstance(args, str):
@@ -439,7 +485,7 @@ def _format_tool_response(tr: dict) -> str:
     out = [f"{_TOOL_RESPONSE_OPEN}response:{name}{{"]
     if isinstance(response, dict):
         items = []
-        for k, v in sorted(response.items()):
+        for k, v in _dictsort(response.items()):
             items.append(f"{k}:{_format_argument(v, escape_keys=False)}")
         out.append(",".join(items))
     else:
@@ -545,6 +591,91 @@ def _render_text_content(message: Message) -> str:
     return "".join(parts)
 
 
+def _tool_response_payload(tool_message: Message) -> Any:
+    """Extract the response payload from an OpenAI ``role:tool`` message.
+
+    The template passes string content straight to ``format_tool_response_block``
+    (rendered as ``value:<escaped>``) and concatenates the ``text`` parts of a
+    content-parts array. We mirror that; non-text parts are not supported on the
+    text-only path.
+    """
+    content = tool_message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") for part in content if part.get("type") == "text"
+        )
+    return content
+
+
+def _resolve_tool_name(tool_calls: list, tool_message: Message) -> str:
+    """Resolve a tool result's function name the way the template does: match the
+    result's ``tool_call_id`` against the assistant's ``tool_calls`` (last match
+    wins, per the jinja loop), falling back to the message ``name`` or
+    ``'unknown'``. Handles both dict and tinker ``ToolCall`` shapes."""
+    name = tool_message.get("name") or "unknown"
+    call_id = tool_message.get("tool_call_id")
+    for tc in tool_calls or []:
+        tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+        if tc_id == call_id:
+            fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            if isinstance(fn, dict):
+                name = fn.get("name", name)
+            elif fn is not None:
+                name = getattr(fn, "name", name)
+    return name
+
+
+def _fold_tool_messages(messages: list[Message]) -> list[Message]:
+    """Fold OpenAI ``role:tool`` messages into ``tool_responses`` on the
+    preceding assistant-with-``tool_calls``, matching the official template.
+
+    The template skips ``role:tool`` messages in its main loop and instead
+    forward-scans the run of consecutive ``role:tool`` messages that follow an
+    assistant message carrying ``tool_calls``, emitting each as an inline
+    ``<|tool_response>`` envelope inside that same (still-open) model turn. The
+    following assistant answer continues that turn with no new ``<|turn>model``
+    header.
+
+    A ``role:tool`` message that is *not* preceded by such an assistant is never
+    forward-scanned and is therefore dropped by the template; we drop it too.
+    Messages already carrying the legacy ``tool_responses`` field are left
+    untouched.
+    """
+    result: list[Message] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        msg = messages[i]
+        if msg.get("role") == "tool":
+            i += 1  # orphaned tool result — dropped, matching the template
+            continue
+        if (
+            msg.get("role") == "assistant"
+            and msg.get("tool_calls")
+            and not msg.get("tool_responses")
+        ):
+            responses: list[dict] = []
+            j = i + 1
+            while j < n and messages[j].get("role") == "tool":
+                follow = messages[j]
+                responses.append(
+                    {
+                        "name": _resolve_tool_name(msg["tool_calls"], follow),
+                        "response": _tool_response_payload(follow),
+                    }
+                )
+                j += 1
+            if responses:
+                result.append({**msg, "tool_responses": responses})
+                i = j
+                continue
+        result.append(msg)
+        i += 1
+    return result
+
+
 class Gemma4Renderer(Renderer):
     """Renderer matching the official Gemma 4 chat template byte-for-byte
     for the text-only path including tools and thinking.
@@ -611,14 +742,15 @@ class Gemma4Renderer(Renderer):
         return _MODEL_ROLE if message["role"] == "assistant" else message["role"]
 
     @staticmethod
-    def _is_tool_response_only(message: Message) -> bool:
-        """Mirror the template's
-        ``message['tool_responses'] and not message['content']`` predicate.
+    def _suppresses_generation_prompt(message: Message) -> bool:
+        """Whether a message leaves the model turn open for continuation.
 
-        When True, the trailing ``<turn|>\\n`` is suppressed and the next
-        generation prompt is also suppressed.
+        Mirrors the template's ``prev_message_type in ('tool_call',
+        'tool_response')`` gate on the generation prompt: after a message that
+        emitted a tool call or a tool-response envelope, no ``<|turn>model\\n``
+        suffix is added — the model keeps filling the same turn.
         """
-        return bool(message.get("tool_responses")) and not message.get("content")
+        return bool(message.get("tool_calls")) or bool(message.get("tool_responses"))
 
     # ------------------------------------------------------------------
     # System-block / preprocessing
@@ -652,28 +784,30 @@ class Gemma4Renderer(Renderer):
         return [Message(role="system", content=bundled)]
 
     def _preprocess_messages(self, messages: list[Message]) -> list[Message]:
-        """Inject the ``<|think|>`` marker when ``enable_thinking`` is True.
+        """Prepare the conversation for the concatenation-based base renderer.
 
-        Mirrors the template's ``if enable_thinking ... <|think|>`` block at
-        the very top of the first system turn. If the conversation has no
-        system message, an empty one is synthesized just to carry the marker.
+        Two transforms, both matching the official template:
+
+        1. **Tool folding** — collapse OpenAI ``role:tool`` messages into
+           ``tool_responses`` on the preceding assistant-with-``tool_calls`` so
+           they render as inline ``<|tool_response>`` envelopes inside one model
+           turn (see ``_fold_tool_messages``).
+        2. **Thinking marker** — when ``enable_thinking`` is True, flag the first
+           system/developer turn with ``_THINK_PREFIX_KEY`` so ``render_message``
+           prepends ``<|think|>\\n``. The flag is a private key rather than
+           injected content because the marker's trailing newline must not be
+           swallowed by the per-message ``| trim`` (which would drop it when the
+           system body is empty). If there is no leading system/developer
+           message, an empty one is synthesized to carry the marker.
         """
+        result = _fold_tool_messages(list(messages))
         if not self.enable_thinking:
-            return list(messages)
+            return result
 
-        result: list[Message] = list(messages)
         if result and result[0]["role"] in ("system", "developer"):
-            sys_msg = result[0]
-            content = sys_msg.get("content", "")
-            if isinstance(content, str):
-                # Trim FIRST to match the template's `messages[0]['content'] | trim`,
-                # then prepend the think marker so the marker hugs the role header.
-                new_content: Any = _THINK_TOKEN + content.strip()
-            else:
-                new_content = [TextPart(type="text", text=_THINK_TOKEN), *content]
-            result[0] = {**sys_msg, "content": new_content}
+            result[0] = {**result[0], _THINK_PREFIX_KEY: True}
         else:
-            result.insert(0, Message(role="system", content=_THINK_TOKEN))
+            result.insert(0, {"role": "system", "content": "", _THINK_PREFIX_KEY: True})
         return result
 
     def _with_render_messages(self, messages: list[Message], fn: Callable[[], Any]) -> Any:
@@ -713,12 +847,15 @@ class Gemma4Renderer(Renderer):
         return self._with_render_messages(processed, _build)
 
     def _continue_same_model_turn(self, message: Message, ctx: RenderContext) -> bool:
-        """Suppress ``<|turn>model\\n`` only for immediately consecutive assistants.
+        """Suppress ``<|turn>model\\n`` when the previous (non-tool) message was
+        also an assistant, so a tool_call → tool_response → answer sequence
+        renders as one model turn.
 
-        A ``tool`` turn (or any other role) between two assistant messages starts
-        a fresh model header, matching HF ``apply_chat_template`` for cases like
-        ``tool_role_verbatim``. Consecutive assistant messages without an intervening
-        turn still share one model header per jinja.
+        ``role:tool`` messages are already folded into the preceding assistant in
+        ``_preprocess_messages``, so the previous message here is exactly the
+        template's "previous non-tool message": any intervening non-assistant
+        role (e.g. ``user``) starts a fresh model header, while consecutive
+        assistants share one header, matching the jinja continuation gate.
         """
         if message["role"] != "assistant" or ctx.idx == 0:
             return False
@@ -739,6 +876,12 @@ class Gemma4Renderer(Renderer):
         header_str = "" if suppress_header else f"{_TURN_OPEN}{role}\n"
 
         body_parts: list[str] = []
+
+        # `<|think|>\n` marker at the very top of the first system turn. Emitted
+        # separately from the trimmed body so its newline survives (see
+        # ``_preprocess_messages``).
+        if message.get(_THINK_PREFIX_KEY):
+            body_parts.append(f"{_THINK_TOKEN}\n")
 
         if message["role"] == "assistant":
             reasoning = _get_reasoning_text(message)
@@ -762,10 +905,18 @@ class Gemma4Renderer(Renderer):
         if text:
             body_parts.append(text)
 
-        # Per the template, the trailing `<turn|>\n` is omitted when the
-        # message is purely a tool response with no content. Otherwise it
-        # closes every turn.
-        if not self._is_tool_response_only(message):
+        # Trailing terminator, mirroring the template's three-way branch:
+        #   * a message ending in a tool_call with no response emits a bare
+        #     `<|tool_response>` (the runner injects the result there) and
+        #     leaves the model turn OPEN;
+        #   * a tool-response envelope with no content leaves the turn OPEN so
+        #     the next assistant message continues it;
+        #   * everything else closes with `<turn|>\n`.
+        has_tool_responses = bool(tool_responses)
+        has_content = bool(text)
+        if tool_calls and not has_tool_responses:
+            body_parts.append(_TOOL_RESPONSE_OPEN)
+        elif not (has_tool_responses and not has_content):
             body_parts.append(f"{_TURN_CLOSE}\n")
         body_str = "".join(body_parts)
 
@@ -783,12 +934,19 @@ class Gemma4Renderer(Renderer):
         return RenderedMessage(header=header, output=output)
 
     def _get_generation_suffix(self, role: Role, ctx: RenderContext) -> list[int]:
-        # The official template suppresses the generation prompt entirely
-        # when the previous message was a tool response, leaving the model to
-        # continue inside the same turn the tool call started.
-        if ctx.prev_message is not None and self._is_tool_response_only(ctx.prev_message):
+        # The official template suppresses the generation prompt entirely when
+        # the previous message emitted a tool call or a tool-response envelope
+        # (``prev_message_type in ('tool_call', 'tool_response')``), leaving the
+        # model to continue inside the same open turn.
+        if ctx.prev_message is not None and self._suppresses_generation_prompt(
+            ctx.prev_message
+        ):
             return []
         suffix_str = f"{_TURN_OPEN}{_MODEL_ROLE}\n"
+        # When NOT in thinking mode, the template appends an empty closed thought
+        # channel to the generation prompt to force a non-reasoning response.
+        if not self.enable_thinking:
+            suffix_str += f"{_CHANNEL_OPEN}{_THINKING_CHANNEL_PREFIX}{_CHANNEL_CLOSE}"
         return self.tokenizer.encode(suffix_str, add_special_tokens=False)
 
     def get_stop_sequences(self) -> list[int]:

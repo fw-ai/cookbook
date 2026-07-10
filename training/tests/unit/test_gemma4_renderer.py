@@ -513,13 +513,24 @@ def test_gemma4_split_renderer_disables_extension_property_for_sft():
     assert renderer.has_extension_property is False
 
 
-def test_plain_text_observations_remain_prefix_extensions(renderer):
-    """Plain-text multi-turn prompts still satisfy observation prefix extension.
+def test_plain_text_observations_remain_prefix_extensions(tokenizer, renderer):
+    """Plain-text multi-turn *context* remains a prefix extension across turns.
 
     ``has_extension_property`` is False on ``Gemma4Renderer`` because
-    tool-call + reasoning transcripts do not (see next test).
+    tool-call + reasoning transcripts do not (see next test), and because the
+    non-thinking generation prompt ends with the empty ``<|channel>thought
+    \\n<channel|>`` sampling marker (matching the official template) that the
+    model fills and history then strips. Prefix extension therefore holds only
+    up to that trailing marker, so we strip it before comparing the conversation
+    context.
     """
     assert renderer.has_extension_property is False
+
+    # The non-thinking generation suffix the template appends and the model
+    # overwrites: `<|turn>model\n` plus the empty closed thought channel.
+    suffix = tokenizer.encode(
+        "<|turn>model\n<|channel>thought\n<channel|>", add_special_tokens=False
+    )
 
     messages = [
         {"role": "system", "content": "Be terse."},
@@ -538,11 +549,15 @@ def test_plain_text_observations_remain_prefix_extensions(renderer):
         cur = list(
             renderer.build_generation_prompt(messages[:k], role="assistant").to_ints()
         )
-        assert cur[: len(prev)] == prev, (
-            f"observation at boundary k={k} is not a prefix extension of the previous "
-            f"observation; len(prev)={len(prev)} len(cur)={len(cur)}"
+        assert cur[-len(suffix):] == suffix, (
+            f"generation prompt at k={k} must end with the sampling marker"
         )
-        prev = cur
+        context = cur[: -len(suffix)]
+        assert context[: len(prev)] == prev, (
+            f"context at boundary k={k} is not a prefix extension of the previous "
+            f"context; len(prev)={len(prev)} len(context)={len(context)}"
+        )
+        prev = context
 
 
 def test_tool_reasoning_observations_are_not_prefix_extensions(renderer):
