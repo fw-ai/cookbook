@@ -378,10 +378,15 @@ def _normalize_content(content: Any) -> str | list[dict[str, Any]]:
                 )
                 continue
             raise TypeError(f"Unsupported message content part: {part!r}")
-        if normalized_parts and all(
-            part["type"] == "text" for part in normalized_parts
-        ):
-            return "".join(str(part["text"]) for part in normalized_parts)
+        # Preserve the content parts instead of collapsing an all-text list into
+        # a single joined string. Joining is lossy: it discards per-part
+        # boundaries, and each model's chat template trims parts differently
+        # (gemma-4 trims EACH part before joining, e.g. ["a ", "b"] -> "ab";
+        # every other cookbook renderer concatenates raw, e.g. -> "a b"). By
+        # keeping the list, each renderer applies its own per-part policy so the
+        # training tokens match the template. Renderers already handle list
+        # content (mixed text / thinking / image), and a single-element text
+        # list renders identically to the equivalent string.
         return normalized_parts
     raise TypeError(f"Unsupported message content type: {type(content)!r}")
 

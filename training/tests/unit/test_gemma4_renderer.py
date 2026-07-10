@@ -41,7 +41,11 @@ from training.renderer.gemma4 import (
     _split_thinking_and_text,
 )
 from training.renderer._gemma4_split import Gemma4SplitRenderer
-from training.utils.supervised import render_messages_to_datum, render_messages_to_datums
+from training.utils.supervised import (
+    normalize_messages,
+    render_messages_to_datum,
+    render_messages_to_datums,
+)
 
 _MODEL_PATH_ENV = "GEMMA4_MODEL_PATH"
 
@@ -105,6 +109,82 @@ def _assert_match(tokenizer, hf, ours):
             f"--- HF text ---\n{tokenizer.decode(hf)}\n"
             f"--- Our text ---\n{tokenizer.decode(ours)}"
         )
+
+
+# ── Developer-role first-message folding ────────────────────────────────────
+
+
+def test_developer_first_message_maps_to_system(tokenizer, renderer):
+    """A FIRST ``developer`` message is folded into the ``<|turn>system`` block,
+    matching the official template's ``messages[0].role in ('system',
+    'developer')`` guard."""
+    messages = [
+        {"role": "developer", "content": "Be terse."},
+        {"role": "user", "content": "hi"},
+    ]
+    _assert_match(tokenizer, _hf_tokens(tokenizer, messages), _renderer_tokens(renderer, messages))
+
+
+def test_developer_midconversation_stays_verbatim(tokenizer, renderer):
+    """A ``developer`` message that is not the first turn stays a
+    ``<|turn>developer`` turn, matching the template (only ``messages[0]`` is
+    folded into the system block)."""
+    messages = [
+        {"role": "user", "content": "a"},
+        {"role": "developer", "content": "d"},
+        {"role": "user", "content": "b"},
+    ]
+    _assert_match(tokenizer, _hf_tokens(tokenizer, messages), _renderer_tokens(renderer, messages))
+
+
+# ── Multi-part content per-part trim (through the normalize path) ─────────────
+
+
+def test_multipart_user_text_trims_per_part_after_normalize(tokenizer, renderer):
+    """A user message whose content is a list of text parts must be trimmed
+    PER PART then joined (the template does ``item['text'] | trim``), e.g.
+    ``["part one ", "part two"] -> "part onepart two"``.
+
+    This exercises the production path: ``normalize_messages`` must PRESERVE the
+    content parts (not pre-join them into one string) so the renderer can apply
+    the template's per-part trim. If normalize collapses them first, the
+    interior whitespace survives and this diverges from the template.
+    """
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "part one "},
+                {"type": "text", "text": "part two"},
+            ],
+        }
+    ]
+    hf = _hf_tokens(tokenizer, messages)
+    ours = list(
+        renderer.build_generation_prompt(
+            normalize_messages(messages), role="assistant"
+        ).to_ints()
+    )
+    _assert_match(tokenizer, hf, ours)
+
+
+def test_multipart_assistant_text_trims_per_part_after_normalize(tokenizer, renderer):
+    """Same per-part-trim contract for a multi-part assistant turn (supervised)."""
+    messages = [
+        {"role": "user", "content": "x"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "first "},
+                {"type": "text", "text": "second"},
+            ],
+        },
+    ]
+    hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
+    ours = list(
+        renderer.build_supervised_example(normalize_messages(messages))[0].to_ints()
+    )
+    _assert_match(tokenizer, hf, ours)
 
 
 # ── Token-level parity vs the official HF chat template ─────────────────────
@@ -513,13 +593,24 @@ def test_gemma4_split_renderer_disables_extension_property_for_sft():
     assert renderer.has_extension_property is False
 
 
-def test_plain_text_observations_remain_prefix_extensions(renderer):
-    """Plain-text multi-turn prompts still satisfy observation prefix extension.
+def test_plain_text_observations_remain_prefix_extensions(tokenizer, renderer):
+    """Plain-text multi-turn *context* remains a prefix extension across turns.
 
     ``has_extension_property`` is False on ``Gemma4Renderer`` because
-    tool-call + reasoning transcripts do not (see next test).
+    tool-call + reasoning transcripts do not (see next test), and because the
+    non-thinking generation prompt ends with the empty ``<|channel>thought
+    \\n<channel|>`` sampling marker (matching the official template) that the
+    model fills and history then strips. Prefix extension therefore holds only
+    up to that trailing marker, so we strip it before comparing the conversation
+    context.
     """
     assert renderer.has_extension_property is False
+
+    # The non-thinking generation suffix the template appends and the model
+    # overwrites: `<|turn>model\n` plus the empty closed thought channel.
+    suffix = tokenizer.encode(
+        "<|turn>model\n<|channel>thought\n<channel|>", add_special_tokens=False
+    )
 
     messages = [
         {"role": "system", "content": "Be terse."},
@@ -538,11 +629,15 @@ def test_plain_text_observations_remain_prefix_extensions(renderer):
         cur = list(
             renderer.build_generation_prompt(messages[:k], role="assistant").to_ints()
         )
-        assert cur[: len(prev)] == prev, (
-            f"observation at boundary k={k} is not a prefix extension of the previous "
-            f"observation; len(prev)={len(prev)} len(cur)={len(cur)}"
+        assert cur[-len(suffix):] == suffix, (
+            f"generation prompt at k={k} must end with the sampling marker"
         )
-        prev = cur
+        context = cur[: -len(suffix)]
+        assert context[: len(prev)] == prev, (
+            f"context at boundary k={k} is not a prefix extension of the previous "
+            f"context; len(prev)={len(prev)} len(context)={len(context)}"
+        )
+        prev = context
 
 
 def test_tool_reasoning_observations_are_not_prefix_extensions(renderer):

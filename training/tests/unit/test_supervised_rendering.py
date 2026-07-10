@@ -511,6 +511,30 @@ def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():
     ]
 
 
+def test_normalize_messages_preserves_multipart_text_parts():
+    """All-text content parts are preserved as a list rather than pre-joined into
+    one string. Pre-joining is lossy: it discards per-part boundaries, and each
+    model's chat template trims parts differently (gemma-4 trims EACH part;
+    others concatenate raw). Preserving the list lets every renderer apply its
+    own per-part policy so training tokens match the template.
+    """
+    normalized = normalize_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "part one "},
+                    {"type": "text", "text": "part two"},
+                ],
+            }
+        ]
+    )
+    assert normalized[0]["content"] == [
+        {"type": "text", "text": "part one "},
+        {"type": "text", "text": "part two"},
+    ]
+
+
 def test_normalize_messages_promotes_reasoning_content_to_thinking_part():
     """OpenAI-style ``reasoning_content`` should become a ThinkingPart.
 

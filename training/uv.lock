@@ -1091,6 +1091,7 @@ source = { editable = "." }
 dependencies = [
     { name = "datasets" },
     { name = "fireworks-ai", extra = ["training"] },
+    { name = "hydra-core" },
     { name = "numpy" },
     { name = "orjson" },
     { name = "python-dotenv" },
@@ -1125,6 +1126,7 @@ requires-dist = [
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = ">=0.3.23" },
     { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.0a87,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
+    { name = "hydra-core", specifier = ">=1.3,<2" },
     { name = "math-verify", marker = "extra == 'dev'" },
     { name = "numpy" },
     { name = "orjson" },
