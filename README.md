@@ -17,7 +17,7 @@ See [`training/README.md`](./training/README.md) for configuration, recipes, and
 
 ## For AI Agents
 
-The primary reference for agents working in this repo is **[`skills/dev/SKILL.md`](skills/dev/SKILL.md)** — it maps tasks and error signals to specific reference files. Start there, not the READMEs.
+Two agent skills cover this repo: **[`skills/fireworks-fine-tuning/SKILL.md`](skills/fireworks-fine-tuning/SKILL.md)** for **managed fine-tuning** (SFT/DPO/RFT driven through `firectl`), and **[`skills/dev/SKILL.md`](skills/dev/SKILL.md)** for the **Training SDK** power-user path (recipes, custom loops, RL internals). Each maps tasks and error signals to specific reference files — start there, not the READMEs.
 
 ## Repository Structure
 
@@ -33,15 +33,11 @@ training/           Training SDK recipes, utilities, and examples
 skills/             Agent skills and reference docs
 ```
 
-## Fireworks Agent skill
+## Fine-tuning skills
 
-- [`skills/fireworks-agent/SKILL.md`](skills/fireworks-agent/SKILL.md)
-  — end-to-end fine-tuning via the Fireworks Agent (`firectl
-  session`). Give it one natural-language instruction and it handles
-  data inspection, model selection, hyperparameter sweeps, training,
-  evaluation, and deployment. Includes the full session lifecycle:
-  create, stream events, answer the agent's mid-run questions,
-  recover from failures, and clean up.
+- **[`skills/fireworks-fine-tuning/SKILL.md`](skills/fireworks-fine-tuning/SKILL.md)** — the primary skill for **managed fine-tuning** (SFT / DPO / RFT). Your coding agent drives the `firectl` primitives directly: choose a method, prepare + validate a dataset, launch + monitor a job, pick a training shape, deploy, and troubleshoot. Successor to the Pilot agent.
+- [`skills/dev/SKILL.md`](skills/dev/SKILL.md) — the Training SDK power-user path (fork a recipe, custom training loop, RL internals, hotload, distillation).
+- _Deprecated:_ [`skills/fireworks-agent/`](skills/fireworks-agent/SKILL.md) (Pilot, `firectl session`) and [`skills/research/fireworks-auto-tune/`](skills/research/fireworks-auto-tune/SKILL.md) (customer `firectl` SFT) — both superseded by `skills/fireworks-fine-tuning/`.
 
 ## Contributing
 
