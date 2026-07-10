@@ -52,12 +52,15 @@ paths byte-for-byte. The pieces:
   (``dictsort``) and the ``<|"|>`` string-escape token.
 * **Assistant tool calls**: Pass an HF-shaped tool call dict on the
   message: ``message["tool_calls"] = [{"function": {"name": ...,
-  "arguments": <dict or json string>}}]``. The renderer emits
-  ``<|tool_call>call:name{key:value,...}<tool_call|>`` matching the
-  template. ``arguments`` may be a dict (preferred) or a JSON string;
-  JSON strings are parsed and re-emitted as a dict so that round-trips
-  via tinker's ``ToolCall`` (which always carries a JSON string) match
-  HF parity.
+  "arguments": <dict or json string>}}]``. The renderer mirrors the
+  template's two branches exactly: a **dict** ``arguments`` renders as
+  native ``<|tool_call>call:name{key:<|"|>value<|"|>,...}<tool_call|>``,
+  while a **JSON-string** ``arguments`` is emitted **verbatim** inside the
+  braces (``call:name{{"key":"value"}}``) — because the official template
+  does (``elif arguments is string``). It is NOT parsed and re-serialized
+  to native: tinker's ``ToolCall`` / OpenAI / ``normalize_messages`` all
+  carry ``arguments`` as a JSON string, so verbatim is the byte-exact path
+  serving/inference takes through ``apply_chat_template``.
 * **Tool responses (OpenAI ``role:tool``)**: The standard OpenAI shape —
   ``{"role": "tool", "content": ..., "tool_call_id": ...}`` following an
   assistant-with-``tool_calls`` — is folded (in ``_preprocess_messages``) into
@@ -105,7 +108,6 @@ Special-token IDs (Gemma 4 tokenizer)::
 
 from __future__ import annotations
 
-import json
 import re
 import threading
 from collections.abc import Callable, Mapping
@@ -423,33 +425,22 @@ def _format_tool_block(tools: list) -> str:
     return "".join(f"{_TOOL_OPEN}{_format_function_declaration(t).strip()}{_TOOL_CLOSE}" for t in tools)
 
 
-def _coerce_tool_arguments(args: Any) -> Any:
-    """Normalize tool-call arguments for parity rendering.
-
-    Tinker's ``ToolCall`` model carries arguments as a JSON string; HF's chat
-    template input shape carries them as a dict. We accept both: a dict is
-    used as-is, and a string is parsed as JSON if it round-trips to a dict
-    (matching what HF would emit). A non-JSON string is preserved verbatim
-    so the literal-string branch of the template's ``arguments is string``
-    case still works.
-    """
-    if isinstance(args, dict):
-        return args
-    if isinstance(args, str):
-        try:
-            parsed = json.loads(args)
-        except (json.JSONDecodeError, ValueError):
-            return args
-        if isinstance(parsed, dict):
-            return parsed
-        return args
-    return args
-
-
 def _format_tool_call(tc: Any) -> str:
     """Render a single tool call as ``<|tool_call>call:name{args}<tool_call|>``.
 
-    Accepts both HF-dict and tinker ``ToolCall`` pydantic shapes.
+    Mirrors the official template's two ``arguments`` branches EXACTLY, and does
+    NOT coerce between them, so that whatever ``apply_chat_template`` would emit
+    for a given ``arguments`` value at inference the renderer emits at training::
+
+        {%- if function['arguments'] is mapping -%}   native key:<|"|>value<|"|>
+        {%- elif function['arguments'] is string -%}  {{ arguments }}  (verbatim)
+
+    Tinker's ``ToolCall`` (and the OpenAI wire shape, and cookbook
+    ``normalize_messages``) carry ``arguments`` as a JSON string, so the string
+    branch is the path serving/inference actually takes. A JSON string is NOT
+    parsed and re-serialized into the native form, because the template does not:
+    the model is trained on exactly the bytes the template (hence inference)
+    produces. Accepts both HF-dict and tinker ``ToolCall`` pydantic shapes.
     """
     if hasattr(tc, "function") and not isinstance(tc, dict):
         fn_name = tc.function.name
@@ -459,15 +450,14 @@ def _format_tool_call(tc: Any) -> str:
         fn_name = fn["name"]
         raw_args = fn.get("arguments")
 
-    args = _coerce_tool_arguments(raw_args) if raw_args is not None else {}
     out = [f"{_TOOL_CALL_OPEN}call:{fn_name}{{"]
-    if isinstance(args, dict):
+    if isinstance(raw_args, dict):
         items = []
-        for k, v in _dictsort(args.items()):
+        for k, v in _dictsort(raw_args.items()):
             items.append(f"{k}:{_format_argument(v, escape_keys=False)}")
         out.append(",".join(items))
-    elif isinstance(args, str):
-        out.append(args)
+    elif isinstance(raw_args, str):
+        out.append(raw_args)
     out.append(f"}}{_TOOL_CALL_CLOSE}")
     return "".join(out)
 
@@ -801,6 +791,13 @@ class Gemma4Renderer(Renderer):
            message, an empty one is synthesized to carry the marker.
         """
         result = _fold_tool_messages(list(messages))
+        # The official template folds a FIRST developer message into the system
+        # block (its guard is ``messages[0].role in ('system', 'developer')``),
+        # emitting a ``<|turn>system`` header. A mid-conversation developer
+        # message stays verbatim. Remap the first turn here so the header is
+        # ``<|turn>system`` rather than ``<|turn>developer``.
+        if result and result[0].get("role") == "developer":
+            result[0] = {**result[0], "role": "system"}
         if not self.enable_thinking:
             return result
 
