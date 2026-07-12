@@ -119,6 +119,15 @@ class Config:
     shapes, this is auto-populated from the shape's
     ``max_supported_context_length``.  Must be set manually on the
     manual path (no training shape)."""
+    renderer_name: str = ""
+    """Cookbook renderer used for response grading, and — only when the HF
+    tokenizer ships no ``chat_template`` (e.g. DeepSeek-V4) — for building
+    rollout prompt tokens via ``renderer.build_generation_prompt(...)`` +
+    ``sample_with_prompt_tokens`` instead of ``tokenizer.apply_chat_template``.
+    Models whose tokenizer has a chat template keep the apply_chat_template
+    rollout path regardless of this field. Empty = infer from
+    ``deployment.tokenizer_model`` (see
+    :func:`training.utils.supervised.resolve_renderer_name`)."""
     lora_rank: int = 0
     lora_alpha: int | None = 32
     """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
@@ -483,7 +492,23 @@ def main(
         # Renderer used to grade the model's response channel (see
         # _response_text_for_grading): restores the prompt-prefilled <think>
         # and strips the think block so reward sees the post-think answer.
-        response_renderer = build_renderer(tokenizer, cfg.deployment.tokenizer_model)
+        response_renderer = build_renderer(
+            tokenizer, cfg.deployment.tokenizer_model, cfg.renderer_name
+        )
+        # Rollout prompt construction. Models whose HF tokenizer ships no
+        # chat_template (e.g. DeepSeek-V4, whose template source of truth is
+        # DeepSeek's encoding package) cannot go through
+        # tokenizer.apply_chat_template inside sample_with_tokens; build
+        # prompt tokens with the cookbook renderer (selected by
+        # cfg.renderer_name) + sample_with_prompt_tokens instead. Models whose
+        # tokenizer does ship a chat template keep the existing
+        # apply_chat_template path unchanged.
+        use_renderer_prompts = getattr(tokenizer, "chat_template", None) is None
+        if use_renderer_prompts:
+            logger.info(
+                "Rollout prompts: renderer-backed (renderer_name=%r; tokenizer ships no chat_template)",
+                cfg.renderer_name,
+            )
         concurrency_controller = None
         sampler = None
         if uses_recipe_sampler:
@@ -587,11 +612,23 @@ def main(
                 return None
 
             try:
-                sampled = await sampler.sample_with_tokens(
-                    messages=input_messages,
-                    n=completions_per_prompt,
-                    **sample_kwargs,
-                )
+                if use_renderer_prompts:
+                    from training.utils.rl.rollout.renderer import model_input_to_token_ids
+
+                    model_input = response_renderer.build_generation_prompt(input_messages)
+                    prompt_token_ids = model_input_to_token_ids(model_input)
+                    sampled = await sampler.sample_with_prompt_tokens(
+                        prompt_token_ids,
+                        n=completions_per_prompt,
+                        stop=response_renderer.get_stop_sequences(),
+                        **sample_kwargs,
+                    )
+                else:
+                    sampled = await sampler.sample_with_tokens(
+                        messages=input_messages,
+                        n=completions_per_prompt,
+                        **sample_kwargs,
+                    )
             except Exception as e:
                 # HTTP 425 during deployment hot-load is counted as a sample failure.
                 logger.warning("Sampling failed: %s", e)
