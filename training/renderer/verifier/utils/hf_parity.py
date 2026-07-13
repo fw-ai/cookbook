@@ -34,7 +34,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
 # ``tinker_cookbook.renderers.get_renderer``.
 import training.renderer  # noqa: F401
-from training.utils.supervised import prepare_messages_with_tools
+from training.utils.supervised import normalize_messages
 
 
 @dataclasses.dataclass
@@ -78,7 +78,6 @@ def compare_renderer_to_hf(
     renderer_name: str,
     tokenizer_model: str,
     messages: list[dict],
-    tools: list[dict] | None = None,
     add_generation_prompt: bool = True,
     apply_chat_template_kwargs: dict[str, Any] | None = None,
 ) -> HFParityResult:
@@ -96,11 +95,7 @@ def compare_renderer_to_hf(
         )
 
     renderer = get_renderer(renderer_name, tokenizer)
-    normalized = prepare_messages_with_tools(
-        messages,
-        renderer=renderer,
-        tools=tools,
-    )
+    normalized = normalize_messages(messages)
 
     if add_generation_prompt:
         renderer_input = renderer.build_generation_prompt(normalized, role="assistant")
@@ -112,7 +107,6 @@ def compare_renderer_to_hf(
     # ``BatchEncoding`` depending on the transformers version; normalize.
     hf_result = tokenizer.apply_chat_template(
         messages,
-        tools=tools,
         tokenize=True,
         add_generation_prompt=add_generation_prompt,
         **(apply_chat_template_kwargs or {}),

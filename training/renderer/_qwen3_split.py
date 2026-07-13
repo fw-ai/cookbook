@@ -1,4 +1,4 @@
-"""Local Qwen3 / Qwen3.5 / Qwen3.6 / Qwen3.7 renderers.
+"""Local Qwen3 / Qwen3.5 / Qwen3.6 renderers with multi-turn SFT disaggregate support.
 
 Upstream ``tinker_cookbook.renderers.qwen3`` and
 ``tinker_cookbook.renderers.qwen3_5`` ship without a
@@ -16,24 +16,12 @@ override before any caller resolves a renderer via ``get_renderer``.
 
 from __future__ import annotations
 
-import dataclasses
-from typing import cast
-
-import tinker
 from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
-    Message,
-    RenderContext,
-    RenderedMessage,
-    TrainOnWhat,
-)
 from tinker_cookbook.renderers.qwen3 import (
-    ImageProcessorProtocol,
     Qwen3DisableThinkingRenderer,
     Qwen3Renderer,
     Qwen3VLInstructRenderer,
     Qwen3VLRenderer,
-    image_to_chunk,
 )
 from tinker_cookbook.renderers.qwen3_5 import (
     Qwen3_5DisableThinkingRenderer,
@@ -57,7 +45,9 @@ class Qwen3VLSplitRenderer(DisaggregateMultiTurnMixin, Qwen3VLRenderer):
     pass
 
 
-class Qwen3VLInstructSplitRenderer(DisaggregateMultiTurnMixin, Qwen3VLInstructRenderer):
+class Qwen3VLInstructSplitRenderer(
+    DisaggregateMultiTurnMixin, Qwen3VLInstructRenderer
+):
     pass
 
 
@@ -185,283 +175,12 @@ class Qwen3_6PreserveThinkingSplitRenderer(Qwen3_5SplitRenderer):
         has_think = False
         if isinstance(content, list):
             has_think = any(
-                isinstance(p, dict) and p.get("type") == "thinking" for p in content
+                isinstance(p, dict) and p.get("type") == "thinking"
+                for p in content
             )
         elif isinstance(content, str):
             has_think = "<think>" in content
         return "" if has_think else "<think>\n\n</think>\n\n"
-
-
-class _Qwen3_7TemplateMixin:
-    """Qwen3.7 template deltas on top of the Qwen3.6 renderer family.
-
-    Qwen3.7 keeps the Qwen3.6 vocabulary, special tokens, thinking blocks,
-    XML tool-call format, parser, and stop token. Its stock template differs
-    in three places that the upstream Qwen3.5 renderer does not model:
-
-    * An assistant remains in the active query/tool chain until the next real
-      user query, so its thinking stays visible while tool results are added.
-    * Consecutive tool results share one ``user`` envelope.
-    * Tool declarations retain their OpenAI
-      ``{"type":"function","function":...}`` wrapper.
-
-    Everything else deliberately delegates to Qwen3.6.
-    """
-
-    @staticmethod
-    def _visible_text(message: Message) -> str:
-        content = message.get("content", "")
-        if isinstance(content, str):
-            return content
-        return "".join(
-            part.get("text", "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        )
-
-    def _format_tool_calls_chunks(self, message: Message):
-        """Match Qwen3.7's conditional separator before the first tool call."""
-        assert "tool_calls" in message, "tool_calls are required to format tool calls"
-        separator = "\n\n" if self._visible_text(message).strip() else ""
-        return [
-            {
-                "type": "text",
-                "text": separator
-                + "\n".join(
-                    self._format_tool_call_xml(tool_call)
-                    for tool_call in message["tool_calls"]
-                ),
-            }
-        ]
-
-    def _render_tool_response(
-        self,
-        message: Message,
-        ctx: RenderContext,
-    ) -> RenderedMessage:
-        """Render consecutive tool results in one HF-compatible user turn.
-
-        ``RenderContext`` has the previous message but no look-ahead. A tool
-        group is opened by its first result, continued without another header,
-        and closed either at the conversation tail or by the following
-        non-tool message's header.
-        """
-        first_in_group = not (
-            ctx.prev_message is not None and ctx.prev_message.get("role") == "tool"
-        )
-        header_text = ""
-        if first_in_group:
-            maybe_newline = "\n" if ctx.idx > 0 else ""
-            header_text = f"{maybe_newline}<|im_start|>user"
-
-        content = message.get("content", "")
-        if isinstance(content, str):
-            trimmed_content: str | list[dict] = content.strip()
-        else:
-            # The HF template applies ``|trim`` after rendering the complete
-            # multimodal tool result. Preserve image boundaries while removing
-            # whitespace only from the outermost text parts.
-            trimmed_content = [dict(part) for part in content]
-            for part in trimmed_content:
-                if part.get("type") == "text":
-                    part["text"] = part.get("text", "").lstrip()
-                    if part["text"]:
-                        break
-                elif part.get("type") == "image":
-                    break
-            for part in reversed(trimmed_content):
-                if part.get("type") == "text":
-                    part["text"] = part.get("text", "").rstrip()
-                    if part["text"]:
-                        break
-                elif part.get("type") == "image":
-                    break
-
-        content_message = dict(message)
-        content_message["content"] = trimmed_content
-        content_parts = self._preprocess_message_parts(content_message)
-        output_parts = [
-            {"type": "text", "text": "\n<tool_response>\n"},
-            *content_parts,
-            {"type": "text", "text": "\n</tool_response>"},
-        ]
-        if ctx.is_last:
-            output_parts.append({"type": "text", "text": "<|im_end|>"})
-
-        merged_output_parts: list[dict] = []
-        for part in output_parts:
-            if (
-                part["type"] == "text"
-                and merged_output_parts
-                and merged_output_parts[-1]["type"] == "text"
-            ):
-                merged_output_parts[-1]["text"] += part["text"]
-            else:
-                merged_output_parts.append(dict(part))
-
-        output: list[tinker.ModelInputChunk] = []
-        for part in merged_output_parts:
-            if part["type"] == "image":
-                assert self.image_processor is not None, (
-                    "image_processor is required to render image content"
-                )
-                output.append(
-                    image_to_chunk(
-                        image_or_str=part["image"],
-                        image_processor=cast(
-                            ImageProcessorProtocol,
-                            self.image_processor,
-                        ),
-                    )
-                )
-            else:
-                output.append(
-                    tinker.types.EncodedTextChunk(
-                        tokens=self.tokenizer.encode(
-                            part["text"],
-                            add_special_tokens=False,
-                        )
-                    )
-                )
-
-        header = None
-        if header_text:
-            header = tinker.types.EncodedTextChunk(
-                tokens=self.tokenizer.encode(
-                    header_text,
-                    add_special_tokens=False,
-                )
-            )
-        return RenderedMessage(
-            header=header,
-            output=output,
-            stop_overlap=(
-                tinker.types.EncodedTextChunk(
-                    tokens=self.tokenizer.encode("\n", add_special_tokens=False)
-                )
-                if ctx.is_last
-                else None
-            ),
-        )
-
-    def render_message(
-        self,
-        message: Message,
-        ctx: RenderContext,
-    ) -> RenderedMessage:
-        if message["role"] == "system" and isinstance(message.get("content"), list):
-            if any(
-                isinstance(part, dict) and part.get("type") == "image"
-                for part in message["content"]
-            ):
-                raise ValueError("System message cannot contain images.")
-
-        if message["role"] == "tool":
-            return self._render_tool_response(message, ctx)
-
-        # HF's ``last_query_index`` is the last real user query, not the last
-        # message. Mark assistants in an active tool chain as current so the
-        # inherited renderer retains their thinking in default mode.
-        inherited_ctx = ctx
-        if message["role"] == "assistant":
-            inherited_ctx = dataclasses.replace(
-                ctx,
-                is_last=ctx.idx > ctx.last_user_index,
-            )
-        rendered = super().render_message(message, inherited_ctx)
-
-        # A non-tool message closes the preceding tool-result group. The
-        # inherited header already starts with the newline after <|im_end|>.
-        if ctx.prev_message is not None and ctx.prev_message.get("role") == "tool":
-            end_tokens = self.tokenizer.encode(
-                "<|im_end|>",
-                add_special_tokens=False,
-            )
-            old_header_tokens = list(rendered.header.tokens) if rendered.header else []
-            rendered = RenderedMessage(
-                header=tinker.types.EncodedTextChunk(
-                    tokens=end_tokens + old_header_tokens
-                ),
-                output=rendered.output,
-                stop_overlap=rendered.stop_overlap,
-            )
-        if ctx.is_last:
-            rendered = RenderedMessage(
-                header=rendered.header,
-                output=rendered.output,
-                stop_overlap=tinker.types.EncodedTextChunk(
-                    tokens=self.tokenizer.encode("\n", add_special_tokens=False)
-                ),
-            )
-        return rendered
-
-    def create_conversation_prefix_with_tools(
-        self,
-        tools,
-        system_prompt: str = "",
-    ):
-        """Keep OpenAI wrappers exactly as Qwen3.7's HF template serializes them."""
-        wrapped_tools = [{"type": "function", "function": tool} for tool in tools]
-        return super().create_conversation_prefix_with_tools(
-            wrapped_tools,
-            system_prompt=system_prompt,
-        )
-
-    def build_supervised_example(
-        self,
-        messages,
-        train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ):
-        """Add HF's final newline as a masked, template-injected token.
-
-        Generation prompts get this newline from the following assistant
-        header. A closed conversation has no following header, while the HF
-        template still emits ``<|im_end|>\n``. Keep the extra token out of the
-        loss because it is not part of the model's ``<|im_end|>`` stop signal.
-        """
-        model_input, weights = super().build_supervised_example(
-            messages,
-            train_on_what=train_on_what,
-        )
-        newline_tokens = self.tokenizer.encode("\n", add_special_tokens=False)
-        if newline_tokens:
-            weights[-len(newline_tokens) :] = 0
-        return model_input, weights
-
-
-class Qwen3_7SplitRenderer(_Qwen3_7TemplateMixin, Qwen3_6SplitRenderer):
-    pass
-
-
-class Qwen3_7DisableThinkingSplitRenderer(
-    _Qwen3_7TemplateMixin,
-    Qwen3_6DisableThinkingSplitRenderer,
-):
-    pass
-
-
-class Qwen3_7PreserveThinkingSplitRenderer(
-    _Qwen3_7TemplateMixin,
-    Qwen3_6PreserveThinkingSplitRenderer,
-):
-    pass
-
-
-# Dedicated VL aliases keep model resolution explicit. The implementation is
-# intentionally shared with the text aliases: Qwen3.7 uses Qwen3.5's vision
-# tokens and image-chunk transport, while the Qwen3.7 mixin supplies the exact
-# thinking/tool-history template deltas. The separate names ensure only VL
-# checkpoints load an image processor.
-class Qwen3_7VLSplitRenderer(Qwen3_7SplitRenderer):
-    pass
-
-
-class Qwen3_7VLDisableThinkingSplitRenderer(Qwen3_7DisableThinkingSplitRenderer):
-    pass
-
-
-class Qwen3_7VLPreserveThinkingSplitRenderer(Qwen3_7PreserveThinkingSplitRenderer):
-    pass
 
 
 register_renderer("qwen3", lambda tok, ip=None: Qwen3SplitRenderer(tok))
@@ -483,7 +202,9 @@ register_renderer(
 )
 register_renderer(
     "qwen3_5_disable_thinking",
-    lambda tok, ip=None: Qwen3_5DisableThinkingSplitRenderer(tok, image_processor=ip),
+    lambda tok, ip=None: Qwen3_5DisableThinkingSplitRenderer(
+        tok, image_processor=ip
+    ),
 )
 register_renderer(
     "qwen3_6",
@@ -491,45 +212,13 @@ register_renderer(
 )
 register_renderer(
     "qwen3_6_disable_thinking",
-    lambda tok, ip=None: Qwen3_6DisableThinkingSplitRenderer(tok, image_processor=ip),
+    lambda tok, ip=None: Qwen3_6DisableThinkingSplitRenderer(
+        tok, image_processor=ip
+    ),
 )
 register_renderer(
     "qwen3_6_preserve_thinking",
-    lambda tok, ip=None: Qwen3_6PreserveThinkingSplitRenderer(tok, image_processor=ip),
-)
-register_renderer(
-    "qwen3_7",
-    lambda tok, ip=None: Qwen3_7SplitRenderer(tok, image_processor=ip),
-)
-register_renderer(
-    "qwen3_7_disable_thinking",
-    lambda tok, ip=None: Qwen3_7DisableThinkingSplitRenderer(
-        tok,
-        image_processor=ip,
-    ),
-)
-register_renderer(
-    "qwen3_7_preserve_thinking",
-    lambda tok, ip=None: Qwen3_7PreserveThinkingSplitRenderer(
-        tok,
-        image_processor=ip,
-    ),
-)
-register_renderer(
-    "qwen3_7_vl",
-    lambda tok, ip=None: Qwen3_7VLSplitRenderer(tok, image_processor=ip),
-)
-register_renderer(
-    "qwen3_7_vl_disable_thinking",
-    lambda tok, ip=None: Qwen3_7VLDisableThinkingSplitRenderer(
-        tok,
-        image_processor=ip,
-    ),
-)
-register_renderer(
-    "qwen3_7_vl_preserve_thinking",
-    lambda tok, ip=None: Qwen3_7VLPreserveThinkingSplitRenderer(
-        tok,
-        image_processor=ip,
+    lambda tok, ip=None: Qwen3_6PreserveThinkingSplitRenderer(
+        tok, image_processor=ip
     ),
 )

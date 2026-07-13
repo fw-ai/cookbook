@@ -26,7 +26,6 @@ A renderer can pass one and still fail the other; both are needed.
 from __future__ import annotations
 
 import dataclasses
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -44,7 +43,6 @@ class _Case:
     renderer: str
     tokenizer_model: str
     messages: list[dict]
-    tools: list[dict] | None = None
     apply_chat_template_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
     xfail_reason: str | None = None  # if set, mark the test xfail with this reason
 
@@ -66,61 +64,6 @@ _KIMI_REASONING_MSGS = [
         "role": "assistant",
         "reasoning_content": "2+2 is basic arithmetic.",
         "content": "4.",
-    },
-    {"role": "user", "content": "And 3+3?"},
-]
-
-_QWEN3_7_TOKENIZER = (
-    "/shared/qwen3p7-plus-llm-think/hf"
-    if Path("/shared/qwen3p7-plus-llm-think/hf/tokenizer_config.json").exists()
-    else "Qwen/Qwen3.6-27B"
-)
-_QWEN3_7_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get weather for a city.",
-            "parameters": {
-                "type": "object",
-                "properties": {"city": {"type": "string"}},
-                "required": ["city"],
-            },
-        },
-    }
-]
-_QWEN3_7_ACTIVE_PARALLEL_TOOL_MSGS = [
-    {"role": "user", "content": "Compare the weather in SF and NYC."},
-    {
-        "role": "assistant",
-        "reasoning_content": "I need current data for both cities.",
-        "content": "Checking both.",
-        "tool_calls": [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "arguments": {"city": "San Francisco"},
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "arguments": {"city": "New York"},
-                },
-            },
-        ],
-    },
-    {"role": "tool", "content": "San Francisco: 72F"},
-    {"role": "tool", "content": "NYC: 68F"},
-]
-_QWEN3_7_PRESERVED_MULTITURN_MSGS = [
-    {"role": "user", "content": "What is 2+2?"},
-    {
-        "role": "assistant",
-        "reasoning_content": "Two plus two is four.",
-        "content": "4",
     },
     {"role": "user", "content": "And 3+3?"},
 ]
@@ -212,36 +155,6 @@ _CASES: list[_Case] = [
         messages=_MULTI_TURN_MSGS,
         apply_chat_template_kwargs={"preserve_thinking": True},
     ),
-    # Qwen3.7 is a thin Qwen3.6 specialization. On developer machines this
-    # uses the exact downloaded qwen3p7-plus-llm-think tokenizer; CI falls
-    # back to the template-compatible public Qwen3.6 tokenizer.
-    _Case(
-        case_id="qwen3_7-thinking-single-turn",
-        renderer="qwen3_7",
-        tokenizer_model=_QWEN3_7_TOKENIZER,
-        messages=_SHORT_MSGS,
-    ),
-    _Case(
-        case_id="qwen3_7-disable-thinking",
-        renderer="qwen3_7_disable_thinking",
-        tokenizer_model=_QWEN3_7_TOKENIZER,
-        messages=_SHORT_MSGS,
-        apply_chat_template_kwargs={"enable_thinking": False},
-    ),
-    _Case(
-        case_id="qwen3_7-preserve-thinking-multi-turn",
-        renderer="qwen3_7_preserve_thinking",
-        tokenizer_model=_QWEN3_7_TOKENIZER,
-        messages=_QWEN3_7_PRESERVED_MULTITURN_MSGS,
-        apply_chat_template_kwargs={"preserve_thinking": True},
-    ),
-    _Case(
-        case_id="qwen3_7-active-parallel-tools",
-        renderer="qwen3_7",
-        tokenizer_model=_QWEN3_7_TOKENIZER,
-        messages=_QWEN3_7_ACTIVE_PARALLEL_TOOL_MSGS,
-        tools=_QWEN3_7_TOOLS,
-    ),
     _Case(
         case_id="kimi_k25-single-turn",
         renderer="kimi_k25",
@@ -283,7 +196,6 @@ def test_renderer_matches_hf_chat_template(case: _Case) -> None:
             renderer_name=case.renderer,
             tokenizer_model=case.tokenizer_model,
             messages=case.messages,
-            tools=case.tools,
             add_generation_prompt=True,
             apply_chat_template_kwargs=case.apply_chat_template_kwargs,
         )
