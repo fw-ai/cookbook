@@ -10,6 +10,7 @@ from tinker_cookbook.renderers import (
     ParseTermination,
     RenderContext,
     Renderer,
+    ToolCall,
     TrainOnWhat,
 )
 from tinker_cookbook.renderers.base import RenderedMessage
@@ -484,6 +485,28 @@ def test_normalize_messages_supports_openai_tool_call_shape():
     tool_call = normalized[0]["tool_calls"][0]
     assert tool_call.function.name == "lake_move"
     assert tool_call.function.arguments == '{"action": "RIGHT"}'
+
+
+def test_normalize_messages_accepts_renderer_parsed_tool_call() -> None:
+    """Verifier round trips pass the renderer's structured ToolCall back in."""
+    parsed_tool_call = ToolCall(
+        function=ToolCall.FunctionBody(
+            name="get_weather",
+            arguments='{"city": "San Francisco"}',
+        )
+    )
+
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [parsed_tool_call],
+            }
+        ]
+    )
+
+    assert normalized[0]["tool_calls"] == [parsed_tool_call]
 
 
 def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():
@@ -996,6 +1019,17 @@ def test_resolve_renderer_name_prefers_qwen3_6() -> None:
     assert resolve_renderer_name("Qwen/Qwen3.6-27B") == "qwen3_6"
     assert resolve_renderer_name("Qwen/Qwen3.6-9B") == "qwen3_6"
     assert resolve_renderer_name("custom/qwen3_6-finetune") == "qwen3_6"
+
+
+def test_resolve_renderer_name_prefers_qwen3_7() -> None:
+    """HF and Fireworks Qwen3.7 spellings use the dedicated thin alias."""
+    assert resolve_renderer_name("Qwen/Qwen3.7-Plus-LLM-Think") == "qwen3_7"
+    assert resolve_renderer_name("custom/qwen3_7-finetune") == "qwen3_7"
+    assert (
+        resolve_renderer_name("accounts/fireworks/models/qwen3p7-plus-llm-think")
+        == "qwen3_7"
+    )
+    assert resolve_renderer_name("/shared/qwen3p7-plus-llm-think/hf") == "qwen3_7"
 
 
 def test_resolve_renderer_name_prefers_gemma4() -> None:

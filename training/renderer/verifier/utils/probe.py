@@ -37,7 +37,7 @@ from tinker_cookbook.renderers.base import (
 # renderers ("glm5", "gemma4", etc.) under the names exposed by
 # ``tinker_cookbook.renderers.get_renderer``.
 import training.renderer  # noqa: F401
-from training.utils.supervised import normalize_messages
+from training.utils.supervised import normalize_messages, prepare_messages_with_tools
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,9 @@ def resolve_dispatch(
 
         api_key = api_key or _os.environ.get("FIREWORKS_API_KEY")
         if not api_key:
-            raise DispatchError("FIREWORKS_API_KEY not set; cannot resolve deployment_id")
+            raise DispatchError(
+                "FIREWORKS_API_KEY not set; cannot resolve deployment_id"
+            )
         base_url = base_url or _os.environ.get(
             "FIREWORKS_BASE_URL", "https://api.fireworks.ai"
         )
@@ -373,7 +375,9 @@ def _call_completion(
         kwargs.update(extra_kwargs)
 
     response = client.chat.completions.create(**kwargs)
-    payload = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+    payload = (
+        response.model_dump() if hasattr(response, "model_dump") else dict(response)
+    )
 
     prompt_ids = payload.get("prompt_token_ids")
     completion_ids: list[int] = []
@@ -437,7 +441,11 @@ def run_probe(
     The artifact is JSON-serialisable. The caller writes it to disk.
     """
     renderer = get_renderer(renderer_name, tokenizer)
-    normalized = normalize_messages(messages)
+    normalized = prepare_messages_with_tools(
+        messages,
+        renderer=renderer,
+        tools=tools,
+    )
 
     # 1) Local prompt render
     prompt_input = renderer.build_generation_prompt(normalized, role="assistant")
@@ -468,10 +476,8 @@ def run_probe(
         and len(completion_tokens) >= len(api_prompt_tokens)
         and completion_tokens[: len(api_prompt_tokens)] == api_prompt_tokens
     ):
-        completion_tokens = completion_tokens[len(api_prompt_tokens):]
-        completion_text = tokenizer.decode(
-            completion_tokens, skip_special_tokens=False
-        )
+        completion_tokens = completion_tokens[len(api_prompt_tokens) :]
+        completion_text = tokenizer.decode(completion_tokens, skip_special_tokens=False)
         echo_stripped = True
 
     # 3) Round-trip the completion through the renderer's parser so the
@@ -489,8 +495,7 @@ def run_probe(
         completion_message: Any = parsed_msg
     else:
         completion_message = {"role": "assistant", "content": completion_text}
-    full_messages_raw = list(messages) + [completion_message]
-    full_messages = normalize_messages(full_messages_raw)
+    full_messages = normalized + normalize_messages([completion_message])
 
     # Authoritative source for tokens AND per-token weights: the renderer's
     # own build_supervised_example. This honours per-renderer customization
@@ -517,7 +522,9 @@ def run_probe(
         # Pad span_refs so downstream indexing doesn't crash; the sanity flag
         # tells the human something is off and the audit table will look weird.
         if len(span_refs) < len(full_tokens):
-            span_refs = span_refs + [span_refs[-1]] * (len(full_tokens) - len(span_refs))
+            span_refs = span_refs + [span_refs[-1]] * (
+                len(full_tokens) - len(span_refs)
+            )
         else:
             span_refs = span_refs[: len(full_tokens)]
 
@@ -540,7 +547,9 @@ def run_probe(
         "full_render_prompt_prefix_matches_api": (
             full_tokens[: len(api_prompt_tokens)] == api_prompt_tokens
         ),
-        "tokenization_diverged_count": sum(1 for p in provenance if p == _PROV_DIVERGED),
+        "tokenization_diverged_count": sum(
+            1 for p in provenance if p == _PROV_DIVERGED
+        ),
         "echo_prompt_stripped": echo_stripped,
         "completion_token_count": len(completion_tokens),
         "completion_stop_reason": api.get("stop_reason"),
