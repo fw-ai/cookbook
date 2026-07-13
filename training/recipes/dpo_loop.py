@@ -114,6 +114,8 @@ class Config:
 
     beta: float = 0.1
     learning_rate: float = 1e-5
+    weight_decay: float = DEFAULT_ADAM["weight_decay"]
+    """Adam weight decay. Defaults to the shared cookbook Adam default."""
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
     """Per-step LR scheduler spec for managed and local DPO runs."""
 
@@ -381,6 +383,8 @@ async def _train_loop(
 
     if runner is None:
         runner = RunnerIO()
+    adam_kwargs = adam_params.model_dump()
+    adam_kwargs.pop("learning_rate", None)
     pipe: asyncio.Queue = asyncio.Queue()
     sem = asyncio.Semaphore(cfg.ref_cache_concurrency)
 
@@ -408,7 +412,7 @@ async def _train_loop(
             base_lr=cfg.learning_rate,
             total_steps=total_steps,
         )
-        step_adam_params = tinker.AdamParams(learning_rate=step_lr, **DEFAULT_ADAM)
+        step_adam_params = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
         optim_result = policy.optim_step(step_adam_params)
         step += 1
 
@@ -739,7 +743,9 @@ def main(
         )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+        adam_kwargs = dict(DEFAULT_ADAM)
+        adam_kwargs["weight_decay"] = cfg.weight_decay
+        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Stream-render dataset + (optional) ref cache ---------------------
         #

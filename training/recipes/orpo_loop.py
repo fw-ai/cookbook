@@ -80,7 +80,6 @@ from training.utils.runner_state import start_running, write_completed, write_ru
 
 logger = logging.getLogger(__name__)
 
-
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -99,6 +98,8 @@ class Config:
 
     orpo_lambda: float = 1.0
     learning_rate: float = 1e-5
+    weight_decay: float = DEFAULT_ADAM["weight_decay"]
+    """Adam weight decay. Defaults to the shared cookbook Adam default."""
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
     """Per-step LR scheduler spec. Legacy flat scheduler fields below remain accepted."""
 
@@ -399,6 +400,8 @@ def main(
             lr_scheduler.warmup_ratio,
             cfg.learning_rate,
         )
+        adam_kwargs = dict(DEFAULT_ADAM)
+        adam_kwargs["weight_decay"] = cfg.weight_decay
 
         def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
             nonlocal step
@@ -427,7 +430,7 @@ def main(
                     base_lr=cfg.learning_rate,
                     total_steps=total_steps,
                 )
-            adam_params = tinker.AdamParams(learning_rate=current_lr, **DEFAULT_ADAM)
+            adam_params = tinker.AdamParams(learning_rate=current_lr, **adam_kwargs)
 
             loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
             result = client.forward_backward_custom(datums, loss_fn)
