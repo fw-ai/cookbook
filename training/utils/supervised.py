@@ -73,7 +73,9 @@ def _tool_prefix_builder(renderer: Renderer):
     prefix_builder = getattr(renderer, "create_conversation_prefix_with_tools", None)
     if prefix_builder is None:
         return None
-    class_builder = getattr(type(renderer), "create_conversation_prefix_with_tools", None)
+    class_builder = getattr(
+        type(renderer), "create_conversation_prefix_with_tools", None
+    )
     if class_builder is Renderer.create_conversation_prefix_with_tools:
         return None
     return prefix_builder
@@ -118,6 +120,19 @@ def resolve_renderer_name(
         return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
+    # Qwen3.7 VL thinking checkpoints use the same Qwen3.5 image-chunk
+    # transport plus Qwen3.7's thinking/tool template. Route these before the
+    # generic Qwen3.7 match so build_renderer loads the image processor.
+    is_qwen3_7 = any(
+        marker in normalized_model_name for marker in ("qwen3.7", "qwen3_7", "qwen3p7")
+    )
+    if is_qwen3_7 and "vl" in normalized_model_name:
+        return "qwen3_7_vl"
+    # Qwen3.7 text-only thinking checkpoints retain the Qwen3.6/Qwen3.5
+    # tokenizer and XML tool format. Match Fireworks' ``qwen3p7`` resource
+    # spelling as well as HF-style dotted/underscored names.
+    if is_qwen3_7:
+        return "qwen3_7"
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
     # adds an opt-in `preserve_thinking` flag (renders historical thinking
     # for ALL assistant turns when true). Default invocation produces output
@@ -286,6 +301,9 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
     """Normalize common tool-call shapes into Tinker's structured ToolCall form."""
     normalized: list[ToolCall] = []
     for tool_call in tool_calls or []:
+        if isinstance(tool_call, ToolCall):
+            normalized.append(tool_call)
+            continue
         if not isinstance(tool_call, Mapping):
             raise TypeError(f"Unsupported tool call type: {type(tool_call)!r}")
 
@@ -496,7 +514,9 @@ def normalize_messages(
         reasoning = message.get("reasoning")
         if thinking is None and reasoning is not None:
             if not isinstance(reasoning, str):
-                raise TypeError(f"Unsupported reasoning value type: {type(reasoning)!r}")
+                raise TypeError(
+                    f"Unsupported reasoning value type: {type(reasoning)!r}"
+                )
             if reasoning:
                 normalized_message["content"] = [
                     {"type": "thinking", "thinking": reasoning},
@@ -536,6 +556,52 @@ def normalize_messages(
         normalized.append(normalized_message)
 
     return normalized
+
+
+def prepare_messages_with_tools(
+    messages: Iterable[Mapping[str, Any]],
+    *,
+    renderer: Renderer,
+    tools: Sequence[Mapping[str, Any]] | None = None,
+) -> list[Message]:
+    """Normalize messages and prepend the renderer's canonical tool prefix.
+
+    Training and the live verifier both call this function so a local prompt
+    can never omit tool declarations that are present in the gateway request.
+    """
+    normalized_messages = list(normalize_messages(messages))
+    if not tools:
+        return normalized_messages
+
+    prefix_builder = _tool_prefix_builder(renderer)
+    if prefix_builder is None:
+        return normalized_messages
+
+    tool_specs = [
+        tool["function"]
+        for tool in tools
+        if isinstance(tool, Mapping) and isinstance(tool.get("function"), Mapping)
+    ]
+    if not tool_specs:
+        return normalized_messages
+
+    system_prompt = ""
+    if normalized_messages and normalized_messages[0].get("role") == "system":
+        system_content = normalized_messages.pop(0).get("content")
+        if isinstance(system_content, str):
+            system_prompt = system_content
+        elif isinstance(system_content, list):
+            system_prompt = "\n".join(
+                part.get("text", "")
+                for part in system_content
+                if isinstance(part, Mapping) and part.get("type") == "text"
+            )
+
+    prefix_messages = list(prefix_builder(tool_specs, system_prompt=system_prompt))
+    if any("trainable" in message for message in normalized_messages):
+        for prefix_message in prefix_messages:
+            prefix_message.setdefault("trainable", False)
+    return prefix_messages + normalized_messages
 
 
 def _stable_chunk_sentinel(chunk: Any) -> int:
@@ -936,9 +1002,8 @@ def _equivalent_single_example_train_on_what(
     the false-positive warning while preserving true warnings for non-equivalent
     conversations.
     """
-    if (
-        train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES
-        or getattr(renderer, "has_extension_property", False)
+    if train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES or getattr(
+        renderer, "has_extension_property", False
     ):
         return train_on_what
 
@@ -1006,34 +1071,11 @@ def render_messages_to_datums(
     content is preserved as the system prompt passed to the renderer.
     Renderers without tool-prefix support silently drop the field.
     """
-    normalized_messages = list(normalize_messages(messages))
-
-    if tools:
-        prefix_builder = _tool_prefix_builder(renderer)
-        if prefix_builder is not None:
-            tool_specs = [
-                t["function"]
-                for t in tools
-                if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)
-            ]
-            if tool_specs:
-                system_prompt = ""
-                if normalized_messages and normalized_messages[0].get("role") == "system":
-                    sys_content = normalized_messages.pop(0).get("content")
-                    if isinstance(sys_content, str):
-                        system_prompt = sys_content
-                    elif isinstance(sys_content, list):
-                        system_prompt = "\n".join(
-                            part.get("text", "")
-                            for part in sys_content
-                            if isinstance(part, Mapping) and part.get("type") == "text"
-                        )
-                prefix = prefix_builder(tool_specs, system_prompt=system_prompt)
-                prefix_messages = list(prefix)
-                if any("trainable" in m for m in normalized_messages):
-                    for prefix_msg in prefix_messages:
-                        prefix_msg.setdefault("trainable", False)
-                normalized_messages = prefix_messages + normalized_messages
+    normalized_messages = prepare_messages_with_tools(
+        messages,
+        renderer=renderer,
+        tools=tools,
+    )
 
     effective_train_on_what = parse_train_on_what(train_on_what)
     if any("trainable" in m for m in normalized_messages):

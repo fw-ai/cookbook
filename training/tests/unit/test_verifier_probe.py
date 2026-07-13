@@ -23,7 +23,7 @@ from tinker_cookbook.renderers.base import (
     RenderContext,
     RenderedMessage,
     Renderer,
-    Role,
+    ToolCall,
     TrainOnWhat,
 )
 
@@ -99,6 +99,11 @@ class _ToyRenderer(Renderer):
     def get_stop_sequences(self) -> list[int]:
         return [_T["<eot>"]]
 
+    def create_conversation_prefix_with_tools(self, tools, system_prompt=""):
+        del tools
+        content = "hello" if not system_prompt else system_prompt
+        return [Message(role="system", content=content)]
+
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
         role = message["role"]
         content = message["content"] or ""
@@ -136,6 +141,25 @@ def _toy_factory(tokenizer, image_processor=None):
     return _ToyRenderer(tokenizer)
 
 
+class _ToolCallToyRenderer(_ToyRenderer):
+    def parse_response(self, response: list[int]):
+        message, termination = super().parse_response(response)
+        message["tool_calls"] = [
+            ToolCall(
+                function=ToolCall.FunctionBody(
+                    name="lookup",
+                    arguments='{"query": "weather"}',
+                )
+            )
+        ]
+        return message, termination
+
+
+def _tool_call_toy_factory(tokenizer, image_processor=None):
+    del image_processor
+    return _ToolCallToyRenderer(tokenizer)
+
+
 @pytest.fixture
 def toy_renderer():
     register_renderer("__verifier_test_toy", _toy_factory)
@@ -145,20 +169,32 @@ def toy_renderer():
         unregister_renderer("__verifier_test_toy")
 
 
+@pytest.fixture
+def tool_call_toy_renderer():
+    register_renderer("__verifier_test_tool_call", _tool_call_toy_factory)
+    try:
+        yield "__verifier_test_tool_call"
+    finally:
+        unregister_renderer("__verifier_test_tool_call")
+
+
 class _StubClient:
     """Returns prompt + completion token IDs that match the toy renderer's
     own render of the conversation, so the probe's alignment check
     classifies tokens cleanly."""
 
-    def __init__(self, prompt_token_ids: list[int], completion_token_ids: list[int], completion_text: str):
+    def __init__(
+        self,
+        prompt_token_ids: list[int],
+        completion_token_ids: list[int],
+        completion_text: str,
+    ):
         self._prompt_token_ids = prompt_token_ids
         self._completion_token_ids = completion_token_ids
         self._completion_text = completion_text
 
         # Mimic the .chat.completions.create surface
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **kwargs: Any):
         # The probe sends echo=True, raw_output=True, return_token_ids=True
@@ -167,7 +203,10 @@ class _StubClient:
                 "prompt_token_ids": self._prompt_token_ids,
                 "choices": [
                     {
-                        "message": {"role": "assistant", "content": self._completion_text},
+                        "message": {
+                            "role": "assistant",
+                            "content": self._completion_text,
+                        },
                         "finish_reason": "stop",
                         "raw_output": {
                             "completion_token_ids": self._completion_token_ids,
@@ -189,8 +228,10 @@ def test_run_probe_artifact_shape_and_provenance(toy_renderer):
     # The toy renderer's prompt for these messages would be:
     #   <sys> hello <user> world <asst>
     expected_prompt_ids = [
-        _T["<sys>"], _T["hello"],
-        _T["<user>"], _T["world"],
+        _T["<sys>"],
+        _T["hello"],
+        _T["<user>"],
+        _T["world"],
         _T["<asst>"],
     ]
     completion_text = "fine thanks"
@@ -282,6 +323,64 @@ def test_run_probe_strips_echoed_prompt(toy_renderer):
     assert artifact["sanity"]["completion_token_count"] == len(actual_completion_ids)
     # No spurious divergence after stripping.
     assert artifact["sanity"]["tokenization_diverged_count"] == 0
+
+
+def test_run_probe_includes_tools_in_local_prompt(toy_renderer):
+    tokenizer = _StubTokenizer()
+    messages = [{"role": "user", "content": "world"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+    expected_prompt_ids = [
+        _T["<sys>"],
+        _T["hello"],
+        _T["<user>"],
+        _T["world"],
+        _T["<asst>"],
+    ]
+    client = _StubClient(
+        prompt_token_ids=expected_prompt_ids,
+        completion_token_ids=[_T["fine"]],
+        completion_text="fine",
+    )
+
+    artifact = run_probe(
+        renderer_name=toy_renderer,
+        tokenizer=tokenizer,
+        client=client,
+        model="test/model",
+        messages=messages,
+        tools=tools,
+    )
+
+    assert artifact["sanity"]["renderer_prompt_matches_api_prompt"] is True
+
+
+def test_run_probe_round_trips_renderer_tool_call(tool_call_toy_renderer):
+    tokenizer = _StubTokenizer()
+    messages = [{"role": "user", "content": "hello"}]
+    expected_prompt_ids = [_T["<user>"], _T["hello"], _T["<asst>"]]
+    client = _StubClient(
+        prompt_token_ids=expected_prompt_ids,
+        completion_token_ids=[_T["fine"], _T["thanks"]],
+        completion_text="fine thanks",
+    )
+
+    artifact = run_probe(
+        renderer_name=tool_call_toy_renderer,
+        tokenizer=tokenizer,
+        client=client,
+        model="test/model",
+        messages=messages,
+    )
+
+    assert artifact["sanity"]["renderer_prompt_matches_api_prompt"] is True
 
 
 def test_inspect_renders_structured_summary(toy_renderer):
