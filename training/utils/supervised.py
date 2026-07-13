@@ -120,12 +120,18 @@ def resolve_renderer_name(
         return "minimax_m2"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
+    # Qwen3.7 VL thinking checkpoints use the same Qwen3.5 image-chunk
+    # transport plus Qwen3.7's thinking/tool template. Route these before the
+    # generic Qwen3.7 match so build_renderer loads the image processor.
+    is_qwen3_7 = any(
+        marker in normalized_model_name for marker in ("qwen3.7", "qwen3_7", "qwen3p7")
+    )
+    if is_qwen3_7 and "vl" in normalized_model_name:
+        return "qwen3_7_vl"
     # Qwen3.7 text-only thinking checkpoints retain the Qwen3.6/Qwen3.5
     # tokenizer and XML tool format. Match Fireworks' ``qwen3p7`` resource
     # spelling as well as HF-style dotted/underscored names.
-    if any(
-        marker in normalized_model_name for marker in ("qwen3.7", "qwen3_7", "qwen3p7")
-    ):
+    if is_qwen3_7:
         return "qwen3_7"
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
     # adds an opt-in `preserve_thinking` flag (renders historical thinking

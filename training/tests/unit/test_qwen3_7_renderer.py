@@ -97,10 +97,16 @@ def test_qwen3_7_variants_are_registered_with_expected_extension_property():
     default = get_renderer("qwen3_7", tokenizer)
     disabled = get_renderer("qwen3_7_disable_thinking", tokenizer)
     preserved = get_renderer("qwen3_7_preserve_thinking", tokenizer)
+    vl_default = get_renderer("qwen3_7_vl", tokenizer)
+    vl_disabled = get_renderer("qwen3_7_vl_disable_thinking", tokenizer)
+    vl_preserved = get_renderer("qwen3_7_vl_preserve_thinking", tokenizer)
 
     assert default.has_extension_property is False
     assert disabled.has_extension_property is False
     assert preserved.has_extension_property is True
+    assert vl_default.has_extension_property is False
+    assert vl_disabled.has_extension_property is False
+    assert vl_preserved.has_extension_property is True
 
 
 @pytest.mark.parametrize(

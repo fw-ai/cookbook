@@ -1032,6 +1032,40 @@ def test_resolve_renderer_name_prefers_qwen3_7() -> None:
     assert resolve_renderer_name("/shared/qwen3p7-plus-llm-think/hf") == "qwen3_7"
 
 
+def test_resolve_renderer_name_prefers_qwen3_7_vl() -> None:
+    assert resolve_renderer_name("Qwen/Qwen3.7-Plus-VL-Think") == "qwen3_7_vl"
+    assert (
+        resolve_renderer_name("accounts/fireworks/models/qwen3p7-plus-vl-think")
+        == "qwen3_7_vl"
+    )
+    assert resolve_renderer_name("/shared/qwen3p7-plus-vl-think/hf") == "qwen3_7_vl"
+
+
+def test_build_renderer_loads_image_processor_for_qwen3_7_vl(monkeypatch) -> None:
+    calls: list[tuple[str, object | None]] = []
+
+    def fake_get_image_processor(model_name):
+        assert model_name == "/shared/qwen3p7-plus-vl-think/hf"
+        return "qwen3.7-image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        calls.append((name, image_processor))
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    renderer = build_renderer(
+        tokenizer="tok",
+        tokenizer_model="/shared/qwen3p7-plus-vl-think/hf",
+    )
+
+    assert renderer == "renderer"
+    assert calls == [("qwen3_7_vl", "qwen3.7-image-processor")]
+
+
 def test_resolve_renderer_name_prefers_gemma4() -> None:
     """Gemma 4 models should resolve to the gemma4 renderer."""
     assert resolve_renderer_name("google/gemma-4-12b-it") == "gemma4"

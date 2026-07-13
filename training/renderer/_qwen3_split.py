@@ -17,6 +17,7 @@ override before any caller resolves a renderer via ``get_renderer``.
 from __future__ import annotations
 
 import dataclasses
+from typing import cast
 
 import tinker
 from tinker_cookbook.renderers import register_renderer
@@ -27,10 +28,12 @@ from tinker_cookbook.renderers.base import (
     TrainOnWhat,
 )
 from tinker_cookbook.renderers.qwen3 import (
+    ImageProcessorProtocol,
     Qwen3DisableThinkingRenderer,
     Qwen3Renderer,
     Qwen3VLInstructRenderer,
     Qwen3VLRenderer,
+    image_to_chunk,
 )
 from tinker_cookbook.renderers.qwen3_5 import (
     Qwen3_5DisableThinkingRenderer,
@@ -251,10 +254,75 @@ class _Qwen3_7TemplateMixin:
             maybe_newline = "\n" if ctx.idx > 0 else ""
             header_text = f"{maybe_newline}<|im_start|>user"
 
-        content = self._visible_text(message).strip()
-        output_text = f"\n<tool_response>\n{content}\n</tool_response>"
+        content = message.get("content", "")
+        if isinstance(content, str):
+            trimmed_content: str | list[dict] = content.strip()
+        else:
+            # The HF template applies ``|trim`` after rendering the complete
+            # multimodal tool result. Preserve image boundaries while removing
+            # whitespace only from the outermost text parts.
+            trimmed_content = [dict(part) for part in content]
+            for part in trimmed_content:
+                if part.get("type") == "text":
+                    part["text"] = part.get("text", "").lstrip()
+                    if part["text"]:
+                        break
+                elif part.get("type") == "image":
+                    break
+            for part in reversed(trimmed_content):
+                if part.get("type") == "text":
+                    part["text"] = part.get("text", "").rstrip()
+                    if part["text"]:
+                        break
+                elif part.get("type") == "image":
+                    break
+
+        content_message = dict(message)
+        content_message["content"] = trimmed_content
+        content_parts = self._preprocess_message_parts(content_message)
+        output_parts = [
+            {"type": "text", "text": "\n<tool_response>\n"},
+            *content_parts,
+            {"type": "text", "text": "\n</tool_response>"},
+        ]
         if ctx.is_last:
-            output_text += "<|im_end|>"
+            output_parts.append({"type": "text", "text": "<|im_end|>"})
+
+        merged_output_parts: list[dict] = []
+        for part in output_parts:
+            if (
+                part["type"] == "text"
+                and merged_output_parts
+                and merged_output_parts[-1]["type"] == "text"
+            ):
+                merged_output_parts[-1]["text"] += part["text"]
+            else:
+                merged_output_parts.append(dict(part))
+
+        output: list[tinker.ModelInputChunk] = []
+        for part in merged_output_parts:
+            if part["type"] == "image":
+                assert self.image_processor is not None, (
+                    "image_processor is required to render image content"
+                )
+                output.append(
+                    image_to_chunk(
+                        image_or_str=part["image"],
+                        image_processor=cast(
+                            ImageProcessorProtocol,
+                            self.image_processor,
+                        ),
+                    )
+                )
+            else:
+                output.append(
+                    tinker.types.EncodedTextChunk(
+                        tokens=self.tokenizer.encode(
+                            part["text"],
+                            add_special_tokens=False,
+                        )
+                    )
+                )
 
         header = None
         if header_text:
@@ -266,14 +334,7 @@ class _Qwen3_7TemplateMixin:
             )
         return RenderedMessage(
             header=header,
-            output=[
-                tinker.types.EncodedTextChunk(
-                    tokens=self.tokenizer.encode(
-                        output_text,
-                        add_special_tokens=False,
-                    )
-                )
-            ],
+            output=output,
             stop_overlap=(
                 tinker.types.EncodedTextChunk(
                     tokens=self.tokenizer.encode("\n", add_special_tokens=False)
@@ -288,6 +349,13 @@ class _Qwen3_7TemplateMixin:
         message: Message,
         ctx: RenderContext,
     ) -> RenderedMessage:
+        if message["role"] == "system" and isinstance(message.get("content"), list):
+            if any(
+                isinstance(part, dict) and part.get("type") == "image"
+                for part in message["content"]
+            ):
+                raise ValueError("System message cannot contain images.")
+
         if message["role"] == "tool":
             return self._render_tool_response(message, ctx)
 
@@ -379,6 +447,23 @@ class Qwen3_7PreserveThinkingSplitRenderer(
     pass
 
 
+# Dedicated VL aliases keep model resolution explicit. The implementation is
+# intentionally shared with the text aliases: Qwen3.7 uses Qwen3.5's vision
+# tokens and image-chunk transport, while the Qwen3.7 mixin supplies the exact
+# thinking/tool-history template deltas. The separate names ensure only VL
+# checkpoints load an image processor.
+class Qwen3_7VLSplitRenderer(Qwen3_7SplitRenderer):
+    pass
+
+
+class Qwen3_7VLDisableThinkingSplitRenderer(Qwen3_7DisableThinkingSplitRenderer):
+    pass
+
+
+class Qwen3_7VLPreserveThinkingSplitRenderer(Qwen3_7PreserveThinkingSplitRenderer):
+    pass
+
+
 register_renderer("qwen3", lambda tok, ip=None: Qwen3SplitRenderer(tok))
 register_renderer(
     "qwen3_disable_thinking",
@@ -426,6 +511,24 @@ register_renderer(
 register_renderer(
     "qwen3_7_preserve_thinking",
     lambda tok, ip=None: Qwen3_7PreserveThinkingSplitRenderer(
+        tok,
+        image_processor=ip,
+    ),
+)
+register_renderer(
+    "qwen3_7_vl",
+    lambda tok, ip=None: Qwen3_7VLSplitRenderer(tok, image_processor=ip),
+)
+register_renderer(
+    "qwen3_7_vl_disable_thinking",
+    lambda tok, ip=None: Qwen3_7VLDisableThinkingSplitRenderer(
+        tok,
+        image_processor=ip,
+    ),
+)
+register_renderer(
+    "qwen3_7_vl_preserve_thinking",
+    lambda tok, ip=None: Qwen3_7VLPreserveThinkingSplitRenderer(
         tok,
         image_processor=ip,
     ),
