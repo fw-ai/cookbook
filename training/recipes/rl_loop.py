@@ -33,7 +33,7 @@ import signal
 import asyncio
 import logging
 from contextlib import ExitStack
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, List, Literal, Optional
 from dataclasses import field, dataclass
 
 import tinker
@@ -155,6 +155,14 @@ class Config:
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 disables clipping."""
 
+    emit_grad_norm_metrics: Literal["off", "basic", "detailed"] | bool | None = None
+    """Optional trainer-side gradient-norm telemetry for optimizer steps.
+
+    ``"basic"`` emits the global norm; ``"detailed"`` also emits coarse
+    parameter-category norms. ``None`` preserves the default zero-overhead
+    behavior.
+    """
+
     policy_loss: PolicyLoss = "grpo"
     """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
 
@@ -262,6 +270,14 @@ class Config:
     All paths are optional; unset paths are silently skipped.
     See training/utils/runner.py for file format details.
     """
+
+
+def _build_adam_params(cfg: Config) -> tinker.AdamParams:
+    adam_kwargs = dict(DEFAULT_ADAM)
+    adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+    if cfg.emit_grad_norm_metrics is not None:
+        adam_kwargs["emit_grad_norm_metrics"] = cfg.emit_grad_norm_metrics
+    return tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -575,9 +591,7 @@ def main(
         all_rows = raw_dataset * cfg.epochs
         rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         cursor = RawRowCursor(max_rows=len(all_rows))
-        adam_kwargs = dict(DEFAULT_ADAM)
-        adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
+        adam_params = _build_adam_params(cfg)
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,

@@ -247,6 +247,36 @@ class TestBuiltinLossConfig:
 
         assert metrics["inference_kld"] == pytest.approx(0.0)
         assert metrics["inference_diff"] == pytest.approx(0.0)
+        assert metrics["raw_inference_logprob_coverage"] == pytest.approx(1.0)
+
+    def test_partial_raw_logprobs_report_incomplete_observability_coverage(self):
+        datums = [
+            build_datum_from_token_mask(
+                token_ids=[10, 11, 12, 13],
+                token_mask=[0, 1, 1, 1],
+            ).datum
+            for _ in range(2)
+        ]
+        builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.0))
+        loss_fn = builder(
+            [1.0, 1.0],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            [2, 2],
+            [[-9.0, -9.0, -9.0], [-9.0, -9.0, -9.0]],
+            [[-0.1, -0.2, -0.3], [-0.1, -0.2, -0.3]],
+            [[-1.0, -2.0, -3.0], []],
+        )
+        _loss, metrics = loss_fn(
+            datums,
+            [
+                torch.tensor([-1.0, -2.0, -3.0], requires_grad=True),
+                torch.tensor([-1.0, -2.0, -3.0], requires_grad=True),
+            ],
+        )
+
+        assert metrics["inference_kld"] == pytest.approx(0.0)
+        assert metrics["inference_diff"] == pytest.approx(0.0)
+        assert metrics["raw_inference_logprob_coverage"] == pytest.approx(0.5)
 
 
 class TestKLBetaRoutesToClientSide:

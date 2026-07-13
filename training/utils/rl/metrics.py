@@ -259,6 +259,7 @@ def compute_step_metrics(
     all_truncated: list[bool] = []
     correct_count = 0
     total_samples = 0
+    total_trained_datums = 0
 
     for pg in prompt_groups:
         all_rewards.extend(pg.rewards)
@@ -266,8 +267,10 @@ def compute_step_metrics(
         all_truncated.extend(pg.truncated)
         correct_count += sum(1 for r in pg.rewards if r > 0.5)
         total_samples += len(pg.rewards)
+        total_trained_datums += len(pg.data)
 
     metrics["rollout/samples_completed"] = total_samples
+    metrics["rollout/trained_datums"] = total_trained_datums
     if total_samples > 0:
         metrics["rollout/reward"] = sum(all_rewards) / total_samples
         metrics["rollout/accuracy"] = correct_count / total_samples
