@@ -48,6 +48,7 @@ DCP_TIMEOUT_S: int = 2700
 
 
 def _install_tinker_future_retrieve_compat() -> None:
+    """Keep metadata-only disabled until all trainer versions support it."""
     current = getattr(tinker_api_future_impl, "FutureRetrieveRequest", None)
     if current is None or getattr(current, "_fw_cookbook_compat", False):
         return
