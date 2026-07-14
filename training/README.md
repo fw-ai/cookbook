@@ -17,6 +17,19 @@ Each recipe is a single Python file you can fork and customize.
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
 | SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
 
+## Case studies
+
+Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each takes one real problem end-to-end (**build data -> evaluate the base model -> fine-tune -> evaluate again and measure the improvement**). These run on the **Fireworks Python SDK** (`fireworks-ai`) plus the [eval-protocol](https://github.com/eval-protocol/python-sdk) framework — no `firectl` and no cookbook training loop required.
+
+| Case study | Technique | Dataset | "Customer problem" | Open |
+| --- | --- | --- | --- | --- |
+| [sft_prompt_router](case-studies/sft_prompt_router) | Text SFT / classification (Python SDK) | Prompt-Routing-Dataset | Route prompts to a small vs big model (multi-field classifier) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_sft_sdk.ipynb) |
+| [sft_cord_receipts](case-studies/sft_cord_receipts) | Vision SFT (Python SDK) | CORD receipts | Teach the model a new structured-output task | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_cord_receipts/cord_receipt_sft_sdk.ipynb) |
+| [dpo_style](case-studies/dpo_style) | DPO (Python SDK) | HelpSteer3 | "Write the way we write" (style/quality preferences) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/dpo_style/dpo_helpsteer3_sdk.ipynb) |
+| [reasoning_rl](case-studies/reasoning_rl) | GRPO via managed RFT (Python SDK) | GSM8K | Improve step-by-step reasoning | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/reasoning_rl/rft_grpo_math.ipynb) |
+
+**Setup.** These are independent of the cookbook install above — just `pip install fireworks-ai eval-protocol` (a couple add extras, noted in their own READMEs) and a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
+
 ## Getting started
 
 ### 1. Clone and install
