@@ -44,6 +44,7 @@ on it.
 
 from __future__ import annotations
 
+import base64
 import inspect
 import logging
 from dataclasses import dataclass
@@ -179,22 +180,35 @@ def _collect_base64_images(
     messages: List[Any],
     model_input: tinker.ModelInput,
 ) -> List[str]:
-    """Collect base64 image payloads for the completions ``images`` field."""
-    seen: set[str] = set()
+    """Collect the renderer's exact image payloads for completions."""
+    rendered_images: List[str] = []
+
+    for chunk in model_input.chunks:
+        if isinstance(chunk, tinker.types.ImageChunk):
+            encoded = base64.b64encode(bytes(chunk.data)).decode("ascii")
+            rendered_images.append(
+                _validate_base64_image_payload(
+                    f"data:image/{chunk.format};base64,{encoded}",
+                    source="ImageChunk.data",
+                )
+            )
+        elif isinstance(chunk, tinker.types.ImageAssetPointerChunk):
+            rendered_images.append(
+                _validate_base64_image_payload(
+                    str(chunk.location),
+                    source="ImageAssetPointerChunk.location",
+                )
+            )
+
+    # ModelInput is the trainer contract. When the renderer materializes an
+    # image (for example PNG -> JPEG), serving must consume those same bytes.
+    if rendered_images:
+        return rendered_images
+
     images: List[str] = []
 
     def _add(value: str, *, source: str) -> None:
-        payload = _validate_base64_image_payload(value, source=source)
-        if payload not in seen:
-            seen.add(payload)
-            images.append(payload)
-
-    for chunk in model_input.chunks:
-        if isinstance(chunk, tinker.types.ImageAssetPointerChunk):
-            _add(
-                str(chunk.location),
-                source="ImageAssetPointerChunk.location",
-            )
+        images.append(_validate_base64_image_payload(value, source=source))
 
     for msg in normalize_messages(messages):
         content = msg.get("content")
@@ -567,6 +581,7 @@ def _build_multimodal_rollout_sample(
     completion_tokens: List[int],
     completion_logprobs: List[float],
     raw_completion_logprobs: List[float] | None = None,
+    routing_matrices: List[str] | None = None,
     reward: float,
     finish_reason: str,
     text: str,
@@ -592,6 +607,9 @@ def _build_multimodal_rollout_sample(
         finish_reason=finish_reason,
         text=text,
         prompt_model_input=prompt_model_input,
+        routing_matrices=(
+            list(routing_matrices) if routing_matrices is not None else None
+        ),
         raw_logprobs=(
             [0.0] * len(prompt_text_ids) + list(raw_completion_logprobs)
             if raw_completion_logprobs is not None
@@ -782,6 +800,7 @@ async def single_turn_renderer_rollout(
             completion_tokens=out_tokens,
             completion_logprobs=out_logprobs,
             raw_completion_logprobs=raw_out_logprobs,
+            routing_matrices=getattr(c, "routing_matrices", None),
             reward=reward,
             finish_reason=getattr(c, "finish_reason", "stop"),
             text=getattr(c, "text", ""),

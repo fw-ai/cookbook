@@ -218,6 +218,142 @@ recipe:
     assert cfg.deployment.replica_count == 2
 
 
+def test_load_yaml_provision_applies_hydra_overrides(tmp_path: Path) -> None:
+    if importlib.util.find_spec("hydra") is None:
+        pytest.skip("hydra is not installed")
+    config_path = tmp_path / "fireworks.yaml"
+    config_path.write_text(
+        """
+common:
+  base_model: accounts/test/models/base
+  tokenizer_model: Qwen/Test
+  lora_rank: 16
+trainers:
+  policy:
+    training_shape_id: accounts/test/trainingShapes/policy
+    base_model: accounts/test/models/policy-base
+    weight_sync_deployment: rollout
+    replica_count: 1
+deployments:
+  rollout:
+    tokenizer_model: Qwen/Test
+    replica_count: 1
+    sample_timeout: 60
+recipe:
+  rl:
+    trainer: policy
+    deployment: rollout
+""",
+        encoding="utf-8",
+    )
+
+    mode, cfg = module._load_yaml_provision(
+        mode=None,
+        recipe=None,
+        path=config_path,
+        overrides=[
+            "common.base_model=accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged",
+            "common.tokenizer_model=Qwen/Qwen3.5-9B",
+            "common.lora_rank=128",
+            "deployments.rollout.replica_count=3",
+            "deployments.rollout.sample_timeout=600",
+            (
+                "trainers.policy.training_shape_id="
+                "accounts/research/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
+            ),
+            "trainers.policy.base_model=accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged",
+            "trainers.policy.weight_sync_deployment=rollout",
+            "trainers.policy.replica_count=2",
+        ],
+    )
+
+    assert mode == "rl"
+    assert cfg.base_model == "accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged"
+    assert cfg.lora_rank == 128
+    assert cfg.deployment.replica_count == 3
+    assert cfg.deployment.sample_timeout == 600
+    assert cfg.trainer.training_shape_id == (
+        "accounts/research/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
+    )
+    assert cfg.trainer.replica_count == 2
+
+
+def test_load_yaml_provision_uses_provision_cli_recipe_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "fireworks.yaml"
+    config_path.write_text(
+        """
+provision_cli:
+  recipe: rl
+common:
+  base_model: accounts/test/models/base
+  tokenizer_model: Qwen/Test
+  lora_rank: 16
+trainers:
+  policy:
+    training_shape_id: accounts/test/trainingShapes/policy
+deployments:
+  rollout:
+    tokenizer_model: Qwen/Test
+    replica_count: 1
+recipe:
+  sft:
+    trainer: policy
+  rl:
+    trainer: policy
+    deployment: rollout
+    kl_beta: 0.2
+""",
+        encoding="utf-8",
+    )
+
+    mode, cfg = module._load_yaml_provision(mode=None, recipe=None, path=config_path)
+
+    assert mode == "rl"
+    assert cfg.kl_beta == 0.2
+    assert cfg.deployment.replica_count == 1
+
+
+def test_load_yaml_provision_uses_provision_cli_recipe_from_hydra_override(tmp_path: Path) -> None:
+    if importlib.util.find_spec("hydra") is None:
+        pytest.skip("hydra is not installed")
+    config_path = tmp_path / "fireworks.yaml"
+    config_path.write_text(
+        """
+provision_cli: {}
+common:
+  base_model: accounts/test/models/base
+  tokenizer_model: Qwen/Test
+  lora_rank: 16
+trainers:
+  policy:
+    training_shape_id: accounts/test/trainingShapes/policy
+deployments:
+  rollout:
+    tokenizer_model: Qwen/Test
+    replica_count: 1
+recipe:
+  sft:
+    trainer: policy
+  rl:
+    trainer: policy
+    deployment: rollout
+    kl_beta: 0.3
+""",
+        encoding="utf-8",
+    )
+
+    mode, cfg = module._load_yaml_provision(
+        mode=None,
+        recipe=None,
+        path=config_path,
+        overrides=["+provision_cli.recipe=rl"],
+    )
+
+    assert mode == "rl"
+    assert cfg.kl_beta == 0.3
+    assert cfg.deployment.replica_count == 1
+
+
 def test_trainer_base_model_defaults_to_common_base_model(tmp_path: Path) -> None:
     config_path = tmp_path / "fireworks.yaml"
     config_path.write_text(

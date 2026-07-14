@@ -9,7 +9,6 @@ All recipes are defined in the sibling ``fireworks.yaml`` file.
 
 from __future__ import annotations
 
-import argparse
 import copy
 import dataclasses
 import logging
@@ -21,9 +20,11 @@ from pathlib import Path
 from types import FrameType, UnionType
 from typing import Any, Callable, Literal, Union, get_args, get_origin, get_type_hints
 
+import hydra
 import yaml
 from fireworks.training.sdk import FiretitanServiceClient
 from fireworks.training.sdk.client import FiretitanTrainingClient
+from omegaconf import DictConfig, OmegaConf
 
 from training.utils import (
     AdaptiveConcurrencyController,
@@ -741,12 +742,23 @@ def _load_yaml_provision(
     mode: str | None,
     recipe: str | None,
     path: Path = FIREWORKS_YAML,
+    overrides: list[str] | None = None,
 ) -> tuple[ProvisionMode, Any]:
-    with path.open(encoding="utf-8") as handle:
-        doc = yaml.safe_load(handle) or {}
+    doc = _load_config_doc(path, overrides=overrides)
+    return _load_provision_doc(doc, mode=mode, recipe=recipe)
+
+
+def _load_provision_doc(
+    doc: dict[str, Any],
+    *,
+    mode: str | None,
+    recipe: str | None,
+) -> tuple[ProvisionMode, Any]:
     if not isinstance(doc, dict):
         raise ValueError("fireworks provision config must be a YAML mapping")
 
+    options = _pop_hydra_runtime_options(doc)
+    recipe = recipe if recipe is not None else options.get("recipe")
     recipe_name, recipe_cfg = _select_recipe(doc, mode=mode, recipe=recipe)
     resolved_mode = _canonical_mode(recipe_cfg.get("mode") or mode or _mode_from_recipe_name(recipe_name))
     if resolved_mode not in PROVISION_MODES:
@@ -760,9 +772,31 @@ def load_yaml_provision(
     mode: str | None,
     recipe: str | None,
     path: Path = FIREWORKS_YAML,
+    overrides: list[str] | None = None,
 ) -> tuple[ProvisionMode, Any]:
     """Load a Fireworks provisioning YAML and return its resolved mode/config."""
-    return _load_yaml_provision(mode=mode, recipe=recipe, path=path)
+    return _load_yaml_provision(mode=mode, recipe=recipe, path=path, overrides=overrides)
+
+
+def _load_config_doc(path: Path, *, overrides: list[str] | None) -> dict[str, Any]:
+    if overrides:
+        return _load_hydra_config_doc(path, overrides=overrides)
+    with path.open(encoding="utf-8") as handle:
+        doc = yaml.safe_load(handle) or {}
+    if not isinstance(doc, dict):
+        raise ValueError("fireworks provision config must be a YAML mapping")
+    return doc
+
+
+def _load_hydra_config_doc(path: Path, *, overrides: list[str]) -> dict[str, Any]:
+    config_path = path.resolve()
+    config_name = config_path.stem if config_path.suffix in {".yaml", ".yml"} else config_path.name
+    with hydra.initialize_config_dir(config_dir=str(config_path.parent), version_base="1.3"):
+        cfg = hydra.compose(config_name=config_name, overrides=overrides)
+    doc = OmegaConf.to_container(cfg, resolve=True)
+    if not isinstance(doc, dict):
+        raise ValueError("fireworks provision config must be a YAML mapping")
+    return doc
 
 
 def _select_recipe(
@@ -1050,28 +1084,23 @@ def resolve_config_path(config: str | None, config_name: str | None) -> Path:
     return _resolve_config_path(config, config_name)
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Start Fireworks training infrastructure and keep it alive.")
-    parser.add_argument("--config", help="Path to a Fireworks YAML config file (default: fireworks.yaml)")
-    parser.add_argument("--config-name", help="Load <name>.yaml from the provision directory (alternative to --config)")
-    parser.add_argument("--recipe", help="Recipe name defined at the top level of the config (e.g. sft, rl)")
-    parser.add_argument("--progress-interval-s", type=float, default=15.0)
-    parser.add_argument("--health-check-interval-s", type=float, default=60.0)
-    parser.add_argument("--cleanup-existing", action="store_true")
-    return parser.parse_args()
+def _pop_hydra_runtime_options(doc: dict[str, Any]) -> dict[str, Any]:
+    options = doc.pop("provision_cli", {}) or {}
+    if not isinstance(options, dict):
+        raise ValueError("provision_cli must be a mapping when provided")
+    return options
 
 
-def main() -> None:
+@hydra.main(config_path=".", config_name="fireworks", version_base="1.3")
+def main(config: DictConfig) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    args = _parse_args()
-    config_path = _resolve_config_path(args.config, args.config_name)
-    mode, cfg = _load_yaml_provision(mode=None, recipe=args.recipe, path=config_path)
+    doc = OmegaConf.to_container(config, resolve=True)
+    if not isinstance(doc, dict):
+        raise ValueError("fireworks provision config must be a YAML mapping")
+    mode, cfg = _load_provision_doc(mode=None, recipe=None, doc=doc)
     run_until_interrupted(
         mode,
         cfg,
-        progress_interval_s=args.progress_interval_s,
-        health_check_interval_s=args.health_check_interval_s,
-        cleanup_existing=args.cleanup_existing,
     )
 
 

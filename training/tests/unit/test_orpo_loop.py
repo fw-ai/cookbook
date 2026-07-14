@@ -6,6 +6,12 @@ import pytest
 import training.recipes.orpo_loop as module
 
 
+def test_config_uses_shared_default_weight_decay():
+    cfg = module.Config(log_path="/tmp/orpo_test_logs")
+
+    assert cfg.weight_decay == pytest.approx(module.DEFAULT_ADAM["weight_decay"])
+
+
 def test_main_rejects_invalid_base_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(log_path="/tmp/orpo_test_logs", base_model="qwen3-4b", dataset="/tmp/pairs.jsonl", tokenizer_model="Qwen/Qwen3-4B")

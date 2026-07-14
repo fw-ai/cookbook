@@ -178,7 +178,6 @@ class TrainerConfig:
     skip_validations: bool = False
     """Skip server-side shape validation. Requires superuser API key."""
 
-
 class WeightSyncScope(Enum):
     """How trainer weights are synced to the inference deployment.
 

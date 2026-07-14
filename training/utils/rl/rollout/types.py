@@ -315,6 +315,7 @@ def rollout_to_prompt_group(
                     s.prompt_model_input,
                     completion_tokens,
                 )
+                reference_model_input = datum.model_input
                 target_tokens = [
                     int(x) for x in datum.loss_fn_inputs["target_tokens"].data
                 ]
@@ -340,14 +341,30 @@ def rollout_to_prompt_group(
                     (i for i, w in enumerate(target_mask) if w > 0),
                     0,
                 )
-                per_sample_prompt_lens.append(shifted_first_active + 1)
+                sample_prompt_len = shifted_first_active + 1
+                per_sample_prompt_lens.append(sample_prompt_len)
+
+                if s.routing_matrices is not None:
+                    rm = build_r3_routing_matrices(
+                        s.routing_matrices,
+                        prompt_len=sample_prompt_len,
+                        model_input_len=len(target_mask),
+                        completion_only=router_replay_completion_only,
+                    )
+                    if rm is not None:
+                        datum = tinker.Datum(
+                            model_input=datum.model_input.model_copy(
+                                update={"routing_matrices": rm}
+                            ),
+                            loss_fn_inputs=datum.loss_fn_inputs,
+                        )
 
                 policy_data.append(datum)
 
                 if with_reference:
                     mask_len = len(target_mask)
                     reference_data.append(tinker.Datum(
-                        model_input=datum.model_input,
+                        model_input=reference_model_input,
                         loss_fn_inputs={
                             "target_tokens": tinker.TensorData(
                                 data=target_tokens,

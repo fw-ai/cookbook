@@ -21,7 +21,10 @@ Two agent skills cover this repo: **[`skills/fireworks-fine-tuning/SKILL.md`](sk
 
 ## Repository Structure
 
-Only `training/` is actively developed. Other top-level directories (`integrations/`, `multimedia/`, `archived/`) are kept for backward compatibility.
+`training/` is the primary development surface. `tools/` holds standalone
+customer-facing scripts (public `firectl` workflows). Other top-level
+directories (`integrations/`, `multimedia/`, `archived/`) are kept for backward
+compatibility.
 
 ```
 training/           Training SDK recipes, utilities, and examples
@@ -30,6 +33,7 @@ training/           Training SDK recipes, utilities, and examples
   examples/         Worked examples (RL, SFT, DPO, ORPO)
   verifier/         Renderer correctness validator + live React viewer
   tests/            Unit and end-to-end tests
+tools/              Standalone customer scripts (downloadable from GitHub)
 skills/             Agent skills and reference docs
 ```
 

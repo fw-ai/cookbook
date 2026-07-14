@@ -53,7 +53,7 @@ def test_model_input_to_token_ids_rejects_image_chunks():
         model_input_to_token_ids(_multimodal_prompt())
 
 
-def test_collect_base64_images_from_model_input_and_messages():
+def test_collect_base64_images_prefers_model_input_over_messages():
     messages = [
         {
             "role": "user",
@@ -64,7 +64,60 @@ def test_collect_base64_images_from_model_input_and_messages():
         }
     ]
     images = _collect_base64_images(messages, _multimodal_prompt())
-    assert images == [_BASE64_PNG, "data:image/png;base64,abc"]
+    assert images == [_BASE64_PNG]
+
+
+def test_collect_base64_images_uses_materialized_image_chunk_bytes():
+    model_input = tinker.ModelInput(
+        chunks=[
+            tinker.types.EncodedTextChunk(tokens=[10]),
+            tinker.types.ImageChunk(
+                data=b"renderer-jpeg",
+                format="jpeg",
+                expected_tokens=4,
+            ),
+            tinker.types.ImageChunk(
+                data=b"renderer-jpeg",
+                format="jpeg",
+                expected_tokens=4,
+            ),
+            tinker.types.EncodedTextChunk(tokens=[11]),
+        ]
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": _BASE64_PNG},
+            ],
+        }
+    ]
+
+    images = _collect_base64_images(messages, model_input)
+
+    assert images == [
+        "data:image/jpeg;base64,cmVuZGVyZXItanBlZw==",
+        "data:image/jpeg;base64,cmVuZGVyZXItanBlZw==",
+    ]
+
+
+def test_collect_base64_images_preserves_duplicate_message_images():
+    model_input = tinker.ModelInput(
+        chunks=[tinker.types.EncodedTextChunk(tokens=[10])]
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": _BASE64_PNG},
+                {"type": "image", "image": _BASE64_PNG},
+            ],
+        }
+    ]
+
+    images = _collect_base64_images(messages, model_input)
+
+    assert images == [_BASE64_PNG, _BASE64_PNG]
 
 
 def test_collect_base64_images_rejects_http_url():
@@ -288,6 +341,36 @@ def test_multimodal_inf_logprobs_match_datum_weight_index_space():
     assert len(inf_lp) >= response_start + (len(weights) - response_start)
 
 
+def test_multimodal_router_replay_uses_expanded_datum_boundary():
+    prompt = _multimodal_prompt()
+    run = _build_multimodal_rollout_sample(
+        prompt_model_input=prompt,
+        completion_tokens=[30, 31],
+        completion_logprobs=[-0.1, -0.2],
+        routing_matrices=["route-30", "route-31"],
+        reward=1.0,
+        finish_reason="stop",
+        text="hi",
+    )
+
+    pg = rollout_to_prompt_group(
+        Rollout(runs=[run, run]),
+        advantage_fn=lambda rewards: list(rewards),
+        with_reference=True,
+        router_replay_completion_only=True,
+    )
+
+    assert pg is not None
+    weights = [float(w) for w in pg.data[0].loss_fn_inputs["weights"].data]
+    active = [i for i, w in enumerate(weights) if w > 0]
+    routes = pg.data[0].model_input.routing_matrices
+    assert routes is not None
+    assert len(routes) == len(weights)
+    assert [routes[i] for i in active] == ["route-30", "route-31"]
+    assert all(routes[i] == "" for i in range(active[0]))
+    assert pg.ref_data[0].model_input.routing_matrices is None
+
+
 @pytest.mark.asyncio
 async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
     """Prompt-prefilled tokens are sliced off before renderer.parse_response."""
@@ -372,6 +455,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
                 finish_reason="stop",
                 inference_logprobs=[-0.3, -0.4],
                 sampling_logprobs=[-0.31, -0.41],
+                routing_matrices=["route-99", "route-100"],
             )
         ]
 
@@ -386,16 +470,19 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
         message_builder=_test_messages,
         reward_fn=_test_reward,
         tokenizer=tokenizer,
+        sample_kwargs={"include_routing_matrix": True},
     )
     assert run is not None
     assert captured["prompt_token_ids"] == [10, 11, 248056, 12]
     assert captured["kwargs"]["images"] == [_BASE64_PNG]
     assert captured["kwargs"]["logprobs"] is True
     assert captured["kwargs"]["return_token_ids"] is True
+    assert captured["kwargs"]["include_routing_matrix"] is True
     segment = run.segments[0]
     assert segment.prompt_model_input is not None
     assert segment.tokens[-2:] == [99, 100]
     assert segment.logprobs[-2:] == [-0.31, -0.41]
+    assert segment.routing_matrices == ["route-99", "route-100"]
 
 
 @pytest.mark.asyncio

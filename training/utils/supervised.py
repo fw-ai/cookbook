@@ -79,6 +79,66 @@ def _tool_prefix_builder(renderer: Renderer):
     return prefix_builder
 
 
+def renderer_declares_tools(renderer: Renderer) -> bool:
+    """Whether ``renderer`` actually renders tool declarations.
+
+    True only when the renderer OVERRIDES
+    ``create_conversation_prefix_with_tools`` (not the base :class:`Renderer`
+    stub). Both production (:func:`render_messages_to_datums`) and the renderer
+    QA harness gate tool-declaration rendering on this, so a renderer that can't
+    declare tools is never asked to.
+    """
+    return _tool_prefix_builder(renderer) is not None
+
+
+def build_tool_prefixed_messages(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    renderer: Renderer,
+    tools: Sequence[Mapping[str, Any]] | None = None,
+) -> list[Message]:
+    """Normalize a chat row and prepend the renderer's tool-declaration prefix.
+
+    This is the **single** message-assembly path shared by production SFT
+    (:func:`render_messages_to_datums`) and the renderer QA harness, so tests
+    render tool rows byte-for-byte the way training does. When ``tools`` is
+    provided and the renderer implements ``create_conversation_prefix_with_tools``
+    (see :func:`renderer_declares_tools`), the tool definitions are encoded as
+    renderer-specific prefix messages and prepended, folding a leading system
+    message's content into the prefix's ``system_prompt``. Renderers without
+    tool-prefix support drop the field (they do NOT raise), matching production.
+    """
+    normalized_messages = list(normalize_messages(messages))
+    if not tools:
+        return normalized_messages
+    prefix_builder = _tool_prefix_builder(renderer)
+    if prefix_builder is None:
+        return normalized_messages
+    tool_specs = [
+        t["function"]
+        for t in tools
+        if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)
+    ]
+    if not tool_specs:
+        return normalized_messages
+    system_prompt = ""
+    if normalized_messages and normalized_messages[0].get("role") == "system":
+        sys_content = normalized_messages.pop(0).get("content")
+        if isinstance(sys_content, str):
+            system_prompt = sys_content
+        elif isinstance(sys_content, list):
+            system_prompt = "\n".join(
+                part.get("text", "")
+                for part in sys_content
+                if isinstance(part, Mapping) and part.get("type") == "text"
+            )
+    prefix_messages = list(prefix_builder(tool_specs, system_prompt=system_prompt))
+    if any("trainable" in m for m in normalized_messages):
+        for prefix_msg in prefix_messages:
+            prefix_msg.setdefault("trainable", False)
+    return prefix_messages + normalized_messages
+
+
 def resolve_renderer_name(
     tokenizer_model: str,
     renderer_name: str = "",
@@ -378,10 +438,15 @@ def _normalize_content(content: Any) -> str | list[dict[str, Any]]:
                 )
                 continue
             raise TypeError(f"Unsupported message content part: {part!r}")
-        if normalized_parts and all(
-            part["type"] == "text" for part in normalized_parts
-        ):
-            return "".join(str(part["text"]) for part in normalized_parts)
+        # Preserve the content parts instead of collapsing an all-text list into
+        # a single joined string. Joining is lossy: it discards per-part
+        # boundaries, and each model's chat template trims parts differently
+        # (gemma-4 trims EACH part before joining, e.g. ["a ", "b"] -> "ab";
+        # every other cookbook renderer concatenates raw, e.g. -> "a b"). By
+        # keeping the list, each renderer applies its own per-part policy so the
+        # training tokens match the template. Renderers already handle list
+        # content (mixed text / thinking / image), and a single-element text
+        # list renders identically to the equivalent string.
         return normalized_parts
     raise TypeError(f"Unsupported message content type: {type(content)!r}")
 
@@ -1001,34 +1066,9 @@ def render_messages_to_datums(
     content is preserved as the system prompt passed to the renderer.
     Renderers without tool-prefix support silently drop the field.
     """
-    normalized_messages = list(normalize_messages(messages))
-
-    if tools:
-        prefix_builder = _tool_prefix_builder(renderer)
-        if prefix_builder is not None:
-            tool_specs = [
-                t["function"]
-                for t in tools
-                if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)
-            ]
-            if tool_specs:
-                system_prompt = ""
-                if normalized_messages and normalized_messages[0].get("role") == "system":
-                    sys_content = normalized_messages.pop(0).get("content")
-                    if isinstance(sys_content, str):
-                        system_prompt = sys_content
-                    elif isinstance(sys_content, list):
-                        system_prompt = "\n".join(
-                            part.get("text", "")
-                            for part in sys_content
-                            if isinstance(part, Mapping) and part.get("type") == "text"
-                        )
-                prefix = prefix_builder(tool_specs, system_prompt=system_prompt)
-                prefix_messages = list(prefix)
-                if any("trainable" in m for m in normalized_messages):
-                    for prefix_msg in prefix_messages:
-                        prefix_msg.setdefault("trainable", False)
-                normalized_messages = prefix_messages + normalized_messages
+    normalized_messages = build_tool_prefixed_messages(
+        messages, renderer=renderer, tools=tools
+    )
 
     effective_train_on_what = parse_train_on_what(train_on_what)
     if any("trainable" in m for m in normalized_messages):

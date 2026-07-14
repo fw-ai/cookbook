@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import tinker
+from tinker.lib.chunked_fwdbwd_helpers import combine_fwd_bwd_output_results
+
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.metrics import (
     build_accumulated_async_loop_stats,
@@ -131,6 +134,7 @@ class TestComputeStepMetrics:
 
         assert metrics["rollout/valid_prompt_groups"] == 6
         assert metrics["rollout/samples_completed"] == 1
+        assert metrics["rollout/trained_datums"] == 1
         assert metrics["rollout/filter_reject_ratio"] == 1 / 7
         assert metrics["rollout/sample_fail_count"] == 2
         assert metrics["perf/trainer_wait_for_sampler_time"] == 3.0
@@ -199,6 +203,48 @@ class TestFwdBwdMinibatchAveraging:
         )
         assert metrics["train/ppo_clip_frac"] == 0.42
         assert metrics["train/ppo_ratio_mean"] == 1.07
+
+    def test_k1_preserves_tinker_reduced_runtime_dp_sharding_evidence(self):
+        server_chunks = [
+            tinker.ForwardBackwardOutput(
+                loss_fn_output_type="cross_entropy",
+                loss_fn_outputs=[],
+                metrics={
+                    "dp_sharded_counts:min": True,
+                    "dp_sharded_counts:max": True,
+                    "local_input_sequences:sum": local_count,
+                    # ``:last`` is not a Tinker reducer.  This pins the live
+                    # failure mode: these legacy spellings are silently lost.
+                    "dp_sharded_counts:last": True,
+                    "local_input_sequences:last": local_count,
+                },
+            )
+            for local_count in (1, 2)
+        ]
+        only = combine_fwd_bwd_output_results(server_chunks)
+
+        assert only.metrics["dp_sharded_counts:min"] is True
+        assert only.metrics["dp_sharded_counts:max"] is True
+        assert only.metrics["local_input_sequences:sum"] == 3
+        assert "dp_sharded_counts:last" not in only.metrics
+        assert "local_input_sequences:last" not in only.metrics
+
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=[only],
+            optim_result=None,
+            n_accum=1,
+            timing_metrics={},
+        )
+
+        # Cookbook metric aggregation retains Tinker's reducer suffixes; the
+        # promotion gate validates min == max and maps these to its canonical
+        # numerics fields.
+        assert metrics["train/dp_sharded_counts:min"] == 1.0
+        assert metrics["train/dp_sharded_counts:max"] == 1.0
+        assert metrics["train/local_input_sequences:sum"] == 3.0
+        assert "train/dp_sharded_counts" not in metrics
+        assert "train/local_input_sequences" not in metrics
 
     def test_empty_fwd_bwd_results_emits_no_train_keys(self):
         metrics = compute_step_metrics(
