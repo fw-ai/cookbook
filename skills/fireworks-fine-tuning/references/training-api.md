@@ -18,14 +18,14 @@ There are two RFT paths, and they differ in **where the reward lives**. This mat
 
 | Path | Reward | Agent-drivable? |
 |---|---|---|
-| **Managed RFT** — `firectl reinforcement-fine-tuning-job create --evaluator <id>` | A **registered evaluator resource** (server-side, built in an e2b sandbox, eval v3) | **No, not headless.** `firectl evaluator create` (V1) is **deprecated**; you must register via **eval-protocol** (`pytest` auto-registers) or the **UI**. Use when a human is authoring the evaluator. |
+| **Managed RFT** — `firectl reinforcement-fine-tuning-job create --evaluator <id>` | A **registered evaluator resource** (server-side, built in an e2b sandbox, eval v3) | **Only with an admin-role key.** Register via **eval-protocol** (`pytest` auto-registers) or the **UI**; authoring calls `CreateEvaluatorV2`, which **requires admin role** (a user-role key gets 403). `firectl evaluator create` (V1) is **deprecated**. Use when an admin authors the evaluator. |
 | **Training-API RL** — fork `training.recipes.rl_loop` / `async_rl_loop` | An **inline `reward_fn(completion, row) -> float`** in the forked recipe (`row["ground_truth"]` carries the label) | **Yes.** No evaluator resource. Same shape as Tinker's reward-in-the-loop. The SDK provisions the trainer + rollout deployment. |
 
 **For an agent running RFT via this skill, use the inline-reward recipe path** (below). It needs no deprecated evaluator, mirrors Tinker, and is fully code-driven. Reserve the managed `--evaluator` path for when a human sets up the sandboxed evaluator via eval-protocol/UI.
 
-### Managed RFT: authoring the eval3 evaluator (agent-drivable via eval-protocol)
+### Managed RFT: authoring the eval3 evaluator (admin-role-gated)
 
-`firectl reinforcement-fine-tuning-job create` needs an **eval3 evaluator with an `entry_point`** — legacy evaluators are rejected (`InvalidArgument: managed RFT requires an eval3 evaluator`), and `firectl evaluator create` is deprecated. The **headless, agent-drivable** way to make one is **eval-protocol** (no UI needed):
+`firectl reinforcement-fine-tuning-job create` needs an **eval3 evaluator with an `entry_point`** — legacy evaluators are rejected (`InvalidArgument: managed RFT requires an eval3 evaluator`), and `firectl evaluator create` is deprecated. The code-first way to make one is **eval-protocol** (no UI), but **authoring requires an admin-role identity** — see the gate below:
 
 ```bash
 pip install eval-protocol          # provides @reward / EvaluationRow (needs Python 3.10+)
@@ -36,9 +36,9 @@ from eval_protocol import reward, EvaluationRow          # write the reward as c
 def category_match(row: EvaluationRow) -> float:
     return 1.0 if parse(row.output).get("category") == row.ground_truth else 0.0
 ```
-Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval3 evaluator + the dataset with Fireworks; then `firectl rftj create --base-model <m> --dataset <ds> --evaluator accounts/<acct>/evaluators/<id>`. So the "you need the UI" limitation is not fundamental — an agent can author eval3 in code.
+Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval3 evaluator + the dataset with Fireworks; then `firectl rftj create --base-model <m> --dataset <ds> --evaluator accounts/<acct>/evaluators/<id>`. So the "you need the UI" limitation is not fundamental: the flow is fully code-drivable via eval-protocol. But **authoring still requires an admin role** (below), so a standard user-role key cannot do it unattended.
 
-**Why the UI can and a headless agent can't — it's an admin-role gate (tested).** eval3 creation is a multi-RPC flow (`CreateEvaluatorV2` → `GetEvaluatorUploadEndpoint` → upload → `ValidateEvaluatorUpload` → e2b build). eval-protocol drives exactly this — but calling `CreateEvaluatorV2` with a normal user API key returns **`403: admin role required to call CreateEvaluatorV2`**. The UI wizard works only because a console session carries admin. So an agent with a standard key **cannot author an eval3 evaluator**; you need the **UI (admin)** or an **admin API key**. This is a platform authz gate, not something the skill can route around. (`firectl evaluator create` is separately deprecated/V1.) → For managed RFT, a human authors the evaluator (UI/admin) once; the agent then drives `rftj create --evaluator <id>`.
+**It's an admin-role gate, not a credential-type gate (tested).** eval3 creation is a multi-RPC flow (`CreateEvaluatorV2` → `GetEvaluatorUploadEndpoint` → upload → `ValidateEvaluatorUpload` → e2b build). eval-protocol drives exactly this. The gate is on **account role, not credential type**: an **admin-role** identity authors the evaluator fine (even with a plain `fw_` API key), while a **user-role** identity gets **`403: admin role required to call CreateEvaluatorV2`**. The UI wizard works only because a console session carries admin. So an agent whose key has admin role **can** author eval3 in code; an agent with a user-role key **cannot**, and needs an admin (UI or admin-role key) to author it once. This is a platform authz gate, not something the skill can route around. (`firectl evaluator create` is separately deprecated/V1.) → For managed RFT with a non-admin key, an admin authors the evaluator once; the agent then drives `rftj create --evaluator <id>`. This admin gate is exactly why agent-driven RFT defaults to the inline-reward path.
 
 > **But the run is capacity-gated.** RFT provisions a trainer + a rollout deployment; on capacity-constrained accounts this readiness-times-out or fails (0/6 success observed on the shared account). RFT reliability is a **platform** matter, not a skill one — see `references/deploy-and-troubleshoot.md`.
 

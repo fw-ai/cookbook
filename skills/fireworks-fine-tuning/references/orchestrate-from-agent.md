@@ -70,7 +70,7 @@ Loop until `COMPLETED`/`FAILED`, watching that loss/step actually advance. **A s
 
 **5. Deploy on-demand + smoke test.**
 ```bash
-firectl deployment create --model accounts/<acct>/models/<tuned-name>   # LoRA is on-demand only, never serverless
+firectl deployment create accounts/<acct>/models/<tuned-name>   # positional model arg; fine-tuned LoRA serves from an on-demand deployment
 # send one real completion, confirm sane output
 ```
 
