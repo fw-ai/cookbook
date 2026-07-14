@@ -18,6 +18,18 @@ class _StopAfterProvisioning(RuntimeError):
     pass
 
 
+def test_build_adam_params_threads_grad_norm_telemetry_opt_in() -> None:
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        emit_grad_norm_metrics="basic",
+    )
+
+    params = module._build_adam_params(cfg)
+
+    assert params.emit_grad_norm_metrics == "basic"
+    assert params.learning_rate == cfg.learning_rate
+
+
 def test_response_text_for_grading_uses_renderer_parse_response():
     class _Renderer:
         def parse_response(self, tokens):

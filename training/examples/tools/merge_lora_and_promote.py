@@ -40,8 +40,7 @@ Usage:
         --adapter-gcs gs://my-bucket/adapters/my-lora \
         --lora-rank 8 \
         --training-shape accounts/<acct>/trainingShapes/<shape>:<version> \
-        --output-model-id my-merged-qwen3-8b \
-        --region US_VIRGINIA_1
+        --output-model-id my-merged-qwen3-8b
 """
 
 from __future__ import annotations
@@ -85,7 +84,7 @@ class MergeConfig:
     lora_rank: int
     training_shape: str
     output_model_id: str
-    region: str
+    region: str | None
     snapshot_name: str
     keep_trainer: bool
     trainer_timeout_s: float
@@ -128,7 +127,12 @@ def parse_args() -> MergeConfig:
         help="Validated LORA_TRAINER training shape id. Empty = let the backend "
              "auto-select (may fail if no default shape exists for the model).",
     )
-    parser.add_argument("--region", default="US_VIRGINIA_1")
+    parser.add_argument(
+        "--region",
+        default=None,
+        help="Optional explicit trainer region. Leave unset so the backend "
+             "selects placement.",
+    )
     parser.add_argument(
         "--snapshot-name",
         default="merged-base",

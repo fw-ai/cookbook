@@ -139,7 +139,6 @@ python training/examples/distillation/gsm8k_privileged/train_gsm8k_privileged.py
   --distill-mode topk_forward_kl \
   --sdft-top-k 5 \
   --training-shape accounts/<your-account>/trainingShapes/<student-shape> \
-  --region US_OHIO_1 \
   --base-model accounts/fireworks/models/qwen3p5-9b \
   --teacher-base-model accounts/fireworks/models/qwen3p5-9b \
   --tokenizer-model Qwen/Qwen3.5-9B

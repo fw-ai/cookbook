@@ -82,6 +82,35 @@ sample_kwargs = {
 Avoid cookbook-wide or recipe-wide markers that imply a root cause before the
 metrics support it.
 
+## Structured sampling errors
+
+The sampler owns a single retry budget (the transport helper no longer
+double-retries the sampling POST) and raises a structured, payload-free error on
+exhaustion. Nothing here logs prompts, generated tokens, API keys, or bodies.
+
+- **Terminal exception.** A logical sampling request that exhausts retries
+  raises `fireworks.training.sdk.SamplingRequestError` with `logical_request_id`,
+  `model`, `attempts`, `final_status`, `final_error_kind`, the last attempt's
+  server `request_id`, and optional `context`; `as_error_record()` serializes
+  those for logs. `DeploymentSamplerTimeoutError` is now a **subclass**
+  (timeout-like exhaustion), so existing `except DeploymentSamplerTimeoutError`
+  still works and the timeout diagnostic above is unchanged.
+- **Stable correlation id.** Each logical request gets one `logical_request_id`,
+  constant across its retries, sent as the `X-Request-Id` header so the gateway
+  echoes it — use it to search server logs.
+- **Optional request context.** Pass `request_context={"session": ..., "run": ...,
+  "checkpoint": ...}` when constructing a `DeploymentSampler`, and/or a per-call
+  `sampling_context={"step": ...}` kwarg to `sample_with_tokens` /
+  `sample_with_prompt_tokens`, to attach non-sensitive identity to the error
+  (recognized keys: session/run/checkpoint/step/group/item). Optional — the
+  error is already useful with just the SDK-boundary fields.
+- **`Retry-After`.** When the server sends it, it is honored as a floor on the
+  backoff, bounded by the sampler's max backoff.
+
+The serverless stage wrapper keeps this full structured error instead of
+collapsing to the last traceback line, so a failed stage stays attributable
+(status, error code, request id, retry history) end to end.
+
 ## Related
 
 - [`async-rl.md`](async-rl.md): async RL overlap, waits, and off-policy gate.

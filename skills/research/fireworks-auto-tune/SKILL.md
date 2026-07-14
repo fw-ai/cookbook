@@ -275,6 +275,11 @@ Read serving behavior with `firectl deployment-metrics list --metric <name>`
 (for example `load` or `latency`) before reporting readiness or scaling
 decisions.
 
+To find idle deployments by token volume, use
+[`tools/list_low_token_deployments.py`](../../tools/list_low_token_deployments.py).
+It groups `tokens-prompt-per-second` and `tokens-per-second` by deployment over
+daily buckets and lists deployments below a token/day threshold.
+
 Tear down with `firectl deployment delete <deployment>`, or leave a
 scale-to-zero deployment in place. Keep teardown a foreground step and record
 the final state.

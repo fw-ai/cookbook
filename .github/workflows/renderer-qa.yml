@@ -1,0 +1,68 @@
+name: Renderer QA
+
+# CPU-only property-based renderer parity gate. Runs on every PR that touches
+# a renderer or the QA harness, plus on pushes to main. No GPU, no deployment —
+# just tokenizers + apply_chat_template, so it is safe and cheap for PR CI.
+#
+# RENDERER_QA_STRICT=1 turns "a REQUIRED public renderer's tokenizer silently
+# stopped loading" into a red build instead of an invisible skip. It needs HF
+# Hub access (HF_TOKEN) to load the canonical tokenizers; without it the
+# invariant tests skip cleanly and the strict guard fails loudly, which is the
+# intended signal.
+
+on:
+  pull_request:
+    paths:
+      - "training/renderer/**"
+      - "training/tests/unit/renderer_*.py"
+      - "training/tests/unit/test_renderer_properties.py"
+      - "training/utils/supervised.py"
+      - ".github/workflows/renderer-qa.yml"
+  push:
+    branches: [main]
+    paths:
+      - "training/renderer/**"
+      - "training/tests/unit/renderer_*.py"
+      - "training/tests/unit/test_renderer_properties.py"
+      - "training/utils/supervised.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renderer-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  renderer-qa:
+    name: Renderer QA (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: training
+    env:
+      # Strict mode: a REQUIRED public renderer that stops loading fails CI.
+      RENDERER_QA_STRICT: "1"
+      # Optional Hub token so gated/canonical tokenizers download in CI.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: training/pyproject.toml
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Run Renderer QA suite
+        run: pytest -q -p no:cacheprovider tests/unit/test_renderer_properties.py

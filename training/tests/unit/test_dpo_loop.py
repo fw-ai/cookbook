@@ -44,6 +44,12 @@ def test_validate_dpo_beta_accepts_valid_range():
     module._validate_dpo_beta(0.25)
 
 
+def test_config_uses_shared_default_weight_decay():
+    cfg = module.Config(log_path="/tmp/dpo_test_logs")
+
+    assert cfg.weight_decay == pytest.approx(module.DEFAULT_ADAM["weight_decay"])
+
+
 @pytest.mark.parametrize("beta", [0, 0.5])
 def test_validate_dpo_beta_rejects_outside_range(beta):
     with pytest.raises(ValueError, match=r"Config\.beta must be > 0 and < 0\.5"):
@@ -390,9 +396,11 @@ class _FakePolicy:
 
     def __init__(self):
         self.optim_step_count = 0
+        self.optim_params = []
 
-    def optim_step(self, _params, **kwargs):
+    def optim_step(self, params, **kwargs):
         self.optim_step_count += 1
+        self.optim_params.append(params)
         return SimpleNamespace(metrics={"optimizer/lr": 1e-4})
 
     def save_state(self, name, timeout=None):
@@ -400,6 +408,12 @@ class _FakePolicy:
 
     def resolve_checkpoint_path(self, name, source_job_id=None):
         return f"tinker://unit/state/{name}"
+
+
+def _adam_params(*, weight_decay: float = 0.01) -> module.tinker.AdamParams:
+    adam_kwargs = dict(module.DEFAULT_ADAM)
+    adam_kwargs["weight_decay"] = weight_decay
+    return module.tinker.AdamParams(learning_rate=1e-4, **adam_kwargs)
 
 
 def _stub_train_step_deps(monkeypatch, events: dict):
@@ -427,11 +441,12 @@ class TestTrainLoop:
         )
         ref_done = []
         cursor = _new_cursor(max_rows=4)
+        policy = _FakePolicy()
         step = asyncio.run(
             module._train_loop(
                 ds, None,
-                _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
+                _FakeReference(), policy,
+                adam_params=_adam_params(weight_decay=0.07),
                 cfg=cfg,
                 step_offset=0,
                 cursor=cursor,
@@ -442,6 +457,7 @@ class TestTrainLoop:
         assert step == 2
         assert cursor.value == 4
         assert ref_done == [True]
+        assert all(params.weight_decay == pytest.approx(0.07) for params in policy.optim_params)
         assert len(events["flush_batches"]) == 2
         for batch, beta in events["flush_batches"]:
             assert beta == 0.2
@@ -471,7 +487,7 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
+                adam_params=_adam_params(),
                 cfg=cfg,
                 step_offset=0,
                 cursor=_new_cursor(max_rows=4),
@@ -502,7 +518,7 @@ class TestTrainLoop:
                 module._train_loop(
                     ds, ref_cache,
                     _FakeReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4},
+                    adam_params=_adam_params(),
                     cfg=cfg, step_offset=0,
                     cursor=cursor,
                 )
@@ -534,7 +550,7 @@ class TestTrainLoop:
                 module._train_loop(
                     ds, None,
                     _FakeReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4},
+                    adam_params=_adam_params(),
                     cfg=cfg, step_offset=0,
                     cursor=_new_cursor(max_rows=4),
                 )
@@ -565,7 +581,7 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
+                adam_params=_adam_params(),
                 cfg=cfg, step_offset=0,
                 cursor=_new_cursor(max_rows=4),
                 on_ref_done=lambda: timeline.append(time.monotonic()),
@@ -609,7 +625,7 @@ class TestTrainLoop:
             asyncio.run(
                 module._train_loop(
                     ds, None, CountingReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+                    adam_params=_adam_params(), cfg=cfg, step_offset=0,
                     cursor=_new_cursor(max_rows=4),
                 )
             )
@@ -643,7 +659,7 @@ class TestTrainLoop:
         step = asyncio.run(
             module._train_loop(
                 ds, None, _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+                adam_params=_adam_params(), cfg=cfg, step_offset=0,
                 cursor=_new_cursor(max_rows=5),
             )
         )
@@ -703,7 +719,7 @@ class TestTrainLoop:
                 None,
                 _FakeReference(),
                 _FakePolicy(),
-                adam_params={"lr": 1e-4},
+                adam_params=_adam_params(),
                 cfg=cfg,
                 step_offset=0,
                 cursor=_new_cursor(max_rows=5),
@@ -763,7 +779,7 @@ class TestTrainLoop:
                 None,
                 _FakeReference(),
                 _FakePolicy(),
-                adam_params={"lr": 1e-4},
+                adam_params=_adam_params(),
                 cfg=cfg,
                 step_offset=0,
                 cursor=_new_cursor(max_rows=2),
@@ -814,7 +830,7 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
+                adam_params=_adam_params(),
                 cfg=cfg, step_offset=0,
                 cursor=cursor,
                 ckpt=_CapturingCkpt(),
@@ -849,7 +865,7 @@ class TestTrainLoop:
             module._train_loop(
                 ds, None,
                 _FakeReference(), _FakePolicy(),
-                adam_params={"lr": 1e-4},
+                adam_params=_adam_params(),
                 cfg=cfg, step_offset=10,
                 cursor=cursor,
                 ckpt=_CapturingCkpt(),
@@ -876,7 +892,7 @@ class TestTrainLoop:
                 module._train_loop(
                     ds, ref_cache,
                     _FakeReference(), _FakePolicy(),
-                    adam_params={"lr": 1e-4},
+                    adam_params=_adam_params(),
                     cfg=cfg, step_offset=0,
                     cursor=cursor,
                 )
@@ -919,7 +935,7 @@ def _run_dpo_batches(
         module._train_loop(
             ds, None,
             _FakeReference(), _FakePolicy(),
-            adam_params={"lr": 1e-4}, cfg=cfg, step_offset=0,
+            adam_params=_adam_params(), cfg=cfg, step_offset=0,
             cursor=_new_cursor(max_rows=len(order_sizes)),
         )
     )

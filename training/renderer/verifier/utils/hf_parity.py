@@ -25,6 +25,7 @@ clear first-divergence message).
 from __future__ import annotations
 
 import dataclasses
+import json
 from typing import Any
 
 from tinker_cookbook.renderers import get_renderer
@@ -34,7 +35,10 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
 # ``tinker_cookbook.renderers.get_renderer``.
 import training.renderer  # noqa: F401
-from training.utils.supervised import normalize_messages
+from training.utils.supervised import (
+    build_tool_prefixed_messages,
+    renderer_declares_tools,
+)
 
 
 @dataclasses.dataclass
@@ -73,6 +77,35 @@ def _first_divergence(a: list[int], b: list[int]) -> int | None:
     return None
 
 
+def _hf_messages_with_normalized_tool_args(messages: list[dict]) -> list[dict]:
+    """Return ``messages`` with each tool_call's ``arguments`` as a JSON string.
+
+    Mirrors ``normalize_messages`` (the renderer path), which serializes tool
+    arguments to ``json.dumps(parsed)``. Passing the same string form to
+    ``apply_chat_template`` keeps the HF comparison apples-to-apples and matches
+    inference (tool args are JSON strings on the wire).
+    """
+    out: list[dict] = []
+    for message in messages:
+        tool_calls = message.get("tool_calls")
+        if not tool_calls:
+            out.append(message)
+            continue
+        new_calls: list[dict] = []
+        for call in tool_calls:
+            call = dict(call)
+            function = dict(call.get("function") or {})
+            if "arguments" in function:
+                raw = function["arguments"]
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                function["arguments"] = json.dumps(parsed)
+            call["function"] = function
+            new_calls.append(call)
+        message = {**message, "tool_calls": new_calls}
+        out.append(message)
+    return out
+
+
 def compare_renderer_to_hf(
     *,
     renderer_name: str,
@@ -80,9 +113,16 @@ def compare_renderer_to_hf(
     messages: list[dict],
     add_generation_prompt: bool = True,
     apply_chat_template_kwargs: dict[str, Any] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> HFParityResult:
     """Compare ``renderer.build_generation_prompt`` (or full conversation)
     tokens to ``tokenizer.apply_chat_template`` for the same input.
+
+    When ``tools`` is provided, both sides render the tool *declarations*: the
+    HF reference receives ``tools=`` and the renderer receives the block from
+    ``create_conversation_prefix_with_tools``. This keeps tool-declaration
+    formatting inside the same byte-parity contract as everything else, rather
+    than exempting it.
 
     The function intentionally has no side effects beyond loading the
     tokenizer — caller decides what to do with a mismatch.
@@ -95,21 +135,40 @@ def compare_renderer_to_hf(
         )
 
     renderer = get_renderer(renderer_name, tokenizer)
-    normalized = normalize_messages(messages)
+    # Assemble the renderer input through the SAME production path SFT uses
+    # (build_tool_prefixed_messages), so the tool-declaration prefix is applied
+    # exactly as training does — no harness-local reimplementation to drift from.
+    renderer_messages = build_tool_prefixed_messages(
+        messages, renderer=renderer, tools=tools
+    )
 
     if add_generation_prompt:
-        renderer_input = renderer.build_generation_prompt(normalized, role="assistant")
+        renderer_input = renderer.build_generation_prompt(
+            renderer_messages, role="assistant"
+        )
     else:
-        renderer_input, _weights = renderer.build_supervised_example(normalized)
+        renderer_input, _weights = renderer.build_supervised_example(renderer_messages)
     renderer_tokens = [int(t) for t in renderer_input.to_ints()]
 
-    # ``apply_chat_template(tokenize=True)`` returns either a list or a
-    # ``BatchEncoding`` depending on the transformers version; normalize.
+    # Declare tools to HF ONLY when the renderer actually declares them (matches
+    # production: renderers without a create_conversation_prefix_with_tools
+    # override drop tools, so comparing against an HF prompt that DID declare
+    # them would be a false divergence). Set tools AFTER hf_kwargs so a stray
+    # ``tools`` key in hf_kwargs can't override the scenario's decision.
+    hf_kwargs = dict(apply_chat_template_kwargs or {})
+    if tools and renderer_declares_tools(renderer):
+        hf_kwargs["tools"] = tools
+    else:
+        hf_kwargs.pop("tools", None)
+    # Feed HF the SAME tool-call argument representation the renderer sees
+    # (normalize_messages serializes tool_call arguments to a JSON string), so a
+    # type-branching template (gemma-4: dict->native, string->verbatim) can't
+    # diverge purely because the two sides received different argument shapes.
     hf_result = tokenizer.apply_chat_template(
-        messages,
+        _hf_messages_with_normalized_tool_args(messages),
         tokenize=True,
         add_generation_prompt=add_generation_prompt,
-        **(apply_chat_template_kwargs or {}),
+        **hf_kwargs,
     )
     if hasattr(hf_result, "input_ids"):
         hf_tokens = [int(t) for t in list(hf_result.input_ids)]  # type: ignore[arg-type]

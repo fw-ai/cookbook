@@ -28,6 +28,14 @@ Always required on `Config` (with `trainer=TrainerConfig(...)`):
 
 RL-specific: for the primary `async_rl_loop.py`, you write a `rollout_fn` (typically a `rollout.py`) and a `train.py` that sets the `Config` (policy loss, reward wiring, deployment) and calls `main(cfg, rollout_fn_factory=..., rows=...)`; the recipe owns the loop. The simpler synchronous `rl_loop.py` takes a reward function, rollout batch sizes, and a deployment config directly. See [`rl/async-rl.md`](rl/async-rl.md).
 
+Forward/backward metrics retain Tinker's reducer suffixes after SDK request
+chunking. Runtime input-sharding telemetry therefore appears as
+`train/dp_sharded_counts:min`, `train/dp_sharded_counts:max`, and
+`train/local_input_sequences:sum`. Consumers that need proof of the executed
+path must require min and max to agree, then use the summed rank-local input
+count. Do not change these to `:last`: Tinker does not support that reducer for
+chunked forward/backward results and silently drops those metrics.
+
 Distillation-specific: use `distillation_loop.py` for OPD/SDFT. Open [`distillation.md`](distillation.md) before changing its config, dataset format, teacher routing, or top-K objective plumbing.
 
 ## Resume
