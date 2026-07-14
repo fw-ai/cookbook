@@ -23,6 +23,7 @@ def compute_inference_observability_metrics(
 
     total_inf_diff = 0.0
     total_inf_kld = 0.0
+    total_inf_k1 = 0.0
     raw_inf_num_samples = 0
     expected_active_tokens = 0
     compared_active_tokens = 0
@@ -74,6 +75,11 @@ def compute_inference_observability_metrics(
         )
         inf_log_diff = resp_pi.detach()[active] - resp_raw_inf[active]
         total_inf_diff += inf_log_diff.abs().mean().item()
+        # Signed mean (k1): captures directional bias. A systematic numerics
+        # mismatch pushes logprobs one way (|k1| ~= inference_diff), while
+        # symmetric rollout/outlier noise cancels (k1 ~= 0 with inference_diff/kld
+        # still inflated) -- so k1 vs inference_diff separates the two causes.
+        total_inf_k1 += inf_log_diff.mean().item()
         total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
         raw_inf_num_samples += 1
         compared_active_tokens += active_tokens
@@ -87,6 +93,7 @@ def compute_inference_observability_metrics(
         metrics.update(
             {
                 "inference_diff": total_inf_diff / raw_inf_num_samples,
+                "inference_k1": total_inf_k1 / raw_inf_num_samples,
                 "inference_kld": total_inf_kld / raw_inf_num_samples,
             }
         )

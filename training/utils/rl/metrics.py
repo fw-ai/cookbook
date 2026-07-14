@@ -254,6 +254,36 @@ def compute_step_metrics(
             metrics["kld/inference_step_min"] = min(kld_chunk_vals)
             metrics["kld/chunks_per_step"] = len(kld_chunk_vals)
 
+        # Signed-bias (k1) bracketing + a directionality ratio to tell a real
+        # numerics regression apart from rollout-entropy noise on the same
+        # ``kld/*`` (train-filter-surviving) axis. k1 keeps sign, so min<0<max
+        # is informative (a single-chunk directional spike shows as |min|/|max|
+        # approaching the diff, while symmetric noise straddles zero).
+        k1_chunk_vals = [
+            r.metrics["inference_k1"]
+            for r in fwd_bwd_results
+            if getattr(r, "metrics", None) and "inference_k1" in r.metrics
+        ]
+        diff_chunk_vals = [
+            r.metrics["inference_diff"]
+            for r in fwd_bwd_results
+            if getattr(r, "metrics", None) and "inference_diff" in r.metrics
+        ]
+        if k1_chunk_vals:
+            k1_mean = sum(k1_chunk_vals) / len(k1_chunk_vals)
+            metrics["kld/inference_k1_step_mean"] = k1_mean
+            metrics["kld/inference_k1_step_max"] = max(k1_chunk_vals)
+            metrics["kld/inference_k1_step_min"] = min(k1_chunk_vals)
+            # Directionality ratio in [0, 1]: |mean signed diff| / mean |diff|.
+            #   ~1 => logprob gap is one-directional  => systematic numerics drift.
+            #   ~0 => gap cancels (symmetric)         => rollout entropy / outlier
+            #         tokens, i.e. a large kld/inference_step_* here is NOISE, not
+            #         a numerics regression.
+            if diff_chunk_vals:
+                diff_mean = sum(diff_chunk_vals) / len(diff_chunk_vals)
+                if diff_mean > 0:
+                    metrics["kld/inference_directionality"] = abs(k1_mean) / diff_mean
+
     all_rewards: list[float] = []
     all_comp_lens: list[int] = []
     all_truncated: list[bool] = []
