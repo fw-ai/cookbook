@@ -10,3 +10,6 @@ __pycache__/
 wandb/
 ep_summaries_*/
 ep_trajectory_*/
+ep_remote_*/
+tau2_remote_evaluator/
+coding_agent_rl_logs/
