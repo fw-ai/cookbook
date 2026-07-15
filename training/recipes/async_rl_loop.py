@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 import os
 import signal
 import time
@@ -52,9 +53,6 @@ from training.utils import (
     DEFAULT_ADAM,
     DeployConfig,
     TrainerConfig,
-    RunnerConfig,
-    RunnerIO,
-    RunStatus,
     WandBConfig,
     ReconnectableClient,
     build_service_client,
@@ -88,17 +86,10 @@ from training.utils.rl.metrics import (
     build_accumulated_async_loop_stats,
     build_train_chunk_metrics,
     compute_step_metrics,
-    total_target_tokens,
 )
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
-from training.utils.runner_state import (
-    estimate_async_total_steps,
-    start_running,
-    write_completed,
-    write_running_step,
-)
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -202,11 +193,6 @@ class Config:
     cleanup_on_exit: bool = True
     """Clean up SDK-created trainer/deployment resources on close."""
 
-    runner: RunnerConfig = field(default_factory=RunnerConfig)
-    """Optional orchestration outputs (status / metadata / metrics / output
-    model). When unset the recipe still runs; the orchestration layer just
-    won't receive progress updates. See ``training.utils.runner``."""
-
     init_from_checkpoint: str | None = None
     """Resume from prior checkpoint; bare name = this job, ``"job:name"``
     = cross-job."""
@@ -301,7 +287,6 @@ def main(
     Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
     cfg = config
-    runner = RunnerIO(cfg.runner)
 
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
@@ -365,9 +350,7 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    runner.write_status(RunStatus.PENDING, message="provisioning")
-
-    with runner, ExitStack() as stack:
+    with ExitStack() as stack:
         tokenizer = load_deployment_tokenizer(cfg.deployment)
         service = build_service_client(
             api_key=api_key,
@@ -393,14 +376,6 @@ def main(
         training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
         rollout_model = sampler.model
-        runner.set_accelerator_info(
-            service.accelerator_type,
-            service.accelerator_count,
-            profile=service.training_profile,
-        )
-
-        runner.write_metadata()
-
         wandb_log({"rollout/step": 0})
 
         policy = ReconnectableClient.from_training_client(
@@ -466,11 +441,9 @@ def main(
             seed=cfg.seed,
         )
 
-        total_steps_estimate = estimate_async_total_steps(
-            step_offset=step_offset,
-            total_items=row_loader.total_items,
-            prior_rows_consumed=prior_rows_consumed,
-            prompt_groups_per_step=cfg.prompt_groups_per_step,
+        remaining_rows = max(0, row_loader.total_items - prior_rows_consumed)
+        total_steps_estimate = step_offset + math.ceil(
+            remaining_rows / max(1, cfg.prompt_groups_per_step)
         )
 
         validate_loss_path(cfg, service.training_profile)
@@ -830,14 +803,6 @@ def main(
             wandb_metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
             wandb_metrics["train/step"] = step
             wandb_log(wandb_metrics)
-            # Report the number of trained target tokens, not raw rollout length.
-            write_running_step(
-                runner,
-                step=step,
-                total_steps=total_steps_estimate,
-                metrics=metrics,
-                tokens=total_target_tokens(prompt_groups),
-            )
             # DCP cadence is in rollout batches. Async has one optimizer step
             # per rollout batch; pipeline chunks do not multiply it.
             rollouts_completed = step - step_offset
@@ -867,17 +832,6 @@ def main(
             train_accum["sampler_wait_for_trainer_time"] = 0.0
             return step, metrics
 
-        def log_post_train_metrics(metrics: dict[str, Any]) -> None:
-            wandb_log(metrics)
-            train_step_value = int(metrics.get("train/step", 0))
-            runner.append_metrics(train_step_value, metrics)
-
-        start_running(
-            runner,
-            step=step_offset,
-            total_steps=total_steps_estimate,
-        )
-
         global_step, final_stats = asyncio.run(
             run_async_rl_loop(
                 rows=make_row_requests(),
@@ -894,7 +848,7 @@ def main(
                 max_concurrent=cfg.max_concurrency_rollout_sample,
                 dynamic_filter_fn=dynamic_filter_fn,
                 pipeline_chunks_per_step=cfg.pipeline_chunks_per_step,
-                post_train_metrics_fn=log_post_train_metrics,
+                post_train_metrics_fn=wandb_log,
                 global_step=step_offset,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
                 return_final_stats=True,
@@ -906,7 +860,6 @@ def main(
         resume_row_cursor = int(final_stats["resolved_rows"])
         has_trained_steps = global_step > step_offset
         has_advanced_dataset = resume_row_cursor > prior_rows_consumed
-        promoted_checkpoint: str | None = None
         if cfg.save_final_checkpoint and (has_trained_steps or has_advanced_dataset):
             cp_name = f"step-{global_step}"
             ckpt.save(
@@ -917,22 +870,6 @@ def main(
             )
             if cfg.output_model_id and has_trained_steps:
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
-                promoted_checkpoint = cp_name
-
-        if promoted_checkpoint is not None and cfg.output_model_id:
-            runner.write_output_model(
-                model_id=cfg.output_model_id,
-                checkpoint=promoted_checkpoint,
-                job_id=service.trainer_job_id,
-            )
-
-        # Clamp progress at 100% when filtering/partial final batches shorten the run.
-        final_step = max(global_step, total_steps_estimate)
-        write_completed(
-            runner,
-            step=final_step,
-            total_steps=final_step,
-        )
 
         logger.info(
             "Async RL training complete: %d steps (%d new in this run)",
