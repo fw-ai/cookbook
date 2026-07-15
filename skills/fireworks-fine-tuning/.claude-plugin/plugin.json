@@ -1,0 +1,10 @@
+{
+  "name": "fireworks-fine-tuning",
+  "description": "Managed fine-tuning on Fireworks (SFT/DPO/RFT) driven from your coding agent via firectl: method choice, dataset validation, launch + monitor, deploy, and troubleshoot. Successor to the Pilot agent.",
+  "version": "1.0.0",
+  "author": { "name": "Fireworks AI" },
+  "homepage": "https://docs.fireworks.ai/fine-tuning/agent/use-with-coding-agents",
+  "repository": "https://github.com/fw-ai/cookbook",
+  "license": "MIT",
+  "keywords": ["fireworks", "fine-tuning", "training", "sft", "dpo", "rft", "firectl"]
+}
