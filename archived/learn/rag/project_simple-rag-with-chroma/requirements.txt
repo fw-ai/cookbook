@@ -221,7 +221,7 @@ tiktoken==0.7.0
 tokenizers==0.19.1
 toml==0.10.2
 torch==2.4.1
-tornado==6.4.1
+tornado==6.5.6
 tqdm==4.66.5
 traitlets==5.14.3
 transformers==4.44.2
