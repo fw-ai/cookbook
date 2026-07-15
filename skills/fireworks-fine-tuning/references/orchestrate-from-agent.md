@@ -79,6 +79,16 @@ firectl deployment create accounts/<acct>/models/<tuned-name>   # positional mod
 firectl deployment delete <DEPLOYMENT_ID>
 ```
 
+## Hyperparameter sweep + promotion gate (agent-driven)
+
+Pilot ran an automatic sweep; here the coding agent runs it. For a real run (not a smoke), don't ship one hand-picked config:
+
+1. **Subsample for the search.** For datasets over ~1,000 rows, search on a fixed 1,000-row sample (seed it) to bound cost; train the winner on full data.
+2. **Launch the grid as separate jobs.** Use the 3-cell grid from `references/choose-method.md` (rank 8 / 16 / 32 with matched LRs). Each cell is its own `sftj create` and its own cost line. Cap concurrency (≈3–6 active jobs) to respect quota.
+3. **Evaluate each candidate on the held-out split** (not the train split). For classification, per-label accuracy; for open-ended, your evaluator or an LLM-judge rubric.
+4. **Promotion gate — pause and ask.** Present the candidate scoreboard (val loss + eval metric per cell) and let the user confirm the winner before the full-data run. This is a protected decision, do not auto-pick.
+5. **Full-data final run** on the winning config, then deploy + benchmark base-vs-fine-tuned (`references/deploy-and-troubleshoot.md`).
+
 ## Rules specific to agent-driven orchestration
 
 - **Do not use `firectl session *` in new work.** It is the deprecated Pilot path and is being decommissioned. Drive the resource commands above directly.

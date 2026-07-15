@@ -19,6 +19,7 @@ Do you have labeled ground-truth outputs?
 |--------|-------------|----------|
 | **SFT** | Labeled `messages` (the ideal output) | Classification, extraction, style/format, tool-call shaping. The default. |
 | **DPO** | preferred vs non-preferred responses | Aligning tone/quality when you can rank two answers but can't write the one true answer. |
+| **ORPO** | preferred vs non-preferred responses (same shape as DPO) | Same signal as DPO but **no reference model** (one model, less memory/GPU). A reasonable DPO alternative on tight budgets; recipe in `skills/dev` (`recipes/orpo_loop.py`). |
 | **RFT** | Prompts + an evaluator/reward (0.0–1.0) | Verifiable tasks (math, code, agents) with few labels. |
 
 ## SFT format
@@ -43,6 +44,20 @@ Preference pairs, **one-turn only** (preferred/non-preferred must be the last as
 ## RFT — reinforcement fine-tuning
 
 Provide three things (not labeled outputs): a **dataset** of prompts; an **evaluator** that scores an output 0.0→1.0 (the reward), registered via `pytest` or a remote service; and the **agent** being trained. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/how-rft-works · [evaluators](https://docs.fireworks.ai/fine-tuning/evaluators)
+
+## Classification (a common SFT task)
+
+Classification is SFT where the assistant turn is the label. Two extra checks matter:
+
+- **Label imbalance.** Compute the ratio of the most-frequent to least-frequent label. If it's high (say > 50:1), the model can score well by always predicting the majority. Flag it in the plan and mitigate: rebalance/subsample, use per-message `weight`, or narrow the label set.
+- **Per-label accuracy, not just overall.** Report accuracy per label plus a confusion-matrix-style summary (which labels get confused for which), and always measure on a held-out split. Overall accuracy hides minority-class failure.
+- **Baseline first.** Run the base model on the eval split before training so you have a base-vs-fine-tuned delta (see the benchmark step in `references/deploy-and-troubleshoot.md`), not just an absolute number.
+
+If `ground_truth` is a separate field rather than the final assistant turn, map it onto the assistant message before upload.
+
+## Hyperparameter sweep + promotion gate
+
+For anything past a smoke run, don't hand-pick one config: run the small grid below as **separate jobs**, compare on a held-out split, and promote the winner. This is now **agent-driven** (the coding agent runs the loop), not a server-side auto-sweep; the workflow lives in `references/orchestrate-from-agent.md`.
 
 ## LoRA vs full-parameter
 

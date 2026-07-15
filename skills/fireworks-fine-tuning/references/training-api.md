@@ -21,7 +21,7 @@ There are two RFT paths, and they differ in **where the reward lives**. This mat
 | **Managed RFT** — `firectl reinforcement-fine-tuning-job create --evaluator <id>` | A **registered evaluator resource** (server-side, built in an e2b sandbox, eval v3) | **Only with an admin-role key.** Register via **eval-protocol** (`pytest` auto-registers) or the **UI**; authoring calls `CreateEvaluatorV2`, which **requires admin role** (a user-role key gets 403). `firectl evaluator create` (V1) is **deprecated**. Use when an admin authors the evaluator. |
 | **Training-API RL** — fork `training.recipes.rl_loop` / `async_rl_loop` | An **inline `reward_fn(completion, row) -> float`** in the forked recipe (`row["ground_truth"]` carries the label) | **Yes.** No evaluator resource. Same shape as Tinker's reward-in-the-loop. The SDK provisions the trainer + rollout deployment. |
 
-**For an agent running RFT via this skill, use the inline-reward recipe path** (below). It needs no deprecated evaluator, mirrors Tinker, and is fully code-driven. Reserve the managed `--evaluator` path for when a human sets up the sandboxed evaluator via eval-protocol/UI.
+**Prefer the managed path for RFT** (same as the managed UI): `firectl reinforcement-fine-tuning-job create --dataset <ds> --evaluator <id>` — it resolves the training shape for you and is proven live (qwen3-4b, 2026-07-15). Reuse an existing evaluator or author one via eval-protocol (authoring is admin-gated today; the scoped-permission fix opens it to any key). **Use the inline-reward recipe (below) only for users with Training API access** who need a custom loop/reward, rollouts, or agentic trajectories, or who can't use a managed evaluator. It needs no evaluator resource, mirrors Tinker, and is fully code-driven.
 
 ### Managed RFT: authoring the eval3 evaluator (admin-role-gated)
 
@@ -41,6 +41,14 @@ Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval
 **It's an admin-role gate, not a credential-type gate (tested).** eval3 creation is a multi-RPC flow (`CreateEvaluatorV2` → `GetEvaluatorUploadEndpoint` → upload → `ValidateEvaluatorUpload` → e2b build). eval-protocol drives exactly this. The gate is on **account role, not credential type**: an **admin-role** identity authors the evaluator fine (even with a plain `fw_` API key), while a **user-role** identity gets **`403: admin role required to call CreateEvaluatorV2`**. The UI wizard works only because a console session carries admin. So an agent whose key has admin role **can** author eval3 in code; an agent with a user-role key **cannot**, and needs an admin (UI or admin-role key) to author it once. This is a platform authz gate, not something the skill can route around. (`firectl evaluator create` is separately deprecated/V1.) → For managed RFT with a non-admin key, an admin authors the evaluator once; the agent then drives `rftj create --evaluator <id>`. This admin gate is exactly why agent-driven RFT defaults to the inline-reward path.
 
 > **But the run is capacity-gated.** RFT provisions a trainer + a rollout deployment; on capacity-constrained accounts this readiness-times-out or fails (0/6 success observed on the shared account). RFT reliability is a **platform** matter, not a skill one — see `references/deploy-and-troubleshoot.md`.
+
+## Ways to supply the reward
+
+Whichever RFT route you use, the reward can come from three places (Pilot supported the same three):
+
+1. **An existing evaluator ID** (`accounts/<acct>/evaluators/<id>`) — reuse a registered eval3 evaluator. Managed route.
+2. **An inline `reward_fn`** — write the reward as Python in the forked recipe. The agent-drivable default; no evaluator resource, any key.
+3. **An LLM-judge rubric** — when correctness isn't a clean 0/1 (tone, quality, open-ended), score completions with a judge model against a rubric. Implement it inside `reward_fn` (call a judge model, map its verdict to a float), or register it as an evaluator. If the user gives no evaluator and no rubric, infer a data-grounded rubric from the training samples and confirm it with them before spending.
 
 ## Default workflow: fork a cookbook recipe
 
@@ -94,5 +102,6 @@ Trainer↔inference divergence silently wrecks RL. Required reading: https://doc
 - **Start from a cookbook recipe**, not a blank loop.
 - **Align numerics** before trusting any RL signal; turn on **R3** for MoE.
 - **For RL, use a dedicated rollout deployment** (sized for sampling), not your prod endpoint.
+- **Set an explicit deployment shape for the rollout.** RFT provisions a rollout/sampling deployment, and the accelerator is owned by the *deployment shape*. With only a base model and `training_shape=auto`, creation fails: `ValueError: Cannot create a managed deployment without a deployment shape`. Pass a `deployment_shape` (or a `training_shape_id` whose shape references one) — e.g. via the recipe's `--training-shape`. The RFT preflight should check this before launch. (Observed live on qwen3-4b, 2026-07-15.)
 - Use `forward_backward_custom` only for a genuinely custom objective; otherwise the built-in path is cheaper.
 - Loss must be differentiable w.r.t. `logprobs_list`; the metrics dict is logging-only.

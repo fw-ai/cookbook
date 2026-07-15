@@ -80,29 +80,18 @@ Training and inference are different code paths; mismatched numerics cause logpr
 - **Measure logprob divergence** on the same tokens.
 - **MoE → Router Replay (R3):** divergence often comes from the router picking different top-K experts; pass `include_routing_matrix: true` + `logprobs: true`. Docs: [Numerics alignment](https://docs.fireworks.ai/fine-tuning/rl-rollout-integration#numerics-alignment), [MoE Router Replay](https://docs.fireworks.ai/guides/rollout-inference#moe-router-replay).
 
-## Common issues (field-observed)
+## Benchmark: base vs fine-tuned
 
-Distilled from recurring training-support cases. **First triage question: platform-side (retry / escalate, not your config) vs user-side (fix your dataset/config).** A bare error string is often *not* diagnostic on its own; classify by symptom. When a job is stuck or failing, `sftj get <id>` for the status message, then match below.
+An absolute score means little without the before/after delta. Always compare the fine-tuned model against the base model on the **same held-out split**:
 
-| Symptom | What it usually is | What to do |
-|---|---|---|
-| **Stuck in `RUNNING` at 0%, no loss** | Startup, not training: a job can be marked `RUNNING` before the trainer actually starts, so `RUNNING` ≠ progress. Usually the model download or GPU placement hasn't finished. **Platform-side.** | Don't wait indefinitely. No loss after a few minutes → retry once; if it recurs on the same model/shape, escalate. It is not your config. |
-| **Fails after a readiness/startup timeout (~3600s)** | Trainer/rollout couldn't become ready in the window (large download, tight capacity). **Platform-side**, often transient. | Retry; if it repeats, it's capacity or a known infra issue → escalate with the job id. |
-| **`RESOURCE_EXHAUSTED` / "no capacity" / unschedulable** | Scheduler can't place the job on the requested GPU class/region (large shapes and some regions run hot). **Platform-side (infra)** — not quota, not config. | Retry (capacity frees up), try a smaller shape / different region, or request capacity. Distinct from a 429 quota ceiling. |
-| **Bare "Internal error", no detail** | Masking gap: the trainer crashed before writing a status file, so you see a generic message. Cause is **either** platform (failed to download the base model) **or** user (dataset rejected — next row). | Not diagnostic alone. Re-validate the dataset first (cheapest); if it's clean, treat as a platform startup/download crash → retry + escalate. |
-| **Dataset rejected / validation error** | Malformed JSONL — rows missing `messages`, bad roles. **User-side.** Can surface as a plain "Internal error" above. | Fix the JSONL (every line needs `messages` with `role`+`content`), re-upload (`dataset create` validates on upload). See `references/choose-method.md`. |
-| **400 on a warm-start / reused config** | Known issue where jobs created with validations skipped can 400 when warm-starting or reusing a shape. **Platform-side**, fix rolling out. | Create against a **validated shape** (don't skip validations); retry. If blocked, escalate for a rollout ETA. |
-| **429 on job create** | Quota — a **ceiling on concurrent GPUs**, not billing. Retry storms make it worse. **User-side (limits).** | Back off; raise quota ([account quotas](https://docs.fireworks.ai/guides/quotas_usage/account-quotas)) or run fewer concurrent jobs / a smaller model. |
-| **Account suspended / "spending limit reached"** | **Billing-side**, distinct from quota — budget cap (even with credits), no payment method, or risk review. | Fix in [Billing](https://fireworks.ai/billing). Not a platform bug. ([suspended with credits](https://docs.fireworks.ai/faq-new/billing-pricing/why-might-my-account-be-suspended-even-with-remaining-credits)) |
-| **412 / shape unavailable** | The requested training shape isn't enabled on your account. | Pick a listed shape or request enablement. |
-| **Context length rejected (`must be divisible by 16`)** | Config validation: requested max context isn't a multiple of the shape's tiling — and a shape's *advertised* max may not itself be divisible. **User-side.** | Round the context length **down** to a multiple of 16. |
-| **Deploy after LoRA serves base behavior / "never works"** | Adapter not promoted/loaded, **or** a deployment image/chart version skew (chart newer than the served image). | Confirm the job finished + model exists; for multi-LoRA confirm `load-lora` and route `model#deployment`. Still base-only on a fresh deploy → likely image/chart skew, escalate. |
-| **Multi-LoRA / addon load rejected** | FP8/FP4 shapes reject addons; some model families don't support multi-LoRA at all. | Use a **BF16** shape for addons, or live-merge a single adapter. Confirm the family supports multi-LoRA. |
-| **Reused / "leaked" deployment fails on redeploy** | A deployment resource reused from a prior run (or swept as a "leaked resource") leaves a stale ledger entry, so the redeploy fails. **Platform-side.** | Delete the old deployment and create fresh; if a rollout (RFT) deploy keeps failing right after a resource sweep, escalate with the deployment id. |
-| **SFT much slower than expected (esp. via Training API)** | Sequences not packed → a large fraction of tokens are padding, so throughput drops sharply. | Enable sequence packing / batch tokenization where available; check token utilization. |
-| **RL/GRPO reward collapses or KLD explodes** | Almost always **numerics drift** between trainer and rollout inference (especially MoE routing), not the algorithm. | Align precision + measure logprob divergence; for MoE enable **Router Replay (R3)** — see Numerics alignment above. |
+1. Run the **base model** on the eval split first (this is the baseline; do it before or during training so you're not blocked).
+2. Run the **fine-tuned model** on the same split. Use a **preemptible deployment** (above) so you don't hold dedicated capacity just to eval.
+3. Report the delta, per-label for classification (plus a confusion-matrix summary), and your evaluator/rubric score for open-ended tasks. A fine-tune that doesn't beat base on the held-out split is not ready, regardless of training loss.
+4. Tear down the eval deployment when done.
 
-**When escalating**, include the job id, base model + shape, and the exact status message. Do not paste account or customer identifiers into shared or customer-facing places.
+## Troubleshooting a failed or stuck job
+
+Full field-observed error table, platform-vs-user triage, and debug steps are in [`error-reference.md`](error-reference.md). Deep Training-SDK debugging (weight sync, checkpoints, renderer) lives in the `skills/dev` skill.
 
 ## Critical rules
 

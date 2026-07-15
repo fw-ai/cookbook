@@ -16,6 +16,17 @@ Fireworks lets you fine-tune open models and serve them on one platform. **Manag
 
 **Companion skill.** This skill is the *managed* fine-tuning router (drive `firectl` SFT/DPO/RFT end to end). For the *SDK power-user* path — forking a cookbook recipe, writing a custom training loop, RL recipe internals, hotload, checkpoint promotion, distillation — use [`../dev/SKILL.md`](../dev/SKILL.md) (the `fireworks-training` skill). They complement each other: this skill for launching + operating managed jobs, `dev` for the reference implementation of `fireworks.training.sdk`.
 
+## Method surface — managed by default (same as the managed UI)
+
+This skill lets a user run **SFT, DPO, and RFT from their agent the same way the managed UI does**, all through `firectl` (the platform resolves the training shape):
+
+- **SFT** → `firectl sftj create` · **DPO** → `firectl dpo-job create`
+- **RFT** → `firectl reinforcement-fine-tuning-job create --dataset <ds> --evaluator <id>` (reuse an existing evaluator, or author one via eval-protocol; authoring is admin-gated today, the scoped-permission fix opens it to any key). Proven live on qwen3-4b, 2026-07-15.
+
+Managed is the default because it's declarative and cheaper (SFT/DPO bill per training token; RFT and any custom loop bill per GPU-hour). **Guide users to the Training API only when they have Training API access** and need something managed can't express — a custom loss/reward, rollouts (inference-in-the-loop), or agentic/multi-turn trajectories — see `references/training-api.md`. GA of the Training API (targeted ~Aug 2026) doesn't change this default; the surfaces still differ in billing and capability.
+
+Worked examples for all three live in the cookbook [`training/case-studies/`](../../training/case-studies) (`reasoning_rl` for RFT, `sft_prompt_router` for classification, `dpo_style` for DPO).
+
 ## Before you build
 
 Install + auth: `firectl` + `firectl signin` -> `references/getting-started.md`.
@@ -29,11 +40,12 @@ The references **link the live `.md` docs**; for any specific value (training sh
 | Task | Reference |
 |---|---|
 | Set up, install `firectl`, first job, quota | `references/getting-started.md` |
-| Pick SFT vs DPO vs RFT; dataset format; LoRA vs full-param | `references/choose-method.md` |
+| Pick SFT vs DPO vs ORPO vs RFT; dataset format; classification (imbalance, per-label); LoRA vs full-param | `references/choose-method.md` |
 | Custom training loop, cookbook recipes, RL/GRPO, custom loss/reward, numerics | `references/training-api.md` |
 | Pick a training shape / model; context length; GPU class; what it costs | `references/models-shapes-and-cost.md` |
-| Deploy a fine-tuned model; evaluate a model cheaply (preemptible); tear down; fix a failed job / quota / suspension | `references/deploy-and-troubleshoot.md` |
-| Orchestrate a full run from your coding agent (replaces Pilot); managed lifecycle loop; `firectl session` deprecation | `references/orchestrate-from-agent.md` |
+| Deploy a fine-tuned model; evaluate cheaply (preemptible); benchmark base vs fine-tuned; tear down | `references/deploy-and-troubleshoot.md` |
+| A job failed, is stuck, or errored; debug or triage it (platform vs user); quota / suspension | `references/error-reference.md` |
+| Orchestrate a full run from your coding agent (replaces Pilot); HP sweep + promotion gate; managed lifecycle loop; `firectl session` deprecation | `references/orchestrate-from-agent.md` |
 
 **Not covered above?** The full machine-readable doc index is at <https://docs.fireworks.ai/llms.txt> — find the relevant page and fetch its `.md` version (every page has one). The routing table covers the common paths; `llms.txt` + the live docs are the complete, always-current source.
 

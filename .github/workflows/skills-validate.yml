@@ -1,0 +1,32 @@
+name: Skills Validate
+
+# Paved-path gate for the agent skills: fails the PR if a SKILL.md loses its
+# frontmatter, routes to a missing reference, has a broken relative link, or
+# leaves an orphan reference. This is the "skill install/attach keeps working"
+# half of CI; the recipe half runs in training-smoke.yml (nightly, real GPU).
+
+on:
+  pull_request:
+    paths:
+      - "skills/**"
+  push:
+    branches: [main]
+    paths:
+      - "skills/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate agent skills
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate skill structure, routing, and links
+        run: python skills/validate_skills.py
