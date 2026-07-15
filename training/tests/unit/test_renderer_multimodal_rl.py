@@ -145,9 +145,11 @@ def test_model_input_to_completions_prompt_text_inserts_vision_placeholder():
     assert tokenizer.decode.call_count == 2
 
 
-def test_build_multimodal_completions_prompt_token_ids_uses_chat_template():
+def test_build_multimodal_completions_prompt_token_ids_uses_renderer_model_input():
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = [1, 248056, 2]
+    # The tokenizer default can add thinking tokens that the selected renderer
+    # intentionally omitted. Sampling must not re-render the prompt here.
+    tokenizer.apply_chat_template.return_value = [10, 11, 248056, 12, 248068, 198]
     tokenizer.special_ids = MagicMock(image=248056)
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     prompt_ids, images = build_multimodal_completions_prompt_token_ids(
@@ -155,16 +157,16 @@ def test_build_multimodal_completions_prompt_token_ids_uses_chat_template():
         _multimodal_prompt(),
         tokenizer,
     )
-    assert prompt_ids == [1, 248056, 2]
+    assert prompt_ids == [10, 11, 248056, 12]
     assert images == [_BASE64_PNG]
-    tokenizer.apply_chat_template.assert_called_once()
+    tokenizer.apply_chat_template.assert_not_called()
 
 
-def test_build_multimodal_completions_prompt_token_ids_raises_when_chat_template_fails():
+def test_build_multimodal_completions_prompt_token_ids_requires_image_token_id():
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.side_effect = ValueError("no multimodal template")
+    tokenizer.special_ids = MagicMock(image=None)
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-    with pytest.raises(MultimodalRenderingNotSupported, match="apply_chat_template"):
+    with pytest.raises(MultimodalRenderingNotSupported, match="image placeholder token ID"):
         build_multimodal_completions_prompt_token_ids(
             messages,
             _multimodal_prompt(),
@@ -172,33 +174,57 @@ def test_build_multimodal_completions_prompt_token_ids_raises_when_chat_template
         )
 
 
-def test_build_multimodal_completions_request_uses_chat_template():
+def test_build_multimodal_completions_prompt_token_ids_accepts_hf_image_token_id():
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = "<|im_start|>user\nimg\n"
+    tokenizer.special_ids = None
+    tokenizer.image_token_id = 248056
+    prompt_ids, _ = build_multimodal_completions_prompt_token_ids(
+        [],
+        _multimodal_prompt(),
+        tokenizer,
+    )
+    assert prompt_ids == [10, 11, 248056, 12]
+
+
+def test_build_multimodal_completions_request_uses_renderer_model_input():
+    tokenizer = MagicMock()
+    tokenizer.decode.side_effect = ["<|im_start|>user\n", "img\n"]
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     prompt_text, images = build_multimodal_completions_request(
         messages,
         _multimodal_prompt(),
         tokenizer,
     )
-    assert prompt_text == "<|im_start|>user\nimg\n"
+    assert prompt_text == (
+        "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>img\n"
+    )
     assert images == [_BASE64_PNG]
-    tokenizer.apply_chat_template.assert_called_once()
+    tokenizer.apply_chat_template.assert_not_called()
 
 
-def test_build_multimodal_completions_request_falls_back_to_model_input_stitch():
+def test_build_multimodal_completions_request_accepts_materialized_image_chunk():
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.side_effect = ValueError("no template")
-    tokenizer.decode.return_value = "USER:"
+    tokenizer.decode.side_effect = ["USER:", "ASSISTANT:"]
+    model_input = tinker.ModelInput(
+        chunks=[
+            tinker.types.EncodedTextChunk(tokens=[10]),
+            tinker.types.ImageChunk(
+                data=b"renderer-jpeg",
+                format="jpeg",
+                expected_tokens=4,
+            ),
+            tinker.types.EncodedTextChunk(tokens=[11]),
+        ]
+    )
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     prompt_text, images = build_multimodal_completions_request(
         messages,
-        _multimodal_prompt(),
+        model_input,
         tokenizer,
     )
-    assert "USER:" in prompt_text
-    assert "<|image_pad|>" in prompt_text
-    assert images == [_BASE64_PNG]
+    assert prompt_text == ("USER:<|vision_start|><|image_pad|><|vision_end|>ASSISTANT:")
+    assert images == ["data:image/jpeg;base64,cmVuZGVyZXItanBlZw=="]
+    tokenizer.apply_chat_template.assert_not_called()
 
 
 def test_parse_vision_completions_payload():
@@ -460,7 +486,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
         ]
 
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = [10, 11, 248056, 12]
+    tokenizer.apply_chat_template.return_value = [10, 11, 248056, 12, 248068, 198]
     tokenizer.special_ids = MagicMock(image=248056)
 
     run = await single_turn_renderer_rollout(
@@ -474,6 +500,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
     )
     assert run is not None
     assert captured["prompt_token_ids"] == [10, 11, 248056, 12]
+    tokenizer.apply_chat_template.assert_not_called()
     assert captured["kwargs"]["images"] == [_BASE64_PNG]
     assert captured["kwargs"]["logprobs"] is True
     assert captured["kwargs"]["return_token_ids"] is True
@@ -510,7 +537,7 @@ async def test_single_turn_renderer_rollout_vision_accepts_sync_reward_fn():
         )
 
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = "<|im_start|>user\n"
+    tokenizer.decode.side_effect = ["PROMPT:", "ASSISTANT:"]
 
     def sync_reward(_row, _msg, _ok):
         return 0.5
@@ -526,6 +553,7 @@ async def test_single_turn_renderer_rollout_vision_accepts_sync_reward_fn():
     )
     assert run is not None
     assert run.segments[0].reward == 0.5
+    tokenizer.apply_chat_template.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -558,7 +586,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision()
         raise AssertionError("token path should not run when sample_with_vision is set")
 
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = "<|im_start|>user\n"
+    tokenizer.decode.side_effect = ["PROMPT:", "ASSISTANT:"]
 
     run = await single_turn_renderer_rollout(
         {"id": 1},
@@ -570,6 +598,9 @@ async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision()
         tokenizer=tokenizer,
     )
     assert run is not None
-    assert captured["prompt_text"] == "<|im_start|>user\n"
+    assert captured["prompt_text"] == (
+        "PROMPT:<|vision_start|><|image_pad|><|vision_end|>ASSISTANT:"
+    )
     assert captured["images"] == [_BASE64_PNG]
+    tokenizer.apply_chat_template.assert_not_called()
     assert run.segments[0].tokens[-2:] == [99, 100]

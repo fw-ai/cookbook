@@ -30,6 +30,10 @@ from typing import Any
 
 import pytest
 
+from training.utils.rl.rollout.renderer import (
+    build_multimodal_completions_prompt_token_ids,
+)
+
 from training.renderer.verifier.utils.hf_parity import (
     HFParityResult,
     compare_renderer_to_hf,
@@ -67,6 +71,12 @@ _KIMI_REASONING_MSGS = [
     },
     {"role": "user", "content": "And 3+3?"},
 ]
+_QWEN35_MODEL = "Qwen/Qwen3.5-27B"
+_ONE_PIXEL_PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8A"
+    "AQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 _CASES: list[_Case] = [
@@ -112,6 +122,19 @@ _CASES: list[_Case] = [
         case_id="qwen3-disable-thinking",
         renderer="qwen3_disable_thinking",
         tokenizer_model="Qwen/Qwen3-8B",
+        messages=_SHORT_MSGS,
+        apply_chat_template_kwargs={"enable_thinking": False},
+    ),
+    _Case(
+        case_id="qwen3_5-thinking-single-turn",
+        renderer="qwen3_5",
+        tokenizer_model=_QWEN35_MODEL,
+        messages=_SHORT_MSGS,
+    ),
+    _Case(
+        case_id="qwen3_5-disable-thinking",
+        renderer="qwen3_5_disable_thinking",
+        tokenizer_model=_QWEN35_MODEL,
         messages=_SHORT_MSGS,
         apply_chat_template_kwargs={"enable_thinking": False},
     ),
@@ -206,3 +229,86 @@ def test_renderer_matches_hf_chat_template(case: _Case) -> None:
         pytest.skip(f"tokenizer unavailable for {case.tokenizer_model!r}: {exc}")
 
     assert result.match, format_divergence(result)
+
+
+@pytest.mark.timeout(180)
+def test_qwen3_5_multimodal_adapter_matches_independent_hf_ground_truth() -> None:
+    """The serving adapter must transport, not re-render, renderer output.
+
+    Tinker's disable-thinking renderer and HuggingFace's official template
+    with ``enable_thinking=False`` are independent producers of the expected
+    prompt.  Re-running the HF template with its defaults recreates the
+    production regression by appending a different thinking prefix.
+    """
+    try:
+        from tinker_cookbook.image_processing_utils import get_image_processor
+        from tinker_cookbook.renderers import get_renderer
+        from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+        import training.renderer  # noqa: F401 (register local renderer overrides)
+        from training.utils.supervised import normalize_messages
+
+        tokenizer = get_tokenizer(_QWEN35_MODEL)
+        renderer = get_renderer(
+            "qwen3_5_disable_thinking",
+            tokenizer,
+            image_processor=get_image_processor(_QWEN35_MODEL),
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        pytest.skip(f"Qwen3.5 tokenizer/image processor unavailable: {exc}")
+
+    renderer_messages = [
+        {"role": "system", "content": "Answer briefly."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": _ONE_PIXEL_PNG},
+                {"type": "text", "text": "Where am I?"},
+            ],
+        },
+    ]
+    hf_messages = [
+        {"role": "system", "content": "Answer briefly."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": _ONE_PIXEL_PNG}},
+                {"type": "text", "text": "Where am I?"},
+            ],
+        },
+    ]
+
+    model_input = renderer.build_generation_prompt(
+        normalize_messages(renderer_messages),
+        role="assistant",
+    )
+    adapter_tokens, images = build_multimodal_completions_prompt_token_ids(
+        renderer_messages,
+        model_input,
+        tokenizer,
+    )
+    hf_disabled = tokenizer.apply_chat_template(
+        hf_messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    hf_default = tokenizer.apply_chat_template(
+        hf_messages,
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    disabled_tokens = [int(t) for t in hf_disabled.input_ids]
+    default_tokens = [int(t) for t in hf_default.input_ids]
+
+    assert adapter_tokens == disabled_tokens
+    assert adapter_tokens != default_tokens
+    assert len(images) == 1
+    assert images[0].startswith("data:image/jpeg;base64,")
+    assert images[0] != _ONE_PIXEL_PNG
+    assert tokenizer.decode(adapter_tokens, skip_special_tokens=False).endswith(
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    )
+    assert tokenizer.decode(default_tokens, skip_special_tokens=False).endswith(
+        "<|im_start|>assistant\n<think>\n"
+    )
