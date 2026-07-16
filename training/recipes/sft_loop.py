@@ -1097,7 +1097,9 @@ def main(
             if getattr(cfg, "output_model_id", None):
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
-                    model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
+                    model_id=cfg.output_model_id,
+                    checkpoint=f"step-{step}",
+                    job_id=job_id,
                 )
 
         write_completed(runner, step=step, total_steps=step)

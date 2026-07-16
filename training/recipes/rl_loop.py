@@ -1024,7 +1024,9 @@ def main(
                 if getattr(cfg, "output_model_id", None):
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                     runner.write_output_model(
-                        model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
+                        model_id=cfg.output_model_id,
+                        checkpoint=f"step-{global_step}",
+                        job_id=policy_job_id,
                     )
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)

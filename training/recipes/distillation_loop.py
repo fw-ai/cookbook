@@ -1043,7 +1043,7 @@ def main(
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                     runner.write_output_model(
                         model_id=cfg.output_model_id,
-                        checkpoint=checkpoint_name,
+                        checkpoint=f"step-{global_step}",
                         job_id=policy_job_id,
                     )
             except Exception as exc:

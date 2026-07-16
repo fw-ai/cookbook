@@ -916,7 +916,7 @@ def main(
             )
             if cfg.output_model_id and has_trained_steps:
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
-                promoted_checkpoint = cp_name
+                promoted_checkpoint = f"step-{global_step}"
 
         if promoted_checkpoint is not None and cfg.output_model_id:
             runner.write_output_model(
