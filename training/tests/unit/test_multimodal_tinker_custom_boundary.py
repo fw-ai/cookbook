@@ -74,9 +74,9 @@ class _CapturingTrainingClient(TrainingClient):
 
 
 def test_tinker_custom_grpo_keeps_expanded_multimodal_wire_coordinates() -> None:
-    """Exercise Tinker 0.22.7's real two-pass custom-loss implementation."""
+    """Exercise Tinker 0.23.0's real two-pass custom-loss implementation."""
 
-    assert version("tinker") == "0.22.7"
+    assert version("tinker") == "0.23.0"
 
     prompt = tinker.ModelInput(
         chunks=[
