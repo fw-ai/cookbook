@@ -40,19 +40,20 @@ Distillation-specific: use `distillation_loop.py` for OPD/SDFT. Open [`distillat
 
 ## Resume
 
-Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes; the reference trainer is SDK-managed, so there is no separate reference job id to pin), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`checkpoints.md`](checkpoints.md) for the full priority order and constraints.
+Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer.job_id`, keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's authoritative RPC rows, picks the newest resumable row, and restores its exact row cursor from the local `trainer job -> step -> cursor` KV mapping. Set `cfg.dataloader_cursor` to override that lookup explicitly. See [`checkpoints.md`](checkpoints.md) for the full contract.
 
 ## Init from another job
 
 ```python
 config = Config(
     log_path="./new_run",
-    init_from_checkpoint="i44pvd4syzg8hjfk:step-4",  # job_id:checkpoint_name
+    init_from_checkpoint=checkpoint_row,  # row returned by list_checkpoints
+    dataloader_cursor=128,  # optional explicit override; bypasses local lookup
     ...
 )
 ```
 
-Loads weights from the other job; resets step to 0.
+You may also pass the row's full resource name or `"i44pvd4syzg8hjfk:step-4"`. Cross-job resume preserves the checkpoint step.
 
 ## RL specifics
 

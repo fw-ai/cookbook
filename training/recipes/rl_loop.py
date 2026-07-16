@@ -232,9 +232,12 @@ class Config:
     """Directory to save per-step trajectory JSONL files.  Each file contains
     prompts, completions, and rewards for every prompt group in that step."""
 
-    init_from_checkpoint: str | None = None
+    init_from_checkpoint: str | dict | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
-    format ``"job_id:checkpoint_name"``."""
+    format ``"job_id:checkpoint_name"`` and rows from ``list_checkpoints``."""
+
+    dataloader_cursor: int | None = None
+    """Explicit raw-row cursor. When set, local cursor resolution is skipped."""
 
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
@@ -570,19 +573,16 @@ def main(
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
+            dataloader_cursor=cfg.dataloader_cursor,
         )
-        step_offset = resume_info.step if resume_info else 0
+        step_offset = resume_info.step
         wandb_log({"train/step": step_offset}, step_offset)
 
         if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
             logger.info("[step %d] weight sync: saving + loading...", step_offset)
             t0 = _time.time()
             with timer("weight_sync"):
-                saved = policy.save_weights_for_sampler(
-                    f"step-{step_offset}",
-                    checkpoint_type="base",
-                )
-                service.hotload_sampler_snapshot(saved.path)
+                ckpt.sync_weights(step_offset, service.hotload_sampler_snapshot)
             logger.info("[step %d] weight sync: done (%.1fs)", step_offset, _time.time() - t0)
 
         # -- Prepare sampling and training --------------------------------------
@@ -916,10 +916,10 @@ def main(
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
                 ckpt.save(
-                    f"step-{step}",
+                    step,
                     resumable=True,
                     promotable=False,
-                    data_consumed=cursor.value,
+                    row_cursor=cursor.value,
                 )
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
@@ -982,13 +982,7 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        # Prefer the persisted raw-row cursor; fall back to step-derived
-        # progress for older checkpoints.
-        rollouts_done = step_offset // max(1, cfg.ppo_n_minibatches)
-        cursor.resume(
-            resume_info.data_consumed if resume_info else None,
-            fallback=rollouts_done * prompt_groups_per_step,
-        )
+        cursor.resume(resume_info.row_cursor)
         remaining_rows = all_rows[cursor.value:]
 
         total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
@@ -1006,8 +1000,8 @@ def main(
                 global_step=step_offset,
                 metrics_callback=_loop_metrics_callback,
                 weight_sync_fn=(
-                    lambda step: service.hotload_sampler_snapshot(
-                        policy.save_weights_for_sampler(f"step-{step}").path
+                    lambda step: ckpt.sync_weights(
+                        step, service.hotload_sampler_snapshot
                     )
                     if cfg.weight_sync_interval > 0
                     else None
@@ -1020,12 +1014,11 @@ def main(
 
         if cfg.save_final_checkpoint and global_step > step_offset:
             try:
-                cp_name = f"step-{global_step}"
                 ckpt.save(
-                    cp_name,
+                    global_step,
                     resumable=True,
                     promotable=True,
-                    data_consumed=cursor.value,
+                    row_cursor=cursor.value,
                 )
 
                 if getattr(cfg, "output_model_id", None):

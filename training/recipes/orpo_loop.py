@@ -54,6 +54,7 @@ from fireworks.training.sdk.training_spec import (
 
 from training.utils import (
     DEFAULT_ADAM,
+    RawRowCursor,
     TrainerConfig,
     ReconnectableClient,
     RunnerConfig,
@@ -158,7 +159,9 @@ class Config:
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
-    init_from_checkpoint: str | None = None
+    init_from_checkpoint: str | dict | None = None
+    dataloader_cursor: int | None = None
+    """Explicit prepared-row cursor. When set, local cursor resolution is skipped."""
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
     weights from the adapter at training start (weights-only, fresh optimizer).
@@ -327,8 +330,9 @@ def main(
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
+            dataloader_cursor=cfg.dataloader_cursor,
         )
-        step_offset = resume_info.step if resume_info else 0
+        step_offset = resume_info.step
 
         # -- Data ----------------------------------------------------------------
 
@@ -392,6 +396,8 @@ def main(
 
         step = step_offset
         total_steps = ((len(pair_cache) + cfg.batch_size - 1) // cfg.batch_size) * cfg.epochs
+        cursor = RawRowCursor(max_rows=len(pair_cache) * cfg.epochs)
+        cursor.resume(resume_info.row_cursor)
 
         logger.info(
             "LR schedule: %s | warmup_steps=%s | warmup_ratio=%s | peak_lr=%g",
@@ -436,14 +442,15 @@ def main(
             result = client.forward_backward_custom(datums, loss_fn)
             client.optim_step(adam_params)
             step += 1
+            cursor.record(len(step_pairs))
 
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 logger.info("Saving DCP checkpoint at step %d", step)
                 ckpt.save(
-                    f"step-{step}",
+                    step,
                     resumable=True,
                     promotable=False,
-                    data_consumed=(step - step_offset) * cfg.batch_size,
+                    row_cursor=cursor.value,
                 )
 
             step_elapsed = time.monotonic() - step_started_at
@@ -491,10 +498,14 @@ def main(
         start_running(runner, total_steps=total_steps)
 
         for epoch in range(cfg.epochs):
+            epoch_start = epoch * len(pair_cache)
+            skip_in_epoch = max(0, cursor.value - epoch_start)
+            if skip_in_epoch >= len(pair_cache):
+                continue
             epoch_pairs = _shuffled_pair_cache(pair_cache, cfg.seed, epoch)
             step_t0 = time.monotonic()
             batch_buffer: list[dict] = []
-            for pair in epoch_pairs:
+            for pair in epoch_pairs[skip_in_epoch:]:
                 batch_buffer.append(pair)
                 if len(batch_buffer) >= cfg.batch_size:
                     step_t0 = _run_train_step(epoch, batch_buffer, step_t0)
@@ -507,12 +518,11 @@ def main(
 
         if cfg.save_final_checkpoint and step > step_offset:
             logger.info("Saving final checkpoint (step %d)...", step)
-            cp_name = f"step-{step}"
             ckpt.save(
-                cp_name,
+                step,
                 resumable=True,
                 promotable=True,
-                data_consumed=(step - step_offset) * cfg.batch_size,
+                row_cursor=cursor.value,
             )
             if getattr(cfg, "output_model_id", None):
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

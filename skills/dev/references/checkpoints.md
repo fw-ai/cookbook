@@ -1,47 +1,53 @@
-# Checkpoints — where state lives
+# Checkpoints — one remote source of truth
 
-The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/checkpoints.py`. The control plane is the source of truth for what checkpoints exist; the only cookbook-side state is `dataloader.json`, which maps each saved checkpoint name to a `data_consumed` counter (one int per row).
+`TrainingCheckpoints` in `training/utils/checkpoints.py` is the cookbook boundary for resume, promotion, and sampler weight sync. Checkpoint identity and metadata live on the Fireworks control plane. Recipes discover them through `list_checkpoints`; they do not maintain a second checkpoint registry.
 
-## Two axes
-
-`TrainingCheckpoints.save(name, *, resumable, promotable, data_consumed=None)` — pick capabilities independently:
-
-- `resumable=True` → DCP write (weights + optimizer). Training can continue from this.
-- `promotable=True` → sampler write (HF safetensors). Eligible for `promote_checkpoint`.
-- Both → DCP + sampler in one call.
-
-Periodic mid-training saves are usually `resumable=True, promotable=False`. The final save is `resumable=True, promotable=True`. RL weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves.
-
-## `dataloader.json`
-
-Written to `{log_path}/dataloader.json`. Single int per checkpoint name:
+The only local checkpoint state is the dataset position that the trainer cannot infer:
 
 ```json
-{"step-10": 40, "step-50": 200}
+{
+  "trainer-job-a": {"10": 40, "50": 200},
+  "trainer-job-b": {"8": 32}
+}
 ```
 
-Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has been, in the new model. The control plane (`FireworksClient.list_checkpoints(job_id)`) is queried at resume / promote time for everything else.
+This is `{log_path}/dataloader.json`, a bounded KV mapping from trainer job id and checkpoint step to the next raw row cursor. It contains no paths, checkpoint types, timestamps, or promotion metadata. Each trainer keeps its newest 20 cursor entries. The former flat `{"step-10": 40}` shape is migrated when it is read.
 
-## When each axis is used
+## Save and sync APIs
 
-- `cfg.dcp_save_interval` > 0 → recipe calls `ckpt.save(resumable=True, promotable=False, ...)` every N steps.
-- End of training → recipe calls `ckpt.save(resumable=True, promotable=True, ...)`.
-- `cfg.output_model_id` set → recipe also calls `ckpt.promote_latest(output_model_id, base_model)`.
+`TrainingCheckpoints.save(step, *, resumable, promotable, row_cursor)` keeps the two save capabilities independent:
 
-If `dcp_save_interval` is `0` (the default), mid-training saves are off — training cannot be resumed from intermediate steps. Set it in the recipe's `Config`.
+- `resumable=True` writes DCP weights and optimizer state and records `(trainer_job_id, actual_saved_step) -> row_cursor` locally.
+- `promotable=True` writes a complete sampler export that can be promoted.
+- Both perform both writes under the same `step-N` logical name.
 
-## Delta chain (sampler `checkpoint_type`)
+Periodic saves use `resumable=True, promotable=False`; the final save usually uses both. `row_cursor` is required for every resumable save. If `dcp_save_interval=0` (the default), there are no intermediate resume points.
 
-This is an SDK-level detail, surfaced when you call `save_weights_for_sampler_ext` directly. For full-parameter training, only `base` sampler saves are promotable; `delta` saves are not. LoRA always saves the full adapter, so every LoRA sampler checkpoint is promotable. The SDK-managed sampler backend records the base-then-delta chain for recipe hotload; recipe-level `ckpt.save(promotable=True)` always saves `base`.
+RL recipes call `TrainingCheckpoints.sync_weights(step, hotload)`. They never pass `checkpoint_type` or branch on LoRA versus full-parameter training. The SDK saves a complete LoRA adapter for LoRA runs and manages the full/base/delta chain for full-parameter runs. The checkpoint manager also hides the complete-export choice required for promotion.
 
-`checkpoint_type="merged_base"` is a third, LoRA-only value. Instead of saving the standalone adapter, the trainer folds the active adapter into the base weights (`W <- W + scaling*(B@A)`), strips the adapter metadata, and exports a full base checkpoint that promotes as `INFERENCE_BASE` / `HF_BASE_MODEL`. The session must have a non-trivial adapter — either trained in this run, or loaded via `load_adapter` / the recipe `warm_start_from_adapter`; a fresh LoRA session has zero-delta weights and would export base-identical output. It is a full standalone checkpoint, so — like `base` — it never participates in the delta chain. Note this client-side adapter load is the supported path; control-plane `warmStartFrom` of a LoRA addon is **not** effective and is rejected for service-mode RLOR jobs.
+`checkpoint_type="merged_base"` remains an explicit, specialized LoRA export operation: it folds an adapter into its base model to produce a standalone `HF_BASE_MODEL`. Use `training/examples/tools/merge_lora_and_promote.py` for that workflow; ordinary recipes should not choose checkpoint formats.
 
-Two ways to use it:
+## Resume
 
-- **During a LoRA training run** — to emit a full `HF_BASE_MODEL` instead of a `HF_PEFT_ADDON`, save the final promotable checkpoint directly with `client.save_weights_for_sampler("final-merged", checkpoint_type="merged_base")` rather than relying on `TrainingCheckpoints.save(promotable=True)` (which always saves `base`). The adapter is already loaded in-session, so no separate merge step is needed.
-- **Merge an existing adapter** (no further training) — the standalone `training/examples/tools/merge_lora_and_promote.py` script drives it end to end (provision → `load_adapter` → `merged_base` save → promote).
+`TrainingCheckpoints.list()` returns the authoritative RPC rows. A user may pass any of these forms as `init_from_checkpoint`:
 
----
+- the row dictionary returned by `ckpt.list()` or `FireworksClient.list_checkpoints(job_id)`;
+- the row's full checkpoint resource name;
+- `job_id:step-N`;
+- a bare `step-N` for the current trainer.
+
+The checkpoint row determines the trainer state and step. The local KV mapping supplies only its row cursor. If the mapping has no entry, the cursor is `0`.
+
+Every recipe also exposes `dataloader_cursor`. When it is explicitly set, that exact cursor is used and the local mapping is not read. Use this for a deliberate data-position override or when resuming a remote checkpoint without its original `dataloader.json`.
+
+Resume priority is:
+
+1. `init_from_checkpoint` — load the explicit resumable checkpoint row/resource.
+2. Newest resumable RPC row for the current trainer — auto-resume.
+3. `warm_start_from_adapter` — load LoRA weights only and start at step/cursor zero.
+4. Fresh start.
+
+RPC list failures propagate instead of silently starting fresh.
 
 ## Warm-start from a promoted adapter (LoRA only)
 
@@ -56,14 +62,7 @@ cfg = Config(
 )
 ```
 
-Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh.
-
-Priority inside `TrainingCheckpoints.resume` (highest first):
-
-1. `init_from_checkpoint` — explicit cross-job DCP resume (weights + optimizer). Step counter resets.
-2. Newest resumable row on the control plane for the current trainer — auto-resume.
-3. `warm_start_from_adapter` — fresh start with adapter weights.
-4. None — fresh start from `base_model`.
+Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, step, and row cursor start fresh.
 
 **Constraints (enforced by `validate_warm_start_config`):**
 
@@ -74,12 +73,9 @@ Supported in all recipe loops: `sft_loop`, `dpo_loop`, `orpo_loop`, `rl_loop`, `
 
 ## Cross-run resume
 
-Auto-resume (priority 2) is **scoped to one trainer job**. If you re-run with the same `log_path` but provision a fresh trainer, the new trainer's `list_checkpoints` is empty and resume falls through to fresh start.
+Auto-resume is scoped to the current trainer job. To continue a prior trainer, pin `cfg.trainer.job_id`; its RPC rows and local row cursors will line up automatically.
 
-To resume across separate `main()` invocations, either:
-
-- Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes). The reference trainer is SDK-managed, so there is no separate reference job id to pin. The second run reattaches and the CP rows are visible.
-- Or use `init_from_checkpoint=f"{prior_job_id}:step-N"` for explicit cross-job DCP load. This resets the step counter to 0 — fine for warm-start scenarios, not for "continue training and skip to step N".
+To resume into another trainer, pass the prior RPC row (preferred), its full resource name, or `f"{prior_job_id}:step-N"`. Cross-job resume preserves checkpoint step `N`. The cursor is looked up under the source trainer id, or taken directly from `dataloader_cursor` when provided.
 
 ---
 

@@ -39,6 +39,15 @@ from training.tests.async_grpo_helpers import (
 
 logger = logging.getLogger(__name__)
 
+
+def _max_row_cursor(mapping: dict[str, dict[str, int]]) -> int:
+    return max(
+        int(cursor)
+        for job_rows in mapping.values()
+        for cursor in job_rows.values()
+    )
+
+
 _TRAINER_CLEANUP_STATES = {
     "JOB_STATE_ARCHIVED",
     "JOB_STATE_DELETING",
@@ -178,7 +187,7 @@ class TestGRPOResumeE2E:
             )
 
             # Read the persisted rollout cursor from dataloader.json — the only
-            # cookbook-side state in the new model (one int per checkpoint name).
+            # cookbook-side state in the new model (job id -> step -> row cursor).
             dataloader_path = os.path.join(log_dir, DATALOADER_BASE_NAME)
             assert os.path.exists(dataloader_path), (
                 f"Phase 1 should have written {DATALOADER_BASE_NAME} under {log_dir}"
@@ -186,7 +195,7 @@ class TestGRPOResumeE2E:
             with open(dataloader_path) as f:
                 phase1_dataloader = json.load(f)
             assert phase1_dataloader, "dataloader.json should be non-empty after phase 1"
-            phase1_data_consumed = max(int(v) for v in phase1_dataloader.values())
+            phase1_row_cursor = _max_row_cursor(phase1_dataloader)
 
             # Verify the control plane has at least one resumable row for the
             # phase-1 policy trainer — phase 2's resume reads from there.
@@ -200,8 +209,8 @@ class TestGRPOResumeE2E:
                 f"for policy job {phase1_policy_job_id}; got rows: {phase1_rows}"
             )
             logger.info(
-                "Phase 1 CP rows: %d resumable (data_consumed=%d)",
-                len(phase1_resumable), phase1_data_consumed,
+                "Phase 1 CP rows: %d resumable (row_cursor=%d)",
+                len(phase1_resumable), phase1_row_cursor,
             )
 
             # Phase 2: reattach to the same policy + reference trainers so resume
@@ -256,15 +265,15 @@ class TestGRPOResumeE2E:
 
             with open(dataloader_path) as f:
                 phase2_dataloader = json.load(f)
-            phase2_data_consumed = max(int(v) for v in phase2_dataloader.values())
-            assert phase2_data_consumed >= phase1_data_consumed, (
-                f"Phase 2 data_consumed ({phase2_data_consumed}) should not regress "
-                f"from phase 1's ({phase1_data_consumed}); rollout cursor should remain aligned."
+            phase2_row_cursor = _max_row_cursor(phase2_dataloader)
+            assert phase2_row_cursor >= phase1_row_cursor, (
+                f"Phase 2 row cursor ({phase2_row_cursor}) should not regress "
+                f"from phase 1's ({phase1_row_cursor}); rollout cursor should remain aligned."
             )
             logger.info(
-                "Resume verified: phase1=%d steps (data_consumed=%d), "
-                "phase2=%d steps (data_consumed=%d)",
-                phase1_steps, phase1_data_consumed, phase2_steps, phase2_data_consumed,
+                "Resume verified: phase1=%d steps (row_cursor=%d), "
+                "phase2=%d steps (row_cursor=%d)",
+                phase1_steps, phase1_row_cursor, phase2_steps, phase2_row_cursor,
             )
             verified = True
         finally:

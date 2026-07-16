@@ -514,9 +514,11 @@ class Config:
 
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
 
-    init_from_checkpoint: str | None = None
-    """Load pretrained DCP weights on a fresh dataset. Supports cross-job
-    format ``"job_id:checkpoint_name"``."""
+    init_from_checkpoint: str | dict | None = None
+    """Resume from a checkpoint name, resource, or ``list_checkpoints`` row."""
+
+    dataloader_cursor: int | None = None
+    """Explicit raw-row cursor. When set, local cursor resolution is skipped."""
 
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
@@ -878,11 +880,12 @@ def main(
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
+            dataloader_cursor=cfg.dataloader_cursor,
         )
-        step = resume_info.step if resume_info else 0
+        step = resume_info.step
         total_raw_rows = training_count * cfg.epochs
         cursor = RawRowCursor(max_rows=total_raw_rows)
-        cursor.resume(resume_info.data_consumed if resume_info else None)
+        cursor.resume(resume_info.row_cursor)
         wandb_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
@@ -951,7 +954,12 @@ def main(
             if cfg.dcp_save_interval > 0 and s % cfg.dcp_save_interval == 0:
                 with timer("dcp_save"):
                     logger.info("Saving DCP checkpoint at step %d", s)
-                    ckpt.save(f"step-{s}", resumable=True, promotable=False, data_consumed=cursor.value)
+                    ckpt.save(
+                        s,
+                        resumable=True,
+                        promotable=False,
+                        row_cursor=cursor.value,
+                    )
 
             # Metrics logging
             step_metrics: Dict[str, Any] = flush_timing()
@@ -1077,15 +1085,14 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
-        start_step = resume_info.step if resume_info else 0
+        start_step = resume_info.step
         if cfg.save_final_checkpoint and step > start_step:
             logger.info("Saving final checkpoint (step %d)...", step)
-            cp_name = f"step-{step}"
             ckpt.save(
-                cp_name,
+                step,
                 resumable=True,
                 promotable=True,
-                data_consumed=cursor.value,
+                row_cursor=cursor.value,
             )
             if getattr(cfg, "output_model_id", None):
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

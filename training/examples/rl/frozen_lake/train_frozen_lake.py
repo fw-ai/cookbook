@@ -122,6 +122,7 @@ class FrozenLakeConfig:
     epochs: int = 3
     max_seeds: int = 20
     max_steps: int = 12
+    dataloader_cursor: int | None = None
     lora_rank: int = 0
     max_seq_len: int | None = None
 
@@ -532,13 +533,11 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
         )
-        resume_info = ckpt.resume()
-        step_offset = resume_info.step if resume_info else 0
-        prior_rows_consumed = resume_info.data_consumed if resume_info else 0
+        resume_info = ckpt.resume(dataloader_cursor=cfg.dataloader_cursor)
+        step_offset = resume_info.step
+        prior_rows_consumed = resume_info.row_cursor
         if cfg.deployment_id:
-            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
-            service.hotload_sampler_snapshot(saved.snapshot_name)
+            ckpt.sync_weights(step_offset, service.hotload_sampler_snapshot)
 
         # -- Build rollout processor ----------------------------------------
         rollout_base_url = sampler.base_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
@@ -716,10 +715,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     t0 = time.time()
                     with timer("dcp_save"):
                         ckpt.save(
-                            f"step-{step}",
+                            step,
                             resumable=True,
                             promotable=False,
-                            data_consumed=step - step_offset,
+                            row_cursor=prior_rows_consumed + step - step_offset,
                         )
                     logger.info("[step %d] dcp_save: done (%.1fs)", step, time.time() - t0)
 
@@ -759,8 +758,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 logger.info("[step %d] weight_sync: saving + loading...", step)
                 t0 = time.time()
                 with timer("weight_sync"):
-                    saved = policy.save_weights_for_sampler_ext(f"step-{step}")
-                    service.hotload_sampler_snapshot(saved.snapshot_name)
+                    ckpt.sync_weights(step, service.hotload_sampler_snapshot)
                 logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
 
             def should_accept(pg: PromptGroup) -> bool:
@@ -834,13 +832,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             if global_step > step_offset:
                 try:
-                    cp_name = f"step-{global_step}"
-                    _data_consumed = int(final_stats["resolved_rows"])
+                    row_cursor = int(final_stats["resolved_rows"])
                     ckpt.save(
-                        cp_name,
+                        global_step,
                         resumable=True,
                         promotable=True,
-                        data_consumed=_data_consumed,
+                        row_cursor=row_cursor,
                     )
                     if getattr(cfg, "output_model_id", None):
                         ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

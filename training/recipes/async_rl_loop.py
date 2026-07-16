@@ -207,9 +207,11 @@ class Config:
     model). When unset the recipe still runs; the orchestration layer just
     won't receive progress updates. See ``training.utils.runner``."""
 
-    init_from_checkpoint: str | None = None
+    init_from_checkpoint: str | dict | None = None
     """Resume from prior checkpoint; bare name = this job, ``"job:name"``
-    = cross-job."""
+    = cross-job. Rows returned by ``list_checkpoints`` are also accepted."""
+    dataloader_cursor: int | None = None
+    """Explicit raw-row cursor. When set, local cursor resolution is skipped."""
     save_final_checkpoint: bool = True
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
@@ -266,18 +268,19 @@ def _rollout_fn_context_param_names(rollout_fn: RolloutFn) -> frozenset[str]:
 def _save_checkpoint(
     ckpt: TrainingCheckpoints,
     *,
-    name: str,
-    data_consumed: int,
+    step: int,
+    row_cursor: int,
     resumable: bool = True,
     promotable: bool = False,
 ) -> None:
+    name = f"step-{step}"
     logger.info("[%s] dcp_save...", name)
     with elapsed_timer("dcp_save") as span:
         ckpt.save(
-            name,
+            step,
             resumable=resumable,
             promotable=promotable,
-            data_consumed=data_consumed,
+            row_cursor=row_cursor,
         )
     logger.info("[%s] dcp_save: done (%.1fs)", name, span.elapsed)
 
@@ -435,8 +438,9 @@ def main(
 
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
+            dataloader_cursor=cfg.dataloader_cursor,
         )
-        step_offset = resume_info.step if resume_info else 0
+        step_offset = resume_info.step
         if step_offset:
             logger.info("Resuming from step %d", step_offset)
             wandb_log(
@@ -445,11 +449,7 @@ def main(
 
         if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
             with elapsed_timer("weight_sync") as span:
-                saved = policy.save_weights_for_sampler(
-                    f"step-{step_offset}",
-                    checkpoint_type="base",
-                )
-                service.hotload_sampler_snapshot(saved.path)
+                ckpt.sync_weights(step_offset, service.hotload_sampler_snapshot)
             logger.info("[step %d] weight sync (%.1fs)", step_offset, span.elapsed)
 
         if rows is None:
@@ -457,7 +457,7 @@ def main(
         else:
             rows = list(rows)
 
-        prior_rows_consumed = resume_info.data_consumed if resume_info else 0
+        prior_rows_consumed = resume_info.row_cursor
         row_loader = CursorDataLoader(
             rows,
             start_cursor=prior_rows_consumed,
@@ -851,8 +851,8 @@ def main(
                 try:
                     _save_checkpoint(
                         ckpt,
-                        name=f"step-{step}",
-                        data_consumed=int(loop_stats["resolved_rows"]),
+                        step=step,
+                        row_cursor=int(loop_stats["resolved_rows"]),
                     )
                 except (OSError, RuntimeError) as e:
                     # Periodic save: surface the failure but keep training.
@@ -887,8 +887,8 @@ def main(
                 max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
                 with_reference=(reference is not None),
                 min_group_size=cfg.min_group_size,
-                weight_sync_fn=lambda step: service.hotload_sampler_snapshot(
-                    policy.save_weights_for_sampler(f"step-{step}").path
+                weight_sync_fn=lambda step: ckpt.sync_weights(
+                    step, service.hotload_sampler_snapshot
                 ),
                 weight_sync_interval=_WEIGHT_SYNC_INTERVAL,
                 max_concurrent=cfg.max_concurrency_rollout_sample,
@@ -896,7 +896,7 @@ def main(
                 pipeline_chunks_per_step=cfg.pipeline_chunks_per_step,
                 post_train_metrics_fn=log_post_train_metrics,
                 global_step=step_offset,
-                resolved_rows_fn=lambda: row_loader.data_consumed,
+                resolved_rows_fn=lambda: row_loader.row_cursor,
                 return_final_stats=True,
             )
         )
@@ -908,12 +908,11 @@ def main(
         has_advanced_dataset = resume_row_cursor > prior_rows_consumed
         promoted_checkpoint: str | None = None
         if cfg.save_final_checkpoint and (has_trained_steps or has_advanced_dataset):
-            cp_name = f"step-{global_step}"
             ckpt.save(
-                cp_name,
+                global_step,
                 resumable=True,
                 promotable=has_trained_steps,
-                data_consumed=resume_row_cursor,
+                row_cursor=resume_row_cursor,
             )
             if cfg.output_model_id and has_trained_steps:
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

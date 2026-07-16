@@ -1,35 +1,14 @@
-"""Unified checkpoint API for cookbook training loops.
+"""Checkpoint, resume, and sampler weight-sync plumbing for cookbook loops.
 
-Collapses the old three-way split (DCP / sampler-full / sampler-LoRA) behind
-two user-facing axes: ``resumable`` and ``promotable``. The control plane
-(``FireworksClient.list_checkpoints(job_id)``) is the source of truth for
-what checkpoints exist, their type, and promotability. The only
-locally-persisted file is ``dataloader.json``, which maps checkpoint name
-to the cookbook's ``data_consumed`` counter (no server-side
-representation).
+Remote checkpoint rows are authoritative. The cookbook only persists the one
+piece of client state the trainer cannot know: a mapping from trainer job and
+checkpoint step to the next raw dataset row::
 
-The helpers centralize checkpoint naming and resume metadata handling.
+    {"trainer-job-id": {"10": 80, "20": 160}}
 
-Usage::
-
-    ckpt = TrainingCheckpoints(client, rlor_mgr,
-                               trainer_id=job_id, log_path=cfg.log_path,
-                               lora_rank=cfg.lora_rank)
-
-    resume_info = ckpt.resume(
-        init_from_checkpoint=cfg.init_from_checkpoint,
-        warm_start_from_adapter=cfg.warm_start_from_adapter,
-    )
-
-    # periodic (RL / SFT)
-    ckpt.save(f"step-{step}", resumable=True, promotable=False,
-              data_consumed=data_consumed)
-
-    # final
-    ckpt.save(f"step-{step}", resumable=True, promotable=True,
-              data_consumed=data_consumed)
-    if cfg.output_model_id:
-        ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
+Recipes never choose LoRA/full or base/delta sampler formats. ``sync_weights``
+delegates that choice to the SDK, while final promotable saves force a complete
+export behind this boundary.
 """
 
 from __future__ import annotations
@@ -40,60 +19,62 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 import training.utils.fileio as fileio
 
-DATALOADER_BASE_NAME = "dataloader.json"
+DATALOADER_CURSOR_BASE_NAME = "dataloader.json"
+# Compatibility for callers that imported the old constant.
+DATALOADER_BASE_NAME = DATALOADER_CURSOR_BASE_NAME
 DATALOADER_HISTORY_KEEP = 20
 
 _RESUMABLE_TYPE_SUFFIXES = ("TRAINING", "TRAINING_LORA")
+_SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
+_RUN_SCOPED_NAME_RE = re.compile(r"^run-[0-9a-f]{32}[:-](.+)$")
+_CHECKPOINT_RESOURCE_RE = re.compile(
+    r"(?:^|/)(?:rlorTrainerJobs|trainingSessions)/([^/]+)/checkpoints/([^/]+)$"
+)
+_STEP_NAME_RE = re.compile(r"^step-(\d+)$")
+_PROMOTABLE_FRESHNESS_TOLERANCE_S = 10.0
 
 logger = logging.getLogger(__name__)
 
 
-# -- Public types --------------------------------------------------------------
-
-
-@dataclass
+@dataclass(frozen=True)
 class ResumeInfo:
-    """Resolved resume state returned by :meth:`TrainingCheckpoints.resume`."""
+    """The resolved trainer step and raw-row cursor for a run."""
 
     step: int = 0
-    #: Cumulative raw rows from the source dataset (incl. drops / sample failures), across all runs.
-    data_consumed: int = 0
+    row_cursor: int = 0
     source_job_id: str | None = None
 
+    @property
+    def data_consumed(self) -> int:
+        """Backward-compatible name for :attr:`row_cursor`."""
+        return self.row_cursor
 
-class _CheckpointLister(Protocol):
+
+class _CheckpointControlPlane(Protocol):
     def list_checkpoints(self, job_id: str, *, page_size: int = 200) -> list[dict]: ...
 
     def promote_checkpoint(
         self,
-        job_id: str,
-        checkpoint_id: str,
+        *,
+        name: str,
         output_model_id: str,
         base_model: str,
-        *,
         hot_load_deployment_id: str | None = None,
     ) -> dict: ...
-
-
-# -- Helpers -------------------------------------------------------------------
 
 
 def validate_warm_start_config(
     *,
     warm_start_from_adapter: str | None,
-    init_from_checkpoint: str | None,
+    init_from_checkpoint: str | Mapping[str, Any] | None,
     lora_rank: int,
 ) -> None:
-    """Validate cross-field constraints on warm-start inputs.
-
-    Full-param warm-start is handled via ``cfg.base_model`` at session init,
-    not via this API — this helper only checks the LoRA adapter path.
-    """
-    if warm_start_from_adapter and init_from_checkpoint:
+    """Validate cross-field constraints on weights-only warm starts."""
+    if warm_start_from_adapter and init_from_checkpoint is not None:
         raise ValueError(
             "warm_start_from_adapter and init_from_checkpoint are mutually exclusive"
         )
@@ -101,51 +82,31 @@ def validate_warm_start_config(
         raise ValueError(
             "warm_start_from_adapter requires lora_rank > 0. "
             "For full-param warm-start, set cfg.base_model to the promoted model "
-            "resource name — the training session will initialize from it directly."
+            "resource name; the training session initializes from it directly."
         )
 
 
 def _short_name(resource_name: str) -> str:
-    """Extract the trailing checkpoint id from a full resource name."""
     return resource_name.rstrip("/").rsplit("/", 1)[-1]
 
 
-_SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
-_RUN_SCOPED_NAME_RE = re.compile(r"^run-[0-9a-f]{32}[:-](.+)$")
-_PROMOTABLE_FRESHNESS_TOLERANCE_S = 10.0
-
-
 def _logical_name(short: str) -> str:
-    """Strip the server-appended session suffix from a sampler checkpoint id.
-
-    Sampler writes (``INFERENCE_*`` rows) get an 8-hex-char session id
-    appended by the trainer (e.g. ``"step-5"`` -> ``"step-5-45dda197"``).
-    DCP (``TRAINING*``) rows keep the original caller-supplied name. For
-    skip-if-exists the caller's logical name is what should match.
-    """
+    """Strip the trainer's sampler-session suffix from a checkpoint id."""
     return _SESSION_SUFFIX_RE.sub("", short)
 
 
 def _public_logical_name(short: str) -> str:
-    """Return the caller-visible logical name for a CP checkpoint id.
-
-    Serverless training-session checkpoints are surfaced as
-    ``<run_id>-<checkpoint_id>`` to keep multiple source runs unique. The
-    cookbook caller only knows the trainer-side ``<checkpoint_id>`` it passed
-    to ``save()``, so skip/wait checks compare against the suffix after the
-    public run prefix. Accept the legacy ``<run_id>:<checkpoint_id>`` form too
-    so in-flight jobs from older control planes still skip duplicate saves.
-    """
-    m = _RUN_SCOPED_NAME_RE.match(short)
-    if m:
-        short = m.group(1)
+    """Strip a public serverless run prefix and sampler-session suffix."""
+    match = _RUN_SCOPED_NAME_RE.match(short)
+    if match:
+        short = match.group(1)
     return _logical_name(short)
 
 
 def _logical_name_for_run(short: str, current_run_id: str | None = None) -> str:
     if current_run_id:
-        for sep in ("-", ":"):
-            prefix = f"{current_run_id}{sep}"
+        for separator in ("-", ":"):
+            prefix = f"{current_run_id}{separator}"
             if short.startswith(prefix):
                 return _logical_name(short[len(prefix) :])
     return _public_logical_name(short)
@@ -157,296 +118,246 @@ def _is_run_scoped_name(short: str) -> bool:
 
 def _belongs_to_run(short: str, current_run_id: str | None = None) -> bool:
     if current_run_id is None:
-        # Without the owning run id, only legacy unscoped rows are safe to use.
-        # A run-scoped row belongs to a specific source run under the shared
-        # TrainingSession; treating it as eligible would let resume/promote/skip
-        # pick another run's checkpoint.
         return not _is_run_scoped_name(short)
     return short.startswith(f"{current_run_id}-") or short.startswith(
         f"{current_run_id}:"
     )
 
 
-def _is_resumable_row(row: dict) -> bool:
-    ctype = row.get("checkpointType", "") or ""
-    return any(ctype.endswith(suffix) for suffix in _RESUMABLE_TYPE_SUFFIXES)
+def _is_resumable_row(row: Mapping[str, Any]) -> bool:
+    checkpoint_type = row.get("checkpointType", "") or ""
+    return any(checkpoint_type.endswith(suffix) for suffix in _RESUMABLE_TYPE_SUFFIXES)
 
 
 def _parse_iso_time(value: str | None) -> datetime | None:
-    """Parse an RFC3339 timestamp into an aware ``datetime``.
-
-    Handles both microsecond-precision (``...123456Z``) and
-    second-precision (``...Z``) forms used by the control plane.
-    Returns ``None`` on missing / malformed input so callers can
-    fall back without crashing.
-    """
     if not value:
         return None
-    s = value.strip()
-    if not s:
+    value = value.strip()
+    if not value:
         return None
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
     try:
-        dt = datetime.fromisoformat(s)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _newest_first(rows: list[dict]) -> list[dict]:
-    """Sort rows newest-first by parsed ``createTime``.
-
-    Lexicographic sort is wrong because the control plane mixes
-    second-precision (``...:13Z``) and microsecond-precision
-    (``...:13.123456Z``) timestamps in the same response: ``'Z' (90)
-    > '.' (46)`` makes the older second-precision row sort newer than
-    the newer microsecond-precision one, silently picking a stale
-    checkpoint in :meth:`_latest_resumable` and :meth:`promote_latest`.
-    Sort by parsed datetime instead (epoch fallback for unparseable
-    values so they sort to the end).
-    """
-    NEG_INF = datetime.min.replace(tzinfo=timezone.utc)
+    """Sort CP rows by parsed ``createTime`` rather than RFC3339 text."""
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
     return sorted(
         rows,
-        key=lambda r: _parse_iso_time(r.get("createTime")) or NEG_INF,
+        key=lambda row: _parse_iso_time(row.get("createTime")) or epoch,
         reverse=True,
     )
 
 
-def _parse_cross_job(spec: str) -> tuple[str | None, str]:
-    """Parse ``"job_id:checkpoint_name"`` or a plain path/name."""
-    if ":" in spec and not spec.startswith(("gs://", "/")):
+def _checkpoint_step(name: str) -> int:
+    match = _STEP_NAME_RE.fullmatch(name)
+    if match is None:
+        raise ValueError(
+            f"Checkpoint {name!r} does not use the cookbook step-N naming contract"
+        )
+    return int(match.group(1))
+
+
+def _checkpoint_ref(
+    spec: str | Mapping[str, Any],
+    *,
+    default_job_id: str,
+) -> tuple[str, str]:
+    """Resolve a list-checkpoints row, resource name, ``job:name``, or name."""
+    if isinstance(spec, Mapping):
+        if not _is_resumable_row(spec):
+            raise ValueError("init_from_checkpoint must reference a resumable checkpoint")
+        value = spec.get("name")
+        if not isinstance(value, str) or not value:
+            raise ValueError("Checkpoint row is missing its resource name")
+        spec = value
+
+    resource_match = _CHECKPOINT_RESOURCE_RE.search(spec)
+    if resource_match:
+        return resource_match.group(1), resource_match.group(2)
+
+    if ":" in spec and not spec.startswith(("gs://", "tinker://", "/")):
         job_id, name = spec.split(":", 1)
-        return job_id, name
-    return None, spec
-
-
-# -- Main class ----------------------------------------------------------------
+        if job_id and name:
+            return job_id, name
+    return default_job_id, _short_name(spec)
 
 
 class TrainingCheckpoints:
-    """Single cookbook-side checkpoint manager.
-
-    Holds a reference to the live training client (for save / load RPCs on
-    the trainer pod) and a control-plane client (for the authoritative list
-    of checkpoints and for ``:promote``).
-    """
+    """One cookbook boundary for checkpoint RPCs and sampler weight sync."""
 
     def __init__(
         self,
         client: Any,
-        fw_client: _CheckpointLister,
+        fw_client: _CheckpointControlPlane,
         *,
         trainer_id: str,
         log_path: str,
         lora_rank: int = 0,
         serverless: bool = False,
         save_appear_timeout_s: float = 90.0,
-        save_stabilize_s: float = 15.0,
         save_poll_s: float = 3.0,
         current_run_id: str | None = None,
+        **legacy_options: Any,
     ) -> None:
+        # ``save_stabilize_s`` used to control a CP poll after DCP saves. DCP
+        # results now give us the stored checkpoint name directly.
+        legacy_options.pop("save_stabilize_s", None)
+        if legacy_options:
+            unexpected = ", ".join(sorted(legacy_options))
+            raise TypeError(f"Unexpected checkpoint options: {unexpected}")
         self._client = client
         self._fw_client = fw_client
         self._trainer_id = trainer_id
         self._log_path = log_path
         self._lora_rank = lora_rank
-        # In serverless mode trainer_id is the TrainingSession id (not a job),
-        # which changes how resume refs are built — see resume().
         self._serverless = serverless
         self._current_run_id = current_run_id if serverless else None
         self._save_appear_timeout_s = save_appear_timeout_s
-        self._save_stabilize_s = save_stabilize_s
         self._save_poll_s = save_poll_s
 
-    # -- Save --------------------------------------------------------------
+    def list(self) -> list[dict]:
+        """Return the control plane's authoritative checkpoint rows."""
+        return self._fw_client.list_checkpoints(self._trainer_id)
 
     def save(
         self,
-        name: str,
+        step: int,
         *,
         resumable: bool,
         promotable: bool,
-        data_consumed: int | None = None,
+        row_cursor: int | None = None,
     ) -> None:
-        """Save a checkpoint with the requested capabilities.
+        """Save trainer state and/or a complete promotable export.
 
-        ``resumable=True`` writes a DCP checkpoint (weights + optimizer).
-        ``promotable=True`` writes a sampler checkpoint. The sampler write is
-        skipped if a row with the same name already exists on the control
-        plane with ``promotable=True`` (e.g. produced earlier by
-        RL weight sync in the same loop).
-
-        ``data_consumed`` is persisted to ``dataloader.json`` keyed on
-        ``name`` so the corresponding resume call can recover the cookbook's
-        rollouts-consumed counter. Ignored when ``resumable=False``.
+        The cursor is recorded only for a resumable save. The step stored in
+        the trainer RPC result is used as the key, so server-side normalization
+        never requires a second control-plane lookup.
         """
+        if step < 0:
+            raise ValueError("step must be >= 0")
         if not (resumable or promotable):
             raise ValueError("save() requires at least one of resumable/promotable")
+        if resumable and row_cursor is None:
+            raise ValueError("row_cursor is required for resumable checkpoints")
+        if row_cursor is not None and row_cursor < 0:
+            raise ValueError("row_cursor must be >= 0")
 
-        t0 = time.time()
+        name = f"step-{step}"
         if resumable:
-            # Record save start time so we can wait for the control plane to
-            # reflect a row newer than this save. The trainer may rename to its
-            # internal step counter (caller passes "step-42", service stores
-            # as "step-0") — and resume reads names from the control plane —
-            # so ``dataloader.json`` must be keyed on whatever name ends up as
-            # the newest resumable row (which is exactly what resume will pick).
-            t_save_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            logger.info("Saving DCP checkpoint '%s'...", name)
-            self._client.save_state(name)
-            logger.info("DCP checkpoint '%s' saved (%.1fs)", name, time.time() - t0)
-            if data_consumed is not None:
-                actual_name = self._resolve_cp_name_after_save(
-                    fallback=name,
-                    save_started_iso=t_save_iso,
-                    appear_timeout_s=self._save_appear_timeout_s,
-                    stabilize_s=self._save_stabilize_s,
-                    poll_s=self._save_poll_s,
-                )
-                self._write_dataloader(actual_name, data_consumed)
-                if actual_name != name:
-                    logger.info(
-                        "DCP server-stored name %r differs from caller name %r; "
-                        "dataloader.json keyed on server name for resume alignment.",
-                        actual_name,
-                        name,
-                    )
+            started = time.time()
+            logger.info("Saving resumable checkpoint %r...", name)
+            result = self._client.save_state(name)
+            actual_name = self._saved_checkpoint_name(result, fallback=name)
+            actual_step = _checkpoint_step(actual_name)
+            self._write_row_cursor(self._trainer_id, actual_step, int(row_cursor))
+            logger.info(
+                "Resumable checkpoint %r saved (%.1fs, row cursor %d)",
+                actual_name,
+                time.time() - started,
+                row_cursor,
+            )
 
         if promotable:
-            if self._promotable_exists(name):
-                logger.info(
-                    "Sampler checkpoint '%s' already promotable on control plane — "
-                    "skipping redundant save.",
-                    name,
-                )
-            else:
-                t1 = time.time()
-                sampler_save_started = datetime.now(timezone.utc)
-                logger.info("Saving sampler checkpoint '%s'...", name)
-                self._client.save_weights_for_sampler(name, checkpoint_type="base")
-                logger.info(
-                    "Sampler checkpoint '%s' saved (%.1fs)", name, time.time() - t1
-                )
-                actual_name = self._wait_for_promotable_after_save(
-                    name=name,
-                    save_started=sampler_save_started,
-                    appear_timeout_s=self._save_appear_timeout_s,
-                    poll_s=self._save_poll_s,
-                )
-                if actual_name and actual_name != name:
-                    logger.info(
-                        "Sampler server-stored name %r differs from caller name %r; "
-                        "using control-plane row for subsequent promotion.",
-                        actual_name,
-                        name,
-                    )
+            self._save_promotable(name)
 
-    # -- Resume ------------------------------------------------------------
+    def sync_weights(
+        self,
+        step: int,
+        hotload: Callable[[str], Any],
+    ) -> str:
+        """Save and hot-load the current sampler weights.
+
+        No checkpoint format is supplied: the SDK selects a full LoRA adapter
+        for LoRA runs and manages the base/delta chain for full-parameter runs.
+        """
+        if step < 0:
+            raise ValueError("step must be >= 0")
+        name = f"step-{step}"
+        started = time.time()
+        saved = self._client.save_weights_for_sampler(name)
+        path = getattr(saved, "path", None)
+        if not isinstance(path, str) or not path:
+            raise RuntimeError(f"Weight sync {name!r} returned no snapshot path")
+        hotload(path)
+        logger.info("Weights synced at step %d (%.1fs)", step, time.time() - started)
+        return path
 
     def resume(
         self,
         *,
-        init_from_checkpoint: str | None = None,
+        init_from_checkpoint: str | Mapping[str, Any] | None = None,
         warm_start_from_adapter: str | None = None,
-    ) -> ResumeInfo | None:
-        """Determine resume state and load weights into the live client.
+        dataloader_cursor: int | None = None,
+    ) -> ResumeInfo:
+        """Resolve and load a checkpoint, returning step and raw-row cursor.
 
-        Priority:
-
-        1. ``init_from_checkpoint`` — explicit DCP load. Same-trainer loads
-           resume the step/cursor; cross-job loads reset the step counter.
-        2. Newest resumable row on the control plane — auto-resume.
-        3. ``warm_start_from_adapter`` — HF PEFT adapter (weights only).
-        4. Fresh start (returns ``None``).
+        ``init_from_checkpoint`` accepts a row returned by :meth:`list`, its
+        full resource name, ``job_id:step-N``, or a bare ``step-N``. When
+        ``dataloader_cursor`` is supplied, local cursor state is not read.
         """
         validate_warm_start_config(
             warm_start_from_adapter=warm_start_from_adapter,
             init_from_checkpoint=init_from_checkpoint,
             lora_rank=self._lora_rank,
         )
+        if dataloader_cursor is not None and dataloader_cursor < 0:
+            raise ValueError("dataloader_cursor must be >= 0")
 
-        if init_from_checkpoint:
-            source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
-            if self._serverless:
-                # The pooled trainer namespaces checkpoints under
-                # sessions/<session_id>/ and rejects cross_job://<id>/<name> refs
-                # (a session id is not a source job). Cross-session warm-start is
-                # not supported on the shared pool (checkpoints are session
-                # isolated), so a spec naming a different session is an error;
-                # otherwise resume from the bare name and let the trainer prepend
-                # the session prefix, mirroring the auto-resume path below.
-                if source_job_id and source_job_id != self._trainer_id:
-                    raise ValueError(
-                        f"serverless init_from_checkpoint cannot reference another "
-                        f"session ({source_job_id!r}); checkpoints on the shared pool "
-                        f"are isolated to session {self._trainer_id!r}. Use a bare "
-                        f"checkpoint name to resume within this session."
-                    )
-                source_job_id = None
-            elif source_job_id == self._trainer_id:
-                path = self._client.resolve_checkpoint_path(dcp_name)
-                logger.info(
-                    "Resuming from explicit same-trainer checkpoint: %s", dcp_name
-                )
-                t0 = time.time()
-                self._client.load_state_with_optimizer(path)
-                logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
-                return ResumeInfo(
-                    step=_step_from_name(dcp_name),
-                    data_consumed=self._read_dataloader(dcp_name),
-                    source_job_id=source_job_id,
-                )
-            path = self._client.resolve_checkpoint_path(
-                dcp_name, source_job_id=source_job_id
+        if init_from_checkpoint is not None:
+            source_job_id, stored_name = _checkpoint_ref(
+                init_from_checkpoint,
+                default_job_id=self._trainer_id,
             )
-            logger.info(
-                "Starting at step 0 with weights loaded from %s "
-                "(no resume — step counter resets)",
-                path,
+            if self._serverless and source_job_id != self._trainer_id:
+                raise ValueError(
+                    "serverless init_from_checkpoint cannot reference another "
+                    f"session ({source_job_id!r}); checkpoints on the shared pool "
+                    "are isolated"
+                )
+            logical_name = self._trainer_logical_name(stored_name)
+            step = _checkpoint_step(logical_name)
+            load_source = None if source_job_id == self._trainer_id else source_job_id
+            self._load_checkpoint(logical_name, source_job_id=load_source)
+            return ResumeInfo(
+                step=step,
+                row_cursor=self._resolve_row_cursor(
+                    source_job_id,
+                    step,
+                    override=dataloader_cursor,
+                ),
+                source_job_id=source_job_id,
             )
-            t0 = time.time()
-            self._client.load_state_with_optimizer(path)
-            logger.info("Checkpoint loaded (%.1fs)", time.time() - t0)
-            return ResumeInfo(step=0, data_consumed=0, source_job_id=source_job_id)
 
         latest = self._latest_resumable()
-        if latest:
-            short = _short_name(latest["name"])
-            logical = self._trainer_logical_name(short)
-            # In serverless mode the pooled multi-session trainer namespaces
-            # checkpoints under the current run/session itself and rejects a
-            # cross_job://<session_id>/<name> ref (session_id is not a source
-            # job, and CP rows are public run-scoped ids). Resume from the
-            # trainer-side logical name so the trainer prepends its current run
-            # prefix; the dedicated path also uses the local trainer namespace
-            # because cross_job://<same-trainer>/<name> points at the global
-            # durable checkpoint prefix and can miss still-local trainer state.
-            path = self._client.resolve_checkpoint_path(logical, source_job_id=None)
-            logger.info("Resuming from control-plane row: %s", short)
-            t0 = time.time()
-            self._client.load_state_with_optimizer(path)
-            logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
+        if latest is not None:
+            logical_name = self._trainer_logical_name(_short_name(latest["name"]))
+            step = _checkpoint_step(logical_name)
+            self._load_checkpoint(logical_name, source_job_id=None)
             return ResumeInfo(
-                step=_step_from_name(logical),
-                data_consumed=self._read_dataloader(logical),
-                source_job_id=None if self._serverless else self._trainer_id,
+                step=step,
+                row_cursor=self._resolve_row_cursor(
+                    self._trainer_id,
+                    step,
+                    override=dataloader_cursor,
+                ),
+                source_job_id=self._trainer_id,
             )
 
         if warm_start_from_adapter:
-            logger.info("Fresh start with HF adapter: %s", warm_start_from_adapter)
-            t0 = time.time()
+            logger.info("Starting with an explicit HF adapter")
+            started = time.time()
             self._client.load_adapter(warm_start_from_adapter)
-            logger.info("Adapter loaded (%.1fs)", time.time() - t0)
-            return ResumeInfo(step=0, data_consumed=0, source_job_id=None)
+            logger.info("Adapter loaded (%.1fs)", time.time() - started)
 
-        logger.info("Starting at step 0 from base model (no checkpoint)")
-        return None
-
-    # -- Promote -----------------------------------------------------------
+        return ResumeInfo(row_cursor=dataloader_cursor or 0)
 
     def promote_latest(
         self,
@@ -455,33 +366,22 @@ class TrainingCheckpoints:
         *,
         hot_load_deployment_id: str | None = None,
     ) -> dict:
-        """Promote the newest promotable row on the control plane.
-
-        No local lookup. Works identically for full and LoRA runs; in LoRA
-        runs this transparently picks up the most recent
-        weight-sync sampler row without requiring an explicit final
-        sampler save.
-        """
+        """Promote the newest promotable row returned by the control plane."""
         rows = _newest_first(
             [
-                r
-                for r in self._list_checkpoints()
-                if r.get("promotable") and self._row_matches_current_run(r)
+                row
+                for row in self.list()
+                if row.get("promotable") and self._row_matches_current_run(row)
             ]
         )
         if not rows:
             raise RuntimeError(
-                f"No promotable checkpoints found for trainer job '{self._trainer_id}'. "
-                "Call save(promotable=True) or run a promotable weight sync first."
+                f"No promotable checkpoints found for trainer job {self._trainer_id!r}. "
+                "Save a promotable checkpoint first."
             )
-        # Use the 4-segment resource name end-to-end: the SDK accepts
-        # ``name=`` directly, so we hand the row's ``name`` field through
-        # without disassembly. See the public docs page on saving and
-        # loading (``/fine-tuning/training-api/saving-and-loading``) for
-        # the full promote API contract.
         full_name = rows[0]["name"]
         logger.info(
-            "Promoting newest promotable checkpoint: %s -> %s",
+            "Promoting checkpoint %s -> %s",
             _short_name(full_name),
             output_model_id,
         )
@@ -492,181 +392,51 @@ class TrainingCheckpoints:
             hot_load_deployment_id=hot_load_deployment_id,
         )
 
-    # -- Internal ----------------------------------------------------------
-
-    def _list_checkpoints(self) -> list[dict]:
-        return self._fw_client.list_checkpoints(self._trainer_id)
-
-    def _resolve_cp_name_after_save(
-        self,
-        *,
-        fallback: str,
-        save_started_iso: str,
-        appear_timeout_s: float,
-        stabilize_s: float,
-        poll_s: float,
-    ) -> str:
-        """Wait for the save to surface, let the CP state stabilize, then
-        return the short name of the row resume would pick (newest resumable).
-
-        The control plane can show a transient row name mid-save before the
-        trainer's internal bookkeeping consolidates (e.g. caller writes
-        ``step-2`` but the service later collapses it into ``step-0``). Picking
-        the "first new name" would race with that consolidation and store a
-        dataloader key that resume never sees. Instead we mirror
-        :meth:`_latest_resumable` exactly: after a brief stabilization window,
-        pick the newest resumable row.
-        """
-        deadline = time.time() + appear_timeout_s
-        while time.time() < deadline:
-            try:
-                rows = self._list_checkpoints()
-            except AttributeError as e:
-                # Permanent: the control-plane client doesn't implement
-                # ``list_checkpoints`` (e.g. a unit-test fake). Don't burn
-                # the appear_timeout — fall back to the caller name now.
-                logger.warning(
-                    "list_checkpoints not implemented on control-plane client (%s); "
-                    "falling back to caller name %r for dataloader.json.",
-                    e,
-                    fallback,
-                )
-                return fallback
-            except Exception as e:
-                logger.debug(
-                    "list_checkpoints during save-resolution failed: %s; retrying.",
-                    e,
-                )
-                time.sleep(poll_s)
-                continue
-            surfaced = any(
-                _is_resumable_row(r)
-                and self._row_matches_current_run(r)
-                and r.get("createTime", "") >= save_started_iso
-                for r in rows
-            )
-            if surfaced:
-                break
-            time.sleep(poll_s)
-        else:
-            logger.warning(
-                "Timed out after %.0fs waiting for CP to surface save (>= %s); "
-                "falling back to caller name %r for dataloader.json.",
-                appear_timeout_s,
-                save_started_iso,
-                fallback,
-            )
-            return fallback
-
-        time.sleep(stabilize_s)
-
-        try:
-            rows = self._list_checkpoints()
-        except Exception as e:
-            logger.warning(
-                "list_checkpoints after stabilize failed (%s); falling back to %r.",
-                e,
-                fallback,
-            )
-            return fallback
-        resumable = [
-            r for r in rows if _is_resumable_row(r) and self._row_matches_current_run(r)
-        ]
-        if not resumable:
-            return fallback
-        newest = _newest_first(resumable)[0]
-        return self._trainer_logical_name(_short_name(newest["name"]))
-
-    def _wait_for_promotable_after_save(
-        self,
-        *,
-        name: str,
-        save_started: datetime,
-        appear_timeout_s: float,
-        poll_s: float,
-    ) -> str | None:
-        """Wait until a freshly-saved sampler row is visible on the CP.
-
-        Fast-checkpoint sampler saves are discovered through a regional scan,
-        which can lag the trainer RPC return briefly. Without this wait the
-        next ``promote_latest`` call can observe an empty checkpoint list even
-        though the sampler bytes were written successfully.
-        """
-        deadline = time.time() + appear_timeout_s
-        while time.time() < deadline:
-            try:
-                row = self._promotable_row(name, min_create_time=save_started)
-            except AttributeError as e:
-                logger.warning(
-                    "list_checkpoints not implemented on control-plane client (%s); "
-                    "cannot confirm sampler checkpoint %r surfaced.",
-                    e,
-                    name,
-                )
-                return None
-            except Exception as e:
-                logger.debug(
-                    "list_checkpoints during sampler save-resolution failed: %s; retrying.",
-                    e,
-                )
-                time.sleep(poll_s)
-                continue
-            if row:
-                return _short_name(row["name"])
-            time.sleep(poll_s)
-
-        logger.warning(
-            "Timed out after %.0fs waiting for sampler checkpoint %r to surface "
-            "as promotable; continuing and letting promote_latest perform the "
-            "final control-plane check.",
-            appear_timeout_s,
+    def _load_checkpoint(self, name: str, *, source_job_id: str | None) -> None:
+        path = self._client.resolve_checkpoint_path(
             name,
+            source_job_id=source_job_id,
         )
-        return None
+        logger.info("Resuming from checkpoint %s", path)
+        started = time.time()
+        self._client.load_state_with_optimizer(path)
+        logger.info("Checkpoint loaded (%.1fs)", time.time() - started)
 
     def _latest_resumable(self) -> dict | None:
-        try:
-            rows = [
-                r
-                for r in self._list_checkpoints()
-                if _is_resumable_row(r) and self._row_matches_current_run(r)
-            ]
-        except Exception as e:
-            logger.warning(
-                "Control-plane list_checkpoints failed (%s); treating as fresh start. "
-                "Override with init_from_checkpoint if this is wrong.",
-                e,
-            )
-            return None
+        rows = [
+            row
+            for row in self.list()
+            if _is_resumable_row(row) and self._row_matches_current_run(row)
+        ]
         rows = _newest_first(rows)
         return rows[0] if rows else None
 
-    def _row_matches_current_run(self, row: dict) -> bool:
-        if not self._serverless:
-            return True
-        return _belongs_to_run(_short_name(row.get("name", "")), self._current_run_id)
+    def _save_promotable(self, name: str) -> None:
+        if self._promotable_row(name) is not None:
+            logger.info("Promotable checkpoint %r already exists", name)
+            return
+        started_at = datetime.now(timezone.utc)
+        started = time.time()
+        # A complete export is required for promotion. This is intentionally
+        # hidden here; ordinary weight sync delegates base/delta selection.
+        self._client.save_weights_for_sampler(name, checkpoint_type="base")
+        logger.info("Promotable checkpoint %r saved (%.1fs)", name, time.time() - started)
+        self._wait_for_promotable(name=name, save_started=started_at)
 
-    def _trainer_logical_name(self, short: str) -> str:
-        if self._serverless:
-            return _logical_name_for_run(short, self._current_run_id)
-        return _logical_name(short)
-
-    def _promotable_exists(self, name: str) -> bool:
-        """Check if ``name`` is already on the control plane as promotable.
-
-        Failures are non-fatal: on error we proceed with the save (GCS
-        overwrite is safe), trading dedup for forward progress.
-        """
-        try:
-            row = self._promotable_row(name)
-        except Exception as e:
-            logger.warning(
-                "Control-plane list_checkpoints failed during skip-check (%s); "
-                "proceeding with sampler write.",
-                e,
-            )
-            return False
-        return row is not None
+    def _wait_for_promotable(self, *, name: str, save_started: datetime) -> None:
+        deadline = time.time() + self._save_appear_timeout_s
+        while time.time() < deadline:
+            try:
+                if self._promotable_row(name, min_create_time=save_started) is not None:
+                    return
+            except Exception as error:
+                logger.debug("Checkpoint list failed while waiting for %r: %s", name, error)
+            time.sleep(self._save_poll_s)
+        logger.warning(
+            "Timed out after %.0fs waiting for promotable checkpoint %r to surface",
+            self._save_appear_timeout_s,
+            name,
+        )
 
     def _promotable_row(
         self,
@@ -674,9 +444,7 @@ class TrainingCheckpoints:
         *,
         min_create_time: datetime | None = None,
     ) -> dict | None:
-        rows = _newest_first(
-            [r for r in self._list_checkpoints() if r.get("promotable")]
-        )
+        rows = _newest_first([row for row in self.list() if row.get("promotable")])
         freshness_floor = None
         if min_create_time is not None:
             freshness_floor = min_create_time - timedelta(
@@ -687,46 +455,94 @@ class TrainingCheckpoints:
                 continue
             if self._trainer_logical_name(_short_name(row.get("name", ""))) != name:
                 continue
-            if freshness_floor is not None:
-                create_time = _parse_iso_time(row.get("createTime"))
-                if create_time is not None and create_time < freshness_floor:
-                    continue
+            create_time = _parse_iso_time(row.get("createTime"))
+            if (
+                freshness_floor is not None
+                and create_time is not None
+                and create_time < freshness_floor
+            ):
+                continue
             return row
         return None
 
-    def _dataloader_path(self) -> str:
-        return fileio.join(self._log_path, DATALOADER_BASE_NAME)
+    def _row_matches_current_run(self, row: Mapping[str, Any]) -> bool:
+        if not self._serverless:
+            return True
+        return _belongs_to_run(_short_name(row.get("name", "")), self._current_run_id)
 
-    def _read_all_dataloader(self) -> dict[str, int]:
+    def _trainer_logical_name(self, short: str) -> str:
+        if self._serverless:
+            return _logical_name_for_run(short, self._current_run_id)
+        return _logical_name(short)
+
+    @staticmethod
+    def _saved_checkpoint_name(result: Any, *, fallback: str) -> str:
+        path = getattr(result, "path", None)
+        if not isinstance(path, str) or not path:
+            return fallback
+        short = _short_name(path)
+        return short if _STEP_NAME_RE.fullmatch(short) else fallback
+
+    def _resolve_row_cursor(
+        self,
+        job_id: str,
+        step: int,
+        *,
+        override: int | None,
+    ) -> int:
+        if override is not None:
+            return override
+        return self._read_row_cursor(job_id, step)
+
+    def _dataloader_path(self) -> str:
+        return fileio.join(self._log_path, DATALOADER_CURSOR_BASE_NAME)
+
+    def _read_cursor_store(self) -> dict[str, dict[str, int]]:
         path = self._dataloader_path()
         raw = fileio.read_text(path)
         if not raw:
             return {}
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            logger.warning("Corrupt %s (%s); treating as empty.", path, e)
+        except json.JSONDecodeError as error:
+            logger.warning("Corrupt %s (%s); treating as empty", path, error)
             return {}
-        return {k: int(v) for k, v in data.items()}
+        if not isinstance(data, dict):
+            logger.warning("Invalid cursor mapping in %s; treating as empty", path)
+            return {}
 
-    def _write_dataloader(self, name: str, data_consumed: int) -> None:
-        data = self._read_all_dataloader()
-        data[name] = data_consumed
-        if len(data) > DATALOADER_HISTORY_KEEP:
-            ordered = sorted(data.items(), key=lambda kv: _step_from_name(kv[0]))
-            data = dict(ordered[-DATALOADER_HISTORY_KEEP:])
+        # Migrate the former {"step-N": cursor} shape into the only local
+        # state shape supported now: {job_id: {step: cursor}}.
+        if all(not isinstance(value, dict) for value in data.values()):
+            migrated: dict[str, int] = {}
+            for name, cursor in data.items():
+                try:
+                    migrated[str(_checkpoint_step(str(name)))] = int(cursor)
+                except (TypeError, ValueError):
+                    continue
+            return {self._trainer_id: migrated} if migrated else {}
+
+        normalized: dict[str, dict[str, int]] = {}
+        try:
+            for job_id, steps in data.items():
+                if not isinstance(steps, dict):
+                    raise TypeError
+                normalized[str(job_id)] = {
+                    str(int(step)): int(cursor) for step, cursor in steps.items()
+                }
+        except (TypeError, ValueError):
+            logger.warning("Invalid cursor mapping in %s; treating as empty", path)
+            return {}
+        return normalized
+
+    def _write_row_cursor(self, job_id: str, step: int, row_cursor: int) -> None:
+        data = self._read_cursor_store()
+        job_steps = data.setdefault(job_id, {})
+        job_steps[str(step)] = row_cursor
+        ordered = sorted(job_steps.items(), key=lambda item: int(item[0]))
+        data[job_id] = dict(ordered[-DATALOADER_HISTORY_KEEP:])
         fileio.makedirs(self._log_path)
         fileio.write_json(self._dataloader_path(), data)
 
-    def _read_dataloader(self, name: str) -> int:
-        return self._read_all_dataloader().get(name, 0)
-
-
-def _step_from_name(name: str) -> int:
-    """Parse an integer step from a ``"step-N"`` checkpoint name."""
-    if name.startswith("step-"):
-        try:
-            return int(name.removeprefix("step-"))
-        except ValueError:
-            pass
-    return 0
+    def _read_row_cursor(self, job_id: str, step: int) -> int:
+        return self._read_cursor_store().get(job_id, {}).get(str(step), 0)

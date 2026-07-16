@@ -50,8 +50,13 @@ class CursorDataLoader(Generic[T]):
         return CursorItem(index=idx, value=copy.deepcopy(self.items[self._row_index(idx)]))
 
     @property
-    def data_consumed(self) -> int:
+    def row_cursor(self) -> int:
         return self.cursor
+
+    @property
+    def data_consumed(self) -> int:
+        """Backward-compatible alias for :attr:`row_cursor`."""
+        return self.row_cursor
 
     @property
     def total_items(self) -> int:

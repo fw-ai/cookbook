@@ -200,21 +200,25 @@ class TestCheckpointsSmoke:
         dataloader_path = os.path.join(log_dir, DATALOADER_BASE_NAME)
         assert os.path.exists(dataloader_path), (
             f"Expected {DATALOADER_BASE_NAME} under {log_dir} "
-            "(written by ckpt.save when data_consumed is supplied)"
+            "(written by ckpt.save when row_cursor is supplied)"
         )
         with open(dataloader_path) as f:
             dataloader_state = json.load(f)
         assert dataloader_state, (
             f"{DATALOADER_BASE_NAME} should be non-empty after a resumable save"
         )
-        max_data_consumed = max(int(v) for v in dataloader_state.values())
-        assert max_data_consumed > 0, (
+        max_row_cursor = max(
+            int(cursor)
+            for job_rows in dataloader_state.values()
+            for cursor in job_rows.values()
+        )
+        assert max_row_cursor > 0, (
             f"Expected positive raw_rows_consumed in {DATALOADER_BASE_NAME}, "
             f"got {dataloader_state}"
         )
         logger.info(
-            "dataloader.json: %d entries, max=%d",
-            len(dataloader_state), max_data_consumed,
+            "dataloader.json: %d trainer jobs, max row cursor=%d",
+            len(dataloader_state), max_row_cursor,
         )
 
         # ---- Confirm trainer cleanup ---------------------------------------

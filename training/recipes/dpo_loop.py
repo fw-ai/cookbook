@@ -159,7 +159,9 @@ class Config:
     dcp_save_interval: int = 0
     """Save DCP checkpoints every N steps. 0 disables."""
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
-    init_from_checkpoint: str | None = None
+    init_from_checkpoint: str | dict | None = None
+    dataloader_cursor: int | None = None
+    """Explicit raw-row cursor. When set, local cursor resolution is skipped."""
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
     weights from the adapter at training start (weights-only, fresh optimizer).
@@ -392,7 +394,7 @@ async def _train_loop(
         epoch: int,
         step_pairs: list[dict[str, Any]],
         *,
-        data_consumed: int | None = None,
+        row_cursor: int | None = None,
     ) -> None:
         nonlocal step
         step_t0 = time.monotonic()
@@ -424,11 +426,11 @@ async def _train_loop(
         if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
             with timer("dcp_save"):
                 ckpt.save(
-                    f"step-{step}",
+                    step,
                     resumable=True,
                     promotable=False,
-                    data_consumed=(
-                        cursor.value if data_consumed is None else data_consumed
+                    row_cursor=(
+                        cursor.value if row_cursor is None else row_cursor
                     ),
                 )
 
@@ -508,7 +510,7 @@ async def _train_loop(
         async def _emit_enriched(
             chunk: list[dict[str, Any]],
             *,
-            data_consumed: int,
+            row_cursor: int,
         ) -> None:
             nonlocal pairs_per_epoch
             enriched = await _ref_forward_batch(
@@ -518,7 +520,7 @@ async def _train_loop(
             if multi_epoch:
                 for pair in enriched:
                     ref_cache_log.append(pair)
-            await pipe.put((enriched, data_consumed))
+            await pipe.put((enriched, row_cursor))
 
         while True:
             batch = await asyncio.to_thread(next, loader_iter, sentinel)
@@ -554,13 +556,13 @@ async def _train_loop(
             while len(pending_pairs) >= batch_size:
                 await _emit_enriched(
                     pending_pairs[:batch_size],
-                    data_consumed=cursor.value,
+                    row_cursor=cursor.value,
                 )
                 pending_pairs = pending_pairs[batch_size:]
             if cfg.max_pairs is not None and pairs_per_epoch + len(pending_pairs) >= cfg.max_pairs:
                 break
         if pending_pairs:
-            await _emit_enriched(pending_pairs, data_consumed=cursor.value)
+            await _emit_enriched(pending_pairs, row_cursor=cursor.value)
         await pipe.put(_DONE)
 
     async def _trainer() -> None:
@@ -568,12 +570,12 @@ async def _train_loop(
             item = await pipe.get()
             if item is _DONE:
                 break
-            step_pairs, data_consumed = item
+            step_pairs, row_cursor = item
             await asyncio.to_thread(
                 _run_train_step,
                 0,
                 step_pairs,
-                data_consumed=data_consumed,
+                row_cursor=row_cursor,
             )
             pbar.update(1)
 
@@ -740,8 +742,9 @@ def main(
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
+            dataloader_cursor=cfg.dataloader_cursor,
         )
-        step_offset = resume_info.step if resume_info else 0
+        step_offset = resume_info.step
         wandb_log({"train/step": step_offset}, step_offset)
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["weight_decay"] = cfg.weight_decay
@@ -801,7 +804,7 @@ def main(
             reference_job_id = None
 
         cursor = RawRowCursor(max_rows=len(pair_dataset) * cfg.epochs)
-        cursor.resume(resume_info.data_consumed if resume_info else None)
+        cursor.resume(resume_info.row_cursor)
         runner.start_training()
         step = asyncio.run(
             _train_loop(
@@ -819,12 +822,11 @@ def main(
         # -- Final checkpoint --------------------------------------------------
 
         if cfg.save_final_checkpoint and step > step_offset:
-            cp_name = f"step-{step}"
             ckpt.save(
-                cp_name,
+                step,
                 resumable=True,
                 promotable=True,
-                data_consumed=cursor.value,
+                row_cursor=cursor.value,
             )
 
             if getattr(cfg, "output_model_id", None):

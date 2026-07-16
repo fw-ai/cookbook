@@ -5,33 +5,33 @@ def test_cursor_starts_from_resume_point():
     loader = CursorDataLoader(["a", "b", "c"], start_cursor=1)
 
     assert next(loader).value == "b"
-    assert loader.data_consumed == 1
+    assert loader.row_cursor == 1
 
 
 def test_cursor_advances_in_order_only():
     loader = CursorDataLoader(["a", "b", "c"])
 
     loader.mark_resolved(1)
-    assert loader.data_consumed == 0
+    assert loader.row_cursor == 0
 
     loader.mark_resolved(0)
-    assert loader.data_consumed == 2
+    assert loader.row_cursor == 2
 
     loader.mark_resolved(2)
-    assert loader.data_consumed == 3
+    assert loader.row_cursor == 3
 
 
 def test_cursor_ignores_already_resolved_indices():
     loader = CursorDataLoader(["a", "b"], start_cursor=1)
 
     loader.mark_resolved(0)
-    assert loader.data_consumed == 1
+    assert loader.row_cursor == 1
 
 
 def test_cursor_can_resume_past_available_rows():
     loader = CursorDataLoader(["a"], start_cursor=3)
 
-    assert loader.data_consumed == 3
+    assert loader.row_cursor == 3
     assert list(loader) == []
 
 

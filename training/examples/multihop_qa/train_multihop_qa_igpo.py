@@ -114,6 +114,7 @@ class MultiHopQAIGPOConfig:
     epochs: int = 3
     max_rows: int = 200
     max_steps: int = 8
+    dataloader_cursor: int | None = None
     lora_rank: int = 0
     max_seq_len: int | None = None
 
@@ -407,14 +408,10 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
         )
-        resume_info = ckpt.resume()
-        step_offset = resume_info.step if resume_info else 0
+        resume_info = ckpt.resume(dataloader_cursor=cfg.dataloader_cursor)
+        step_offset = resume_info.step
         if cfg.deployment_id:
-            name = (
-                f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            )
-            saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
-            service.hotload_sampler_snapshot(saved.snapshot_name)
+            ckpt.sync_weights(step_offset, service.hotload_sampler_snapshot)
 
         # Rollout processor
         rollout_base_url = sampler.base_url.rstrip("/") + (
@@ -714,23 +711,22 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     and step % WEIGHT_SYNC_INTERVAL == 0
                 ):
                     with timer("weight_sync"):
-                        saved = policy.save_weights_for_sampler_ext(f"step-{step}")
-                        service.hotload_sampler_snapshot(saved.snapshot_name)
+                        ckpt.sync_weights(step, service.hotload_sampler_snapshot)
 
                 if (
                     DCP_SAVE_INTERVAL > 0
                     and step % DCP_SAVE_INTERVAL == 0
                 ):
                     with timer("dcp_save"):
-                        _data_consumed = (
-                            (resume_info.data_consumed if resume_info else 0)
+                        row_cursor = (
+                            resume_info.row_cursor
                             + (step - step_offset) * prompt_groups_per_step
                         )
                         ckpt.save(
-                            f"step-{step}",
+                            step,
                             resumable=True,
                             promotable=False,
-                            data_consumed=_data_consumed,
+                            row_cursor=row_cursor,
                         )
 
                 metrics = compute_step_metrics(
@@ -810,15 +806,14 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
 
             if global_step > step_offset:
                 try:
-                    cp_name = f"step-{global_step}"
-                    _data_consumed = (
-                        resume_info.data_consumed if resume_info else 0
-                    ) + (global_step - step_offset) * prompt_groups_per_step
+                    row_cursor = resume_info.row_cursor + (
+                        global_step - step_offset
+                    ) * prompt_groups_per_step
                     ckpt.save(
-                        cp_name,
+                        global_step,
                         resumable=True,
                         promotable=True,
-                        data_consumed=_data_consumed,
+                        row_cursor=row_cursor,
                     )
                     if getattr(cfg, "output_model_id", None):
                         ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

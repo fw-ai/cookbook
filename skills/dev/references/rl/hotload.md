@@ -50,7 +50,6 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 | Field | Default | Meaning |
 |---|---|---|
 | `weight_sync_interval` | `1` | Sync every N optimizer steps. `1` = after every step (on-policy). `0` = no weight sync at all (rollouts always come from the initial policy — you almost never want this for RL). |
-| `first_checkpoint_type` | `"base"` | First sampler save is a full snapshot; subsequent saves can be deltas. Do not change. |
 | `weight_sync_timeout` | `600` | Per-hotload timeout in seconds. Bump if you see `Hotload did not complete within 600s` on large models. |
 | `weight_sync_before_training` | `False` | Push an initial base snapshot before step 0. Useful when the deployment starts from a different snapshot than the trainer's base. |
 | `dcp_save_interval` | `0` | DCP (optimizer + weights) save cadence for **resume**. Orthogonal to sampler hotload. `0` = off; no intermediate resume points. |
@@ -65,8 +64,10 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 
 For full-parameter training, the first sampler save is `base` (full weights, ~16 GB for 8B). Subsequent saves are `delta` (XOR diff, ~10× smaller). The SDK-managed sampler backend records this chain automatically — users don't pick per-step.
 
-- LoRA always saves the full adapter regardless of `checkpoint_type` — every LoRA sampler checkpoint is promotable.
+- LoRA always saves the full adapter; every LoRA sampler checkpoint is promotable.
 - Full-param `delta` saves are **not** promotable. Only `base` saves are. The cookbook's `TrainingCheckpoints.save(promotable=True)` always emits a `base` save, so periodic promotables stay promotable. Recipe weight sync switches to `delta` after the first call — those rows are still visible in `list_checkpoints`, while `promote_latest` picks the most-recent **promotable** row.
+
+This behavior is entirely behind `TrainingCheckpoints.sync_weights`: recipe code supplies a step and hotload callback, while the SDK chooses LoRA/full and full base/delta behavior.
 
 ## `dcp_save_interval` for resume
 
@@ -203,5 +204,5 @@ Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_
 
 - [Hotload flows docs page](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows) — user-facing overview (this skill is the deep reference)
 - Low-level `WeightSyncer` lifecycle: `fireworks.training.sdk.weight_syncer.WeightSyncer` (installed under `src/fireworks/training/sdk/weight_syncer.py`). Recipes use SDK-managed service hotload directly.
-- `save_weights_for_sampler_ext`, `save_state`, `list_checkpoints`: `fireworks.training.sdk.client.FiretitanTrainingClient`.
+- `save_weights_for_sampler`, `save_state`, `list_checkpoints`: `fireworks.training.sdk.client.FiretitanTrainingClient`.
 - Trainer + deployment managers this flow depends on: `fireworks.training.sdk.trainer.TrainerJobManager` and `fireworks.training.sdk.deployment.DeploymentManager`.

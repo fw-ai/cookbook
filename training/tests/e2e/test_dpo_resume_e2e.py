@@ -45,6 +45,10 @@ def _make_preference_dataset(path: str, num_pairs: int = 8) -> None:
             f.write(json.dumps(row) + "\n")
 
 
+def _max_row_cursor(mapping: dict[str, dict[str, int]]) -> int:
+    return max(int(cursor) for steps in mapping.values() for cursor in steps.values())
+
+
 @pytest.mark.e2e
 @pytest.mark.timeout(5400)
 class TestDPOResumeE2E:
@@ -151,7 +155,7 @@ class TestDPOResumeE2E:
             with open(dataloader_path) as f:
                 phase1_dataloader = json.load(f)
             assert phase1_dataloader, "dataloader.json should be non-empty after phase 1"
-            phase1_data_consumed = max(int(v) for v in phase1_dataloader.values())
+            phase1_row_cursor = _max_row_cursor(phase1_dataloader)
 
             phase1_rows = rlor_mgr.list_checkpoints(phase1_job_id)
             phase1_resumable = [
@@ -197,10 +201,10 @@ class TestDPOResumeE2E:
 
             with open(dataloader_path) as f:
                 phase2_dataloader = json.load(f)
-            phase2_data_consumed = max(int(v) for v in phase2_dataloader.values())
-            assert phase2_data_consumed >= phase1_data_consumed, (
-                f"Phase 2 data_consumed ({phase2_data_consumed}) should not regress "
-                f"from phase 1's ({phase1_data_consumed}); dataloader cursor should remain aligned."
+            phase2_row_cursor = _max_row_cursor(phase2_dataloader)
+            assert phase2_row_cursor >= phase1_row_cursor, (
+                f"Phase 2 row cursor ({phase2_row_cursor}) should not regress "
+                f"from phase 1's ({phase1_row_cursor}); dataloader cursor should remain aligned."
             )
 
             logger.info("Resume verified: phase1=%d, phase2=%d", phase1_steps, phase2_steps)

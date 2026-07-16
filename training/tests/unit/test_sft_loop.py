@@ -13,10 +13,7 @@ from training.utils.checkpoints import TrainingCheckpoints
 def _patch_resume(monkeypatch, resume_info):
     """Replace TrainingCheckpoints.resume on the class for unit tests.
 
-    ``resume_info`` is what ``ckpt.resume()`` should return: ``None`` for
-    a fresh start, or a SimpleNamespace with ``step`` / ``data_consumed``
-    fields. After PR #385 ``data_consumed`` carries SFT's
-    ``raw_rows_consumed`` semantically (single load-bearing counter).
+    ``resume_info`` carries the resolved trainer step and raw-row cursor.
     """
     monkeypatch.setattr(
         TrainingCheckpoints, "resume", lambda self, **kwargs: resume_info,

@@ -23,59 +23,32 @@ TrainStepFns, run_rl_loop = load_rl_train("dataloader_cursor", prompt_group_cls=
 
 
 # ---------------------------------------------------------------------------
-# RawRowCursor: resume() — clamping, ambiguity, fallback
+# RawRowCursor: resume() — exact cursor and clamping
 # ---------------------------------------------------------------------------
 
 
-def test_resume_with_persisted_value_sets_cursor():
+def test_resume_sets_exact_cursor():
     cursor = RawRowCursor(max_rows=10)
     cursor.resume(5)
     assert cursor.value == 5
 
 
-def test_resume_clamps_persisted_past_max():
+def test_resume_clamps_cursor_past_max():
     cursor = RawRowCursor(max_rows=3)
     cursor.resume(99)
     assert cursor.value == 3
 
 
-def test_resume_clamps_negative_persisted_to_zero():
+def test_resume_clamps_negative_cursor_to_zero():
     cursor = RawRowCursor(max_rows=10)
     cursor.resume(-5)
     assert cursor.value == 0
 
 
-def test_resume_with_none_uses_fallback():
-    """``persisted=None`` (no dataloader.json) → cursor takes ``fallback``."""
+def test_resume_zero_is_fresh_start():
     cursor = RawRowCursor(max_rows=10)
-    cursor.resume(None, fallback=4)
-    assert cursor.value == 4
-
-
-def test_resume_with_zero_persisted_and_zero_fallback_trusts_zero():
-    """Fresh start (both 0) is trusted, not routed through fallback."""
-    cursor = RawRowCursor(max_rows=10)
-    cursor.resume(0, fallback=0)
+    cursor.resume(0)
     assert cursor.value == 0
-
-
-def test_resume_with_zero_persisted_and_nonzero_fallback_takes_fallback():
-    """Legacy ckpt signal: ``persisted=0`` with non-zero fallback → step-derived path."""
-    cursor = RawRowCursor(max_rows=10)
-    cursor.resume(0, fallback=4)
-    assert cursor.value == 4
-
-
-def test_resume_prefers_persisted_over_fallback_when_both_nonzero():
-    cursor = RawRowCursor(max_rows=10)
-    cursor.resume(7, fallback=4)
-    assert cursor.value == 7
-
-
-def test_resume_clamps_fallback_past_max():
-    cursor = RawRowCursor(max_rows=3)
-    cursor.resume(None, fallback=10)
-    assert cursor.value == 3
 
 
 def test_resume_without_max_rows_does_not_clamp():
@@ -170,7 +143,7 @@ def test_pipeline_clean_run_advances_cursor_to_dataset_length():
     """No drops, no fails: cursor at end equals dataset length."""
     rows = [{"id": i, "reward": 1.0} for i in range(8)]
     cursor = RawRowCursor(max_rows=len(rows))
-    cursor.resume(None, fallback=0)
+    cursor.resume(0)
     from training.tests._dataloader_test_helpers import _load_module
     m = _load_module("rl_train_for_int", "utils/rl/train.py")
 
@@ -209,7 +182,7 @@ def test_pipeline_with_drops_advances_cursor_by_raw_rows_not_accepted():
         {"id": 5, "reward": 1.0},
     ]
     cursor = RawRowCursor(max_rows=len(rows))
-    cursor.resume(None, fallback=0)
+    cursor.resume(0)
     from training.tests._dataloader_test_helpers import _load_module
     m = _load_module("rl_train_for_drops", "utils/rl/train.py")
 
@@ -280,7 +253,7 @@ def test_tail_drops_in_window_are_unaccounted():
         {"id": 3, "reward": 0.0},   # tail drop after dispatch
     ]
     cursor = RawRowCursor(max_rows=len(rows))
-    cursor.resume(None, fallback=0)
+    cursor.resume(0)
     from training.tests._dataloader_test_helpers import _load_module
     m = _load_module("rl_train_for_tail", "utils/rl/train.py")
 

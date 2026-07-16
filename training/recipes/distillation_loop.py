@@ -175,8 +175,11 @@ class Config:
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     """Concurrency control for inference sampling."""
 
-    init_from_checkpoint: str | None = None
-    """Load pretrained DCP weights on a fresh dataset."""
+    init_from_checkpoint: str | dict | None = None
+    """Resume from a checkpoint name, resource, or ``list_checkpoints`` row."""
+
+    dataloader_cursor: int | None = None
+    """Explicit raw-row cursor. When set, local cursor resolution is skipped."""
 
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory for LoRA warm start."""
@@ -675,14 +678,13 @@ def main(
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
+            dataloader_cursor=cfg.dataloader_cursor,
         )
-        step_offset = resume_info.step if resume_info else 0
+        step_offset = resume_info.step
         wandb_log({"train/step": step_offset}, step_offset)
 
         if cfg.weight_sync_before_training:
-            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
-            service.hotload_sampler_snapshot(saved.snapshot_name)
+            ckpt.sync_weights(step_offset, service.hotload_sampler_snapshot)
 
         # -- Prepare sampling and training --------------------------------------
 
@@ -935,14 +937,14 @@ def main(
             rollouts_completed = step - step_offset
             dcp_interval = cfg.dcp_save_interval
             if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
-                data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+                row_cursor = resume_info.row_cursor + (
                     rollouts_completed * prompt_groups_per_step
                 )
                 ckpt.save(
-                    f"step-{step}",
+                    step,
                     resumable=True,
                     promotable=False,
-                    data_consumed=data_consumed,
+                    row_cursor=row_cursor,
                 )
 
             metrics: dict[str, Any] = dict(flush_timing())
@@ -977,8 +979,7 @@ def main(
                 logger.info("[step %d] weight_sync: saving + loading...", step)
                 t0 = _time.time()
                 with timer("weight_sync"):
-                    saved = policy.save_weights_for_sampler_ext(f"step-{step}")
-                    service.hotload_sampler_snapshot(saved.snapshot_name)
+                    ckpt.sync_weights(step, service.hotload_sampler_snapshot)
                 logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
                 if (
                     cfg.step_eval is not None
@@ -1029,15 +1030,14 @@ def main(
 
         if cfg.save_final_checkpoint and global_step > step_offset:
             try:
-                checkpoint_name = f"step-{global_step}"
-                data_consumed = (resume_info.data_consumed if resume_info else 0) + (
+                row_cursor = resume_info.row_cursor + (
                     (global_step - step_offset) * prompt_groups_per_step
                 )
                 ckpt.save(
-                    checkpoint_name,
+                    global_step,
                     resumable=True,
                     promotable=True,
-                    data_consumed=data_consumed,
+                    row_cursor=row_cursor,
                 )
                 if cfg.output_model_id:
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)

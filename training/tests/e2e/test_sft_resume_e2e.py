@@ -54,6 +54,10 @@ def _make_chat_dataset(path: str, num_examples: int = 10) -> None:
             f.write(json.dumps(row) + "\n")
 
 
+def _max_row_cursor(mapping: dict[str, dict[str, int]]) -> int:
+    return max(int(cursor) for steps in mapping.values() for cursor in steps.values())
+
+
 @pytest.mark.e2e
 @pytest.mark.timeout(5400)
 class TestSFTResumeE2E:
@@ -108,7 +112,7 @@ class TestSFTResumeE2E:
 
             # Read the persisted raw_rows_consumed from dataloader.json.
             # In the new model, dataloader.json holds the only cookbook-side
-            # state — one int per checkpoint name.
+            # state — a trainer job -> checkpoint step -> row cursor KV mapping.
             dataloader_path = os.path.join(log_dir, DATALOADER_BASE_NAME)
             assert os.path.exists(dataloader_path), (
                 f"Phase 1 should have written {DATALOADER_BASE_NAME} under {log_dir}"
@@ -116,7 +120,7 @@ class TestSFTResumeE2E:
             with open(dataloader_path) as f:
                 phase1_dataloader = json.load(f)
             assert phase1_dataloader, "dataloader.json should be non-empty after phase 1"
-            phase1_raw_rows = max(int(v) for v in phase1_dataloader.values())
+            phase1_raw_rows = _max_row_cursor(phase1_dataloader)
 
             # Verify the control plane has at least one resumable row for the
             # phase-1 trainer — that is what phase 2's resume will read.
@@ -165,7 +169,7 @@ class TestSFTResumeE2E:
 
             with open(dataloader_path) as f:
                 phase2_dataloader = json.load(f)
-            phase2_raw_rows = max(int(v) for v in phase2_dataloader.values())
+            phase2_raw_rows = _max_row_cursor(phase2_dataloader)
             assert phase2_raw_rows > phase1_raw_rows, (
                 f"Phase 2 raw_rows_consumed ({phase2_raw_rows}) should exceed "
                 f"phase 1's ({phase1_raw_rows}); dataloader cursor should advance."

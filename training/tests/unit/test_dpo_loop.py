@@ -473,8 +473,8 @@ class TestTrainLoop:
             def __init__(self):
                 self.saves = []
 
-            def save(self, name, **kwargs):
-                self.saves.append((name, kwargs))
+            def save(self, step, **kwargs):
+                self.saves.append((step, kwargs))
 
         ds = _make_pair_dataset(tmp_path, n=4)
         cfg = module.Config(
@@ -497,8 +497,8 @@ class TestTrainLoop:
 
         assert step == 2
         assert ckpt.saves == [
-            ("step-1", {"resumable": True, "promotable": False, "data_consumed": 2}),
-            ("step-2", {"resumable": True, "promotable": False, "data_consumed": 4}),
+            (1, {"resumable": True, "promotable": False, "row_cursor": 2}),
+            (2, {"resumable": True, "promotable": False, "row_cursor": 4}),
         ]
 
     def test_multi_epoch_uses_ref_cache_log(self, tmp_path, monkeypatch):
@@ -797,8 +797,8 @@ class TestTrainLoop:
         assert call["metrics"]["train/ref_tokens"] == 12
         assert call["metrics"]["train/total_tokens"] == 24
 
-    def test_data_consumed_includes_render_drops(self, tmp_path, monkeypatch):
-        """``data_consumed`` reflects raw rows pulled (incl. render drops), not post-filter pairs."""
+    def test_row_cursor_includes_render_drops(self, tmp_path, monkeypatch):
+        """The cursor reflects raw rows pulled, not post-filter pairs."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
@@ -822,8 +822,8 @@ class TestTrainLoop:
         saves: list[dict] = []
 
         class _CapturingCkpt:
-            def save(self, name, *, resumable, promotable, data_consumed):
-                saves.append({"name": name, "data_consumed": data_consumed})
+            def save(self, step, *, resumable, promotable, row_cursor):
+                saves.append({"step": step, "row_cursor": row_cursor})
 
         cursor = _new_cursor(max_rows=6)
         step = asyncio.run(
@@ -840,9 +840,9 @@ class TestTrainLoop:
         assert step == 2
         assert cursor.value == 6
         # Final DCP save records raw rows (incl. drops), not just the 4 trained pairs.
-        assert saves[-1]["data_consumed"] == 6
+        assert saves[-1]["row_cursor"] == 6
 
-    def test_data_consumed_threads_prior_value_on_resume(self, tmp_path, monkeypatch):
+    def test_row_cursor_threads_prior_value_on_resume(self, tmp_path, monkeypatch):
         """Cursor pre-resumed to ``persisted=100`` accumulates new raw rows on top."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
@@ -856,8 +856,8 @@ class TestTrainLoop:
         saves: list[int] = []
 
         class _CapturingCkpt:
-            def save(self, name, *, resumable, promotable, data_consumed):
-                saves.append(data_consumed)
+            def save(self, step, *, resumable, promotable, row_cursor):
+                saves.append(row_cursor)
 
         # max_rows=None: pretend a larger source where 100 prior rows were consumed.
         cursor = _new_cursor(persisted=100)
@@ -875,8 +875,8 @@ class TestTrainLoop:
         assert cursor.value == 104
         assert saves[-1] == 104
 
-    def test_data_consumed_grows_per_epoch_in_multi_epoch(self, tmp_path, monkeypatch):
-        """Multi-epoch replay advances ``data_consumed`` by ``total_raw_rows`` per epoch."""
+    def test_row_cursor_grows_per_epoch_in_multi_epoch(self, tmp_path, monkeypatch):
+        """Multi-epoch replay advances the cursor by total raw rows per epoch."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
