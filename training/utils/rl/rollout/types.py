@@ -133,12 +133,13 @@ def _align_multimodal_inf_logprobs(
     completion_lps: List[float],
     shifted_weights: List[float],
 ) -> List[float]:
-    """Map text-only inference logprobs into datum ``weights`` index space.
+    """Map completion-only inference logprobs into expanded target space.
 
-    Multimodal datums use shifted weights over the full chunked sequence
-    (text + image slots + completion).  GRPO/TIS slice ``inf_logprobs`` with
-    ``prompt_lens`` in that same index space, so the parallel text-only
-    ``sample.logprobs[1:]`` must be scattered onto weight==1 positions.
+    Canonical multimodal datums use one shared shifted coordinate space for
+    ``target_tokens``, weights, forward logprobs, and built-in loss inputs.
+    Samplers return completion-only logprobs, so scatter those values onto the
+    trained positions and fill prompt/image positions with zeros. GRPO/TIS can
+    then slice the result with ``prompt_lens`` without changing coordinates.
     """
     active_indices = [i for i, w in enumerate(shifted_weights) if w > 0]
     if len(completion_lps) != len(active_indices):
@@ -323,6 +324,15 @@ def rollout_to_prompt_group(
                 target_mask = [
                     float(x) for x in datum.loss_fn_inputs["weights"].data
                 ]
+                if not (
+                    target_len == len(target_mask) == datum.model_input.length
+                ):
+                    raise ValueError(
+                        "multimodal datum must use canonical expanded coordinates "
+                        "for model_input, target_tokens, and weights "
+                        f"({datum.model_input.length} / {target_len} / "
+                        f"{len(target_mask)})."
+                    )
                 target_logprobs = _align_multimodal_inf_logprobs(
                     _completion_logprobs_from_sample(s), target_mask,
                 )

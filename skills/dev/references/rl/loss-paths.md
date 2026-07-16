@@ -49,6 +49,37 @@ the raw and behavior-policy values are equivalent.
 `rl_loop.py` keeps its existing public interface: `policy_loss="importance_sampling"`
 with `separate_tis=False` reuses `rollout_logprobs`; other modes recompute.
 
+## Multimodal datum contract
+
+Vision RL uses the canonical Tinker expanded sequence coordinates. For an
+unshifted sequence of length `N`, including every image slot:
+
+- `datum.model_input.length == N - 1`;
+- `target_tokens`, `weights`, forward logprobs, and backward gradients all have
+  length `N - 1`;
+- image positions in `target_tokens` are zero **wire placeholders**, not model
+  vocabulary token IDs; and
+- image positions have zero weight/advantage and therefore contribute no loss.
+
+The trainer resolves wire placeholders to the model-specific image token ID
+before gathering logprobs. Do not strip image positions from `target_tokens` or
+compress client-side loss tensors into text-only coordinates. Both
+`loss_path="client"` (including vanilla GRPO) and `loss_path="builtin"` use the
+same expanded coordinates. Sampling APIs may return completion-only logprobs;
+the rollout adapter scatters them onto active completion positions and fills
+prompt/image positions with zero before either loss path runs.
+
+When `max_seq_len` truncates a multimodal datum, text chunks may be shortened
+but image chunks are removed whole. Always derive input, targets, and weights
+from the same truncated chunk sequence.
+
+For rollout, deploy the dual-read trainer first: it accepts both the legacy
+text-only target layout and the canonical expanded layout. Promote the
+canonical cookbook only after every trainer image eligible for the pool has
+that compatibility code. A new cookbook can send expanded targets to any
+eligible trainer, so mixed old/new trainer capacity is unsafe. Keep legacy
+reads until the old cookbook population has drained.
+
 ## Related
 
 - How to write a custom loss → [`custom-loss.md`](custom-loss.md)
