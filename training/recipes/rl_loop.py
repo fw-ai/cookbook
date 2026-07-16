@@ -234,10 +234,11 @@ class Config:
 
     init_from_checkpoint: str | dict | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
-    format ``"job_id:checkpoint_name"`` and rows from ``list_checkpoints``."""
+    format ``"job_id:checkpoint_name"`` and rows from ``list_checkpoints``.
+    When omitted, no latest checkpoint is selected automatically."""
 
-    dataloader_cursor: int | None = None
-    """Explicit raw-row cursor. When set, local cursor resolution is skipped."""
+    dataloader_cursor: int = 0
+    """First raw dataset row to process. This is the only dataset resume input."""
 
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
@@ -381,6 +382,9 @@ def main(
     sample_prompt_fn: Callable[..., Awaitable[PromptGroup | None]] | None = None,
 ):
     cfg = config
+    if cfg.dataloader_cursor < 0:
+        raise ValueError("dataloader_cursor must be >= 0")
+    logger.info("Dataset resume row: %d", cfg.dataloader_cursor)
     runner = RunnerIO(cfg.runner)
     uses_recipe_sampler = sample_prompt_fn is None
 
@@ -574,6 +578,7 @@ def main(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
             dataloader_cursor=cfg.dataloader_cursor,
+            auto_latest=False,
         )
         step_offset = resume_info.step
         wandb_log({"train/step": step_offset}, step_offset)
@@ -919,7 +924,6 @@ def main(
                     step,
                     resumable=True,
                     promotable=False,
-                    row_cursor=cursor.value,
                 )
                 logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
 
@@ -982,7 +986,7 @@ def main(
 
         train_fns = TrainStepFns(train_step=train_step)
 
-        cursor.resume(resume_info.row_cursor)
+        cursor.resume(cfg.dataloader_cursor)
         remaining_rows = all_rows[cursor.value:]
 
         total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
@@ -1018,7 +1022,6 @@ def main(
                     global_step,
                     resumable=True,
                     promotable=True,
-                    row_cursor=cursor.value,
                 )
 
                 if getattr(cfg, "output_model_id", None):
@@ -1032,13 +1035,18 @@ def main(
                 logger.warning("Failed to save final checkpoint: %s", e)
 
         write_completed(runner, step=global_step, total_steps=total_rl_steps)
-        logger.info("Training complete: %d steps", global_step)
+        logger.info(
+            "Training complete: %d steps, rows trained: %d",
+            global_step,
+            cursor.value,
+        )
         wandb_finish()
         return {
             "steps": global_step,
             "policy_job_id": policy_job_id,
             "reference_job_id": reference_job_id,
             "deployment_id": deployment_id,
+            "rows_trained": cursor.value,
         }
 
 

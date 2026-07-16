@@ -10,7 +10,9 @@ SDK, or a deployment:
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -139,6 +141,11 @@ class TestConfigRunnerField:
 
         assert cfg.pipeline_chunks_per_step == 1
 
+    def test_dataset_resume_row_defaults_to_zero(self) -> None:
+        cfg = async_rl_loop.Config(log_path="gs://logs")
+
+        assert cfg.dataloader_cursor == 0
+
     def test_config_uses_conservative_loss_defaults(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")
 
@@ -183,6 +190,45 @@ def test_main_requests_cleanup_for_sdk_created_resources(monkeypatch: pytest.Mon
     assert (
         kwargs["cleanup_deployment_on_close"]
         == async_rl_loop.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+    )
+
+
+def test_main_logs_dataset_resume_row_first(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cfg = async_rl_loop.Config(
+        log_path="/tmp/async_rl_test_logs",
+        dataloader_cursor=23,
+        deployment=async_rl_loop.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        _build_service_kwargs(monkeypatch, cfg)
+
+    assert "Dataset resume row: 23" in caplog.text
+
+
+def test_main_rejects_negative_dataset_resume_row() -> None:
+    cfg = async_rl_loop.Config(log_path="/tmp/logs", dataloader_cursor=-1)
+
+    with pytest.raises(ValueError, match="dataloader_cursor"):
+        async_rl_loop.main(
+            cfg,
+            rows=[],
+            rollout_fn_factory=lambda _setup: (lambda _sample: None),
+        )
+
+
+def test_checkpoint_save_has_no_client_cursor_payload() -> None:
+    checkpoints = MagicMock()
+
+    async_rl_loop._save_checkpoint(checkpoints, step=7)
+
+    checkpoints.save.assert_called_once_with(
+        7,
+        resumable=True,
+        promotable=False,
     )
 
 

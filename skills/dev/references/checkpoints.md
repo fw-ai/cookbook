@@ -2,7 +2,7 @@
 
 `TrainingCheckpoints` in `training/utils/checkpoints.py` is the cookbook boundary for resume, promotion, and sampler weight sync. Checkpoint identity and metadata live on the Fireworks control plane. Recipes discover them through `list_checkpoints`; they do not maintain a second checkpoint registry.
 
-The only local checkpoint state is the dataset position that the trainer cannot infer:
+For supervised recipes, the only local checkpoint state is the dataset position that the trainer cannot infer:
 
 ```json
 {
@@ -15,13 +15,13 @@ This is `{log_path}/dataloader.json`, a bounded KV mapping from trainer job id a
 
 ## Save and sync APIs
 
-`TrainingCheckpoints.save(step, *, resumable, promotable, row_cursor)` keeps the two save capabilities independent:
+`TrainingCheckpoints.save(step, *, resumable, promotable, row_cursor=None)` keeps the two save capabilities independent:
 
-- `resumable=True` writes DCP weights and optimizer state and records `(trainer_job_id, actual_saved_step) -> row_cursor` locally.
+- `resumable=True` writes DCP weights and optimizer state. Supervised recipes may also record `(trainer_job_id, actual_saved_step) -> row_cursor` locally.
 - `promotable=True` writes a complete sampler export that can be promoted.
 - Both perform both writes under the same `step-N` logical name.
 
-Periodic saves use `resumable=True, promotable=False`; the final save usually uses both. `row_cursor` is required for every resumable save. If `dcp_save_interval=0` (the default), there are no intermediate resume points.
+Periodic saves use `resumable=True, promotable=False`; the final save usually uses both. If `dcp_save_interval=0` (the default), there are no intermediate resume points.
 
 RL recipes call `TrainingCheckpoints.sync_weights(step, hotload)`. They never pass `checkpoint_type` or branch on LoRA versus full-parameter training. The SDK saves a complete LoRA adapter for LoRA runs and manages the full/base/delta chain for full-parameter runs. The checkpoint manager also hides the complete-export choice required for promotion.
 
@@ -38,16 +38,24 @@ RL recipes call `TrainingCheckpoints.sync_weights(step, hotload)`. They never pa
 
 The checkpoint row determines the trainer state and step. The local KV mapping supplies only its row cursor. If the mapping has no entry, the cursor is `0`.
 
-Every recipe also exposes `dataloader_cursor`. When it is explicitly set, that exact cursor is used and the local mapping is not read. Use this for a deliberate data-position override or when resuming a remote checkpoint without its original `dataloader.json`.
+Supervised recipes expose `dataloader_cursor` as an override. When set, that exact cursor is used and the local mapping is not read.
 
-Resume priority is:
+`rl_loop` and `async_rl_loop` use a stricter explicit contract:
+
+- `dataloader_cursor` is always an integer and is the only dataset resume input;
+- no local cursor mapping is read or written;
+- no latest checkpoint is selected automatically;
+- `init_from_checkpoint`, when supplied, must explicitly identify the trainer checkpoint;
+- the returned `rows_trained` value is the cumulative row number to pass to the next run.
+
+Supervised resume priority is:
 
 1. `init_from_checkpoint` — load the explicit resumable checkpoint row/resource.
 2. Newest resumable RPC row for the current trainer — auto-resume.
 3. `warm_start_from_adapter` — load LoRA weights only and start at step/cursor zero.
 4. Fresh start.
 
-RPC list failures propagate instead of silently starting fresh.
+For supervised auto-resume, RPC list failures propagate instead of silently starting fresh. RL does not issue the auto-latest list call.
 
 ## Warm-start from a promoted adapter (LoRA only)
 
@@ -73,9 +81,9 @@ Supported in all recipe loops: `sft_loop`, `dpo_loop`, `orpo_loop`, `rl_loop`, `
 
 ## Cross-run resume
 
-Auto-resume is scoped to the current trainer job. To continue a prior trainer, pin `cfg.trainer.job_id`; its RPC rows and local row cursors will line up automatically.
+Supervised auto-resume is scoped to the current trainer job. To continue a prior trainer, pin `cfg.trainer.job_id`; its RPC rows and local row cursors will line up automatically.
 
-To resume into another trainer, pass the prior RPC row (preferred), its full resource name, or `f"{prior_job_id}:step-N"`. Cross-job resume preserves checkpoint step `N`. The cursor is looked up under the source trainer id, or taken directly from `dataloader_cursor` when provided.
+For RL, explicitly pass the prior RPC row (preferred), its full resource name, or `f"{prior_job_id}:step-N"`, plus `dataloader_cursor=<rows_trained from the prior run>`. Cross-job resume preserves checkpoint step `N`.
 
 ---
 

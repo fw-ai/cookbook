@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import logging
 import pkgutil
 from types import SimpleNamespace
 
@@ -156,6 +157,33 @@ def test_main_requires_deployment_tokenizer_model(monkeypatch):
 
     with pytest.raises(ValueError, match="deployment.tokenizer_model"):
         module.main(cfg)
+
+
+def test_dataset_resume_row_defaults_to_zero():
+    cfg = module.Config(log_path="/tmp/rl_test_logs")
+
+    assert cfg.dataloader_cursor == 0
+
+
+def test_main_rejects_negative_dataset_resume_row():
+    cfg = module.Config(log_path="/tmp/rl_test_logs", dataloader_cursor=-1)
+
+    with pytest.raises(ValueError, match="dataloader_cursor"):
+        module.main(cfg)
+
+
+def test_main_logs_dataset_resume_row_first(monkeypatch, caplog):
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        dataloader_cursor=23,
+        deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        _build_service_kwargs(monkeypatch, cfg)
+
+    assert "Dataset resume row: 23" in caplog.text
 
 
 async def _external_sample_prompt_fn(_row, *, cursor_index: int):

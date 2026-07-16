@@ -40,7 +40,7 @@ Distillation-specific: use `distillation_loop.py` for OPD/SDFT. Open [`distillat
 
 ## Resume
 
-Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer.job_id`, keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's authoritative RPC rows, picks the newest resumable row, and restores its exact row cursor from the local `trainer job -> step -> cursor` KV mapping. Set `cfg.dataloader_cursor` to override that lookup explicitly. See [`checkpoints.md`](checkpoints.md) for the full contract.
+SFT/DPO/ORPO retain trainer-scoped auto-resume through RPC rows and their local cursor mapping. Sync and async RL are explicit: pass the checkpoint through `init_from_checkpoint` and pass the prior run's returned `rows_trained` value through `dataloader_cursor`. RL neither reads/writes the local cursor mapping nor selects a latest checkpoint automatically. See [`checkpoints.md`](checkpoints.md) for the full contract.
 
 ## Init from another job
 
@@ -48,7 +48,7 @@ Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg
 config = Config(
     log_path="./new_run",
     init_from_checkpoint=checkpoint_row,  # row returned by list_checkpoints
-    dataloader_cursor=128,  # optional explicit override; bypasses local lookup
+    dataloader_cursor=128,  # required RL dataset position; no local lookup
     ...
 )
 ```

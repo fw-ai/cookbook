@@ -240,6 +240,25 @@ class TestResume:
             checkpoints.resume()
         client.load_state_with_optimizer.assert_not_called()
 
+    def test_auto_latest_can_be_disabled_without_listing_or_local_lookup(
+        self, tmp_path, monkeypatch
+    ):
+        checkpoints, client, fw = _make(str(tmp_path), rows=[_row("step-3")])
+        monkeypatch.setattr(
+            checkpoints,
+            "_read_row_cursor",
+            lambda *_args: pytest.fail("local cursor lookup must not run"),
+        )
+
+        info = checkpoints.resume(
+            dataloader_cursor=11,
+            auto_latest=False,
+        )
+
+        assert info == ResumeInfo(row_cursor=11)
+        fw.list_checkpoints.assert_not_called()
+        client.load_state_with_optimizer.assert_not_called()
+
     def test_warm_start_loads_adapter_and_honors_explicit_cursor(self, tmp_path):
         checkpoints, client, _ = _make(str(tmp_path), lora_rank=8)
 
@@ -273,11 +292,14 @@ class TestSave:
         }
         fw.list_checkpoints.assert_not_called()
 
-    def test_resumable_save_requires_cursor(self, tmp_path):
-        checkpoints, _, _ = _make(str(tmp_path))
+    def test_resumable_save_without_cursor_writes_no_local_state(self, tmp_path):
+        checkpoints, client, fw = _make(str(tmp_path))
 
-        with pytest.raises(ValueError, match="row_cursor"):
-            checkpoints.save(1, resumable=True, promotable=False)
+        checkpoints.save(1, resumable=True, promotable=False)
+
+        client.save_state.assert_called_once_with("step-1")
+        fw.list_checkpoints.assert_not_called()
+        assert not (tmp_path / DATALOADER_BASE_NAME).exists()
 
     def test_promotable_save_forces_complete_export_behind_boundary(self, tmp_path):
         checkpoints, client, _ = _make(str(tmp_path))

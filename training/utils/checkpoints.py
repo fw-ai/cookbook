@@ -237,16 +237,14 @@ class TrainingCheckpoints:
     ) -> None:
         """Save trainer state and/or a complete promotable export.
 
-        The cursor is recorded only for a resumable save. The step stored in
-        the trainer RPC result is used as the key, so server-side normalization
-        never requires a second control-plane lookup.
+        When ``row_cursor`` is supplied for a resumable save, it is recorded
+        under the step returned by the trainer. Omitting it performs no local
+        cursor I/O, which is the sync/async RL contract.
         """
         if step < 0:
             raise ValueError("step must be >= 0")
         if not (resumable or promotable):
             raise ValueError("save() requires at least one of resumable/promotable")
-        if resumable and row_cursor is None:
-            raise ValueError("row_cursor is required for resumable checkpoints")
         if row_cursor is not None and row_cursor < 0:
             raise ValueError("row_cursor must be >= 0")
 
@@ -256,14 +254,21 @@ class TrainingCheckpoints:
             logger.info("Saving resumable checkpoint %r...", name)
             result = self._client.save_state(name)
             actual_name = self._saved_checkpoint_name(result, fallback=name)
-            actual_step = _checkpoint_step(actual_name)
-            self._write_row_cursor(self._trainer_id, actual_step, int(row_cursor))
-            logger.info(
-                "Resumable checkpoint %r saved (%.1fs, row cursor %d)",
-                actual_name,
-                time.time() - started,
-                row_cursor,
-            )
+            if row_cursor is None:
+                logger.info(
+                    "Resumable checkpoint %r saved (%.1fs)",
+                    actual_name,
+                    time.time() - started,
+                )
+            else:
+                actual_step = _checkpoint_step(actual_name)
+                self._write_row_cursor(self._trainer_id, actual_step, row_cursor)
+                logger.info(
+                    "Resumable checkpoint %r saved (%.1fs, row cursor %d)",
+                    actual_name,
+                    time.time() - started,
+                    row_cursor,
+                )
 
         if promotable:
             self._save_promotable(name)
@@ -296,12 +301,14 @@ class TrainingCheckpoints:
         init_from_checkpoint: str | Mapping[str, Any] | None = None,
         warm_start_from_adapter: str | None = None,
         dataloader_cursor: int | None = None,
+        auto_latest: bool = True,
     ) -> ResumeInfo:
         """Resolve and load a checkpoint, returning step and raw-row cursor.
 
         ``init_from_checkpoint`` accepts a row returned by :meth:`list`, its
         full resource name, ``job_id:step-N``, or a bare ``step-N``. When
         ``dataloader_cursor`` is supplied, local cursor state is not read.
+        Set ``auto_latest=False`` when the caller owns checkpoint selection.
         """
         validate_warm_start_config(
             warm_start_from_adapter=warm_start_from_adapter,
@@ -336,7 +343,7 @@ class TrainingCheckpoints:
                 source_job_id=source_job_id,
             )
 
-        latest = self._latest_resumable()
+        latest = self._latest_resumable() if auto_latest else None
         if latest is not None:
             logical_name = self._trainer_logical_name(_short_name(latest["name"]))
             step = _checkpoint_step(logical_name)

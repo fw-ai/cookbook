@@ -209,9 +209,10 @@ class Config:
 
     init_from_checkpoint: str | dict | None = None
     """Resume from prior checkpoint; bare name = this job, ``"job:name"``
-    = cross-job. Rows returned by ``list_checkpoints`` are also accepted."""
-    dataloader_cursor: int | None = None
-    """Explicit raw-row cursor. When set, local cursor resolution is skipped."""
+    = cross-job. Rows returned by ``list_checkpoints`` are also accepted.
+    When omitted, no latest checkpoint is selected automatically."""
+    dataloader_cursor: int = 0
+    """First raw dataset row to process. This is the only dataset resume input."""
     save_final_checkpoint: bool = True
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
@@ -269,7 +270,6 @@ def _save_checkpoint(
     ckpt: TrainingCheckpoints,
     *,
     step: int,
-    row_cursor: int,
     resumable: bool = True,
     promotable: bool = False,
 ) -> None:
@@ -280,7 +280,6 @@ def _save_checkpoint(
             step,
             resumable=resumable,
             promotable=promotable,
-            row_cursor=row_cursor,
         )
     logger.info("[%s] dcp_save: done (%.1fs)", name, span.elapsed)
 
@@ -304,6 +303,9 @@ def main(
     Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
     cfg = config
+    if cfg.dataloader_cursor < 0:
+        raise ValueError("dataloader_cursor must be >= 0")
+    logger.info("Dataset resume row: %d", cfg.dataloader_cursor)
     runner = RunnerIO(cfg.runner)
 
     logger.warning(
@@ -439,6 +441,7 @@ def main(
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             dataloader_cursor=cfg.dataloader_cursor,
+            auto_latest=False,
         )
         step_offset = resume_info.step
         if step_offset:
@@ -457,7 +460,7 @@ def main(
         else:
             rows = list(rows)
 
-        prior_rows_consumed = resume_info.row_cursor
+        prior_rows_consumed = cfg.dataloader_cursor
         row_loader = CursorDataLoader(
             rows,
             start_cursor=prior_rows_consumed,
@@ -852,7 +855,6 @@ def main(
                     _save_checkpoint(
                         ckpt,
                         step=step,
-                        row_cursor=int(loop_stats["resolved_rows"]),
                     )
                 except (OSError, RuntimeError) as e:
                     # Periodic save: surface the failure but keep training.
@@ -905,14 +907,12 @@ def main(
         # Promotion still requires at least one optimizer step.
         resume_row_cursor = int(final_stats["resolved_rows"])
         has_trained_steps = global_step > step_offset
-        has_advanced_dataset = resume_row_cursor > prior_rows_consumed
         promoted_checkpoint: str | None = None
-        if cfg.save_final_checkpoint and (has_trained_steps or has_advanced_dataset):
+        if cfg.save_final_checkpoint and has_trained_steps:
             ckpt.save(
                 global_step,
                 resumable=True,
                 promotable=has_trained_steps,
-                row_cursor=resume_row_cursor,
             )
             if cfg.output_model_id and has_trained_steps:
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
@@ -934,8 +934,10 @@ def main(
         )
 
         logger.info(
-            "Async RL training complete: %d steps (%d new in this run)",
-            global_step, global_step - step_offset,
+            "Async RL training complete: %d steps (%d new), rows trained: %d",
+            global_step,
+            global_step - step_offset,
+            resume_row_cursor,
         )
         wandb_finish()
         return {
@@ -943,4 +945,5 @@ def main(
             "policy_job_id": service.trainer_job_id,
             "reference_job_id": service.reference_trainer_job_id,
             "deployment_id": service.deployment_id,
+            "rows_trained": resume_row_cursor,
         }

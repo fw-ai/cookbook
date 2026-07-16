@@ -4,10 +4,8 @@ Two-phase test on the SDK-managed single-shape trainer:
 
   Phase 1: Create an RL trainer/deployment, train a few steps, and save DCP
            checkpoints. Capture the policy, reference, and deployment IDs.
-  Phase 2: Reattach to the same trainer and deployment with the same ``log_path``.
-           ``TrainingCheckpoints.resume()`` lists the policy trainer's
-           checkpoints on the control plane, picks the newest resumable
-           row, and restores the rollout cursor from ``dataloader.json``.
+  Phase 2: Reattach to the same trainer and deployment, explicitly passing the
+           chosen RPC checkpoint row and phase 1's returned dataset row cursor.
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training/deployment access
@@ -17,9 +15,8 @@ Requires:
 
 from __future__ import annotations
 
-import json
-import os
 import logging
+import os
 import tempfile
 import time
 from dataclasses import replace
@@ -28,7 +25,6 @@ import httpx
 import pytest
 
 from training.utils import DeployConfig, TrainerConfig
-from training.utils.checkpoints import DATALOADER_BASE_NAME
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.async_rl_loop import Config, main
 from training.tests.async_grpo_helpers import (
@@ -38,14 +34,6 @@ from training.tests.async_grpo_helpers import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _max_row_cursor(mapping: dict[str, dict[str, int]]) -> int:
-    return max(
-        int(cursor)
-        for job_rows in mapping.values()
-        for cursor in job_rows.values()
-    )
 
 
 _TRAINER_CLEANUP_STATES = {
@@ -186,16 +174,11 @@ class TestGRPOResumeE2E:
                 phase1_deployment_id,
             )
 
-            # Read the persisted rollout cursor from dataloader.json — the only
-            # cookbook-side state in the new model (job id -> step -> row cursor).
-            dataloader_path = os.path.join(log_dir, DATALOADER_BASE_NAME)
-            assert os.path.exists(dataloader_path), (
-                f"Phase 1 should have written {DATALOADER_BASE_NAME} under {log_dir}"
+            phase1_row_cursor = phase1_metrics["rows_trained"]
+            assert phase1_row_cursor > 0
+            assert not os.path.exists(os.path.join(log_dir, "dataloader.json")), (
+                "RL must not persist a client-side cursor registry"
             )
-            with open(dataloader_path) as f:
-                phase1_dataloader = json.load(f)
-            assert phase1_dataloader, "dataloader.json should be non-empty after phase 1"
-            phase1_row_cursor = _max_row_cursor(phase1_dataloader)
 
             # Verify the control plane has at least one resumable row for the
             # phase-1 policy trainer — phase 2's resume reads from there.
@@ -208,14 +191,17 @@ class TestGRPOResumeE2E:
                 f"Expected phase 1 to leave a resumable row on the control plane "
                 f"for policy job {phase1_policy_job_id}; got rows: {phase1_rows}"
             )
+            phase1_checkpoint = max(
+                phase1_resumable,
+                key=lambda row: row.get("createTime", ""),
+            )
             logger.info(
                 "Phase 1 CP rows: %d resumable (row_cursor=%d)",
                 len(phase1_resumable), phase1_row_cursor,
             )
 
-            # Phase 2: reattach to the same policy + reference trainers so resume
-            # can find the phase-1 CP rows. Auto-resume across separate trainer
-            # jobs is not supported in the new model.
+            # Phase 2 explicitly selects both pieces of resume state: the RPC
+            # checkpoint row and the first dataset row to process.
             logger.info(
                 "PHASE 2: reattach to policy=%s, reference=%s",
                 phase1_policy_job_id, phase1_reference_job_id,
@@ -243,6 +229,8 @@ class TestGRPOResumeE2E:
                 ),
                 weight_sync_before_training=True,
                 weight_sync_timeout=600,
+                init_from_checkpoint=phase1_checkpoint,
+                dataloader_cursor=phase1_row_cursor,
             )
 
             phase2_metrics = main(
@@ -263,9 +251,7 @@ class TestGRPOResumeE2E:
                 f"({phase1_steps}); resume probably did not pick up phase 1's CP rows."
             )
 
-            with open(dataloader_path) as f:
-                phase2_dataloader = json.load(f)
-            phase2_row_cursor = _max_row_cursor(phase2_dataloader)
+            phase2_row_cursor = phase2_metrics["rows_trained"]
             assert phase2_row_cursor >= phase1_row_cursor, (
                 f"Phase 2 row cursor ({phase2_row_cursor}) should not regress "
                 f"from phase 1's ({phase1_row_cursor}); rollout cursor should remain aligned."
