@@ -76,6 +76,7 @@ __all__ = [
     "load_tokenizer",
     "replicate_rows_for_epochs",
     "log_metrics_json",
+    "log_metrics",
     "make_render_dataloader",
     "make_orpo_loss_fn",
     "make_batch_orpo_loss_fn",
@@ -145,6 +146,7 @@ from training.utils.dataloader_cursor import RawRowCursor
 from training.utils.infra import read_api_extra_headers_env
 from training.utils.logging import (
     compute_pass_at_k,
+    log_metrics,
     log_metrics_json,
     setup_wandb,
     wandb_finish,

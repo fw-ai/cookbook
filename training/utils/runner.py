@@ -242,6 +242,10 @@ class RunnerIO:
         }
         self._write_json(self._metadata_file, payload)
 
+    def set_tokens_processed(self, tokens: int) -> None:
+        """Set the canonical processed-token total used by metadata output."""
+        self._tokens_processed = max(0, int(tokens))
+
     # -- metrics ---------------------------------------------------------------
 
     def append_metrics(self, step: int, metrics: dict[str, Any], *, tokens: int = 0) -> None:

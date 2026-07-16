@@ -18,10 +18,10 @@ class _StopAfterProvisioning(RuntimeError):
     pass
 
 
-def test_config_keeps_runner_state_for_sync_ci() -> None:
+def test_config_has_no_runner_state() -> None:
     cfg = module.Config(log_path="gs://logs")
 
-    assert isinstance(cfg.runner, module.RunnerConfig)
+    assert not hasattr(cfg, "runner")
 
 
 def test_build_adam_params_threads_grad_norm_telemetry_opt_in() -> None:

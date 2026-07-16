@@ -6,12 +6,9 @@ SDK, or a deployment.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from training.recipes import async_rl_loop
-from training.utils.rl.metrics import build_train_chunk_metrics
 
 
 class _StopAfterProvisioning(RuntimeError):
@@ -109,42 +106,3 @@ def test_main_requests_trainer_cleanup_for_empty_job_id(monkeypatch: pytest.Monk
     kwargs = _build_service_kwargs(monkeypatch, cfg)
 
     assert kwargs["cleanup_trainer_on_close"] is True
-
-
-class TestTrainChunkMetrics:
-    def test_logs_lr_even_when_remote_metrics_are_empty(self) -> None:
-        metrics = build_train_chunk_metrics(
-            SimpleNamespace(metrics={}),
-            SimpleNamespace(metrics={}),
-            step=3,
-            chunk_idx=2,
-            num_chunks=4,
-            learning_rate=5e-5,
-            run_optimizer_step=False,
-        )
-
-        assert metrics == {
-            "train/step": 3,
-            "train/chunk_idx": 2,
-            "train/num_chunks": 4,
-            "train/lr": 5e-5,
-            "train/run_optimizer_step": 0,
-        }
-
-    def test_scheduled_lr_overrides_remote_lr_metric(self) -> None:
-        metrics = build_train_chunk_metrics(
-            SimpleNamespace(metrics={"loss": 1.25, "step": 99}),
-            SimpleNamespace(metrics={"lr": 1e-3, "grad_norm": 0.5}),
-            step=7,
-            chunk_idx=1,
-            num_chunks=2,
-            learning_rate=2e-5,
-            run_optimizer_step=True,
-        )
-
-        assert metrics["train/lr"] == 2e-5
-        assert metrics["train/loss"] == 1.25
-        assert metrics["train/grad_norm"] == 0.5
-        assert metrics["train/run_optimizer_step"] == 1
-        assert "train/step_id" not in metrics
-        assert metrics["train/step"] == 7

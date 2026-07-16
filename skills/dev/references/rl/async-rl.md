@@ -278,6 +278,27 @@ cap.  AReaL's GSM8K example uses `R=1` with `O=2`; we've tested
 
 ## Metrics: tuning staleness and the trainer/sampler GPU split
 
+`rl_loop.py`, `async_rl_loop.py`, and held-out eval send metrics through the
+shared `training.utils.log_metrics` path. The producer passes a plain metric
+dictionary and an explicit business `step`; the logger never infers semantics
+from metric names. It makes values finite and JSON-compatible, appends the
+result to the configured `COOKBOOK_METRICS_FILE` JSONL ledger, then sends that
+exact dictionary to W&B. Async aggregates chunk metrics into one record per
+optimizer step and logs post-dispatch overlap telemetry separately. When a
+ledger is configured, its write is required and failures propagate. It works
+when W&B is disabled or unavailable and is the source CI uses for validation,
+plots, and artifacts.
+
+W&B uses its implicit, unique `_step` only as transport. Dashboard axes
+come from `train/step` and `rollout/step` through `define_metric`; never pass a
+repeated business step as W&B's transport step because chunk, overlap, rollout,
+and eval log calls can legitimately share it. JSONL line order preserves those
+calls without an event envelope. The ledger can later be replayed into other
+sinks such as MLflow. RL metrics never depend on
+`Config.runner` or `RunnerIO`; do not reintroduce runner state to produce
+`metrics.jsonl`. The CI wrapper may still use `RunnerIO` for the distinct
+status and resource-metadata lifecycle files.
+
 The target regime is **sampler-bound with minimal trainer wait**: the trainer
 finishes its step + sync just before the next batch is ready, so it idles only
 briefly waiting on the sampler.  The four core wall-time metrics tell you

@@ -11,7 +11,6 @@ from training.utils.rl.losses import PromptGroup
 from training.utils.rl.metrics import (
     build_accumulated_async_loop_stats,
     build_loop_metrics,
-    build_train_chunk_metrics,
     compute_step_metrics,
 )
 
@@ -57,26 +56,6 @@ class TestBuildLoopMetrics:
 
 
 class TestAsyncMetricHelpers:
-    def test_build_train_chunk_metrics_uses_chunk_axis(self):
-        metrics = build_train_chunk_metrics(
-            SimpleNamespace(metrics={"loss": 0.5, "step": 99}),
-            SimpleNamespace(metrics={"grad_norm": 1.25}),
-            step=3,
-            chunk_idx=2,
-            num_chunks=4,
-            learning_rate=1e-5,
-            run_optimizer_step=False,
-        )
-
-        assert metrics["train/loss"] == 0.5
-        assert metrics["train/grad_norm"] == 1.25
-        assert metrics["train/step"] == 3
-        assert metrics["train/chunk_idx"] == 2
-        assert metrics["train/num_chunks"] == 4
-        assert metrics["train/lr"] == 1e-5
-        assert metrics["train/run_optimizer_step"] == 0
-        assert "train/step_id" not in metrics
-
     def test_build_accumulated_async_loop_stats_merges_chunk_stats(self):
         pg1 = _make_prompt_group()
         pg2 = _make_prompt_group()
@@ -135,7 +114,12 @@ class TestComputeStepMetrics:
         assert metrics["rollout/valid_prompt_groups"] == 6
         assert metrics["rollout/samples_completed"] == 1
         assert metrics["rollout/trained_datums"] == 1
+        assert metrics["train/target_tokens"] == 3
+        assert metrics["rollout/filter_accept_ratio"] == 1.0 - 1 / 7
         assert metrics["rollout/filter_reject_ratio"] == 1 / 7
+        assert metrics["rollout/raw_samples_completed"] == 2
+        assert metrics["rollout/raw_reward"] == 0.5
+        assert metrics["rollout/raw_accuracy"] == 0.5
         assert metrics["rollout/sample_fail_count"] == 2
         assert metrics["perf/trainer_wait_for_sampler_time"] == 3.0
         assert metrics["perf/rollout_batch_wall_time"] == 2.0

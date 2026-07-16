@@ -106,53 +106,6 @@ def add_train_perf_metrics(metrics: dict[str, Any], *, total_model_tokens: int) 
         metrics["perf/weight_sync_ratio"] = weight_sync_time / step_time
 
 
-def compute_minibatch_metrics(
-    fwd_bwd_result: Any,
-    optim_result: Any,
-) -> dict[str, Any]:
-    """Per-minibatch ``train/*`` metrics for one ``fwd_bwd + optim_step``.
-
-    Recipes that log on a per-PPO-minibatch axis (slime convention: each
-    inner step is its own data point on ``train/step``) call this once
-    per minibatch instead of letting :func:`compute_step_metrics`
-    average across the inner loop.
-    """
-    metrics: dict[str, Any] = {}
-    if fwd_bwd_result is not None and getattr(fwd_bwd_result, "metrics", None):
-        for k, v in fwd_bwd_result.metrics.items():
-            if k not in _SKIP_REMOTE_KEYS:
-                metrics[f"train/{k}"] = v
-    if optim_result is not None and getattr(optim_result, "metrics", None):
-        for k, v in optim_result.metrics.items():
-            if k not in _SKIP_REMOTE_KEYS:
-                metrics[f"train/{k}"] = v
-    return metrics
-
-
-def build_train_chunk_metrics(
-    fwd_bwd_result: Any,
-    optim_result: Any,
-    *,
-    step: int,
-    chunk_idx: int,
-    num_chunks: int,
-    learning_rate: float,
-    run_optimizer_step: bool,
-) -> dict[str, Any]:
-    """Per-dispatch train metrics for async pipeline chunks."""
-    metrics = compute_minibatch_metrics(fwd_bwd_result, optim_result)
-    metrics.update(
-        {
-            "train/step": step,
-            "train/chunk_idx": chunk_idx,
-            "train/num_chunks": num_chunks,
-            "train/lr": learning_rate,
-            "train/run_optimizer_step": int(run_optimizer_step),
-        }
-    )
-    return metrics
-
-
 def build_accumulated_async_loop_stats(
     *,
     prompt_groups: Sequence[PromptGroup],
@@ -213,6 +166,7 @@ def compute_step_metrics(
     metrics = dict(timing_metrics)
 
     total_model_tokens = total_target_tokens(prompt_groups)
+    metrics["train/target_tokens"] = total_model_tokens
     metrics["train/effective_accumulation_steps"] = n_accum
     add_train_perf_metrics(metrics, total_model_tokens=total_model_tokens)
 
@@ -340,6 +294,7 @@ def compute_step_metrics(
         filter_ratio = filtered / max(1, valid + filtered)
         metrics["rollout/valid_prompt_groups"] = valid
         metrics["rollout/total_sampled"] = loop_stats["total_sampled"]
+        metrics["rollout/filter_accept_ratio"] = 1.0 - filter_ratio
         metrics["rollout/filter_reject_ratio"] = filter_ratio
         metrics["rollout/sample_fail_count"] = loop_stats["sample_fails"]
         metrics["rollout/fwd_bwd_count"] = n_accum
@@ -386,6 +341,10 @@ def compute_step_metrics(
 
         raw_rewards = loop_stats["all_raw_rewards"]
         if raw_rewards:
+            metrics["rollout/raw_samples_completed"] = len(raw_rewards)
             metrics["rollout/raw_reward"] = sum(raw_rewards) / len(raw_rewards)
+            metrics["rollout/raw_accuracy"] = (
+                sum(1 for reward in raw_rewards if reward > 0.5) / len(raw_rewards)
+            )
 
     return metrics

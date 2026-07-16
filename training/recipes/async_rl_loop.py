@@ -55,14 +55,16 @@ from training.utils import (
     TrainerConfig,
     WandBConfig,
     ReconnectableClient,
+    RunnerIO,
+    RunStatus,
     build_service_client,
+    log_metrics,
     load_deployment_tokenizer,
     load_jsonl_dataset,
     read_api_extra_headers_env,
     setup_wandb,
     validate_config,
     wandb_finish,
-    wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.dataloader import CursorDataLoader
@@ -84,12 +86,12 @@ from training.utils.rl.losses import (
 )
 from training.utils.rl.metrics import (
     build_accumulated_async_loop_stats,
-    build_train_chunk_metrics,
     compute_step_metrics,
 )
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
+from training.utils.runner_state import start_running, write_completed, write_running_progress
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -287,6 +289,7 @@ def main(
     Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
     cfg = config
+    runner = RunnerIO()
 
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
@@ -350,7 +353,9 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    with ExitStack() as stack:
+    runner.write_status(RunStatus.PENDING, message="provisioning")
+
+    with runner, ExitStack() as stack:
         tokenizer = load_deployment_tokenizer(cfg.deployment)
         service = build_service_client(
             api_key=api_key,
@@ -376,7 +381,19 @@ def main(
         training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
         rollout_model = sampler.model
-        wandb_log({"rollout/step": 0})
+        training_profile = getattr(service, "training_profile", None)
+        accelerator_type = getattr(service, "accelerator_type", None)
+        if accelerator_type is None:
+            accelerator_type = getattr(training_profile, "accelerator_type", None)
+        accelerator_count = getattr(service, "accelerator_count", None)
+        if accelerator_count is None:
+            accelerator_count = getattr(training_profile, "accelerator_count", None)
+        runner.set_accelerator_info(
+            accelerator_type,
+            accelerator_count,
+            profile=training_profile,
+        )
+        log_metrics({"rollout/step": 0}, step=0)
 
         policy = ReconnectableClient.from_training_client(
             training_client,
@@ -414,8 +431,9 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         if step_offset:
             logger.info("Resuming from step %d", step_offset)
-            wandb_log(
+            log_metrics(
                 {"train/step": step_offset, "rollout/step": step_offset},
+                step=step_offset,
             )
 
         if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
@@ -614,6 +632,7 @@ def main(
             "trainer_wait_for_sampler_time": 0.0,
             "sampler_wait_for_trainer_time": 0.0,
         }
+        tokens_processed = 0
 
         def train_step(
             step: int,
@@ -628,15 +647,16 @@ def main(
             chunk is the full rollout batch. In pipeline mode only the final
             accumulated chunk steps it.
 
-            Slime-aligned dual-axis logging: ``train/*`` lands on the
-            ``train/step`` axis (one point per optimizer step); ``rollout/*`` /
-            ``perf/*`` / ``async/*`` / ``version/*`` land on ``rollout/step``
-            (one point per outer rollout batch).
+            Metrics from all chunks are aggregated into one record per optimizer
+            step. ``train/*`` lands on the ``train/step`` axis; ``rollout/*`` /
+            ``perf/*`` / ``async/*`` / ``version/*`` land on ``rollout/step``.
             checkpoint identities remain optimizer-step labels (resume math is
             in optim steps); the off-policy budget is accounted in
             weight-sync versions inside ``_StalenessController`` and is
             independent of those labels.
             """
+            nonlocal tokens_processed
+
             train_start = time.monotonic()
             num_chunks = int(
                 (loop_stats or {}).get(
@@ -720,17 +740,6 @@ def main(
                 total_steps=total_steps_estimate,
             )
             if not run_optimizer_step:
-                wandb_log(
-                    build_train_chunk_metrics(
-                        fwd_bwd_result,
-                        None,
-                        step=step + 1,
-                        chunk_idx=chunk_idx,
-                        num_chunks=num_chunks,
-                        learning_rate=step_lr,
-                        run_optimizer_step=False,
-                    )
-                )
                 return step, {}
 
             adam_kwargs = dict(DEFAULT_ADAM)
@@ -745,18 +754,6 @@ def main(
             logger.info(
                 "[rollout %d step %d] optim_step (chunk %d/%d) (%.1fs)",
                 rollout_id, step, chunk_idx, num_chunks, span.elapsed,
-            )
-
-            wandb_log(
-                build_train_chunk_metrics(
-                    fwd_bwd_result,
-                    optim_result,
-                    step=step,
-                    chunk_idx=chunk_idx,
-                    num_chunks=num_chunks,
-                    learning_rate=step_lr,
-                    run_optimizer_step=True,
-                )
             )
 
             prompt_groups = list(train_accum["prompt_groups"])
@@ -782,10 +779,11 @@ def main(
                 loop_stats=loop_stats,
                 completions_per_prompt=cfg.completions_per_prompt,
             )
+            metrics["train/lr"] = step_lr
             # Per-rollout reference KL for the human summary line below.
             ref_kl = metrics.get("train/ref_kl", 0.0)
             metrics["rollout/step"] = rollout_id
-            metrics["train/step"] = step  # monotonic fallback for the wandb global step
+            metrics["train/step"] = step
             for k, v in ctx_metadata.items():
                 if isinstance(v, bool):
                     metrics[f"ctx/{k}"] = int(v)
@@ -800,9 +798,14 @@ def main(
                 metrics.get("rollout/accuracy", 0.0) * 100,
                 ref_kl,
             )
-            wandb_metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
-            wandb_metrics["train/step"] = step
-            wandb_log(wandb_metrics)
+            log_metrics(metrics, step=step)
+            tokens_processed += int(metrics.get("train/target_tokens", 0))
+            write_running_progress(
+                runner,
+                step=step,
+                total_steps=total_steps_estimate,
+                tokens_processed=tokens_processed,
+            )
             # DCP cadence is in rollout batches. Async has one optimizer step
             # per rollout batch; pipeline chunks do not multiply it.
             rollouts_completed = step - step_offset
@@ -832,6 +835,12 @@ def main(
             train_accum["sampler_wait_for_trainer_time"] = 0.0
             return step, metrics
 
+        start_running(
+            runner,
+            step=step_offset,
+            total_steps=total_steps_estimate,
+        )
+
         global_step, final_stats = asyncio.run(
             run_async_rl_loop(
                 rows=make_row_requests(),
@@ -848,7 +857,10 @@ def main(
                 max_concurrent=cfg.max_concurrency_rollout_sample,
                 dynamic_filter_fn=dynamic_filter_fn,
                 pipeline_chunks_per_step=cfg.pipeline_chunks_per_step,
-                post_train_metrics_fn=wandb_log,
+                post_train_metrics_fn=lambda metrics: log_metrics(
+                    metrics,
+                    step=int(metrics["train/step"]),
+                ),
                 global_step=step_offset,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
                 return_final_stats=True,
@@ -860,6 +872,7 @@ def main(
         resume_row_cursor = int(final_stats["resolved_rows"])
         has_trained_steps = global_step > step_offset
         has_advanced_dataset = resume_row_cursor > prior_rows_consumed
+        promoted_checkpoint: str | None = None
         if cfg.save_final_checkpoint and (has_trained_steps or has_advanced_dataset):
             cp_name = f"step-{global_step}"
             ckpt.save(
@@ -870,15 +883,28 @@ def main(
             )
             if cfg.output_model_id and has_trained_steps:
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
+                promoted_checkpoint = cp_name
+
+        if promoted_checkpoint is not None and cfg.output_model_id:
+            runner.write_output_model(
+                model_id=cfg.output_model_id,
+                checkpoint=promoted_checkpoint,
+                job_id=service.trainer_job_id,
+            )
+
+        final_step = max(global_step, total_steps_estimate)
+        write_completed(runner, step=final_step, total_steps=final_step)
 
         logger.info(
             "Async RL training complete: %d steps (%d new in this run)",
             global_step, global_step - step_offset,
         )
-        wandb_finish()
+        wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
             "steps": global_step,
             "policy_job_id": service.trainer_job_id,
             "reference_job_id": service.reference_trainer_job_id,
             "deployment_id": service.deployment_id,
+            "accelerator_type": accelerator_type,
+            "accelerator_count": accelerator_count,
         }

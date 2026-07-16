@@ -26,6 +26,25 @@ def write_running_step(
     runner.write_metadata()
 
 
+def write_running_progress(
+    runner: RunnerIO,
+    *,
+    step: int,
+    total_steps: int,
+    tokens_processed: int,
+    message: str = "training",
+) -> None:
+    """Refresh lifecycle progress without writing a second metrics stream."""
+    runner.set_tokens_processed(tokens_processed)
+    runner.write_status(
+        RunStatus.RUNNING,
+        step=step,
+        total_steps=total_steps,
+        message=message,
+    )
+    runner.write_metadata()
+
+
 def start_running(
     runner: RunnerIO,
     *,

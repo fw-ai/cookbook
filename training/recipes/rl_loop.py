@@ -45,15 +45,13 @@ from training.utils import (
     AdaptiveConcurrencyController,
     ConcurrencyConfig,
     TrainerConfig,
-    RunnerConfig,
-    RunnerIO,
-    RunStatus,
     WandBConfig,
     DeployConfig,
     RawRowCursor,
-    RLPromptDataset,
+    RunnerIO,
+    RunStatus,
     build_service_client,
-    wandb_log,
+    log_metrics,
     setup_wandb,
     wandb_finish,
     validate_config,
@@ -89,7 +87,7 @@ from training.utils.rl.losses import (
 )
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
-from training.utils.runner_state import start_running, write_completed, write_running_step
+from training.utils.runner_state import start_running, write_completed, write_running_progress
 
 logger = logging.getLogger(__name__)
 
@@ -258,19 +256,6 @@ class Config:
     cleanup_on_exit: bool = True
     """Clean up SDK-created trainer/deployment resources on close."""
 
-    runner: RunnerConfig = field(default_factory=RunnerConfig)
-    """Optional orchestration outputs written during training.
-
-    Paths can be set here or via environment variables:
-      COOKBOOK_STATUS_FILE      -- training status + progress (JSON, overwritten each step)
-      COOKBOOK_METADATA_FILE    -- tokens processed + accelerator-seconds (JSON)
-      COOKBOOK_METRICS_FILE     -- per-step metrics (JSONL, appended each step)
-      COOKBOOK_OUTPUT_MODEL_PATH -- final model info written on completion (JSON)
-
-    All paths are optional; unset paths are silently skipped.
-    See training/utils/runner.py for file format details.
-    """
-
 
 def _build_adam_params(cfg: Config) -> tinker.AdamParams:
     adam_kwargs = dict(DEFAULT_ADAM)
@@ -378,7 +363,7 @@ def main(
     sample_prompt_fn: Callable[..., Awaitable[PromptGroup | None]] | None = None,
 ):
     cfg = config
-    runner = RunnerIO(cfg.runner)
+    runner = RunnerIO()
     uses_recipe_sampler = sample_prompt_fn is None
 
     # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
@@ -462,14 +447,20 @@ def main(
             lora_rank=cfg.lora_rank,
             lora_alpha=cfg.lora_alpha,
         )
-        runner.set_accelerator_info(
-            service.accelerator_type,
-            service.accelerator_count,
-            profile=service.training_profile,
-        )
-
         policy_job_id = service.trainer_job_id
         deployment_id = service.deployment_id
+        training_profile = getattr(service, "training_profile", None)
+        accelerator_type = getattr(service, "accelerator_type", None)
+        if accelerator_type is None:
+            accelerator_type = getattr(training_profile, "accelerator_type", None)
+        accelerator_count = getattr(service, "accelerator_count", None)
+        if accelerator_count is None:
+            accelerator_count = getattr(training_profile, "accelerator_count", None)
+        runner.set_accelerator_info(
+            accelerator_type,
+            accelerator_count,
+            profile=training_profile,
+        )
 
         policy = ReconnectableClient.from_training_client(
             training_client,
@@ -575,7 +566,10 @@ def main(
             warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step_offset = resume_info.step if resume_info else 0
-        wandb_log({"train/step": step_offset}, step_offset)
+        log_metrics(
+            {"train/step": step_offset},
+            step=step_offset,
+        )
 
         if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
             logger.info("[step %d] weight sync: saving + loading...", step_offset)
@@ -592,7 +586,6 @@ def main(
 
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         all_rows = raw_dataset * cfg.epochs
-        rl_dataset = RLPromptDataset(all_rows, prompts_per_step=prompt_groups_per_step)
         cursor = RawRowCursor(max_rows=len(all_rows))
         adam_params = _build_adam_params(cfg)
         sample_kwargs: dict = dict(
@@ -831,6 +824,8 @@ def main(
                 ),
             )
 
+        tokens_processed = 0
+
         def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
@@ -845,6 +840,8 @@ def main(
             batches, not optim steps) so resume accounting is independent of
             the minibatch count.
             """
+            nonlocal tokens_processed
+
             if not prompt_groups:
                 raise ValueError("train_step requires at least one prompt group")
 
@@ -943,9 +940,6 @@ def main(
             )
             metrics["train/step"] = step
 
-            step_tokens = sum(
-                len(d.loss_fn_inputs["target_tokens"].data) for pg in prompt_groups for d in pg.data
-            )
             avg_reward = metrics.get("rollout/reward", 0.0)
             avg_acc = metrics.get("rollout/accuracy", 0.0)
             avg_ref_kl = metrics.get("train/ref_kl", 0.0)
@@ -957,15 +951,13 @@ def main(
                 avg_ref_kl,
             )
             log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, ref_kl=avg_ref_kl)
-            wandb_log(metrics, step)
-
-            total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
-            write_running_step(
+            log_metrics(metrics, step=step)
+            tokens_processed += int(metrics.get("train/target_tokens", 0))
+            write_running_progress(
                 runner,
                 step=step,
                 total_steps=total_rl_steps,
-                metrics=metrics,
-                tokens=step_tokens,
+                tokens_processed=tokens_processed,
             )
 
             if cfg.trajectory_dir:
@@ -981,7 +973,10 @@ def main(
                 cc_summary = concurrency_controller.step_completed()
                 for k, v in cc_summary.items():
                     loop_metrics[f"concurrency/{k}"] = v
-            wandb_log(loop_metrics, step=loop_metrics.get("train/step", 0))
+            log_metrics(
+                loop_metrics,
+                step=int(loop_metrics["train/step"]),
+            )
 
         train_fns = TrainStepFns(train_step=train_step)
 
@@ -993,9 +988,11 @@ def main(
             fallback=rollouts_done * prompt_groups_per_step,
         )
         remaining_rows = all_rows[cursor.value:]
-
-        total_rl_steps = len(rl_dataset) * max(1, cfg.ppo_n_minibatches) - step_offset
-        start_running(runner, total_steps=total_rl_steps)
+        total_rl_steps = step_offset + (
+            math.ceil(len(remaining_rows) / max(1, prompt_groups_per_step))
+            * max(1, cfg.ppo_n_minibatches)
+        )
+        start_running(runner, step=step_offset, total_steps=total_rl_steps)
 
         global_step = asyncio.run(
             run_batched_training_loop(
@@ -1034,19 +1031,24 @@ def main(
                 if getattr(cfg, "output_model_id", None):
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                     runner.write_output_model(
-                        model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
+                        model_id=cfg.output_model_id,
+                        checkpoint=cp_name,
+                        job_id=policy_job_id,
                     )
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
 
-        write_completed(runner, step=global_step, total_steps=total_rl_steps)
+        final_step = max(global_step, total_rl_steps)
+        write_completed(runner, step=final_step, total_steps=final_step)
         logger.info("Training complete: %d steps", global_step)
-        wandb_finish()
+        wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
             "steps": global_step,
             "policy_job_id": policy_job_id,
             "reference_job_id": reference_job_id,
             "deployment_id": deployment_id,
+            "accelerator_type": accelerator_type,
+            "accelerator_count": accelerator_count,
         }
 
 
