@@ -35,16 +35,16 @@ trainers:
     extra_args: null
     skip_validations: false
 
-  # Optional override for full-parameter RFT with KL (kl_beta > 0).
-  # LoRA reuses the policy as its frozen reference, so leave it unwired otherwise.
+  # Optional override for client-side reference KL (kl_beta > 0).
+  # LoRA can reuse the policy with its adapter disabled; wire this only when
+  # a separate reference trainer is required or should be pinned explicitly.
   reference:
     training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora
     job_id: null           # null = create a new job; set to reattach
     replica_count: 1
-    # Optional fields for admin users.
     custom_image_tag: null
-    region: null           # optional explicit trainer region; prefer leaving unset
-    timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
+    region: null
+    timeout_s: 3600
     extra_args: null
     skip_validations: false
 
@@ -53,4 +53,4 @@ recipe:
   rft:
     trainer: policy
     deployment: rollout
-    # reference_trainer: reference   # uncomment for full-param RFT with reference KL
+    # reference_trainer: reference   # optional explicit reference for kl_beta > 0

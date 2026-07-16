@@ -21,11 +21,8 @@ from training.utils.rl.rollout.renderer import (
     single_turn_renderer_rollout,
 )
 from fireworks.training.sdk.sampling import SampledCompletion
-from training.utils.rl.losses import (
-    LossConfig,
-    build_builtin_loss_datums,
-    build_loss_fn,
-)
+from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.losses import build_grpo_datums
 from training.utils.rl.rollout.types import rollout_to_prompt_group, Rollout
 from training.utils.supervised import build_multimodal_policy_datum, has_non_text_chunks
 
@@ -398,15 +395,13 @@ def test_multimodal_client_grpo_preserves_expanded_coordinates():
     ]
     assert target_lengths == [len(values) for values in pg.inf_logprobs]
 
-    build_client_loss = build_loss_fn(
-        LossConfig(policy_loss="grpo", loss_path="client", kl_beta=0.0)
-    )
-    loss_fn = build_client_loss(
+    loss_fn = make_grpo_loss_fn(
         pg.advantages,
         [[0.0] * n for n in target_lengths],
         pg.prompt_lens,
-        pg.inf_logprobs,
-        pg.inf_logprobs,
+        inf_logprobs=pg.inf_logprobs,
+        old_policy_logprobs=pg.inf_logprobs,
+        kl_beta=0.0,
     )
     forward_logprobs = [
         torch.tensor(values, dtype=torch.float32, requires_grad=True)
@@ -450,13 +445,12 @@ def test_multimodal_builtin_loss_datums_use_expanded_coordinates():
     assert pg is not None
     assert pg.prompt_lens is not None
 
-    builtin_datums = build_builtin_loss_datums(
+    builtin_datums = build_grpo_datums(
         data=pg.data,
         advantages=pg.advantages,
         old_policy_logprobs=pg.inf_logprobs,
         inf_logprobs=pg.inf_logprobs,
         prompt_lens=pg.prompt_lens,
-        policy_loss="grpo",
     )
 
     for policy_datum, builtin_datum in zip(pg.data, builtin_datums):

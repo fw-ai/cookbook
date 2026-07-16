@@ -1,9 +1,11 @@
+"""Optional train/inference drift metrics for direct client losses."""
+
 from __future__ import annotations
 
 from typing import Dict, List
 
-import torch
 import tinker
+import torch
 
 from training.utils.rl.common import (
     _coerce_response_logprobs,
@@ -19,6 +21,7 @@ def compute_inference_observability_metrics(
     prompt_lens: List[int],
     policy_loss: str,
 ) -> Dict[str, float]:
+    """Compare trainer policy logprobs with optional raw inference logprobs."""
     raw_inf_logprobs = raw_inf_logprobs or []
 
     total_inf_diff = 0.0
@@ -44,7 +47,11 @@ def compute_inference_observability_metrics(
                 resp_pi.device,
             )
         else:
-            resp_mask = torch.ones(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
+            resp_mask = torch.ones(
+                resp_len,
+                dtype=resp_pi.dtype,
+                device=resp_pi.device,
+            )
         active = resp_mask > 0.5
         active_tokens = int(active.sum().item())
         if active_tokens == 0:
@@ -75,19 +82,19 @@ def compute_inference_observability_metrics(
         )
         inf_log_diff = resp_pi.detach()[active] - resp_raw_inf[active]
         total_inf_diff += inf_log_diff.abs().mean().item()
-        # Signed mean (k1): captures directional bias. A systematic numerics
-        # mismatch pushes logprobs one way (|k1| ~= inference_diff), while
-        # symmetric rollout/outlier noise cancels (k1 ~= 0 with inference_diff/kld
-        # still inflated) -- so k1 vs inference_diff separates the two causes.
         total_inf_k1 += inf_log_diff.mean().item()
-        total_inf_kld += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
+        total_inf_kld += (
+            torch.exp(inf_log_diff) - inf_log_diff - 1.0
+        ).mean().item()
         raw_inf_num_samples += 1
         compared_active_tokens += active_tokens
 
     if expected_active_tokens == 0:
         return {}
     metrics = {
-        "raw_inference_logprob_coverage": compared_active_tokens / expected_active_tokens,
+        "raw_inference_logprob_coverage": (
+            compared_active_tokens / expected_active_tokens
+        ),
     }
     if raw_inf_num_samples > 0:
         metrics.update(

@@ -16,7 +16,14 @@ from typing import Dict, List, Tuple, Union
 import torch
 import tinker
 
+from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
 from training.utils.rl.tis import TISConfig
+
+
+def validate_is_config(*, ratio_log_cap: float) -> None:
+    """Validate importance-sampling settings before building the loss closure."""
+    if ratio_log_cap < 0:
+        raise ValueError("IS ratio_log_cap must be non-negative.")
 
 
 def make_is_loss_fn(
@@ -29,8 +36,7 @@ def make_is_loss_fn(
     tis_config: TISConfig | None = None,
 ) -> ...:
     """Build an IS loss closure with unclipped ratio and behavioral TIS weight."""
-    from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-
+    validate_is_config(ratio_log_cap=ratio_log_cap)
     if tis_config is None:
         tis_config = TISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))

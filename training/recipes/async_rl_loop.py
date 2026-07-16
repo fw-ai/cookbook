@@ -4,7 +4,7 @@
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
 names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intentionally minimal-surface: the
 only thing most users need to write is the rollout function; everything
-else (gate, advantage, ref forward, weight sync, KL/TIS, pipeline chunking,
+else (gate, advantage, optional reference KL, weight sync, TIS, pipeline chunking,
 checkpoints) is handled by ``main()``.  See
 ``skills/dev/references/rl/async-rl.md`` for the full contract.
 
@@ -37,7 +37,7 @@ import signal
 import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 import tinker
 from fireworks.training.sdk.training_spec import (
@@ -71,19 +71,8 @@ from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_train import RowRequest, run_async_rl_loop
-from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.dapo import DAPOConfig
-from training.utils.rl.dro import DROConfig
-from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.losses import (
-    LossPath,
-    PolicyLoss,
-    build_builtin_loss_datums,
-    build_loss_fn,
-    combine_prompt_groups,
-    get_builtin_loss_config,
-    validate_loss_path,
-)
+from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
+from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import (
     build_accumulated_async_loop_stats,
     compute_step_metrics,
@@ -121,6 +110,7 @@ class Config:
     """Per-step LR scheduler spec for managed and local async RL runs."""
 
     kl_beta: float = 0.001
+    """Reference-KL coefficient. Set to ``0`` to skip reference provisioning."""
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
     temperature: float = 1.0
@@ -147,28 +137,10 @@ class Config:
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 disables clipping."""
 
-    policy_loss: PolicyLoss = "grpo"
-    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
-
-    loss_path: LossPath = "client"
-    """Which forward/backward path to use.
-
-    - ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
-      kernel. Faster, but cannot apply KL (``kl_beta`` must be 0).
-    - ``"client"`` -- client-side ``forward_backward_custom(...)``. Always
-      works; slower because the client evaluates the Python loss closure.
-
-    Validated at startup by :func:`validate_loss_path`; mismatches raise
-    instead of silently falling back.
-    """
-
-    dapo: DAPOConfig = field(default_factory=DAPOConfig)
-    dro: DROConfig = field(default_factory=DROConfig)
-    gspo: GSPOConfig = field(default_factory=GSPOConfig)
-    cispo: CISPOConfig = field(default_factory=CISPOConfig)
     eps_clip: float = 0.2
+    """Lower/upper PPO clip epsilon used by the client-side GRPO update."""
     eps_clip_high: float | None = None
-    ratio_log_cap: float = 20.0
+    """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
     pipeline_chunks_per_step: int = 1
     """Scheduler chunk cap per global optimizer batch.
 
@@ -176,14 +148,13 @@ class Config:
     continuous batching owns execution-level coalescing/microbatching.
     """
     tis: TISConfig = field(default_factory=TISConfig)
+    """TIS (Train-Inference IS) weight correction config."""
+    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
+    """PPO anchor source.
 
-    use_rollout_logprobs: bool = False
-    """Use rollout-time logprobs as the PPO/IS old-policy anchor.
-
-    Mirrors Slime's ``use_rollout_logprobs`` flag. ``False`` preserves the
-    historical async behavior by recomputing old-policy logprobs on the trainer.
-    Set ``True`` when the sampler/policy gap is known to be negligible and you
-    want to skip the old-policy forward pass.
+    ``"old_policy"`` snapshots trainer logprobs and applies TIS against the
+    rollout behavior policy. ``"rollout"`` skips that forward, anchors PPO on
+    rollout logprobs, and makes the TIS ratio identity.
     """
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -289,6 +260,14 @@ def main(
     Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
     cfg = config
+    validate_grpo_config(
+        kl_beta=cfg.kl_beta,
+        eps_clip=cfg.eps_clip,
+        eps_clip_high=cfg.eps_clip_high,
+        reference_training_shape_id=cfg.trainer.reference_training_shape_id,
+        reference_job_id=cfg.trainer.reference_job_id,
+        anchor_logp=cfg.anchor_logp,
+    )
     runner = RunnerIO()
 
     logger.warning(
@@ -340,9 +319,10 @@ def main(
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
+            "algorithm": "grpo",
+            "trainer_loss": "client",
             "kl_beta": cfg.kl_beta,
-            "loss_path": cfg.loss_path,
-            "use_rollout_logprobs": int(cfg.use_rollout_logprobs),
+            "anchor_logp": cfg.anchor_logp,
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
         },
@@ -464,26 +444,7 @@ def main(
             remaining_rows / max(1, cfg.prompt_groups_per_step)
         )
 
-        validate_loss_path(cfg, service.training_profile)
-        if cfg.loss_path == "builtin":
-            builtin_loss = get_builtin_loss_config(cfg)
-            client_loss_builder = None
-            logger.info(
-                "policy_loss=%s loss_path=builtin (server-side loss=%s)",
-                cfg.policy_loss,
-                builtin_loss[0],
-            )
-        else:
-            builtin_loss = None
-            client_loss_builder = build_loss_fn(cfg)
-            logger.info(
-                "policy_loss=%s loss_path=client (forward_backward_custom)",
-                cfg.policy_loss,
-            )
-        logger.info(
-            "use_rollout_logprobs=%s",
-            cfg.use_rollout_logprobs,
-        )
+        logger.info("algorithm=grpo trainer_loss=client kl_beta=%g", cfg.kl_beta)
 
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
@@ -523,8 +484,10 @@ def main(
             "temperature": cfg.temperature,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
-            "loss_path": cfg.loss_path,
-            "use_rollout_logprobs": cfg.use_rollout_logprobs,
+            "algorithm": "grpo",
+            "trainer_loss": "client",
+            "kl_beta": cfg.kl_beta,
+            "anchor_logp": cfg.anchor_logp,
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "model": rollout_model,
         }
@@ -536,7 +499,9 @@ def main(
                 idx = item.index
                 epoch = idx // rows_per_epoch if rows_per_epoch else 0
                 row_index = idx % rows_per_epoch if rows_per_epoch else idx
-                end_of_epoch = row_index == rows_per_epoch - 1 if rows_per_epoch else True
+                end_of_epoch = (
+                    row_index == rows_per_epoch - 1 if rows_per_epoch else True
+                )
                 source_row_id = row.get("id") if isinstance(row, dict) else None
 
                 def factory(
@@ -559,8 +524,7 @@ def main(
                         return rollout_fn(
                             sample_prompt,
                             **{
-                                key: context[key]
-                                for key in rollout_context_param_names
+                                key: context[key] for key in rollout_context_param_names
                             },
                         )
                     return rollout_fn(sample_prompt)
@@ -594,33 +558,24 @@ def main(
             raw_inf_lp,
             old_policy_logprobs,
         ):
-            if builtin_loss is not None:
-                loss_name, loss_cfg = builtin_loss
-                rl_datums = build_builtin_loss_datums(
-                    data,
-                    adv,
-                    old_policy_logprobs,
-                    inf_lp,
-                    prompt_lens,
-                    cfg.tis,
-                    policy_loss=cfg.policy_loss,
-                )
-                return policy.forward_backward(
-                    rl_datums,
-                    loss_name,
-                    loss_fn_config=loss_cfg,
-                )
+            """Run client-side GRPO with PPO clipping, TIS, and optional reference KL.
 
-            assert client_loss_builder is not None
+            To switch to built-in PPO or another loss, replace this call rather
+            than adding dispatch. See ``skills/customize-rl-loss/SKILL.md``.
+            """
             return policy.forward_backward_custom(
                 data,
-                client_loss_builder(
-                    adv,
-                    ref_lp,
-                    prompt_lens,
-                    inf_lp,
-                    old_policy_logprobs,
-                    raw_inf_lp,
+                make_grpo_loss_fn(
+                    advantages=adv,
+                    ref_logprobs=ref_lp,
+                    prompt_len=prompt_lens,
+                    inf_logprobs=inf_lp,
+                    old_policy_logprobs=old_policy_logprobs,
+                    kl_beta=cfg.kl_beta,
+                    eps_clip=cfg.eps_clip,
+                    eps_clip_high=cfg.eps_clip_high,
+                    tis_config=cfg.tis,
+                    raw_inf_logprobs=raw_inf_lp,
                 ),
             )
 
@@ -640,7 +595,7 @@ def main(
             loop_stats: dict | None,
             run_optimizer_step: bool,
         ) -> tuple[int, dict]:
-            """ref_forward + old_policy_logprobs snapshot + train chunks + metrics.
+            """Reference/old-policy snapshots + client GRPO chunks + optimizer.
 
             Each chunk runs fwd/bwd. ``run_optimizer_step`` controls
             whether the chunk also runs ``optim_step``. In default mode the
@@ -680,29 +635,16 @@ def main(
             with elapsed_timer("ref_forward") as span:
                 ref_forward(prompt_groups)
             logger.info(
-                "[rollout %d] ref_forward (%.1fs)", rollout_id, span.elapsed,
+                "[rollout %d] ref_forward (%.1fs)",
+                rollout_id,
+                span.elapsed,
             )
 
             data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combine_prompt_groups(
                 prompt_groups,
                 include_raw=True,
             )
-            if cfg.use_rollout_logprobs:
-                if len(inf_lp) != len(data):
-                    raise ValueError(
-                        "use_rollout_logprobs=True requires one rollout_logprobs "
-                        f"row per datum; got {len(inf_lp)} rows for {len(data)} datums."
-                    )
-                if any(not row for row in inf_lp):
-                    raise ValueError(
-                        "use_rollout_logprobs=True requires non-empty rollout_logprobs."
-                    )
-                old_policy_logprobs = inf_lp
-                logger.info(
-                    "[rollout %d] old_policy_logprobs: using rollout_logprobs",
-                    rollout_id,
-                )
-            else:
+            if cfg.anchor_logp == "old_policy":
                 with elapsed_timer("old_policy_forward") as span:
                     old_policy_fwd = policy.forward(data, "cross_entropy")
                     old_policy_logprobs = [
@@ -711,7 +653,23 @@ def main(
                     ]
                 logger.info(
                     "[rollout %d] old_policy_forward (%.1fs)",
-                    rollout_id, span.elapsed,
+                    rollout_id,
+                    span.elapsed,
+                )
+            else:
+                if len(inf_lp) != len(data):
+                    raise ValueError(
+                        "anchor_logp='rollout' requires one rollout_logprobs "
+                        f"row per datum; got {len(inf_lp)} rows for {len(data)} datums."
+                    )
+                if any(not row for row in inf_lp):
+                    raise ValueError(
+                        "anchor_logp='rollout' requires non-empty rollout_logprobs."
+                    )
+                old_policy_logprobs = inf_lp
+                logger.info(
+                    "[rollout %d] anchor_logp=rollout (old-policy forward skipped)",
+                    rollout_id,
                 )
 
             optim_result: Any = None
@@ -730,7 +688,11 @@ def main(
                 train_accum["fwd_bwd_results"].append(fwd_bwd_result)
             logger.info(
                 "[rollout %d step %d] fwd_bwd (chunk %d/%d) (%.1fs)",
-                rollout_id, step + 1, chunk_idx, num_chunks, span.elapsed,
+                rollout_id,
+                step + 1,
+                chunk_idx,
+                num_chunks,
+                span.elapsed,
             )
 
             step_lr = compute_lr(
@@ -753,7 +715,11 @@ def main(
             step += 1
             logger.info(
                 "[rollout %d step %d] optim_step (chunk %d/%d) (%.1fs)",
-                rollout_id, step, chunk_idx, num_chunks, span.elapsed,
+                rollout_id,
+                step,
+                chunk_idx,
+                num_chunks,
+                span.elapsed,
             )
 
             prompt_groups = list(train_accum["prompt_groups"])
@@ -897,7 +863,8 @@ def main(
 
         logger.info(
             "Async RL training complete: %d steps (%d new in this run)",
-            global_step, global_step - step_offset,
+            global_step,
+            global_step - step_offset,
         )
         wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {

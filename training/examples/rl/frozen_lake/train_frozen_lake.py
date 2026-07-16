@@ -64,21 +64,11 @@ from training.utils.rl.rollout import (
     load_eval_protocol_input_rows,
     make_eval_protocol_rollout_fn_factory,
 )
-from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.dapo import DAPOConfig
-from training.utils.rl.dro import DROConfig
-from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.losses import (
-    LossPath,
-    PolicyLoss,
-    build_builtin_loss_datums,
-    build_loss_fn,
-    combine_prompt_groups,
-    get_builtin_loss_config,
-    validate_loss_path,
-)
+from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.metrics import compute_step_metrics
+from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.timer import timer, flush_timing
 
 logging.basicConfig(
@@ -128,23 +118,10 @@ class FrozenLakeConfig:
     prompt_groups_per_step: int = 4
     max_concurrent: int = 16
 
-    policy_loss: PolicyLoss = "grpo"
-    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
-
-    loss_path: LossPath = "client"
-    """``"builtin"`` for server-side fused kernel, ``"client"`` for the
-    Python loss closure. Validated at startup -- mismatches raise instead
-    of silently falling back."""
     eps_clip: float = 0.2
-    """PPO clip epsilon for the off-policy ratio (GRPO/DAPO)."""
+    """PPO clip epsilon for the client-side GRPO objective."""
     eps_clip_high: float | None = None
-    """Asymmetric upper clip bound (GRPO/DAPO)."""
-    ratio_log_cap: float = 20.0
-    """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
-    dapo: DAPOConfig = field(default_factory=DAPOConfig)
-    dro: DROConfig = field(default_factory=DROConfig)
-    gspo: GSPOConfig = field(default_factory=GSPOConfig)
-    cispo: CISPOConfig = field(default_factory=CISPOConfig)
+    """Asymmetric upper clip bound for the client-side GRPO objective."""
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
 
@@ -524,7 +501,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         infra_boot_time = time.time() - _infra_start
         wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
 
-        from training.utils.checkpoints import TrainingCheckpoints
         ckpt = TrainingCheckpoints(
             policy,
             service,
@@ -578,11 +554,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         eval3_input_rows = load_eval_protocol_input_rows(frozen_lake_evaluator)[prior_rows_consumed:]
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-        # Client-side fallback: build the Python loss closure used by
-        # forward_backward_custom(...) when no eligible builtin kernel exists.
-        # ``cfg`` satisfies the LossArgs Protocol via its top-level loss fields.
-        client_loss_builder = build_loss_fn(cfg)
-
         # -- Trajectory logging -----------------------------------------------
         trajectory_path = f"/tmp/frozen_lake_trajectories_{int(time.time())}.jsonl"
         trajectory_log = open(trajectory_path, "a")
@@ -648,42 +619,25 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     ]
                     idx += n
 
-            # Validate user's explicit loss_path choice; raises (no silent
-            # fallback) if builtin was picked in a configuration that forbids
-            # it (kl_beta > 0 or a client-only loss).
-            validate_loss_path(cfg, service.training_profile)
-            if cfg.loss_path == "builtin":
-                builtin_loss = get_builtin_loss_config(cfg)
-                logger.info(
-                    "policy_loss=%s loss_path=builtin (server-side loss=%s)",
-                    cfg.policy_loss, builtin_loss[0],
-                )
-            else:
-                builtin_loss = None
-                logger.info(
-                    "policy_loss=%s loss_path=client", cfg.policy_loss,
-                )
+            logger.info("algorithm=grpo trainer_loss=client")
 
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 old_policy_fwd = policy.forward(data, "cross_entropy")
                 old_policy_lp = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-                if builtin_loss is not None:
-                    loss_name, loss_cfg = builtin_loss
-                    rl_datums = build_builtin_loss_datums(
-                        data,
-                        adv,
-                        old_policy_lp,
-                        inf_lp,
-                        prompt_lens,
-                        cfg.tis,
-                        policy_loss=cfg.policy_loss,
-                    )
-                    return policy.forward_backward(
-                        rl_datums, loss_name, loss_fn_config=loss_cfg,
-                    )
                 return policy.forward_backward_custom(
-                    data, client_loss_builder(adv, ref_lp, prompt_lens, inf_lp, old_policy_lp),
+                    data,
+                    make_grpo_loss_fn(
+                        adv,
+                        ref_lp,
+                        prompt_lens,
+                        inf_logprobs=inf_lp,
+                        old_policy_logprobs=old_policy_lp,
+                        kl_beta=cfg.kl_beta,
+                        eps_clip=cfg.eps_clip,
+                        eps_clip_high=cfg.eps_clip_high,
+                        tis_config=cfg.tis,
+                    ),
                 )
 
             def train_step(

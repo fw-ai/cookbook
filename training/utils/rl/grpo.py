@@ -3,7 +3,8 @@
 Uses PPO-style clipped surrogate objective with behavioral TIS weight
 correction.  The PPO ratio is computed against pre-computed old-policy
 logprobs (from a forward pass before training), and the TIS weight
-corrects for the train-inference gap.
+corrects for the train-inference gap. Optional reference regularization uses
+the differentiable k3 KL estimator.
 """
 
 from __future__ import annotations
@@ -14,7 +15,41 @@ import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
+from training.utils.rl.observability import compute_inference_observability_metrics
 from training.utils.rl.tis import SAFETY_CLAMP, TISConfig
+
+
+def validate_grpo_config(
+    *,
+    kl_beta: float,
+    eps_clip: float,
+    eps_clip_high: float | None,
+    reference_training_shape_id: str | None = None,
+    reference_job_id: str | None = None,
+    reference_configured: bool = False,
+    anchor_logp: str | None = None,
+    ppo_n_minibatches: int | None = None,
+) -> None:
+    """Validate GRPO loss and recipe settings before provisioning or training."""
+    if kl_beta < 0:
+        raise ValueError("kl_beta must be non-negative.")
+    if kl_beta == 0 and (
+        reference_configured
+        or reference_training_shape_id is not None
+        or reference_job_id is not None
+    ):
+        raise ValueError(
+            "Reference trainer settings require kl_beta > 0; they would be unused."
+        )
+    if eps_clip < 0 or (eps_clip_high is not None and eps_clip_high < 0):
+        raise ValueError("eps_clip and eps_clip_high must be non-negative.")
+    if anchor_logp is not None and anchor_logp not in {"old_policy", "rollout"}:
+        raise ValueError(
+            "anchor_logp must be 'old_policy' or 'rollout', got "
+            f"{anchor_logp!r}."
+        )
+    if ppo_n_minibatches is not None and ppo_n_minibatches < 1:
+        raise ValueError("ppo_n_minibatches must be >= 1.")
 
 
 def make_grpo_loss_fn(
@@ -27,13 +62,20 @@ def make_grpo_loss_fn(
     eps_clip: float = 0.2,
     eps_clip_high: float | None = None,
     tis_config: TISConfig | None = None,
+    raw_inf_logprobs: List[List[float]] | None = None,
 ) -> ...:
     """GRPO loss with PPO-clipped ratio and behavioral TIS weight.
 
     ``old_policy_logprobs`` are pre-computed by a forward pass before training.
     The PPO ratio ``exp(pi_theta - old_policy)`` is clipped by ``eps_clip``.
     The TIS weight ``exp(old_policy - inf)`` corrects for train-inference mismatch.
+    Reference KL uses ``exp(ref - pi) - (ref - pi) - 1``.
     """
+    validate_grpo_config(
+        kl_beta=kl_beta,
+        eps_clip=eps_clip,
+        eps_clip_high=eps_clip_high,
+    )
     if tis_config is None:
         tis_config = TISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
@@ -50,7 +92,9 @@ def make_grpo_loss_fn(
 
         surr1 = -ratio * ctx.adv
         surr2 = -clipped_ratio * ctx.adv
-        kl_penalty = kl_beta * (ctx.pi_detached - ctx.resp_ref)
+        ref_log_ratio = ctx.resp_ref - ctx.resp_pi
+        ref_kl = torch.exp(ref_log_ratio) - ref_log_ratio - 1.0
+        kl_penalty = kl_beta * ref_kl
         per_token_loss = (torch.maximum(surr1, surr2) * ctx.tis_weight + kl_penalty) * ctx.resp_mask
 
         return per_token_loss, {
@@ -58,7 +102,7 @@ def make_grpo_loss_fn(
             "ratio_mean": ratio_mean,
             "resp_len": float(len(ctx.resp_pi)),
             "adv_term": (-ctx.adv * ctx.resp_pi * ctx.resp_mask).sum().item(),
-            "kl_term": (kl_beta * ctx.resp_pi * ctx.resp_mask).sum().item(),
+            "kl_term": (kl_penalty * ctx.resp_mask).sum().item(),
         }
 
     def loss_fn(
@@ -82,6 +126,16 @@ def make_grpo_loss_fn(
         metrics["mean_adv_loss"] = result.extra_sums.get("adv_term", 0.0) / nt if nt > 0 else 0.0
         metrics["mean_kl_penalty"] = result.extra_sums.get("kl_term", 0.0) / nt if nt > 0 else 0.0
         metrics["mean_loss"] = result.total_loss.item() / nt if nt > 0 else 0.0
+        if raw_inf_logprobs is not None:
+            metrics.update(
+                compute_inference_observability_metrics(
+                    data,
+                    logprobs_list,
+                    raw_inf_logprobs,
+                    prompt_lens,
+                    "grpo",
+                )
+            )
         return result.total_loss, metrics
 
     return loss_fn

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Tuple, Union
 from dataclasses import dataclass
 
 import torch
 import tinker
 
-if TYPE_CHECKING:
-    from training.utils.rl.tis import TISConfig
+from training.utils.rl.tis import TISConfig, compute_tis_weight
 
 
 def _normalize_prompt_lens(prompt_len: Union[int, List[int]], n: int) -> List[int]:
@@ -226,8 +225,6 @@ def run_loss_loop(
     sample, and delegates per-token loss computation to ``policy_fn``.
     loss/TIS ratios use ``inf_logprobs`` and ``old_policy_logprobs``.
     """
-    from training.utils.rl.tis import compute_tis_weight
-
     total_loss = torch.tensor(0.0, requires_grad=True)
     total_kl = 0.0
     total_ppo_kl = 0.0

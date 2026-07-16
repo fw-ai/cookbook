@@ -21,7 +21,7 @@ The cookbook is the reference implementation of the Fireworks Training SDK. Fork
 | "How do I set the training / deployment shape?" | [`references/shapes.md`](references/shapes.md) |
 | `RuntimeError: Failed to resolve latest validated training shape` | [`references/shapes.md`](references/shapes.md#when-resolve_training_profile-raises-failed-to-resolve-latest-validated-training-shape) — don't pin a version; retry or reach out |
 | "Can I run two deployments off one trainer (sampler + eval)?" | [`references/rl/hotload.md`](references/rl/hotload.md#two-deployments-one-trainer) |
-| "How does RL dispatch server-side vs client-side loss? What's the cost?" | [`references/rl/loss-paths.md`](references/rl/loss-paths.md) |
+| "How do I change GRPO, TIS, KL, switch client/built-in loss, or add an RL algorithm?" | [`../customize-rl-loss/SKILL.md`](../customize-rl-loss/SKILL.md) |
 | Multimodal / vision RL target, logprob, weight, or advantage length mismatch | [`references/rl/loss-paths.md`](references/rl/loss-paths.md#multimodal-datum-contract) |
 | "How does gradient accumulation work at `optim_step`? What normalization does RL use?" | [`references/rl/gradient-accumulation.md`](references/rl/gradient-accumulation.md) |
 | "Why are some RL samples being filtered?" | [`references/rl/dynamic-filter.md`](references/rl/dynamic-filter.md) |

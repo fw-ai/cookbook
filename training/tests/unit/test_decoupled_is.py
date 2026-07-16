@@ -12,6 +12,22 @@ from training.utils.rl.tis import (
 
 
 class TestComputeTISWeight:
+    def test_config_rejects_negative_cap(self):
+        with pytest.raises(ValueError, match="cap must be non-negative"):
+            TISConfig(cap=-1.0)
+
+    def test_config_rejects_unknown_level(self):
+        with pytest.raises(ValueError, match="level must be"):
+            TISConfig(level="typo")  # type: ignore[arg-type]
+
+    def test_rejects_misaligned_logprobs(self):
+        with pytest.raises(ValueError, match="requires aligned"):
+            compute_tis_weight(
+                torch.tensor([-0.5]),
+                torch.tensor([-0.5, -0.3]),
+                TISConfig(),
+            )
+
     def test_same_logprobs_gives_weight_one(self):
         old_policy = torch.tensor([-0.5, -0.3, -0.8])
         inf = torch.tensor([-0.5, -0.3, -0.8])

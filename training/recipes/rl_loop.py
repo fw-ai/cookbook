@@ -6,17 +6,9 @@ Fork this script and customise the reward function, loss, or sampling
 strategy to fit your task.
 
 Each optimizer step samples ``prompt_groups_per_step`` prompts concurrently,
-then runs a single training update + ``optim_step`` (1:1 ratio).
-
-RL losses can execute in two places, picked **explicitly** by ``cfg.loss_path``:
-- ``"builtin"``: ``forward_backward(...)`` with a server-side fused kernel,
-  configured via :func:`training.utils.rl.losses.get_builtin_loss_config`.
-- ``"client"``: ``forward_backward_custom(...)`` with a Python loss closure
-  built by :func:`training.utils.rl.losses.build_loss_fn`.
-
-``validate_loss_path`` runs at startup and raises with an actionable message
-if the chosen path is incompatible with this run's config/profile (e.g.
-``"builtin"`` + ``kl_beta>0``).
+computes group-normalized advantages, and runs the client-side GRPO loss
+directly. The loss call keeps PPO clipping, TIS, and optional reference KL
+visible in this file without a registry or runtime dispatch.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -68,23 +60,17 @@ from tinker_cookbook.renderers import get_text_content
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup
 from training.utils.rl.common import align_sample_logprobs_to_target_tokens
+from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.tis import TISConfig
+from training.utils.rl.rollout.renderer import model_input_to_token_ids
 from training.utils.timer import timer, flush_timing
 import time as _time
-from training.utils.rl.dapo import DAPOConfig
-from training.utils.rl.dro import DROConfig
-from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.cispo import CISPOConfig
-from training.train_loop import TrainStepFns, raw_rows_from_stats, run_batched_training_loop
-from training.utils.rl.losses import (
-    LossPath,
-    PolicyLoss,
-    build_builtin_loss_datums,
-    build_loss_fn,
-    combine_prompt_groups,
-    get_builtin_loss_config,
-    validate_loss_path,
+from training.train_loop import (
+    TrainStepFns,
+    raw_rows_from_stats,
+    run_batched_training_loop,
 )
+from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import build_r3_routing_matrices
 from training.utils.runner_state import start_running, write_completed, write_running_progress
@@ -107,6 +93,7 @@ class Config:
 
     learning_rate: float = 1e-5
     kl_beta: float = 0.001
+    """Reference-KL coefficient. Set to ``0`` to skip reference provisioning."""
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
     temperature: float = 1.0
@@ -161,31 +148,10 @@ class Config:
     behavior.
     """
 
-    policy_loss: PolicyLoss = "grpo"
-    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
-
-    loss_path: LossPath = "client"
-    """Which forward/backward path to use:
-
-    - ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
-      kernel. Faster, but cannot apply KL (``kl_beta`` must be 0).
-    - ``"client"`` -- client-side ``forward_backward_custom(...)``. Always
-      works; slower because of an extra forward pass for old-policy logprobs.
-
-    Validated at startup by :func:`validate_loss_path` -- mismatches raise,
-    they no longer silently fall back.
-    """
-
-    dapo: DAPOConfig = field(default_factory=DAPOConfig)
-    dro: DROConfig = field(default_factory=DROConfig)
-    gspo: GSPOConfig = field(default_factory=GSPOConfig)
-    cispo: CISPOConfig = field(default_factory=CISPOConfig)
     eps_clip: float = 0.2
-    """PPO clip epsilon for the off-policy ratio (GRPO only)."""
+    """Lower/upper PPO clip epsilon used by the client-side GRPO update."""
     eps_clip_high: float | None = None
-    """Asymmetric upper clip bound (GRPO only)."""
-    ratio_log_cap: float = 20.0
-    """Log-ratio clamp for ``policy_loss="importance_sampling"``."""
+    """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
     ppo_n_minibatches: int = 1
     """Number of inner PPO minibatches per rollout batch.
 
@@ -196,30 +162,6 @@ class Config:
     behavior."""
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
-
-    separate_tis: bool = False
-    """Train-inference correction strategy for ``policy_loss='importance_sampling'``.
-
-    - ``False`` (default — Tinker on-policy IS): anchor the ratio directly on the
-      inference/sampler logprobs, ``ratio = exp(pi - inf)`` (bounded only by
-      ``ratio_log_cap``). The train-inference gap is corrected *inside* the ratio,
-      two-sided and unclamped; the per-step old-policy forward is skipped and the
-      ``TISConfig`` (``cap``/``level``) has no effect. Requires
-      ``ppo_n_minibatches == 1``.
-    - ``True`` (separate TIS): snapshot old-policy logprobs from a trainer forward
-      so the ratio measures policy drift ``exp(pi - old_policy)``, and correct the
-      train-inference gap with a *separate, clamped* weight
-      ``clamp(exp(old_policy - inf), max=TISConfig.cap)`` applied per ``TISConfig.level``
-      (token or sequence). This is the only mode where ``TISConfig`` matters and
-      the only mode compatible with ``ppo_n_minibatches > 1``.
-
-    Note the two modes coincide exactly while the TIS clamp does not bind:
-    ``exp(pi - old_policy) * exp(old_policy - inf) == exp(pi - inf)``. They differ only when
-    ``|old_policy - inf|`` exceeds the cap, where the separate-TIS path clips the
-    correction (asymmetrically when ``cap <= 1``) and the default does not.
-
-    Ignored for non-IS losses (GRPO/DAPO/GSPO/CISPO), which always snapshot
-    old-policy logprobs for the PPO ratio and apply TIS as a composable weight."""
 
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     """Concurrency control for inference sampling.  ``"fixed"`` (default)
@@ -252,7 +194,9 @@ class Config:
     weight_sync_before_training: bool = False
     weight_sync_timeout: int = 600
     dcp_save_interval: int = 0
-    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
+    wandb: WandBConfig = field(
+        default_factory=lambda: WandBConfig(project="grpo-tinker")
+    )
     cleanup_on_exit: bool = True
     """Clean up SDK-created trainer/deployment resources on close."""
 
@@ -324,7 +268,9 @@ def should_accept(pg: PromptGroup) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptGroup]) -> None:
+def _dump_trajectory(
+    trajectory_dir: str, step: int, prompt_groups: list[PromptGroup]
+) -> None:
     """Write per-step trajectory JSONL: one line per individual completion."""
     os.makedirs(trajectory_dir, exist_ok=True)
     path = os.path.join(trajectory_dir, f"step_{step:04d}.jsonl")
@@ -339,16 +285,30 @@ def _dump_trajectory(trajectory_dir: str, step: int, prompt_groups: list[PromptG
                     "completion_index": comp_idx,
                     "prompt": pg.prompt,
                     "completion": comp_text,
-                    "reward": pg.rewards[comp_idx] if comp_idx < len(pg.rewards) else None,
-                    "advantage": pg.advantages[comp_idx] if comp_idx < len(pg.advantages) else None,
-                    "completion_len": pg.completion_lens[comp_idx] if comp_idx < len(pg.completion_lens) else None,
-                    "truncated": pg.truncated[comp_idx] if comp_idx < len(pg.truncated) else None,
-                    "ground_truth": pg.row_meta.get("ground_truth") if pg.row_meta else None,
+                    "reward": pg.rewards[comp_idx]
+                    if comp_idx < len(pg.rewards)
+                    else None,
+                    "advantage": pg.advantages[comp_idx]
+                    if comp_idx < len(pg.advantages)
+                    else None,
+                    "completion_len": pg.completion_lens[comp_idx]
+                    if comp_idx < len(pg.completion_lens)
+                    else None,
+                    "truncated": pg.truncated[comp_idx]
+                    if comp_idx < len(pg.truncated)
+                    else None,
+                    "ground_truth": pg.row_meta.get("ground_truth")
+                    if pg.row_meta
+                    else None,
                 }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 n_records += 1
     logger.info(
-        "[step %d] Saved trajectory to %s (%d completions from %d groups)", step, path, n_records, len(prompt_groups)
+        "[step %d] Saved trajectory to %s (%d completions from %d groups)",
+        step,
+        path,
+        n_records,
+        len(prompt_groups),
     )
 
 
@@ -363,6 +323,14 @@ def main(
     sample_prompt_fn: Callable[..., Awaitable[PromptGroup | None]] | None = None,
 ):
     cfg = config
+    validate_grpo_config(
+        kl_beta=cfg.kl_beta,
+        eps_clip=cfg.eps_clip,
+        eps_clip_high=cfg.eps_clip_high,
+        reference_training_shape_id=cfg.trainer.reference_training_shape_id,
+        reference_job_id=cfg.trainer.reference_job_id,
+        ppo_n_minibatches=cfg.ppo_n_minibatches,
+    )
     runner = RunnerIO()
     uses_recipe_sampler = sample_prompt_fn is None
 
@@ -386,13 +354,6 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
-    if cfg.policy_loss == "importance_sampling" and not cfg.separate_tis and cfg.ppo_n_minibatches > 1:
-        raise ValueError(
-            "importance_sampling with the default inference-anchored ratio requires "
-            "ppo_n_minibatches == 1 (the inference anchor cannot stand in for an old-policy "
-            "snapshot across drifting inner steps). Set separate_tis=True to use a trainer "
-            "old-policy snapshot with ppo_n_minibatches > 1."
-        )
     completions_per_prompt = cfg.completions_per_prompt
     prompt_groups_per_step = cfg.prompt_groups_per_step
     if not cfg.deployment.tokenizer_model:
@@ -405,8 +366,9 @@ def main(
         {
             "completions_per_prompt": completions_per_prompt,
             "prompt_groups_per_step": prompt_groups_per_step,
+            "algorithm": "grpo",
+            "trainer_loss": "client",
             "kl_beta": cfg.kl_beta,
-            "loss_path": cfg.loss_path,
             "lr": cfg.learning_rate,
         },
     )
@@ -470,7 +432,6 @@ def main(
             default_timeout=cfg.step_timeout or 3600,
             service=service,
         )
-        policy_profile = None
         max_seq_len = service.max_context_length
 
         # The KL reference is optional in RL (only needed when kl_beta > 0).
@@ -542,7 +503,8 @@ def main(
                 cfg.concurrency.rollout_adjustment_interval,
             )
             sampler = service.create_deployment_sampler(
-                tokenizer=tokenizer, concurrency_controller=concurrency_controller,
+                tokenizer=tokenizer,
+                concurrency_controller=concurrency_controller,
             )
 
         ckpt = TrainingCheckpoints(
@@ -580,7 +542,9 @@ def main(
                     checkpoint_type="base",
                 )
                 service.hotload_sampler_snapshot(saved.path)
-            logger.info("[step %d] weight sync: done (%.1fs)", step_offset, _time.time() - t0)
+            logger.info(
+                "[step %d] weight sync: done (%.1fs)", step_offset, _time.time() - t0
+            )
 
         # -- Prepare sampling and training --------------------------------------
 
@@ -610,7 +574,9 @@ def main(
 
         # -- Sample one prompt (VISIBLE -- customise this) ----------------------
 
-        async def sample_one_prompt(row: dict, *, cursor_index: int) -> PromptGroup | None:
+        async def sample_one_prompt(
+            row: dict, *, cursor_index: int
+        ) -> PromptGroup | None:
             """Sample completions for one prompt and return a PromptGroup."""
             if sample_prompt_fn is not None:
                 return await sample_prompt_fn(row, cursor_index=cursor_index)
@@ -623,9 +589,9 @@ def main(
 
             try:
                 if use_renderer_prompts:
-                    from training.utils.rl.rollout.renderer import model_input_to_token_ids
-
-                    model_input = response_renderer.build_generation_prompt(input_messages)
+                    model_input = response_renderer.build_generation_prompt(
+                        input_messages
+                    )
                     prompt_token_ids = model_input_to_token_ids(model_input)
                     sampled = await sampler.sample_with_prompt_tokens(
                         prompt_token_ids,
@@ -647,7 +613,10 @@ def main(
             if not sampled or len(sampled) < completions_per_prompt:
                 return None
 
-            rewards = [reward_fn(_response_text_for_grading(response_renderer, s), row) for s in sampled]
+            rewards = [
+                reward_fn(_response_text_for_grading(response_renderer, s), row)
+                for s in sampled
+            ]
             advantages = compute_advantages(rewards)
 
             prompt_len = sampled[0].prompt_len
@@ -673,9 +642,13 @@ def main(
                     )
 
                 policy_datum = tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(tokens[:-1], routing_matrices=rm),
+                    model_input=tinker.ModelInput.from_ints(
+                        tokens[:-1], routing_matrices=rm
+                    ),
                     loss_fn_inputs={
-                        "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[model_input_len]),
+                        "target_tokens": tinker.TensorData(
+                            data=tokens[1:], dtype="int64", shape=[model_input_len]
+                        ),
                     },
                 )
                 policy_data.append(policy_datum)
@@ -729,10 +702,14 @@ def main(
                 truncated=trunc,
                 prompt=input_messages if cfg.trajectory_dir else None,
                 completions=[s.text for s in sampled] if cfg.trajectory_dir else None,
-                row_meta={"ground_truth": row.get("ground_truth", "")} if cfg.trajectory_dir else None,
+                row_meta={"ground_truth": row.get("ground_truth", "")}
+                if cfg.trajectory_dir
+                else None,
             )
 
         # -- Training callbacks ----------------------------------------------------
+
+        logger.info("algorithm=grpo trainer_loss=client kl_beta=%g", cfg.kl_beta)
 
         def ref_forward(groups: list[PromptGroup]) -> None:
             """Compute reference logprobs for all prompt groups (one call)."""
@@ -754,32 +731,6 @@ def main(
                 pg.ref_logprobs = [ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)]
                 idx += n
 
-        validate_loss_path(cfg, policy_profile)
-        if cfg.loss_path == "builtin":
-            builtin_loss = get_builtin_loss_config(cfg)
-            client_loss_builder = None
-            logger.info(
-                "policy_loss=%s loss_path=builtin (server-side loss=%s)",
-                cfg.policy_loss,
-                builtin_loss[0],
-            )
-        else:
-            builtin_loss = None
-            client_loss_builder = build_loss_fn(cfg)
-            logger.info(
-                "policy_loss=%s loss_path=client (forward_backward_custom)",
-                cfg.policy_loss,
-            )
-        use_rollout_logprobs = (
-            cfg.policy_loss == "importance_sampling" and not cfg.separate_tis
-        )
-        logger.info(
-            "use_rollout_logprobs=%s (derived from policy_loss=%s separate_tis=%s)",
-            use_rollout_logprobs,
-            cfg.policy_loss,
-            cfg.separate_tis,
-        )
-
         def fwd_bwd_minibatch(
             data,
             adv,
@@ -789,38 +740,24 @@ def main(
             raw_inf_lp,
             old_policy_logprobs,
         ):
-            """One inner PPO minibatch using builtin or client-side loss path.
+            """Run client-side GRPO with PPO clipping, TIS, and optional reference KL.
 
-            Callers pre-compute ``old_policy_logprobs`` once per rollout batch and pass
-            a slice of the flattened rollout tensors for this minibatch.
+            To switch to built-in PPO or another loss, replace this call rather
+            than adding dispatch. See ``skills/customize-rl-loss/SKILL.md``.
             """
-            if builtin_loss is not None:
-                loss_name, loss_cfg = builtin_loss
-                rl_datums = build_builtin_loss_datums(
-                    data,
-                    adv,
-                    old_policy_logprobs,
-                    inf_lp,
-                    prompt_lens,
-                    cfg.tis,
-                    policy_loss=cfg.policy_loss,
-                )
-                return policy.forward_backward(
-                    rl_datums,
-                    loss_name,
-                    loss_fn_config=loss_cfg,
-                )
-
-            assert client_loss_builder is not None
             return policy.forward_backward_custom(
                 data,
-                client_loss_builder(
-                    adv,
-                    ref_lp,
-                    prompt_lens,
-                    inf_lp,
-                    old_policy_logprobs,
-                    raw_inf_lp,
+                make_grpo_loss_fn(
+                    advantages=adv,
+                    ref_logprobs=ref_lp,
+                    prompt_len=prompt_lens,
+                    inf_logprobs=inf_lp,
+                    old_policy_logprobs=old_policy_logprobs,
+                    kl_beta=cfg.kl_beta,
+                    eps_clip=cfg.eps_clip,
+                    eps_clip_high=cfg.eps_clip_high,
+                    tis_config=cfg.tis,
+                    raw_inf_logprobs=raw_inf_lp,
                 ),
             )
 
@@ -831,7 +768,7 @@ def main(
             prompt_groups: list[PromptGroup],
             loop_stats: dict | None = None,
         ) -> tuple[int, dict]:
-            """ref_forward + old_policy_logprobs snapshot + num_minibatches x (fwd_bwd + optim_step) + metrics.
+            """Old-policy snapshot + num_minibatches x (fwd_bwd + optim_step) + metrics.
 
             ``num_minibatches = cfg.ppo_n_minibatches``. ``old_policy_logprobs``
             is snapshotted once per rollout batch and reused across every inner
@@ -848,31 +785,29 @@ def main(
             train_step_start = _time.time()
             t0 = _time.time()
             ref_forward(prompt_groups)
-            logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, _time.time() - t0)
-
+            logger.info(
+                "[step %d] ref_forward: done (%.1fs)",
+                step + 1,
+                _time.time() - t0,
+            )
             data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combine_prompt_groups(
                 prompt_groups,
                 include_raw=True,
             )
-            # Historical sync-loop behavior: IS without separate TIS uses
-            # rollout_logprobs; other modes snapshot on the trainer.
-            if use_rollout_logprobs:
-                old_policy_logprobs = inf_lp
-                logger.info(
-                    "[step %d] old_policy_logprobs: using rollout_logprobs",
-                    step + 1,
-                )
-            else:
-                t0 = _time.time()
-                old_policy_fwd = policy.forward(data, "cross_entropy")
-                old_policy_logprobs = [
-                    old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
-                    for i in range(len(data))
-                ]
-                logger.info("[step %d] old_policy_forward: done (%.1fs)", step + 1, _time.time() - t0)
+            t0 = _time.time()
+            old_policy_fwd = policy.forward(data, "cross_entropy")
+            old_policy_logprobs = [
+                old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
+                for i in range(len(data))
+            ]
+            logger.info(
+                "[step %d] old_policy_forward: done (%.1fs)",
+                step + 1,
+                _time.time() - t0,
+            )
 
             n = len(data)
-            num_minibatches = max(1, cfg.ppo_n_minibatches)
+            num_minibatches = cfg.ppo_n_minibatches
             minibatch_size = max(1, math.ceil(n / num_minibatches))
             fwd_bwd_results: list = []
             optim_result: Any = None
@@ -883,18 +818,23 @@ def main(
                     break
 
                 t0 = _time.time()
-                fwd_bwd_results.append(fwd_bwd_minibatch(
-                    data[minibatch_start:minibatch_end],
-                    adv[minibatch_start:minibatch_end],
-                    ref_lp[minibatch_start:minibatch_end],
-                    prompt_lens[minibatch_start:minibatch_end],
-                    inf_lp[minibatch_start:minibatch_end],
-                    raw_inf_lp[minibatch_start:minibatch_end],
-                    old_policy_logprobs[minibatch_start:minibatch_end],
-                ))
+                fwd_bwd_results.append(
+                    fwd_bwd_minibatch(
+                        data[minibatch_start:minibatch_end],
+                        adv[minibatch_start:minibatch_end],
+                        ref_lp[minibatch_start:minibatch_end] if ref_lp else [],
+                        prompt_lens[minibatch_start:minibatch_end],
+                        inf_lp[minibatch_start:minibatch_end],
+                        raw_inf_lp[minibatch_start:minibatch_end],
+                        old_policy_logprobs[minibatch_start:minibatch_end],
+                    )
+                )
                 logger.info(
                     "[step %d] fwd_bwd (mb %d/%d): done (%.1fs)",
-                    step + 1, minibatch_idx + 1, num_minibatches, _time.time() - t0,
+                    step + 1,
+                    minibatch_idx + 1,
+                    num_minibatches,
+                    _time.time() - t0,
                 )
 
                 t0 = _time.time()
@@ -905,14 +845,23 @@ def main(
                 step += 1
                 logger.info(
                     "[step %d] optim_step (mb %d/%d): done (%.1fs)",
-                    step, minibatch_idx + 1, num_minibatches, _time.time() - t0,
+                    step,
+                    minibatch_idx + 1,
+                    num_minibatches,
+                    _time.time() - t0,
                 )
 
-            cursor.record(raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups)))
+            cursor.record(
+                raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups))
+            )
 
             rollouts_completed = (step - step_offset) // num_minibatches
             dcp_interval = cfg.dcp_save_interval
-            if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
+            if (
+                dcp_interval > 0
+                and rollouts_completed > 0
+                and rollouts_completed % dcp_interval == 0
+            ):
                 logger.info("[step %d] dcp_save...", step)
                 t0 = _time.time()
                 ckpt.save(
@@ -926,8 +875,12 @@ def main(
             if loop_stats is not None:
                 train_wall_time = _time.time() - train_step_start
                 loop_stats["train_wall_time"] = train_wall_time
-                rollout_wall_time = float(loop_stats.get("rollout_batch_wall_time", 0.0))
-                loop_stats["scheduler_step_wall_time"] = rollout_wall_time + train_wall_time
+                rollout_wall_time = float(
+                    loop_stats.get("rollout_batch_wall_time", 0.0)
+                )
+                loop_stats["scheduler_step_wall_time"] = (
+                    rollout_wall_time + train_wall_time
+                )
 
             metrics = compute_step_metrics(
                 prompt_groups=prompt_groups,
@@ -982,7 +935,7 @@ def main(
 
         # Prefer the persisted raw-row cursor; fall back to step-derived
         # progress for older checkpoints.
-        rollouts_done = step_offset // max(1, cfg.ppo_n_minibatches)
+        rollouts_done = step_offset // cfg.ppo_n_minibatches
         cursor.resume(
             resume_info.data_consumed if resume_info else None,
             fallback=rollouts_done * prompt_groups_per_step,
@@ -1006,11 +959,13 @@ def main(
                 global_step=step_offset,
                 metrics_callback=_loop_metrics_callback,
                 weight_sync_fn=(
-                    lambda step: service.hotload_sampler_snapshot(
-                        policy.save_weights_for_sampler(f"step-{step}").path
+                    lambda step: (
+                        service.hotload_sampler_snapshot(
+                            policy.save_weights_for_sampler(f"step-{step}").path
+                        )
+                        if cfg.weight_sync_interval > 0
+                        else None
                     )
-                    if cfg.weight_sync_interval > 0
-                    else None
                 ),
                 weight_sync_interval=cfg.weight_sync_interval,
             )
@@ -1053,7 +1008,9 @@ def main(
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     cfg = Config(
         log_path="./rl_logs",
         base_model="accounts/fireworks/models/qwen3-8b",

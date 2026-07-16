@@ -22,6 +22,51 @@ def test_config_has_no_runner_state() -> None:
     cfg = module.Config(log_path="gs://logs")
 
     assert not hasattr(cfg, "runner")
+    assert cfg.kl_beta == 0.001
+
+
+def test_main_has_direct_client_grpo_customization_boundary() -> None:
+    source = inspect.getsource(module.main)
+
+    assert "make_grpo_loss_fn(" in source
+    assert "policy.forward_backward_custom(" in source
+    assert 'attr="inference_logprobs"' in source
+    assert "raw_inf_logprobs=raw_inf_lp" in source
+    assert "To switch to built-in PPO or another loss" in source
+    assert "adding dispatch" in source
+    assert "skills/customize-rl-loss/SKILL.md" in source
+    assert "build_loss_fn" not in source
+    assert "loss_path" not in source
+
+
+@pytest.mark.parametrize(
+    "trainer",
+    [
+        module.TrainerConfig(reference_training_shape_id="ref-shape"),
+        module.TrainerConfig(reference_job_id="ref-job"),
+    ],
+)
+def test_main_rejects_unused_reference_trainer_config(trainer) -> None:
+    cfg = module.Config(log_path="gs://logs", kl_beta=0, trainer=trainer)
+
+    with pytest.raises(ValueError, match="require kl_beta > 0"):
+        module.main(cfg)
+
+
+@pytest.mark.parametrize(
+    ("config_overrides", "message"),
+    [
+        ({"eps_clip": -0.1}, "eps_clip"),
+        ({"eps_clip_high": -0.1}, "eps_clip"),
+        ({"kl_beta": -0.1}, "kl_beta"),
+        ({"ppo_n_minibatches": 0}, "ppo_n_minibatches"),
+    ],
+)
+def test_main_rejects_invalid_grpo_config(config_overrides, message) -> None:
+    cfg = module.Config(log_path="gs://logs", **config_overrides)
+
+    with pytest.raises(ValueError, match=message):
+        module.main(cfg)
 
 
 def test_build_adam_params_threads_grad_norm_telemetry_opt_in() -> None:
@@ -47,7 +92,9 @@ def test_response_text_for_grading_uses_renderer_parse_response():
         prompt_len=3,
         text="raw completion with reasoning",
     )
-    assert module._response_text_for_grading(_Renderer(), sampled) == "<answer>42</answer>"
+    assert (
+        module._response_text_for_grading(_Renderer(), sampled) == "<answer>42</answer>"
+    )
 
 
 def test_response_text_for_grading_does_not_fallback_on_parse_failure():
@@ -90,14 +137,24 @@ def test_extract_answer_reads_digits_from_answer_block():
 
 
 def test_reward_fn_requires_matching_numeric_answer():
-    assert module.reward_fn("<answer>7</answer>", {"ground_truth": "<answer>7</answer>"}) == 1.0
-    assert module.reward_fn("<answer>8</answer>", {"ground_truth": "<answer>7</answer>"}) == 0.0
+    assert (
+        module.reward_fn("<answer>7</answer>", {"ground_truth": "<answer>7</answer>"})
+        == 1.0
+    )
+    assert (
+        module.reward_fn("<answer>8</answer>", {"ground_truth": "<answer>7</answer>"})
+        == 0.0
+    )
     assert module.reward_fn("missing", {"ground_truth": "<answer>7</answer>"}) == 0.0
 
 
 def test_should_accept_requires_reward_variance():
-    same_rewards = PromptGroup(data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 0.0])
-    varied_rewards = PromptGroup(data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 1.0])
+    same_rewards = PromptGroup(
+        data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 0.0]
+    )
+    varied_rewards = PromptGroup(
+        data=[], advantages=[], ref_logprobs=[], prompt_len=0, rewards=[0.0, 1.0]
+    )
 
     assert module.should_accept(same_rewards) is False
     assert module.should_accept(varied_rewards) is True
@@ -174,7 +231,9 @@ def _build_service_kwargs(monkeypatch, cfg, *, sample_prompt_fn=None):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "validate_warm_start_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        module, "validate_warm_start_config", lambda *args, **kwargs: None
+    )
 
     def fake_build_service_client(**kwargs):
         calls.append(kwargs)

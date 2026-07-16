@@ -84,8 +84,9 @@ class RolloutSample:
     """Optional raw model logprobs aligned with ``tokens`` for observability.
 
     ``logprobs`` remains the rollout/sampling logprob source used by loss
-    ratios and TIS.  When present, ``raw_logprobs`` is packed into
-    ``PromptGroup.raw_inf_logprobs`` for ``train/inference_*`` metrics only.
+    ratios and TIS. When present, ``raw_logprobs`` is packed into
+    ``PromptGroup.raw_inf_logprobs`` for optional train/inference drift metrics.
+    It never replaces behavior logprobs in the loss or TIS.
     """
 
 

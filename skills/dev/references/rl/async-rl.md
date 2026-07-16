@@ -26,10 +26,10 @@ about the separate ideas:
 
 For strict on-policy training, use `max_head_offpolicy_versions=0`.  Raising
 `O` permits more head-of-line submission and can create useful overlap, but
-actual policy staleness must be validated with behavior-policy metadata when
-available and policy-drift metrics such as `train/inference_kld` /
-`train/inference_diff`.  Those drift metrics are observability-only; training
-ratios use `rollout_logprobs`, not raw inference logprobs.
+`async/version_offset_*` remains only a submission-lag proxy. The stock path
+uses rollout behavior logprobs for TIS but does not emit a direct
+behavior-policy divergence metric. Add that metric explicitly in a research
+fork if the experiment needs it.
 
 `rl_loop.py` is the older synchronous recipe (always strict on-policy, drains
 rollouts before each step).  The async recipe is the recommended starting
@@ -48,7 +48,7 @@ concurrency cap.
 
 **Two-file layout.** A run is typically a `rollout.py` (the rollout function,
 `make_rollout_fn(setup) -> rollout_fn`) plus a `train.py` (the `Config` —
-training/deployment shapes, `policy_loss`, reward wiring — and the
+training/deployment shapes and reward wiring — and the
 `main(cfg, rollout_fn_factory=..., rows=...)` call). The reward is computed
 inside the rollout and set on each `RolloutSample.reward` segment inside a
 `RolloutRun` (often factored into a `reward.py` the rollout imports). The
@@ -58,13 +58,13 @@ recipe owns everything between.
 
 The recipe is intentionally minimal-surface: **the only thing most users need
 to write is the rollout function**.  Everything else — gate, advantage
-computation, reference-model forwards, weight sync, KL/TIS metrics, pipeline
+computation, optional reference and old-policy forwards, weight sync, TIS, pipeline
 chunking, checkpoint plumbing — is handled by `recipes/async_rl_loop.py::main`.
 
 | You write | The recipe handles |
 |---|---|
 | `rollout_fn_factory(setup) -> rollout_fn` (one trajectory per call) | Async fan-out / GroupAssembler / off-policy gate |
-| (optional) `dynamic_filter_fn(pg)` for batch-level filtering | Reference model forwards, KL, TIS, drift metrics |
+| (optional) `dynamic_filter_fn(pg)` for batch-level filtering | Reference/old-policy forwards, KL, and TIS correction |
 | Dataset rows (or pass `rows=` to `main()`) | Weight sync cadence, checkpoint save/promote, WandB axes |
 | `Config(...)` knobs (LR, gate sizes, deployment shape) | Pipeline chunking, gradient accumulation, advantage z-score |
 
@@ -223,8 +223,7 @@ many rows are submitted in the current admission tick.
 | `max_head_offpolicy_versions` | weight-sync versions | `O`: headroom for submitting rows ahead of future sampler versions.  This is an admission budget, not a guarantee that every request finishes within `O` versions |
 | `max_concurrency_rollout_sample` | samples | `C_s`: hard cap on in-flight LLM calls; map to `deployment.max_batch_size`.  Must be `>= cpp` or the gate deadlocks |
 | `pipeline_chunks_per_step` | scheduler chunks | Caps how many fwd/bwd chunks feed one optimizer step; these are not trainer/executor microbatches |
-| `loss_path` | train path | `"client"` runs the Python loss via `forward_backward_custom`; `"builtin"` uses the server-side fused loss and requires `kl_beta=0` |
-| `use_rollout_logprobs` | bool | Slime-style flag; `False` recomputes old-policy logprobs, `True` reuses `rollout_logprobs` and skips the old-policy forward |
+| `anchor_logp` | logprob source | `"old_policy"` (default) snapshots trainer logprobs and applies TIS; `"rollout"` skips that forward and makes TIS identity |
 
 Derived: `B_s = B_p × cpp` (samples per outer batch), `R = C_s / B_s` (active set
 relative to one batch).
@@ -248,19 +247,16 @@ submitted under the same sampler-version counter the trainer currently sees.
 row by looking at current in-flight and accepted sample counts.  It cannot
 promise that a submitted request will finish before a future weight sync, nor
 can it prove which model version served every generated token.  A slow rollout
-may come back after the trainer has advanced the sampler version, so validate
-policy drift with:
+may come back after the trainer has advanced the sampler version, so monitor
+the submission lag with:
 
 - `async/version_offset_mean`
 - `async/version_offset_max`
-- `train/inference_kld`
-- `train/inference_diff`
 
 Treat the `async/version_offset_*` values as admission/submission diagnostics.
-Treat `train/inference_kld` and `train/inference_diff` as observability-only
-policy-drift checks computed from raw inference logprobs when available.  The
-losses themselves use `rollout_logprobs` for ratios/TIS.  If drift is too high,
-lower `max_head_offpolicy_versions`, reduce
+They are not direct policy-divergence measurements. The stock client loss uses
+rollout behavior logprobs for TIS. If lag is too high, lower
+`max_head_offpolicy_versions`, reduce
 `max_concurrency_rollout_sample`, or set `max_head_offpolicy_versions=0` for
 the strict on-policy baseline.
 
@@ -328,7 +324,7 @@ the wait pair to decide what to change.
    staleness budget.  The trainer is the slow side; admit more off-policyness
    or reduce trainer load.
    - First lever: raise `max_head_offpolicy_versions` by 1 (`O += 1`).  Cheap
-     and reversible; KL/PPO-clip will absorb modest extra drift.
+     and reversible; TIS and PPO clipping correct or bound modest extra drift.
    - If `O` is already at the sizing rule (`O ≥ R−1`) and the wait persists,
      the trainer step itself is too long.  Add training replicas /
      pipeline-parallel ranks, or reduce the optimizer batch size.
@@ -372,13 +368,6 @@ the current global batch reaches its optimizer boundary.
   snapshot for the current optimizer batch.  In async pipeline mode it helps
   check whether delayed optimizer boundaries are seeing meaningful policy
   movement.
-- `train/inference_kld`, `train/inference_diff` — observability-only drift
-  between rollout-time raw inference logprobs and train-time policy logprobs.
-  They do not feed loss, TIS, or old-policy anchors.  These are the best
-  available signal for behavior-policy drift in this recipe because
-  `async/version_offset_*` only records submit-version lag.  If they spike even
-  when `O` is small, look for slow rollout tails, excessive concurrency, or a
-  silently failing `weight_sync_fn`.
 - `rollout/entropy` — averaged over `loss_mask>0` only.  Sudden collapse is
   the usual mode-collapse signal.
 
@@ -409,28 +398,26 @@ global optimizer step; it does not change the optimizer batch size.
 
 ## Loss path
 
-Async supports the same explicit loss-path contract as `rl_loop.py`:
+Async snapshots old-policy logprobs and passes a direct
+`make_grpo_loss_fn(...)` closure to `forward_backward_custom(...)` by default.
+Set `anchor_logp="rollout"` to reuse aligned rollout behavior logprobs instead.
+That closure applies PPO clipping, TIS, optional reference KL, and
+observability-only raw-inference drift metrics. There is no loss selector or
+fallback. Fork the documented `fwd_bwd_batch` function and follow
+[`skills/customize-rl-loss/SKILL.md`](../../../customize-rl-loss/SKILL.md) to
+switch to a trainer built-in or another client loss.
 
-- `loss_path="client"` runs `forward_backward_custom(...)` with the Python loss
-  closure. This is the conservative default and supports `kl_beta>0`.
-- `loss_path="builtin"` runs `forward_backward(...)` with the server-side fused
-  loss. This is faster for built-in losses such as GRPO, but it rejects
-  `kl_beta>0` because the built-in kernel does not consume `ref_logprobs`.
+## TIS correction
 
-`use_rollout_logprobs=True` reuses `rollout_logprobs` as the old-policy anchor.
-Use it when the sampler/policy gap is known to be negligible and you want to skip
-the old-policy forward pass. The default `False` preserves existing async
-behavior.
-
-## TIS / drift metrics
-
-`utils/rl/common.py::run_loss_loop` computes TIS weights and `ppo_kl` over
-**active positions only** (`loss_mask>0`).  Including masked bridge/user/tool
-tokens biases the geometric-mean TIS toward 1 and drift metrics toward 0.  This
+`utils/rl/common.py::run_loss_loop` computes TIS weights over **active
+positions only** (`loss_mask>0`). Including masked bridge/user/tool
+tokens biases the geometric-mean TIS toward 1. This
 matches slime's `tis_level="geometric"` `masked_mean` and AReaL's
-`masked_mean(log_diff, mask, expand=True)` semantics. `build_loss_fn` attaches
-`inference_diff` / `inference_kld` from raw inference logprobs only for
-observability; training ratios/TIS use `rollout_logprobs`.
+`masked_mean(log_diff, mask, expand=True)` semantics. Training TIS uses
+`rollout_logprobs` and reports the TIS metrics returned by the client loss.
+When raw inference logprobs are available, the same direct builder reports
+`train/inference_diff`, `train/inference_k1`, and `train/inference_kld`; those
+metrics do not feed PPO or TIS.
 The SDK keeps a backward-compatibility fallback for legacy completions routes
 that return only `logprob`: raw values may stand in for `rollout_logprobs` only
 when sampling is full-distribution (`temperature=1.0`, `top_p=1.0`,

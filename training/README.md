@@ -9,8 +9,8 @@ Each recipe is a single Python file you can fork and customize.
 
 | Recipe | File | Description |
 | --- | --- | --- |
-| GRPO / IS / DAPO / DRO / GSPO / CISPO | `recipes/rl_loop.py` | On-policy RL with streaming rollouts. Set `policy_loss="grpo"`, `"importance_sampling"`, `"dapo"`, `"dro"`, `"gspo"`, or `"cispo"`. |
-| Async RL (any of the above losses) | `recipes/async_rl_loop.py` | Gate-native async RL: rollout/train overlap with bounded off-policy staleness. Strict superset of `rl_loop.py`; recommended for new RL work. |
+| GRPO | `recipes/rl_loop.py` | Opinionated synchronous RL using group-normalized advantages and a direct client-side GRPO loss. |
+| Async GRPO | `recipes/async_rl_loop.py` | The same client-side GRPO update with rollout/train overlap and bounded off-policy staleness. |
 | IGPO (multi-turn turn-level Information Gain) | `recipes/igpo_loop.py` | GRPO + per-turn IG rewards for agent trajectories (Wang et al., ICLR 2026). |
 | Distillation / OPD | `recipes/distillation_loop.py` | Sampled-token on-policy distillation. The student rolls out on policy, one or more teachers score those same tokens, and training uses the server-side importance-sampling loss. |
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
@@ -142,16 +142,16 @@ The example entrypoints expose the same setting as `--trainer-replicas 2`.
 It applies to trainer jobs the recipe creates for that run; a pre-created
 `trainer.job_id` value is reused as-is.
 
-**LoRA RL** -- for LoRA GRPO with KL regularisation (`kl_beta > 0`), set `lora_rank`:
+**LoRA RL** -- set `lora_rank` to train an adapter:
 
 | Field | What to set |
 | --- | --- |
 | `lora_rank` | Rank of the LoRA adapter (e.g. `64`, `128`) |
 
-When `kl_beta > 0` the RL loop uses a separate frozen reference client for
-full-parameter policy runs. Backend trainer creation auto-selects a
-LoRA-capable reference shape unless `reference_training_shape_id` explicitly
-pins a LoRA-capable shape.
+The generic GRPO recipes default to `kl_beta=0.001` and provision a reference
+for the direct client loss. Set `kl_beta=0` to skip it. To switch to the trainer
+built-in or another research loss, follow
+[`skills/customize-rl-loss/SKILL.md`](../skills/customize-rl-loss/SKILL.md).
 
 **DPO / ORPO** -- also requires:
 

@@ -14,7 +14,6 @@ import torch
 import pytest
 
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
-from training.utils.rl.losses import LossConfig, build_loss_fn
 
 
 def _make_logprobs(seq_len: int, seed: int = 0) -> torch.Tensor:
@@ -160,28 +159,6 @@ class TestCISPOMetrics:
 
         assert "mean_kl" in metrics
         assert "cispo_clip_frac" in metrics
-
-    def test_reports_inference_metrics(self):
-        """Client builder should report inference_diff and inference_kld."""
-        adv = [1.0]
-        ref = [[0.0] * 5]
-        inf = [[0.0] * 5]
-        old_policy = [[0.0] * 5]
-        lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
-
-        builder = build_loss_fn(LossConfig(policy_loss="cispo"))
-        fn = builder(
-            adv,
-            ref,
-            [1],
-            inf,
-            old_policy,
-            inf,
-        )
-        _, metrics = fn([], [lp])
-
-        assert "inference_diff" in metrics
-        assert "inference_kld" in metrics
 
     def test_requires_inf_logprobs(self):
         """CISPO should raise if inf_logprobs is empty."""

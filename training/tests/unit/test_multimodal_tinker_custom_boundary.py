@@ -15,7 +15,7 @@ from tinker.lib.public_interfaces.api_future import APIFuture
 from tinker.lib.public_interfaces.training_client import TrainingClient
 from tinker.types import ImageChunk
 
-from training.utils.rl.losses import LossConfig, build_loss_fn
+from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.supervised import build_multimodal_policy_datum
 
 
@@ -116,14 +116,13 @@ def test_tinker_custom_grpo_keeps_expanded_multimodal_wire_coordinates() -> None
     )
     client = _CapturingTrainingClient(forward_result)
 
-    grpo_loss = build_loss_fn(
-        LossConfig(policy_loss="grpo", loss_path="client", kl_beta=0.0)
-    )(
+    grpo_loss = make_grpo_loss_fn(
         [1.0],
         [[0.0] * 6],
         [5],
-        [list(expanded_forward_logprobs)],
-        [list(expanded_forward_logprobs)],
+        inf_logprobs=[list(expanded_forward_logprobs)],
+        old_policy_logprobs=[list(expanded_forward_logprobs)],
+        kl_beta=0.0,
     )
     observed_logprobs: list[torch.Tensor] = []
 
