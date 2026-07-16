@@ -49,6 +49,13 @@ grep -rn -E 'InfraConfig|setup_infra|ResourceCleanup|make_reference_client|creat
 the training shape owns accelerator selection. `node_count` and
 `custom_image_tag` remain advanced controls; prefer a training shape.
 
+Trainer provisioning has two independent wait budgets. Set
+`TrainerConfig.pending_timeout_s` for capacity placement while the job is
+`PENDING` (48 hours by default), and `TrainerConfig.timeout_s` for
+post-placement startup/readiness (1 hour by default). A long capacity wait no
+longer consumes the readiness budget. This requires an SDK version that exposes
+`trainer_pending_timeout_s`; upgrade the SDK before using this cookbook version.
+
 ## Recipe-launch migration (the common case)
 
 Most scripts just build a recipe `Config` and call `main(cfg)`. Rename the

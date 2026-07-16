@@ -157,6 +157,9 @@ class TrainerConfig:
     ``replica_count`` for data-parallel scaling."""
     node_count: int | None = None
     timeout_s: float = 3600
+    """Post-placement budget for the trainer to become healthy and ready."""
+    pending_timeout_s: float = 48 * 60 * 60
+    """Capacity-placement budget while the trainer remains ``PENDING``."""
     extra_args: list[str] | None = None
     replica_count: int | None = None
     """Data-parallel trainer replica count for service-mode HSDP launches."""
