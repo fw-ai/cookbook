@@ -115,6 +115,7 @@ class TestGRPOResumeE2E:
 
         shared_trainer = TrainerConfig(
             training_shape_id=e2e_training_shape,
+            cleanup_reference_on_close=False,
             custom_image_tag=custom_image_tag,
         )
         rollout_fn_factory = make_message_rollout_fn_factory(gsm8k_numeric_reward)
