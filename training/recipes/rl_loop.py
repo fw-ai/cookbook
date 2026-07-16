@@ -539,13 +539,16 @@ def main(
                 min_window=cfg.concurrency.min_window,
                 max_window=cfg.concurrency.max_window,
                 prefill_queue_target=cfg.concurrency.prefill_queue_target,
+                adjustment_interval=cfg.concurrency.rollout_adjustment_interval,
             )
             logger.info(
-                "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs)",
+                "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs, "
+                "adjustment_interval=%d)",
                 initial_window,
                 cfg.concurrency.min_window,
                 cfg.concurrency.max_window,
                 cfg.concurrency.prefill_queue_target,
+                cfg.concurrency.rollout_adjustment_interval,
             )
             sampler = service.create_deployment_sampler(
                 tokenizer=tokenizer, concurrency_controller=concurrency_controller,

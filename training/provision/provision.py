@@ -499,6 +499,7 @@ def _create_sampler(service: FiretitanServiceClient, cfg: Any) -> tuple[Any, Any
         min_window=cfg.concurrency.min_window,
         max_window=cfg.concurrency.max_window,
         prefill_queue_target=cfg.concurrency.prefill_queue_target,
+        adjustment_interval=cfg.concurrency.rollout_adjustment_interval,
     )
     sampler = service.create_deployment_sampler(
         tokenizer=tokenizer,

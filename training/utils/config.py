@@ -54,6 +54,10 @@ class ConcurrencyConfig:
     prefill_queue_target: float = 0.5
     """Target prefill queue duration (seconds) for the AIMD controller."""
 
+    rollout_adjustment_interval: int = 32
+    """Adjust adaptive concurrency every N completed requests within an RL step.
+    Remaining requests adjust at the step boundary; ``0`` adjusts only there."""
+
 
 @dataclass
 class InfraConfig:

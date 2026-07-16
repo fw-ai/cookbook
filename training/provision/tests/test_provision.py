@@ -36,6 +36,7 @@ def _cfg(*, trainer_job_id: str | None = None, deployment_id: str | None = None)
             min_window=1,
             max_window=32,
             prefill_queue_target=0.5,
+            rollout_adjustment_interval=32,
         ),
     )
 
@@ -82,6 +83,27 @@ def _stub_runtime(monkeypatch: pytest.MonkeyPatch, calls: list[dict]) -> _FakeSe
         lambda **_kwargs: object(),
     )
     return service
+
+
+def test_create_sampler_forwards_rollout_adjustment_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller_kwargs: dict[str, object] = {}
+    controller = object()
+    monkeypatch.setattr(module, "load_deployment_tokenizer", lambda _deployment: object())
+
+    def make_controller(**kwargs: object) -> object:
+        controller_kwargs.update(kwargs)
+        return controller
+
+    monkeypatch.setattr(module, "AdaptiveConcurrencyController", make_controller)
+    cfg = _cfg()
+    cfg.concurrency.rollout_adjustment_interval = 7
+
+    _, created_controller = module._create_sampler(_FakeService(), cfg)
+
+    assert created_controller is controller
+    assert controller_kwargs["adjustment_interval"] == 7
 
 
 def test_init_enables_cleanup_for_fresh_resources(monkeypatch: pytest.MonkeyPatch) -> None:
