@@ -52,15 +52,12 @@ paths byte-for-byte. The pieces:
   (``dictsort``) and the ``<|"|>`` string-escape token.
 * **Assistant tool calls**: Pass an HF-shaped tool call dict on the
   message: ``message["tool_calls"] = [{"function": {"name": ...,
-  "arguments": <dict or json string>}}]``. The renderer mirrors the
-  template's two branches exactly: a **dict** ``arguments`` renders as
-  native ``<|tool_call>call:name{key:<|"|>value<|"|>,...}<tool_call|>``,
-  while a **JSON-string** ``arguments`` is emitted **verbatim** inside the
-  braces (``call:name{{"key":"value"}}``) — because the official template
-  does (``elif arguments is string``). It is NOT parsed and re-serialized
-  to native: tinker's ``ToolCall`` / OpenAI / ``normalize_messages`` all
-  carry ``arguments`` as a JSON string, so verbatim is the byte-exact path
-  serving/inference takes through ``apply_chat_template``.
+  "arguments": <dict or json string>}}]``. The current template accepts only
+  deserialized argument objects and renders them as native
+  ``<|tool_call>call:name{key:<|"|>value<|"|>,...}<tool_call|>``. Tinker's
+  ``ToolCall`` and ``normalize_messages`` carry arguments as JSON strings, so
+  the renderer deserializes those strings before applying the same native
+  formatter used by the template.
 * **Tool responses (OpenAI ``role:tool``)**: The standard OpenAI shape —
   ``{"role": "tool", "content": ..., "tool_call_id": ...}`` following an
   assistant-with-``tool_calls`` — is folded (in ``_preprocess_messages``) into
@@ -85,12 +82,10 @@ paths byte-for-byte. The pieces:
   template's ``add_generation_prompt`` branch).
 * **Reasoning labels** (``reasoning`` / ``reasoning_content``): the official
   template injects ``<|channel>thought\\n{text}\\n<channel|>`` (a CLOSED thought
-  channel) only when the assistant turn is after the final user message **and**
-  carries ``tool_calls``. Plain text SFT without tools ignores these fields;
-  content is passed through ``strip_thinking`` instead. The channel MUST close
-  with ``<channel|>`` before the tool call — the serving reasoning parser
-  delimits ``reasoning_content`` on ``<channel|>``, so an unclosed channel
-  causes reasoning to be dropped on reasoning->tool turns.
+  channel) when the assistant turn is after the final user message. The channel
+  MUST close with ``<channel|>`` before any tool call — the serving reasoning
+  parser delimits ``reasoning_content`` on ``<channel|>``, so an unclosed channel
+  causes reasoning to be dropped on reasoning-to-tool turns.
 * **Registered aliases** (``renderer_name`` / SFT ``jinja_template``):
 
   * ``gemma4`` — default tool-call SFT renderer.
@@ -108,6 +103,7 @@ Special-token IDs (Gemma 4 tokenizer)::
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 from collections.abc import Callable, Mapping
@@ -428,19 +424,10 @@ def _format_tool_block(tools: list) -> str:
 def _format_tool_call(tc: Any) -> str:
     """Render a single tool call as ``<|tool_call>call:name{args}<tool_call|>``.
 
-    Mirrors the official template's two ``arguments`` branches EXACTLY, and does
-    NOT coerce between them, so that whatever ``apply_chat_template`` would emit
-    for a given ``arguments`` value at inference the renderer emits at training::
-
-        {%- if function['arguments'] is mapping -%}   native key:<|"|>value<|"|>
-        {%- elif function['arguments'] is string -%}  {{ arguments }}  (verbatim)
-
-    Tinker's ``ToolCall`` (and the OpenAI wire shape, and cookbook
-    ``normalize_messages``) carry ``arguments`` as a JSON string, so the string
-    branch is the path serving/inference actually takes. A JSON string is NOT
-    parsed and re-serialized into the native form, because the template does not:
-    the model is trained on exactly the bytes the template (hence inference)
-    produces. Accepts both HF-dict and tinker ``ToolCall`` pydantic shapes.
+    The current official template requires ``function.arguments`` to be a
+    mapping. Tinker and OpenAI-compatible inputs use JSON strings, so deserialize
+    that wire representation before applying the template's native formatter.
+    Accepts both HF dictionaries and Tinker ``ToolCall`` pydantic shapes.
     """
     if hasattr(tc, "function") and not isinstance(tc, dict):
         fn_name = tc.function.name
@@ -450,14 +437,21 @@ def _format_tool_call(tc: Any) -> str:
         fn_name = fn["name"]
         raw_args = fn.get("arguments")
 
+    if isinstance(raw_args, str):
+        raw_args = json.loads(raw_args)
+    if raw_args is None:
+        raw_args = {}
+    if not isinstance(raw_args, Mapping):
+        raise TypeError(
+            "Gemma 4 tool-call arguments must decode to a JSON object, "
+            f"got {type(raw_args)!r}"
+        )
+
     out = [f"{_TOOL_CALL_OPEN}call:{fn_name}{{"]
-    if isinstance(raw_args, dict):
-        items = []
-        for k, v in _dictsort(raw_args.items()):
-            items.append(f"{k}:{_format_argument(v, escape_keys=False)}")
-        out.append(",".join(items))
-    elif isinstance(raw_args, str):
-        out.append(raw_args)
+    items = []
+    for k, v in _dictsort(raw_args.items()):
+        items.append(f"{k}:{_format_argument(v, escape_keys=False)}")
+    out.append(",".join(items))
     out.append(f"}}{_TOOL_CALL_CLOSE}")
     return "".join(out)
 
@@ -530,9 +524,8 @@ def _get_reasoning_text(message: Message) -> str | None:
 
 
 def _should_emit_reasoning_channel(message: Message, ctx: RenderContext) -> bool:
-    """Mirror jinja: inject thought channel only after the last user and with tool calls."""
-    after_last_user = ctx.last_user_index == -1 or ctx.idx > ctx.last_user_index
-    return after_last_user and bool(message.get("tool_calls"))
+    """Mirror Jinja: inject the thought channel after the last user turn."""
+    return ctx.last_user_index == -1 or ctx.idx > ctx.last_user_index
 
 
 def _format_reasoning_channel(reasoning: str) -> str:
@@ -863,6 +856,16 @@ class Gemma4Renderer(Renderer):
             return ctx.prev_message["role"] == "assistant"
         return False
 
+    def _next_non_tool_role(self, ctx: RenderContext) -> str | None:
+        """Return the next non-tool role from the preprocessed transcript."""
+        messages = self._current_render_messages()
+        if messages is None:
+            return None
+        for next_message in messages[ctx.idx + 1 :]:
+            if next_message["role"] != "tool":
+                return next_message["role"]
+        return None
+
     # ------------------------------------------------------------------
     # render_message: tool_calls + tool_responses + content
     # ------------------------------------------------------------------
@@ -911,9 +914,19 @@ class Gemma4Renderer(Renderer):
         #   * everything else closes with `<turn|>\n`.
         has_tool_responses = bool(tool_responses)
         has_content = bool(text)
+        next_non_tool_role = self._next_non_tool_role(ctx)
+        continues_into_next = (
+            message["role"] == "assistant"
+            and next_non_tool_role == "assistant"
+            and (not tool_calls or has_tool_responses)
+        )
         if tool_calls and not has_tool_responses:
             body_parts.append(_TOOL_RESPONSE_OPEN)
-        elif not (has_tool_responses and not has_content):
+        elif continues_into_next:
+            pass
+        elif not (
+            has_tool_responses and not has_content and next_non_tool_role is None
+        ):
             body_parts.append(f"{_TURN_CLOSE}\n")
         body_str = "".join(body_parts)
 
@@ -938,6 +951,11 @@ class Gemma4Renderer(Renderer):
         if ctx.prev_message is not None and self._suppresses_generation_prompt(
             ctx.prev_message
         ):
+            if self.enable_thinking and ctx.prev_message.get("tool_responses"):
+                return self.tokenizer.encode(
+                    f"{_CHANNEL_OPEN}{_THINKING_CHANNEL_PREFIX}",
+                    add_special_tokens=False,
+                )
             return []
         suffix_str = f"{_TURN_OPEN}{_MODEL_ROLE}\n"
         # When NOT in thinking mode, the template appends an empty closed thought
