@@ -85,10 +85,13 @@ Metrics are written to `metrics.jsonl` and a `reward_curve.png` under a fresh
   pooled LoRA trainer for `base_model`. If the pool is full you'll get an
   out-of-capacity error — retry, or use the dedicated recipes.
 - **LoRA only.** The serverless pool is LoRA-only (`lora_rank > 0`).
+- **Set `max_seq_len` explicitly.** The example defaults to `65536` and rejects
+  prompts or training datums that would exceed it. Lower it for a smaller
+  context budget.
 - **`base_model` / `tokenizer_model` must match.** The tokenizer renders prompts
   and decodes sampled tokens client-side; a mismatch corrupts rewards. Defaults
-  target `qwen3p5-27b` / `Qwen/Qwen3.5-27B`.
-- **Cost.** Defaults (`qwen3p5-27b`, 10 steps × 8 prompts × 8 samples) are a real
+  target `qwen3p6-27b` / `Qwen/Qwen3.6-27B`.
+- **Cost.** Defaults (`qwen3p6-27b`, 10 steps × 8 prompts × 8 samples) are a real
   training run. Drop `steps` / `group_size` / `max_sample_tokens`, or switch to a
   smaller `base_model`, for a cheaper smoke run.
 

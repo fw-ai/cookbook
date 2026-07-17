@@ -6,7 +6,7 @@ names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intent
 only thing most users need to write is the rollout function; everything
 else (gate, advantage, optional reference KL, weight sync, TIS, pipeline chunking,
 checkpoints) is handled by ``main()``.  See
-``skills/dev/references/rl/async-rl.md`` for the full contract.
+``skills/fireworks-training/references/sdk/rl/async-rl.md`` for the full contract.
 
 Acknowledgements -- prior art referenced while designing this loop:
 
@@ -124,7 +124,7 @@ class Config:
     prompt_groups_per_step: int = 1
     max_head_offpolicy_versions: int = 0
     """Staleness budget in weight-sync versions; ``0`` = strict on-policy.
-    See ``skills/dev/references/rl/async-rl.md`` (gate semantics)."""
+    See ``skills/fireworks-training/references/sdk/rl/async-rl.md`` (gate semantics)."""
     max_concurrency_rollout_sample: int | None = None
     """In-flight LLM-call cap (same unit as ``deployment.max_batch_size``);
     must be ``>= completions_per_prompt`` or the gate stalls."""
@@ -180,7 +180,7 @@ class RolloutSetup:
     """Dependencies the recipe hands the rollout factory once at startup.
 
     Inference endpoint, tokenizer, sampling kwargs, plus an ``extras`` dict
-    for caller state.  See ``skills/dev/references/rl/async-rl.md``.
+    for caller state.  See ``skills/fireworks-training/references/sdk/rl/async-rl.md``.
     """
 
     tokenizer: Any
@@ -273,7 +273,7 @@ def main(
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
         "the Config / RolloutSetup API may change. See "
-        "skills/dev/references/rl/async-rl.md.",
+        "skills/fireworks-training/references/sdk/rl/async-rl.md.",
     )
 
     def _signal_handler(signum, _):

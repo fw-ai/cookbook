@@ -3,8 +3,8 @@
 Five standalone scripts live in `training/examples/tools/`. Each does one operation. Most need no active trainer; `merge_lora_and_promote.py` provisions its own short-lived trainer.
 
 For renderer work, see the dedicated skills under `cookbook/skills/`:
-- [`renderer/SKILL.md`](../../renderer/SKILL.md) — implementing a new renderer.
-- [`verifier/SKILL.md`](../../verifier/SKILL.md) — validating a renderer against the live gateway and the upstream HF chat template.
+- [Renderer skill](https://github.com/fw-ai/cookbook/blob/main/skills/renderer/SKILL.md) — implementing a new renderer.
+- [Verifier skill](https://github.com/fw-ai/cookbook/blob/main/skills/verifier/SKILL.md) — validating a renderer against the live gateway and the upstream HF chat template.
 
 ## `promote_checkpoint.py`
 

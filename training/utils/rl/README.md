@@ -7,7 +7,7 @@ Token-native rollout API for the async RL recipe (`training/recipes/async_rl_loo
 
 For the user-facing contract (`rollout_fn(sample_prompt) -> RolloutRun`,
 `RolloutSetup`, `rollout_fn_factory`, off-policy gate sizing), see
-[`/skills/dev/references/rl/async-rl.md`](/skills/dev/references/rl/async-rl.md).
+[`/skills/fireworks-training/references/sdk/rl/async-rl.md`](/skills/fireworks-training/references/sdk/rl/async-rl.md).
 
 ## Layout
 

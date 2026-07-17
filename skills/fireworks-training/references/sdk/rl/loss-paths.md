@@ -44,7 +44,7 @@ logprobs, and makes the TIS ratio identity.
 
 Fork the recipe at its documented `fwd_bwd_minibatch` / `fwd_bwd_batch` call.
 For the exact built-in switch and new-algorithm workflow, use
-[`skills/customize-rl-loss/SKILL.md`](../../../customize-rl-loss/SKILL.md).
+the [customize RL loss skill](https://github.com/fw-ai/fireworks/blob/main/public-repos/cookbook/skills/customize-rl-loss/SKILL.md).
 
 The server built-in `"ppo"` path cannot apply reference KL. A built-in fork
 must require `kl_beta=0`, prepare the kernel's datum contract explicitly, and

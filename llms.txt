@@ -1,12 +1,15 @@
 Fireworks Cookbook
 
-This repository contains cookbook recipes and examples for the Fireworks Training SDK.
+This repository contains cookbook recipes and examples for the Fireworks Training API.
 
 Canonical documentation:
-- Training SDK introduction: https://docs.fireworks.ai/fine-tuning/training-sdk/introduction
-- Cookbook overview: https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/overview
-- Configuration reference: https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/reference
-- Training shapes: https://docs.fireworks.ai/fine-tuning/training-sdk/training-shapes
+- Training API introduction: https://docs.fireworks.ai/fine-tuning/training-api/introduction
+- Choose infrastructure: https://docs.fireworks.ai/fine-tuning/training-api/choose-infrastructure
+- Serverless training: https://docs.fireworks.ai/fine-tuning/training-api/serverless
+- Dedicated training: https://docs.fireworks.ai/fine-tuning/training-api/dedicated
+- Cookbook overview: https://docs.fireworks.ai/fine-tuning/training-api/cookbook/overview
+- Configuration reference: https://docs.fireworks.ai/fine-tuning/training-api/cookbook/reference
+- Training shapes: https://docs.fireworks.ai/fine-tuning/training-api/training-shapes
 
 Shape-selection notes:
 - The cookbook does not own a static model-to-shape inventory.

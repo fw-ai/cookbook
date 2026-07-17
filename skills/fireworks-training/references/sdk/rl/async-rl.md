@@ -404,7 +404,7 @@ Set `anchor_logp="rollout"` to reuse aligned rollout behavior logprobs instead.
 That closure applies PPO clipping, TIS, optional reference KL, and
 observability-only raw-inference drift metrics. There is no loss selector or
 fallback. Fork the documented `fwd_bwd_batch` function and follow
-[`skills/customize-rl-loss/SKILL.md`](../../../customize-rl-loss/SKILL.md) to
+[customize RL loss skill](https://github.com/fw-ai/fireworks/blob/main/public-repos/cookbook/skills/customize-rl-loss/SKILL.md) to
 switch to a trainer built-in or another client loss.
 
 ## TIS correction

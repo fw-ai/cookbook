@@ -5,7 +5,7 @@ A multi-turn math agent that ports
 to the cookbook's async RL recipe.
 
 For the recipe API and gate sizing, see
-[`/skills/dev/references/rl/async-rl.md`](/skills/dev/references/rl/async-rl.md).
+[`/skills/fireworks-training/references/sdk/rl/async-rl.md`](/skills/fireworks-training/references/sdk/rl/async-rl.md).
 
 The model is asked a GSM8K problem and must put its final answer in
 `\boxed{...}`.  If the boxed answer is wrong (verified by `math_verify`),

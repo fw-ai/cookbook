@@ -4,7 +4,7 @@ RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-tra
 
 Recipe hotload behaviour is controlled by top-level fields such as `weight_sync_interval`, `weight_sync_before_training`, and `weight_sync_timeout`; the *scope* (who owns the GCS bucket) is set on `DeployConfig.weight_sync_scope`.
 
-For the user-facing overview of the two bucket scopes (`PER_TRAINER` vs `PER_DEPLOYMENT`), see the docs page: [Hotload flows](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows). This skill is the deep reference — server-side validation details, knob tuning, recovery playbooks.
+For current user-facing checkpoint and sampling flows, see [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) and [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading.md). This file is the deep scope-mismatch and recovery reference.
 
 ## Weight sync scope: PER_TRAINER vs PER_DEPLOYMENT
 
@@ -18,7 +18,7 @@ DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
 
 1. Create the trainer via `TrainerJobManager.create_and_wait(...)`.
 2. Create the deployment via `DeploymentManager.create_or_get(DeploymentConfig(hot_load_trainer_job=<trainer_job>, ...))`.
-   The deployment copies the trainer's bucket URL at creation. The Training SDK marks cookbook-created serving
+   The deployment copies the trainer's bucket URL at creation. The Training API SDK marks cookbook-created serving
    deployments as training deployments, which is required for deployment shape versions pinned by training shapes.
 3. The **trainer owns** the checkpoints. Promote reads them from the trainer's bucket without any deployment ID.
 4. On resume, the deployment is re-attached to the new trainer (PATCH `hotLoadTrainerJob`), which briefly restarts the serving pod.
@@ -185,7 +185,7 @@ Agent-assisted debugging: first search the Fireworks training cookbook skill for
 
 Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>` or `checkpoint "<name>" not found in GCS`.
 
-1. **First, check the SDK version matches the cookbook's pin** (see [`../../SKILL.md#first-debug-step--always`](../../SKILL.md#first-debug-step--always)).
+1. **First, check the SDK version matches the cookbook's pin** (see the [common workflow](../../../SKILL.md#common-workflow)).
 2. **Check if it's a retention-expired trainer.** `list_checkpoints` / `promote_checkpoint` returning `NOT_FOUND` > 30 days after delete is expected — the row is gone and the checkpoints in GCS have been GC'd too.
 3. **If the error shows expected snapshot `S` but a different current deployment snapshot:** use [Runtime hotload mismatch or stale deployment attachment](#runtime-hotload-mismatch-or-stale-deployment-attachment).
 4. **If the trainer is alive or within retention:** most remaining causes are a `PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up on a `--skip-validations` trainer or a pre-validation run. Ask:
@@ -201,7 +201,8 @@ Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_
 
 ## See also
 
-- [Hotload flows docs page](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows) — user-facing overview (this skill is the deep reference)
+- [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) — current user-facing lifecycle
+- [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading.md) — checkpoint and sampler behavior
 - Low-level `WeightSyncer` lifecycle: `fireworks.training.sdk.weight_syncer.WeightSyncer` (installed under `src/fireworks/training/sdk/weight_syncer.py`). Recipes use SDK-managed service hotload directly.
 - `save_weights_for_sampler_ext`, `save_state`, `list_checkpoints`: `fireworks.training.sdk.client.FiretitanTrainingClient`.
 - Trainer + deployment managers this flow depends on: `fireworks.training.sdk.trainer.TrainerJobManager` and `fireworks.training.sdk.deployment.DeploymentManager`.

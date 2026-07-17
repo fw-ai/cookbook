@@ -117,7 +117,7 @@ class Config:
     lora_alpha: int | None = 32
     """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
 
-    Defaults to ``32`` to match Tinker and the Training SDK
+    Defaults to ``32`` to match Tinker and the Training API SDK client
     ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
     prompt_groups_per_step: int = 1
     """Number of prompt groups per optimizer step.

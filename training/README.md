@@ -3,7 +3,7 @@
 Ready-to-run training recipes for reinforcement learning, preference optimization, and supervised fine-tuning on [Fireworks](https://fireworks.ai).
 Each recipe is a single Python file you can fork and customize.
 
-> **Full documentation**: For detailed guides on each recipe, configuration reference, and the Training SDK, see the [Training SDK documentation](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction).
+> **Full documentation**: For detailed guides on each recipe, configuration reference, and the underlying SDK, see the [Training API documentation](https://docs.fireworks.ai/fine-tuning/training-api/introduction).
 
 ## Recipes
 
@@ -176,9 +176,9 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 
 For detailed guides, configuration reference, and examples, see the official documentation:
 
-- [Introduction & Quickstart](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction)
-- [Cookbook recipes (SFT, RL, DPO, ORPO)](https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/overview)
-- [Configuration reference](https://docs.fireworks.ai/fine-tuning/training-sdk/cookbook/reference)
+- [Introduction & Quickstart](https://docs.fireworks.ai/fine-tuning/training-api/introduction)
+- [Cookbook recipes (SFT, RL, DPO, ORPO)](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/overview)
+- [Configuration reference](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/reference)
 
 ## Directory layout
 

@@ -1,6 +1,6 @@
 # Recipes — fork, don't reinvent
 
-Each recipe is a single Python file in `training/recipes/` that wires the Training SDK. Copy, edit the `Config` at the top, run.
+Each recipe is a single Python file in `training/recipes/` that wires the Training API SDK. Copy, edit the `Config` at the top, run.
 
 | Task | File |
 |------|------|

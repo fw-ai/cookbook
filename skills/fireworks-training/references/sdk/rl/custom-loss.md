@@ -2,8 +2,8 @@
 
 The generic sync and async recipes call the client-side GRPO builder directly.
 Fork the documented forward/backward function and replace that one builder when
-you need another Python research loss. See
-[`skills/customize-rl-loss/SKILL.md`](../../../customize-rl-loss/SKILL.md).
+you need another Python research loss. See the
+[customize RL loss skill](https://github.com/fw-ai/fireworks/blob/main/public-repos/cookbook/skills/customize-rl-loss/SKILL.md).
 
 ## Interface
 
