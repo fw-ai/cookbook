@@ -4,7 +4,7 @@ RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-tra
 
 Recipe hotload behaviour is controlled by top-level fields such as `weight_sync_interval`, `weight_sync_before_training`, and `weight_sync_timeout`; the *scope* (who owns the GCS bucket) is set on `DeployConfig.weight_sync_scope`.
 
-For the user-facing overview of the two bucket scopes (`PER_TRAINER` vs `PER_DEPLOYMENT`), see the docs page: [Hotload flows](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows). This skill is the deep reference — server-side validation details, knob tuning, recovery playbooks.
+For current user-facing checkpoint and sampling flows, see [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) and [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading.md). This file is the deep scope-mismatch and recovery reference.
 
 ## Weight sync scope: PER_TRAINER vs PER_DEPLOYMENT
 
@@ -201,7 +201,8 @@ Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_
 
 ## See also
 
-- [Hotload flows docs page](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/hotload-flows) — user-facing overview (this skill is the deep reference)
+- [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) — current user-facing lifecycle
+- [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading.md) — checkpoint and sampler behavior
 - Low-level `WeightSyncer` lifecycle: `fireworks.training.sdk.weight_syncer.WeightSyncer` (installed under `src/fireworks/training/sdk/weight_syncer.py`). Recipes use SDK-managed service hotload directly.
 - `save_weights_for_sampler_ext`, `save_state`, `list_checkpoints`: `fireworks.training.sdk.client.FiretitanTrainingClient`.
 - Trainer + deployment managers this flow depends on: `fireworks.training.sdk.trainer.TrainerJobManager` and `fireworks.training.sdk.deployment.DeploymentManager`.

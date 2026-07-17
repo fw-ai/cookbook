@@ -42,7 +42,7 @@ The coding agent, UI, CLI, REST API, and Python SDK are interaction surfaces. Th
 Creating a job is protected, spend-gated work. Verify all of these first. A rejected create is almost always one of these prerequisites, not a platform bug:
 
 ```bash
-firectl version                              # installed; some flags (e.g. --preemptible) need >= 1.7.26
+firectl version                              # record the installed version
 firectl whoami                               # signed in? (else: firectl signin)
 firectl quota list                           # GPU quota headroom for the shape you will use
 firectl model get -a fireworks <MODEL_ID>    # base model shows Tunable: true

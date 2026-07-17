@@ -24,6 +24,10 @@ method: sft | dpo | managed-rft | training-api-serverless | training-api-dedicat
 
 ## Inputs
 account:
+firectl_version:
+docs_urls:
+cookbook_commit:
+sdk_version:
 local_dataset:
 fireworks_dataset:
 base_model:
@@ -185,6 +189,12 @@ output_model:
 job:
 deployment:
 
+## Provenance
+firectl_version:
+docs_urls:
+cookbook_commit:
+sdk_version:
+
 ## Evidence
 success_metric:
 base_result:
@@ -218,6 +228,7 @@ Rules:
 - Report base versus tuned evidence on a held-out split whenever evaluation was in scope.
 - Report estimated versus actual cost only from real evidence. Label unavailable values.
 - Include the exact final config, including defaults the agent applied.
+- Include CLI version, live documentation URLs, and, for Training API runs, cookbook commit and SDK version.
 - Include one copy-paste inference example when a deployment remains available.
 - Confirm teardown state. Never say teardown succeeded without reading the final resource state.
 - For a sweep, include every candidate, metric, cost line, and the user's promotion decision.

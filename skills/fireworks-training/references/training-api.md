@@ -1,6 +1,6 @@
 # Training API (custom training loops)
 
-*Source of truth: [Training API intro](https://docs.fireworks.ai/fine-tuning/training-api/introduction.md) · [choose infrastructure](https://docs.fireworks.ai/fine-tuning/training-api/choose-infrastructure.md) · [cookbook](https://github.com/fw-ai/cookbook) — defer to the live docs/repo for current SDK + recipes.*
+*Source of truth: [Training API intro](https://docs.fireworks.ai/fine-tuning/training-api/introduction.md) · [current serverless comparison](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md#serverless-vs-dedicated) · [pinned cookbook](https://github.com/fw-ai/cookbook/tree/e3dca98ea6363b7ed7d2ea1f7203b16489451407) — defer to the live docs/repo for current SDK + recipes.*
 
 Write or fork a Python training loop; Fireworks runs forward/backward on distributed GPUs. The SDK is **Tinker-compatible**, so Tinker code ports over with minimal changes. For standard supported jobs, prefer managed training.
 
@@ -19,7 +19,7 @@ Use **managed training** for standard SFT/DPO/ORPO/RFT jobs. Reach for the **Tra
 | **Serverless** | Supported-model LoRA SFT or RL, shared pool, per-token billing, no provisioning | `training/examples/serverless_rl/` |
 | **Dedicated** | Full-parameter, DPO, broader model/method support, sustained runs, explicit trainer/deployment/checkpoint control | `training/recipes/` |
 
-Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) pages before choosing.
+Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated lifecycle](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) pages before choosing.
 
 ## Two agent-drivable ways to run RFT/RL
 

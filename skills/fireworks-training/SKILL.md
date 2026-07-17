@@ -34,6 +34,23 @@ Never copy a volatile catalog or price into an answer when it can be read live.
 Record the docs URLs, cookbook commit, SDK version, and CLI version used in the
 run manifest and final report.
 
+## Cookbook checkout
+
+The standalone skill package does not vendor the cookbook. For Training API
+work, clone and pin the tested cookbook revision before opening a recipe:
+
+```bash
+git clone https://github.com/fw-ai/cookbook
+cd cookbook
+git checkout e3dca98ea6363b7ed7d2ea1f7203b16489451407
+pip install -e ./training
+```
+
+This revision requires `fireworks-ai[training]>=1.2.0a87,<2` in
+`training/pyproject.toml`. Install the cookbook package rather than upgrading
+the SDK without its upper bound. Record the actual `git rev-parse HEAD` and
+installed SDK version in the run manifest.
+
 ## Choose the training path
 
 First choose the training workflow. Then, only for Training API work, choose
@@ -61,7 +78,7 @@ Live docs:
 - Managed training: <https://docs.fireworks.ai/fine-tuning/managed-finetuning-intro.md>
 - Training API: <https://docs.fireworks.ai/fine-tuning/training-api/introduction.md>
 - Serverless training: <https://docs.fireworks.ai/fine-tuning/training-api/serverless.md>
-- Dedicated training: <https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md>
+- Dedicated training lifecycle: <https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md>
 
 ## Mandatory final-plan confirmation
 
@@ -108,15 +125,18 @@ local parsing, and offline evaluator tests do not require confirmation.
 
 | Task | Managed path | Cookbook implementation | Read |
 |---|---|---|---|
-| SFT | `firectl sftj` | [`training/recipes/sft_loop.py`](../../training/recipes/sft_loop.py) | `references/choose-method.md`, `references/sdk/recipes.md` |
-| DPO | `firectl dpo-job create --loss-method DPO` | [`training/recipes/dpo_loop.py`](../../training/recipes/dpo_loop.py) | `references/choose-method.md`, `references/sdk/recipes.md` |
-| ORPO | `firectl dpo-job create --loss-method ORPO` | [`training/recipes/orpo_loop.py`](../../training/recipes/orpo_loop.py) | `references/choose-method.md`, `references/sdk/recipes.md` |
+| Managed SFT | `firectl sftj` | Not applicable | `references/choose-method.md` |
+| Managed DPO | `firectl dpo-job create --loss-method DPO` | Not applicable | `references/choose-method.md` |
+| Managed ORPO | `firectl dpo-job create --loss-method ORPO` | Not applicable | `references/choose-method.md` |
 | Managed RFT | `firectl rftj create --evaluator <resource>` | Not applicable | `references/preference-data-and-evaluators.md`, `references/training-api.md` |
-| Training API RL | Not applicable | [`training/recipes/rl_loop.py`](../../training/recipes/rl_loop.py) | `references/training-api.md`, `references/sdk/rl/loss-paths.md` |
-| Async or agentic RL | Not applicable | [`training/recipes/async_rl_loop.py`](../../training/recipes/async_rl_loop.py) | `references/sdk/rl/async-rl.md` |
-| IGPO | Not applicable | [`training/recipes/igpo_loop.py`](../../training/recipes/igpo_loop.py) | `references/sdk/recipes.md` |
-| Distillation | Not applicable | [`training/recipes/distillation_loop.py`](../../training/recipes/distillation_loop.py) | `references/sdk/distillation.md` |
-| Serverless RL example | Not applicable | [`training/examples/serverless_rl/`](../../training/examples/serverless_rl) | Live serverless docs |
+| Training API SFT | Not applicable | [`training/recipes/sft_loop.py`](https://github.com/fw-ai/cookbook/blob/e3dca98ea6363b7ed7d2ea1f7203b16489451407/training/recipes/sft_loop.py) | `references/sdk/recipes.md` |
+| Training API DPO | Not applicable | [`training/recipes/dpo_loop.py`](https://github.com/fw-ai/cookbook/blob/e3dca98ea6363b7ed7d2ea1f7203b16489451407/training/recipes/dpo_loop.py) | `references/sdk/recipes.md` |
+| Training API ORPO | Not applicable | [`training/recipes/orpo_loop.py`](https://github.com/fw-ai/cookbook/blob/e3dca98ea6363b7ed7d2ea1f7203b16489451407/training/recipes/orpo_loop.py) | `references/sdk/recipes.md` |
+| Training API RL | Not applicable | [`training/recipes/rl_loop.py`](https://github.com/fw-ai/cookbook/blob/e3dca98ea6363b7ed7d2ea1f7203b16489451407/training/recipes/rl_loop.py) | `references/training-api.md`, `references/sdk/rl/loss-paths.md` |
+| Async or agentic RL | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/e3dca98ea6363b7ed7d2ea1f7203b16489451407/training/recipes/async_rl_loop.py) | `references/sdk/rl/async-rl.md` |
+| IGPO | Not applicable | [`training/recipes/igpo_loop.py`](https://github.com/fw-ai/cookbook/blob/e3dca98ea6363b7ed7d2ea1f7203b16489451407/training/recipes/igpo_loop.py) | `references/sdk/recipes.md` |
+| Distillation | Not applicable | [`training/recipes/distillation_loop.py`](https://github.com/fw-ai/cookbook/blob/e3dca98ea6363b7ed7d2ea1f7203b16489451407/training/recipes/distillation_loop.py) | `references/sdk/distillation.md` |
+| Serverless RL example | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/e3dca98ea6363b7ed7d2ea1f7203b16489451407/training/examples/serverless_rl) | Live serverless docs |
 
 **Cookbook first.** Inspect and fork the closest maintained recipe before
 writing a loop. Change the loss, reward, rollout, data, or config needed by the
@@ -189,8 +209,12 @@ reconciliation.
 | Training API serverless | Session/run IDs and recipe metrics | Forward/backward, optimizer, reward, and snapshot progress |
 | Training API dedicated | RLOR trainer, deployment, checkpoints, and recipe metrics | Steps, rollouts, snapshots, W&B, and runner artifacts |
 
-State alone is not progress. Use a bounded no-progress timeout and
-`references/error-reference.md`; do not poll indefinitely.
+State alone is not progress. Put a numeric no-progress timeout in the approved
+plan: default to 10 minutes for a small smoke run unless live docs or the
+selected shape justify a different startup window. On timeout, gather evidence
+before classifying. Do not launch a replacement until the old job is cancelled
+or terminal, its final state is confirmed, and the user approves replacement
+spend. Use `references/error-reference.md`; do not poll indefinitely.
 
 ### 5. Evaluate and promote
 
@@ -207,7 +231,8 @@ per-token inference.
 
 ```bash
 firectl deployment create accounts/<acct>/models/<output-model-id> \
-  --deployment-id <run-id>-deploy
+  --deployment-id <run-id>-deploy \
+  --deployment-shape accounts/fireworks/deploymentShapes/<resolved-shape>
 ```
 
 `READY` is not serving proof. Send one real request and require a successful,

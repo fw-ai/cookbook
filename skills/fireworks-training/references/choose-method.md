@@ -19,7 +19,7 @@ Do you have labeled ground-truth outputs?
 |--------|-------------|----------|
 | **SFT** | Labeled `messages` (the ideal output) | Classification, extraction, style/format, tool-call shaping. The default. |
 | **DPO** | preferred vs non-preferred responses | Aligning tone/quality when you can rank two answers but can't write the one true answer. |
-| **ORPO** | preferred vs non-preferred responses (same shape as DPO) | Same signal as DPO but **no reference model** (one model, less memory/GPU). A reasonable DPO alternative on tight budgets; use the `fireworks-training` companion skill and `training/recipes/orpo_loop.py`. |
+| **ORPO** | preferred vs non-preferred responses (same shape as DPO) | Same signal as DPO but **no reference model**. Use managed `dpo-job --loss-method ORPO` for standard runs; custom Training API work starts from the pinned `training/recipes/orpo_loop.py`. |
 | **RFT** | Prompts + an evaluator/reward (0.0–1.0) | Verifiable tasks (math, code, agents) with few labels. |
 
 ## SFT format
@@ -101,24 +101,71 @@ Catch format errors locally before `firectl dataset create`. A malformed row oth
 
 ```python
 import json, sys
+
 method = "sft"   # "sft" | "dpo" | "managed-rft" | "sdk-rft"
-# Set only when the selected SDK reward reads a required per-row field.
-sdk_reward_required_field = None  # e.g. "ground_truth"
+managed_evaluator_required_fields = []  # from the reviewed evaluator contract
+sdk_reward_required_fields = []         # e.g. ["ground_truth"]
+allowed_roles = {"system", "user", "assistant", "tool"}
+
+def validate_messages(messages, line_no, *, final_assistant):
+    assert isinstance(messages, list) and messages, f"line {line_no}: no messages[]"
+    seen_non_system = False
+    previous_role = None
+    for j, message in enumerate(messages):
+        assert isinstance(message, dict), f"line {line_no}: message {j} is not an object"
+        role = message.get("role")
+        assert role in allowed_roles, f"line {line_no}: invalid role {role!r}"
+        content = message.get("content")
+        assert isinstance(content, (str, list)) and content, f"line {line_no}: empty content at message {j}"
+        if role == "system":
+            assert not seen_non_system, f"line {line_no}: system message after conversation started"
+        else:
+            seen_non_system = True
+            if role == "user":
+                assert previous_role in {None, "assistant"}, f"line {line_no}: user cannot follow {previous_role!r}"
+            elif role == "assistant":
+                assert previous_role in {"user", "tool"}, f"line {line_no}: assistant cannot follow {previous_role!r}"
+            elif role == "tool":
+                assert previous_role in {"assistant", "tool"}, f"line {line_no}: tool cannot follow {previous_role!r}"
+            previous_role = role
+    non_system_roles = [m["role"] for m in messages if m["role"] != "system"]
+    assert non_system_roles, f"line {line_no}: no user message"
+    first_non_system = non_system_roles[0]
+    assert first_non_system == "user", f"line {line_no}: first non-system role must be user"
+    if final_assistant:
+        assert messages[-1]["role"] == "assistant", f"line {line_no}: final role must be assistant"
+
+def validate_preference_output(value, line_no, field):
+    assert isinstance(value, list) and len(value) == 1, f"line {line_no}: {field} must contain exactly one message"
+    message = value[0]
+    assert isinstance(message, dict) and message.get("role") == "assistant", f"line {line_no}: {field} must be one assistant message"
+    assert isinstance(message.get("content"), (str, list)) and message["content"], f"line {line_no}: empty {field} content"
+
 n = 0
 for i, line in enumerate(open(sys.argv[1]), 1):
     line = line.strip()
     if not line:
         continue
-    o = json.loads(line); n += 1
+    o = json.loads(line)
+    n += 1
+    assert n <= 3_000_000, "maximum 3,000,000 examples"
     if method == "sft":
-        assert isinstance(o.get("messages"), list) and o["messages"], f"line {i}: no messages[]"
+        validate_messages(o.get("messages"), i, final_assistant=True)
     elif method == "dpo":
-        assert o.get("input", {}).get("messages"), f"line {i}: no input.messages"
-        assert o.get("preferred_output") and o.get("non_preferred_output"), f"line {i}: missing preferred_output/non_preferred_output"
-    elif method in {"managed-rft", "sdk-rft"}:
-        assert o.get("messages"), f"line {i}: no messages[]"
-        if method == "sdk-rft" and sdk_reward_required_field:
-            assert sdk_reward_required_field in o, f"line {i}: no {sdk_reward_required_field!r} required by reward_fn"
+        input_messages = o.get("input", {}).get("messages")
+        validate_messages(input_messages, i, final_assistant=False)
+        dpo_turns = [m for m in input_messages if m["role"] != "system"]
+        assert len(dpo_turns) == 1 and dpo_turns[0]["role"] == "user", f"line {i}: DPO input must contain exactly one user turn"
+        validate_preference_output(o.get("preferred_output"), i, "preferred_output")
+        validate_preference_output(o.get("non_preferred_output"), i, "non_preferred_output")
+    elif method == "managed-rft":
+        validate_messages(o.get("messages"), i, final_assistant=False)
+        for field in managed_evaluator_required_fields:
+            assert field in o, f"line {i}: missing {field!r} required by evaluator"
+    elif method == "sdk-rft":
+        validate_messages(o.get("messages"), i, final_assistant=False)
+        for field in sdk_reward_required_fields:
+            assert field in o, f"line {i}: missing {field!r} required by reward_fn"
     else:
         raise ValueError(f"unknown method: {method}")
 assert n >= 3, "need at least 3 examples"

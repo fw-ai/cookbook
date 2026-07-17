@@ -55,7 +55,8 @@ python -m pytest tests/
 The required SDK version is pinned in `training/pyproject.toml`. To upgrade:
 
 ```bash
-uv pip install --pre --upgrade "fireworks-ai[training]"
+cd cookbook/training
+uv pip install --pre --upgrade -e .
 ```
 
 Then verify the installed version satisfies the pin:

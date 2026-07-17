@@ -29,14 +29,19 @@ firectl load-lora <FINE_TUNED_MODEL_ID> --deployment <DEPLOYMENT_ID>
 
 Docs: [Deploying fine-tuned models](https://docs.fireworks.ai/fine-tuning/deploying-loras), [On-demand deployments](https://docs.fireworks.ai/guides/ondemand-deployments).
 
-## Preemptible deployment (eval / batch — borrow idle capacity)
+## Preemptible deployment (optional eval / batch feature)
 
-**The recommended way to evaluate a model without holding dedicated on-demand capacity.** `--preemptible` opts the deployment into *borrowing idle reserved GPUs* rather than reserving capacity for you exclusively, so you don't pay to hold dedicated capacity for the eval. It can be reclaimed (preempted) at any time and is **not guaranteed** — but in practice it usually stays up long enough to run an eval end to end, and it carries no *unique* availability risk (if there's no capacity for a preemptible deployment, there's none for an on-demand one either). Safer than the older eval script, which leaned on client-side pieces that are hard to fix without customer coordination.
+Use this only when the installed CLI exposes `--preemptible` in `firectl deployment create --help`. It borrows idle capacity and can be reclaimed at any time. If the flag is absent, use a bounded on-demand deployment and tear it down immediately after evaluation.
 
 > **Eval / batch only.** It can disappear mid-request — never point production or latency-sensitive traffic at it.
 
-Requirements:
-- **`firectl` ≥ 1.7.26** (`firectl version`) — `--preemptible` is a newer flag and is **silently ignored** on older builds. Upgrade if below.
+Feature probe:
+
+```bash
+firectl deployment create --help | grep -q -- '--preemptible'
+```
+
+Do not use the flag when this probe fails.
 
 ```bash
 firectl deployment create accounts/fireworks/models/<MODEL> \
@@ -85,13 +90,13 @@ Training and inference are different code paths; mismatched numerics cause logpr
 An absolute score means little without the before/after delta. Always compare the fine-tuned model against the base model on the **same held-out split**:
 
 1. Run the **base model** on the eval split first (this is the baseline; do it before or during training so you're not blocked).
-2. Run the **fine-tuned model** on the same split. Use a **preemptible deployment** (above) so you don't hold dedicated capacity just to eval.
+2. Run the **fine-tuned model** on the same split. Use preemptible only when the installed CLI exposes it; otherwise use a bounded on-demand deployment.
 3. Report the delta, per-label for classification (plus a confusion-matrix summary), and your evaluator/rubric score for open-ended tasks. A fine-tune that doesn't beat base on the held-out split is not ready, regardless of training loss.
 4. Tear down the eval deployment when done.
 
 ## Troubleshooting a failed or stuck job
 
-Full field-observed error table, platform-vs-user triage, and debug steps are in [`error-reference.md`](error-reference.md). Deep Training-SDK debugging (weight sync, checkpoints, renderer) lives in the separately installed `fireworks-training` companion skill.
+Full field-observed error table, platform-vs-user triage, and debug steps are in [`error-reference.md`](error-reference.md). Deep Training API debugging lives in `references/sdk/` within this skill.
 
 ## Critical rules
 
@@ -100,4 +105,4 @@ Full field-observed error table, platform-vs-user triage, and debug steps are in
 - **Always tear down / `scale_to_zero` when done** — on-demand bills by GPU-second even when idle.
 - **Align numerics before trusting outputs** (precision + logprob divergence + R3 for MoE).
 - **Before assuming a Fireworks bug, check quota (a GPU ceiling) and billing (suspension = billing-side)** — different controls.
-- **A bare "Internal error" or stuck-at-0% is usually platform-side, not your config** — validate the dataset, then retry / escalate rather than rewriting your setup.
+- **A bare "Internal error" or stuck-at-0% is unknown until evidence supports a side** — validate locally, gather method-specific status/progress/request evidence, then classify.

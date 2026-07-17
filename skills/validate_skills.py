@@ -87,6 +87,13 @@ def check_skill(skill_dir: Path, errors: list[str]) -> None:
                     f"{markdown_file.relative_to(SKILLS_DIR)}: broken link `{link}`"
                 )
         for link in COOKBOOK_LINK_RE.findall(text):
+            if link.startswith("https://github.com/fw-ai/cookbook/"):
+                if "e3dca98ea6363b7ed7d2ea1f7203b16489451407" not in link:
+                    errors.append(
+                        f"{markdown_file.relative_to(SKILLS_DIR)}: cookbook URL "
+                        f"is not pinned: `{link}`"
+                    )
+                continue
             target = (markdown_file.parent / link).resolve()
             if not target.exists():
                 errors.append(
@@ -122,7 +129,9 @@ def check_training_contract(
         "Promotion and deployment each require",
         "https://docs.fireworks.ai/llms.txt",
         "https://docs.fireworks.ai/fine-tuning/training-api/serverless.md",
-        "https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md",
+        "https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md",
+        "e3dca98ea6363b7ed7d2ea1f7203b16489451407",
+        "fireworks-ai[training]>=1.2.0a87,<2",
         "training/recipes/sft_loop.py",
         "training/recipes/dpo_loop.py",
         "training/recipes/orpo_loop.py",
@@ -132,6 +141,7 @@ def check_training_contract(
         "training/examples/serverless_rl/",
         "--job-id <run-id>",
         "--deployment-id <run-id>-deploy",
+        "--deployment-shape accounts/fireworks/deploymentShapes/<resolved-shape>",
         "firectl dpo-job create",
         "firectl dpo-job create --loss-method DPO",
         "firectl dpo-job create --loss-method ORPO",
@@ -148,11 +158,20 @@ def check_training_contract(
         errors.append("SKILL.md: nonexistent `sftj export-metrics` command")
 
     choose = (skill_dir / "references/choose-method.md").read_text(encoding="utf-8")
-    for marker in ('"managed-rft"', '"sdk-rft"', "sdk_reward_required_field"):
+    for marker in (
+        '"managed-rft"',
+        '"sdk-rft"',
+        "managed_evaluator_required_fields",
+        "sdk_reward_required_fields",
+        "validate_preference_output",
+        "3_000_000",
+        "previous_role",
+        "DPO input must contain exactly one user turn",
+    ):
         if marker not in choose:
             errors.append(f"choose-method.md: RFT validator missing `{marker}`")
     if re.search(
-        r'elif method in \{"managed-rft", "sdk-rft"\}:[\s\S]{0,300}'
+        r'elif method == "managed-rft":[\s\S]{0,500}'
         r'assert "ground_truth" in o',
         choose,
     ):
@@ -170,6 +189,10 @@ def check_training_contract(
         "planned_deployment_id:",
         "trainer_job:",
         "latest_checkpoint:",
+        "firectl_version:",
+        "docs_urls:",
+        "cookbook_commit:",
+        "sdk_version:",
     ):
         if marker not in state:
             errors.append(f"run-state-and-reporting.md: missing `{marker}`")
