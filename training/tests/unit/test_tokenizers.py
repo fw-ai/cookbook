@@ -1,26 +1,47 @@
 from __future__ import annotations
 
+import socket
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.utils import hf_raise_for_status
 
 import training.utils.tokenizers as tokenizers
 import training.utils.runner as runner
 from training.utils.runner import RunnerConfig, RunnerIO
 
 
-class FakeHuggingFaceHTTPError(Exception):
-    def __init__(self, status_code: int, model: str = "Qwen/Qwen3-8B"):
-        super().__init__(
-            f"Server error '{status_code}' for url 'https://huggingface.co/{model}'"
-        )
-        self.response = SimpleNamespace(status_code=status_code)
+@contextmanager
+def local_status_server(status_code: int):
+    class StatusHandler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(status_code)
+            self.end_headers()
 
+        def log_message(self, format, *args):
+            pass
 
-def wrapped_tokenizer_error(status_code: int, model: str = "Qwen/Qwen3-8B") -> OSError:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), StatusHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
     try:
-        raise FakeHuggingFaceHTTPError(status_code, model)
-    except FakeHuggingFaceHTTPError as exc:
+        yield f"http://127.0.0.1:{server.server_port}/model"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def real_wrapped_tokenizer_http_error(url: str) -> OSError:
+    response = httpx.head(url)
+    try:
+        hf_raise_for_status(response)
+    except HfHubHTTPError as exc:
         try:
             raise OSError(
                 "Unable to load vocabulary from file. Please check that the "
@@ -84,111 +105,81 @@ def test_load_deployment_tokenizer_uses_generic_deploy_config_fields(monkeypatch
     assert captured == {"model": "model/name", "revision": "abc123"}
 
 
-def test_load_tokenizer_retries_transient_huggingface_failure(monkeypatch):
-    calls = 0
-    sleeps: list[float] = []
-    fake_tokenizer = object()
+@pytest.mark.parametrize("status_code", [404, 504])
+def test_load_tokenizer_propagates_real_huggingface_http_status(
+    monkeypatch, status_code
+):
+    with local_status_server(status_code) as url:
 
-    def fake_from_pretrained(model, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls < 3:
-            raise wrapped_tokenizer_error(504)
-        return fake_tokenizer
+        def from_pretrained(model, **kwargs):
+            raise real_wrapped_tokenizer_http_error(url)
+
+        monkeypatch.setattr(
+            tokenizers.transformers.AutoTokenizer, "from_pretrained", from_pretrained
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            tokenizers.load_tokenizer("org/model-504")
+
+    assert str(exc_info.value) == (
+        "Hugging Face Hub request failed while loading tokenizer "
+        f"'org/model-504' (HTTP {status_code})."
+    )
+    tokenizer_error = exc_info.value.__cause__
+    assert isinstance(tokenizer_error, OSError)
+    hub_error = tokenizer_error.__cause__
+    assert isinstance(hub_error, HfHubHTTPError)
+    assert hub_error.response.status_code == status_code
+    assert isinstance(hub_error.__cause__, httpx.HTTPStatusError)
+
+
+def test_load_tokenizer_does_not_misclassify_connection_refused_as_http(monkeypatch):
+    socket_handle = socket.socket()
+    socket_handle.bind(("127.0.0.1", 0))
+    port = socket_handle.getsockname()[1]
+    socket_handle.close()
+    url = f"http://127.0.0.1:{port}/model"
+
+    def from_pretrained(model, **kwargs):
+        try:
+            httpx.head(url)
+        except httpx.ConnectError as exc:
+            raise OSError("Unable to reach tokenizer endpoint") from exc
+        raise AssertionError("expected connection refusal")
 
     monkeypatch.setattr(
-        tokenizers.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
-    )
-    monkeypatch.setattr(tokenizers.time, "sleep", sleeps.append)
-
-    result = tokenizers.load_tokenizer("Qwen/Qwen3-8B")
-
-    assert result is fake_tokenizer
-    assert calls == 3
-    assert sleeps == [2.0, 4.0]
-
-
-def test_load_tokenizer_reports_huggingface_unavailability_after_retries(monkeypatch):
-    sleeps: list[float] = []
-
-    def fake_from_pretrained(model, **kwargs):
-        raise wrapped_tokenizer_error(504)
-
-    monkeypatch.setattr(
-        tokenizers.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
-    )
-    monkeypatch.setattr(tokenizers.time, "sleep", sleeps.append)
-
-    with pytest.raises(RuntimeError) as exc_info:
-        tokenizers.load_tokenizer("Qwen/Qwen3-8B")
-
-    assert "Hugging Face Hub is unavailable" in str(exc_info.value)
-    assert "HTTP 504" in str(exc_info.value)
-    assert "exhausted 3 attempts" in str(exc_info.value)
-    assert sleeps == [2.0, 4.0]
-    assert isinstance(exc_info.value.__cause__, OSError)
-
-
-def test_load_tokenizer_does_not_retry_non_transient_failure(monkeypatch):
-    calls = 0
-    sleeps: list[float] = []
-
-    def fake_from_pretrained(model, **kwargs):
-        nonlocal calls
-        calls += 1
-        raise wrapped_tokenizer_error(404)
-
-    monkeypatch.setattr(
-        tokenizers.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
-    )
-    monkeypatch.setattr(tokenizers.time, "sleep", sleeps.append)
-
-    with pytest.raises(OSError, match="Unable to load vocabulary"):
-        tokenizers.load_tokenizer("missing/model")
-
-    assert calls == 1
-    assert sleeps == []
-
-
-def test_load_tokenizer_trusts_explicit_non_transient_status(monkeypatch):
-    calls = 0
-
-    def fake_from_pretrained(model, **kwargs):
-        nonlocal calls
-        calls += 1
-        raise wrapped_tokenizer_error(404, model="org/model-504")
-
-    monkeypatch.setattr(
-        tokenizers.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
+        tokenizers.transformers.AutoTokenizer, "from_pretrained", from_pretrained
     )
 
-    with pytest.raises(OSError, match="Unable to load vocabulary"):
-        tokenizers.load_tokenizer("org/model-504")
+    with pytest.raises(OSError, match="Unable to reach tokenizer endpoint") as exc_info:
+        tokenizers.load_tokenizer("offline/model")
 
-    assert calls == 1
+    assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
+    assert tokenizers._huggingface_http_status_code(exc_info.value) is None
 
 
 def test_huggingface_unavailability_propagates_to_runner_status(monkeypatch):
     status_writes: list[tuple[str, dict]] = []
 
-    def fake_from_pretrained(model, **kwargs):
-        raise wrapped_tokenizer_error(503)
+    with local_status_server(503) as url:
 
-    monkeypatch.setattr(
-        tokenizers.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
-    )
-    monkeypatch.setattr(tokenizers.time, "sleep", lambda _: None)
-    monkeypatch.setattr(
-        runner.fileio,
-        "write_json",
-        lambda path, payload: status_writes.append((path, payload)),
-    )
+        def from_pretrained(model, **kwargs):
+            raise real_wrapped_tokenizer_http_error(url)
 
-    with pytest.raises(RuntimeError):
-        with RunnerIO(RunnerConfig(status_file="status.json")):
-            tokenizers.load_tokenizer("Qwen/Qwen3-8B")
+        monkeypatch.setattr(
+            tokenizers.transformers.AutoTokenizer, "from_pretrained", from_pretrained
+        )
+        monkeypatch.setattr(
+            runner.fileio,
+            "write_json",
+            lambda path, payload: status_writes.append((path, payload)),
+        )
+
+        with pytest.raises(RuntimeError):
+            with RunnerIO(RunnerConfig(status_file="status.json")):
+                tokenizers.load_tokenizer("Qwen/Qwen3-8B")
 
     assert status_writes[-1][0] == "status.json"
     assert status_writes[-1][1]["code"] == 9
-    assert "Hugging Face Hub is unavailable" in status_writes[-1][1]["message"]
+    assert "Hugging Face Hub request failed" in status_writes[-1][1]["message"]
     assert "HTTP 503" in status_writes[-1][1]["message"]
