@@ -82,17 +82,47 @@ def align_sample_logprobs_to_target_tokens(
 ) -> List[float] | None:
     """Normalize sampler logprobs into ``target_tokens`` coordinates.
 
-    Echoed samples are already target-aligned. Non-echo samples are
-    completion-only and need prompt-prefix padding.
+    Echoed samples are already target-aligned.  Prompt tokens are conditioned
+    inputs rather than sampled outputs, so serving may report null
+    ``sampling_logprob`` values for their ``prompt_len - 1`` target positions.
+    Normalize those unsampled positions to zero while still requiring every
+    generated-token behavior logprob.  Non-echo samples are completion-only
+    and need the same zero prompt-prefix padding.
     """
     values = getattr(sampled, attr, None)
     if values is None or not values:
         if required:
             raise RuntimeError(f"{source} required but sample {sample_idx} has none.")
         return None
-    target_len = max(0, len(sampled.full_tokens) - 1)
+    sequence_len = len(sampled.full_tokens)
+    prompt_len = int(sampled.prompt_len)
+    if not 0 <= prompt_len <= sequence_len:
+        raise RuntimeError(
+            f"{source} for sample {sample_idx} has invalid prompt_len {prompt_len} "
+            f"for {sequence_len} tokens."
+        )
+    target_len = max(0, sequence_len - 1)
+    response_start = max(0, prompt_len - 1)
     values = list(values)
     if getattr(sampled, "logprobs_echoed", False):
+        if attr == "sampling_logprobs":
+            if len(values) != target_len:
+                raise RuntimeError(
+                    f"{source} for sample {sample_idx} has target-aligned length "
+                    f"{len(values)}, expected {target_len} target-aligned logprobs."
+                )
+            prompt_values = [
+                0.0 if value is None else float(value)
+                for value in values[:response_start]
+            ]
+            completion_values = _coerce_logprobs_to_float(
+                values[response_start:],
+                expected_len=target_len - response_start,
+                source=source,
+                sample_idx=sample_idx,
+                coordinates="completion",
+            )
+            return prompt_values + completion_values
         return _coerce_logprobs_to_float(
             values,
             expected_len=target_len,
@@ -101,7 +131,6 @@ def align_sample_logprobs_to_target_tokens(
             coordinates="target-aligned",
         )
 
-    response_start = min(max(0, int(sampled.prompt_len) - 1), target_len)
     response_len = target_len - response_start
     completion_logprobs = _coerce_logprobs_to_float(
         values,

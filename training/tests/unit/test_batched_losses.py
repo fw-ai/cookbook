@@ -76,6 +76,92 @@ class TestAlignSampleLogprobs:
             required=True,
         ) == [-1.0, -1.1, -0.5, -0.6]
 
+    def test_pads_null_echoed_prompt_sampling_logprobs(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            # Serving emits behavior-policy logprobs only for generated tokens.
+            sampling_logprobs=[None, None, -0.5, -0.6],
+            logprobs_echoed=True,
+        )
+
+        assert align_sample_logprobs_to_target_tokens(
+            sampled,
+            attr="sampling_logprobs",
+            source="rollout_logprobs",
+            sample_idx=0,
+            required=True,
+        ) == [0.0, 0.0, -0.5, -0.6]
+
+    def test_rejects_null_echoed_completion_sampling_logprob(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            sampling_logprobs=[None, None, -0.5, None],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="null completion logprob"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="sampling_logprobs",
+                source="rollout_logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
+    def test_rejects_null_echoed_completion_with_single_token_prompt(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 10, 11],
+            prompt_len=1,
+            sampling_logprobs=[None, -0.6],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="null completion logprob"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="sampling_logprobs",
+                source="rollout_logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
+    @pytest.mark.parametrize("prompt_len", [-1, 6])
+    def test_rejects_invalid_prompt_len(self, prompt_len):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=prompt_len,
+            sampling_logprobs=[None, None, -0.5, -0.6],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="invalid prompt_len"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="sampling_logprobs",
+                source="rollout_logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
+    def test_rejects_null_echoed_raw_inference_logprob(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            inference_logprobs=[None, -1.1, -0.5, -0.6],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="null target-aligned logprob"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="inference_logprobs",
+                source="raw inference logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
     def test_rejects_non_completion_only_logprobs(self):
         sampled = SimpleNamespace(
             full_tokens=[1, 2, 3, 10, 11],

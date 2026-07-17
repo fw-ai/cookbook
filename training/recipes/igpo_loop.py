@@ -73,7 +73,10 @@ from training.utils.rl.igpo import (
 )
 from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.rl.metrics import compute_step_metrics
-from training.utils.rl.router_replay import build_r3_routing_matrices
+from training.utils.rl.router_replay import (
+    build_r3_routing_matrices,
+    warn_if_full_sequence_router_replay,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +243,8 @@ def main(
     config: Config,
 ):
     cfg = config
+    if cfg.router_replay:
+        warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):

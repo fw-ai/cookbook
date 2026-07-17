@@ -344,3 +344,24 @@ def test_main_sample_prompt_fn_defaults_to_rollout_deployment(monkeypatch):
         kwargs["cleanup_deployment_on_close"]
         == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
     )
+
+
+@pytest.mark.parametrize(
+    ("sample_prompt_fn", "warns"),
+    [(None, True), (_external_sample_prompt_fn, False)],
+)
+def test_main_warns_when_full_router_replay_disables_prompt_cache(
+    monkeypatch, caplog, sample_prompt_fn, warns
+):
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        router_replay=True,
+        router_replay_completion_only=False,
+        deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+
+    with caplog.at_level("WARNING"):
+        _build_service_kwargs(monkeypatch, cfg, sample_prompt_fn=sample_prompt_fn)
+
+    assert ("router_replay_completion_only=False" in caplog.text) is warns
