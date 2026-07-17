@@ -182,9 +182,14 @@ def check_training_contract(
     )
     for marker in (
         "## State machine",
+        "partial_failure_cleanup",
         "## Resume safely",
         "### Resume a Training API dedicated run",
         "## Required final report",
+        "planned_evaluator_name:",
+        "evaluator_source_sha256:",
+        "evaluator_account:",
+        "evaluator_registration_started_at_utc:",
         "planned_job_id:",
         "planned_deployment_id:",
         "trainer_job:",

@@ -21,7 +21,7 @@ The recipe passes it into `training_client.forward_backward_custom(datums, my_lo
 ## Don'ts
 
 - **Don't reimplement `forward_backward_custom`.** Fork `rl_loop.py` and swap only the loss function; the recipe already wires logprob collection, reference-model forward, and client-side loss dispatch.
-- **Don't dispatch manually** between the server-side and client-side paths — `rl_loop.py` does that based on `cfg.policy_loss`. Adding a custom loss means registering it, or just setting `cfg.policy_loss` to a name with no builtin kernel so the recipe falls back to custom.
+- **Set dispatch explicitly.** Use `cfg.loss_path="builtin"` only with a registered built-in policy loss, or `cfg.loss_path="client"` for a custom Python loss. There is no silent fallback.
 - **Don't forget `grad_accumulation_normalization`** — see [`gradient-accumulation.md`](gradient-accumulation.md). Match the mode to whether your loss returns a raw sum or a pre-normalized mean.
 
 ## RL-only `Config` fields you commonly touch
@@ -30,7 +30,8 @@ All live on `rl_loop.Config`:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `policy_loss` | `"grpo"` | `grpo`, `importance_sampling`, `dapo`, `dro`, `gspo`, `reinforce`, `cispo`. Decides server-side vs client-side dispatch. |
+| `loss_path` | `"client"` | Explicitly selects `client` or `builtin` dispatch. |
+| `policy_loss` | `"grpo"` | `grpo`, `importance_sampling`, `dapo`, `dro`, `gspo`, `reinforce`, `cispo`. Selects the objective, not the dispatch path. |
 | `completions_per_prompt` | `4` | GRPO group size — responses sampled per prompt. |
 | `prompt_groups_per_step` | `1` | Number of prompt groups per `forward_backward + optim_step` pair. |
 | `kl_beta` | `0.001` | KL-to-reference coefficient. For full-param, the SDK provisions a separate frozen reference trainer and lets backend trainer creation auto-select a LoRA-capable shape unless `cfg.trainer.reference_training_shape_id` pins a LoRA-capable shape. For LoRA, leave it unset — `service.create_reference_client(...)` reuses the policy session with the adapter disabled (the base is the reference). |

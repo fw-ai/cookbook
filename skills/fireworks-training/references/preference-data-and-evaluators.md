@@ -82,6 +82,7 @@ Exact and partial credit:
 Invalid output behavior:
 Edge cases:
 Calibration examples:
+Dependencies and network/credential requirements:
 ```
 
 Show the spec to the user and resolve ambiguity before implementing the evaluator.
@@ -101,7 +102,7 @@ Managed RFT uses a registered eval3 evaluator with an `entry_point`. Use Eval Pr
 
 Evaluator creation may be restricted by account role. Check the current docs and attempt no workaround. If `CreateEvaluatorV2` returns `403`, an admin authors or registers the evaluator once; the scoped agent can then launch managed RFT with that evaluator ID.
 
-If registration returns ambiguously or the response is lost, do not run it again. Use the Eval Protocol output, account UI, or current evaluator API to locate a resource matching the planned display name and source hash. If it cannot be identified unambiguously, ask an admin or support to reconcile it before retrying.
+If registration returns ambiguously or the response is lost, do not run it again. Use the Eval Protocol output, account UI, or current evaluator API to locate a resource matching the account, planned display name, source hash, and narrow UTC upload window. If it cannot be identified unambiguously, ask an admin or support to reconcile it before retrying.
 
 ### Training API inline reward
 

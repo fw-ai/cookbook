@@ -8,6 +8,10 @@ Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookboo
 
 > Status: private preview — request access at https://fireworks.ai/contact-training
 
+## Access preflight
+
+Before selecting a Training API path, confirm that the target account was enabled through onboarding or account settings. For dedicated work, read the account and shared shape inventories with `firectl training-shape list`; this proves shape visibility but does not by itself prove serverless entitlement. If no authoritative read-only entitlement signal is available, mark access unverified and ask the user to confirm enablement. Do not discover access by creating a trainer or serverless session.
+
 ## Managed training vs Training API
 
 Use **managed training** for standard SFT/DPO/ORPO/RFT jobs. Reach for the **Training API** when you need a custom **loss/reward**, **RL with rollouts** (inference-in-the-loop), forward-pass internals (for example MoE routing for R3), distillation, or multi-turn/agentic trajectories.

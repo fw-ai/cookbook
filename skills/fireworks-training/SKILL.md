@@ -34,6 +34,14 @@ Never copy a volatile catalog or price into an answer when it can be read live.
 Record the docs URLs, cookbook commit, SDK version, and CLI version used in the
 run manifest and final report.
 
+## Privacy and feedback
+
+The public skill does not write or transmit usage telemetry and does not
+automatically collect issues. Run manifests are customer-private local files and
+must not contain keys, raw environment dumps, or secret-bearing output. Share
+feedback or manifests only when the user explicitly chooses to do so; no
+telemetry opt-out is required because collection is off.
+
 ## Cookbook checkout
 
 The standalone skill package does not vendor the cookbook. For Training API
@@ -117,6 +125,11 @@ some parameters. A prior “run it” counts only when it approved the same comp
 resolved plan. Any change to method, model, parameters, sweep breadth, or cost
 ceiling requires renewed confirmation. Promotion and deployment each require a
 separate confirmation.
+
+Treat these as independent approval stages when present: paid pair generation or
+evaluation, evaluator registration, dataset upload plus training, expanded
+sweep breadth, promotion, and deployment. Approval for one stage does not
+authorize a later stage.
 
 Read-only commands such as `whoami`, `get`, `list`, `quota`, catalog reads,
 local parsing, and offline evaluator tests do not require confirmation.

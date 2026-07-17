@@ -46,6 +46,9 @@ teardown_plan:
 planned_dataset_id:
 planned_evaluator_name:
 evaluator_source_sha256:
+evaluator_account:
+evaluator_registration_started_at_utc:
+evaluator_registration_ended_at_utc:
 planned_job_id:
 planned_output_model_id:
 planned_deployment_id:
@@ -98,7 +101,11 @@ local_preflight
 -> reported
 ```
 
-Also use `failed` or `cancelled` as terminal states. Record the failed phase, exact platform state, last progress signal, and next safe action.
+Use `partial_failure_cleanup` when training succeeds but evaluation, deployment,
+serving proof, or teardown fails. Reconcile and clean up every resource before
+reporting the partial outcome. Also use `failed` or `cancelled` as terminal
+states. Record the failed phase, exact platform state, last progress signal, and
+next safe action.
 
 Update the manifest:
 
