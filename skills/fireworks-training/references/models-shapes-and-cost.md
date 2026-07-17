@@ -23,11 +23,11 @@ service = FiretitanServiceClient.from_firetitan_config(
 
 ## Supported base models
 
-Most major open families — **DeepSeek, Qwen, Kimi, GLM, Gemma, Llama, Nemotron, MiniMax** and more. Once supported, every managed method (SFT/DPO/RFT) works. The set is generated from the live registry — **don't hardcode it**. Live: [tunable text](https://app.fireworks.ai/models?filter=LLM&tunable=true) · [vision](https://app.fireworks.ai/models?filter=vision&tunable=true) · [context table](https://docs.fireworks.ai/fine-tuning/managed-finetuning-intro.md#supported-base-models)
+Most major open families — **DeepSeek, Qwen, Kimi, GLM, Gemma, Llama, Nemotron, MiniMax** and more. Eligibility is specific to method, tuning mode, and training shape. Confirm SFT, DPO, ORPO, or RFT support in the live Training Shapes matrix before launch. The set is generated from the live registry — **don't hardcode it**. Live: [tunable text](https://app.fireworks.ai/models?filter=LLM&tunable=true) · [vision](https://app.fireworks.ai/models?filter=vision&tunable=true) · [method-support matrix](https://docs.fireworks.ai/fine-tuning/training-api/training-shapes.md)
 
 ## Context length & LoRA rank
 
-**We support the model's full context.** Each shape exposes `max_supported_context_length` (up to 256K / 262,144 for Gemma-4 / Kimi / Qwen3.5 families; smaller models less). Per-job: set `max_context_length` (or inherit from the shape). `lora_rank=0` → full-param; positive int → LoRA.
+Each shape exposes `max_supported_context_length`. A catalog-level model maximum may come from a shape that does not support the selected method or tuning mode. For a job, use the maximum context length of a compatible shape. Set `max_context_length` or inherit it from that shape. `lora_rank=0` means full-parameter; a positive integer means LoRA.
 
 ## GPU classes
 
@@ -35,9 +35,9 @@ The platform maps GPU class + count to the model — **let it**. Larger/MoE → 
 
 ## Pricing model
 
-**Per training token** — SFT & DPO, all sizes; tiered by base-model size (per 1M training tokens). **Read current rates from the live [pricing page](https://fireworks.ai/pricing)** — don't trust a hardcoded table. Shape of it: smaller models cost less; full-param > LoRA; DPO > SFT. RFT is **free under 16B**.
+**Per training token** — managed SFT and DPO where listed. **Read current rates from the live [pricing page](https://fireworks.ai/pricing)** rather than trusting a hardcoded table.
 
-**Per GPU-hour** — full-param/RFT trainer time + dedicated deployments (on-demand, GPU-class rates). Again, [pricing page](https://fireworks.ai/pricing) is the source of truth.
+**Runtime-priced resources** — managed RFT on eligible models under 16B is currently free. Other managed RFT and dedicated Training API resources follow current pricing. Dedicated trainers and deployments use GPU-hour rates and are metered by runtime.
 
 **Inference:** serverless per-token; dedicated per GPU-hour.
 
@@ -56,6 +56,6 @@ Estimate the spend surface before protected work; label uncertainty rather than 
 
 - **Let the platform map GPU → model** (don't override accelerator/count/node).
 - **Use the full shape path** and let the SDK pin the version.
-- **Use the model's full context** — read `max_supported_context_length`, don't assume a stale cap.
+- **Use a compatible shape's context** — read the selected method and tuning mode's `max_supported_context_length`, not the model-level maximum.
 - **Always check the live catalog + pricing** — generated from the live registry; they change.
-- **Billing-aware:** SFT/DPO = per training token; full-param/RFT + deployments = per GPU-hour; saturate the GPU.
+- **Billing-aware:** use the current pricing page for the selected managed method or Training API infrastructure; label unknown rates rather than generalizing.

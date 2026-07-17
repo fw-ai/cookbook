@@ -71,7 +71,7 @@ firectl model list                             # the new LoRA appears here
 ```
 
 - **Always** verify the base model is `Tunable: true` first.
-- RFT is **free for models under 16B**; SFT/DPO bill per training token ([pricing](https://fireworks.ai/pricing)).
+- Managed RFT on eligible models under 16B is currently free. Check the live [pricing page](https://fireworks.ai/pricing) for the selected managed method or Training API infrastructure.
 
 ## 6. Check your quota
 

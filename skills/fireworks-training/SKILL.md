@@ -109,9 +109,9 @@ local parsing, and offline evaluator tests do not require confirmation.
 | Task | Managed path | Cookbook implementation | Read |
 |---|---|---|---|
 | SFT | `firectl sftj` | [`training/recipes/sft_loop.py`](../../training/recipes/sft_loop.py) | `references/choose-method.md`, `references/sdk/recipes.md` |
-| DPO | `firectl dpo-job --loss-method DPO` | [`training/recipes/dpo_loop.py`](../../training/recipes/dpo_loop.py) | `references/choose-method.md`, `references/sdk/recipes.md` |
-| ORPO | `firectl dpo-job --loss-method ORPO` | [`training/recipes/orpo_loop.py`](../../training/recipes/orpo_loop.py) | `references/choose-method.md`, `references/sdk/recipes.md` |
-| Managed RFT | `firectl rftj --evaluator` | Not applicable | `references/preference-data-and-evaluators.md`, `references/training-api.md` |
+| DPO | `firectl dpo-job create --loss-method DPO` | [`training/recipes/dpo_loop.py`](../../training/recipes/dpo_loop.py) | `references/choose-method.md`, `references/sdk/recipes.md` |
+| ORPO | `firectl dpo-job create --loss-method ORPO` | [`training/recipes/orpo_loop.py`](../../training/recipes/orpo_loop.py) | `references/choose-method.md`, `references/sdk/recipes.md` |
+| Managed RFT | `firectl rftj create --evaluator <resource>` | Not applicable | `references/preference-data-and-evaluators.md`, `references/training-api.md` |
 | Training API RL | Not applicable | [`training/recipes/rl_loop.py`](../../training/recipes/rl_loop.py) | `references/training-api.md`, `references/sdk/rl/loss-paths.md` |
 | Async or agentic RL | Not applicable | [`training/recipes/async_rl_loop.py`](../../training/recipes/async_rl_loop.py) | `references/sdk/rl/async-rl.md` |
 | IGPO | Not applicable | [`training/recipes/igpo_loop.py`](../../training/recipes/igpo_loop.py) | `references/sdk/recipes.md` |

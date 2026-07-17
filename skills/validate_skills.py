@@ -133,7 +133,10 @@ def check_training_contract(
         "--job-id <run-id>",
         "--deployment-id <run-id>-deploy",
         "firectl dpo-job create",
+        "firectl dpo-job create --loss-method DPO",
+        "firectl dpo-job create --loss-method ORPO",
         "firectl rftj create",
+        "firectl rftj create --evaluator <resource>",
     )
     for marker in required_markers:
         if marker not in root_text:
