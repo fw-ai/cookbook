@@ -76,7 +76,7 @@ def load_tokenizer(
                     "Hugging Face Hub is unavailable while loading tokenizer "
                     f"{tokenizer_model!r} (HTTP {status_code}); exhausted "
                     f"{_TOKENIZER_LOAD_ATTEMPTS} attempts. Retry the training job "
-                    "when Hugging Face is available or use a staged tokenizer artifact."
+                    "when Hugging Face is available."
                 ) from exc
 
             backoff_seconds = _TOKENIZER_RETRY_INITIAL_BACKOFF_SECONDS * 2 ** (
