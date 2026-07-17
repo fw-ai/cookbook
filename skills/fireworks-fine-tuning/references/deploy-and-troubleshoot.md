@@ -91,7 +91,7 @@ An absolute score means little without the before/after delta. Always compare th
 
 ## Troubleshooting a failed or stuck job
 
-Full field-observed error table, platform-vs-user triage, and debug steps are in [`error-reference.md`](error-reference.md). Deep Training-SDK debugging (weight sync, checkpoints, renderer) lives in the `skills/dev` skill.
+Full field-observed error table, platform-vs-user triage, and debug steps are in [`error-reference.md`](error-reference.md). Deep Training-SDK debugging (weight sync, checkpoints, renderer) lives in the separately installed `fireworks-training` companion skill.
 
 ## Critical rules
 

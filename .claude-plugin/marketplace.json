@@ -2,13 +2,18 @@
   "name": "fw-ai-cookbook",
   "owner": { "name": "Fireworks AI" },
   "metadata": {
-    "description": "Fireworks AI agent skills. Currently the fireworks-fine-tuning skill (managed SFT/DPO/RFT via firectl)."
+    "description": "Fireworks AI agent skills for managed fine-tuning and Training SDK custom loops."
   },
   "plugins": [
     {
       "name": "fireworks-fine-tuning",
       "source": "./skills/fireworks-fine-tuning",
       "description": "Managed fine-tuning on Fireworks (SFT/DPO/RFT via firectl), driven from your coding agent. Successor to the Pilot agent."
+    },
+    {
+      "name": "fireworks-training",
+      "source": "./skills/dev",
+      "description": "Fireworks Training SDK recipes and custom loops for SFT, DPO, RFT/RL, distillation, hotload, and debugging."
     }
   ]
 }

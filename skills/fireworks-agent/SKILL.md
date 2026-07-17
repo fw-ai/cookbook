@@ -11,10 +11,10 @@ description: Deprecated. The Pilot agent (`firectl session`) is being decommissi
 
 | You were using | Now use |
 |---|---|
-| `session create -n "..."` | Preflight -> plan/confirm -> `firectl sftj create ...` |
-| `session events --wait` | Poll `firectl sftj get` + `sftj export-metrics` |
+| `session create -n "..."` | Local preflight -> plan/confirm -> the matching `sftj` / `dpo-job` / `rftj create` command |
+| `session events --wait` | Poll the matching job resource and its available metrics or linked W&B run |
 | `session update` | The agent decides inline / asks the user |
-| `session get` / `list` | `firectl sftj get` / `sftj list`, `deployment get` / `list` |
-| `session cancel` / `delete` | `firectl sftj cancel`; delete artifacts via their own resource commands |
+| `session get` / `list` | The matching `sftj` / `dpo-job` / `rftj get` or `list`, plus deployment resources |
+| `session cancel` / `delete` | The matching job `cancel`; delete artifacts through their own resource commands |
 
-For the SDK power-user path (custom loops, RL recipes), see [`skills/dev/SKILL.md`](../dev/SKILL.md).
+For the SDK power-user path (custom loops, RL recipes), use the separately installed [`fireworks-training` skill](https://github.com/fw-ai/cookbook/blob/main/skills/dev/SKILL.md).

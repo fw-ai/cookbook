@@ -19,7 +19,7 @@ Do you have labeled ground-truth outputs?
 |--------|-------------|----------|
 | **SFT** | Labeled `messages` (the ideal output) | Classification, extraction, style/format, tool-call shaping. The default. |
 | **DPO** | preferred vs non-preferred responses | Aligning tone/quality when you can rank two answers but can't write the one true answer. |
-| **ORPO** | preferred vs non-preferred responses (same shape as DPO) | Same signal as DPO but **no reference model** (one model, less memory/GPU). A reasonable DPO alternative on tight budgets; recipe in `skills/dev` (`recipes/orpo_loop.py`). |
+| **ORPO** | preferred vs non-preferred responses (same shape as DPO) | Same signal as DPO but **no reference model** (one model, less memory/GPU). A reasonable DPO alternative on tight budgets; use the `fireworks-training` companion skill and `training/recipes/orpo_loop.py`. |
 | **RFT** | Prompts + an evaluator/reward (0.0–1.0) | Verifiable tasks (math, code, agents) with few labels. |
 
 ## SFT format
@@ -41,9 +41,11 @@ Preference pairs, **one-turn only** (preferred/non-preferred must be the last as
 ```
 (Training API also accepts `chosen`/`rejected`.) Docs: https://docs.fireworks.ai/fine-tuning/dpo-fine-tuning
 
+If the user has prompts but no preference pairs, do not reject the task or silently invent labels. Use `references/preference-data-and-evaluators.md` to plan, cost, generate, review, and preserve pair provenance before upload.
+
 ## RFT — reinforcement fine-tuning
 
-Provide three things (not labeled outputs): a **dataset** of prompts; an **evaluator** that scores an output 0.0→1.0 (the reward), registered via `pytest` or a remote service; and the **agent** being trained. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/how-rft-works · [evaluators](https://docs.fireworks.ai/fine-tuning/evaluators)
+Provide three things (not necessarily labeled outputs): a **dataset** of prompts; an **evaluator or inline reward** that scores an output 0.0→1.0; and the **agent** being trained. Managed RFT uses a registered evaluator. Training SDK RFT uses reward code and may read `ground_truth` or any other field declared by that reward. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/how-rft-works · [evaluators](https://docs.fireworks.ai/fine-tuning/evaluators)
 
 ## Classification (a common SFT task)
 
@@ -99,7 +101,9 @@ Catch format errors locally before `firectl dataset create`. A malformed row oth
 
 ```python
 import json, sys
-method = "sft"   # "sft" | "dpo" | "rft"
+method = "sft"   # "sft" | "dpo" | "managed-rft" | "sdk-rft"
+# Set only when the selected SDK reward reads a required per-row field.
+sdk_reward_required_field = None  # e.g. "ground_truth"
 n = 0
 for i, line in enumerate(open(sys.argv[1]), 1):
     line = line.strip()
@@ -111,11 +115,14 @@ for i, line in enumerate(open(sys.argv[1]), 1):
     elif method == "dpo":
         assert o.get("input", {}).get("messages"), f"line {i}: no input.messages"
         assert o.get("preferred_output") and o.get("non_preferred_output"), f"line {i}: missing preferred_output/non_preferred_output"
-    elif method == "rft":
+    elif method in {"managed-rft", "sdk-rft"}:
         assert o.get("messages"), f"line {i}: no messages[]"
-        assert "ground_truth" in o, f"line {i}: no ground_truth (needed by the inline reward_fn)"
+        if method == "sdk-rft" and sdk_reward_required_field:
+            assert sdk_reward_required_field in o, f"line {i}: no {sdk_reward_required_field!r} required by reward_fn"
+    else:
+        raise ValueError(f"unknown method: {method}")
 assert n >= 3, "need at least 3 examples"
 print(f"OK: {n} valid {method} rows")
 ```
 
-Reminders: JSONL, one object per line, roles in order, min 3 and max 3M examples. DPO is one-turn only (preferred and non-preferred are the single last assistant turn). RFT rows carry `ground_truth` for the reward. `firectl dataset create` re-validates on upload, but running this first turns a late platform error into an instant local fix.
+Reminders: JSONL, one object per line, roles in order, min 3 and max 3M examples. DPO is one-turn only (preferred and non-preferred are the single last assistant turn). Managed RFT validates the prompt schema plus whatever its registered evaluator expects. SDK RFT validates only the fields its selected reward reads; `ground_truth` is common, not universal. `firectl dataset create` re-validates on upload, but running this first turns a late platform error into an instant local fix.

@@ -1,6 +1,6 @@
 # Error reference: running jobs, deploying, and debugging
 
-*One place for "my training job failed / is stuck / errored" and "how do I debug it." Source of truth for volatile behavior is the live docs; this is durable field-observed triage. For deep Training-SDK debugging (weight sync, checkpoint promotion, renderer, hotload) use the `skills/dev` skill instead.*
+*One place for "my training job failed / is stuck / errored" and "how do I debug it." Source of truth for volatile behavior is the live docs; this is durable field-observed triage. For deep Training-SDK debugging (weight sync, checkpoint promotion, renderer, hotload) use the separately installed `fireworks-training` companion skill instead.*
 
 ## First question, always: platform-side or user-side?
 
@@ -10,12 +10,15 @@ A bare error string is usually **not** diagnostic on its own. Classify by sympto
 - **User-side** = fix your dataset/config/quota; the skill can resolve it outright. (~14%.)
 - **Generic/unknown** = de-mask first (pull the real signal below), then re-classify. (~17%.)
 
-When a job is stuck or failing, get the status message first:
-```bash
-firectl sftj get <JOB_ID>            # (or dpo-job / reinforcement-fine-tuning-job)
-firectl sftj export-metrics <JOB_ID> # loss/step series — the real progress signal
-```
-`State` alone lies: a job can read `RUNNING` before the trainer starts, and a silent crash can leave `RUNNING` with no error. Trust the loss/step series (or the linked W&B run), not the state.
+When a job is stuck or failing, use the resource family that created it:
+
+| Method | Status | Strongest available progress signal |
+|---|---|---|
+| SFT | `firectl sftj get <JOB_ID> -o json` | Job fields and linked W&B metrics when enabled. The current CLI has no `sftj export-metrics`. |
+| DPO / ORPO | `firectl dpo-job get <JOB_ID> -o json` | `firectl dpo-job export-metrics <JOB_ID>` and linked W&B metrics when enabled. |
+| Managed RFT | `firectl rftj get <JOB_ID> -o json` | Job, evaluator, and rollout fields plus linked W&B metrics when enabled. The current CLI has no `rftj export-metrics`. |
+
+Run the selected resource and `get` commands with `--help` before relying on flags. Do not substitute `sftj` commands for a DPO or RFT resource. `State` alone lies: a job can read `RUNNING` before the trainer starts, and a silent crash can leave `RUNNING` with no error. Trust a real step, rollout, checkpoint, or linked W&B signal when one is available.
 
 ## Common issues (field-observed)
 
@@ -40,7 +43,7 @@ firectl sftj export-metrics <JOB_ID> # loss/step series — the real progress si
 
 ## Debugging a run (get the real signal)
 
-1. **De-mask.** Pull `export-metrics` and the linked W&B run. A generic message plus no step progress = suspected stall, not health.
+1. **De-mask.** Pull the method's strongest available progress signal from the table above. A generic message plus no step or rollout progress = suspected stall, not health.
 2. **Isolate user vs platform.** Re-validate the dataset locally (instant, cheap). If clean, the failure is almost certainly platform-side.
 3. **Reproduce minimally.** For a config-shaped failure, retry once with defaults on a validated shape before assuming a bug.
 4. **Escalate with context**, not just "stuck": include the job id, base model + shape, elapsed time, last step, and the exact status message. Do not paste account or customer identifiers into shared or customer-facing places.
@@ -49,6 +52,6 @@ firectl sftj export-metrics <JOB_ID> # loss/step series — the real progress si
 
 - Job id + method (`sftj` / `dpo-job` / `reinforcement-fine-tuning-job`)
 - Base model + training shape
-- Elapsed time and last observed step (from `export-metrics`)
+- Elapsed time and last observed step, rollout, checkpoint, or W&B metric
 - Exact status message
 - What you already ruled out (dataset validated? quota checked? billing checked?)

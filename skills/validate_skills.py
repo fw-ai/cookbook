@@ -85,6 +85,128 @@ def check_skill(skill_md: Path, errors: list[str]) -> None:
         if ref_rel not in text:
             errors.append(f"{rel}: `{ref_rel}` exists but SKILL.md never routes to it")
 
+    if slug == "fireworks-fine-tuning":
+        check_fine_tuning_contract(skill_dir, errors)
+
+
+def check_fine_tuning_contract(skill_dir: Path, errors: list[str]) -> None:
+    """Protect the safety and method-routing fixes that replace Pilot."""
+    orchestrate_path = skill_dir / "references/orchestrate-from-agent.md"
+    orchestrate = orchestrate_path.read_text(encoding="utf-8")
+    plan_marker = "**1.5 Plan + confirm"
+    upload_command = "firectl dataset create <name>"
+    if plan_marker not in orchestrate or upload_command not in orchestrate:
+        errors.append(
+            f"{orchestrate_path.relative_to(SKILLS_DIR)}: missing plan gate or dataset upload command"
+        )
+    elif orchestrate.index(plan_marker) > orchestrate.index(upload_command):
+        errors.append(
+            f"{orchestrate_path.relative_to(SKILLS_DIR)}: dataset upload appears before plan approval"
+        )
+
+    for command in (
+        "firectl sftj create",
+        "firectl dpo-job create",
+        "firectl rftj create",
+        "firectl sftj get",
+        "firectl dpo-job get",
+        "firectl rftj get",
+    ):
+        if command not in orchestrate:
+            errors.append(
+                f"{orchestrate_path.relative_to(SKILLS_DIR)}: missing method-specific command `{command}`"
+            )
+    for marker in ("--job-id <run-id>", "--deployment-id <run-id>-deploy"):
+        if marker not in orchestrate:
+            errors.append(
+                f"{orchestrate_path.relative_to(SKILLS_DIR)}: idempotent create guidance missing `{marker}`"
+            )
+    for marker in (
+        "dpo-job create --job-id",
+        "dpo-job create --loss-method ORPO",
+        "rftj create --job-id",
+    ):
+        if marker not in orchestrate:
+            errors.append(
+                f"{orchestrate_path.relative_to(SKILLS_DIR)}: method-specific sweep missing `{marker}`"
+            )
+    if re.search(r"(?m)^\s*firectl sftj export-metrics\b", orchestrate):
+        errors.append(
+            f"{orchestrate_path.relative_to(SKILLS_DIR)}: uses nonexistent `sftj export-metrics` command"
+        )
+
+    choose_path = skill_dir / "references/choose-method.md"
+    choose = choose_path.read_text(encoding="utf-8")
+    for marker in ('"managed-rft"', '"sdk-rft"', "sdk_reward_required_field"):
+        if marker not in choose:
+            errors.append(
+                f"{choose_path.relative_to(SKILLS_DIR)}: RFT validator missing `{marker}`"
+            )
+    if re.search(
+        r'elif method in \{"managed-rft", "sdk-rft"\}:[\s\S]{0,300}'
+        r'assert "ground_truth" in o',
+        choose,
+    ):
+        errors.append(
+            f"{choose_path.relative_to(SKILLS_DIR)}: managed RFT must not require `ground_truth`"
+        )
+
+    state_path = skill_dir / "references/run-state-and-reporting.md"
+    state = state_path.read_text(encoding="utf-8")
+    for heading in (
+        "## State machine",
+        "## Resume safely",
+        "### Resume a Training SDK run",
+        "## Required final report",
+        "planned_evaluator_name:",
+        "evaluator_source_sha256:",
+        "planned_job_id:",
+        "planned_deployment_id:",
+        "sdk_trainer_job:",
+        "sdk_latest_checkpoint:",
+    ):
+        if heading not in state:
+            errors.append(
+                f"{state_path.relative_to(SKILLS_DIR)}: missing contract section `{heading}`"
+            )
+
+    training_api_path = skill_dir / "references/training-api.md"
+    training_api = training_api_path.read_text(encoding="utf-8")
+    if "Plan + confirm before protected work" not in (
+        SKILLS_DIR / "dev/SKILL.md"
+    ).read_text(encoding="utf-8"):
+        errors.append("dev/SKILL.md: Training SDK protected-work approval gate is missing")
+    if re.search(
+        r"The dataset is JSONL[^.]*with a `ground_truth` field per row",
+        training_api,
+    ):
+        errors.append(
+            f"{training_api_path.relative_to(SKILLS_DIR)}: SDK RFT incorrectly requires universal `ground_truth`"
+        )
+    preference_path = skill_dir / "references/preference-data-and-evaluators.md"
+    preference = preference_path.read_text(encoding="utf-8")
+    for marker in (
+        "offline-only",
+        "source hash",
+        "do not run it again",
+        "Register only after approval",
+    ):
+        if marker not in preference:
+            errors.append(
+                f"{preference_path.relative_to(SKILLS_DIR)}: evaluator safety guidance missing `{marker}`"
+            )
+
+    marketplace_path = SKILLS_DIR.parent / ".claude-plugin/marketplace.json"
+    marketplace = marketplace_path.read_text(encoding="utf-8")
+    for plugin in ('"name": "fireworks-fine-tuning"', '"name": "fireworks-training"'):
+        if plugin not in marketplace:
+            errors.append(
+                f"{marketplace_path.relative_to(SKILLS_DIR.parent)}: missing companion plugin `{plugin}`"
+            )
+    training_plugin_path = SKILLS_DIR / "dev/.claude-plugin/plugin.json"
+    if not training_plugin_path.exists():
+        errors.append("dev/.claude-plugin/plugin.json: Training SDK plugin manifest is missing")
+
 
 def main() -> int:
     skill_mds = sorted(SKILLS_DIR.glob("*/SKILL.md")) + sorted(SKILLS_DIR.glob("*/*/SKILL.md"))

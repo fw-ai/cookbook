@@ -12,20 +12,20 @@ Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookboo
 
 Use the **managed UI** for standard SFT/DPO (data + hyperparameters, no code). Reach for the **Training API** when you need: custom **loss/reward**, **RL with rollouts** (inference-in-the-loop), access to forward-pass internals (e.g. MoE routing for R3), or multi-turn/agentic trajectories.
 
-## Two ways to run RFT/RL — pick the inline-reward recipe for agent-driven work
+## Two agent-drivable ways to run RFT/RL
 
 There are two RFT paths, and they differ in **where the reward lives**. This matters a lot when a coding agent is driving:
 
 | Path | Reward | Agent-drivable? |
 |---|---|---|
-| **Managed RFT** — `firectl reinforcement-fine-tuning-job create --evaluator <id>` | A **registered evaluator resource** (server-side, built in an e2b sandbox, eval v3) | **Only with an admin-role key.** Register via **eval-protocol** (`pytest` auto-registers) or the **UI**; authoring calls `CreateEvaluatorV2`, which **requires admin role** (a user-role key gets 403). `firectl evaluator create` (V1) is **deprecated**. Use when an admin authors the evaluator. |
-| **Training-API RL** — fork `training.recipes.rl_loop` / `async_rl_loop` | An **inline `reward_fn(completion, row) -> float`** in the forked recipe (`row["ground_truth"]` carries the label) | **Yes.** No evaluator resource. Same shape as Tinker's reward-in-the-loop. The SDK provisions the trainer + rollout deployment. |
+| **Managed RFT** — `firectl reinforcement-fine-tuning-job create --evaluator <id>` | A **registered evaluator resource** (server-side, built in an e2b sandbox, eval v3) | **Yes once the evaluator exists.** Register via **eval-protocol** (`pytest` auto-registers) or the **UI**. Evaluator authoring may require an admin role; a scoped key can still launch with an evaluator it can access. `firectl evaluator create` (V1) is **deprecated**. |
+| **Training-API RL** — fork `training.recipes.rl_loop` / `async_rl_loop` | An **inline `reward_fn(completion, row) -> float`** in the forked recipe. It may read `ground_truth`, another declared reference field, tool outcomes, environment state, or a judge result. | **Yes.** No evaluator resource. Same shape as Tinker's reward-in-the-loop. The SDK provisions the trainer + rollout deployment. |
 
-**Prefer the managed path for RFT** (same as the managed UI): `firectl reinforcement-fine-tuning-job create --dataset <ds> --evaluator <id>` — it resolves the training shape for you and is proven live (qwen3-4b, 2026-07-15). Reuse an existing evaluator or author one via eval-protocol (authoring is admin-gated today; the scoped-permission fix opens it to any key). **Use the inline-reward recipe (below) only for users with Training API access** who need a custom loop/reward, rollouts, or agentic trajectories, or who can't use a managed evaluator. It needs no evaluator resource, mirrors Tinker, and is fully code-driven.
+**Prefer the managed path for standard RFT** (same as the managed UI): `firectl reinforcement-fine-tuning-job create --dataset <ds> --evaluator <id>` — it resolves the training shape for you and is proven live (qwen3-4b, 2026-07-15). Reuse an existing evaluator or author one via eval-protocol. **Use the inline-reward recipe (below) for users with Training API access** who need a custom loop/reward, rollouts, or agentic trajectories. Both paths are agent-drivable; they differ in reward location, access, billing, and capability.
 
-### Managed RFT: authoring the eval3 evaluator (admin-role-gated)
+### Managed RFT: authoring the eval3 evaluator
 
-`firectl reinforcement-fine-tuning-job create` needs an **eval3 evaluator with an `entry_point`** — legacy evaluators are rejected (`InvalidArgument: managed RFT requires an eval3 evaluator`), and `firectl evaluator create` is deprecated. The code-first way to make one is **eval-protocol** (no UI), but **authoring requires an admin-role identity** — see the gate below:
+`firectl reinforcement-fine-tuning-job create` needs an **eval3 evaluator with an `entry_point`** — legacy evaluators are rejected (`InvalidArgument: managed RFT requires an eval3 evaluator`), and `firectl evaluator create` is deprecated. The code-first way to make one is **eval-protocol** (no UI). Check current evaluator authorization in the live docs and handle the observed role gate below:
 
 ```bash
 pip install eval-protocol          # provides @reward / EvaluationRow (needs Python 3.10+)
@@ -36,9 +36,9 @@ from eval_protocol import reward, EvaluationRow          # write the reward as c
 def category_match(row: EvaluationRow) -> float:
     return 1.0 if parse(row.output).get("category") == row.ground_truth else 0.0
 ```
-Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval3 evaluator + the dataset with Fireworks; then `firectl rftj create --base-model <m> --dataset <ds> --evaluator accounts/<acct>/evaluators/<id>`. So the "you need the UI" limitation is not fundamental: the flow is fully code-drivable via eval-protocol. But **authoring still requires an admin role** (below), so a standard user-role key cannot do it unattended.
+Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval3 evaluator + the dataset with Fireworks. Treat that command as protected registration and run it only after approval; offline tests should import and call the reward directly without authentication. After registration, run `firectl rftj create --base-model <m> --dataset <ds> --evaluator accounts/<acct>/evaluators/<id>`. The flow is fully code-drivable via eval-protocol. If the current account role cannot register it, an admin registers it once and the scoped agent continues with the evaluator resource.
 
-**It's an admin-role gate, not a credential-type gate (tested).** eval3 creation is a multi-RPC flow (`CreateEvaluatorV2` → `GetEvaluatorUploadEndpoint` → upload → `ValidateEvaluatorUpload` → e2b build). eval-protocol drives exactly this. The gate is on **account role, not credential type**: an **admin-role** identity authors the evaluator fine (even with a plain `fw_` API key), while a **user-role** identity gets **`403: admin role required to call CreateEvaluatorV2`**. The UI wizard works only because a console session carries admin. So an agent whose key has admin role **can** author eval3 in code; an agent with a user-role key **cannot**, and needs an admin (UI or admin-role key) to author it once. This is a platform authz gate, not something the skill can route around. (`firectl evaluator create` is separately deprecated/V1.) → For managed RFT with a non-admin key, an admin authors the evaluator once; the agent then drives `rftj create --evaluator <id>`. This admin gate is exactly why agent-driven RFT defaults to the inline-reward path.
+**Observed authorization behavior on 2026-07-15:** eval3 creation is a multi-RPC flow (`CreateEvaluatorV2` → `GetEvaluatorUploadEndpoint` → upload → `ValidateEvaluatorUpload` → e2b build). An admin-role identity authored the evaluator with a plain `fw_` API key, while a user-role identity received **`403: admin role required to call CreateEvaluatorV2`**. Treat live docs and current API behavior as authoritative because scoped permissions may change. Do not broaden credentials or work around a 403. Ask an admin to register the evaluator once, then launch managed RFT with its resource ID.
 
 > **But the run is capacity-gated.** RFT provisions a trainer + a rollout deployment; on capacity-constrained accounts this readiness-times-out or fails (0/6 success observed on the shared account). RFT reliability is a **platform** matter, not a skill one — see `references/deploy-and-troubleshoot.md`.
 
@@ -52,7 +52,9 @@ Whichever RFT route you use, the reward can come from three places (Pilot suppor
 
 ## Default workflow: fork a cookbook recipe
 
-> **In this repo:** the companion `fireworks-training` skill ([`../../dev/SKILL.md`](../../dev/SKILL.md)) is the SDK reference implementation — route there for recipe internals (RL loss paths, hotload, shapes, distillation, infra migration). This reference is the managed-orchestration view; `dev` is the code.
+> **Companion skill:** the separately installed [`fireworks-training` skill](https://github.com/fw-ai/cookbook/blob/main/skills/dev/SKILL.md) is the SDK reference implementation — route there for recipe internals (RL loss paths, hotload, shapes, distillation, infra migration). This reference is the managed-orchestration view; `fireworks-training` is the code path.
+
+**Approval gate still applies.** Training SDK recipes can create trainers, rollout deployments, checkpoints, promoted models, and paid inference. Before running a recipe or any create/promote/deploy action, show the account, recipe, dataset, full resolved trainer and deployment config, cost drivers, evaluation plan, and teardown plan; get explicit approval for this run. A deployment or materially expanded sweep gets its own approval.
 
 Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw-ai/cookbook`:
 - `training/recipes/` — loop scripts (e.g. `async_rl_loop`)
@@ -88,7 +90,7 @@ def reward_fn(completion: str, row: dict) -> float:   # fork this
     truth = extract_answer(str(row.get("ground_truth", "")))
     return 1.0 if predicted == truth else 0.0
 ```
-The dataset is JSONL of prompts (`messages`) with a `ground_truth` field per row; the recipe samples rollouts, scores each with `reward_fn`, and trains. Key knobs: `policy_loss` (`grpo`/`dapo`/`gspo`/`cispo`/…), `max_head_offpolicy_versions` (0 = strict on-policy), `completions_per_prompt`. The SDK provisions the trainer + rollout deployment and tears them down on close. **No registered evaluator needed on this path.**
+The dataset is JSONL of prompts (`messages`) plus exactly the fields the selected reward reads. `ground_truth` is common for exact-match rewards, but it is not universal. Declare and validate the reward's required fields before launch. The recipe samples rollouts, scores each with `reward_fn`, and trains. Key knobs: `policy_loss` (`grpo`/`dapo`/`gspo`/`cispo`/…), `max_head_offpolicy_versions` (0 = strict on-policy), `completions_per_prompt`. The SDK provisions the trainer + rollout deployment and tears them down on close. **No registered evaluator needed on this path.**
 
 ## Numerics alignment & MoE Router Replay (R3)
 
