@@ -338,11 +338,30 @@ class TestResume:
         )
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
-    def test_init_from_checkpoint_serverless_rejects_cross_session(self, log_dir):
-        # Cross-session warm-start is unsupported on the shared pool (isolation).
-        ckpt, _, _ = _make(log_dir, serverless=True)  # session == "job-1"
-        with pytest.raises(ValueError, match="another session"):
-            ckpt.resume(init_from_checkpoint="other-session:step-5")
+    def test_init_from_checkpoint_serverless_allows_cross_run(self, log_dir):
+        # Cross-run resume on the shared pool: a fully-qualified
+        # "<account>/<run>/<name>" ref has no "<job>:<name>" separator, so it
+        # flows through as the bare dcp_name (source_job_id=None, no cross_job://
+        # wrapping) and the pooled trainer resolves it against the caller's own
+        # account (account-scoped guard). No ValueError anymore.
+        ckpt, client, _ = _make(log_dir, serverless=True)  # session == "job-1"
+        ref = "pyroworks-dev/run-0123456789abcdef0123456789abcdef/step-5"
+        info = ckpt.resume(init_from_checkpoint=ref)
+        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with(ref, source_job_id=None)
+        client.load_state_with_optimizer.assert_called_once_with(f"path://self/{ref}")
+
+    def test_init_from_checkpoint_serverless_bare_name_stays_current_run(self, log_dir):
+        # A legacy "<session>:<name>" shorthand still keeps only "<name>": the
+        # trainer prepends the caller's own run prefix, so this resumes within
+        # the current run (unchanged behavior).
+        ckpt, client, _ = _make(log_dir, serverless=True)  # session == "job-1"
+        info = ckpt.resume(init_from_checkpoint="job-1:step-5")
+        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with(
+            "step-5", source_job_id=None
+        )
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
     def test_warm_start_adapter_when_no_resume(self, log_dir):
         ckpt, client, _ = _make(log_dir, fw_rows=[], lora_rank=8)

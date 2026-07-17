@@ -372,20 +372,18 @@ class TrainingCheckpoints:
         if init_from_checkpoint:
             source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
             if self._serverless:
-                # The pooled trainer namespaces checkpoints under
-                # sessions/<session_id>/ and rejects cross_job://<id>/<name> refs
-                # (a session id is not a source job). Cross-session warm-start is
-                # not supported on the shared pool (checkpoints are session
-                # isolated), so a spec naming a different session is an error;
-                # otherwise resume from the bare name and let the trainer prepend
-                # the session prefix, mirroring the auto-resume path below.
-                if source_job_id and source_job_id != self._trainer_id:
-                    raise ValueError(
-                        f"serverless init_from_checkpoint cannot reference another "
-                        f"session ({source_job_id!r}); checkpoints on the shared pool "
-                        f"are isolated to session {self._trainer_id!r}. Use a bare "
-                        f"checkpoint name to resume within this session."
-                    )
+                # Serverless resumes from a logical checkpoint name, never a
+                # cross_job://<id>/<name> ref (the pooled trainer rejects those:
+                # a session id is not a source job). Cross-run resume is done by
+                # passing a fully-qualified "<account>/<run>/<name>" ref as
+                # init_from_checkpoint: it has no "<job>:<name>" separator, so it
+                # flows through as the bare dcp_name and the pooled trainer
+                # resolves it against the caller's own account (account-scoped
+                # guard). A bare "<name>" still resumes within the current run
+                # (the trainer prepends the caller's own <account>/<run>/ prefix),
+                # and a legacy "<session>:<name>" shorthand keeps only "<name>".
+                # source_job_id stays None either way so no cross_job:// ref is
+                # built.
                 source_job_id = None
             elif source_job_id == self._trainer_id:
                 path = self._client.resolve_checkpoint_path(dcp_name)
