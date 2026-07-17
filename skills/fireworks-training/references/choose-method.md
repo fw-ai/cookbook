@@ -45,7 +45,7 @@ If the user has prompts but no preference pairs, do not reject the task or silen
 
 ## RFT — reinforcement fine-tuning
 
-Provide three things (not necessarily labeled outputs): a **dataset** of prompts; an **evaluator or inline reward** that scores an output 0.0→1.0; and the **agent** being trained. Managed RFT uses a registered evaluator. Training SDK RFT uses reward code and may read `ground_truth` or any other field declared by that reward. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/how-rft-works · [evaluators](https://docs.fireworks.ai/fine-tuning/evaluators)
+Provide three things (not necessarily labeled outputs): a **dataset** of prompts; an **evaluator or inline reward** that scores an output 0.0→1.0; and the **agent** being trained. Managed RFT uses a registered evaluator. Training API RFT uses reward code and may read `ground_truth` or any other field declared by that reward. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/how-rft-works · [evaluators](https://docs.fireworks.ai/fine-tuning/evaluators)
 
 ## Classification (a common SFT task)
 
@@ -59,7 +59,7 @@ If `ground_truth` is a separate field rather than the final assistant turn, map 
 
 ## Hyperparameter sweep + promotion gate
 
-For anything past a smoke run, don't hand-pick one config: run the small grid below as **separate jobs**, compare on a held-out split, and promote the winner. This is now **agent-driven** (the coding agent runs the loop), not a server-side auto-sweep; the workflow lives in `references/orchestrate-from-agent.md`.
+For anything past a smoke run, don't hand-pick one config: run the small grid below as **separate jobs**, compare on a held-out split, and promote the winner. The coding agent runs the method-specific sweep through the common workflow in `SKILL.md`.
 
 ## LoRA vs full-parameter
 

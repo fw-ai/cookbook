@@ -105,7 +105,7 @@ class InfraConfig:
     knob, not part of the validated training shape.
     """
     purpose: str | None = None
-    """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
+    """Optional platform ``Purpose`` proto enum name."""
     skip_validations: bool = False
     """Skip server-side shape validation. Requires superuser API key."""
 
@@ -170,7 +170,7 @@ class TrainerConfig:
     """Disable automatic trainer cleanup after inactivity."""
 
     purpose: str | None = None
-    """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
+    """Optional platform ``Purpose`` proto enum name."""
 
     managed_by: str | None = None
     """Optional parent resource ID for managed trainer ownership."""

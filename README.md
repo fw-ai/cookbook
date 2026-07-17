@@ -2,7 +2,7 @@
 
 Ready-to-run training recipes for reinforcement learning (GRPO, DAPO, GSPO, CISPO), preference optimization (DPO, ORPO), and supervised fine-tuning (SFT) on [Fireworks](https://fireworks.ai).
 
-> **Full documentation**: [Fireworks Training SDK Reference](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction)
+> **Full documentation**: [Fireworks Training API](https://docs.fireworks.ai/fine-tuning/training-api/introduction)
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ See [`training/README.md`](./training/README.md) for configuration, recipes, and
 
 ## For AI Agents
 
-Two agent skills cover this repo: **[`skills/fireworks-fine-tuning/SKILL.md`](skills/fireworks-fine-tuning/SKILL.md)** for **managed fine-tuning** (SFT/DPO/RFT driven through `firectl`), and **[`skills/dev/SKILL.md`](skills/dev/SKILL.md)** for the **Training SDK** power-user path (recipes, custom loops, RL internals). Each maps tasks and error signals to specific reference files — start there, not the READMEs.
+One canonical skill covers the full training product: **[`skills/fireworks-training/SKILL.md`](skills/fireworks-training/SKILL.md)**. It routes managed SFT/DPO/ORPO/RFT and Training API serverless or dedicated workflows, then progressively loads the relevant cookbook, operations, or troubleshooting references.
 
 ## Repository Structure
 
@@ -27,7 +27,7 @@ directories (`integrations/`, `multimedia/`, `archived/`) are kept for backward
 compatibility.
 
 ```
-training/           Training SDK recipes, utilities, and examples
+training/           Training API recipes, utilities, and examples
   recipes/          Fork-and-customize training loop scripts
   utils/            Shared config, data loading, losses, metrics
   examples/         Worked examples (RL, SFT, DPO, ORPO)
@@ -37,11 +37,9 @@ tools/              Standalone customer scripts (downloadable from GitHub)
 skills/             Agent skills and reference docs
 ```
 
-## Fine-tuning skills
+## Training skill
 
-- **[`skills/fireworks-fine-tuning/SKILL.md`](skills/fireworks-fine-tuning/SKILL.md)** — the primary skill for **managed fine-tuning** (SFT / DPO / RFT). Your coding agent drives the `firectl` primitives directly: choose a method, prepare + validate a dataset, launch + monitor a job, pick a training shape, deploy, and troubleshoot. Successor to the Pilot agent.
-- [`skills/dev/SKILL.md`](skills/dev/SKILL.md) — the Training SDK power-user path (fork a recipe, custom training loop, RL internals, hotload, distillation).
-- _Deprecated:_ [`skills/fireworks-agent/`](skills/fireworks-agent/SKILL.md) (Pilot, `firectl session`) and [`skills/research/fireworks-auto-tune/`](skills/research/fireworks-auto-tune/SKILL.md) (customer `firectl` SFT) — both superseded by `skills/fireworks-fine-tuning/`.
+- **[`skills/fireworks-training/SKILL.md`](skills/fireworks-training/SKILL.md)** — install once, then ask your coding agent to plan, run, resume, deploy, or debug training. The skill uses public `firectl` for managed jobs and the cookbook for custom Training API loops.
 
 ## Contributing
 

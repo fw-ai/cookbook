@@ -18,7 +18,7 @@ DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
 
 1. Create the trainer via `TrainerJobManager.create_and_wait(...)`.
 2. Create the deployment via `DeploymentManager.create_or_get(DeploymentConfig(hot_load_trainer_job=<trainer_job>, ...))`.
-   The deployment copies the trainer's bucket URL at creation. The Training SDK marks cookbook-created serving
+   The deployment copies the trainer's bucket URL at creation. The Training API SDK marks cookbook-created serving
    deployments as training deployments, which is required for deployment shape versions pinned by training shapes.
 3. The **trainer owns** the checkpoints. Promote reads them from the trainer's bucket without any deployment ID.
 4. On resume, the deployment is re-attached to the new trainer (PATCH `hotLoadTrainerJob`), which briefly restarts the serving pod.
@@ -185,7 +185,7 @@ Agent-assisted debugging: first search the Fireworks training cookbook skill for
 
 Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>` or `checkpoint "<name>" not found in GCS`.
 
-1. **First, check the SDK version matches the cookbook's pin** (see [`../../SKILL.md#first-debug-step--always`](../../SKILL.md#first-debug-step--always)).
+1. **First, check the SDK version matches the cookbook's pin** (see the [common workflow](../../../SKILL.md#common-workflow)).
 2. **Check if it's a retention-expired trainer.** `list_checkpoints` / `promote_checkpoint` returning `NOT_FOUND` > 30 days after delete is expected — the row is gone and the checkpoints in GCS have been GC'd too.
 3. **If the error shows expected snapshot `S` but a different current deployment snapshot:** use [Runtime hotload mismatch or stale deployment attachment](#runtime-hotload-mismatch-or-stale-deployment-attachment).
 4. **If the trainer is alive or within retention:** most remaining causes are a `PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up on a `--skip-validations` trainer or a pre-validation run. Ask:

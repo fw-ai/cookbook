@@ -2,7 +2,7 @@
 
 *Use this reference whenever a run may outlive the current coding-agent conversation, when resuming work, or when preparing the final result.*
 
-Pilot stored the plan, workspace, approvals, resources, events, and report behind a session ID. The coding-agent flow has no server-side session wrapper, so preserve that useful behavior in a small local run manifest. The manifest stores orchestration state only; Fireworks remains the source of truth for datasets, jobs, models, deployments, and billing.
+The coding-agent flow preserves its plan, approvals, resources, progress, and report in a small local run manifest. The manifest stores orchestration state only; Fireworks remains the source of truth for datasets, jobs, models, deployments, and billing.
 
 ## Create one manifest per run
 
@@ -20,7 +20,7 @@ updated_at_utc:
 ## Intent
 task:
 success_metric:
-method: sft | dpo | managed-rft | training-sdk
+method: sft | dpo | managed-rft | training-api-serverless | training-api-dedicated
 
 ## Inputs
 account:
@@ -49,10 +49,10 @@ evaluator:
 job:
 output_model:
 deployment:
-sdk_recipe_path_and_commit:
-sdk_trainer_job:
-sdk_rollout_deployments:
-sdk_latest_checkpoint:
+training_api_recipe_path_and_commit:
+trainer_job:
+rollout_deployments:
+latest_checkpoint:
 wandb_or_metrics:
 
 ## Progress
@@ -115,8 +115,8 @@ When asked to resume:
    - SFT: `firectl sftj get <JOB_ID> -o json`
    - DPO / ORPO: `firectl dpo-job get <JOB_ID> -o json`
    - Managed RFT: `firectl rftj get <JOB_ID> -o json`
-   - Training SDK trainer: `firectl rlor-trainer-job get <TRAINER_JOB_ID> -o json`
-   - Training SDK checkpoints: `firectl rlor-trainer-job list-checkpoints <TRAINER_JOB_ID>`
+   - Training API dedicated trainer: `firectl rlor-trainer-job get <TRAINER_JOB_ID> -o json`
+   - Training API dedicated checkpoints: `firectl rlor-trainer-job list-checkpoints <TRAINER_JOB_ID>`
    - Deployment: `firectl deployment get <DEPLOYMENT_ID> -o json`
    - Output model: `firectl model get <OUTPUT_MODEL_ID> -o json`
 4. Reconcile the manifest with Fireworks state and update it.
@@ -132,9 +132,9 @@ Never replay dataset, evaluator, job, model, or deployment creation merely becau
 
 If the manifest says creation was attempted but has no returned resource, call the exact matching `get` command with the planned ID. If it exists, compare its immutable inputs and resolved config with the approved plan. Reuse only an exact match. Evaluator registration may not expose a caller-selected ID: if its response is lost, locate it through Eval Protocol output, the account UI, or the current evaluator API by matching the planned name and source hash; never register it again while state is ambiguous. If a resource does not exist, ask before retrying when the original action may have incurred spend. Never generate a second ID as a recovery shortcut.
 
-### Resume a Training SDK run
+### Resume a Training API dedicated run
 
-Training SDK recipes may provision several resources rather than one managed job. Before launch, record the recipe path, cookbook commit, full config, local working directory, planned output-model ID, and deployment IDs. Immediately after provisioning, persist every returned RLOR trainer job and rollout deployment ID.
+Training API dedicated recipes may provision several resources rather than one managed job. Before launch, record the recipe path, cookbook commit, full config, local working directory, planned output-model ID, and deployment IDs. Immediately after provisioning, persist every returned RLOR trainer job and rollout deployment ID.
 
 On resume:
 
@@ -149,7 +149,7 @@ If the process exited before the trainer ID was recorded, do not relaunch automa
 
 ## Method-neutral progress updates
 
-Pilot exposed one event stream. Recreate the useful part as a concise progress update:
+Normalize the strongest method-specific signal into a concise progress update:
 
 ```text
 Phase: job_running
@@ -168,7 +168,7 @@ Always distinguish:
 - **Cost** from authoritative usage or billing evidence. If unavailable, say unavailable.
 - **ETA** from an explicit platform estimate. Do not invent one from elapsed time.
 
-For method-specific commands and no-progress handling, use `references/orchestrate-from-agent.md` and `references/error-reference.md`.
+For method-specific commands use the common workflow in `SKILL.md`; for no-progress handling use `references/error-reference.md`.
 
 ## Required final report
 

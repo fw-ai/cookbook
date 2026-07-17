@@ -25,18 +25,17 @@ Create a key in the [dashboard](https://app.fireworks.ai/settings/users/api-keys
 - **Always** prefer a least-privilege key over a personal admin key for automation/agents — use a **service account** with a scoped permission preset. See [Service Accounts](https://docs.fireworks.ai/accounts/service-accounts.md).
 - **Never** commit a key — use `.env` (gitignored) or a secret manager.
 
-## 3. Choose your launch surface
+## 3. Choose the training workflow
 
 Managed fine-tuning is **GA**; the **Training API is private preview** ([request access](https://fireworks.ai/contact-training)). See [overview](https://docs.fireworks.ai/fine-tuning/finetuning-intro.md).
 
-| Surface | What it is | Use when |
+| Workflow | What it is | Use when |
 | --- | --- | --- |
-| **Your coding agent + this skill + `firectl`** | Claude Code / Cursor drives the CLI primitives directly, using this skill as the orchestration layer | Default going forward. See `references/orchestrate-from-agent.md` |
 | **Managed Fine-Tuning** | Data + config via UI / `firectl` / REST; runs SFT, DPO, RFT | Standard production tuning |
-| **Training API** | Custom Python training loops on Fireworks GPUs | Research / custom loss / RL (preview) |
-| ~~**Fireworks Agent (Pilot)**~~ | ~~Plain-English server-side agent (`firectl session ...`)~~ | **Deprecated.** Being decommissioned in favor of the coding-agent + skill path above |
+| **Training API serverless** | Custom LoRA SFT or RL loop on a shared pooled trainer | Fast iteration on supported models with no provisioning |
+| **Training API dedicated** | Custom loop with provisioned trainer and deployment resources | Full-parameter, DPO, sustained RL, explicit resume/deployment control; subject to quota and availability |
 
-Default: drive the run from your coding agent with `firectl` (see `references/orchestrate-from-agent.md`); use the dashboard for a first look at loss curves. **Do not build on `firectl session *` (Pilot) — it is deprecated.**
+The coding agent, UI, CLI, REST API, and Python SDK are interaction surfaces. This skill can guide any of the three workflows; use the root `SKILL.md` decision tables.
 
 ## 4. Preflight — verify before you create a job
 
@@ -54,7 +53,7 @@ firectl model get -a fireworks <MODEL_ID>    # base model shows Tunable: true
 - **Full model path:** always pass the full base-model path `accounts/fireworks/models/<MODEL_ID>`, never a bare name. A bare name resolves against your own account, so the public base model fails to resolve when your acting account is not `fireworks`.
 - **Quota vs billing are different gates:** quota is a GPU ceiling; billing is a payment-method / spend control. Check both.
 
-Only after these pass, show the plan and create the job.
+Only after these pass, show the complete resolved plan and receive explicit confirmation before dataset upload or job creation.
 
 ## 5. Minimal first SFT job
 

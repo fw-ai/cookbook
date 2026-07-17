@@ -1,18 +1,23 @@
 name: Skills Validate
 
-# Paved-path gate for the agent skills: fails the PR if a SKILL.md loses its
-# frontmatter, routes to a missing reference, has a broken relative link, or
-# leaves an orphan reference. This is the "skill install/attach keeps working"
-# half of CI; the recipe half runs in training-smoke.yml (nightly, real GPU).
+# Gate for the canonical training skill, cookbook routes, confirmation contract,
+# plugin packaging, references, and relative links. Live recipe behavior remains
+# covered by training-smoke.yml.
 
 on:
   pull_request:
     paths:
       - "skills/**"
+      - ".claude-plugin/**"
+      - "training/recipes/**"
+      - "training/examples/serverless_rl/**"
   push:
     branches: [main]
     paths:
       - "skills/**"
+      - ".claude-plugin/**"
+      - "training/recipes/**"
+      - "training/examples/serverless_rl/**"
   workflow_dispatch:
 
 permissions:

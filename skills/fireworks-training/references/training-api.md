@@ -1,16 +1,25 @@
 # Training API (custom training loops)
 
-*Source of truth: [Training API intro](https://docs.fireworks.ai/fine-tuning/training-api/introduction.md) · [cookbook](https://github.com/fw-ai/cookbook) — defer to the live docs/repo for current SDK + recipes.*
+*Source of truth: [Training API intro](https://docs.fireworks.ai/fine-tuning/training-api/introduction.md) · [choose infrastructure](https://docs.fireworks.ai/fine-tuning/training-api/choose-infrastructure.md) · [cookbook](https://github.com/fw-ai/cookbook) — defer to the live docs/repo for current SDK + recipes.*
 
-Write your **own** Python training loop; Fireworks runs forward/backward on distributed GPUs. The SDK is **Tinker-compatible**, so Tinker code ports over with minimal changes. Low-level path — for standard runs prefer the managed UI.
+Write or fork a Python training loop; Fireworks runs forward/backward on distributed GPUs. The SDK is **Tinker-compatible**, so Tinker code ports over with minimal changes. For standard supported jobs, prefer managed training.
 
 Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookbook (start here): https://github.com/fw-ai/cookbook
 
 > Status: private preview — request access at https://fireworks.ai/contact-training
 
-## API vs managed UI
+## Managed training vs Training API
 
-Use the **managed UI** for standard SFT/DPO (data + hyperparameters, no code). Reach for the **Training API** when you need: custom **loss/reward**, **RL with rollouts** (inference-in-the-loop), access to forward-pass internals (e.g. MoE routing for R3), or multi-turn/agentic trajectories.
+Use **managed training** for standard SFT/DPO/ORPO/RFT jobs. Reach for the **Training API** when you need a custom **loss/reward**, **RL with rollouts** (inference-in-the-loop), forward-pass internals (for example MoE routing for R3), distillation, or multi-turn/agentic trajectories.
+
+## Training API infrastructure
+
+| Path | Use when | Cookbook |
+|---|---|---|
+| **Serverless** | Supported-model LoRA SFT or RL, shared pool, per-token billing, no provisioning | `training/examples/serverless_rl/` |
+| **Dedicated** | Full-parameter, DPO, broader model/method support, sustained runs, explicit trainer/deployment/checkpoint control | `training/recipes/` |
+
+Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) pages before choosing.
 
 ## Two agent-drivable ways to run RFT/RL
 
@@ -44,7 +53,7 @@ Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval
 
 ## Ways to supply the reward
 
-Whichever RFT route you use, the reward can come from three places (Pilot supported the same three):
+Whichever RFT route you use, the reward can come from three places:
 
 1. **An existing evaluator ID** (`accounts/<acct>/evaluators/<id>`) — reuse a registered eval3 evaluator. Managed route.
 2. **An inline `reward_fn`** — write the reward as Python in the forked recipe. The agent-drivable default; no evaluator resource, any key.
@@ -52,9 +61,9 @@ Whichever RFT route you use, the reward can come from three places (Pilot suppor
 
 ## Default workflow: fork a cookbook recipe
 
-> **Companion skill:** the separately installed [`fireworks-training` skill](https://github.com/fw-ai/cookbook/blob/main/skills/dev/SKILL.md) is the SDK reference implementation — route there for recipe internals (RL loss paths, hotload, shapes, distillation, infra migration). This reference is the managed-orchestration view; `fireworks-training` is the code path.
+> **Cookbook implementation:** use the exact recipe and SDK references routed from the root `SKILL.md`. This file explains managed-versus-Training-API choices; `references/sdk/` and `training/` contain the implementation depth.
 
-**Approval gate still applies.** Training SDK recipes can create trainers, rollout deployments, checkpoints, promoted models, and paid inference. Before running a recipe or any create/promote/deploy action, show the account, recipe, dataset, full resolved trainer and deployment config, cost drivers, evaluation plan, and teardown plan; get explicit approval for this run. A deployment or materially expanded sweep gets its own approval.
+**Approval gate still applies.** Training API cookbook recipes can create trainers, rollout deployments, checkpoints, promoted models, and paid inference. Before running a recipe or any create/promote/deploy action, show the account, recipe, dataset, full resolved trainer and deployment config, cost drivers, evaluation plan, and teardown plan; get explicit approval for this run. A deployment or materially expanded sweep gets its own approval.
 
 Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw-ai/cookbook`:
 - `training/recipes/` — loop scripts (e.g. `async_rl_loop`)

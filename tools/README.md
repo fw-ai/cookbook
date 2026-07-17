@@ -122,4 +122,4 @@ model, and token totals.
 - Deployments with no metrics data in the window are treated as **0 tokens/day**.
 
 Related agent skill:
-[`skills/research/fireworks-auto-tune/SKILL.md`](../skills/research/fireworks-auto-tune/SKILL.md)
+[`skills/fireworks-training/SKILL.md`](../skills/fireworks-training/SKILL.md)

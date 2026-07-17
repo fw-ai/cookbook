@@ -2,7 +2,7 @@
 
 *Use this reference when the user has prompts but no DPO pairs, needs a reusable evaluator, or wants the agent to turn a plain-language success criterion into executable evaluation.*
 
-Pilot generated preference pairs and evaluators inside its hosted workspace. The coding-agent flow can preserve that capability transparently: write artifacts in the user's workspace, show them for review, validate them locally, and create Fireworks resources only after approval.
+Generate preference pairs and evaluators transparently in the user's workspace: show artifacts for review, validate them locally, and create Fireworks resources only after approval.
 
 ## Route by the signal the user has
 
@@ -11,7 +11,7 @@ Pilot generated preference pairs and evaluators inside its hosted workspace. The
 | Ideal labeled answers | SFT. Do not manufacture preference pairs. |
 | Human or model-ranked pairs | DPO or ORPO. Normalize to the managed preference schema. |
 | Prompts only, plus a clear preference criterion | Generate pairs, review a sample, then run DPO or ORPO. |
-| Prompts plus objective correctness | Managed RFT with a registered evaluator, or Training SDK RFT with an inline reward. |
+| Prompts plus objective correctness | Managed RFT with a registered evaluator, or Training API RFT with an inline reward. |
 | Open-ended quality criteria | Write and calibrate an LLM-judge rubric before training. |
 
 Never silently turn prompts into preference data. Pair generation adds inference cost and embeds the generator or judge's bias into the training set.
@@ -103,7 +103,7 @@ Evaluator creation may be restricted by account role. Check the current docs and
 
 If registration returns ambiguously or the response is lost, do not run it again. Use the Eval Protocol output, account UI, or current evaluator API to locate a resource matching the planned display name and source hash. If it cannot be identified unambiguously, ask an admin or support to reconcile it before retrying.
 
-### Training SDK inline reward
+### Training API inline reward
 
 For custom rollouts, multi-turn trajectories, or reward logic that should remain in code, fork the cookbook `rl_loop` or `async_rl_loop` recipe and implement `reward_fn`. No registered evaluator is required.
 
