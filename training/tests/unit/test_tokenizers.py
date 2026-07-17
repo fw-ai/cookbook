@@ -10,17 +10,16 @@ from training.utils.runner import RunnerConfig, RunnerIO
 
 
 class FakeHuggingFaceHTTPError(Exception):
-    def __init__(self, status_code: int):
+    def __init__(self, status_code: int, model: str = "Qwen/Qwen3-8B"):
         super().__init__(
-            f"Server error '{status_code}' for url "
-            "'https://huggingface.co/Qwen/Qwen3-8B'"
+            f"Server error '{status_code}' for url 'https://huggingface.co/{model}'"
         )
         self.response = SimpleNamespace(status_code=status_code)
 
 
-def wrapped_tokenizer_error(status_code: int) -> OSError:
+def wrapped_tokenizer_error(status_code: int, model: str = "Qwen/Qwen3-8B") -> OSError:
     try:
-        raise FakeHuggingFaceHTTPError(status_code)
+        raise FakeHuggingFaceHTTPError(status_code, model)
     except FakeHuggingFaceHTTPError as exc:
         try:
             raise OSError(
@@ -149,6 +148,24 @@ def test_load_tokenizer_does_not_retry_non_transient_failure(monkeypatch):
 
     assert calls == 1
     assert sleeps == []
+
+
+def test_load_tokenizer_trusts_explicit_non_transient_status(monkeypatch):
+    calls = 0
+
+    def fake_from_pretrained(model, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise wrapped_tokenizer_error(404, model="org/model-504")
+
+    monkeypatch.setattr(
+        tokenizers.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
+    )
+
+    with pytest.raises(OSError, match="Unable to load vocabulary"):
+        tokenizers.load_tokenizer("org/model-504")
+
+    assert calls == 1
 
 
 def test_huggingface_unavailability_propagates_to_runner_status(monkeypatch):

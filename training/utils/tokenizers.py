@@ -26,8 +26,15 @@ def _transient_huggingface_status_code(exc: BaseException) -> int | None:
         seen.add(id(current))
         response = getattr(current, "response", None)
         status_code = getattr(response, "status_code", None)
-        if status_code in _TRANSIENT_HTTP_STATUS_CODES:
-            return int(status_code)
+        if status_code is not None:
+            try:
+                parsed_status_code = int(status_code)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if parsed_status_code in _TRANSIENT_HTTP_STATUS_CODES:
+                    return parsed_status_code
+                return None
 
         message = str(current)
         normalized_message = message.lower()
