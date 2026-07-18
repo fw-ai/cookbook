@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from functools import wraps
 from typing import Any
 
 import transformers
@@ -49,6 +51,32 @@ def _huggingface_http_status_code(exc: BaseException) -> int | None:
     return None
 
 
+_TokenizerLoader = Callable[[str | None, str | None], Any]
+
+
+def _propagate_huggingface_http_status(loader: _TokenizerLoader) -> _TokenizerLoader:
+    """Preserve a wrapped Hugging Face HTTP status at the tokenizer boundary."""
+
+    @wraps(loader)
+    def wrapped(
+        tokenizer_model: str | None,
+        tokenizer_revision: str | None = None,
+    ) -> Any:
+        try:
+            return loader(tokenizer_model, tokenizer_revision)
+        except Exception as exc:
+            status_code = _huggingface_http_status_code(exc)
+            if status_code is None:
+                raise
+            raise RuntimeError(
+                "Hugging Face Hub request failed while loading tokenizer "
+                f"{tokenizer_model!r} (HTTP {status_code})."
+            ) from exc
+
+    return wrapped
+
+
+@_propagate_huggingface_http_status
 def load_tokenizer(
     tokenizer_model: str | None,
     tokenizer_revision: str | None = None,
@@ -58,20 +86,11 @@ def load_tokenizer(
     ``tokenizer_revision`` is optional; empty strings are treated as unset so
     existing configs keep resolving HuggingFace ``main``.
     """
-    try:
-        return transformers.AutoTokenizer.from_pretrained(
-            tokenizer_model,
-            revision=tokenizer_revision or None,
-            trust_remote_code=True,
-        )
-    except Exception as exc:
-        status_code = _huggingface_http_status_code(exc)
-        if status_code is None:
-            raise
-        raise RuntimeError(
-            "Hugging Face Hub request failed while loading tokenizer "
-            f"{tokenizer_model!r} (HTTP {status_code})."
-        ) from exc
+    return transformers.AutoTokenizer.from_pretrained(
+        tokenizer_model,
+        revision=tokenizer_revision or None,
+        trust_remote_code=True,
+    )
 
 
 def load_deployment_tokenizer(deployment: Any) -> Any:
