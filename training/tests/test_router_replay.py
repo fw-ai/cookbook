@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 from pathlib import Path
 
 
@@ -22,3 +23,46 @@ def test_build_r3_routing_matrices_pads_completion_only_response() -> None:
         prompt_len=3,
         model_input_len=4,
     ) == ["", "", "rm_completion_0", "rm_completion_1"]
+
+
+def test_build_r3_routing_matrices_marks_missing_capture_as_enabled() -> None:
+    router_replay = _load_router_replay_module()
+
+    assert router_replay.build_r3_routing_matrices(
+        None,
+        prompt_len=3,
+        model_input_len=6,
+    ) == []
+
+
+def test_build_r3_routing_matrices_warns_and_preserves_invalid_count_for_sdk_check(
+    caplog,
+) -> None:
+    router_replay = _load_router_replay_module()
+
+    with caplog.at_level(logging.WARNING):
+        result = router_replay.build_r3_routing_matrices(
+            ["rm_0", "rm_1", "rm_2"],
+            prompt_len=3,
+            model_input_len=6,
+        )
+
+    assert result == ["rm_0", "rm_1", "rm_2"]
+    assert "R3: routing_matrices length (3) != expected (4)" in caplog.text
+    assert "prompt_len=3, model_input_len=6" in caplog.text
+
+
+def test_warn_if_full_sequence_router_replay(caplog) -> None:
+    router_replay = _load_router_replay_module()
+
+    with caplog.at_level(logging.WARNING):
+        router_replay.warn_if_full_sequence_router_replay(completion_only=True)
+    assert "router_replay_completion_only=False" not in caplog.text
+
+    with caplog.at_level(logging.WARNING):
+        router_replay.warn_if_full_sequence_router_replay(completion_only=False)
+    assert "router_replay_completion_only=False" in caplog.text
+    assert (
+        "disables prompt KV-cache reuse unless serving enables --cache-logprobs"
+        in caplog.text
+    )

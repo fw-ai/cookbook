@@ -1,0 +1,14 @@
+{
+  "name": "fw-ai-cookbook",
+  "owner": { "name": "Fireworks AI" },
+  "metadata": {
+    "description": "Fireworks training from coding agents: managed jobs and Training API cookbook workflows."
+  },
+  "plugins": [
+    {
+      "name": "fireworks-training",
+      "source": "./skills/fireworks-training",
+      "description": "Managed SFT/DPO/ORPO/RFT and Training API serverless or dedicated workflows from one coding-agent skill."
+    }
+  ]
+}

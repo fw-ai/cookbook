@@ -19,8 +19,12 @@ DEFAULT_SMOKE_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256
 DEFAULT_SMOKE_REFERENCE_TRAINING_SHAPE = (
     "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
 )
-DEFAULT_SMOKE_LORA_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
-DEFAULT_SMOKE_DEPLOYMENT_SHAPE = "accounts/fireworks/deploymentShapes/rft-qwen3p5-9b-v2/versions/n864rzzy"
+DEFAULT_SMOKE_LORA_TRAINING_SHAPE = (
+    "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
+)
+DEFAULT_SMOKE_DEPLOYMENT_SHAPE = (
+    "accounts/fireworks/deploymentShapes/rft-qwen3p5-9b-v2/versions/n864rzzy"
+)
 DEFAULT_SMOKE_MINIMAL_TRAINING_SHAPE = "qwen3-4b-minimum"
 DEFAULT_SMOKE_MINIMAL_REF_TRAINING_SHAPE = "qwen3-4b-minimum-lora"
 DEFAULT_SMOKE_BASE_URL = "https://api.fireworks.ai"
@@ -43,7 +47,9 @@ def smoke_tokenizer_model() -> str:
 @pytest.fixture(scope="session")
 def smoke_training_shape(port_lora_rank) -> str:
     if port_lora_rank:
-        return _get_env("FIREWORKS_SMOKE_LORA_TRAINING_SHAPE", DEFAULT_SMOKE_LORA_TRAINING_SHAPE)
+        return _get_env(
+            "FIREWORKS_SMOKE_LORA_TRAINING_SHAPE", DEFAULT_SMOKE_LORA_TRAINING_SHAPE
+        )
     return _get_env("FIREWORKS_SMOKE_TRAINING_SHAPE", DEFAULT_SMOKE_TRAINING_SHAPE)
 
 
@@ -73,12 +79,16 @@ def smoke_training_profile(smoke_sdk_managers, smoke_training_shape, port_lora_r
     rlor_mgr, _deploy_mgr = smoke_sdk_managers
     profile = rlor_mgr.resolve_training_profile(smoke_training_shape)
     if port_lora_rank:
-        assert profile.supports_lora, f"LoRA track requires a LoRA-capable shape: {smoke_training_shape}"
+        assert profile.supports_lora, (
+            f"LoRA track requires a LoRA-capable shape: {smoke_training_shape}"
+        )
     return profile
 
 
 @pytest.fixture(scope="session")
-def smoke_reference_training_profile(smoke_sdk_managers, smoke_reference_training_shape):
+def smoke_reference_training_profile(
+    smoke_sdk_managers, smoke_reference_training_shape
+):
     """Resolve the full-param reference shape before provisioning."""
     if smoke_reference_training_shape is None:
         return None

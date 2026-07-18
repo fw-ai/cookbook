@@ -10,19 +10,20 @@ Composable with any policy loss (GRPO, DAPO, GSPO, CISPO, IS, DRO).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 
 SAFETY_CLAMP = 20.0
 
 
-@dataclass
+@dataclass(frozen=True)
 class TISConfig:
     """TIS weight configuration."""
 
     cap: float = 5.0
     """Upper clamp for the TIS weight."""
-    level: str = "token"
+    level: Literal["token", "sequence"] = "token"
     """'token': per-token IS weights.  'sequence': geometric mean
     of per-token ratios, broadcast to all tokens."""
     icepop_threshold: float | None = None
@@ -32,20 +33,36 @@ class TISConfig:
     everything else.
     """
 
+    def __post_init__(self) -> None:
+        if self.cap < 0.0:
+            raise ValueError(f"TIS cap must be non-negative, got {self.cap}.")
+        if self.level not in {"token", "sequence"}:
+            raise ValueError(
+                f"TIS level must be 'token' or 'sequence', got {self.level!r}."
+            )
+        if self.icepop_threshold is not None and self.level != "token":
+            raise ValueError("icepop_threshold is only supported for token-level TIS.")
+        if self.icepop_threshold is not None and self.icepop_threshold < 1.0:
+            raise ValueError(
+                f"TIS icepop_threshold must be >= 1.0, got {self.icepop_threshold}."
+            )
+
+
 def compute_tis_weight(
     resp_old_policy: torch.Tensor,
     resp_inf: torch.Tensor,
     config: TISConfig,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Compute TIS weight: clamp(exp(old_policy - inf), max=cap)."""
-    if config.icepop_threshold is not None and config.level != "token":
-        raise ValueError("icepop_threshold is only supported for token-level TIS.")
-    if config.icepop_threshold is not None and config.icepop_threshold < 1.0:
+    if resp_old_policy.shape != resp_inf.shape:
         raise ValueError(
-            f"TIS icepop_threshold must be >= 1.0, got {config.icepop_threshold}."
+            "TIS requires aligned old-policy and rollout logprobs, got "
+            f"{tuple(resp_old_policy.shape)} and {tuple(resp_inf.shape)}."
         )
 
-    tis_log = torch.clamp(resp_old_policy - resp_inf, min=-SAFETY_CLAMP, max=SAFETY_CLAMP)
+    tis_log = torch.clamp(
+        resp_old_policy - resp_inf, min=-SAFETY_CLAMP, max=SAFETY_CLAMP
+    )
 
     if config.level == "sequence":
         tis_raw = torch.exp(tis_log.mean()).expand_as(tis_log)

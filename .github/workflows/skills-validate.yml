@@ -1,0 +1,37 @@
+name: Skills Validate
+
+# Gate for the canonical training skill, cookbook routes, confirmation contract,
+# plugin packaging, references, and relative links. Live recipe behavior remains
+# covered by training-smoke.yml.
+
+on:
+  pull_request:
+    paths:
+      - "skills/**"
+      - ".claude-plugin/**"
+      - "training/recipes/**"
+      - "training/examples/serverless_rl/**"
+  push:
+    branches: [main]
+    paths:
+      - "skills/**"
+      - ".claude-plugin/**"
+      - "training/recipes/**"
+      - "training/examples/serverless_rl/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate agent skills
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate skill structure, routing, and links
+        run: python skills/validate_skills.py

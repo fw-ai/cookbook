@@ -15,6 +15,12 @@ from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
 from training.utils.rl.tis import SAFETY_CLAMP, TISConfig
 
 
+def validate_reinforce_config(*, kl_beta: float) -> None:
+    """Validate REINFORCE settings before building the loss closure."""
+    if kl_beta < 0:
+        raise ValueError("REINFORCE kl_beta must be non-negative.")
+
+
 def make_reinforce_loss_fn(
     advantages: List[float],
     ref_logprobs: List[List[float]],
@@ -40,6 +46,7 @@ def make_reinforce_loss_fn(
         kl_beta: KL penalty coefficient (0 disables KL term).
         tis_config: TIS weight configuration.
     """
+    validate_reinforce_config(kl_beta=kl_beta)
     if tis_config is None:
         tis_config = TISConfig()
     prompt_lens_list = _normalize_prompt_lens(prompt_lens, len(advantages))

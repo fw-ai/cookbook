@@ -2,55 +2,9 @@
 
 from __future__ import annotations
 
-import logging
-import math
-from typing import Any, Callable
+from typing import Any
 
 from training.utils.runner import RunnerIO, RunStatus
-
-logger = logging.getLogger(__name__)
-
-ResourceCallback = Callable[..., None]
-"""Callback invoked once remote training resources have been provisioned."""
-
-
-def notify_resources_ready(
-    infra: Any,
-    on_resources_ready: ResourceCallback | None,
-) -> None:
-    """Notify orchestration that training resources are ready.
-
-    Callback failures are logged but never propagated because artifact
-    writers should not be able to abort training.
-    """
-    if on_resources_ready is None:
-        return
-    try:
-        on_resources_ready(
-            deployment_id=getattr(infra, "deployment_id", None),
-            policy_job_id=getattr(infra, "policy_job_id", None),
-            reference_job_id=getattr(infra, "reference_job_id", None),
-        )
-    except Exception as exc:  # noqa: BLE001 - artifact writer must not abort training
-        logger.warning(
-            "on_resources_ready callback raised %r; ignoring",
-            exc,
-            exc_info=True,
-        )
-
-
-def estimate_async_total_steps(
-    *,
-    step_offset: int,
-    total_items: int,
-    prior_rows_consumed: int,
-    prompt_groups_per_step: int,
-) -> int:
-    """Estimate async RL optimizer steps for status reporting."""
-    remaining = max(0, total_items - prior_rows_consumed)
-    rollout_batches = math.ceil(remaining / max(1, prompt_groups_per_step))
-    return step_offset + rollout_batches
-
 
 def write_running_step(
     runner: RunnerIO,
@@ -63,6 +17,25 @@ def write_running_step(
 ) -> None:
     """Append metrics and refresh running status + metadata."""
     runner.append_metrics(step, metrics, tokens=tokens)
+    runner.write_status(
+        RunStatus.RUNNING,
+        step=step,
+        total_steps=total_steps,
+        message=message,
+    )
+    runner.write_metadata()
+
+
+def write_running_progress(
+    runner: RunnerIO,
+    *,
+    step: int,
+    total_steps: int,
+    tokens_processed: int,
+    message: str = "training",
+) -> None:
+    """Refresh lifecycle progress without writing a second metrics stream."""
+    runner.set_tokens_processed(tokens_processed)
     runner.write_status(
         RunStatus.RUNNING,
         step=step,

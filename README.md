@@ -2,7 +2,7 @@
 
 Ready-to-run training recipes for reinforcement learning (GRPO, DAPO, GSPO, CISPO), preference optimization (DPO, ORPO), and supervised fine-tuning (SFT) on [Fireworks](https://fireworks.ai).
 
-> **Full documentation**: [Fireworks Training SDK Reference](https://docs.fireworks.ai/fine-tuning/training-sdk/introduction)
+> **Full documentation**: [Fireworks Training API](https://docs.fireworks.ai/fine-tuning/training-api/introduction)
 
 ## Quick Start
 
@@ -17,7 +17,31 @@ See [`training/README.md`](./training/README.md) for configuration, recipes, and
 
 ## For AI Agents
 
-The primary reference for agents working in this repo is **[`skills/dev/SKILL.md`](skills/dev/SKILL.md)** — it maps tasks and error signals to specific reference files. Start there, not the READMEs.
+One canonical skill covers the full training product: **[`skills/fireworks-training/SKILL.md`](skills/fireworks-training/SKILL.md)**. It routes managed SFT/DPO/ORPO/RFT and Training API serverless or dedicated workflows, then progressively loads the relevant cookbook, operations, or troubleshooting references.
+
+### Claude Code
+
+```bash
+claude plugin marketplace add fw-ai/cookbook
+claude plugin install fireworks-training@fw-ai-cookbook
+```
+
+### Cursor
+
+```bash
+npx --yes skills add fw-ai/cookbook -g -s fireworks-training -a cursor -y
+```
+
+### Codex
+
+```bash
+npx --yes skills add fw-ai/cookbook -g -s fireworks-training -a codex -y
+```
+
+The skill is portable Agent Skills Markdown. Cursor and Codex installation is
+validated with the `skills` CLI; it is not limited to the Claude compact
+interface. `firectl` may still require mutating commands to be run manually in
+the user's terminal when its AI-agent safety guard is active.
 
 ## Repository Structure
 
@@ -27,7 +51,7 @@ directories (`integrations/`, `multimedia/`, `archived/`) are kept for backward
 compatibility.
 
 ```
-training/           Training SDK recipes, utilities, and examples
+training/           Training API recipes, utilities, and examples
   recipes/          Fork-and-customize training loop scripts
   utils/            Shared config, data loading, losses, metrics
   examples/         Worked examples (RL, SFT, DPO, ORPO)
@@ -37,15 +61,9 @@ tools/              Standalone customer scripts (downloadable from GitHub)
 skills/             Agent skills and reference docs
 ```
 
-## Fireworks Agent skill
+## Training skill
 
-- [`skills/fireworks-agent/SKILL.md`](skills/fireworks-agent/SKILL.md)
-  — end-to-end fine-tuning via the Fireworks Agent (`firectl
-  session`). Give it one natural-language instruction and it handles
-  data inspection, model selection, hyperparameter sweeps, training,
-  evaluation, and deployment. Includes the full session lifecycle:
-  create, stream events, answer the agent's mid-run questions,
-  recover from failures, and clean up.
+- **[`skills/fireworks-training/SKILL.md`](skills/fireworks-training/SKILL.md)** — install once, then ask your coding agent to plan, run, resume, deploy, or debug training. The skill uses public `firectl` for managed jobs and the cookbook for custom Training API loops.
 
 ## Contributing
 

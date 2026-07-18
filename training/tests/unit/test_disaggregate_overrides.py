@@ -41,7 +41,10 @@ repo, ...).
 
 from __future__ import annotations
 
+import signal
 import warnings
+from contextlib import contextmanager
+from functools import cache
 from typing import Any
 
 import pytest
@@ -100,11 +103,38 @@ _PARITY_CASES = [
 _NON_THINKING_VARIANTS_NAMES: set[str] = set()
 
 
+class _TokenizerLoadTimeout(BaseException):
+    """Escape huggingface_hub's broad retry handling on a stalled request."""
+
+
+@contextmanager
+def _tokenizer_load_timeout(seconds: int = 30):
+    """Bound Hub metadata/download stalls on Linux CI runners."""
+    if not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _raise_timeout(_signum, _frame):
+        raise _TokenizerLoadTimeout(f"tokenizer load exceeded {seconds}s")
+
+    previous_handler = signal.signal(signal.SIGALRM, _raise_timeout)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+@cache
 def _load_tokenizer(model_id: str):
     try:
-        return transformers.AutoTokenizer.from_pretrained(
-            model_id, trust_remote_code=True
-        )
+        with _tokenizer_load_timeout():
+            return transformers.AutoTokenizer.from_pretrained(
+                model_id, trust_remote_code=True
+            )
+    except _TokenizerLoadTimeout:
+        return None
     except Exception:  # noqa: BLE001 — network / gated repo / config drift
         return None
 

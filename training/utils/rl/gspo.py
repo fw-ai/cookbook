@@ -6,7 +6,8 @@ logprobs, with behavioral TIS weight correction.
 
 Example::
 
-    Config(policy_loss="gspo", gspo=GSPOConfig())
+    loss_fn = make_gspo_loss_fn(..., gspo_config=GSPOConfig())
+    policy.forward_backward_custom(data, loss_fn)
 """
 
 from __future__ import annotations
@@ -32,7 +33,16 @@ class GSPOConfig:
     clip_ratio_low: float = 0.2
     clip_ratio_high: float = 0.2
     seq_ratio_log_cap: float = 10.0
-    kl_beta: float = 0.001
+
+
+def validate_gspo_config(config: GSPOConfig) -> None:
+    """Validate GSPO settings before building the loss closure."""
+    if config.clip_ratio_low < 0 or config.clip_ratio_high < 0:
+        raise ValueError(
+            "GSPO clip_ratio_low and clip_ratio_high must be non-negative."
+        )
+    if config.seq_ratio_log_cap < 0:
+        raise ValueError("GSPO seq_ratio_log_cap must be non-negative.")
 
 
 def make_gspo_loss_fn(
@@ -47,6 +57,7 @@ def make_gspo_loss_fn(
     """Build a GSPO loss closure with sequence-level PPO ratio and behavioral TIS weight."""
     if gspo_config is None:
         gspo_config = GSPOConfig()
+    validate_gspo_config(gspo_config)
     if tis_config is None:
         tis_config = TISConfig()
     clip_low = gspo_config.clip_ratio_low

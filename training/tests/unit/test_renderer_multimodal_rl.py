@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import tinker
+import torch
 
 from training.utils.rl.rollout.renderer import (
     MultimodalRenderingNotSupported,
@@ -20,6 +21,8 @@ from training.utils.rl.rollout.renderer import (
     single_turn_renderer_rollout,
 )
 from fireworks.training.sdk.sampling import SampledCompletion
+from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.losses import build_grpo_datums
 from training.utils.rl.rollout.types import rollout_to_prompt_group, Rollout
 from training.utils.supervised import build_multimodal_policy_datum, has_non_text_chunks
 
@@ -145,9 +148,11 @@ def test_model_input_to_completions_prompt_text_inserts_vision_placeholder():
     assert tokenizer.decode.call_count == 2
 
 
-def test_build_multimodal_completions_prompt_token_ids_uses_chat_template():
+def test_build_multimodal_completions_prompt_token_ids_uses_renderer_model_input():
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = [1, 248056, 2]
+    # The tokenizer default can add thinking tokens that the selected renderer
+    # intentionally omitted. Sampling must not re-render the prompt here.
+    tokenizer.apply_chat_template.return_value = [10, 11, 248056, 12, 248068, 198]
     tokenizer.special_ids = MagicMock(image=248056)
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     prompt_ids, images = build_multimodal_completions_prompt_token_ids(
@@ -155,16 +160,16 @@ def test_build_multimodal_completions_prompt_token_ids_uses_chat_template():
         _multimodal_prompt(),
         tokenizer,
     )
-    assert prompt_ids == [1, 248056, 2]
+    assert prompt_ids == [10, 11, 248056, 12]
     assert images == [_BASE64_PNG]
-    tokenizer.apply_chat_template.assert_called_once()
+    tokenizer.apply_chat_template.assert_not_called()
 
 
-def test_build_multimodal_completions_prompt_token_ids_raises_when_chat_template_fails():
+def test_build_multimodal_completions_prompt_token_ids_requires_image_token_id():
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.side_effect = ValueError("no multimodal template")
+    tokenizer.special_ids = MagicMock(image=None)
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-    with pytest.raises(MultimodalRenderingNotSupported, match="apply_chat_template"):
+    with pytest.raises(MultimodalRenderingNotSupported, match="image placeholder token ID"):
         build_multimodal_completions_prompt_token_ids(
             messages,
             _multimodal_prompt(),
@@ -172,33 +177,57 @@ def test_build_multimodal_completions_prompt_token_ids_raises_when_chat_template
         )
 
 
-def test_build_multimodal_completions_request_uses_chat_template():
+def test_build_multimodal_completions_prompt_token_ids_accepts_hf_image_token_id():
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = "<|im_start|>user\nimg\n"
+    tokenizer.special_ids = None
+    tokenizer.image_token_id = 248056
+    prompt_ids, _ = build_multimodal_completions_prompt_token_ids(
+        [],
+        _multimodal_prompt(),
+        tokenizer,
+    )
+    assert prompt_ids == [10, 11, 248056, 12]
+
+
+def test_build_multimodal_completions_request_uses_renderer_model_input():
+    tokenizer = MagicMock()
+    tokenizer.decode.side_effect = ["<|im_start|>user\n", "img\n"]
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     prompt_text, images = build_multimodal_completions_request(
         messages,
         _multimodal_prompt(),
         tokenizer,
     )
-    assert prompt_text == "<|im_start|>user\nimg\n"
+    assert prompt_text == (
+        "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>img\n"
+    )
     assert images == [_BASE64_PNG]
-    tokenizer.apply_chat_template.assert_called_once()
+    tokenizer.apply_chat_template.assert_not_called()
 
 
-def test_build_multimodal_completions_request_falls_back_to_model_input_stitch():
+def test_build_multimodal_completions_request_accepts_materialized_image_chunk():
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.side_effect = ValueError("no template")
-    tokenizer.decode.return_value = "USER:"
+    tokenizer.decode.side_effect = ["USER:", "ASSISTANT:"]
+    model_input = tinker.ModelInput(
+        chunks=[
+            tinker.types.EncodedTextChunk(tokens=[10]),
+            tinker.types.ImageChunk(
+                data=b"renderer-jpeg",
+                format="jpeg",
+                expected_tokens=4,
+            ),
+            tinker.types.EncodedTextChunk(tokens=[11]),
+        ]
+    )
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     prompt_text, images = build_multimodal_completions_request(
         messages,
-        _multimodal_prompt(),
+        model_input,
         tokenizer,
     )
-    assert "USER:" in prompt_text
-    assert "<|image_pad|>" in prompt_text
-    assert images == [_BASE64_PNG]
+    assert prompt_text == ("USER:<|vision_start|><|image_pad|><|vision_end|>ASSISTANT:")
+    assert images == ["data:image/jpeg;base64,cmVuZGVyZXItanBlZw=="]
+    tokenizer.apply_chat_template.assert_not_called()
 
 
 def test_parse_vision_completions_payload():
@@ -254,7 +283,9 @@ def test_build_multimodal_policy_datum_preserves_image_chunk():
     prompt = _multimodal_prompt()
     datum = build_multimodal_policy_datum(prompt, [20, 21, 22])
     targets = list(datum.loss_fn_inputs["target_tokens"].data)
-    assert 0 not in targets
+    weights = list(datum.loss_fn_inputs["weights"].data)
+    assert targets == [11, 0, 0, 0, 0, 12, 20, 21, 22]
+    assert len(targets) == len(weights) == datum.model_input.length
     chunk_types = [c.type for c in datum.model_input.chunks]
     assert "image_asset_pointer" in chunk_types or any(
         "image" in str(t) for t in chunk_types
@@ -305,7 +336,7 @@ def test_multimodal_reference_datum_mask_shape_matches_weights():
     ref_mask = pg.ref_data[0].loss_fn_inputs["loss_mask"]
     assert len(ref_mask.data) == ref_mask.shape[0]
     assert ref_mask.shape[0] == policy_weights.shape[0]
-    assert ref_mask.shape[0] > len(pg.data[0].loss_fn_inputs["target_tokens"].data)
+    assert ref_mask.shape[0] == len(pg.data[0].loss_fn_inputs["target_tokens"].data)
 
 
 def test_multimodal_inf_logprobs_match_datum_weight_index_space():
@@ -339,6 +370,109 @@ def test_multimodal_inf_logprobs_match_datum_weight_index_space():
     response_start = pg.prompt_lens[0] - 1
     assert response_start == active[0]
     assert len(inf_lp) >= response_start + (len(weights) - response_start)
+
+
+def test_multimodal_client_grpo_preserves_expanded_coordinates():
+    """Client-side GRPO receives one logprob/gradient per expanded target."""
+    prompt = _multimodal_prompt()
+    run = _build_multimodal_rollout_sample(
+        prompt_model_input=prompt,
+        completion_tokens=[30, 31],
+        completion_logprobs=[-0.1, -0.2],
+        reward=1.0,
+        finish_reason="stop",
+        text="hi",
+    )
+    pg = rollout_to_prompt_group(
+        Rollout(runs=[run, run]),
+        advantage_fn=lambda rewards: list(rewards),
+    )
+    assert pg is not None
+    assert pg.prompt_lens is not None
+
+    target_lengths = [
+        len(datum.loss_fn_inputs["target_tokens"].data) for datum in pg.data
+    ]
+    assert target_lengths == [len(values) for values in pg.inf_logprobs]
+
+    loss_fn = make_grpo_loss_fn(
+        pg.advantages,
+        [[0.0] * n for n in target_lengths],
+        pg.prompt_lens,
+        inf_logprobs=pg.inf_logprobs,
+        old_policy_logprobs=pg.inf_logprobs,
+        kl_beta=0.0,
+    )
+    forward_logprobs = [
+        torch.tensor(values, dtype=torch.float32, requires_grad=True)
+        for values in pg.inf_logprobs
+    ]
+
+    loss, metrics = loss_fn(pg.data, forward_logprobs)
+    loss.backward()
+
+    assert metrics["active_tokens"] == 4
+    for datum, logprobs in zip(pg.data, forward_logprobs):
+        weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
+        assert logprobs.grad is not None
+        assert all(
+            logprobs.grad[i].item() == pytest.approx(0.0)
+            for i, weight in enumerate(weights)
+            if weight == 0.0
+        )
+        assert any(
+            abs(logprobs.grad[i].item()) > 0
+            for i, weight in enumerate(weights)
+            if weight > 0.0
+        )
+
+
+def test_multimodal_builtin_loss_datums_use_expanded_coordinates():
+    """Built-in loss fields align with image slots instead of reshaping."""
+    prompt = _multimodal_prompt()
+    run = _build_multimodal_rollout_sample(
+        prompt_model_input=prompt,
+        completion_tokens=[30, 31],
+        completion_logprobs=[-0.1, -0.2],
+        reward=1.0,
+        finish_reason="stop",
+        text="hi",
+    )
+    pg = rollout_to_prompt_group(
+        Rollout(runs=[run, run]),
+        advantage_fn=lambda rewards: list(rewards),
+    )
+    assert pg is not None
+    assert pg.prompt_lens is not None
+
+    builtin_datums = build_grpo_datums(
+        data=pg.data,
+        advantages=pg.advantages,
+        old_policy_logprobs=pg.inf_logprobs,
+        inf_logprobs=pg.inf_logprobs,
+        prompt_lens=pg.prompt_lens,
+    )
+
+    for policy_datum, builtin_datum in zip(pg.data, builtin_datums):
+        expected_len = policy_datum.model_input.length
+        assert set(builtin_datum.loss_fn_inputs) == {
+            "target_tokens",
+            "logprobs",
+            "advantages",
+        }
+        assert all(
+            len(tensor.data) == tensor.shape[0] == expected_len
+            for tensor in builtin_datum.loss_fn_inputs.values()
+        )
+        target_tokens = builtin_datum.loss_fn_inputs["target_tokens"].data
+        assert target_tokens[1:5] == [0, 0, 0, 0]
+        packed_advantages = builtin_datum.loss_fn_inputs["advantages"].data
+        weights = policy_datum.loss_fn_inputs["weights"].data
+        assert all(
+            packed_advantages[i] == pytest.approx(0.0)
+            for i, weight in enumerate(weights)
+            if float(weight) == 0.0
+        )
 
 
 def test_multimodal_router_replay_uses_expanded_datum_boundary():
@@ -460,7 +594,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
         ]
 
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = [10, 11, 248056, 12]
+    tokenizer.apply_chat_template.return_value = [10, 11, 248056, 12, 248068, 198]
     tokenizer.special_ids = MagicMock(image=248056)
 
     run = await single_turn_renderer_rollout(
@@ -474,6 +608,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
     )
     assert run is not None
     assert captured["prompt_token_ids"] == [10, 11, 248056, 12]
+    tokenizer.apply_chat_template.assert_not_called()
     assert captured["kwargs"]["images"] == [_BASE64_PNG]
     assert captured["kwargs"]["logprobs"] is True
     assert captured["kwargs"]["return_token_ids"] is True
@@ -510,7 +645,7 @@ async def test_single_turn_renderer_rollout_vision_accepts_sync_reward_fn():
         )
 
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = "<|im_start|>user\n"
+    tokenizer.decode.side_effect = ["PROMPT:", "ASSISTANT:"]
 
     def sync_reward(_row, _msg, _ok):
         return 0.5
@@ -526,6 +661,7 @@ async def test_single_turn_renderer_rollout_vision_accepts_sync_reward_fn():
     )
     assert run is not None
     assert run.segments[0].reward == 0.5
+    tokenizer.apply_chat_template.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -558,7 +694,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision()
         raise AssertionError("token path should not run when sample_with_vision is set")
 
     tokenizer = MagicMock()
-    tokenizer.apply_chat_template.return_value = "<|im_start|>user\n"
+    tokenizer.decode.side_effect = ["PROMPT:", "ASSISTANT:"]
 
     run = await single_turn_renderer_rollout(
         {"id": 1},
@@ -570,6 +706,9 @@ async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision()
         tokenizer=tokenizer,
     )
     assert run is not None
-    assert captured["prompt_text"] == "<|im_start|>user\n"
+    assert captured["prompt_text"] == (
+        "PROMPT:<|vision_start|><|image_pad|><|vision_end|>ASSISTANT:"
+    )
     assert captured["images"] == [_BASE64_PNG]
+    tokenizer.apply_chat_template.assert_not_called()
     assert run.segments[0].tokens[-2:] == [99, 100]

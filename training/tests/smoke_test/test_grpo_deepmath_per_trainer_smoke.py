@@ -1,6 +1,6 @@
 """GRPO deepmath smoke test on minimal 1xGPU qwen3-4b shapes (``WeightSyncScope.PER_TRAINER``).
 
-40 rows, 4 completions/prompt, 2 prompt groups/step, kl_beta>0. Asserts the
+40 rows, 4 completions/prompt, 2 prompt groups/step. Asserts the
 ``PER_TRAINER`` invariant: the deployment is created with
 ``hot_load_trainer_job`` (pointing at the trainer's bucket), not
 ``hot_load_deployment_id``.

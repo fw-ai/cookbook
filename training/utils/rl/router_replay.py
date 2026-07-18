@@ -7,9 +7,33 @@ the same expert routing decisions are replayed during training.
 from __future__ import annotations
 
 import logging
+import os
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+# ANSI (POSIX) colors so the KV-cache warning stands out in logs. Honor the
+# NO_COLOR convention (https://no-color.org/) for plain-text consumers.
+_COLOR = os.environ.get("NO_COLOR") is None
+_BOLD_RED = "\033[1;31m" if _COLOR else ""
+_BOLD_YELLOW = "\033[1;33m" if _COLOR else ""
+_RESET = "\033[0m" if _COLOR else ""
+
+
+def warn_if_full_sequence_router_replay(completion_only: bool) -> None:
+    """Warn (loudly) when full-sequence replay disables default prompt-cache reuse."""
+    if completion_only:
+        return
+    rule = "=" * 88
+    banner = (
+        f"\n{_BOLD_RED}{rule}{_RESET}\n"
+        f"{_BOLD_RED}!!  KV CACHE DISABLED  --  router_replay_completion_only=False{_RESET}\n"
+        f"{_BOLD_YELLOW}Full-sequence router replay sends rollout requests with echo=True + "
+        f"logprobs, which disables prompt KV-cache reuse unless serving enables "
+        f"--cache-logprobs. Expect higher latency and lower throughput.{_RESET}\n"
+        f"{_BOLD_RED}{rule}{_RESET}"
+    )
+    logger.warning(banner)
 
 
 def build_r3_routing_matrices(
@@ -17,7 +41,7 @@ def build_r3_routing_matrices(
     prompt_len: int,
     model_input_len: int,
     completion_only: bool = False,
-) -> Optional[List[str]]:
+) -> List[str]:
     """Build routing matrices aligned to model_input positions.
 
     Supports echo mode (full sequence) and legacy mode (completion-only,
@@ -29,12 +53,15 @@ def build_r3_routing_matrices(
             replays inference routing for completion tokens.
     """
     if not routing_matrices:
-        return None
+        # This helper is only called when the cookbook enabled R3. Preserve
+        # that intent on ModelInput so the SDK can distinguish "R3 requested
+        # but serving returned nothing" from a normal non-R3 datum.
+        return []
 
     rm = list(routing_matrices)
 
     if len(rm) != model_input_len:
-        expected = model_input_len - (prompt_len - 1)
+        expected = max(0, model_input_len - (prompt_len - 1))
         if len(rm) != expected:
             logger.warning(
                 "R3: routing_matrices length (%d) != expected (%d). "
@@ -44,8 +71,9 @@ def build_r3_routing_matrices(
                 prompt_len,
                 model_input_len,
             )
+            # Preserve the mismatch for the SDK request-boundary check.
+            return rm
         rm = [""] * (prompt_len - 1) + rm
-        rm = rm[:model_input_len]
 
     if completion_only:
         prefix_len = max(0, prompt_len - 1)

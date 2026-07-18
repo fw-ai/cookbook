@@ -11,9 +11,10 @@ text and multimodal prompts:
 * :func:`model_input_to_token_ids` — flatten a text-only ``ModelInput`` from a
   renderer's ``build_generation_prompt(...)`` into ``list[int]``.
 * Multimodal prompts use token-in completions (unexpanded ``list[int]`` prompt
-  with one image-pad token per image + base64 ``images``); the server expands
-  pads and returns expanded ``prompt_token_ids``. Training data is packed via
-  :func:`training.utils.supervised.build_multimodal_policy_datum` at group time).
+  derived from the renderer's ``ModelInput``, with one image-pad token per
+  image + base64 ``images``); the server expands pads and returns expanded
+  ``prompt_token_ids``. Training data is packed from the same ``ModelInput`` via
+  :func:`training.utils.supervised.build_multimodal_policy_datum` at group time.
 
 Multi-turn flows are shown as concrete ``async def
 rollout_fn(sample_prompt) -> RolloutRun | None`` examples under
@@ -57,7 +58,7 @@ from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 from training.utils.supervised import (
     has_non_text_chunks,
     normalize_messages,
-    _extract_text_only_token_ids,
+    _extract_text_token_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,8 +103,8 @@ class VisionCompletionsResult:
     text: str
 
 
-# Qwen3-VL vision span for string-prompt completions when ``apply_chat_template``
-# is unavailable (``sample_with_vision`` / legacy inference).
+# Qwen3-VL vision span used when projecting renderer image chunks into the
+# legacy string-prompt ``sample_with_vision`` interface.
 _QWEN_VISION_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
 
 
@@ -123,36 +124,6 @@ def model_input_to_token_ids(model_input: tinker.ModelInput) -> List[int]:
                 "model_input_to_token_ids; use vision-completions sampling "
                 "for multimodal renderer-backed RL rollouts."
             )
-    return out
-
-
-def _messages_for_hf_chat_template(messages: List[Any]) -> List[dict[str, Any]]:
-    """Convert normalized Tinker messages into HF ``apply_chat_template`` input."""
-    normalized = normalize_messages(messages)
-    out: List[dict[str, Any]] = []
-    for msg in normalized:
-        content = msg["content"]
-        if isinstance(content, list):
-            hf_parts: List[dict[str, Any]] = []
-            for part in content:
-                if part.get("type") == "image":
-                    hf_parts.append(
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": str(part["image"])},
-                        }
-                    )
-                else:
-                    hf_parts.append(part)
-            content = hf_parts
-        row: dict[str, Any] = {"role": msg["role"], "content": content}
-        if msg.get("tool_calls") is not None:
-            row["tool_calls"] = msg["tool_calls"]
-        if msg.get("tool_call_id") is not None:
-            row["tool_call_id"] = msg["tool_call_id"]
-        if msg.get("name") is not None:
-            row["name"] = msg["name"]
-        out.append(row)
     return out
 
 
@@ -231,12 +202,22 @@ def _collect_base64_images(
 def _image_placeholder_token_id(tokenizer: Any) -> int | None:
     """Return the model's image-placeholder token id when exposed by the tokenizer."""
     special_ids = getattr(tokenizer, "special_ids", None)
-    if special_ids is None:
-        return None
-    image_id = getattr(special_ids, "image", None)
-    if image_id is None:
-        return None
-    return int(image_id)
+    image_id = getattr(special_ids, "image", None) if special_ids is not None else None
+    if isinstance(image_id, int) and not isinstance(image_id, bool):
+        return image_id
+
+    # Standard HF VL tokenizers expose image_token_id directly rather than the
+    # Fireworks tokenizer's special_ids struct.
+    image_id = getattr(tokenizer, "image_token_id", None)
+    if isinstance(image_id, int) and not isinstance(image_id, bool):
+        return image_id
+
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if callable(convert):
+        image_id = convert("<|image_pad|>")
+        if isinstance(image_id, int) and not isinstance(image_id, bool):
+            return image_id
+    return None
 
 
 def build_multimodal_completions_prompt_token_ids(
@@ -246,10 +227,15 @@ def build_multimodal_completions_prompt_token_ids(
 ) -> tuple[List[int], List[str]]:
     """Build ``(prompt_token_ids, images)`` for token-in vision completions.
 
-    Prompt token IDs come from ``tokenizer.apply_chat_template(..., tokenize=True)``
-    so placeholder tokens match the model chat template. They must be
-    **unexpanded** (one image-placeholder id per image). Each image must be a
-    base64 data URL (``data:<mime>;base64,...``).
+    Prompt token IDs come directly from the renderer's ``model_input`` so
+    sampling and training preserve the same rendered text-token sequence.
+    Re-rendering ``messages`` through ``tokenizer.apply_chat_template`` here is incorrect:
+    renderer variants such as Qwen disable-thinking can intentionally differ
+    from the tokenizer default (for example by omitting ``<think>\n``).
+
+    The returned prompt is **unexpanded**: each image chunk becomes one image
+    placeholder token and is paired with one base64 data URL. Serving expands
+    the placeholder to the model-specific number of visual tokens.
     """
     images = _collect_base64_images(messages, model_input)
     if not images:
@@ -257,40 +243,41 @@ def build_multimodal_completions_prompt_token_ids(
             "multimodal ModelInput has no base64 images; cannot call completions with images"
         )
 
-    try:
-        tokenized = tokenizer.apply_chat_template(
-            _messages_for_hf_chat_template(messages),
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=False,
-        )
-    except Exception as exc:
+    image_placeholder_id = _image_placeholder_token_id(tokenizer)
+    if image_placeholder_id is None:
         raise MultimodalRenderingNotSupported(
-            "tokenizer.apply_chat_template(..., tokenize=True) is required for "
-            "multimodal RL completions; it failed for this message format. "
-            "Use a VL tokenizer with a multimodal chat template, or fix the "
-            "dataset message shape."
-        ) from exc
+            "multimodal token-in completions require an image placeholder token ID "
+            "to encode renderer image chunks"
+        )
 
-    if hasattr(tokenized, "tolist"):
-        prompt_token_ids = tokenized.tolist()
-    else:
-        prompt_token_ids = list(tokenized)
+    prompt_token_ids: List[int] = []
+    image_chunk_count = 0
+    for chunk in model_input.chunks:
+        if isinstance(chunk, tinker.types.EncodedTextChunk):
+            prompt_token_ids.extend(int(token) for token in chunk.tokens)
+        elif isinstance(
+            chunk,
+            (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+        ):
+            prompt_token_ids.append(image_placeholder_id)
+            image_chunk_count += 1
+        else:
+            raise MultimodalRenderingNotSupported(
+                "cannot build token-in vision prompt from renderer chunk type "
+                f"{type(chunk).__name__}"
+            )
 
     if not prompt_token_ids:
         raise MultimodalRenderingNotSupported(
             "multimodal completions prompt tokenization produced an empty prompt"
         )
 
-    image_placeholder_id = _image_placeholder_token_id(tokenizer)
-    if image_placeholder_id is not None:
-        pad_count = sum(1 for tid in prompt_token_ids if int(tid) == image_placeholder_id)
-        if pad_count != len(images):
-            raise MultimodalRenderingNotSupported(
-                f"image placeholder count in prompt ({pad_count}) != images count "
-                f"({len(images)}); chat template and image list are misaligned"
-            )
-    return [int(t) for t in prompt_token_ids], images
+    if image_chunk_count != len(images):
+        raise MultimodalRenderingNotSupported(
+            f"renderer image chunk count ({image_chunk_count}) != images count "
+            f"({len(images)}); model input and image list are misaligned"
+        )
+    return prompt_token_ids, images
 
 
 def _model_input_to_completions_prompt_text(
@@ -308,7 +295,10 @@ def _model_input_to_completions_prompt_text(
                     clean_up_tokenization_spaces=False,
                 )
             )
-        elif isinstance(chunk, tinker.types.ImageAssetPointerChunk):
+        elif isinstance(
+            chunk,
+            (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+        ):
             parts.append(_QWEN_VISION_PLACEHOLDER)
         else:
             raise MultimodalRenderingNotSupported(
@@ -322,10 +312,14 @@ def build_multimodal_completions_request(
     model_input: tinker.ModelInput,
     tokenizer: Any,
 ) -> tuple[str, List[str]]:
-    """Build ``(prompt_text, images)`` for string-prompt vision completions.
+    """Build ``(prompt_text, images)`` for legacy string-prompt completions.
 
     Each image must be a base64 data URL (``data:<mime>;base64,...``).
     Remote HTTP(S) image URLs are not supported on this path.
+
+    The renderer's ``ModelInput`` remains authoritative.  This compatibility
+    bridge decodes its text chunks and substitutes image placeholders; it must
+    not independently re-render the source messages with a chat template.
     """
     images = _collect_base64_images(messages, model_input)
     if not images:
@@ -333,21 +327,7 @@ def build_multimodal_completions_request(
             "multimodal ModelInput has no base64 images; cannot call completions with images"
         )
 
-    try:
-        prompt_text = str(
-            tokenizer.apply_chat_template(
-                _messages_for_hf_chat_template(messages),
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        )
-    except Exception:
-        logger.debug(
-            "apply_chat_template failed for multimodal rollout; "
-            "falling back to ModelInput string stitch",
-            exc_info=True,
-        )
-        prompt_text = _model_input_to_completions_prompt_text(model_input, tokenizer)
+    prompt_text = _model_input_to_completions_prompt_text(model_input, tokenizer)
     return prompt_text, images
 
 
@@ -586,7 +566,7 @@ def _build_multimodal_rollout_sample(
     finish_reason: str,
     text: str,
 ) -> RolloutRun:
-    prompt_text_ids = _extract_text_only_token_ids(prompt_model_input)
+    prompt_text_ids = _extract_text_token_ids(prompt_model_input)
     completion = [int(t) for t in completion_tokens]
     text_tokens = list(prompt_text_ids) + completion
     if len(completion_logprobs) != len(completion):

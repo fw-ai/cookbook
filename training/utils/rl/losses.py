@@ -1,190 +1,24 @@
-"""RL loss dispatch, path selection, and rollout data types.
+"""Rollout batch types and explicit built-in GRPO datum preparation.
 
-Two parallel registries live in sibling files and are wired in here:
-
-- :mod:`training.utils.rl.client_losses` -- :data:`CLIENT_LOSSES`, the
-  Python loss closures that run inside ``forward_backward_custom(...)``.
-- :mod:`training.utils.rl.builtin_losses` -- :data:`BUILTIN_LOSSES`, the
-  server-side fused losses dispatched via ``forward_backward(...)``.
-
-Per-loss math files (``grpo.py``, ``dapo.py``, ...) hold only the
-``XConfig`` dataclass and ``make_x_loss_fn`` builder; they are intentionally
-unaware of the registries and the path-selection logic.
+The generic sync and async recipes call ``make_grpo_loss_fn`` directly. Recipe
+forks that intentionally switch to the trainer's built-in PPO kernel can use
+``build_grpo_datums``. There is no registry or runtime loss dispatch here.
 """
 
 from __future__ import annotations
 
-from typing import Any, List, Literal, Protocol, Callable
+from typing import List
 from dataclasses import field, dataclass
 
 import tinker
+import torch
 
-from training.utils.rl.builtin_losses import BUILTIN_LOSSES
-from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.client_losses import CLIENT_LOSSES
-from training.utils.rl.dapo import DAPOConfig
-from training.utils.rl.dro import DROConfig
-from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.observability import compute_inference_observability_metrics
-from training.utils.rl.tis import TISConfig
-
-PolicyLoss = Literal[
-    "grpo",
-    "importance_sampling",
-    "dapo",
-    "dro",
-    "gspo",
-    "cispo",
-    "reinforce",
-]
-"""Names of registered RL policy losses.
-
-Kept in lockstep with :data:`CLIENT_LOSSES` keys (and a strict subset of
-:data:`BUILTIN_LOSSES` keys); a startup assertion below catches drift if a
-new client loss is added without updating this ``Literal``.
-"""
-
-
-LossPath = Literal["builtin", "client"]
-"""Which forward/backward path the recipe uses.
-
-- ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
-  loss. Faster, but the loss sees only
-  ``(target_tokens, logprobs, advantages)`` so KL penalties (``kl_beta>0``)
-  cannot be applied.
-- ``"client"`` -- client-side ``forward_backward_custom(...)`` with the
-  Python loss closure. Always works, slower because of an extra forward
-  pass for old-policy logprobs.
-
-The choice is **explicit**: ``validate_loss_path`` raises with an
-actionable message if the user picked ``"builtin"`` in a configuration that
-forbids it, instead of silently falling back to client-side. This avoids
-the historical footgun where setting ``kl_beta > 0`` would magically route
-to the client path -- a behavior that broke once anyone reordered the gate
-or introduced a new builtin loss that consumed ref logprobs.
-"""
-
-SUPPORTED_POLICY_LOSSES: tuple[str, ...] = tuple(CLIENT_LOSSES)
-
-# Drift guard: PolicyLoss Literal must list every client-registered loss,
-# and every builtin must also be in CLIENT_LOSSES (a builtin without a
-# client fallback is a footgun -- there's no way to apply KL.
-import typing as _typing  # noqa: E402
-
-assert set(_typing.get_args(PolicyLoss)) == set(CLIENT_LOSSES), (
-    "PolicyLoss Literal is out of sync with CLIENT_LOSSES. "
-    f"Literal={set(_typing.get_args(PolicyLoss))!r}, "
-    f"client={set(CLIENT_LOSSES)!r}."
+from training.utils.rl.common import (
+    _coerce_response_logprobs,
+    _get_loss_mask,
+    validate_inference_logprobs_for_sample,
 )
-assert set(BUILTIN_LOSSES).issubset(CLIENT_LOSSES), (
-    "Every builtin loss must also have a client-side fallback; "
-    f"orphaned builtins: {set(BUILTIN_LOSSES) - set(CLIENT_LOSSES)!r}."
-)
-
-
-class LossArgs(Protocol):
-    """Loss-related fields ``build_loss_fn`` reads off the recipe Config.
-
-    Recipe ``Config`` dataclasses naturally implement this Protocol when
-    they expose the listed fields at the top level. Tests and external
-    callers can use :class:`LossConfig` (concrete dataclass below) when
-    they don't already have a Config to pass.
-    """
-
-    policy_loss: PolicyLoss
-    loss_path: LossPath
-    kl_beta: float
-    eps_clip: float
-    eps_clip_high: float | None
-    ratio_log_cap: float
-    dapo: DAPOConfig
-    dro: DROConfig
-    gspo: GSPOConfig
-    cispo: CISPOConfig
-    tis: TISConfig
-
-
-@dataclass
-class LossConfig:
-    """Concrete :class:`LossArgs` implementation with sensible defaults.
-
-    Useful when a caller (e.g. a unit test or an ad-hoc script) needs to
-    invoke :func:`build_loss_fn` without a full recipe ``Config``.
-    """
-
-    policy_loss: PolicyLoss = "grpo"
-    loss_path: LossPath = "client"
-    """Default ``"client"`` because it works for every loss/kl_beta combo;
-    opt into ``"builtin"`` explicitly when you want the server-side fast path."""
-    kl_beta: float = 0.0
-    eps_clip: float = 0.2
-    eps_clip_high: float | None = None
-    ratio_log_cap: float = 20.0
-    dapo: DAPOConfig = field(default_factory=DAPOConfig)
-    dro: DROConfig = field(default_factory=DROConfig)
-    gspo: GSPOConfig = field(default_factory=GSPOConfig)
-    cispo: CISPOConfig = field(default_factory=CISPOConfig)
-    tis: TISConfig = field(default_factory=TISConfig)
-
-
-def _supported_policy_losses_text() -> str:
-    return ", ".join(SUPPORTED_POLICY_LOSSES)
-
-
-def validate_loss_path(args: LossArgs, profile: Any | None = None) -> None:
-    """Reject loss-path / config combinations that would silently misbehave.
-
-    Call this **once at recipe startup** so a misconfigured run fails before
-    rollouts begin instead of after. Replaces the historical ``resolve_builtin_loss``
-    fallback (which returned ``None`` when builtin was ineligible and let the
-    recipe quietly switch to client-side).
-
-    No-op when ``args.loss_path == "client"`` (client path always works).
-    Raises ``ValueError`` when ``args.loss_path == "builtin"`` and any of:
-
-    - the loss is registered as client-side-only (no builtin kernel),
-    - ``args.kl_beta > 0`` (builtin datums have no ``ref_logprobs`` field, so
-      the KL term ``kl_beta * (pi - pi_ref)`` would be silently dropped --
-      see :func:`build_builtin_loss_datums`),
-    """
-    if args.loss_path == "client":
-        return
-
-    if args.policy_loss not in CLIENT_LOSSES:
-        supported = _supported_policy_losses_text()
-        raise ValueError(
-            f"Unsupported policy_loss '{args.policy_loss}'. "
-            f"Expected one of: {supported}."
-        )
-    if args.policy_loss not in BUILTIN_LOSSES:
-        raise ValueError(
-            f"loss_path='builtin' requested but '{args.policy_loss}' is "
-            f"registered as client-side-only (no builtin loss). "
-            f"Set loss_path='client' or pick a different policy_loss."
-        )
-    if args.kl_beta > 0.0:
-        raise ValueError(
-            f"loss_path='builtin' requested with kl_beta={args.kl_beta} > 0. "
-            f"Server-side builtin kernels receive datums without ref_logprobs "
-            f"(see build_builtin_loss_datums) so the KL term would be "
-            f"silently dropped. Set loss_path='client' or kl_beta=0."
-        )
-
-
-def get_builtin_loss_config(args: LossArgs) -> tuple[str, dict[str, Any]]:
-    """Return ``(loss_name, loss_config_dict)`` for the builtin path.
-
-    Caller must have already passed :func:`validate_loss_path` -- this helper
-    will raise ``KeyError`` on a config that wasn't validated, by design
-    (loud failure beats silent misconfiguration).
-    """
-    if args.loss_path != "builtin":
-        raise ValueError(
-            f"get_builtin_loss_config called with loss_path={args.loss_path!r}; "
-            f"only valid when loss_path='builtin'."
-        )
-    builder = BUILTIN_LOSSES[args.policy_loss]
-    return builder(args)
+from training.utils.rl.tis import TISConfig, compute_tis_weight
 
 
 @dataclass
@@ -207,7 +41,8 @@ class PromptGroup:
     raw_inf_logprobs: List[List[float]] = field(default_factory=list)
     """Raw model logprobs aligned to ``target_tokens`` for observability only.
 
-    They drive ``train/inference_*`` drift metrics, never loss/TIS ratios.
+    The direct client GRPO builder uses them only for drift metrics. They must
+    never replace behavior logprobs in TIS.
     """
     completion_lens: List[int] = field(default_factory=list)
     """Per-sample completion lengths in tokens."""
@@ -274,16 +109,15 @@ def combine_prompt_groups(
     return data, advantages, ref_logprobs, prompt_lens, inf_logprobs
 
 
-def build_builtin_loss_datums(
+def build_grpo_datums(
     data: List[tinker.Datum],
     advantages: List[float],
     old_policy_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
     tis_config: TISConfig | None = None,
-    policy_loss: str = "rl_loss",
 ) -> List[tinker.Datum]:
-    """Build datums with old-policy logprobs and advantages for server-side built-in loss.
+    """Build strictly aligned datums for an explicit server-side GRPO fork.
 
     Folds the TIS weight ``exp(old_policy - behavior)`` into per-token
     advantages so the server only sees ``logprobs`` (= old_policy_lp) and
@@ -292,26 +126,55 @@ def build_builtin_loss_datums(
     Uses ``compute_tis_weight`` for behavioral TIS correction and
     ``_get_loss_mask`` for multi-turn tool-call masking.
     """
-    import torch
-    from training.utils.rl.common import (
-        _coerce_response_logprobs,
-        _get_loss_mask,
-        validate_inference_logprobs_for_sample,
-    )
-    from training.utils.rl.tis import compute_tis_weight
-
     if tis_config is None:
         tis_config = TISConfig()
-    result: List[tinker.Datum] = []
-    adv_idx = 0
 
-    for i, datum in enumerate(data):
+    n = len(data)
+    aligned = {
+        "advantages": len(advantages),
+        "old_policy_logprobs": len(old_policy_logprobs),
+        "rollout_logprobs": len(inf_logprobs),
+        "prompt_lens": len(prompt_lens),
+    }
+    mismatched = {name: size for name, size in aligned.items() if size != n}
+    if mismatched:
+        details = ", ".join(f"{name}={size}" for name, size in mismatched.items())
+        raise ValueError(
+            f"GRPO requires {n} aligned rows; mismatched inputs: {details}."
+        )
+
+    result: List[tinker.Datum] = []
+    for i, (datum, advantage, old_policy_row, rollout_row, prompt_len) in enumerate(
+        zip(
+            data,
+            advantages,
+            old_policy_logprobs,
+            inf_logprobs,
+            prompt_lens,
+            strict=True,
+        )
+    ):
         target_data = datum.loss_fn_inputs["target_tokens"]
         target_tokens = list(target_data.data)
         n_tokens = len(target_tokens)
-        response_start = max(0, prompt_lens[i] - 1)
-        old_policy_lp = list(old_policy_logprobs[i])
-        inf_lp = list(inf_logprobs[i]) if i < len(inf_logprobs) else []
+        if prompt_len < 0:
+            raise ValueError(
+                f"GRPO prompt_len must be non-negative for sample {i}, got {prompt_len}."
+            )
+        response_start = max(0, prompt_len - 1)
+        if response_start > n_tokens:
+            raise ValueError(
+                "GRPO prompt_len exceeds the datum sequence for sample "
+                f"{i}: prompt_len={prompt_len}, target_tokens={n_tokens}."
+            )
+        old_policy_lp = list(old_policy_row)
+        inf_lp = list(rollout_row)
+
+        if len(old_policy_lp) != n_tokens:
+            raise ValueError(
+                "GRPO old_policy_logprobs must align exactly with target_tokens "
+                f"for sample {i}: expected {n_tokens}, got {len(old_policy_lp)}."
+            )
 
         resp_len = max(0, n_tokens - response_start)
         loss_mask = _get_loss_mask(
@@ -325,7 +188,7 @@ def build_builtin_loss_datums(
 
         if resp_len > 0 and active_count > 0:
             validate_inference_logprobs_for_sample(
-                policy_loss,
+                "grpo",
                 i,
                 inf_lp,
                 response_start + resp_len,
@@ -341,7 +204,7 @@ def build_builtin_loss_datums(
             resp_inf_values = _coerce_response_logprobs(
                 inf_lp[response_start : response_start + resp_len],
                 active,
-                policy_loss=policy_loss,
+                policy_loss="grpo",
                 sample_idx=i,
                 source="rollout_logprobs",
             )
@@ -357,17 +220,11 @@ def build_builtin_loss_datums(
             tis_weight = torch.ones(resp_len, dtype=torch.float32)
 
         per_token_adv = [0.0] * response_start
-        adv_val = advantages[adv_idx] if adv_idx < len(advantages) else 0.0
         for r in range(resp_len):
             per_token_adv.append(
-                float(adv_val * tis_weight[r].item() * loss_mask[r].item())
+                float(advantage * tis_weight[r].item() * loss_mask[r].item())
             )
 
-        old_policy_lp_padded = (
-            old_policy_lp[:n_tokens]
-            if len(old_policy_lp) >= n_tokens
-            else old_policy_lp + [0.0] * (n_tokens - len(old_policy_lp))
-        )
         new_datum = tinker.Datum(
             model_input=datum.model_input,
             loss_fn_inputs={
@@ -377,7 +234,7 @@ def build_builtin_loss_datums(
                     shape=[n_tokens],
                 ),
                 "logprobs": tinker.TensorData(
-                    data=old_policy_lp_padded,
+                    data=old_policy_lp,
                     dtype="float32",
                     shape=[n_tokens],
                 ),
@@ -389,75 +246,5 @@ def build_builtin_loss_datums(
             },
         )
         result.append(new_datum)
-        adv_idx += 1
 
     return result
-
-
-ClientLossBuilder = Callable[..., Any]
-"""Signature for the client-side loss builder used by ``forward_backward_custom``."""
-
-
-def build_loss_fn(args: LossArgs) -> ClientLossBuilder:
-    """Create the client-side loss builder for one registered RL policy loss.
-
-    The returned callable is only used on the
-    ``forward_backward_custom(...)`` path. Builtin server-side kernels are
-    resolved separately by :func:`get_builtin_kernel_config`. Losses
-    registered with ``builtin_config_builder=None`` always take this
-    client-side path.
-
-    *args* implements the :class:`LossArgs` protocol -- typically the recipe
-    ``Config`` dataclass itself, which exposes ``policy_loss``, ``kl_beta``,
-    and per-loss config fields at the top level.
-
-    Returns a callable:
-    ``(advantages, ref_logprobs, prompt_lens, inf_logprobs, old_policy_logprobs,
-    raw_inf_logprobs) -> loss_fn``.  ``raw_inf_logprobs`` is attached here as
-    observability-only metrics; losses use ``inf_logprobs`` /
-    ``old_policy_logprobs`` for ratios.
-    """
-    factory = CLIENT_LOSSES.get(args.policy_loss)
-
-    def build(
-        advantages: List[float],
-        ref_logprobs: List[List[float]],
-        prompt_lens: List[int],
-        inf_logprobs: List[List[float]],
-        old_policy_logprobs: List[List[float]],
-        raw_inf_logprobs: List[List[float]] | None = None,
-    ) -> Any:
-        if factory is None:
-            supported = _supported_policy_losses_text()
-            raise ValueError(
-                f"Unsupported policy_loss '{args.policy_loss}'. "
-                f"Expected one of: {supported}."
-            )
-        loss_fn = factory(
-            args,
-            advantages,
-            ref_logprobs,
-            prompt_lens,
-            inf_logprobs,
-            old_policy_logprobs,
-        )
-        if not raw_inf_logprobs:
-            return loss_fn
-
-        def loss_fn_with_inference_metrics(data, logprobs_list):
-            loss, metrics = loss_fn(data, logprobs_list)
-            inference_metrics = compute_inference_observability_metrics(
-                data,
-                logprobs_list,
-                raw_inf_logprobs,
-                prompt_lens,
-                args.policy_loss,
-            )
-            if inference_metrics:
-                metrics = dict(metrics)
-                metrics.update(inference_metrics)
-            return loss, metrics
-
-        return loss_fn_with_inference_metrics
-
-    return build

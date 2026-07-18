@@ -4,9 +4,9 @@
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
 names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intentionally minimal-surface: the
 only thing most users need to write is the rollout function; everything
-else (gate, advantage, ref forward, weight sync, KL/TIS, pipeline chunking,
+else (gate, advantage, optional reference KL, weight sync, TIS, pipeline chunking,
 checkpoints) is handled by ``main()``.  See
-``skills/dev/references/rl/async-rl.md`` for the full contract.
+``skills/fireworks-training/references/sdk/rl/async-rl.md`` for the full contract.
 
 Acknowledgements -- prior art referenced while designing this loop:
 
@@ -31,12 +31,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 import os
 import signal
 import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 import tinker
 from fireworks.training.sdk.training_spec import (
@@ -52,53 +53,34 @@ from training.utils import (
     DEFAULT_ADAM,
     DeployConfig,
     TrainerConfig,
-    RunnerConfig,
-    RunnerIO,
-    RunStatus,
     WandBConfig,
     ReconnectableClient,
+    RunnerIO,
+    RunStatus,
     build_service_client,
+    log_metrics,
     load_deployment_tokenizer,
     load_jsonl_dataset,
     read_api_extra_headers_env,
     setup_wandb,
     validate_config,
     wandb_finish,
-    wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_train import RowRequest, run_async_rl_loop
-from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.dapo import DAPOConfig
-from training.utils.rl.dro import DROConfig
-from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.losses import (
-    LossPath,
-    PolicyLoss,
-    build_builtin_loss_datums,
-    build_loss_fn,
-    combine_prompt_groups,
-    get_builtin_loss_config,
-    validate_loss_path,
-)
+from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
+from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import (
     build_accumulated_async_loop_stats,
-    build_train_chunk_metrics,
     compute_step_metrics,
-    total_target_tokens,
 )
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
-from training.utils.runner_state import (
-    estimate_async_total_steps,
-    start_running,
-    write_completed,
-    write_running_step,
-)
+from training.utils.runner_state import start_running, write_completed, write_running_progress
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -128,6 +110,7 @@ class Config:
     """Per-step LR scheduler spec for managed and local async RL runs."""
 
     kl_beta: float = 0.001
+    """Reference-KL coefficient. Set to ``0`` to skip reference provisioning."""
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
     temperature: float = 1.0
@@ -141,7 +124,7 @@ class Config:
     prompt_groups_per_step: int = 1
     max_head_offpolicy_versions: int = 0
     """Staleness budget in weight-sync versions; ``0`` = strict on-policy.
-    See ``skills/dev/references/rl/async-rl.md`` (gate semantics)."""
+    See ``skills/fireworks-training/references/sdk/rl/async-rl.md`` (gate semantics)."""
     max_concurrency_rollout_sample: int | None = None
     """In-flight LLM-call cap (same unit as ``deployment.max_batch_size``);
     must be ``>= completions_per_prompt`` or the gate stalls."""
@@ -154,28 +137,10 @@ class Config:
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 disables clipping."""
 
-    policy_loss: PolicyLoss = "grpo"
-    """One of the registered RL policy losses (see :data:`PolicyLoss`)."""
-
-    loss_path: LossPath = "client"
-    """Which forward/backward path to use.
-
-    - ``"builtin"`` -- server-side ``forward_backward(...)`` with a fused
-      kernel. Faster, but cannot apply KL (``kl_beta`` must be 0).
-    - ``"client"`` -- client-side ``forward_backward_custom(...)``. Always
-      works; slower because the client evaluates the Python loss closure.
-
-    Validated at startup by :func:`validate_loss_path`; mismatches raise
-    instead of silently falling back.
-    """
-
-    dapo: DAPOConfig = field(default_factory=DAPOConfig)
-    dro: DROConfig = field(default_factory=DROConfig)
-    gspo: GSPOConfig = field(default_factory=GSPOConfig)
-    cispo: CISPOConfig = field(default_factory=CISPOConfig)
     eps_clip: float = 0.2
+    """Lower/upper PPO clip epsilon used by the client-side GRPO update."""
     eps_clip_high: float | None = None
-    ratio_log_cap: float = 20.0
+    """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
     pipeline_chunks_per_step: int = 1
     """Scheduler chunk cap per global optimizer batch.
 
@@ -183,14 +148,13 @@ class Config:
     continuous batching owns execution-level coalescing/microbatching.
     """
     tis: TISConfig = field(default_factory=TISConfig)
+    """TIS (Train-Inference IS) weight correction config."""
+    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
+    """PPO anchor source.
 
-    use_rollout_logprobs: bool = False
-    """Use rollout-time logprobs as the PPO/IS old-policy anchor.
-
-    Mirrors Slime's ``use_rollout_logprobs`` flag. ``False`` preserves the
-    historical async behavior by recomputing old-policy logprobs on the trainer.
-    Set ``True`` when the sampler/policy gap is known to be negligible and you
-    want to skip the old-policy forward pass.
+    ``"old_policy"`` snapshots trainer logprobs and applies TIS against the
+    rollout behavior policy. ``"rollout"`` skips that forward, anchors PPO on
+    rollout logprobs, and makes the TIS ratio identity.
     """
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -201,11 +165,6 @@ class Config:
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
     cleanup_on_exit: bool = True
     """Clean up SDK-created trainer/deployment resources on close."""
-
-    runner: RunnerConfig = field(default_factory=RunnerConfig)
-    """Optional orchestration outputs (status / metadata / metrics / output
-    model). When unset the recipe still runs; the orchestration layer just
-    won't receive progress updates. See ``training.utils.runner``."""
 
     init_from_checkpoint: str | None = None
     """Resume from prior checkpoint; bare name = this job, ``"job:name"``
@@ -221,7 +180,7 @@ class RolloutSetup:
     """Dependencies the recipe hands the rollout factory once at startup.
 
     Inference endpoint, tokenizer, sampling kwargs, plus an ``extras`` dict
-    for caller state.  See ``skills/dev/references/rl/async-rl.md``.
+    for caller state.  See ``skills/fireworks-training/references/sdk/rl/async-rl.md``.
     """
 
     tokenizer: Any
@@ -301,12 +260,20 @@ def main(
     Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
     cfg = config
-    runner = RunnerIO(cfg.runner)
+    validate_grpo_config(
+        kl_beta=cfg.kl_beta,
+        eps_clip=cfg.eps_clip,
+        eps_clip_high=cfg.eps_clip_high,
+        reference_training_shape_id=cfg.trainer.reference_training_shape_id,
+        reference_job_id=cfg.trainer.reference_job_id,
+        anchor_logp=cfg.anchor_logp,
+    )
+    runner = RunnerIO()
 
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
         "the Config / RolloutSetup API may change. See "
-        "skills/dev/references/rl/async-rl.md.",
+        "skills/fireworks-training/references/sdk/rl/async-rl.md.",
     )
 
     def _signal_handler(signum, _):
@@ -352,9 +319,10 @@ def main(
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
+            "algorithm": "grpo",
+            "trainer_loss": "client",
             "kl_beta": cfg.kl_beta,
-            "loss_path": cfg.loss_path,
-            "use_rollout_logprobs": int(cfg.use_rollout_logprobs),
+            "anchor_logp": cfg.anchor_logp,
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
         },
@@ -393,15 +361,19 @@ def main(
         training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
         rollout_model = sampler.model
+        training_profile = getattr(service, "training_profile", None)
+        accelerator_type = getattr(service, "accelerator_type", None)
+        if accelerator_type is None:
+            accelerator_type = getattr(training_profile, "accelerator_type", None)
+        accelerator_count = getattr(service, "accelerator_count", None)
+        if accelerator_count is None:
+            accelerator_count = getattr(training_profile, "accelerator_count", None)
         runner.set_accelerator_info(
-            service.accelerator_type,
-            service.accelerator_count,
-            profile=service.training_profile,
+            accelerator_type,
+            accelerator_count,
+            profile=training_profile,
         )
-
-        runner.write_metadata()
-
-        wandb_log({"rollout/step": 0})
+        log_metrics({"rollout/step": 0}, step=0)
 
         policy = ReconnectableClient.from_training_client(
             training_client,
@@ -439,8 +411,9 @@ def main(
         step_offset = resume_info.step if resume_info else 0
         if step_offset:
             logger.info("Resuming from step %d", step_offset)
-            wandb_log(
+            log_metrics(
                 {"train/step": step_offset, "rollout/step": step_offset},
+                step=step_offset,
             )
 
         if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
@@ -466,33 +439,12 @@ def main(
             seed=cfg.seed,
         )
 
-        total_steps_estimate = estimate_async_total_steps(
-            step_offset=step_offset,
-            total_items=row_loader.total_items,
-            prior_rows_consumed=prior_rows_consumed,
-            prompt_groups_per_step=cfg.prompt_groups_per_step,
+        remaining_rows = max(0, row_loader.total_items - prior_rows_consumed)
+        total_steps_estimate = step_offset + math.ceil(
+            remaining_rows / max(1, cfg.prompt_groups_per_step)
         )
 
-        validate_loss_path(cfg, service.training_profile)
-        if cfg.loss_path == "builtin":
-            builtin_loss = get_builtin_loss_config(cfg)
-            client_loss_builder = None
-            logger.info(
-                "policy_loss=%s loss_path=builtin (server-side loss=%s)",
-                cfg.policy_loss,
-                builtin_loss[0],
-            )
-        else:
-            builtin_loss = None
-            client_loss_builder = build_loss_fn(cfg)
-            logger.info(
-                "policy_loss=%s loss_path=client (forward_backward_custom)",
-                cfg.policy_loss,
-            )
-        logger.info(
-            "use_rollout_logprobs=%s",
-            cfg.use_rollout_logprobs,
-        )
+        logger.info("algorithm=grpo trainer_loss=client kl_beta=%g", cfg.kl_beta)
 
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
@@ -532,8 +484,10 @@ def main(
             "temperature": cfg.temperature,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
-            "loss_path": cfg.loss_path,
-            "use_rollout_logprobs": cfg.use_rollout_logprobs,
+            "algorithm": "grpo",
+            "trainer_loss": "client",
+            "kl_beta": cfg.kl_beta,
+            "anchor_logp": cfg.anchor_logp,
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "model": rollout_model,
         }
@@ -545,7 +499,9 @@ def main(
                 idx = item.index
                 epoch = idx // rows_per_epoch if rows_per_epoch else 0
                 row_index = idx % rows_per_epoch if rows_per_epoch else idx
-                end_of_epoch = row_index == rows_per_epoch - 1 if rows_per_epoch else True
+                end_of_epoch = (
+                    row_index == rows_per_epoch - 1 if rows_per_epoch else True
+                )
                 source_row_id = row.get("id") if isinstance(row, dict) else None
 
                 def factory(
@@ -568,8 +524,7 @@ def main(
                         return rollout_fn(
                             sample_prompt,
                             **{
-                                key: context[key]
-                                for key in rollout_context_param_names
+                                key: context[key] for key in rollout_context_param_names
                             },
                         )
                     return rollout_fn(sample_prompt)
@@ -603,33 +558,24 @@ def main(
             raw_inf_lp,
             old_policy_logprobs,
         ):
-            if builtin_loss is not None:
-                loss_name, loss_cfg = builtin_loss
-                rl_datums = build_builtin_loss_datums(
-                    data,
-                    adv,
-                    old_policy_logprobs,
-                    inf_lp,
-                    prompt_lens,
-                    cfg.tis,
-                    policy_loss=cfg.policy_loss,
-                )
-                return policy.forward_backward(
-                    rl_datums,
-                    loss_name,
-                    loss_fn_config=loss_cfg,
-                )
+            """Run client-side GRPO with PPO clipping, TIS, and optional reference KL.
 
-            assert client_loss_builder is not None
+            To switch to built-in PPO or another loss, replace this call rather
+            than adding dispatch. See ``skills/customize-rl-loss/SKILL.md``.
+            """
             return policy.forward_backward_custom(
                 data,
-                client_loss_builder(
-                    adv,
-                    ref_lp,
-                    prompt_lens,
-                    inf_lp,
-                    old_policy_logprobs,
-                    raw_inf_lp,
+                make_grpo_loss_fn(
+                    advantages=adv,
+                    ref_logprobs=ref_lp,
+                    prompt_len=prompt_lens,
+                    inf_logprobs=inf_lp,
+                    old_policy_logprobs=old_policy_logprobs,
+                    kl_beta=cfg.kl_beta,
+                    eps_clip=cfg.eps_clip,
+                    eps_clip_high=cfg.eps_clip_high,
+                    tis_config=cfg.tis,
+                    raw_inf_logprobs=raw_inf_lp,
                 ),
             )
 
@@ -641,6 +587,7 @@ def main(
             "trainer_wait_for_sampler_time": 0.0,
             "sampler_wait_for_trainer_time": 0.0,
         }
+        tokens_processed = 0
 
         def train_step(
             step: int,
@@ -648,22 +595,23 @@ def main(
             loop_stats: dict | None,
             run_optimizer_step: bool,
         ) -> tuple[int, dict]:
-            """ref_forward + old_policy_logprobs snapshot + train chunks + metrics.
+            """Reference/old-policy snapshots + client GRPO chunks + optimizer.
 
             Each chunk runs fwd/bwd. ``run_optimizer_step`` controls
             whether the chunk also runs ``optim_step``. In default mode the
             chunk is the full rollout batch. In pipeline mode only the final
             accumulated chunk steps it.
 
-            Slime-aligned dual-axis logging: ``train/*`` lands on the
-            ``train/step`` axis (one point per optimizer step); ``rollout/*`` /
-            ``perf/*`` / ``async/*`` / ``version/*`` land on ``rollout/step``
-            (one point per outer rollout batch).
+            Metrics from all chunks are aggregated into one record per optimizer
+            step. ``train/*`` lands on the ``train/step`` axis; ``rollout/*`` /
+            ``perf/*`` / ``async/*`` / ``version/*`` land on ``rollout/step``.
             checkpoint identities remain optimizer-step labels (resume math is
             in optim steps); the off-policy budget is accounted in
             weight-sync versions inside ``_StalenessController`` and is
             independent of those labels.
             """
+            nonlocal tokens_processed
+
             train_start = time.monotonic()
             num_chunks = int(
                 (loop_stats or {}).get(
@@ -687,29 +635,16 @@ def main(
             with elapsed_timer("ref_forward") as span:
                 ref_forward(prompt_groups)
             logger.info(
-                "[rollout %d] ref_forward (%.1fs)", rollout_id, span.elapsed,
+                "[rollout %d] ref_forward (%.1fs)",
+                rollout_id,
+                span.elapsed,
             )
 
             data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combine_prompt_groups(
                 prompt_groups,
                 include_raw=True,
             )
-            if cfg.use_rollout_logprobs:
-                if len(inf_lp) != len(data):
-                    raise ValueError(
-                        "use_rollout_logprobs=True requires one rollout_logprobs "
-                        f"row per datum; got {len(inf_lp)} rows for {len(data)} datums."
-                    )
-                if any(not row for row in inf_lp):
-                    raise ValueError(
-                        "use_rollout_logprobs=True requires non-empty rollout_logprobs."
-                    )
-                old_policy_logprobs = inf_lp
-                logger.info(
-                    "[rollout %d] old_policy_logprobs: using rollout_logprobs",
-                    rollout_id,
-                )
-            else:
+            if cfg.anchor_logp == "old_policy":
                 with elapsed_timer("old_policy_forward") as span:
                     old_policy_fwd = policy.forward(data, "cross_entropy")
                     old_policy_logprobs = [
@@ -718,7 +653,23 @@ def main(
                     ]
                 logger.info(
                     "[rollout %d] old_policy_forward (%.1fs)",
-                    rollout_id, span.elapsed,
+                    rollout_id,
+                    span.elapsed,
+                )
+            else:
+                if len(inf_lp) != len(data):
+                    raise ValueError(
+                        "anchor_logp='rollout' requires one rollout_logprobs "
+                        f"row per datum; got {len(inf_lp)} rows for {len(data)} datums."
+                    )
+                if any(not row for row in inf_lp):
+                    raise ValueError(
+                        "anchor_logp='rollout' requires non-empty rollout_logprobs."
+                    )
+                old_policy_logprobs = inf_lp
+                logger.info(
+                    "[rollout %d] anchor_logp=rollout (old-policy forward skipped)",
+                    rollout_id,
                 )
 
             optim_result: Any = None
@@ -737,7 +688,11 @@ def main(
                 train_accum["fwd_bwd_results"].append(fwd_bwd_result)
             logger.info(
                 "[rollout %d step %d] fwd_bwd (chunk %d/%d) (%.1fs)",
-                rollout_id, step + 1, chunk_idx, num_chunks, span.elapsed,
+                rollout_id,
+                step + 1,
+                chunk_idx,
+                num_chunks,
+                span.elapsed,
             )
 
             step_lr = compute_lr(
@@ -747,17 +702,6 @@ def main(
                 total_steps=total_steps_estimate,
             )
             if not run_optimizer_step:
-                wandb_log(
-                    build_train_chunk_metrics(
-                        fwd_bwd_result,
-                        None,
-                        step=step + 1,
-                        chunk_idx=chunk_idx,
-                        num_chunks=num_chunks,
-                        learning_rate=step_lr,
-                        run_optimizer_step=False,
-                    )
-                )
                 return step, {}
 
             adam_kwargs = dict(DEFAULT_ADAM)
@@ -771,19 +715,11 @@ def main(
             step += 1
             logger.info(
                 "[rollout %d step %d] optim_step (chunk %d/%d) (%.1fs)",
-                rollout_id, step, chunk_idx, num_chunks, span.elapsed,
-            )
-
-            wandb_log(
-                build_train_chunk_metrics(
-                    fwd_bwd_result,
-                    optim_result,
-                    step=step,
-                    chunk_idx=chunk_idx,
-                    num_chunks=num_chunks,
-                    learning_rate=step_lr,
-                    run_optimizer_step=True,
-                )
+                rollout_id,
+                step,
+                chunk_idx,
+                num_chunks,
+                span.elapsed,
             )
 
             prompt_groups = list(train_accum["prompt_groups"])
@@ -809,10 +745,11 @@ def main(
                 loop_stats=loop_stats,
                 completions_per_prompt=cfg.completions_per_prompt,
             )
+            metrics["train/lr"] = step_lr
             # Per-rollout reference KL for the human summary line below.
             ref_kl = metrics.get("train/ref_kl", 0.0)
             metrics["rollout/step"] = rollout_id
-            metrics["train/step"] = step  # monotonic fallback for the wandb global step
+            metrics["train/step"] = step
             for k, v in ctx_metadata.items():
                 if isinstance(v, bool):
                     metrics[f"ctx/{k}"] = int(v)
@@ -827,16 +764,13 @@ def main(
                 metrics.get("rollout/accuracy", 0.0) * 100,
                 ref_kl,
             )
-            wandb_metrics = {k: v for k, v in metrics.items() if not k.startswith("train/")}
-            wandb_metrics["train/step"] = step
-            wandb_log(wandb_metrics)
-            # Report the number of trained target tokens, not raw rollout length.
-            write_running_step(
+            log_metrics(metrics, step=step)
+            tokens_processed += int(metrics.get("train/target_tokens", 0))
+            write_running_progress(
                 runner,
                 step=step,
                 total_steps=total_steps_estimate,
-                metrics=metrics,
-                tokens=total_target_tokens(prompt_groups),
+                tokens_processed=tokens_processed,
             )
             # DCP cadence is in rollout batches. Async has one optimizer step
             # per rollout batch; pipeline chunks do not multiply it.
@@ -867,11 +801,6 @@ def main(
             train_accum["sampler_wait_for_trainer_time"] = 0.0
             return step, metrics
 
-        def log_post_train_metrics(metrics: dict[str, Any]) -> None:
-            wandb_log(metrics)
-            train_step_value = int(metrics.get("train/step", 0))
-            runner.append_metrics(train_step_value, metrics)
-
         start_running(
             runner,
             step=step_offset,
@@ -894,7 +823,10 @@ def main(
                 max_concurrent=cfg.max_concurrency_rollout_sample,
                 dynamic_filter_fn=dynamic_filter_fn,
                 pipeline_chunks_per_step=cfg.pipeline_chunks_per_step,
-                post_train_metrics_fn=log_post_train_metrics,
+                post_train_metrics_fn=lambda metrics: log_metrics(
+                    metrics,
+                    step=int(metrics["train/step"]),
+                ),
                 global_step=step_offset,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
                 return_final_stats=True,
@@ -926,22 +858,20 @@ def main(
                 job_id=service.trainer_job_id,
             )
 
-        # Clamp progress at 100% when filtering/partial final batches shorten the run.
         final_step = max(global_step, total_steps_estimate)
-        write_completed(
-            runner,
-            step=final_step,
-            total_steps=final_step,
-        )
+        write_completed(runner, step=final_step, total_steps=final_step)
 
         logger.info(
             "Async RL training complete: %d steps (%d new in this run)",
-            global_step, global_step - step_offset,
+            global_step,
+            global_step - step_offset,
         )
-        wandb_finish()
+        wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
             "steps": global_step,
             "policy_job_id": service.trainer_job_id,
             "reference_job_id": service.reference_trainer_job_id,
             "deployment_id": service.deployment_id,
+            "accelerator_type": accelerator_type,
+            "accelerator_count": accelerator_count,
         }

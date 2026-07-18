@@ -18,15 +18,8 @@ from training.utils.rl.common import (
     _normalize_prompt_lens,
     align_sample_logprobs_to_target_tokens,
 )
-from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.client_losses import CLIENT_LOSSES
-from training.utils.rl.losses import (
-    LossConfig,
-    build_builtin_loss_datums,
-    build_loss_fn,
-    get_builtin_loss_config,
-    validate_loss_path,
-)
+from training.utils.rl.losses import build_grpo_datums
+from training.utils.rl.tis import TISConfig
 from training.utils.supervised import build_datum_from_token_mask
 
 
@@ -83,6 +76,92 @@ class TestAlignSampleLogprobs:
             required=True,
         ) == [-1.0, -1.1, -0.5, -0.6]
 
+    def test_pads_null_echoed_prompt_sampling_logprobs(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            # Serving emits behavior-policy logprobs only for generated tokens.
+            sampling_logprobs=[None, None, -0.5, -0.6],
+            logprobs_echoed=True,
+        )
+
+        assert align_sample_logprobs_to_target_tokens(
+            sampled,
+            attr="sampling_logprobs",
+            source="rollout_logprobs",
+            sample_idx=0,
+            required=True,
+        ) == [0.0, 0.0, -0.5, -0.6]
+
+    def test_rejects_null_echoed_completion_sampling_logprob(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            sampling_logprobs=[None, None, -0.5, None],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="null completion logprob"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="sampling_logprobs",
+                source="rollout_logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
+    def test_rejects_null_echoed_completion_with_single_token_prompt(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 10, 11],
+            prompt_len=1,
+            sampling_logprobs=[None, -0.6],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="null completion logprob"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="sampling_logprobs",
+                source="rollout_logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
+    @pytest.mark.parametrize("prompt_len", [-1, 6])
+    def test_rejects_invalid_prompt_len(self, prompt_len):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=prompt_len,
+            sampling_logprobs=[None, None, -0.5, -0.6],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="invalid prompt_len"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="sampling_logprobs",
+                source="rollout_logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
+    def test_rejects_null_echoed_raw_inference_logprob(self):
+        sampled = SimpleNamespace(
+            full_tokens=[1, 2, 3, 10, 11],
+            prompt_len=3,
+            inference_logprobs=[None, -1.1, -0.5, -0.6],
+            logprobs_echoed=True,
+        )
+
+        with pytest.raises(RuntimeError, match="null target-aligned logprob"):
+            align_sample_logprobs_to_target_tokens(
+                sampled,
+                attr="inference_logprobs",
+                source="raw inference logprobs",
+                sample_idx=0,
+                required=True,
+            )
+
     def test_rejects_non_completion_only_logprobs(self):
         sampled = SimpleNamespace(
             full_tokens=[1, 2, 3, 10, 11],
@@ -117,240 +196,87 @@ class TestAlignSampleLogprobs:
             )
 
 
-class TestLossBuilder:
-    def test_rejects_unknown_policy_loss(self):
-        # ``LossConfig`` is typed against the ``PolicyLoss`` Literal; cast to
-        # build a deliberately-invalid bundle for the negative-path test.
-        builder = build_loss_fn(LossConfig(policy_loss="unknown", kl_beta=0.01))  # type: ignore[arg-type]
-        with pytest.raises(ValueError, match="Unsupported policy_loss"):
-            builder([1.0], [_zeros(4)], [2], [_zeros(4)], [_zeros(4)])
-
-    def test_grpo_requires_inference_logprobs(self):
-        builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.01))
-        loss_fn = builder([1.0], [_zeros(4)], [2], [[]], [_zeros(4)])
-
-        with pytest.raises(ValueError, match="GRPO requires rollout_logprobs"):
-            loss_fn([], [_make_dummy_logprobs(4, seed=0)])
-
-    def test_client_only_loss_registration_uses_custom_path(self, monkeypatch):
-        events: dict[str, object] = {}
-
-        def fake_factory(
-            args,
-            advantages,
-            ref_logprobs,
-            prompt_lens,
-            inf_logprobs,
-            old_policy_logprobs,
-        ):
-            events["call"] = {
-                "advantages": advantages,
-                "prompt_lens": prompt_lens,
-                "kl_beta": args.kl_beta,
-            }
-            return "client-only-loss"
-
-        monkeypatch.setitem(CLIENT_LOSSES, "client_only_test", fake_factory)
-
-        # A client-only loss must reject loss_path='builtin' loudly.
-        with pytest.raises(ValueError, match="client-side-only"):
-            validate_loss_path(
-                LossConfig(policy_loss="client_only_test", loss_path="builtin")  # type: ignore[arg-type]
-            )
-
-        builder = build_loss_fn(LossConfig(policy_loss="client_only_test", kl_beta=0.01))  # type: ignore[arg-type]
-        loss_fn = builder([1.0], [_zeros(4)], [2], [_zeros(4)], [_zeros(4)])
-
-        assert loss_fn == "client-only-loss"
-        assert events["call"]["advantages"] == [1.0]
-        assert events["call"]["prompt_lens"] == [2]
-        assert events["call"]["kl_beta"] == pytest.approx(0.01)
-
-
-class TestBuiltinLossConfig:
-    def test_grpo_preserves_zero_upper_clip_bound(self):
-        kernel, config = get_builtin_loss_config(
-            LossConfig(
-                policy_loss="grpo", loss_path="builtin", eps_clip=0.2, eps_clip_high=0.0
-            ),
-        )
-
-        assert kernel == "ppo"
-        assert config["clip_low_threshold"] == pytest.approx(0.8)
-        assert config["clip_high_threshold"] == pytest.approx(1.0)
-
-    def test_gspo_preserves_zero_clip_bounds(self):
-        kernel, config = get_builtin_loss_config(
-            LossConfig(
-                policy_loss="gspo",
-                loss_path="builtin",
-                gspo=GSPOConfig(clip_ratio_low=0.0, clip_ratio_high=0.0),
-            ),
-        )
-
-        assert kernel == "gspo"
-        assert config["clip_low_threshold"] == pytest.approx(1.0)
-        assert config["clip_high_threshold"] == pytest.approx(1.0)
-
-    def test_importance_sampling_uses_ratio_log_cap(self):
-        kernel, config = get_builtin_loss_config(
-            LossConfig(
-                policy_loss="importance_sampling",
-                loss_path="builtin",
-                ratio_log_cap=7.5,
-            ),
-        )
-
-        assert kernel == "importance_sampling"
-        assert config["ratio_log_cap"] == pytest.approx(7.5)
-
-    def test_get_builtin_loss_config_rejects_client_path(self):
-        with pytest.raises(ValueError, match="loss_path='client'"):
-            get_builtin_loss_config(
-                LossConfig(policy_loss="grpo", loss_path="client"),
-            )
-
-    def test_builtin_datums_require_inference_logprobs(self):
-        datum = build_datum_from_token_mask(
-            token_ids=[10, 11, 12, 13],
-            token_mask=[0, 1, 1, 1],
-        ).datum
-
-        with pytest.raises(ValueError, match="GRPO requires rollout_logprobs"):
-            build_builtin_loss_datums(
-                [datum],
-                [1.0],
-                [[-0.1, -0.2, -0.3]],
-                [[]],
-                [2],
-                policy_loss="grpo",
-            )
-
-    def test_raw_logprobs_drive_inference_kld_observability_only(self):
-        datum = build_datum_from_token_mask(
-            token_ids=[10, 11, 12, 13],
-            token_mask=[0, 1, 1, 1],
-        ).datum
-        builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.0))
-        loss_fn = builder(
-            [1.0],
-            [[0.0, 0.0, 0.0]],
-            [2],
-            [[-9.0, -9.0, -9.0]],
-            [[-0.1, -0.2, -0.3]],
-            [[-1.0, -2.0, -3.0]],
-        )
-        _loss, metrics = loss_fn(
-            [datum],
-            [torch.tensor([-1.0, -2.0, -3.0], requires_grad=True)],
-        )
-
-        assert metrics["inference_kld"] == pytest.approx(0.0)
-        assert metrics["inference_diff"] == pytest.approx(0.0)
-        assert metrics["raw_inference_logprob_coverage"] == pytest.approx(1.0)
-
-    def test_partial_raw_logprobs_report_incomplete_observability_coverage(self):
-        datums = [
-            build_datum_from_token_mask(
-                token_ids=[10, 11, 12, 13],
-                token_mask=[0, 1, 1, 1],
-            ).datum
-            for _ in range(2)
-        ]
-        builder = build_loss_fn(LossConfig(policy_loss="grpo", kl_beta=0.0))
-        loss_fn = builder(
-            [1.0, 1.0],
-            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-            [2, 2],
-            [[-9.0, -9.0, -9.0], [-9.0, -9.0, -9.0]],
-            [[-0.1, -0.2, -0.3], [-0.1, -0.2, -0.3]],
-            [[-1.0, -2.0, -3.0], []],
-        )
-        _loss, metrics = loss_fn(
-            datums,
-            [
-                torch.tensor([-1.0, -2.0, -3.0], requires_grad=True),
-                torch.tensor([-1.0, -2.0, -3.0], requires_grad=True),
-            ],
-        )
-
-        assert metrics["inference_kld"] == pytest.approx(0.0)
-        assert metrics["inference_diff"] == pytest.approx(0.0)
-        assert metrics["raw_inference_logprob_coverage"] == pytest.approx(0.5)
-
-
-class TestKLBetaRoutesToClientSide:
-    """Documents the silent-KL-drop footgun and the explicit-path contract.
-
-    Bug: the server-side builtin kernels receive datums produced by
-    :func:`training.utils.rl.losses.build_builtin_loss_datums`, whose
-    ``loss_fn_inputs`` are exactly ``{target_tokens, logprobs, advantages}``
-    -- no ``ref_logprobs`` field is ever sent to the trainer. So when a
-    caller sets ``kl_beta > 0`` expecting a KL penalty, the builtin PPO
-    kernel silently drops the ``kl_beta * (pi - pi_ref)`` term.
-
-    Fix: ``loss_path`` is now an **explicit** user choice. Picking
-    ``"builtin"`` with ``kl_beta > 0`` raises in :func:`validate_loss_path`
-    instead of silently rerouting -- the user has to pick ``loss_path='client'``
-    or ``kl_beta=0`` themselves.
-    """
-
+class TestBuildGRPODatums:
     @staticmethod
-    def _builtin_datum():
-        """Run the builtin datum packer the way rl_loop does."""
-        datum = build_datum_from_token_mask(
+    def _datum():
+        return build_datum_from_token_mask(
             token_ids=[10, 11, 12, 13],
             token_mask=[0, 1, 1, 1],
         ).datum
-        rl_datums = build_builtin_loss_datums(
-            data=[datum],
+
+    def test_builds_exact_builtin_contract(self):
+        datum = build_grpo_datums(
+            data=[self._datum()],
             advantages=[1.0],
-            old_policy_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
-            inf_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
+            old_policy_logprobs=[[-0.1, -0.2, -0.3]],
+            inf_logprobs=[[-0.1, -0.2, -0.3]],
             prompt_lens=[2],
-            policy_loss="grpo",
-        )
-        return rl_datums[0]
+        )[0]
 
-    def test_builtin_datum_has_no_ref_logprobs_field(self):
-        """Structural invariant: the server-side path carries no ref logprobs.
-
-        This is the root cause of the silent KL drop. Encoded as a test so
-        the motivation for the ``validate_loss_path`` kl_beta guard remains
-        explicit: if this invariant ever changes (e.g. the server kernel
-        learns to consume ref logprobs), the guard can be relaxed.
-        """
-        fields = set(self._builtin_datum().loss_fn_inputs.keys())
-
-        assert fields == {"target_tokens", "logprobs", "advantages"}, (
-            "build_builtin_loss_datums emitted unexpected fields "
-            f"{fields!r}; the server-side builtin kernel contract is "
-            "(target_tokens, logprobs, advantages) only."
-        )
-        assert "ref_logprobs" not in fields, (
-            "ref_logprobs leaked into the builtin datum -- if the server "
-            "kernel now consumes it, the kl_beta gate can be lifted."
+        assert set(datum.loss_fn_inputs) == {
+            "target_tokens",
+            "logprobs",
+            "advantages",
+        }
+        assert datum.loss_fn_inputs["logprobs"].data == pytest.approx(
+            [-0.1, -0.2, -0.3]
         )
 
-    def test_validate_loss_path_rejects_builtin_with_kl_beta(self):
-        """``loss_path='builtin'`` + ``kl_beta>0`` must raise (no silent drop)."""
-        with pytest.raises(ValueError, match=r"kl_beta=.* > 0"):
-            validate_loss_path(
-                LossConfig(policy_loss="grpo", loss_path="builtin", kl_beta=0.01),
+    @pytest.mark.parametrize(
+        ("field", "kwargs"),
+        [
+            ("advantages", {"advantages": []}),
+            ("old_policy_logprobs", {"old_policy_logprobs": []}),
+            ("rollout_logprobs", {"inf_logprobs": []}),
+            ("prompt_lens", {"prompt_lens": []}),
+        ],
+    )
+    def test_rejects_misaligned_rows(self, field, kwargs):
+        inputs = {
+            "data": [self._datum()],
+            "advantages": [1.0],
+            "old_policy_logprobs": [[-0.1, -0.2, -0.3]],
+            "inf_logprobs": [[-0.1, -0.2, -0.3]],
+            "prompt_lens": [2],
+        }
+        inputs.update(kwargs)
+
+        with pytest.raises(ValueError, match=field):
+            build_grpo_datums(**inputs)
+
+    def test_rejects_short_old_policy_row_instead_of_padding(self):
+        with pytest.raises(ValueError, match="expected 3, got 2"):
+            build_grpo_datums(
+                data=[self._datum()],
+                advantages=[1.0],
+                old_policy_logprobs=[[-0.1, -0.2]],
+                inf_logprobs=[[-0.1, -0.2, -0.3]],
+                prompt_lens=[2],
             )
 
-    def test_validate_loss_path_accepts_builtin_with_kl_beta_zero(self):
-        """Regression guard: ``kl_beta == 0`` must still allow the fast path."""
-        # No raise.
-        validate_loss_path(
-            LossConfig(policy_loss="grpo", loss_path="builtin", kl_beta=0.0),
-        )
+    @pytest.mark.parametrize("prompt_len", [-1, 5])
+    def test_rejects_prompt_boundary_outside_sequence(self, prompt_len):
+        with pytest.raises(ValueError, match="prompt_len"):
+            build_grpo_datums(
+                data=[self._datum()],
+                advantages=[1.0],
+                old_policy_logprobs=[[-0.1, -0.2, -0.3]],
+                inf_logprobs=[[-0.1, -0.2, -0.3]],
+                prompt_lens=[prompt_len],
+            )
 
-    def test_validate_loss_path_accepts_client_with_kl_beta(self):
-        """Client path tolerates any kl_beta -- it consumes ref_logprobs."""
-        # No raise.
-        validate_loss_path(
-            LossConfig(policy_loss="grpo", loss_path="client", kl_beta=0.01),
+    def test_folds_tis_weight_into_response_advantages(self):
+        datum = build_grpo_datums(
+            data=[self._datum()],
+            advantages=[2.0],
+            old_policy_logprobs=[[0.0, 0.0, 0.0]],
+            inf_logprobs=[[-1.0, -1.0, -1.0]],
+            prompt_lens=[2],
+            tis_config=TISConfig(cap=1.5),
+        )[0]
+
+        assert datum.loss_fn_inputs["advantages"].data == pytest.approx(
+            [0.0, 3.0, 3.0]
         )
 
 

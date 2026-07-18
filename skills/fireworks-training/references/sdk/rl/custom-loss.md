@@ -1,6 +1,9 @@
 # RL: writing a custom loss
 
-Only needed when you cannot express your loss as one of the built-in kernels (GRPO / DAPO / DRO / GSPO / CISPO). Custom losses pay an **extra forward pass** per step (see [`loss-paths.md`](loss-paths.md)); stay on a built-in if you can.
+The generic sync and async recipes call the client-side GRPO builder directly.
+Fork the documented forward/backward function and replace that one builder when
+you need another Python research loss. See the
+[customize RL loss skill](https://github.com/fw-ai/fireworks/blob/main/public-repos/cookbook/skills/customize-rl-loss/SKILL.md).
 
 ## Interface
 
@@ -16,12 +19,18 @@ The recipe passes it into `training_client.forward_backward_custom(datums, my_lo
 
 ## Reference implementation
 
-`cookbook/training/utils/rl/grpo.py` — follow the same shape (advantages + logprobs + optional KL term, returned as `(scalar, metrics)`).
+`cookbook/training/utils/rl/grpo.py` — follow the same shape (advantages +
+logprobs + optional KL term, returned as `(scalar, metrics)`). Other direct
+builders live beside it (`dapo.py`, `gspo.py`, `cispo.py`, and so on).
 
 ## Don'ts
 
-- **Don't reimplement `forward_backward_custom`.** Fork `rl_loop.py` and swap only the loss function; the recipe already wires logprob collection, reference-model forward, and client-side loss dispatch.
-- **Don't dispatch manually** between the server-side and client-side paths — `rl_loop.py` does that based on `cfg.policy_loss`. Adding a custom loss means registering it, or just setting `cfg.policy_loss` to a name with no builtin kernel so the recipe falls back to custom.
+- **Don't reimplement `forward_backward_custom`.** Fork `rl_loop.py` and replace
+  the documented direct GRPO builder with another loss closure.
+- **Don't add an automatic fallback.** A fork should call either
+  `forward_backward` or `forward_backward_custom` explicitly.
+- **Don't silently reuse the GRPO reference.** Keep or remove reference
+  provisioning explicitly based on what the replacement closure consumes.
 - **Don't forget `grad_accumulation_normalization`** — see [`gradient-accumulation.md`](gradient-accumulation.md). Match the mode to whether your loss returns a raw sum or a pre-normalized mean.
 
 ## RL-only `Config` fields you commonly touch
@@ -30,10 +39,9 @@ All live on `rl_loop.Config`:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `policy_loss` | `"grpo"` | `grpo`, `importance_sampling`, `dapo`, `dro`, `gspo`, `reinforce`, `cispo`. Decides server-side vs client-side dispatch. |
 | `completions_per_prompt` | `4` | GRPO group size — responses sampled per prompt. |
 | `prompt_groups_per_step` | `1` | Number of prompt groups per `forward_backward + optim_step` pair. |
-| `kl_beta` | `0.001` | KL-to-reference coefficient. For full-param, the SDK provisions a separate frozen reference trainer and lets backend trainer creation auto-select a LoRA-capable shape unless `cfg.trainer.reference_training_shape_id` pins a LoRA-capable shape. For LoRA, leave it unset — `service.create_reference_client(...)` reuses the policy session with the adapter disabled (the base is the reference). |
+| `kl_beta` | `0.001` | Reference-KL coefficient; `0` skips the reference. |
 | `eps_clip`, `eps_clip_high` | `0.2`, `None` | PPO clip for GRPO. |
 | `router_replay` | `False` | Record routing at rollout time and replay during training (MoE models). |
 | `grad_accumulation_normalization` | `None` | No server-side normalization by default. Use `NUM_LOSS_TOKENS` for raw-sum losses. See [`gradient-accumulation.md`](gradient-accumulation.md). |
@@ -42,5 +50,6 @@ Shape-owned fields (`accelerator_type` / `node_count` / `custom_image_tag`) are 
 
 ## See also
 
-- Built-in loss registry + per-algorithm kernels: `training/utils/rl/losses.py`, `training/utils/rl/{grpo,dapo,dro,gspo,cispo}.py`.
+- Built-in GRPO datum preparation: `training/utils/rl/losses.py`.
+- Direct client loss builders: `training/utils/rl/{grpo,dapo,dro,gspo,cispo}.py`.
 - `forward_backward_custom` signature + behaviour: `fireworks.training.sdk.client.FiretitanTrainingClient.forward_backward_custom` (`pip show fireworks-ai` → find `src/fireworks/training/sdk/client.py` in the installed package).

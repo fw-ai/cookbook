@@ -56,6 +56,7 @@ def _firetitan_service_kwargs(
         "extra_args": trainer.extra_args,
         "trainer_replica_count": trainer.replica_count,
         "trainer_timeout_s": trainer.timeout_s,
+        "trainer_pending_timeout_s": trainer.pending_timeout_s,
         "inactivity_timeout": trainer.inactivity_timeout,
         "disable_inactivity_cleanup": trainer.disable_inactivity_cleanup,
         "purpose": trainer.purpose,

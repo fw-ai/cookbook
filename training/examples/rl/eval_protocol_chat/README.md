@@ -10,7 +10,7 @@ It uses:
 - a small FastAPI chat rollout server that produces one assistant response per
   rollout
 - cookbook renderers to pack the completed `EvaluationRow` into `RolloutRun`
-- `policy_loss="reinforce"` for a simple RL objective
+- the generic async recipe's client-side GRPO objective with reference KL disabled
 
 ## Files
 

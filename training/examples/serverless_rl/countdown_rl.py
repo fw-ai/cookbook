@@ -62,7 +62,7 @@ try:  # Load FIREWORKS_API_KEY / FIREWORKS_BASE_URL from a local .env if present
 except ImportError:
     pass
 
-from examples.serverless_rl.countdown_rewards import composite_reward
+from training.examples.serverless_rl.countdown_rewards import composite_reward
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_DATASET = HERE / "data" / "countdown_train.jsonl"
@@ -73,14 +73,16 @@ class Config:
     """Everything you might want to tune. Edit the ``__main__`` block below."""
 
     # --- What to train ------------------------------------------------------
-    base_model: str = "accounts/fireworks/models/qwen3p5-27b"
+    base_model: str = "accounts/fireworks/models/qwen3p6-27b"
     # HuggingFace tokenizer matching ``base_model`` -- used to render prompts and
     # decode sampled tokens client-side.
-    tokenizer_model: str = "Qwen/Qwen3.5-27B"
+    tokenizer_model: str = "Qwen/Qwen3.6-27B"
     # Leave "" to auto-pick the recommended chat renderer for the tokenizer.
     renderer_name: str = ""
     dataset: str = str(DEFAULT_DATASET)
     lora_rank: int = 8
+    # Serverless has no training shape from which to infer this bound.
+    max_seq_len: int = 65536
 
     # --- RL loop shape ------------------------------------------------------
     steps: int = 10
@@ -107,6 +109,31 @@ class Config:
     run_dir: str = ""
     # Requires matplotlib; set False (or don't install it) to skip the plot.
     plot_reward_curve: bool = True
+
+
+def _validate_config(cfg: Config) -> None:
+    if cfg.max_seq_len <= 0:
+        raise ValueError("serverless training requires max_seq_len > 0")
+    if cfg.lora_rank <= 0:
+        raise ValueError("serverless training requires lora_rank > 0")
+
+
+def _validate_prompt_budget(
+    prompt_length: int, max_sample_tokens: int, max_seq_len: int
+) -> None:
+    if prompt_length + max_sample_tokens > max_seq_len:
+        raise ValueError(
+            "rendered prompt plus max_sample_tokens exceeds max_seq_len: "
+            f"{prompt_length} + {max_sample_tokens} > {max_seq_len}"
+        )
+
+
+def _validate_datum_length(datum_length: int, max_seq_len: int) -> None:
+    if datum_length > max_seq_len:
+        raise ValueError(
+            f"training datum length {datum_length} exceeds "
+            f"max_seq_len {max_seq_len}"
+        )
 
 
 def _serverless_base_url(base_url: str) -> str:
@@ -155,6 +182,7 @@ class ServerlessCountdownRL:
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
+        _validate_config(cfg)
         self.rows = _load_rows(Path(cfg.dataset))
         if not self.rows:
             raise SystemExit(f"dataset is empty: {cfg.dataset}")
@@ -191,7 +219,8 @@ class ServerlessCountdownRL:
             f"connected serverless session={session} run={run_id}\n"
             f"base_model={cfg.base_model} tokenizer={cfg.tokenizer_model} renderer={renderer_name}\n"
             f"steps={cfg.steps} prompt_groups_per_step={cfg.prompt_groups_per_step} "
-            f"group_size={cfg.group_size} lora_rank={cfg.lora_rank} lr={cfg.learning_rate}\n"
+            f"group_size={cfg.group_size} lora_rank={cfg.lora_rank} "
+            f"max_seq_len={cfg.max_seq_len} lr={cfg.learning_rate}\n"
             f"run_dir={self.run_dir}",
             flush=True,
         )
@@ -227,6 +256,10 @@ class ServerlessCountdownRL:
 
         batch = self._next_batch()
         prompts = [self.renderer.build_generation_prompt(row["messages"]) for row in batch]
+        for prompt in prompts:
+            _validate_prompt_budget(
+                prompt.length, cfg.max_sample_tokens, cfg.max_seq_len
+            )
 
         # 2. Roll out `group_size` completions per prompt, a few prompts in
         #    flight at a time.
@@ -279,6 +312,7 @@ class ServerlessCountdownRL:
                 # last sampled token; targets/logprobs/advantages are aligned to
                 # the response region and left-padded over the prompt.
                 model_input = prompt.append(tinker.EncodedTextChunk(tokens=tokens[:-1]))
+                _validate_datum_length(model_input.length, cfg.max_seq_len)
                 datums.append(
                     tinker.Datum(
                         model_input=model_input,

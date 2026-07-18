@@ -236,6 +236,23 @@ class TestSingleTurnPacking:
             f"when set; got {prompt_lens}"
         )
 
+    def test_combine_raw_inference_logprobs_preserves_missing_rows(self):
+        from training.utils.rl.losses import combine_prompt_groups
+
+        r = Rollout(
+            runs=_solo(
+                _sample(raw_logprobs=[0.0, 0.0, -0.2, -0.3, -0.4]),
+                _sample(raw_logprobs=None),
+            )
+        )
+        pg = rollout_to_prompt_group(r)
+
+        *_, rows = combine_prompt_groups([pg], include_raw=True)
+
+        assert len(rows) == 2
+        assert rows[0]
+        assert rows[1] == []
+
     def test_with_reference_mirrors_policy_datums(self):
         r = Rollout(runs=_solo(_sample(), _sample()))
         pg = rollout_to_prompt_group(r, with_reference=True)
@@ -328,23 +345,6 @@ class TestInferenceLogprobs:
             [0.0, -1.1, -1.2, -1.3],
             [0.0, -1.1, -1.2, -1.3],
         ]
-
-    def test_combine_prompt_groups_includes_raw_inf_logprobs(self):
-        from training.utils.rl.losses import combine_prompt_groups
-
-        r = Rollout(runs=_solo(
-            _sample(raw_logprobs=[0.0, 0.0, -1.1, -1.2, -1.3], reward=1.0),
-            _sample(raw_logprobs=[0.0, 0.0, -2.1, -2.2, -2.3], reward=0.0),
-        ))
-
-        pg = rollout_to_prompt_group(r)
-        *_, raw_inf_logprobs = combine_prompt_groups([pg], include_raw=True)
-
-        assert raw_inf_logprobs == [
-            [0.0, -1.1, -1.2, -1.3],
-            [0.0, -2.1, -2.2, -2.3],
-        ]
-
 
 class TestRowMeta:
     def test_row_meta_copied_when_present(self):

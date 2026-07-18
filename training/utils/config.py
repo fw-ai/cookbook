@@ -54,6 +54,10 @@ class ConcurrencyConfig:
     prefill_queue_target: float = 0.5
     """Target prefill queue duration (seconds) for the AIMD controller."""
 
+    rollout_adjustment_interval: int = 32
+    """Adjust adaptive concurrency every N completed requests within an RL step.
+    Remaining requests adjust at the step boundary; ``0`` adjusts only there."""
+
 
 @dataclass
 class InfraConfig:
@@ -105,7 +109,7 @@ class InfraConfig:
     knob, not part of the validated training shape.
     """
     purpose: str | None = None
-    """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
+    """Optional platform ``Purpose`` proto enum name."""
     skip_validations: bool = False
     """Skip server-side shape validation. Requires superuser API key."""
 
@@ -157,6 +161,9 @@ class TrainerConfig:
     ``replica_count`` for data-parallel scaling."""
     node_count: int | None = None
     timeout_s: float = 3600
+    """Post-placement budget for the trainer to become healthy and ready."""
+    pending_timeout_s: float = 48 * 60 * 60
+    """Capacity-placement budget while the trainer remains ``PENDING``."""
     extra_args: list[str] | None = None
     replica_count: int | None = None
     """Data-parallel trainer replica count for service-mode HSDP launches."""
@@ -170,7 +177,7 @@ class TrainerConfig:
     """Disable automatic trainer cleanup after inactivity."""
 
     purpose: str | None = None
-    """Optional ``Purpose`` proto enum name (e.g. ``"PURPOSE_PILOT"``)."""
+    """Optional platform ``Purpose`` proto enum name."""
 
     managed_by: str | None = None
     """Optional parent resource ID for managed trainer ownership."""

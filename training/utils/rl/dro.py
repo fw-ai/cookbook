@@ -32,6 +32,12 @@ class DROConfig:
     beta: float = 0.05
 
 
+def validate_dro_config(config: DROConfig) -> None:
+    """Validate DRO settings before building the loss closure."""
+    if config.beta < 0:
+        raise ValueError("DRO beta must be non-negative.")
+
+
 def make_dro_loss_fn(
     advantages: List[float],
     ref_logprobs: List[List[float]],
@@ -44,6 +50,7 @@ def make_dro_loss_fn(
     """Build a DRO loss closure with quadratic old-policy penalty."""
     if dro_config is None:
         dro_config = DROConfig()
+    validate_dro_config(dro_config)
     if tis_config is None:
         tis_config = TISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))

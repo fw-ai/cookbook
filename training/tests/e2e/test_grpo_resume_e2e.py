@@ -98,16 +98,13 @@ class TestGRPOResumeE2E:
         e2e_model,
         e2e_tokenizer_model,
         e2e_training_shape,
-        e2e_reference_training_shape,
         e2e_training_profile,
-        e2e_reference_training_profile,
         e2e_deployment_accelerator,
         custom_image_tag,
         port_lora_rank,
     ):
         rlor_mgr, deploy_mgr = sdk_managers
         _ = e2e_training_profile
-        _ = e2e_reference_training_profile
         _ = e2e_deployment_accelerator
 
         phase1_policy_job_id = None
@@ -118,7 +115,6 @@ class TestGRPOResumeE2E:
 
         shared_trainer = TrainerConfig(
             training_shape_id=e2e_training_shape,
-            reference_training_shape_id=e2e_reference_training_shape,
             cleanup_reference_on_close=False,
             custom_image_tag=custom_image_tag,
         )
@@ -161,20 +157,19 @@ class TestGRPOResumeE2E:
             phase1_deployment_id = phase1_metrics["deployment_id"]
             if port_lora_rank:
                 assert phase1_reference_job_id is None, (
-                    f"LoRA GRPO should use the shared-reference path: {phase1_metrics}"
+                    f"LoRA GRPO should not create a separate reference: {phase1_metrics}"
                 )
             else:
                 assert phase1_reference_job_id, (
-                    f"Full-param GRPO should create a separate reference trainer: {phase1_metrics}"
+                    f"Full-param GRPO should create a reference trainer: {phase1_metrics}"
                 )
             assert phase1_deployment_id, (
                 f"Expected managed deployment id in metrics: {phase1_metrics}"
             )
             assert phase1_steps >= 2, f"Expected >= 2 steps in phase 1, got {phase1_steps}"
             logger.info(
-                "Phase 1 done: %d steps, policy=%s, reference=%s, deployment=%s",
-                phase1_steps, phase1_policy_job_id, phase1_reference_job_id,
-                phase1_deployment_id,
+                "Phase 1 done: %d steps, policy=%s, deployment=%s",
+                phase1_steps, phase1_policy_job_id, phase1_deployment_id,
             )
 
             # Read the persisted rollout cursor from dataloader.json — the only
@@ -204,12 +199,12 @@ class TestGRPOResumeE2E:
                 len(phase1_resumable), phase1_data_consumed,
             )
 
-            # Phase 2: reattach to the same policy + reference trainers so resume
-            # can find the phase-1 CP rows. Auto-resume across separate trainer
-            # jobs is not supported in the new model.
+            # Phase 2: reattach to the same policy and reference trainers so
+            # resume can find the phase-1 CP rows.
             logger.info(
                 "PHASE 2: reattach to policy=%s, reference=%s",
-                phase1_policy_job_id, phase1_reference_job_id,
+                phase1_policy_job_id,
+                phase1_reference_job_id,
             )
 
             phase2_config = Config(
@@ -243,11 +238,7 @@ class TestGRPOResumeE2E:
             assert phase2_metrics["policy_job_id"] == phase1_policy_job_id, (
                 f"Phase 2 should reuse policy trainer {phase1_policy_job_id}: {phase2_metrics}"
             )
-            if phase1_reference_job_id:
-                assert phase2_metrics.get("reference_job_id") == phase1_reference_job_id, (
-                    f"Phase 2 should reuse reference trainer {phase1_reference_job_id}: "
-                    f"{phase2_metrics}"
-                )
+            assert phase2_metrics.get("reference_job_id") == phase1_reference_job_id
             phase2_steps = phase2_metrics["steps"]
             assert phase2_steps > phase1_steps, (
                 f"Phase 2 step count ({phase2_steps}) should exceed phase 1's "
@@ -272,9 +263,5 @@ class TestGRPOResumeE2E:
                 _delete_deployment_and_assert_cleanup(deploy_mgr, phase1_deployment_id)
             if verified and phase1_policy_job_id:
                 _delete_trainer_and_assert_cleanup(rlor_mgr, phase1_policy_job_id)
-            if (
-                verified
-                and phase1_reference_job_id
-                and phase1_reference_job_id != phase1_policy_job_id
-            ):
+            if verified and phase1_reference_job_id:
                 _delete_trainer_and_assert_cleanup(rlor_mgr, phase1_reference_job_id)

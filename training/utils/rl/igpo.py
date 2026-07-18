@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Tuple
 import tinker
 import torch
 
+from training.utils.rl.common import _get_loss_mask
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -263,6 +265,14 @@ def expand_turn_advantages_from_spans(
 _SAFETY_CLAMP = 20.0
 
 
+def validate_igpo_config(*, kl_beta: float, eps_clip: float) -> None:
+    """Validate IGPO policy-loss settings before building the loss closure."""
+    if kl_beta < 0:
+        raise ValueError("IGPO kl_beta must be non-negative.")
+    if eps_clip < 0:
+        raise ValueError("IGPO eps_clip must be non-negative.")
+
+
 def make_igpo_loss_fn(
     per_token_advantages: List[List[float]],
     ref_logprobs: List[List[float]],
@@ -279,7 +289,7 @@ def make_igpo_loss_fn(
     When ``old_policy_logprobs`` is ``None``, the current forward-pass logprobs
     are used as the old-policy baseline (ratio=1, clipping is a no-op).
     """
-    from training.utils.rl.common import _get_loss_mask
+    validate_igpo_config(kl_beta=kl_beta, eps_clip=eps_clip)
 
     def loss_fn(
         data: List[tinker.Datum],

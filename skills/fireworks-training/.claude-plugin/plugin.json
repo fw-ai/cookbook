@@ -1,0 +1,10 @@
+{
+  "name": "fireworks-training",
+  "description": "Train on Fireworks from your coding agent: managed SFT/DPO/ORPO/RFT plus Training API serverless and dedicated cookbook workflows.",
+  "version": "2.0.0",
+  "author": { "name": "Fireworks AI" },
+  "homepage": "https://docs.fireworks.ai/fine-tuning/agent/use-with-coding-agents",
+  "repository": "https://github.com/fw-ai/cookbook",
+  "license": "MIT",
+  "keywords": ["fireworks", "fine-tuning", "training", "sft", "dpo", "orpo", "rft", "rl", "firectl"]
+}

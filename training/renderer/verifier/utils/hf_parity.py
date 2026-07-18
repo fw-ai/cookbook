@@ -77,13 +77,14 @@ def _first_divergence(a: list[int], b: list[int]) -> int | None:
     return None
 
 
-def _hf_messages_with_normalized_tool_args(messages: list[dict]) -> list[dict]:
-    """Return ``messages`` with each tool_call's ``arguments`` as a JSON string.
+def _hf_messages_with_normalized_tool_args(
+    messages: list[dict], *, require_mapping: bool
+) -> list[dict]:
+    """Return a reference copy with a template-compatible argument shape.
 
-    Mirrors ``normalize_messages`` (the renderer path), which serializes tool
-    arguments to ``json.dumps(parsed)``. Passing the same string form to
-    ``apply_chat_template`` keeps the HF comparison apples-to-apples and matches
-    inference (tool args are JSON strings on the wire).
+    OpenAI-compatible inputs may carry arguments as JSON strings. Current Gemma
+    4 templates require deserialized objects, while other renderer parity tests
+    intentionally exercise the production JSON-string representation.
     """
     out: list[dict] = []
     for message in messages:
@@ -98,7 +99,9 @@ def _hf_messages_with_normalized_tool_args(messages: list[dict]) -> list[dict]:
             if "arguments" in function:
                 raw = function["arguments"]
                 parsed = json.loads(raw) if isinstance(raw, str) else raw
-                function["arguments"] = json.dumps(parsed)
+                function["arguments"] = (
+                    parsed if require_mapping else json.dumps(parsed)
+                )
             call["function"] = function
             new_calls.append(call)
         message = {**message, "tool_calls": new_calls}
@@ -160,12 +163,13 @@ def compare_renderer_to_hf(
         hf_kwargs["tools"] = tools
     else:
         hf_kwargs.pop("tools", None)
-    # Feed HF the SAME tool-call argument representation the renderer sees
-    # (normalize_messages serializes tool_call arguments to a JSON string), so a
-    # type-branching template (gemma-4: dict->native, string->verbatim) can't
-    # diverge purely because the two sides received different argument shapes.
+    # The July 2026 Gemma 4 template requires deserialized arguments. Preserve
+    # the production JSON-string representation for other renderer families.
     hf_result = tokenizer.apply_chat_template(
-        _hf_messages_with_normalized_tool_args(messages),
+        _hf_messages_with_normalized_tool_args(
+            messages,
+            require_mapping=renderer_name in {"gemma4", "gemma4_thinking"},
+        ),
         tokenize=True,
         add_generation_prompt=add_generation_prompt,
         **hf_kwargs,

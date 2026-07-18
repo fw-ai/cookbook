@@ -38,6 +38,14 @@ class CISPOConfig:
     ratio_log_cap: float = 20.0
 
 
+def validate_cispo_config(config: CISPOConfig) -> None:
+    """Validate CISPO settings before building the loss closure."""
+    if config.eps_low < 0 or config.eps_high < 0:
+        raise ValueError("CISPO eps_low and eps_high must be non-negative.")
+    if config.ratio_log_cap < 0:
+        raise ValueError("CISPO ratio_log_cap must be non-negative.")
+
+
 def make_cispo_loss_fn(
     advantages: List[float],
     ref_logprobs: List[List[float]],
@@ -50,6 +58,7 @@ def make_cispo_loss_fn(
     """Build a CISPO loss closure with ratio clipping and behavioral TIS weight."""
     if cispo_config is None:
         cispo_config = CISPOConfig()
+    validate_cispo_config(cispo_config)
     if tis_config is None:
         tis_config = TISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))

@@ -36,6 +36,7 @@ def _cfg(*, trainer_job_id: str | None = None, deployment_id: str | None = None)
             min_window=1,
             max_window=32,
             prefill_queue_target=0.5,
+            rollout_adjustment_interval=32,
         ),
     )
 
@@ -84,6 +85,27 @@ def _stub_runtime(monkeypatch: pytest.MonkeyPatch, calls: list[dict]) -> _FakeSe
     return service
 
 
+def test_create_sampler_forwards_rollout_adjustment_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller_kwargs: dict[str, object] = {}
+    controller = object()
+    monkeypatch.setattr(module, "load_deployment_tokenizer", lambda _deployment: object())
+
+    def make_controller(**kwargs: object) -> object:
+        controller_kwargs.update(kwargs)
+        return controller
+
+    monkeypatch.setattr(module, "AdaptiveConcurrencyController", make_controller)
+    cfg = _cfg()
+    cfg.concurrency.rollout_adjustment_interval = 7
+
+    _, created_controller = module._create_sampler(_FakeService(), cfg)
+
+    assert created_controller is controller
+    assert controller_kwargs["adjustment_interval"] == 7
+
+
 def test_init_enables_cleanup_for_fresh_resources(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict] = []
     _stub_runtime(monkeypatch, calls)
@@ -98,6 +120,43 @@ def test_init_enables_cleanup_for_fresh_resources(monkeypatch: pytest.MonkeyPatc
 
     assert calls[0]["cleanup_trainer_on_close"] is True
     assert calls[0]["cleanup_deployment_on_close"] == "scale_to_zero"
+
+
+def test_init_rl_provisions_reference_when_kl_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+    _stub_runtime(monkeypatch, calls)
+    cfg = _cfg()
+    cfg.kl_beta = 0.1
+
+    infra = module.init_fireworks_infra(
+        "rl",
+        cfg,
+        api_key="fw-key",
+        base_url="https://api.fireworks.ai",
+    )
+
+    assert calls[0]["reference_required"] is True
+    assert infra.reference is not None
+    assert infra.reference_job_id == "reference-trainer-1"
+
+
+def test_init_rl_rejects_negative_kl_beta(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    _stub_runtime(monkeypatch, calls)
+    cfg = _cfg()
+    cfg.kl_beta = -0.1
+
+    with pytest.raises(ValueError, match="kl_beta must be non-negative"):
+        module.init_fireworks_infra(
+            "rl",
+            cfg,
+            api_key="fw-key",
+            base_url="https://api.fireworks.ai",
+        )
+
+    assert calls == []
 
 
 def test_init_does_not_cleanup_existing_resources_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,7 +261,6 @@ recipe:
   rl_small:
     trainer: policy
     deployment: rollout
-    kl_beta: 0.2
 """,
         encoding="utf-8",
     )
@@ -212,7 +270,7 @@ recipe:
     assert mode == "rl"
     assert cfg.base_model == "accounts/test/models/base"
     assert cfg.lora_rank == 16
-    assert cfg.kl_beta == 0.2
+    assert cfg.kl_beta == 0.001
     assert cfg.trainer.training_shape_id == "accounts/test/trainingShapes/policy"
     assert cfg.deployment.tokenizer_model == "Qwen/Test"
     assert cfg.deployment.replica_count == 2
@@ -301,7 +359,6 @@ recipe:
   rl:
     trainer: policy
     deployment: rollout
-    kl_beta: 0.2
 """,
         encoding="utf-8",
     )
@@ -309,7 +366,7 @@ recipe:
     mode, cfg = module._load_yaml_provision(mode=None, recipe=None, path=config_path)
 
     assert mode == "rl"
-    assert cfg.kl_beta == 0.2
+    assert cfg.kl_beta == 0.001
     assert cfg.deployment.replica_count == 1
 
 
@@ -337,7 +394,6 @@ recipe:
   rl:
     trainer: policy
     deployment: rollout
-    kl_beta: 0.3
 """,
         encoding="utf-8",
     )
@@ -350,7 +406,7 @@ recipe:
     )
 
     assert mode == "rl"
-    assert cfg.kl_beta == 0.3
+    assert cfg.kl_beta == 0.001
     assert cfg.deployment.replica_count == 1
 
 
@@ -453,7 +509,7 @@ recipe:
         module._load_yaml_provision(mode=None, recipe="rl_small", path=config_path)
 
 
-def test_load_yaml_provision_supports_reference_trainer(tmp_path: Path) -> None:
+def test_load_yaml_provision_supports_reference_trainer_for_client_grpo(tmp_path: Path) -> None:
     config_path = tmp_path / "fireworks.yaml"
     config_path.write_text(
         """
@@ -475,10 +531,43 @@ recipe:
         encoding="utf-8",
     )
 
-    _mode, cfg = module._load_yaml_provision(mode="rl", recipe="rl_full", path=config_path)
+    _mode, cfg = module._load_yaml_provision(
+        mode="rl",
+        recipe="rl_full",
+        path=config_path,
+    )
 
+    assert cfg.kl_beta == 0.001
     assert cfg.trainer.training_shape_id == "accounts/test/trainingShapes/policy"
-    assert cfg.trainer.reference_training_shape_id == "accounts/test/trainingShapes/reference"
+    assert (
+        cfg.trainer.reference_training_shape_id
+        == "accounts/test/trainingShapes/reference"
+    )
+
+
+def test_load_yaml_provision_rejects_unused_reference_trainer(tmp_path: Path) -> None:
+    config_path = tmp_path / "fireworks.yaml"
+    config_path.write_text(
+        """
+common:
+  base_model: accounts/test/models/base
+  tokenizer_model: Qwen/Test
+trainers:
+  policy: {}
+  reference: {}
+recipe:
+  rl:
+    trainer: policy
+    reference_trainer: reference
+    deployment:
+      tokenizer_model: Qwen/Test
+    kl_beta: 0
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="require kl_beta > 0"):
+        module._load_yaml_provision(mode="rl", recipe="rl", path=config_path)
 
 
 def test_load_yaml_provision_passes_through_recipe_fields(tmp_path: Path) -> None:
@@ -501,8 +590,12 @@ recipe:
     completions_per_prompt: 8
     prompt_groups_per_step: 3
     max_rows: 12
-    dapo:
-      eps_clip_high: 0.35
+    kl_beta: 0.2
+    eps_clip: 0.15
+    eps_clip_high: 0.25
+    tis:
+      cap: 2.0
+      level: sequence
 """,
         encoding="utf-8",
     )
@@ -512,7 +605,35 @@ recipe:
     assert cfg.completions_per_prompt == 8
     assert cfg.prompt_groups_per_step == 3
     assert cfg.max_rows == 12
-    assert cfg.dapo.eps_clip_high == 0.35
+    assert cfg.kl_beta == 0.2
+    assert cfg.eps_clip == 0.15
+    assert cfg.eps_clip_high == 0.25
+    assert cfg.tis.cap == 2.0
+    assert cfg.tis.level == "sequence"
+    assert not hasattr(cfg, "dapo")
+
+
+def test_load_yaml_provision_rejects_removed_rl_loss_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "fireworks.yaml"
+    config_path.write_text(
+        """
+common:
+  base_model: accounts/test/models/base
+  tokenizer_model: Qwen/Test
+trainers:
+  policy: {}
+recipe:
+  rl:
+    trainer: policy
+    deployment:
+      tokenizer_model: Qwen/Test
+    policy_loss: dapo
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="client-side GRPO.*policy_loss"):
+        module._load_yaml_provision(mode="rl", recipe="rl", path=config_path)
 
 
 def test_load_yaml_provision_hydrates_distillation_teacher_model(tmp_path: Path) -> None:

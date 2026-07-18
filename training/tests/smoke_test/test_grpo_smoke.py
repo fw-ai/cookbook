@@ -117,12 +117,14 @@ def test_grpo_smoke(
         returned_policy_job_id = metrics.get("policy_job_id")
         returned_reference_job_id = metrics.get("reference_job_id")
         deployment_id = metrics.get("deployment_id")
-        assert returned_policy_job_id, f"GRPO should return policy trainer id: {metrics}"
+        assert returned_policy_job_id, (
+            f"GRPO should return policy trainer id: {metrics}"
+        )
         policy_job_id = returned_policy_job_id
         reference_job_id = returned_reference_job_id
         if port_lora_rank:
             assert returned_reference_job_id is None, (
-                f"LoRA GRPO should keep the shared-reference path: {metrics}"
+                f"LoRA GRPO should not create a separate reference trainer: {metrics}"
             )
         else:
             assert returned_reference_job_id, (
@@ -131,6 +133,7 @@ def test_grpo_smoke(
         assert deployment_id, f"Async GRPO should report deployment id: {metrics}"
 
         import time
+
         time.sleep(3)
         try:
             job = rlor_mgr.get(returned_policy_job_id)
@@ -146,9 +149,10 @@ def test_grpo_smoke(
         os.unlink(dataset_path)
         if deployment_id:
             _delete_deployment_if_present(deploy_mgr, deployment_id)
-        for job_id in (policy_job_id, reference_job_id):
-            if job_id:
-                _delete_trainer_if_present(rlor_mgr, job_id)
+        if policy_job_id:
+            _delete_trainer_if_present(rlor_mgr, policy_job_id)
+        if reference_job_id:
+            _delete_trainer_if_present(rlor_mgr, reference_job_id)
 
 
 def _delete_deployment_if_present(deploy_mgr, deployment_id: str) -> None:

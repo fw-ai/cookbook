@@ -36,6 +36,7 @@ from training.utils import (
     load_deployment_tokenizer,
     read_api_extra_headers_env,
 )
+from training.utils.rl.grpo import validate_grpo_config
 
 ProvisionMode = Literal["sft", "rl", "distillation", "dpo"]
 PROVISION_MODES: tuple[ProvisionMode, ...] = ("sft", "rl", "distillation", "dpo")
@@ -296,6 +297,16 @@ def _init_rl_infra(
 ) -> FireworksProvisionInfra:
     if not cfg.deployment.tokenizer_model:
         raise ValueError("deployment.tokenizer_model is required for RL provisioning.")
+    validate_grpo_config(
+        kl_beta=cfg.kl_beta,
+        eps_clip=getattr(cfg, "eps_clip", 0.2),
+        eps_clip_high=getattr(cfg, "eps_clip_high", None),
+        reference_training_shape_id=getattr(
+            cfg.trainer, "reference_training_shape_id", None
+        ),
+        reference_job_id=getattr(cfg.trainer, "reference_job_id", None),
+        ppo_n_minibatches=getattr(cfg, "ppo_n_minibatches", 1),
+    )
     service = _build_managed_service(
         cfg,
         api_key=api_key,
@@ -314,7 +325,10 @@ def _init_rl_infra(
         reference_job_id = None
         if cfg.kl_beta > 0:
             reference = ReconnectableClient.from_training_client(
-                service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+                service.create_reference_client(
+                    cfg.base_model,
+                    lora_rank=cfg.lora_rank,
+                ),
                 base_model=cfg.base_model,
                 lora_rank=0,
                 job_id=service.reference_client_job_id,
@@ -499,6 +513,7 @@ def _create_sampler(service: FiretitanServiceClient, cfg: Any) -> tuple[Any, Any
         min_window=cfg.concurrency.min_window,
         max_window=cfg.concurrency.max_window,
         prefill_queue_target=cfg.concurrency.prefill_queue_target,
+        adjustment_interval=cfg.concurrency.rollout_adjustment_interval,
     )
     sampler = service.create_deployment_sampler(
         tokenizer=tokenizer,
@@ -873,6 +888,26 @@ def _build_recipe_config(
 ) -> Any:
     common_cfg = copy.deepcopy(doc.get("common") or {})
     merged = _deep_merge(common_cfg, copy.deepcopy(recipe_cfg))
+    if mode == "rl":
+        removed_loss_options = sorted(
+            {
+                "policy_loss",
+                "loss_path",
+                "dapo",
+                "dro",
+                "gspo",
+                "cispo",
+                "ratio_log_cap",
+                "separate_tis",
+                "use_rollout_logprobs",
+            }.intersection(merged)
+        )
+        if removed_loss_options:
+            raise ValueError(
+                "The generic RL recipe uses direct client-side GRPO and does not accept "
+                f"alternate loss settings: {', '.join(removed_loss_options)}. "
+                "Fork its documented loss call for another algorithm."
+            )
     base_model = _required(merged, "base_model")
     tokenizer_model = merged.get("tokenizer_model")
     trainer, trainer_deployment_ref, trainer_base_model = _resolve_trainer_config(
@@ -909,16 +944,29 @@ def _build_recipe_config(
     elif mode == "rl":
         from training.recipes import rl_loop
 
-        return _make_dataclass_config(
+        cfg = _make_dataclass_config(
             rl_loop.Config,
             {
                 **values,
                 "kl_beta": merged.get("kl_beta", 0.001),
+                "eps_clip": merged.get("eps_clip", 0.2),
+                "eps_clip_high": merged.get("eps_clip_high"),
+                "ppo_n_minibatches": merged.get("ppo_n_minibatches", 1),
                 "deployment": deployment,
                 "concurrency": _resolve_concurrency_config(merged.get("concurrency")),
                 "weight_sync_timeout": merged.get("weight_sync_timeout", 600),
             },
         )
+        validate_grpo_config(
+            kl_beta=cfg.kl_beta,
+            eps_clip=cfg.eps_clip,
+            eps_clip_high=cfg.eps_clip_high,
+            reference_training_shape_id=cfg.trainer.reference_training_shape_id,
+            reference_job_id=cfg.trainer.reference_job_id,
+            reference_configured=merged.get("reference_trainer") is not None,
+            ppo_n_minibatches=cfg.ppo_n_minibatches,
+        )
+        return cfg
     elif mode == "dpo":
         from training.recipes import dpo_loop
 

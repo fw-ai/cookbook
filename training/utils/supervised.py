@@ -320,28 +320,6 @@ def _renderer_uses_images(renderer_name: str) -> bool:
 logger = logging.getLogger(__name__)
 
 
-def _truncate_model_input(model_input: tinker.ModelInput) -> tinker.ModelInput:
-    """Return a copy of *model_input* with the last text token removed.
-
-    This is the multimodal equivalent of ``tokens[:-1]`` used for the standard
-    next-token prediction shift.
-    """
-    chunks = list(model_input.chunks)
-    for i in range(len(chunks) - 1, -1, -1):
-        chunk = chunks[i]
-        if isinstance(chunk, tinker.types.EncodedTextChunk) and len(chunk.tokens) > 0:
-            remaining = list(chunk.tokens)[:-1]
-            if remaining:
-                chunks[i] = tinker.types.EncodedTextChunk(tokens=remaining)
-            else:
-                chunks.pop(i)
-            result = tinker.ModelInput.empty()
-            for c in chunks:
-                result = result.append(c)
-            return result
-    raise ValueError("ModelInput has no text tokens to truncate")
-
-
 def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
     """Normalize common tool-call shapes into Tinker's structured ToolCall form."""
     normalized: list[ToolCall] = []
@@ -701,13 +679,11 @@ def _extract_token_ids(model_input: tinker.ModelInput) -> list[int]:
     return ids
 
 
-def _extract_text_only_token_ids(model_input: tinker.ModelInput) -> list[int]:
-    """Extract only text token IDs from a ModelInput, skipping image chunks.
+def _extract_text_token_ids(model_input: tinker.ModelInput) -> list[int]:
+    """Extract text IDs for sampling-side multimodal rollout bookkeeping.
 
-    Non-text chunks are silently skipped.  The returned list contains only
-    actual text token IDs in sequence order, with no placeholders for images.
-    This is required because the server corrupts logprobs when target_tokens
-    contains zeros at image chunk positions.
+    Trainer datums must use :func:`_extract_token_ids` instead so image slots
+    remain represented in the canonical expanded target coordinate space.
     """
     ids: list[int] = []
     for chunk in model_input.chunks:
@@ -775,40 +751,26 @@ def _build_multimodal_datum(
     weights: list[float],
     max_seq_len: int | None = None,
 ) -> tinker.Datum:
-    """Build a next-token-prediction datum that preserves image chunks.
+    """Build a canonical Tinker-shaped multimodal next-token datum.
 
-    ``target_tokens`` contains only text token IDs (no image placeholders).
-    The server uses these for logprob gathering; including zeros at image
-    positions corrupts the logprob computation.
+    Image positions remain in ``target_tokens`` as zero wire placeholders, so
+    ``model_input.length``, ``target_tokens``, and ``weights`` all share the
+    same expanded ``N - 1`` coordinate space. The trainer resolves those wire
+    placeholders to model-specific image token IDs and masks their loss.
+
+    The pinned Tinker cookbook helper also owns chunk-aware truncation: text
+    chunks may be truncated, while image chunks are retained or removed whole.
     """
-    token_ids = _extract_token_ids(model_input)
+    if len(weights) != model_input.length:
+        raise ValueError(
+            "model_input/weights length mismatch: "
+            f"{model_input.length} != {len(weights)}"
+        )
 
-    if max_seq_len is not None and len(token_ids) > max_seq_len:
-        token_ids = token_ids[:max_seq_len]
-        weights = weights[:max_seq_len]
-
-    if len(token_ids) < 2:
-        raise ValueError("Need at least 2 tokens to build a supervised datum.")
-
-    input_mi = _truncate_model_input(model_input)
-    shifted_weights = weights[1:]
-
-    text_target_tokens = _extract_text_only_token_ids(model_input)[1:]
-
-    return tinker.Datum(
-        model_input=input_mi,
-        loss_fn_inputs={
-            "weights": tinker.TensorData(
-                data=shifted_weights,
-                dtype="float32",
-                shape=[len(shifted_weights)],
-            ),
-            "target_tokens": tinker.TensorData(
-                data=[int(x) for x in text_target_tokens],
-                dtype="int64",
-                shape=[len(text_target_tokens)],
-            ),
-        },
+    return datum_from_model_input_weights(
+        model_input,
+        torch.tensor(weights, dtype=torch.float32),
+        max_length=max_seq_len,
     )
 
 
@@ -823,10 +785,8 @@ def build_datum_from_model_input_and_weights(
     weights = [float(x) for x in token_weights]
 
     if _has_non_text_chunks(model_input):
-        # Multimodal path: use our datum builder which produces text-only
-        # target_tokens.  The upstream datum_from_model_input_weights includes
-        # image-position zeros in target_tokens that corrupt the server's
-        # logprob computation.
+        # Keep the chunked input while using Tinker's canonical expanded target
+        # coordinates, including zero wire placeholders for image positions.
         datum = _build_multimodal_datum(model_input, weights, max_seq_len)
     elif datum_from_model_input_weights is not None:
         weight_tensor = torch.tensor(weights, dtype=torch.float32)

@@ -36,6 +36,19 @@ class DAPOConfig:
     ratio_log_cap: float = 20.0
 
 
+def validate_dapo_config(config: DAPOConfig) -> None:
+    """Validate DAPO settings before building the loss closure."""
+    if config.eps_clip < 0 or config.eps_clip_high < 0:
+        raise ValueError("DAPO eps_clip and eps_clip_high must be non-negative.")
+    if config.eps_clip_c is not None and config.eps_clip_c <= 1.0:
+        raise ValueError(
+            "DAPO dual-clip eps_clip_c must be > 1.0, got "
+            f"{config.eps_clip_c}."
+        )
+    if config.ratio_log_cap < 0:
+        raise ValueError("DAPO ratio_log_cap must be non-negative.")
+
+
 def make_dapo_loss_fn(
     advantages: List[float],
     ref_logprobs: List[List[float]],
@@ -48,6 +61,7 @@ def make_dapo_loss_fn(
     """Build a DAPO loss closure with PPO-clipped ratio and behavioral TIS weight."""
     if dapo_config is None:
         dapo_config = DAPOConfig()
+    validate_dapo_config(dapo_config)
     if tis_config is None:
         tis_config = TISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
@@ -68,8 +82,6 @@ def make_dapo_loss_fn(
         clipped_surrogate = torch.maximum(surr1, surr2)
 
         if dapo_config.eps_clip_c is not None:
-            if dapo_config.eps_clip_c <= 1.0:
-                raise ValueError(f"DAPO dual-clip eps_clip_c must be > 1.0, got {dapo_config.eps_clip_c}.")
             surr3 = -dapo_config.eps_clip_c * ctx.adv
             lower_clipped = torch.minimum(surr3, clipped_surrogate)
             per_token_loss = torch.where(ctx.adv < 0, lower_clipped, clipped_surrogate)

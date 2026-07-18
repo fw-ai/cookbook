@@ -104,6 +104,10 @@ exhaustion. Nothing here logs prompts, generated tokens, API keys, or bodies.
   `sample_with_prompt_tokens`, to attach non-sensitive identity to the error
   (recognized keys: session/run/checkpoint/step/group/item). Optional — the
   error is already useful with just the SDK-boundary fields.
+- **Component and endpoint.** Record whether the response came from the training
+  gateway, sampling gateway, deployment, or another service. If the same logical
+  workload alternates between 429 and 503, preserve both records and escalate
+  the status-mapping inconsistency.
 - **`Retry-After`.** When the server sends it, it is honored as a floor on the
   backoff, bounded by the sampler's max backoff.
 

@@ -62,7 +62,6 @@ def run() -> None:
     cfg = Config(
         log_path=args.log_path,
         base_model=args.base_model,
-        policy_loss="reinforce",
         kl_beta=0.0,
         learning_rate=args.learning_rate,
         completions_per_prompt=args.completions_per_prompt,

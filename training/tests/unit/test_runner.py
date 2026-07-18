@@ -9,6 +9,7 @@ import time
 import pytest
 
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
+from training.utils.runner_state import write_running_progress
 
 
 # -- RunnerConfig -------------------------------------------------------------
@@ -156,6 +157,39 @@ class TestRunnerIOStatus:
 
 
 class TestRunnerIOMetadata:
+    def test_running_progress_does_not_write_metrics(self, tmp_path):
+        status_path = tmp_path / "status.json"
+        metadata_path = tmp_path / "metadata.json"
+        metrics_path = tmp_path / "metrics.jsonl"
+        runner = RunnerIO(
+            RunnerConfig(
+                status_file=str(status_path),
+                metadata_file=str(metadata_path),
+                metrics_file=str(metrics_path),
+            )
+        )
+
+        write_running_progress(
+            runner,
+            step=2,
+            total_steps=4,
+            tokens_processed=123,
+        )
+
+        assert json.loads(status_path.read_text())["details"][0]["percent"] == 50
+        assert json.loads(metadata_path.read_text())["metadata"]["tokens"] == 123
+        assert not metrics_path.exists()
+
+    def test_set_tokens_processed_replaces_canonical_total(self, tmp_path):
+        path = str(tmp_path / "metadata.json")
+        runner = RunnerIO(RunnerConfig(metadata_file=path))
+        runner.append_metrics(1, {}, tokens=100)
+        runner.set_tokens_processed(250)
+
+        runner.write_metadata()
+
+        assert json.loads((tmp_path / "metadata.json").read_text())["metadata"]["tokens"] == 250
+
     def test_write_metadata_with_tokens_and_time(self, tmp_path):
         path = str(tmp_path / "meta.json")
         runner = RunnerIO(RunnerConfig(metadata_file=path))

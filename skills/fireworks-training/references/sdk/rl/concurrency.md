@@ -16,6 +16,13 @@ Knobs you rarely need to touch:
 | `min_window` | `1` | Never needs raising; raising hurts back-pressure behaviour |
 | `max_window` | `256` | You've profiled the deployment and know a higher ceiling is safe |
 | `prefill_queue_target` | `0.5` s | Tighten on a latency-critical deployment, loosen to squeeze more throughput |
+| `rollout_adjustment_interval` | `32` | Set to `N > 0` to resize after every N completed rollout requests, including within an RL step; set to `0` for step-boundary-only adjustment |
+
+By default (`rollout_adjustment_interval=32`), the controller adjusts within
+each step after every 32 completed requests. At the step boundary,
+`step_completed()` adjusts any remaining requests and starts a fresh interval
+for the next step. Set the interval to `0` to average the prefill queue over the
+whole rollout batch and adjust only at the step boundary.
 
 ## When to use `fixed`
 
