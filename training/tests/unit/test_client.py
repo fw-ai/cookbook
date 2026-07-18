@@ -51,6 +51,14 @@ class _FakeInnerClient:
         self.calls.append(("save_weights_for_sampler", name, checkpoint_type))
         return _FakeFuture(self.saved_sampler)
 
+    def forward_backward_custom(self, data, loss_fn, **kwargs):
+        self.calls.append(("forward_backward_custom", data, loss_fn, kwargs))
+        return self.future
+
+    def forward_backward_contrastive(self, data, **kwargs):
+        self.calls.append(("forward_backward_contrastive", data, kwargs))
+        return self.future
+
 
 class _FakeService:
     def __init__(self):
@@ -217,3 +225,74 @@ def test_close_drains_telemetry_and_stops_holder_cleanup():
     assert inner.holder._telemetry.flushed == 1
     assert inner.holder._telemetry.drained == 1
     assert inner.holder._telemetry.stopped == 1
+
+
+def test_forward_backward_custom_default_path_omits_embedding_kwargs():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    result = client.forward_backward_custom("data", "loss-fn")
+
+    assert result == {"ok": True, "timeout": 123}
+    assert inner.calls == [("forward_backward_custom", "data", "loss-fn", {})]
+
+
+def test_forward_backward_custom_embedding_path_forwards_kwargs():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    client.forward_backward_custom(
+        "data",
+        "loss-fn",
+        output="embedding",
+        pooling="last",
+    )
+
+    assert inner.calls == [
+        (
+            "forward_backward_custom",
+            "data",
+            "loss-fn",
+            {"output": "embedding", "pooling": "last"},
+        )
+    ]
+
+
+def test_forward_backward_contrastive_delegates_to_sdk():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    client.forward_backward_contrastive(
+        "data",
+        num_queries=4,
+        temperature=0.02,
+        pooling="last",
+        num_extra_negatives=2,
+    )
+
+    assert inner.calls == [
+        (
+            "forward_backward_contrastive",
+            "data",
+            {
+                "num_queries": 4,
+                "temperature": 0.02,
+                "pooling": "last",
+                "num_extra_negatives": 2,
+            },
+        )
+    ]
+
+
+def test_forward_backward_contrastive_requires_sdk_support():
+    class _OldSdkClient:
+        """Stand-in for a pinned SDK without the contrastive method."""
+
+    client = _make_client(_OldSdkClient())
+
+    with pytest.raises(RuntimeError, match="forward_backward_contrastive requires"):
+        client.forward_backward_contrastive(
+            "data",
+            num_queries=4,
+            temperature=0.02,
+        )
