@@ -33,6 +33,7 @@ from tinker_cookbook.renderers import (
 from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.minimax_m3 as _minimax_m3_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
@@ -73,7 +74,9 @@ def _tool_prefix_builder(renderer: Renderer):
     prefix_builder = getattr(renderer, "create_conversation_prefix_with_tools", None)
     if prefix_builder is None:
         return None
-    class_builder = getattr(type(renderer), "create_conversation_prefix_with_tools", None)
+    class_builder = getattr(
+        type(renderer), "create_conversation_prefix_with_tools", None
+    )
     if class_builder is Renderer.create_conversation_prefix_with_tools:
         return None
     return prefix_builder
@@ -171,11 +174,10 @@ def resolve_renderer_name(
         return "nemotron3"
     if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
         return "minimax_m2"
-    # MiniMax-M3 keeps M2's chat template / tool format (the shape CI passes
-    # renderer_name=minimax_m2 for it); reuse the minimax_m2 renderer -- same
-    # alias pattern as kimi-k2.5 -> Kimi-K2.6 above.
+    # The released MiniMax-M3 tokenizer uses its own BOD/BOS role protocol,
+    # thinking tags, and XML tool-call format; it is not M2-compatible.
     if "minimax-m3" in normalized_model_name or "minimax_m3" in normalized_model_name:
-        return "minimax_m2"
+        return "minimax_m3"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
@@ -534,7 +536,9 @@ def normalize_messages(
         reasoning = message.get("reasoning")
         if thinking is None and reasoning is not None:
             if not isinstance(reasoning, str):
-                raise TypeError(f"Unsupported reasoning value type: {type(reasoning)!r}")
+                raise TypeError(
+                    f"Unsupported reasoning value type: {type(reasoning)!r}"
+                )
             if reasoning:
                 normalized_message["content"] = [
                     {"type": "thinking", "thinking": reasoning},
@@ -956,9 +960,8 @@ def _equivalent_single_example_train_on_what(
     the false-positive warning while preserving true warnings for non-equivalent
     conversations.
     """
-    if (
-        train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES
-        or getattr(renderer, "has_extension_property", False)
+    if train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES or getattr(
+        renderer, "has_extension_property", False
     ):
         return train_on_what
 

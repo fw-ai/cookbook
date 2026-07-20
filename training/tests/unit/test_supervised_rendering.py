@@ -978,9 +978,9 @@ def test_resolve_renderer_name_prefers_minimax_m2() -> None:
     assert resolve_renderer_name("MiniMaxAI/MiniMax-M2") == "minimax_m2"
 
 
-def test_resolve_renderer_name_minimax_m3_reuses_minimax_m2() -> None:
-    """MiniMax-M3 keeps M2's chat template; it reuses the minimax_m2 renderer."""
-    assert resolve_renderer_name("MiniMaxAI/MiniMax-M3") == "minimax_m2"
+def test_resolve_renderer_name_prefers_minimax_m3() -> None:
+    """Released MiniMax-M3 tokenizers use the dedicated M3 renderer."""
+    assert resolve_renderer_name("MiniMaxAI/MiniMax-M3") == "minimax_m3"
 
 
 def test_resolve_renderer_name_prefers_upstream_nemotron3() -> None:
