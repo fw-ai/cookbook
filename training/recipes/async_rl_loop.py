@@ -34,7 +34,6 @@ import logging
 import math
 import os
 import signal
-import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
@@ -70,7 +69,13 @@ from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
-from training.utils.rl.async_train import RowRequest, run_async_rl_loop
+from training.utils.rl.async_rl import (
+    AsyncRLCoordinator,
+    PostStepMetricsFn,
+    TrainingChunk,
+    RolloutRow,
+    run_async_rl_lifecycle,
+)
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import (
@@ -80,7 +85,11 @@ from training.utils.rl.metrics import (
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
-from training.utils.runner_state import start_running, write_completed, write_running_progress
+from training.utils.runner_state import (
+    start_running,
+    write_completed,
+    write_running_progress,
+)
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -92,10 +101,6 @@ __all__ = [
     "RolloutSetup",
     "main",
 ]
-
-# Pinned: raising weight-sync interval trades rollout staleness for weight-sync wall-time,
-# almost never worth it in fully-async RL.
-_WEIGHT_SYNC_INTERVAL = 1
 
 
 @dataclass
@@ -123,7 +128,7 @@ class Config:
 
     prompt_groups_per_step: int = 1
     max_head_offpolicy_versions: int = 0
-    """Staleness budget in weight-sync versions; ``0`` = strict on-policy.
+    """Staleness budget in weight-sync versions; ``0`` is fully on-policy.
     See ``skills/fireworks-training/references/sdk/rl/async-rl.md`` (gate semantics)."""
     max_concurrency_rollout_sample: int | None = None
     """In-flight LLM-call cap (same unit as ``deployment.max_batch_size``);
@@ -160,6 +165,7 @@ class Config:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     weight_sync_before_training: bool = False
+    """Deprecated compatibility field; async RL always performs initial sync."""
     dcp_save_interval: int = 0
     weight_sync_timeout: int = 600
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
@@ -180,7 +186,8 @@ class RolloutSetup:
     """Dependencies the recipe hands the rollout factory once at startup.
 
     Inference endpoint, tokenizer, sampling kwargs, plus an ``extras`` dict
-    for caller state.  See ``skills/fireworks-training/references/sdk/rl/async-rl.md``.
+    for caller state. See
+    ``skills/fireworks-training/references/sdk/rl/async-rl.md``.
     """
 
     tokenizer: Any
@@ -358,7 +365,9 @@ def main(
             reference_required=cfg.kl_beta > 0,
         )
         stack.callback(service.close)
-        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        training_client = service.create_training_client(
+            cfg.base_model, lora_rank=cfg.lora_rank
+        )
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
         rollout_model = sampler.model
         training_profile = getattr(service, "training_profile", None)
@@ -416,14 +425,14 @@ def main(
                 step=step_offset,
             )
 
-        if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
-            with elapsed_timer("weight_sync") as span:
-                saved = policy.save_weights_for_sampler(
-                    f"step-{step_offset}",
-                    checkpoint_type="base",
-                )
-                service.hotload_sampler_snapshot(saved.path)
-            logger.info("[step %d] weight sync (%.1fs)", step_offset, span.elapsed)
+        with elapsed_timer("weight_sync") as span:
+            saved = policy.save_weights_for_sampler(
+                f"step-{step_offset}",
+                checkpoint_type="base",
+            )
+            service.hotload_sampler_snapshot(saved.path)
+        logger.info("[step %d] initial weight sync (%.1fs)", step_offset, span.elapsed)
+        flush_timing()
 
         if rows is None:
             rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
@@ -479,7 +488,6 @@ def main(
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
             "pipeline_chunks_per_step": cfg.pipeline_chunks_per_step,
             "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
-            "weight_sync_interval": _WEIGHT_SYNC_INTERVAL,
             "max_completion_tokens": cfg.max_completion_tokens,
             "temperature": cfg.temperature,
             "shuffle": cfg.shuffle,
@@ -504,7 +512,7 @@ def main(
                 )
                 source_row_id = row.get("id") if isinstance(row, dict) else None
 
-                def factory(
+                def run_one_rollout(
                     sub_index: int,
                     sample_prompt=row,
                     cursor_index=idx,
@@ -529,9 +537,9 @@ def main(
                         )
                     return rollout_fn(sample_prompt)
 
-                yield RowRequest(
+                yield RolloutRow(
                     row_id=idx,
-                    run_factory=factory,
+                    run_factory=run_one_rollout,
                     row_meta={"row_id": source_row_id},
                     on_resolved=lambda _reason, idx=idx: row_loader.mark_resolved(idx),
                 )
@@ -579,83 +587,26 @@ def main(
                 ),
             )
 
-        train_accum: dict[str, Any] = {
-            "prompt_groups": [],
-            "fwd_bwd_results": [],
-            "latest_loop_stats": None,
-            "train_start": None,
-            "trainer_wait_for_sampler_time": 0.0,
-            "sampler_wait_for_trainer_time": 0.0,
-        }
         tokens_processed = 0
 
-        def train_step(
-            step: int,
-            prompt_groups: list[PromptGroup],
-            loop_stats: dict | None,
-            run_optimizer_step: bool,
-        ) -> tuple[int, dict]:
-            """Reference/old-policy snapshots + client GRPO chunks + optimizer.
+        def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
+            """Run the visible GRPO forward/backward phase for one chunk."""
 
-            Each chunk runs fwd/bwd. ``run_optimizer_step`` controls
-            whether the chunk also runs ``optim_step``. In default mode the
-            chunk is the full rollout batch. In pipeline mode only the final
-            accumulated chunk steps it.
-
-            Metrics from all chunks are aggregated into one record per optimizer
-            step. ``train/*`` lands on the ``train/step`` axis; ``rollout/*`` /
-            ``perf/*`` / ``async/*`` / ``version/*`` land on ``rollout/step``.
-            checkpoint identities remain optimizer-step labels (resume math is
-            in optim steps); the off-policy budget is accounted in
-            weight-sync versions inside ``_StalenessController`` and is
-            independent of those labels.
-            """
-            nonlocal tokens_processed
-
-            train_start = time.monotonic()
-            num_chunks = int(
-                (loop_stats or {}).get(
-                    "pipeline/chunks_per_step",
-                    max(1, cfg.pipeline_chunks_per_step),
-                )
-            )
-            rollout_id = step + 1
-            if train_accum["train_start"] is None:
-                train_accum["train_start"] = train_start
-            train_accum["prompt_groups"].extend(prompt_groups)
-            if loop_stats is not None:
-                train_accum["latest_loop_stats"] = dict(loop_stats)
-                train_accum["trainer_wait_for_sampler_time"] += float(
-                    loop_stats.get("trainer_wait_for_sampler_time", 0.0)
-                )
-                train_accum["sampler_wait_for_trainer_time"] += float(
-                    loop_stats.get("sampler_wait_for_trainer_time", 0.0)
-                )
-
-            with elapsed_timer("ref_forward") as span:
+            prompt_groups = list(chunk.groups)
+            with elapsed_timer("ref_forward"):
                 ref_forward(prompt_groups)
-            logger.info(
-                "[rollout %d] ref_forward (%.1fs)",
-                rollout_id,
-                span.elapsed,
-            )
 
             data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combine_prompt_groups(
                 prompt_groups,
                 include_raw=True,
             )
             if cfg.anchor_logp == "old_policy":
-                with elapsed_timer("old_policy_forward") as span:
+                with elapsed_timer("old_policy_forward"):
                     old_policy_fwd = policy.forward(data, "cross_entropy")
                     old_policy_logprobs = [
                         old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
                         for i in range(len(data))
                     ]
-                logger.info(
-                    "[rollout %d] old_policy_forward (%.1fs)",
-                    rollout_id,
-                    span.elapsed,
-                )
             else:
                 if len(inf_lp) != len(data):
                     raise ValueError(
@@ -667,15 +618,8 @@ def main(
                         "anchor_logp='rollout' requires non-empty rollout_logprobs."
                     )
                 old_policy_logprobs = inf_lp
-                logger.info(
-                    "[rollout %d] anchor_logp=rollout (old-policy forward skipped)",
-                    rollout_id,
-                )
 
-            optim_result: Any = None
-            chunk_idx = int((loop_stats or {}).get("pipeline/chunk_idx", 1))
-
-            with elapsed_timer("fwd_bwd") as span:
+            with elapsed_timer("fwd_bwd"):
                 fwd_bwd_result = fwd_bwd_batch(
                     data,
                     adv,
@@ -685,121 +629,38 @@ def main(
                     raw_inf_lp,
                     old_policy_logprobs,
                 )
-                train_accum["fwd_bwd_results"].append(fwd_bwd_result)
-            logger.info(
-                "[rollout %d step %d] fwd_bwd (chunk %d/%d) (%.1fs)",
-                rollout_id,
-                step + 1,
-                chunk_idx,
-                num_chunks,
-                span.elapsed,
-            )
+            return {
+                "prompt_groups": prompt_groups,
+                "fwd_bwd_result": fwd_bwd_result,
+            }
+
+        def optimizer_step(step: int) -> dict[str, Any]:
+            """Apply exactly one optimizer mutation for one rollout batch."""
 
             step_lr = compute_lr(
                 lr_scheduler,
-                step=step + 1,
+                step=step,
                 base_lr=cfg.learning_rate,
                 total_steps=total_steps_estimate,
             )
-            if not run_optimizer_step:
-                return step, {}
-
             adam_kwargs = dict(DEFAULT_ADAM)
             adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
             adam_params = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
-            with elapsed_timer("optim_step") as span:
-                optim_result = policy.optim_step(
+            with elapsed_timer("optim_step"):
+                result = policy.optim_step(
                     adam_params,
                     grad_accumulation_normalization=cfg.grad_accumulation_normalization,
                 )
-            step += 1
-            logger.info(
-                "[rollout %d step %d] optim_step (chunk %d/%d) (%.1fs)",
-                rollout_id,
-                step,
-                chunk_idx,
-                num_chunks,
-                span.elapsed,
-            )
+            return {
+                "result": result,
+                "learning_rate": step_lr,
+            }
 
-            prompt_groups = list(train_accum["prompt_groups"])
-            fwd_bwd_results = list(train_accum["fwd_bwd_results"])
-            train_start = train_accum["train_start"] or train_start
-            loop_stats = build_accumulated_async_loop_stats(
-                prompt_groups=prompt_groups,
-                latest_loop_stats=train_accum["latest_loop_stats"],
-                trainer_wait_for_sampler_time=train_accum[
-                    "trainer_wait_for_sampler_time"
-                ],
-                sampler_wait_for_trainer_time=train_accum[
-                    "sampler_wait_for_trainer_time"
-                ],
-                train_wall_time=time.monotonic() - train_start,
-            )
-            metrics = compute_step_metrics(
-                prompt_groups=prompt_groups,
-                fwd_bwd_results=fwd_bwd_results,
-                optim_result=optim_result,
-                n_accum=len(fwd_bwd_results),
-                timing_metrics=flush_timing(),
-                loop_stats=loop_stats,
-                completions_per_prompt=cfg.completions_per_prompt,
-            )
-            metrics["train/lr"] = step_lr
-            # Per-rollout reference KL for the human summary line below.
-            ref_kl = metrics.get("train/ref_kl", 0.0)
-            metrics["rollout/step"] = rollout_id
-            metrics["train/step"] = step
-            for k, v in ctx_metadata.items():
-                if isinstance(v, bool):
-                    metrics[f"ctx/{k}"] = int(v)
-                elif isinstance(v, (int, float)) and v is not None:
-                    metrics[f"ctx/{k}"] = v
-
-            logger.info(
-                "Rollout %d (step %d) | Reward %.3f | Acc %.1f%% | RefKL %.4f",
-                rollout_id,
-                step,
-                metrics.get("rollout/reward", 0.0),
-                metrics.get("rollout/accuracy", 0.0) * 100,
-                ref_kl,
-            )
-            log_metrics(metrics, step=step)
-            tokens_processed += int(metrics.get("train/target_tokens", 0))
-            write_running_progress(
-                runner,
-                step=step,
-                total_steps=total_steps_estimate,
-                tokens_processed=tokens_processed,
-            )
-            # DCP cadence is in rollout batches. Async has one optimizer step
-            # per rollout batch; pipeline chunks do not multiply it.
-            rollouts_completed = step - step_offset
-            interval = cfg.dcp_save_interval
-            if (
-                loop_stats is not None
-                and interval > 0
-                and rollouts_completed > 0
-                and rollouts_completed % interval == 0
-            ):
-                try:
-                    _save_checkpoint(
-                        ckpt,
-                        name=f"step-{step}",
-                        data_consumed=int(loop_stats["resolved_rows"]),
-                    )
-                except (OSError, RuntimeError) as e:
-                    # Periodic save: surface the failure but keep training.
-                    # The final save (after the loop) is allowed to propagate
-                    # so orchestration sees terminal save problems.
-                    logger.warning("[step %d] dcp_save failed: %s", step, e)
-            train_accum["prompt_groups"] = []
-            train_accum["fwd_bwd_results"] = []
-            train_accum["latest_loop_stats"] = None
-            train_accum["train_start"] = None
-            train_accum["trainer_wait_for_sampler_time"] = 0.0
-            train_accum["sampler_wait_for_trainer_time"] = 0.0
-            return step, metrics
+        def sync_weights(step: int) -> float:
+            with elapsed_timer("weight_sync") as sync_span:
+                saved = policy.save_weights_for_sampler(f"step-{step}")
+                service.hotload_sampler_snapshot(saved.path)
+            return sync_span.elapsed
 
         start_running(
             runner,
@@ -807,32 +668,140 @@ def main(
             total_steps=total_steps_estimate,
         )
 
-        global_step, final_stats = asyncio.run(
-            run_async_rl_loop(
+        async def run_training(
+            post_step_metrics_fn: PostStepMetricsFn | None,
+        ) -> tuple[int, dict[str, Any]]:
+            nonlocal tokens_processed
+
+            coordinator = AsyncRLCoordinator(
                 rows=make_row_requests(),
-                train_step_fn=train_step,
                 completions_per_prompt=cfg.completions_per_prompt,
                 prompt_groups_per_step=cfg.prompt_groups_per_step,
-                max_head_offpolicy_versions=cfg.max_head_offpolicy_versions,
+                training_chunks_per_step=cfg.pipeline_chunks_per_step,
+                max_head_off_policy_versions=cfg.max_head_offpolicy_versions,
+                max_concurrent_rollouts=cfg.max_concurrency_rollout_sample,
                 with_reference=(reference is not None),
                 min_group_size=cfg.min_group_size,
-                weight_sync_fn=lambda step: service.hotload_sampler_snapshot(
-                    policy.save_weights_for_sampler(f"step-{step}").path
-                ),
-                weight_sync_interval=_WEIGHT_SYNC_INTERVAL,
-                max_concurrent=cfg.max_concurrency_rollout_sample,
                 dynamic_filter_fn=dynamic_filter_fn,
-                pipeline_chunks_per_step=cfg.pipeline_chunks_per_step,
-                post_train_metrics_fn=lambda metrics: log_metrics(
-                    metrics,
-                    step=int(metrics["train/step"]),
-                ),
                 global_step=step_offset,
+                resolved_rows_offset=prior_rows_consumed,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
-                return_final_stats=True,
             )
-        )
+            async with coordinator:
+                while (batch := await coordinator.next_batch()) is not None:
+                    chunk_outputs: list[dict[str, Any]] = []
 
+                    async for chunk in batch.chunks():
+                        coordinator.raise_if_failed(batch)
+                        output = await coordinator.run_blocking(
+                            "train_chunk",
+                            train_chunk,
+                            chunk,
+                            optimizer_batch=batch,
+                        )
+                        coordinator.raise_if_failed(batch)
+                        chunk_outputs.append(output)
+
+                    coordinator.raise_if_failed(batch)
+                    optimizer = await coordinator.run_blocking(
+                        "optimizer",
+                        optimizer_step,
+                        batch.batch_id,
+                        optimizer_batch=batch,
+                    )
+
+                    # A producer failure here can only affect a future batch.
+                    # Finish this optimizer's hotload and publication so trainer
+                    # and sampler versions cannot diverge on shutdown.
+                    sync_wall_time = await coordinator.run_blocking(
+                        "weight_sync",
+                        sync_weights,
+                        batch.batch_id,
+                        optimizer_batch=batch,
+                    )
+                    loop_stats = coordinator.publish(batch)
+
+                    prompt_groups = [
+                        group
+                        for output in chunk_outputs
+                        for group in output["prompt_groups"]
+                    ]
+                    fwd_bwd_results = [
+                        output["fwd_bwd_result"] for output in chunk_outputs
+                    ]
+                    accumulated_stats = build_accumulated_async_loop_stats(
+                        prompt_groups=prompt_groups,
+                        latest_loop_stats=loop_stats,
+                        trainer_wait_for_sampler_time=float(
+                            loop_stats["trainer_wait_for_sampler_time"]
+                        ),
+                        sampler_wait_for_trainer_time=float(
+                            loop_stats["sampler_wait_for_trainer_time"]
+                        ),
+                        train_wall_time=float(loop_stats["perf/train_wall_time"]),
+                    )
+                    metrics = compute_step_metrics(
+                        prompt_groups=prompt_groups,
+                        fwd_bwd_results=fwd_bwd_results,
+                        optim_result=optimizer["result"],
+                        n_accum=len(fwd_bwd_results),
+                        timing_metrics=flush_timing(),
+                        loop_stats=accumulated_stats,
+                        completions_per_prompt=cfg.completions_per_prompt,
+                    )
+                    metrics["perf/weight_sync_time"] = sync_wall_time
+                    metrics["train/lr"] = optimizer["learning_rate"]
+                    metrics["rollout/step"] = batch.batch_id
+                    metrics["train/step"] = batch.batch_id
+                    for key, value in ctx_metadata.items():
+                        if isinstance(value, bool):
+                            metrics[f"ctx/{key}"] = int(value)
+                        elif isinstance(value, (int, float)) and value is not None:
+                            metrics[f"ctx/{key}"] = value
+
+                    logger.info(
+                        "Rollout %d | Reward %.3f | Acc %.1f%% | RefKL %.4f",
+                        batch.batch_id,
+                        metrics.get("rollout/reward", 0.0),
+                        metrics.get("rollout/accuracy", 0.0) * 100,
+                        metrics.get("train/ref_kl", 0.0),
+                    )
+                    log_metrics(metrics, step=batch.batch_id)
+                    if post_step_metrics_fn is not None:
+                        post_step_metrics_fn(metrics)
+                    tokens_processed += int(metrics.get("train/target_tokens", 0))
+                    write_running_progress(
+                        runner,
+                        step=batch.batch_id,
+                        total_steps=total_steps_estimate,
+                        tokens_processed=tokens_processed,
+                    )
+
+                    rollouts_completed = batch.batch_id - step_offset
+                    interval = cfg.dcp_save_interval
+                    if (
+                        interval > 0
+                        and rollouts_completed > 0
+                        and rollouts_completed % interval == 0
+                    ):
+                        try:
+                            await coordinator.run_blocking(
+                                "checkpoint",
+                                _save_checkpoint,
+                                ckpt,
+                                name=f"step-{batch.batch_id}",
+                                data_consumed=int(loop_stats["resolved_rows"]),
+                            )
+                        except (OSError, RuntimeError) as error:
+                            logger.warning(
+                                "[step %d] dcp_save failed: %s",
+                                batch.batch_id,
+                                error,
+                            )
+
+                return coordinator.global_step, coordinator.final_stats()
+
+        global_step, final_stats = asyncio.run(run_async_rl_lifecycle(run_training))
         # Save resume progress even if all remaining rows were dropped.
         # Promotion still requires at least one optimizer step.
         resume_row_cursor = int(final_stats["resolved_rows"])

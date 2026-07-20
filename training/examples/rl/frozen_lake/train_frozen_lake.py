@@ -58,7 +58,13 @@ from training.utils import (
     validate_config,
 )
 from training.utils.rl import PromptGroup
-from training.utils.rl.async_train import RowRequest, run_async_rl_loop
+from training.utils.rl.async_rl import (
+    AsyncRLCoordinator,
+    PostStepMetricsFn,
+    TrainingChunk,
+    RolloutRow,
+    run_async_rl_lifecycle,
+)
 from training.utils.rl.rollout import (
     RolloutSample,
     load_eval_protocol_input_rows,
@@ -67,7 +73,10 @@ from training.utils.rl.rollout import (
 from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.tis import TISConfig
-from training.utils.rl.metrics import compute_step_metrics
+from training.utils.rl.metrics import (
+    build_accumulated_async_loop_stats,
+    compute_step_metrics,
+)
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.timer import timer, flush_timing
 
@@ -92,7 +101,6 @@ DEFAULT_VISUAL_PROMPT_TEMPLATE = (
 )
 
 DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS
-WEIGHT_SYNC_INTERVAL = 1
 DCP_SAVE_INTERVAL = 20
 WEIGHT_SYNC_TIMEOUT_S = 900
 
@@ -511,10 +519,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         resume_info = ckpt.resume()
         step_offset = resume_info.step if resume_info else 0
         prior_rows_consumed = resume_info.data_consumed if resume_info else 0
-        if cfg.deployment_id:
-            name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
-            service.hotload_sampler_snapshot(saved.snapshot_name)
+        name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
+        saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
+        service.hotload_sampler_snapshot(saved.snapshot_name)
 
         # -- Build rollout processor ----------------------------------------
         rollout_base_url = sampler.base_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
@@ -640,74 +647,64 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                     ),
                 )
 
-            def train_step(
-                step: int,
-                prompt_groups: list[PromptGroup],
-                loop_stats: dict | None,
-                run_optimizer_step: bool,
-            ) -> tuple[int, dict]:
-                """ref_forward + fwd_bwd + optim_step + metrics (1:1)."""
-                if not run_optimizer_step:
-                    raise ValueError("frozen_lake async train_step only supports optimizer steps")
+            def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
+                """Run reference and policy forward/backward for one ready chunk."""
+
+                prompt_groups = list(chunk.groups)
                 t0 = time.time()
                 ref_forward_batch(prompt_groups)
-                logger.info("[step %d] ref_forward: done (%.1fs)", step + 1, time.time() - t0)
+                logger.info(
+                    "[step %d chunk %d/%d] ref_forward: done (%.1fs)",
+                    chunk.batch_id,
+                    chunk.index + 1,
+                    chunk.planned_chunks,
+                    time.time() - t0,
+                )
 
                 t0 = time.time()
                 fwd_bwd_result = fwd_bwd_one(prompt_groups)
-                logger.info("[step %d] fwd_bwd: done (%.1fs)", step + 1, time.time() - t0)
+                logger.info(
+                    "[step %d chunk %d/%d] fwd_bwd: done (%.1fs)",
+                    chunk.batch_id,
+                    chunk.index + 1,
+                    chunk.planned_chunks,
+                    time.time() - t0,
+                )
+                return {
+                    "prompt_groups": prompt_groups,
+                    "fwd_bwd_result": fwd_bwd_result,
+                }
+
+            def optimizer_step(step: int):
+                """Apply the batch's sole optimizer mutation."""
 
                 t0 = time.time()
-                optim_result = policy.optim_step(
+                result = policy.optim_step(
                     adam_params,
                     grad_accumulation_normalization=GradAccNormalization.NUM_LOSS_TOKENS,
                 )
-                step += 1
-                logger.info("[step %d] optim_step: done (%.1fs)", step, time.time() - t0)
-
-                if DCP_SAVE_INTERVAL > 0 and step % DCP_SAVE_INTERVAL == 0:
-                    logger.info("[step %d] dcp_save...", step)
-                    t0 = time.time()
-                    with timer("dcp_save"):
-                        ckpt.save(
-                            f"step-{step}",
-                            resumable=True,
-                            promotable=False,
-                            data_consumed=step - step_offset,
-                        )
-                    logger.info("[step %d] dcp_save: done (%.1fs)", step, time.time() - t0)
-
-                metrics = compute_step_metrics(
-                    prompt_groups=prompt_groups,
-                    fwd_bwd_results=[fwd_bwd_result],
-                    optim_result=optim_result,
-                    n_accum=1,
-                    timing_metrics=flush_timing(),
-                    loop_stats=loop_stats,
-                    completions_per_prompt=completions_per_prompt,
-                )
-                metrics["train/step"] = step
-                if loop_stats:
-                    metrics["rollout/sample_fail_count"] = loop_stats.get("sample_fails", 0)
-                    metrics["rollout/filter_drops"] = loop_stats.get("filter_drops", 0)
-
-                avg_reward = metrics.get("rollout/reward", 0.0)
-                avg_ref_kl = metrics.get("train/ref_kl", 0.0)
-                mean_loss = metrics.get("train/mean_loss", 0.0)
-                adv_loss = metrics.get("train/mean_adv_loss", 0.0)
-                kl_pen = metrics.get("train/mean_kl_penalty", 0.0)
-                mask_r = metrics.get("train/mask_ratio", 0.0)
-                inf_kld = metrics.get("train/inference_kld", 0.0)
                 logger.info(
-                    "Step %d | Reward: %.3f | RefKL: %.4f | Loss: %.4f "
-                    "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
-                    step, avg_reward, avg_ref_kl, mean_loss, adv_loss, kl_pen, inf_kld, mask_r,
+                    "[step %d] optim_step: done (%.1fs)",
+                    step,
+                    time.time() - t0,
                 )
-                reward_history.append(avg_reward)
-                log_metrics_json(step, reward=avg_reward, ref_kl=avg_ref_kl)
-                _wandb_step[0] = max(_wandb_step[0] + 1, step)
-                wandb_log(metrics, _wandb_step[0])
-                return step, metrics
+                return result
+
+            def save_intermediate_checkpoint(step: int, data_consumed: int) -> None:
+                logger.info("[step %d] dcp_save...", step)
+                t0 = time.time()
+                with timer("dcp_save"):
+                    ckpt.save(
+                        f"step-{step}",
+                        resumable=True,
+                        promotable=False,
+                        data_consumed=data_consumed,
+                    )
+                logger.info(
+                    "[step %d] dcp_save: done (%.1fs)",
+                    step,
+                    time.time() - t0,
+                )
 
             def _weight_sync(step: int) -> None:
                 logger.info("[step %d] weight_sync: saving + loading...", step)
@@ -715,74 +712,190 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 with timer("weight_sync"):
                     saved = policy.save_weights_for_sampler_ext(f"step-{step}")
                     service.hotload_sampler_snapshot(saved.snapshot_name)
-                logger.info("[step %d] weight_sync: done (%.1fs)", step, time.time() - t0)
+                logger.info(
+                    "[step %d] weight_sync: done (%.1fs)",
+                    step,
+                    time.time() - t0,
+                )
 
             def should_accept(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
 
-            max_concurrent_samples = cfg.max_concurrent if cfg.max_concurrent > 0 else None
+            max_concurrent_samples = cfg.max_concurrent or None
             min_group_size = 2 if completions_per_prompt > 1 else 1
-            async_weight_sync_interval = (
-                max(1, WEIGHT_SYNC_INTERVAL)
-                if WEIGHT_SYNC_INTERVAL > 0
-                else 1
-            )
-            max_head_offpolicy_versions = (
-                max(0, async_weight_sync_interval - 1)
-                if WEIGHT_SYNC_INTERVAL > 0
-                else max(0, (len(eval3_input_rows) + prompt_groups_per_step - 1) // prompt_groups_per_step)
-            )
             logger.info(
                 "Training: %d seeds x %d epochs = %d prompt groups, "
                 "%d completions/prompt, %d groups/step, max_concurrent_samples=%s",
-                len(seed_contexts), cfg.epochs, len(eval3_input_rows),
-                completions_per_prompt, prompt_groups_per_step, max_concurrent_samples,
+                len(seed_contexts),
+                cfg.epochs,
+                len(eval3_input_rows),
+                completions_per_prompt,
+                prompt_groups_per_step,
+                max_concurrent_samples,
             )
 
             _wandb_step = [step_offset]
 
             def make_row_requests():
-                for row_idx, eval_row in enumerate(eval3_input_rows, start=prior_rows_consumed):
+                for row_idx, eval_row in enumerate(
+                    eval3_input_rows,
+                    start=prior_rows_consumed,
+                ):
                     dataset_info = eval_row.input_metadata.dataset_info or {}
-                    env_context_dict = dict(dataset_info.get("environment_context") or {})
+                    env_context_dict = dict(
+                        dataset_info.get("environment_context") or {}
+                    )
 
-                    def factory(
+                    def run_one_rollout(
                         rollout_idx: int,
                         *,
                         row_idx: int = row_idx,
                         eval_row: EvaluationRow = eval_row,
                     ):
-                        return frozen_lake_rollout_fn({
-                            "row_id": row_idx,
-                            "rollout_idx": rollout_idx,
-                            "evaluation_row": eval_row,
-                        })
+                        return frozen_lake_rollout_fn(
+                            {
+                                "row_id": row_idx,
+                                "rollout_idx": rollout_idx,
+                                "evaluation_row": eval_row,
+                            }
+                        )
 
-                    yield RowRequest(
+                    yield RolloutRow(
                         row_id=row_idx,
-                        run_factory=factory,
+                        run_factory=run_one_rollout,
                         row_meta={
                             "seed": env_context_dict.get("seed"),
                             "environment_context": env_context_dict,
                         },
                     )
 
-            global_step, final_stats = asyncio.run(run_async_rl_loop(
-                rows=make_row_requests(),
-                train_step_fn=train_step,
-                completions_per_prompt=completions_per_prompt,
-                prompt_groups_per_step=prompt_groups_per_step,
-                max_head_offpolicy_versions=max_head_offpolicy_versions,
-                with_reference=use_reference,
-                min_group_size=min_group_size,
-                weight_sync_fn=_weight_sync if WEIGHT_SYNC_INTERVAL > 0 else None,
-                weight_sync_interval=async_weight_sync_interval,
-                max_concurrent=max_concurrent_samples,
-                dynamic_filter_fn=should_accept,
-                global_step=step_offset,
-                resolved_rows_offset=prior_rows_consumed,
-                return_final_stats=True,
-            ))
+            async def run_training(
+                post_step_metrics_fn: PostStepMetricsFn | None,
+            ) -> tuple[int, dict[str, Any]]:
+                coordinator = AsyncRLCoordinator(
+                    rows=make_row_requests(),
+                    completions_per_prompt=completions_per_prompt,
+                    prompt_groups_per_step=prompt_groups_per_step,
+                    training_chunks_per_step=1,
+                    max_head_off_policy_versions=0,
+                    max_concurrent_rollouts=max_concurrent_samples,
+                    with_reference=use_reference,
+                    min_group_size=min_group_size,
+                    dynamic_filter_fn=should_accept,
+                    global_step=step_offset,
+                    resolved_rows_offset=prior_rows_consumed,
+                )
+                async with coordinator:
+                    while (batch := await coordinator.next_batch()) is not None:
+                        chunk_outputs: list[dict[str, Any]] = []
+                        async for chunk in batch.chunks():
+                            coordinator.raise_if_failed(batch)
+                            output = await coordinator.run_blocking(
+                                "train_chunk",
+                                train_chunk,
+                                chunk,
+                                optimizer_batch=batch,
+                            )
+                            coordinator.raise_if_failed(batch)
+                            chunk_outputs.append(output)
+
+                        coordinator.raise_if_failed(batch)
+                        optim_result = await coordinator.run_blocking(
+                            "optimizer",
+                            optimizer_step,
+                            batch.batch_id,
+                            optimizer_batch=batch,
+                        )
+                        await coordinator.run_blocking(
+                            "weight_sync",
+                            _weight_sync,
+                            batch.batch_id,
+                            optimizer_batch=batch,
+                        )
+                        loop_stats = coordinator.publish(batch)
+
+                        if (
+                            DCP_SAVE_INTERVAL > 0
+                            and batch.batch_id % DCP_SAVE_INTERVAL == 0
+                        ):
+                            await coordinator.run_blocking(
+                                "checkpoint",
+                                save_intermediate_checkpoint,
+                                batch.batch_id,
+                                int(loop_stats["resolved_rows"]),
+                            )
+
+                        prompt_groups = [
+                            group
+                            for output in chunk_outputs
+                            for group in output["prompt_groups"]
+                        ]
+                        fwd_bwd_results = [
+                            output["fwd_bwd_result"] for output in chunk_outputs
+                        ]
+                        accumulated_stats = build_accumulated_async_loop_stats(
+                            prompt_groups=prompt_groups,
+                            latest_loop_stats=loop_stats,
+                            trainer_wait_for_sampler_time=float(
+                                loop_stats["trainer_wait_for_sampler_time"]
+                            ),
+                            sampler_wait_for_trainer_time=float(
+                                loop_stats["sampler_wait_for_trainer_time"]
+                            ),
+                            train_wall_time=float(
+                                loop_stats["perf/train_wall_time"]
+                            ),
+                        )
+                        metrics = compute_step_metrics(
+                            prompt_groups=prompt_groups,
+                            fwd_bwd_results=fwd_bwd_results,
+                            optim_result=optim_result,
+                            n_accum=len(chunk_outputs),
+                            timing_metrics=flush_timing(),
+                            loop_stats=accumulated_stats,
+                            completions_per_prompt=completions_per_prompt,
+                        )
+                        metrics["train/step"] = batch.batch_id
+
+                        avg_reward = metrics.get("rollout/reward", 0.0)
+                        avg_ref_kl = metrics.get("train/ref_kl", 0.0)
+                        mean_loss = metrics.get("train/mean_loss", 0.0)
+                        adv_loss = metrics.get("train/mean_adv_loss", 0.0)
+                        kl_pen = metrics.get("train/mean_kl_penalty", 0.0)
+                        mask_r = metrics.get("train/mask_ratio", 0.0)
+                        inf_kld = metrics.get("train/inference_kld", 0.0)
+                        logger.info(
+                            "Step %d | Reward: %.3f | RefKL: %.4f | Loss: %.4f "
+                            "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | "
+                            "MaskRatio: %.2f",
+                            batch.batch_id,
+                            avg_reward,
+                            avg_ref_kl,
+                            mean_loss,
+                            adv_loss,
+                            kl_pen,
+                            inf_kld,
+                            mask_r,
+                        )
+                        reward_history.append(avg_reward)
+                        log_metrics_json(
+                            batch.batch_id,
+                            reward=avg_reward,
+                            ref_kl=avg_ref_kl,
+                        )
+                        _wandb_step[0] = max(
+                            _wandb_step[0] + 1,
+                            batch.batch_id,
+                        )
+                        wandb_log(metrics, _wandb_step[0])
+                        if post_step_metrics_fn is not None:
+                            post_step_metrics_fn(metrics)
+
+                    return coordinator.global_step, coordinator.final_stats()
+
+            global_step, final_stats = asyncio.run(
+                run_async_rl_lifecycle(run_training)
+            )
 
             # -- Final checkpoint -----------------------------------------------
 

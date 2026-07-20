@@ -99,6 +99,7 @@ class TestComputeStepMetrics:
                 "filter_drops": 1,
                 "sample_fails": 2,
                 "trainer_wait_for_sampler_time": 3.0,
+                "perf/trainer_wait_for_chunk_time": 0.25,
                 "rollout_batch_wall_time": 2.0,
                 "train_wall_time": 1.0,
                 "scheduler_step_wall_time": 6.0,
@@ -122,6 +123,7 @@ class TestComputeStepMetrics:
         assert metrics["rollout/raw_accuracy"] == 0.5
         assert metrics["rollout/sample_fail_count"] == 2
         assert metrics["perf/trainer_wait_for_sampler_time"] == 3.0
+        assert metrics["perf/trainer_wait_for_chunk_time"] == 0.25
         assert metrics["perf/rollout_batch_wall_time"] == 2.0
         assert metrics["perf/train_step_wall_time"] == 1.0
         assert metrics["perf/scheduler_step_wall_time"] == 6.0

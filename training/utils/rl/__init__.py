@@ -28,9 +28,7 @@ __all__ = [
     "expand_turn_advantages_from_spans",
     "make_igpo_loss_fn",
     "score_prefix",
-    # Async loop + rollout contract
-    "run_async_rl_loop",
-    "RowRequest",
+    # Rollout contract
     "Rollout",
     "RolloutRun",
     "RolloutSample",
@@ -81,7 +79,6 @@ from training.utils.rl.igpo import (
     make_igpo_loss_fn,
     score_prefix,
 )
-from training.utils.rl.async_train import RowRequest, run_async_rl_loop
 from training.utils.rl.rollout import (
     GroupAssembler,
     InferenceCall,
