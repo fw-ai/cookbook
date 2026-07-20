@@ -431,15 +431,21 @@ class MiniMaxM3Renderer(Renderer):
 
     def _normalize_response_tokens(self, response: list[int]) -> list[int]:
         if self.thinking_mode == "enabled":
-            return (
-                list(self.tokenizer.encode(_THINK_BEGIN, add_special_tokens=False))
-                + response
+            prefix = list(
+                self.tokenizer.encode(_THINK_BEGIN, add_special_tokens=False)
             )
+            if response[: len(prefix)] == prefix:
+                return response
+            if _THINK_END in str(self.tokenizer.decode(response)):
+                return prefix + response
+            return response
         if self.thinking_mode == "disabled":
-            return (
-                list(self.tokenizer.encode(_THINK_END, add_special_tokens=False))
-                + response
+            prefix = list(
+                self.tokenizer.encode(_THINK_END, add_special_tokens=False)
             )
+            if response[: len(prefix)] == prefix:
+                return response
+            return prefix + response
         return response
 
     def parse_response(self, response: list[int]) -> tuple[Message, ParseTermination]:
