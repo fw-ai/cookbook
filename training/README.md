@@ -1,6 +1,6 @@
 # Fireworks Training Cookbook
 
-Ready-to-run training recipes for reinforcement learning, preference optimization, and supervised fine-tuning on [Fireworks](https://fireworks.ai).
+Ready-to-run training recipes for reinforcement learning, preference optimization, supervised fine-tuning, and embedding (retrieval) fine-tuning on [Fireworks](https://fireworks.ai).
 Each recipe is a single Python file you can fork and customize.
 
 > **Full documentation**: For detailed guides on each recipe, configuration reference, and the underlying SDK, see the [Training API documentation](https://docs.fireworks.ai/fine-tuning/training-api/introduction).
@@ -16,6 +16,7 @@ Each recipe is a single Python file you can fork and customize.
 | DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
 | SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
+| Embedding | `recipes/embedding_loop.py` | Retrieval/embedding fine-tuning with bidirectional in-batch InfoNCE on `(query, positive)` pairs. Three interchangeable trainer modes: `embedding`, `cos_similarity_matrix`, `contrastive_loss`. |
 
 ## Case studies
 
@@ -85,6 +86,23 @@ Each recipe has a `Config` dataclass at the top of the file. Open the recipe you
 | Field | What to set |
 | --- | --- |
 | `tokenizer_model` | HuggingFace model name matching your base model (e.g. `"Qwen/Qwen3-8B"`) |
+
+**Embedding** (`recipes/embedding_loop.py`) -- also requires:
+
+| Field | What to set |
+| --- | --- |
+| `tokenizer_model` | HuggingFace model name matching your base model (e.g. `"Qwen/Qwen3-Embedding-8B"`) |
+| `output_mode` | `embedding` (default), `cos_similarity_matrix`, or `contrastive_loss` -- three points on the client/server compute split for the same bidirectional InfoNCE loss |
+
+Dataset rows are `(query, positive)` pairs, one JSON object per line:
+`{"query": "...", "positive": "..."}`. Training uses in-batch negatives, so
+`batch_size` must be `>= 2` and the dataset must contain at least `batch_size`
+pairs (it fails loudly otherwise). `cos_similarity_matrix` additionally requires
+the whole batch to fit in a single request (single-GPU / DP=1 trainer).
+
+This recipe truncates each side with `max_query_len` / `max_doc_len` rather than
+a single `max_seq_len`; the trainer context is provisioned to fit the larger of
+the two.
 
 **RL** (`recipes/rl_loop.py`) -- also requires:
 
@@ -186,6 +204,7 @@ For detailed guides, configuration reference, and examples, see the official doc
 recipes/                                Training loop scripts (fork these)
 utils/                                  Shared config, data loading, loss functions, metrics
 examples/sft/                           Worked example: SFT getting started
+examples/embedding/                     Worked example: embedding (retrieval) fine-tuning
 examples/dpo/                           Worked example: DPO
 examples/orpo/ifeval/                   Worked example: IFEval with ORPO
 examples/rl/deepmath/                   GRPO on DeepMath (rl_loop)

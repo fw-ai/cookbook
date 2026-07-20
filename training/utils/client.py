@@ -46,6 +46,14 @@ DEFAULT_TIMEOUT_S: int = 3600
 DCP_TIMEOUT_S: int = 2700
 """Default timeout for save_state / load_state_with_optimizer (45 min)."""
 
+_DEFAULT_FBC_OUTPUT = "logprobs"
+_DEFAULT_FBC_POOLING = "mean"
+"""Legacy SFT/ORPO/DPO recipes use these defaults and must not pass embedding kwargs."""
+
+_MIN_SDK_FOR_CONTRASTIVE = "1.2.0a78"
+"""First published ``fireworks-ai[training]`` release with ``forward_backward_contrastive``
+in an importable cookbook (a77 has the method but lacks other symbols utils imports)."""
+
 
 def _install_tinker_future_retrieve_compat() -> None:
     """Keep metadata-only disabled until all trainer versions support it."""
@@ -161,10 +169,65 @@ class ReconnectableClient:
             timeout=self._default_timeout,
         )
 
-    def forward_backward_custom(self, data, loss_fn):
-        return self._client.forward_backward_custom(data, loss_fn).result(
-            timeout=self._default_timeout,
-        )
+    def forward_backward_custom(
+        self,
+        data,
+        loss_fn,
+        *,
+        output: str = "logprobs",
+        pooling: str = "mean",
+    ):
+        """Client-side custom loss over a single forward.
+
+        ``output`` selects what the trainer returns to the client loss_fn:
+
+          - ``"logprobs"`` (default, used by SFT/ORPO/DPO).
+          - ``"embedding"``: pooled per-datum vectors.
+          - ``"cos_similarity_matrix"``: rows of the in-batch ``[N, N]``
+            cosine-similarity matrix.
+
+        ``pooling`` only applies to the embedding outputs ("mean" or "last").
+        """
+        if output == _DEFAULT_FBC_OUTPUT and pooling == _DEFAULT_FBC_POOLING:
+            # Preserve the pre-embedding call shape so older pinned SDKs and
+            # every existing SFT/ORPO/DPO recipe keep working.
+            fb = self._client.forward_backward_custom(data, loss_fn)
+        else:
+            fb = self._client.forward_backward_custom(
+                data, loss_fn, output=output, pooling=pooling,
+            )
+        return fb.result(timeout=self._default_timeout)
+
+    def forward_backward_contrastive(
+        self,
+        data,
+        *,
+        num_queries: int,
+        temperature: float,
+        pooling: str = "last",
+        num_extra_negatives: int = 0,
+    ):
+        """Server-side bidirectional InfoNCE in one round trip.
+
+        ``data`` is laid out as ``[Q_0..Q_{B-1}, D_0..D_{B-1}]`` (plus an
+        optional ``num_extra_negatives`` tail of unpaired hard negatives). The
+        trainer pools, L2-normalizes, builds the similarity matrix, and runs
+        cross-entropy + backward itself, returning a metrics dict with ``loss``.
+        """
+        fb_contrastive = getattr(self._client, "forward_backward_contrastive", None)
+        if fb_contrastive is None:
+            raise RuntimeError(
+                f"forward_backward_contrastive requires fireworks-ai[training]>="
+                f"{_MIN_SDK_FOR_CONTRASTIVE}. Upgrade the Training SDK or use "
+                "output_mode='embedding' or 'cos_similarity_matrix'."
+            )
+        return fb_contrastive(
+            data,
+            num_queries=num_queries,
+            temperature=temperature,
+            pooling=pooling,
+            num_extra_negatives=num_extra_negatives,
+        ).result(timeout=self._default_timeout)
 
     def optim_step(
         self,

@@ -22,6 +22,8 @@ from training.renderer import gemma4 as _gemma4  # noqa: F401  (registers "gemma
 from training.renderer import glm5 as _glm5  # noqa: F401  (registers "glm5")
 from training.renderer import kimi_k27_code as _kimi_k27_code  # noqa: F401  (registers "kimi_k27_code")
 from training.renderer import minimax_m2 as _minimax_m2  # noqa: F401  (registers "minimax_m2")
+from training.renderer import minimax_m3 as _minimax_m3  # noqa: F401  (registers "minimax_m3")
+
 # Local overrides for upstream renderers that need disaggregate-per-user-turn
 # multi-turn SFT support (no upstream ``build_supervised_examples`` override).
 from training.renderer import _qwen3_split as _qwen3_split  # noqa: F401
