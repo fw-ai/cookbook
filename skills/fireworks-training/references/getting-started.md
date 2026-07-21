@@ -48,6 +48,7 @@ firectl quota list                           # GPU quota headroom for the shape 
 firectl model get -a fireworks <MODEL_ID>    # base model shows Tunable: true
 ```
 
+- **Upgrade an outdated CLI first:** if `firectl version` is behind the latest, run `sudo firectl upgrade` before creating jobs. An older CLI can send fields the backend has removed — e.g. 1.7.16 sends `gradient_accumulation_steps`, which **Training V2 rejects** (`InvalidArgument … deprecated and not supported by Training V2`), blocking `sftj create` until you upgrade.
 - **Auth:** either `firectl signin` (interactive) or a `FIREWORKS_API_KEY` environment variable (preferred for agents; use a scoped service-account key, never a personal admin key).
 - **Billing:** the account needs an active payment method on file. Without one, job create is rejected up front, and credits alone do not satisfy it. Add a payment method in the billing settings at https://app.fireworks.ai before your first job.
 - **Full model path:** always pass the full base-model path `accounts/fireworks/models/<MODEL_ID>`, never a bare name. A bare name resolves against your own account, so the public base model fails to resolve when your acting account is not `fireworks`.
@@ -71,7 +72,7 @@ firectl model list                             # the new LoRA appears here
 ```
 
 - **Always** verify the base model is `Tunable: true` first.
-- Managed RFT on eligible models under 16B is currently free. Check the live [pricing page](https://fireworks.ai/pricing) for the selected managed method or Training API infrastructure.
+- Managed RFT may be free for eligible small models — **confirm on the live [pricing page](https://fireworks.ai/pricing)** for the selected managed method or Training API infrastructure rather than assuming a fixed size threshold.
 
 ## 6. Check your quota
 

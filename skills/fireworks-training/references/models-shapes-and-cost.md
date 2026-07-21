@@ -37,7 +37,7 @@ The platform maps GPU class + count to the model — **let it**. Larger/MoE → 
 
 **Per training token** — managed SFT and DPO where listed. **Read current rates from the live [pricing page](https://fireworks.ai/pricing)** rather than trusting a hardcoded table.
 
-**Runtime-priced resources** — managed RFT on eligible models under 16B is currently free. Other managed RFT and dedicated Training API resources follow current pricing. Dedicated trainers and deployments use GPU-hour rates and are metered by runtime.
+**Runtime-priced resources** — managed RFT may be free for eligible small models (confirm on the live pricing page; do not assume a fixed size threshold). Other managed RFT and dedicated Training API resources follow current pricing. Dedicated trainers and deployments use GPU-hour rates and are metered by runtime.
 
 **Inference:** serverless per-token; dedicated per GPU-hour.
 
@@ -51,6 +51,19 @@ Estimate the spend surface before protected work; label uncertainty rather than 
 - **Inference / eval** scales with model, sample count, average input + output tokens, and number of passes.
 - **Deployment** scales with the shape/accelerator, replica count, and uptime; on-demand bills per GPU-second until torn down (include any validation-deployment uptime).
 - If a required rate or shape is unknown, label that line unknown rather than guessing.
+
+### Worked cost example (formula + live rates)
+
+Give a real range, not a wall of "unknown." Read current rates live; the arithmetic is:
+
+```text
+train_tokens = rows × avg_tokens × epochs        # × turns/2 if reasoning/thinking traces are unrolled
+train_cost   = train_tokens / 1e6 × rate_per_1M  # LoRA SFT rate for the model's size tier/mode
+deploy_cost  = days × 24 × gpu_count × $/GPU-hr  # reduce for scale-to-zero / partial uptime
+```
+
+- **GPU count is platform-resolved but boundable:** small dense models (≤~14B) serve on ~1 GPU. State the assumption and give a range instead of writing "unknown."
+- **Deployment usually dominates.** A week of idle-but-up on-demand serving costs far more than a small LoRA SFT (training is often cents; a week on one GPU is hundreds to low-thousands of dollars). Uptime is a customer choice — call it out and recommend scale-to-zero/teardown.
 
 ## Critical rules
 
