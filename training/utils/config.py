@@ -178,6 +178,8 @@ class TrainerConfig:
 
     purpose: str | None = None
     """Optional platform ``Purpose`` proto enum name."""
+    preemptible: bool = False
+    """Request preemptible trainer scheduling. Requires an admin API key."""
 
     managed_by: str | None = None
     """Optional parent resource ID for managed trainer ownership."""

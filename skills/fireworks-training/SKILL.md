@@ -34,6 +34,20 @@ Never copy a volatile catalog or price into an answer when it can be read live.
 Record the docs URLs, cookbook commit, SDK version, and CLI version used in the
 run manifest and final report.
 
+### Degraded or offline sources
+
+When a higher-priority source is unreachable (locked-down network, docs or
+pricing site blocked, GitHub blocked), do not fall back to hardcoded values —
+degrade explicitly:
+
+- **Live docs unreachable:** substitute read-only `firectl` catalog reads
+  (`model get`, `training-shape list`) and a `--dry-run -o json` to resolve
+  shapes and defaults; label anything still unresolved as unknown.
+- **Pricing page unreachable:** present the cost *formula* and ask the user for
+  the current per-unit rate rather than guessing a number.
+- **GitHub blocked:** the Training API / cookbook path (which requires cloning
+  the cookbook) is unavailable; prefer managed training, and say so.
+
 ## Privacy and feedback
 
 The public skill does not write or transmit usage telemetry and does not
@@ -41,6 +55,10 @@ automatically collect issues. Run manifests are customer-private local files and
 must not contain keys, raw environment dumps, or secret-bearing output. Share
 feedback or manifests only when the user explicitly chooses to do so; no
 telemetry opt-out is required because collection is off.
+
+If a user pastes a secret (API key, token) into the conversation, do not repeat
+it back, treat the transcript itself as an exposure, and advise the user to
+rotate or revoke that key and re-issue a scoped service-account key.
 
 ## Cookbook checkout
 
@@ -113,6 +131,7 @@ or job creation, checkpoint promotion, deployment, or other mutation:
    - evaluator, reward, or loss contract;
    - stable resource IDs;
    - every parameter the user set, marked **set**;
+   - any preemptible trainer scheduling request, marked **admin-only**;
    - every default the agent or platform will apply, marked **default**;
    - resolved model, training shape, deployment shape, and context when relevant;
    - cost model, estimate or ceiling, and unknown cost lines;
@@ -146,6 +165,10 @@ an authentication error.
   documented command. If `firectl` returns `BLOCKED: mutating command ...`,
   surface the exact reconstructed command and ask the user to run it manually
   in their terminal.
+- The guard also blocks the **`--dry-run`** form of a mutating command (it is
+  classified as mutating). The confirmation-gate step "resolve config via
+  `--dry-run -o json`" must therefore also be run by the user, not the agent;
+  ask them to paste the dry-run output.
 - After the user runs the command, continue with read-only `get`, `list`,
   monitoring, evaluation, and reporting.
 - Execute a mutation inside the agent only when the installed CLI itself allows

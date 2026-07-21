@@ -15,9 +15,16 @@ A fine-tuned LoRA **cannot run on serverless** — it needs an **on-demand (dedi
 | Perf | Matches base | Slightly higher TTFT; lower max throughput |
 | Best for | Single model in prod | Experiments / many variants |
 
-**One adapter → live merge** (simplest):
+**One adapter → live merge** (simplest). You **must** pass a deployment shape (or an accelerator type): a bare `firectl deployment create <model>` drops into an **interactive shape picker**, and choosing "Create without using shape" fails with `accelerator_type must be specified for non-embeddings engines`. The interactive prompt also breaks non-interactive / agent / CI use, so always pass the shape explicitly and add `--wait`:
 ```bash
-firectl deployment create "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>"
+# preferred: an explicit compatible (BF16) deployment shape
+firectl deployment create "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>" \
+  --deployment-id <DEPLOYMENT_ID> \
+  --deployment-shape accounts/<ACCOUNT_ID>/deploymentShapes/<SHAPE> --wait
+# fallback (no shape): you MUST set the accelerator explicitly
+firectl deployment create "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>" \
+  --deployment-id <DEPLOYMENT_ID> \
+  --accelerator-type NVIDIA_H100_80GB --wait
 ```
 **Multi-LoRA:**
 ```bash
@@ -63,11 +70,13 @@ firectl deployment create accounts/fireworks/models/<MODEL> \
 `State: READY` does not prove the model serves. Send a **real request and confirm HTTP 200** before reporting success or running an eval. Right after `deployment create`, early routing errors are usually transient within the readiness window, so poll with a short backoff rather than failing on the first error.
 
 Fine-tuned LoRA serves from an **on-demand deployment** — serverless per-token serving of your *own* fine-tuned LoRA is not available yet. Addressing the inference `model` depends on the deployment type:
-- **Dedicated live-merge deployment:** target the **deployment** you created. Calling a fresh dedicated deployment by the bare model id can return `NOT_FOUND`; use the deployment's model reference.
+- **Dedicated live-merge deployment:** the bare model id returns `NOT_FOUND` on a fresh deployment, and so does `model="<model>#<short-deployment-name>"`. Use the **full** reference `model="<full-model-path>#<full-deployment-resource-path>"` — e.g. `accounts/acme/models/my-tune#accounts/acme/deployments/my-tune-dep`.
 - **Multi-LoRA:** route `model="<model_name>#<deployment_name>"`.
 
 - **Playground:** open the deployment in the [dashboard](https://app.fireworks.ai), send prompts.
 - **API:** `POST https://api.fireworks.ai/inference/v1/chat/completions`. A base-only response usually means the adapter wasn't promoted/loaded; a `NOT_FOUND` usually means wrong addressing for the serving path above.
+
+> **Reasoning base models (e.g. Qwen3):** the model emits `<think>…</think>` before the answer. Budget enough `max_tokens` for the thinking span — a small value like 16 truncates before the answer (`finish_reason=length`) and makes serving look broken — or disable reasoning, and parse the label **after** `</think>`.
 
 ## CLEAN UP — stop the spend
 
@@ -75,8 +84,30 @@ On-demand bills by **GPU-second while replicas are active, even with no traffic*
 ```bash
 firectl deployment list
 firectl deployment delete <DEPLOYMENT_ID>
+# If the deployment received inference in the last hour, delete is blocked with
+# FailedPrecondition ("pass --ignore-checks to skip this check"). Force teardown now:
+firectl deployment delete <DEPLOYMENT_ID> --ignore-checks
 ```
 Lighter: `scale_to_zero` (min/max replicas = 0). Defaults: scale to zero after ~1h idle; min-0 deployments auto-deleted after 7 days idle. A scaled-to-zero deployment returns **`503 DEPLOYMENT_SCALING_UP`** on the first request — add retry/backoff.
+
+### Recover orphaned spend (you lost the deployment name)
+
+If a run's session ended and there is no manifest / no recorded ID, do not assume nothing is billing — scan the account. This is independent of any manifest:
+
+```bash
+firectl deployment list -a <ACCOUNT_ID>                 # enumerate ALL deployments
+firectl deployment get <DEPLOYMENT_ID> -o json -a <ACCOUNT_ID>   # per hit: State + replica counts
+#   -> a deployment with Replica Count / Ready Replica Count > 0 is actively billing
+firectl model list -a <ACCOUNT_ID>                      # correlate the fine-tuned model created around that time
+firectl rlor-trainer-job list -a <ACCOUNT_ID>           # a dedicated Training API trainer may also still be live
+```
+
+Then stop the spend (confirm first; may hit the agent guard → run manually):
+
+```bash
+firectl deployment update <DEPLOYMENT_ID> --min-replica-count 0 --max-replica-count 0   # park
+firectl deployment delete <DEPLOYMENT_ID> --ignore-checks                                # hard stop
+```
 
 ## Numerics alignment (why outputs drift)
 

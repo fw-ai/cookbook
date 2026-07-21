@@ -34,10 +34,19 @@ jobs:
           cache: pip
           cache-dependency-path: training/pyproject.toml
 
-      - name: Install cookbook with published dependencies
+      - name: Resolve declared minimum SDK
+        id: sdk
+        run: |
+          minimum="$(python tests/verify_sdk_minimum.py)"
+          echo "minimum=${minimum}" >> "${GITHUB_OUTPUT}"
+          echo "Testing declared minimum fireworks-ai==${minimum}"
+
+      - name: Install cookbook with declared minimum SDK
+        env:
+          SDK_MINIMUM: ${{ steps.sdk.outputs.minimum }}
         run: |
           python -m pip install --upgrade pip
-          python -m pip install . pytest
+          python -m pip install . pytest "fireworks-ai[training]==${SDK_MINIMUM}"
 
       - name: Verify installed cookbook artifact
         working-directory: ${{ runner.temp }}
@@ -46,7 +55,7 @@ jobs:
       - name: Verify installed SDK compatibility
         run: |
           python -m pip check
-          python -c 'from importlib.metadata import version; print("fireworks-ai", version("fireworks-ai"))'
+          python tests/verify_sdk_minimum.py --assert-installed
           python -m pytest -q \
             tests/test_smoke_imports.py \
             tests/unit/test_client.py \
@@ -61,28 +70,103 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Create cookbook release
+      - name: Require generated promotion source
+        id: promotion
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          today="$(date -u +%Y.%m.%d)"
-          latest="$(
-            git tag --list "cookbook-v${today}.*" |
-              sed -E "s/^cookbook-v${today}\\.([0-9]+)$/\\1/" |
-              sort -n |
-              tail -1
+          promotion_pr="$(
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '.[] | select(
+                .base.ref == "main" and
+                .head.repo.full_name == "fw-ai/cookbook" and
+                .head.ref == "autogen/promote-cookbook-from-fireworks-main" and
+                .user.login == "bot-fireworks-ai"
+              ) | .number' | head -1
           )"
-          next=$(( ${latest:-0} + 1 ))
-          tag="cookbook-v${today}.${next}"
+          if [[ -z "${promotion_pr}" ]]; then
+            echo "::error::Cookbook releases must come from the generated Fireworks promotion PR."
+            exit 1
+          fi
+
+          existing_tag="$(git tag --points-at "${GITHUB_SHA}" --list 'cookbook-v*' | sort -V | tail -1)"
+          existing_release="false"
+          if [[ -n "${existing_tag}" ]] && gh release view "${existing_tag}" >/dev/null 2>&1; then
+            existing_release="true"
+          fi
+          labels="$(gh pr view "${promotion_pr}" --repo "${GITHUB_REPOSITORY}" \
+            --json labels --jq '[.labels[].name] | join(",")')"
+          if [[ ",${labels}," == *",autorelease: pending,"* ]]; then
+            echo "Verified pending generated cookbook promotion PR #${promotion_pr}."
+          elif [[ "${existing_release}" == "true" && ",${labels}," == *",autorelease: tagged,"* ]]; then
+            echo "Verified idempotent rerun for tagged cookbook promotion PR #${promotion_pr}."
+          else
+            echo "::error::Cookbook promotion PR must be pending, or tagged with its exact release tag already present."
+            exit 1
+          fi
+          {
+            echo "pr=${promotion_pr}"
+            echo "existing_tag=${existing_tag}"
+            echo "existing_release=${existing_release}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create cookbook release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXISTING_TAG: ${{ steps.promotion.outputs.existing_tag }}
+          EXISTING_RELEASE: ${{ steps.promotion.outputs.existing_release }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EXISTING_RELEASE}" == "true" ]]; then
+            echo "Cookbook release ${EXISTING_TAG} already targets ${GITHUB_SHA}; nothing to create."
+            echo "tag=${EXISTING_TAG}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ -n "${EXISTING_TAG}" ]]; then
+            tag="${EXISTING_TAG}"
+          else
+            today="$(date -u +%Y.%m.%d)"
+            latest="$(
+              git tag --list "cookbook-v${today}.*" |
+                sed -E "s/^cookbook-v${today}\\.([0-9]+)$/\\1/" |
+                sort -n |
+                tail -1
+            )"
+            next=$(( ${latest:-0} + 1 ))
+            tag="cookbook-v${today}.${next}"
+          fi
 
           gh release create "${tag}" \
             --target "${GITHUB_SHA}" \
             --title "${tag}" \
             --generate-notes
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Mark promotion PR as tagged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTION_PR: ${{ steps.promotion.outputs.pr }}
+        run: |
+          set -euo pipefail
+          gh label create "autorelease: tagged" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --color "0e8a16" \
+            --description "Release created for this promotion" \
+            --force
+          edit_args=(--add-label "autorelease: tagged")
+          if gh pr view "${PROMOTION_PR}" --repo "${GITHUB_REPOSITORY}" \
+            --json labels --jq 'any(.labels[]; .name == "autorelease: pending")' | grep -qx true; then
+            edit_args+=(--remove-label "autorelease: pending")
+          fi
+          gh pr edit "${PROMOTION_PR}" --repo "${GITHUB_REPOSITORY}" "${edit_args[@]}"

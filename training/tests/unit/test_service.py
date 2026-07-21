@@ -28,6 +28,7 @@ def _trainer_config(**overrides) -> TrainerConfig:
         inactivity_timeout="7200s",
         disable_inactivity_cleanup=True,
         purpose="PURPOSE_UNSPECIFIED",
+        preemptible=True,
         managed_by="parent-job",
         skip_validations=True,
     )
@@ -107,6 +108,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "inactivity_timeout": "7200s",
             "disable_inactivity_cleanup": True,
             "purpose": "PURPOSE_UNSPECIFIED",
+            "preemptible": True,
             "managed_by": "parent-job",
             "skip_validations": True,
             "cleanup_trainer_on_close": True,

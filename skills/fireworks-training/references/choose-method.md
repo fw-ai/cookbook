@@ -4,6 +4,20 @@
 
 Pick the method that matches the *signal you have*, not the one that sounds most advanced. Start simple (SFT); escalate only when your data demands it. Source: https://docs.fireworks.ai/fine-tuning/finetuning-intro
 
+## Intake for a vague request
+
+If the request is vague ("my chatbot gives bad answers", "make my model better"), do not guess a method or start a job. First confirm fine-tuning is even the right tool — a prompt, RAG, or base-model change is often cheaper — then ask the discriminating questions that determine the route:
+
+1. **What does "bad" mean** — wrong facts, wrong tone/format, bad tool calls, refusals? (Is this a fine-tuning problem at all?)
+2. **What supervision do you have?** labeled ideal outputs (→ SFT), only "A is better than B" pairs (→ DPO/ORPO), or a way to score/verify an answer 0.0–1.0 (→ RFT). **This is the single routing question.**
+3. **How many examples** (roughly >1000 / 100–1000 / <100)?
+4. **Is correctness programmatically verifiable**, or subjective quality/tone?
+5. **Which base model**, and is it `Tunable`?
+6. **Held-out eval set + success metric** — how will we know it improved?
+7. **Standard config, or custom loss/reward/rollout** (managed vs Training API)?
+
+Route only once the supervision signal (question 2) is known. Until then, ask — do not default to SFT and start.
+
 ## Decision tree
 
 ```
@@ -169,7 +183,21 @@ for i, line in enumerate(open(sys.argv[1]), 1):
     else:
         raise ValueError(f"unknown method: {method}")
 assert n >= 3, "need at least 3 examples"
+
+# Data-sufficiency + method/shape sanity: a green "OK" at 3 rows is NOT "ready to train".
+warnings = []
+if n < 1000:
+    warnings.append(f"{n} rows meets the 3-row minimum but is far below the ~1000+ recommended for quality; treat as smoke-only, not evidence of generalization")
+first = json.loads(next(l for l in open(sys.argv[1]) if l.strip()))
+detected = "dpo" if ("preferred_output" in first or "chosen" in first) else "sft/rft"
+if method == "dpo" and detected != "dpo":
+    warnings.append("requested method=dpo but rows look SFT/RFT-shaped (no preferred_output/chosen) -> wrong method or wrong file")
+if method in ("sft", "managed-rft", "sdk-rft") and detected == "dpo":
+    warnings.append(f"requested method={method} but rows look DPO-shaped (preferred_output/chosen present) -> wrong method")
+
 print(f"OK: {n} valid {method} rows")
+for w in warnings:
+    print("WARNING:", w)
 ```
 
 Reminders: JSONL, one object per line, roles in order, min 3 and max 3M examples. DPO is one-turn only (preferred and non-preferred are the single last assistant turn). Managed RFT validates the prompt schema plus whatever its registered evaluator expects. SDK RFT validates only the fields its selected reward reads; `ground_truth` is common, not universal. `firectl dataset create` re-validates on upload, but running this first turns a late platform error into an instant local fix.
