@@ -131,6 +131,7 @@ or job creation, checkpoint promotion, deployment, or other mutation:
    - evaluator, reward, or loss contract;
    - stable resource IDs;
    - every parameter the user set, marked **set**;
+   - any preemptible trainer scheduling request, marked **admin-only**;
    - every default the agent or platform will apply, marked **default**;
    - resolved model, training shape, deployment shape, and context when relevant;
    - cost model, estimate or ceiling, and unknown cost lines;

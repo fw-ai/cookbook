@@ -60,6 +60,7 @@ def _firetitan_service_kwargs(
         "inactivity_timeout": trainer.inactivity_timeout,
         "disable_inactivity_cleanup": trainer.disable_inactivity_cleanup,
         "purpose": trainer.purpose,
+        "preemptible": trainer.preemptible,
         "managed_by": trainer.managed_by,
         "skip_validations": trainer.skip_validations,
         "cleanup_trainer_on_close": cleanup_trainer_on_close,
