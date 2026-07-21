@@ -205,9 +205,7 @@ def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
                     "training_loss_weights": training_weights,
                 }
                 handle.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
-                _worker_state["render_samples_written"] = int(
-                    _worker_state.get("render_samples_written", 0)
-                ) + 1
+                _worker_state["render_samples_written"] = int(_worker_state.get("render_samples_written", 0)) + 1
     except Exception:  # noqa: BLE001 - render sample write must not fail training
         if not _worker_state.get("render_samples_error_logged"):
             logger.warning("Failed to write SFT render sample", exc_info=True)
@@ -344,8 +342,7 @@ def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
     valid_rendered_examples = [
         rendered
         for rendered in rendered_examples
-        if 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"]
-        and any(w > 0 for w in rendered.token_weights)
+        if 2 <= len(rendered.token_ids) <= _worker_state["max_seq_len"] and any(w > 0 for w in rendered.token_weights)
     ]
     _write_render_samples(row, valid_rendered_examples)
     datums = [rendered.datum for rendered in valid_rendered_examples]
@@ -362,6 +359,7 @@ def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
 
 DEFAULT_EVAL_CARVE_RATIO = 0.1
 DEFAULT_MAX_EVAL_SEQS = 100
+FIREWORKS_CMEK_RESOURCE_METADATA_KEY = "fireworks_cmek_resource"
 
 
 def compute_eval_carveout(
@@ -430,13 +428,16 @@ def _prepare_datasets(
         eval_data = _render_eagerly(eval_ds, len(eval_ds))
         logger.info(
             "Loaded %d eval examples from %s",
-            len(eval_data), cfg.evaluation_dataset,
+            len(eval_data),
+            cfg.evaluation_dataset,
         )
         return training_ds, eval_data
 
     if cfg.eval_auto_carveout:
         n = compute_eval_carveout(
-            len(training_ds), cfg.eval_carve_ratio, cfg.max_eval_seqs,
+            len(training_ds),
+            cfg.eval_carve_ratio,
+            cfg.max_eval_seqs,
         )
         if n > 0:
             shuffled_indices = list(range(len(training_ds)))
@@ -444,15 +445,17 @@ def _prepare_datasets(
             eval_indices = shuffled_indices[:n]
             eval_index_set = set(eval_indices)
             eval_data = _render_eagerly(
-                training_ds.with_indices(eval_indices), len(eval_indices),
+                training_ds.with_indices(eval_indices),
+                len(eval_indices),
             )
             training_ds = training_ds.with_indices(
                 [idx for idx in range(len(training_ds)) if idx not in eval_index_set]
             )
             logger.info(
-                "Auto carve-out: %d eval examples, %d training examples "
-                "(seed=%d)",
-                len(eval_data), len(training_ds), cfg.seed,
+                "Auto carve-out: %d eval examples, %d training examples " "(seed=%d)",
+                len(eval_data),
+                len(training_ds),
+                cfg.seed,
             )
             return training_ds, eval_data
         logger.warning("Dataset too small for auto carve-out, skipping eval")
@@ -498,6 +501,10 @@ class Config:
     max_examples: int | None = None
     lora_rank: int = 0
     output_model_id: str | None = None
+
+    cmek_output_model_resource: str | None = None
+    """Internal managed-SFT contract. When set, the dedicated trainer encrypts
+    resumable and promotable artifacts with the output model's CMEK resource."""
 
     serverless: bool = False
     """When True, train against an already-provisioned shared/pooled serverless
@@ -609,6 +616,16 @@ class Config:
     """
 
 
+def _cmek_user_metadata(cfg: Config) -> dict[str, str] | None:
+    if not cfg.cmek_output_model_resource:
+        return None
+    if cfg.serverless:
+        raise ValueError("CMEK output encryption requires a dedicated SFT trainer")
+    if cfg.lora_rank <= 0:
+        raise ValueError("CMEK output encryption requires lora_rank > 0")
+    return {FIREWORKS_CMEK_RESOURCE_METADATA_KEY: cfg.cmek_output_model_resource}
+
+
 # ---------------------------------------------------------------------------
 # Eval
 # ---------------------------------------------------------------------------
@@ -640,9 +657,7 @@ def run_eval(
 
     def _eval_batch(b: List[tinker.Datum]) -> Dict[str, float]:
         fwd = client.forward(b, "cross_entropy")
-        logprobs_list = [
-            fwd.loss_fn_outputs[i]["logprobs"].to_torch() for i in range(len(b))
-        ]
+        logprobs_list = [fwd.loss_fn_outputs[i]["logprobs"].to_torch() for i in range(len(b))]
         _, metrics = train_loss_fn(b, logprobs_list)
         return metrics
 
@@ -669,7 +684,10 @@ def run_eval(
 
     logger.info(
         "[Eval] Epoch %d | Loss: %.4f | PPL: %.2f | Tokens: %d",
-        epoch + 1, eval_loss, eval_ppl, eval_resp_tokens,
+        epoch + 1,
+        eval_loss,
+        eval_ppl,
+        eval_resp_tokens,
     )
     log_metrics_json(step, eval_loss=eval_loss, eval_ppl=eval_ppl)
     wandb_log(
@@ -705,6 +723,7 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
+    cmek_user_metadata = _cmek_user_metadata(cfg)
     lr_scheduler = normalize_lr_scheduler_spec(
         cfg.lr_scheduler,
         legacy_warmup_steps=cfg.warmup_steps,
@@ -741,7 +760,11 @@ def main(
             # Attach to a shared, already-running pooled trainer through the
             # serverless surface instead of provisioning a dedicated trainer.
             service, client, ckpt, job_id, max_seq_len = setup_serverless_training(
-                cfg, api_key=api_key, base_url=base_url, additional_headers=additional_headers, stack=stack,
+                cfg,
+                api_key=api_key,
+                base_url=base_url,
+                additional_headers=additional_headers,
+                stack=stack,
             )
             stack.callback(service.close)
             # Per-token billed by the pool trainer; there is no dedicated
@@ -762,7 +785,11 @@ def main(
                 trainer=cfg.trainer,
             )
             stack.callback(service.close)
-            training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+            training_client = service.create_training_client(
+                cfg.base_model,
+                lora_rank=cfg.lora_rank,
+                user_metadata=cmek_user_metadata,
+            )
             runner.set_accelerator_info(
                 service.accelerator_type,
                 service.accelerator_count,
@@ -792,9 +819,7 @@ def main(
         # RAM is O(num_workers * per_worker_render_footprint) instead of
         # O(dataset_size).
         num_workers = (
-            cfg.render_workers
-            if cfg.render_workers is not None
-            else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
+            cfg.render_workers if cfg.render_workers is not None else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
         )
         base_init_args = (
             cfg.tokenizer_model,
@@ -810,9 +835,7 @@ def main(
         render_samples_local_dir = ""
         render_samples_limit = _resolve_render_samples_limit(cfg.render_samples_limit)
         if cfg.render_samples_file and render_samples_limit != 0:
-            render_samples_local_dir = stack.enter_context(
-                tempfile.TemporaryDirectory(prefix="sft-render-samples-")
-            )
+            render_samples_local_dir = stack.enter_context(tempfile.TemporaryDirectory(prefix="sft-render-samples-"))
             stack.callback(
                 _finalize_render_samples,
                 render_samples_local_dir,
@@ -843,9 +866,10 @@ def main(
         effective_batch_size = max(1, min(cfg.batch_size, training_count))
         if effective_batch_size < cfg.batch_size:
             logger.warning(
-                "Training examples (%d) < batch_size (%d); reducing effective "
-                "batch_size to %d.",
-                training_count, cfg.batch_size, effective_batch_size,
+                "Training examples (%d) < batch_size (%d); reducing effective " "batch_size to %d.",
+                training_count,
+                cfg.batch_size,
+                effective_batch_size,
             )
 
         loader_generator = torch.Generator()
@@ -866,10 +890,14 @@ def main(
         logger.info(
             "Dataset: %d examples from %s (renderer=%s, train_on_what=%s,"
             " workers=%d, seed=%d) -> ~%d batches/epoch x %d epochs%s",
-            training_count, cfg.dataset,
+            training_count,
+            cfg.dataset,
             resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
-            cfg.train_on_what, num_workers, cfg.seed,
-            total_batches_per_epoch, cfg.epochs,
+            cfg.train_on_what,
+            num_workers,
+            cfg.seed,
+            total_batches_per_epoch,
+            cfg.epochs,
             f" + {len(eval_data)} eval examples" if eval_data else "",
         )
 
@@ -906,9 +934,7 @@ def main(
         rows_into_current_epoch = cursor.value % training_count if training_count else 0
         start_batch = rows_into_current_epoch // effective_batch_size
         remaining_raw_rows = max(0, total_raw_rows - cursor.value)
-        total_steps_estimate = step + (
-            (remaining_raw_rows + effective_batch_size - 1) // effective_batch_size
-        )
+        total_steps_estimate = step + ((remaining_raw_rows + effective_batch_size - 1) // effective_batch_size)
 
         # Always-on intra-step async + optional inter-step pipelining
         in_flight: deque = deque()
@@ -921,17 +947,19 @@ def main(
 
         def _pipe_submit(batch: list[tinker.Datum], step: int) -> int:
             """Submit one fwd_bwd + optim_step pair (non-blocking). Returns updated step."""
-            tokens = sum(
-                len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens")
-            )
+            tokens = sum(len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens"))
             step += 1
             adam = tinker.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
             t_submit = time.time()
-            in_flight.append((
-                step, tokens, t_submit,
-                client.submit_forward_backward(batch, loss_fn="cross_entropy"),
-                client.submit_optim_step(adam),
-            ))
+            in_flight.append(
+                (
+                    step,
+                    tokens,
+                    t_submit,
+                    client.submit_forward_backward(batch, loss_fn="cross_entropy"),
+                    client.submit_optim_step(adam),
+                )
+            )
             return step
 
         def _pipe_collect() -> None:
@@ -984,13 +1012,23 @@ def main(
                 current_lr = _current_lr(s)
                 logger.info(
                     "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d | depth: %d",
-                    s, total_steps_estimate, avg_loss, ppl, tps, tokens, cfg.pipeline_depth,
+                    s,
+                    total_steps_estimate,
+                    avg_loss,
+                    ppl,
+                    tps,
+                    tokens,
+                    cfg.pipeline_depth,
                 )
                 log_metrics_json(s, ce_loss=avg_loss, ppl=ppl, tokens_per_sec=tps, lr=current_lr)
-                step_metrics.update({
-                    "train/step": s, "train/ce_loss": avg_loss,
-                    "train/loss": avg_loss, "train/ppl": ppl,
-                })
+                step_metrics.update(
+                    {
+                        "train/step": s,
+                        "train/ce_loss": avg_loss,
+                        "train/loss": avg_loss,
+                        "train/ppl": ppl,
+                    }
+                )
                 step_metrics["train/lr"] = current_lr
                 wandb_log(step_metrics, s)
 
@@ -1090,7 +1128,9 @@ def main(
             if getattr(cfg, "output_model_id", None):
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
-                    model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
+                    model_id=cfg.output_model_id,
+                    checkpoint=cp_name,
+                    job_id=job_id,
                 )
 
         write_completed(runner, step=step, total_steps=step)
