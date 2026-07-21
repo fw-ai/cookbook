@@ -103,7 +103,6 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "extra_args": ["--foo"],
             "trainer_replica_count": 4,
             "trainer_timeout_s": 1800,
-            "trainer_pending_timeout_s": 172800,
             "inactivity_timeout": "7200s",
             "disable_inactivity_cleanup": True,
             "purpose": "PURPOSE_UNSPECIFIED",
