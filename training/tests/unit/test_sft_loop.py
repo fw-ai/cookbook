@@ -19,7 +19,9 @@ def _patch_resume(monkeypatch, resume_info):
     ``raw_rows_consumed`` semantically (single load-bearing counter).
     """
     monkeypatch.setattr(
-        TrainingCheckpoints, "resume", lambda self, **kwargs: resume_info,
+        TrainingCheckpoints,
+        "resume",
+        lambda self, **kwargs: resume_info,
     )
 
 
@@ -31,6 +33,7 @@ def _write_dataset(tmp_path, rows):
 
 def _make_stub_render_worker_state(renderer=None, tokenizer=None):
     """Return a populate_render_worker_state replacement that skips HF tokenizer / renderer load."""
+
     def stub(state, *, tokenizer_model, renderer_name, max_seq_len, **extras):
         state.update(
             tokenizer=tokenizer if tokenizer is not None else object(),
@@ -38,6 +41,7 @@ def _make_stub_render_worker_state(renderer=None, tokenizer=None):
             max_seq_len=max_seq_len,
             **extras,
         )
+
     return stub
 
 
@@ -72,13 +76,9 @@ def test_init_render_worker_forwards_tokenizer_revision(monkeypatch):
         captured["state"] = state
         captured["kwargs"] = kwargs
 
-    monkeypatch.setattr(
-        module, "populate_render_worker_state", fake_populate_render_worker_state
-    )
+    monkeypatch.setattr(module, "populate_render_worker_state", fake_populate_render_worker_state)
 
-    module._init_render_worker(
-        "moonshotai/Kimi-K2.6", "kimi_k25", "all_assistant_messages", 4096, "2755962"
-    )
+    module._init_render_worker("moonshotai/Kimi-K2.6", "kimi_k25", "all_assistant_messages", 4096, "2755962")
 
     assert captured["state"] is module._worker_state
     assert captured["kwargs"]["tokenizer_model"] == "moonshotai/Kimi-K2.6"
@@ -100,9 +100,7 @@ def test_configure_render_sample_state_does_not_repopulate_renderer(tmp_path, mo
             train_on_what=kwargs["train_on_what"],
         )
 
-    monkeypatch.setattr(
-        module, "populate_render_worker_state", fake_populate_render_worker_state
-    )
+    monkeypatch.setattr(module, "populate_render_worker_state", fake_populate_render_worker_state)
     monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
 
     module._worker_state.clear()
@@ -167,10 +165,7 @@ def test_write_render_samples_captures_token_debug_payload(tmp_path):
         [rendered, extra_rendered],
     )
 
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "render_samples.worker-2.jsonl").read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in (tmp_path / "render_samples.worker-2.jsonl").read_text().splitlines()]
     assert records == [
         {
             "source_jsonl_row_index": 4,
@@ -211,12 +206,8 @@ def test_finalize_render_samples_uploads_worker_jsonl(tmp_path, monkeypatch):
 
 
 def test_finalize_render_samples_enforces_global_limit_round_robin(tmp_path, monkeypatch):
-    (tmp_path / "render_samples.worker-0.jsonl").write_text(
-        '{"worker":0,"seq":0}\n{"worker":0,"seq":1}\n'
-    )
-    (tmp_path / "render_samples.worker-1.jsonl").write_text(
-        '{"worker":1,"seq":0}\n{"worker":1,"seq":1}\n'
-    )
+    (tmp_path / "render_samples.worker-0.jsonl").write_text('{"worker":0,"seq":0}\n{"worker":0,"seq":1}\n')
+    (tmp_path / "render_samples.worker-1.jsonl").write_text('{"worker":1,"seq":0}\n{"worker":1,"seq":1}\n')
     uploaded: dict[str, bytes] = {}
     monkeypatch.setattr(
         module.fileio,
@@ -232,9 +223,7 @@ def test_finalize_render_samples_enforces_global_limit_round_robin(tmp_path, mon
 
     assert uploaded == {
         "gs://bucket/job/render_samples.jsonl": (
-            b'{"worker":0,"seq":0}\n'
-            b'{"worker":1,"seq":0}\n'
-            b'{"worker":0,"seq":1}\n'
+            b'{"worker":0,"seq":0}\n' b'{"worker":1,"seq":0}\n' b'{"worker":0,"seq":1}\n'
         ),
     }
 
@@ -390,7 +379,8 @@ class TestPrepareDatasets:
     def test_no_eval_branch(self, tmp_path, monkeypatch):
         path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(5)])
         monkeypatch.setattr(
-            module, "_render_one_worker",
+            module,
+            "_render_one_worker",
             lambda r: f"d-{r['messages'][0]['content']}",
         )
 
@@ -410,7 +400,8 @@ class TestPrepareDatasets:
         train = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(5)])
         eval_path = _write_jsonl_at(tmp_path / "eval.jsonl", [_row(100 + i) for i in range(3)])
         monkeypatch.setattr(
-            module, "_render_one_worker",
+            module,
+            "_render_one_worker",
             lambda r: f"d-{r['messages'][0]['content']}",
         )
 
@@ -424,7 +415,8 @@ class TestPrepareDatasets:
         # 20 rows, 10% ratio capped at max_eval_seqs=3 → 2 eval, 18 train.
         path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(20)])
         monkeypatch.setattr(
-            module, "_render_one_worker",
+            module,
+            "_render_one_worker",
             lambda r: f"d-{r['messages'][0]['content']}",
         )
 
@@ -458,7 +450,8 @@ class TestPrepareDatasets:
     def test_auto_carveout_uses_cfg_seed(self, tmp_path, monkeypatch):
         path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(20)])
         monkeypatch.setattr(
-            module, "_render_one_worker",
+            module,
+            "_render_one_worker",
             lambda r: f"d-{r['messages'][0]['content']}",
         )
 
@@ -485,3 +478,23 @@ class TestPrepareDatasets:
         assert eval_data == []
         assert len(train_ds) == 1
         assert "too small for auto carve-out" in caplog.text
+
+
+def test_cmek_user_metadata_is_reserved_and_lora_only(tmp_path):
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        lora_rank=8,
+        cmek_output_model_resource="models/output-model",
+    )
+    assert module._cmek_user_metadata(cfg) == {
+        "fireworks_cmek_resource": "models/output-model",
+    }
+
+    cfg.lora_rank = 0
+    with pytest.raises(ValueError, match="lora_rank > 0"):
+        module._cmek_user_metadata(cfg)
+
+    cfg.lora_rank = 8
+    cfg.serverless = True
+    with pytest.raises(ValueError, match="dedicated"):
+        module._cmek_user_metadata(cfg)

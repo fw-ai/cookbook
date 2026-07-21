@@ -12,6 +12,22 @@ The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/ch
 
 Periodic mid-training saves are usually `resumable=True, promotable=False`. The final save is `resumable=True, promotable=True`. RL weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves.
 
+### Managed SFT CMEK outputs
+
+For a CMEK-enabled account, the managed dedicated SFT V2 LoRA path associates
+the output model resource with the training client internally. The trainer then
+encrypts both DCP resume checkpoints and PEFT sampler checkpoints before direct
+GCS upload. The trainer uploads encrypted `.metadata`/`config.json` readiness
+objects only after all ciphertext payloads are present; the control plane lists
+only those completed artifacts, restricts encrypted DCP resume to the same
+managed job, and promotes PEFT ciphertext without rewriting it. This path does
+not use the serverless trainer pool or regional fast-checkpoint storage.
+
+`cmek_output_model_resource` and the reserved Tinker metadata key
+`fireworks_cmek_resource` are control-plane contracts, not user configuration.
+Do not set or copy them into standalone recipes. CMEK full-parameter SFT output
+is not supported by this path.
+
 ## `dataloader.json`
 
 Written to `{log_path}/dataloader.json`. Single int per checkpoint name:

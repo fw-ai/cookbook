@@ -1,917 +1,576 @@
-"""Unit tests for training.utils.rl.async_train.run_async_rl_loop.
-
-Exercises the per-run API: rows fan out to N rollout runs, the
-GroupAssembler joins them by row id, and the loop trains on assembled
-PromptGroups.  No GPU / network / fireworks SDK required.
-"""
+"""Acceptance tests for the batch-native asynchronous RL coordinator."""
 
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+from collections.abc import Awaitable, Callable, Iterable
 
 import pytest
 
-from training.utils.rl.async_train import (
-    RowRequest,
-    _StalenessController,
-    run_async_rl_loop,
+from training.utils.rl.async_rl.errors import (
+    CircuitBreakerConfig,
+    CircuitBreakerTripped,
+    ErrorClassification,
+    ErrorDisposition,
+    RecoverableCircuitBreaker,
+    classify_rollout_error,
 )
+from training.utils.rl.async_rl import (
+    AsyncRLCoordinator,
+    OptimizerBatch,
+    RolloutRow,
+    run_async_rl_lifecycle,
+)
+from training.utils.rl.async_rl.batch import balanced_chunk_targets
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 
 
-def _run(coro):
-    return asyncio.run(coro)
-
-
-def _sample(reward: float = 0.0) -> RolloutSample:
-    """Minimal valid RolloutSample for loop-level tests."""
-    return RolloutSample(
-        tokens=[1, 2],
-        logprobs=[0.0, -0.1],
-        loss_mask=[0, 1],
-        reward=reward,
-    )
+def _run(awaitable):
+    return asyncio.run(awaitable)
 
 
 def _rollout_run(reward: float = 0.0) -> RolloutRun:
-    return RolloutRun(segments=[_sample(reward)])
+    return RolloutRun(
+        segments=[
+            RolloutSample(
+                tokens=[1, 2],
+                logprobs=[0.0, -0.1],
+                loss_mask=[0, 1],
+                reward=reward,
+            )
+        ]
+    )
 
 
-def _passthrough_advantages(rewards):
-    """REINFORCE-style: raw reward as advantage.  Safe on N=1 groups."""
+def _passthrough_advantages(rewards: list[float]) -> list[float]:
     return list(rewards)
+
+
+class SamplingRequestError(RuntimeError):
+    """Shape of the SDK terminal sampling error across supported SDK versions."""
+
+    __module__ = "fireworks.training.sdk.sampling_observability"
+
+    def __init__(
+        self,
+        *,
+        attempts: int,
+        final_status: int | None = None,
+        final_error_kind: str | None = None,
+    ) -> None:
+        super().__init__("sampling failed")
+        self.attempts = attempts
+        self.final_status = final_status
+        self.final_error_kind = final_error_kind
+
+
+class DeploymentSamplerTimeoutError(SamplingRequestError):
+    __module__ = "fireworks.training.sdk.sampling_observability"
 
 
 def _row(
     row_id: int,
     *,
-    reward: float = 0.0,
-    fail_indices: tuple[int, ...] = (),
-    on_resolved=None,
-    row_meta=None,
-) -> RowRequest:
-    """Build a RowRequest whose run_factory returns a fresh rollout run
-    per sub_index (or ``None`` for indices in ``fail_indices``)."""
+    reward: float | None = None,
+    run_factory: Callable[[int], Awaitable[RolloutRun | None]] | None = None,
+    on_resolved: Callable[[str], None] | None = None,
+) -> RolloutRow:
+    if run_factory is None:
 
-    async def factory(sub_index: int):
-        if sub_index in fail_indices:
-            return None
-        return _rollout_run(reward=reward)
+        async def run_factory(_sub_index: int) -> RolloutRun:
+            return _rollout_run(float(row_id) if reward is None else reward)
 
-    return RowRequest(
+    return RolloutRow(
         row_id=row_id,
-        run_factory=factory,
-        row_meta=row_meta,
+        run_factory=run_factory,
         on_resolved=on_resolved,
     )
 
 
-def _noop_train_step(step, groups, extra):
-    return step + 1, {}
+def _coordinator(
+    rows: Iterable[RolloutRow],
+    **overrides,
+) -> AsyncRLCoordinator:
+    options = {
+        "rows": rows,
+        "completions_per_prompt": 1,
+        "prompt_groups_per_step": 2,
+        "training_chunks_per_step": 2,
+        "max_head_off_policy_versions": 0,
+        "advantage_fn": _passthrough_advantages,
+    }
+    options.update(overrides)
+    return AsyncRLCoordinator(**options)
 
 
-def _train_step_fn(fn):
-    def train_step(
-        step: int,
-        groups,
-        extra,
-        run_optimizer_step: bool,
-    ):
-        return fn(step, groups, extra)
-
-    return train_step
+async def _wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("condition was not reached")
+        await asyncio.sleep(0)
 
 
-# Sensible defaults for tests that don't care about the new knobs.
-_DEFAULTS = dict(
-    completions_per_prompt=1,
-    advantage_fn=_passthrough_advantages,
-)
+async def _consume(batch: OptimizerBatch) -> list[int]:
+    sizes = []
+    async for chunk in batch.chunks():
+        sizes.append(chunk.actual_groups)
+    return sizes
 
 
-class TestArgValidation:
-    def test_rejects_invalid_prompt_groups_per_step(self):
-        with pytest.raises(ValueError, match="prompt_groups_per_step"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=0,
-                max_head_offpolicy_versions=0,
-                **_DEFAULTS,
-            ))
+class TestValidation:
+    @pytest.mark.parametrize(
+        ("overrides", "match"),
+        [
+            ({"completions_per_prompt": 0}, "completions_per_prompt"),
+            ({"prompt_groups_per_step": 0}, "prompt_groups_per_step"),
+            ({"training_chunks_per_step": 0}, "training_chunks_per_step"),
+            ({"max_head_off_policy_versions": -1}, "max_head_off_policy_versions"),
+            ({"global_step": -1}, "global_step"),
+            ({"max_concurrent_rollouts": 0}, "max_concurrent_rollouts"),
+            (
+                {
+                    "completions_per_prompt": 2,
+                    "max_concurrent_rollouts": 1,
+                },
+                "whole row",
+            ),
+            ({"completions_per_prompt": 2, "min_group_size": 3}, "min_group_size"),
+        ],
+    )
+    def test_coordinator_rejects_invalid_values(self, overrides, match):
+        with pytest.raises((TypeError, ValueError), match=match):
+            _coordinator([], **overrides)
 
-    def test_rejects_invalid_completions_per_prompt(self):
-        with pytest.raises(ValueError, match="completions_per_prompt"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=1,
-                max_head_offpolicy_versions=0,
-                completions_per_prompt=0,
-                advantage_fn=_passthrough_advantages,
-            ))
+    def test_balanced_chunk_targets_are_fixed_and_nonempty(self):
+        assert balanced_chunk_targets(8, 3) == (3, 3, 2)
+        assert balanced_chunk_targets(2, 8) == (1, 1)
 
-    def test_rejects_min_group_size_above_completions(self):
-        with pytest.raises(ValueError, match="min_group_size"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=1,
-                max_head_offpolicy_versions=0,
-                completions_per_prompt=2,
-                min_group_size=3,
-                advantage_fn=_passthrough_advantages,
-            ))
+    def test_row_id_must_be_hashable(self):
+        with pytest.raises(TypeError, match="hashable"):
+            RolloutRow(row_id=[], run_factory=lambda _index: None)  # type: ignore[arg-type]
 
-    def test_rejects_negative_offpolicy(self):
-        with pytest.raises(ValueError, match="max_head_offpolicy_versions"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=1,
-                max_head_offpolicy_versions=-1,
-                **_DEFAULTS,
-            ))
 
-    def test_rejects_zero_weight_sync_interval(self):
-        with pytest.raises(ValueError, match="weight_sync_interval"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=1,
-                max_head_offpolicy_versions=0,
-                weight_sync_interval=0,
-                **_DEFAULTS,
-            ))
+def test_completion_refills_during_physical_training() -> None:
+    """A retired rollout immediately refills capacity while trainer is blocked."""
 
-    def test_rejects_zero_max_concurrent(self):
-        with pytest.raises(ValueError, match="max_concurrent"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=1,
-                max_head_offpolicy_versions=0,
-                max_concurrent=0,
-                **_DEFAULTS,
-            ))
+    async def scenario() -> None:
+        releases = {index: asyncio.Event() for index in range(1, 5)}
+        submitted = {index: asyncio.Event() for index in range(5)}
 
-    def test_rejects_weight_sync_interval_gt_offpolicy_plus_one(self):
-        """``weight_sync_interval > 1`` + ``max_head_offpolicy_versions == 0``
-        is mathematically guaranteed to stall."""
-        with pytest.raises(ValueError, match="max_head_offpolicy_versions"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=1,
-                max_head_offpolicy_versions=0,
-                weight_sync_interval=5,
-                **_DEFAULTS,
-            ))
+        def make_row(index: int) -> RolloutRow:
+            async def factory(_sub_index: int) -> RolloutRun:
+                submitted[index].set()
+                if index:
+                    await releases[index].wait()
+                return _rollout_run(float(index))
 
-    def test_accepts_balanced_weight_sync_interval_and_offpolicy(self):
-        result = _run(run_async_rl_loop(
-            rows=iter([]),
-            train_step_fn=_train_step_fn(_noop_train_step),
+            return _row(index, run_factory=factory)
+
+        coordinator = _coordinator(
+            (make_row(index) for index in range(5)),
+            max_head_off_policy_versions=2,
+            max_concurrent_rollouts=3,
+        )
+        train_started = threading.Event()
+        train_release = threading.Event()
+
+        def blocked_train() -> None:
+            train_started.set()
+            assert train_release.wait(timeout=2.0)
+
+        async with coordinator:
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+            assert batch is not None
+            chunks = batch.chunks()
+            first = await anext(chunks)
+            assert first.index == 0
+
+            await asyncio.wait_for(submitted[3].wait(), timeout=1.0)
+            trainer = asyncio.create_task(
+                coordinator.run_blocking(
+                    "train_chunk",
+                    blocked_train,
+                    optimizer_batch=batch,
+                )
+            )
+            await _wait_until(train_started.is_set)
+            releases[1].set()
+
+            await asyncio.wait_for(submitted[4].wait(), timeout=1.0)
+            snapshot = coordinator.snapshot()
+            assert snapshot["completion_refills_during_train"] >= 1
+
+            train_release.set()
+            await trainer
+            await chunks.aclose()
+
+    _run(scenario())
+
+
+def test_staleness_gate_blocks_refill_until_publish() -> None:
+    """Strict on-policy admission never submits batch 2 before version 1."""
+
+    async def scenario() -> None:
+        third_submitted = asyncio.Event()
+
+        def make_row(index: int) -> RolloutRow:
+            async def factory(_sub_index: int) -> RolloutRun:
+                if index == 2:
+                    third_submitted.set()
+                return _rollout_run(float(index))
+
+            return _row(index, run_factory=factory)
+
+        coordinator = _coordinator(
+            (make_row(index) for index in range(3)),
+            max_concurrent_rollouts=3,
+        )
+        async with coordinator:
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+            assert batch is not None
+            assert await _consume(batch) == [1, 1]
+
+            await asyncio.sleep(0)
+            before = coordinator.snapshot()
+            assert before["rows_submitted"] == 2
+            assert before["staleness_capacity"] == 0
+            assert not third_submitted.is_set()
+
+            metrics = coordinator.publish(batch)
+            await asyncio.wait_for(third_submitted.wait(), timeout=1.0)
+            assert metrics["ctx/current_version"] == 0
+            assert coordinator.published_version == 1
+
+    _run(scenario())
+
+
+def test_later_chunk_queues_while_first_chunk_trains() -> None:
+    async def scenario() -> None:
+        second_release = asyncio.Event()
+
+        async def second_factory(_sub_index: int) -> RolloutRun:
+            await second_release.wait()
+            return _rollout_run(1.0)
+
+        coordinator = _coordinator([_row(0), _row(1, run_factory=second_factory)])
+        train_started = threading.Event()
+        train_release = threading.Event()
+
+        def blocked_train() -> None:
+            train_started.set()
+            assert train_release.wait(timeout=2.0)
+
+        async with coordinator:
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+            assert batch is not None
+            chunks = batch.chunks()
+            await anext(chunks)
+            trainer = asyncio.create_task(
+                coordinator.run_blocking(
+                    "train_chunk",
+                    blocked_train,
+                    optimizer_batch=batch,
+                )
+            )
+            await _wait_until(train_started.is_set)
+            second_release.set()
+            await _wait_until(lambda: batch.ready_chunks == 1)
+
+            train_release.set()
+            await trainer
+            assert (await anext(chunks)).index == 1
+            with pytest.raises(StopAsyncIteration):
+                await anext(chunks)
+            metrics = coordinator.publish(batch)
+            assert metrics["async/max_ready_training_chunks_during_train"] == 1
+
+    _run(scenario())
+
+
+def test_one_optimizer_and_hotload_per_full_or_partial_batch() -> None:
+    async def scenario() -> None:
+        coordinator = _coordinator((_row(index) for index in range(5)))
+        calls = {"train": 0, "optimizer": 0, "hotload": 0}
+        batch_shapes = []
+
+        def count(name: str) -> None:
+            calls[name] += 1
+
+        async with coordinator:
+            while (batch := await coordinator.next_batch()) is not None:
+                sizes = []
+                async for chunk in batch.chunks():
+                    sizes.append(chunk.actual_groups)
+                    await coordinator.run_blocking(
+                        "train_chunk",
+                        count,
+                        "train",
+                        optimizer_batch=batch,
+                    )
+                await coordinator.run_blocking(
+                    "optimizer",
+                    count,
+                    "optimizer",
+                    optimizer_batch=batch,
+                )
+                await coordinator.run_blocking(
+                    "weight_sync",
+                    count,
+                    "hotload",
+                    optimizer_batch=batch,
+                )
+                batch_shapes.append((sizes, int(batch.partial)))
+                coordinator.publish(batch)
+
+            assert calls == {"train": 5, "optimizer": 3, "hotload": 3}
+            assert batch_shapes == [([1, 1], 0), ([1, 1], 0), ([1], 1)]
+            assert coordinator.global_step == 3
+
+    _run(scenario())
+
+
+def test_train_wall_time_ends_with_optimizer() -> None:
+    async def scenario() -> None:
+        coordinator = _coordinator(
+            [_row(0)],
             prompt_groups_per_step=1,
-            max_head_offpolicy_versions=2,
-            weight_sync_interval=3,
-            **_DEFAULTS,
-        ))
-        assert isinstance(result, int)
-
-    def test_pipeline_chunks_are_independent_of_staleness_budget(self):
-        result = _run(run_async_rl_loop(
-            rows=iter([]),
-            train_step_fn=_train_step_fn(_noop_train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=1,
-            pipeline_chunks_per_step=2,
-            **_DEFAULTS,
-        ))
-        assert isinstance(result, int)
-
-    def test_rejects_invalid_pipeline_chunks_per_step(self):
-        with pytest.raises(ValueError, match="pipeline_chunks_per_step"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=2,
-                max_head_offpolicy_versions=0,
-                pipeline_chunks_per_step=0,
-                **_DEFAULTS,
-            ))
-
-
-class TestStalenessController:
-    def test_capacity_matches_areal_formula(self):
-        # cpp=1 collapses sample-level math to batch/group units, so the
-        # values below double as a reference for the AReaL row-level form.
-        ctl = _StalenessController(
-            batch_size_samples=4,
-            completions_per_prompt=1,
-            max_staleness=1,
-            max_concurrent_samples=3,
+            training_chunks_per_step=1,
         )
-        assert ctl.capacity() == 3
-
-        ctl.submit()
-        ctl.submit()
-        assert ctl.capacity() == 1
-
-        ctl.accept()
-        ctl.accept()
-        assert ctl.capacity() == 3
-
-        ctl.advance_version()
-        assert ctl.capacity() == 3
-
-    def test_reject_frees_running_capacity_without_charging_accepted(self):
-        ctl = _StalenessController(
-            batch_size_samples=2,
-            completions_per_prompt=1,
-            max_staleness=0,
-            max_concurrent_samples=2,
-        )
-        ctl.submit()
-        ctl.submit()
-        assert ctl.capacity() == 0
-
-        ctl.reject("none")
-        assert ctl.accepted_samples == 0
-        assert ctl.sample_fails == 1
-        assert ctl.capacity() == 1
-
-    def test_recovered_version_offsets_prior_accepted_samples(self):
-        ctl = _StalenessController(
-            batch_size_samples=4,
-            completions_per_prompt=1,
-            max_staleness=2,
-            max_concurrent_samples=None,
-            version=5,
-            accepted_samples_offset=5 * 4,
-        )
-
-        assert ctl.staleness_capacity() == 12
-        ctl.advance_version()
-        assert ctl.staleness_capacity() == 16
-
-
-class TestHappyPath:
-    def test_strict_onpolicy_runs_all_steps(self):
-        """budget=0, gpb=2, 4 rows -> 2 training steps."""
-        n_rows = 4
-        calls = []
-
-        def train_step(step, groups, extra, run_optimizer_step):
-            calls.append((
-                step,
-                len(groups),
-                extra.get("async/version_offset_max"),
-                run_optimizer_step,
-                "train/run_optimizer_step" in extra,
-            ))
-            return step + 1, {}
-
-        result = _run(run_async_rl_loop(
-            rows=(_row(i, reward=float(i)) for i in range(n_rows)),
-            train_step_fn=train_step,
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            weight_sync_fn=lambda _step: None,
-            **_DEFAULTS,
-        ))
-        assert result == 2
-        assert len(calls) == 2
-        assert all(offset == 0 for _, _, offset, _, _ in calls)
-        assert all(run_step for _, _, _, run_step, _ in calls)
-        assert not any(in_metrics for _, _, _, _, in_metrics in calls)
-
-    def test_sample_failures_skip_batch_not_charge_gate(self):
-        """Run factory returning None drops the row from training."""
-        n_rows = 6
-        calls = []
-
-        def train_step(step, groups, extra):
-            calls.append(extra["sample_fails"])
-            return step + 1, {}
-
-        # Even rows fail (single sample == row drops).
-        rows = (
-            _row(i, fail_indices=(0,) if i % 2 == 0 else ())
-            for i in range(n_rows)
-        )
-
-        _run(run_async_rl_loop(
-            rows=rows,
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=2,
-            **_DEFAULTS,
-        ))
-        assert any(fails >= 1 for fails in calls)
-
-    def test_filter_drops_exclude_from_buffer(self):
-        """dynamic_filter_fn=False drops groups, doesn't train on them."""
-        n_rows = 6
-
-        def filter_fn(pg):
-            return pg.rewards[0] >= 3.0
-
-        trained_groups = []
-
-        def train_step(step, groups, extra):
-            trained_groups.extend(groups)
-            return step + 1, {}
-
-        _run(run_async_rl_loop(
-            rows=(_row(i, reward=float(i)) for i in range(n_rows)),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=3,
-            max_head_offpolicy_versions=2,
-            dynamic_filter_fn=filter_fn,
-            **_DEFAULTS,
-        ))
-        assert len(trained_groups) == 3
-        assert all(g.rewards[0] >= 3.0 for g in trained_groups)
-
-    def test_iterator_exhausted_flushes_partial_final_step(self):
-        sizes: list[int] = []
-
-        def train_step(step, groups, extra):
-            sizes.append(len(groups))
-            return step + 1, {}
-
-        final_step = _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(5)),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            weight_sync_fn=lambda _step: None,
-            **_DEFAULTS,
-        ))
-        assert sizes == [2, 2, 1]
-        assert final_step == 3
-
-    def test_partial_only_buffer_still_trains(self):
-        sizes: list[int] = []
-
-        def train_step(step, groups, extra):
-            sizes.append(len(groups))
-            return step + 1, {}
-
-        _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(2)),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=4,
-            max_head_offpolicy_versions=0,
-            weight_sync_fn=lambda _step: None,
-            **_DEFAULTS,
-        ))
-        assert sizes == [2]
-
-    def test_pipeline_dispatches_before_global_batch_done(self):
-        calls = []
-        sync_calls = []
-
-        def train_step(step, groups, extra, run_optimizer_step):
-            calls.append((
-                step,
-                len(groups),
-                run_optimizer_step,
-                extra["async/in_flight"],
-                "train/run_optimizer_step" in extra,
-            ))
-            return (step + 1 if run_optimizer_step else step), {}
-
-        def make_row(row_id: int) -> RowRequest:
-            async def factory(_sub_index: int):
-                if row_id >= 2:
-                    await asyncio.sleep(0.05)
-                return _rollout_run(reward=float(row_id))
-
-            return RowRequest(row_id=row_id, run_factory=factory)
-
-        final_step = _run(run_async_rl_loop(
-            rows=(make_row(i) for i in range(4)),
-            train_step_fn=train_step,
-            prompt_groups_per_step=4,
-            max_head_offpolicy_versions=0,
-            pipeline_chunks_per_step=2,
-            weight_sync_fn=sync_calls.append,
-            **_DEFAULTS,
-        ))
-
-        assert final_step == 1
-        assert sync_calls == [1]
-        assert calls[0][0:3] == (0, 2, False)
-        assert calls[1][0:3] == (0, 2, True)
-        assert calls[0][3] > 0
-        assert not any(call[-1] for call in calls)
-
-    def test_post_train_metrics_reports_rollouts_completed_during_train(self):
-        metrics = []
-
-        def train_step(step, _groups, _extra, run_optimizer_step):
-            time.sleep(0.05)
-            return (step + 1 if run_optimizer_step else step), {}
-
-        def make_row(row_id: int) -> RowRequest:
-            async def factory(_sub_index: int):
-                if row_id >= 2:
-                    await asyncio.sleep(0.01)
-                return _rollout_run(reward=float(row_id))
-
-            return RowRequest(row_id=row_id, run_factory=factory)
-
-        final_step = _run(run_async_rl_loop(
-            rows=(make_row(i) for i in range(4)),
-            train_step_fn=train_step,
-            prompt_groups_per_step=4,
-            max_head_offpolicy_versions=0,
-            pipeline_chunks_per_step=2,
-            weight_sync_fn=lambda _step: None,
-            post_train_metrics_fn=metrics.append,
-            **_DEFAULTS,
-        ))
-
-        assert final_step == 1
-        assert metrics[0]["async/in_flight_at_train_start"] == 2
-        assert metrics[0]["async/rollout_tasks_available_during_train"] == 2
-        assert metrics[0]["async/rollout_tasks_completed_during_train"] == 2
-        assert metrics[0]["perf/train_rollout_overlap_completion_ratio"] == 1.0
-
-    def test_pipeline_flushes_final_partial_global_batch(self):
-        calls = []
-
-        def train_step(step, groups, extra, run_optimizer_step):
-            calls.append((
-                len(groups),
-                run_optimizer_step,
-                extra["pipeline/prompt_groups_accumulated"],
-                extra["pipeline/chunks_per_step"],
-            ))
-            return (step + 1 if run_optimizer_step else step), {}
-
-        final_step = _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(3)),
-            train_step_fn=train_step,
-            prompt_groups_per_step=4,
-            max_head_offpolicy_versions=0,
-            pipeline_chunks_per_step=2,
-            weight_sync_fn=lambda _step: None,
-            **_DEFAULTS,
-        ))
-
-        assert final_step == 1
-        assert calls == [(2, False, 2, 2), (1, True, 3, 2)]
-
-    def test_pipeline_reports_actual_chunks_when_request_exceeds_groups(self):
-        calls = []
-
-        def train_step(step, groups, extra, run_optimizer_step):
-            calls.append((
-                len(groups),
-                run_optimizer_step,
-                extra["pipeline/chunk_idx"],
-                extra["pipeline/chunks_per_step"],
-                extra["pipeline/configured_chunks_per_step"],
-                extra["pipeline/requested_chunks_per_step"],
-            ))
-            return (step + 1 if run_optimizer_step else step), {}
-
-        final_step = _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(2)),
-            train_step_fn=train_step,
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            pipeline_chunks_per_step=8,
-            weight_sync_fn=lambda _step: None,
-            **_DEFAULTS,
-        ))
-
-        assert final_step == 1
-        assert calls == [
-            (1, False, 1, 2, 2, 8),
-            (1, True, 2, 2, 2, 8),
-        ]
-
-    def test_stalled_gate_probes_but_does_not_drain_remaining_iterator(self):
-        """A stalled strict-on-policy loop may probe one row to distinguish
-        starvation from exhaustion, but must not drain the lazy iterator."""
-
-        class Rows:
-            def __init__(self):
-                self.consumed = 0
-
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                self.consumed += 1
-                if self.consumed > 4:
-                    raise StopIteration
-                return _row(self.consumed)
-
-        rows = Rows()
-        with pytest.raises(RuntimeError, match="scheduler starvation"):
-            _run(run_async_rl_loop(
-                rows=rows,
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=2,
-                max_head_offpolicy_versions=0,
-                weight_sync_fn=None,
-                **_DEFAULTS,
-            ))
-        assert rows.consumed == 3
-
-
-class TestVersionTracking:
-    def test_weight_sync_increments_version(self):
-        sync_calls = []
-
-        def weight_sync(step):
-            sync_calls.append(step)
-
-        _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(6)),
-            train_step_fn=_train_step_fn(_noop_train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            weight_sync_fn=weight_sync,
-            weight_sync_interval=1,
-            **_DEFAULTS,
-        ))
-        assert sync_calls == [1, 2, 3]
-
-    def test_weight_sync_interval_skips(self):
-        sync_calls = []
-
-        def weight_sync(step):
-            sync_calls.append(step)
-
-        _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(8)),
-            train_step_fn=_train_step_fn(_noop_train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=2,
-            weight_sync_fn=weight_sync,
-            weight_sync_interval=2,
-            **_DEFAULTS,
-        ))
-        assert sync_calls == [2, 4]
-
-    def test_weight_sync_interval_uses_optimizer_step_versions(self):
-        sync_calls = []
-        versions_at_train = []
-
-        def weight_sync(step):
-            sync_calls.append(step)
-
-        def train_step(step, groups, extra):
-            versions_at_train.append(extra["ctx/current_version"])
-            return step + 1, {}
-
-        result = _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(20)),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=2,
-            weight_sync_fn=weight_sync,
-            weight_sync_interval=2,
-            **_DEFAULTS,
-        ))
-
-        assert result == 10
-        assert sync_calls == [2, 4, 6, 8, 10]
-        assert versions_at_train == [0, 0, 2, 2, 4, 4, 6, 6, 8, 8]
-
-    def test_weight_sync_interval_resume_uses_absolute_versions(self):
-        sync_calls = []
-        versions_at_train = []
-
-        def weight_sync(step):
-            sync_calls.append(step)
-
-        def train_step(step, groups, extra):
-            versions_at_train.append(extra["ctx/current_version"])
-            return step + 1, {}
-
-        result = _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(8)),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=2,
-            weight_sync_fn=weight_sync,
-            weight_sync_interval=2,
-            global_step=20,
-            **_DEFAULTS,
-        ))
-
-        assert result == 24
-        assert sync_calls == [22, 24]
-        assert versions_at_train == [20, 20, 22, 22]
-
-    def test_version_offset_emitted(self):
-        metric_snapshots = []
-
-        def train_step(step, groups, extra):
-            metric_snapshots.append(dict(extra))
-            return step + 1, {}
-
-        _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(4)),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            weight_sync_fn=lambda _step: None,
-            **_DEFAULTS,
-        ))
-        assert len(metric_snapshots) == 2
-        for m in metric_snapshots:
-            assert m["async/version_offset_mean"] == 0
-            assert m["async/version_offset_max"] == 0
-            assert m["async/version_offset_min"] == 0
-
-
-class TestMaxConcurrent:
-    def test_caps_in_flight_even_with_budget(self):
-        """max_concurrent counts in-flight SAMPLES; with cpp=1 the row
-        and sample bookkeeping coincide."""
-        peak_in_flight = [0]
-
-        def train_step(step, groups, extra):
-            peak_in_flight[0] = max(peak_in_flight[0], extra["async/in_flight"])
-            return step + 1, {}
-
-        async def slow_factory(_sub):
-            await asyncio.sleep(0.01)
-            return _rollout_run()
-
-        rows = (
-            RowRequest(row_id=i, run_factory=slow_factory)
-            for i in range(10)
-        )
-
-        _run(run_async_rl_loop(
-            rows=rows,
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=5,
-            max_head_offpolicy_versions=10,
-            max_concurrent=2,
-            **_DEFAULTS,
-        ))
-        assert peak_in_flight[0] <= 2
-
-    def test_caps_in_flight_at_sample_level_with_cpp_gt_1(self):
-        """cpp=4, max_concurrent=8: never more than 8 samples in flight.
-
-        Pins the unit semantic for max_concurrent: it counts samples
-        (LLM calls), not rows.  Each row submits cpp=4 rollout tasks
-        atomically, so under an 8-sample cap at most 2 rows are admitted.
-        """
-        peak_samples = [0]
-
-        async def slow_factory(_sub):
-            await asyncio.sleep(0.005)
-            return _rollout_run()
-
-        def train_step(step, groups, extra):
-            peak_samples[0] = max(peak_samples[0], extra["async/in_flight"])
-            return step + 1, {}
-
-        rows = (
-            RowRequest(row_id=i, run_factory=slow_factory)
-            for i in range(6)
-        )
-
-        _run(run_async_rl_loop(
-            rows=rows,
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=10,
-            completions_per_prompt=4,
-            max_concurrent=8,
-            weight_sync_fn=lambda _step: None,
-            advantage_fn=_passthrough_advantages,
-        ))
-        assert peak_samples[0] <= 8
-
-    def test_rejects_max_concurrent_below_cpp(self):
-        """max_concurrent < cpp would deadlock the gate (can't admit a row)."""
-        with pytest.raises(ValueError, match="max_concurrent"):
-            _run(run_async_rl_loop(
-                rows=iter([]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=1,
-                max_head_offpolicy_versions=2,
-                completions_per_prompt=4,
-                max_concurrent=3,
-                advantage_fn=_passthrough_advantages,
-            ))
-
-
-class TestTaskExceptions:
-    def test_exception_in_sample_propagates(self):
-        """Run-task exceptions abort the run rather than getting silently
-        counted as ``sample_fails``."""
-
-        async def factory(sub_index):
-            raise RuntimeError("boom")
-
-        bad_row = RowRequest(row_id=99, run_factory=factory)
-
-        with pytest.raises(RuntimeError, match="boom"):
-            _run(run_async_rl_loop(
-                rows=iter([_row(0), bad_row, _row(2), _row(3)]),
-                train_step_fn=_train_step_fn(_noop_train_step),
-                prompt_groups_per_step=1,
-                max_head_offpolicy_versions=2,
-                **_DEFAULTS,
-            ))
-
-
-class TestRowResolutionHooks:
-    def test_on_resolved_drives_external_cursor(self):
-        cursor = {"value": 0}
-
-        def make_row(i):
-            return _row(i, on_resolved=lambda _reason, i=i: cursor.update(value=i + 1))
-
-        final_step, final = _run(run_async_rl_loop(
-            rows=(make_row(i) for i in range(3)),
-            train_step_fn=_train_step_fn(_noop_train_step),
-            prompt_groups_per_step=1,
-            max_head_offpolicy_versions=0,
-            weight_sync_fn=lambda _step: None,
-            resolved_rows_fn=lambda: cursor["value"],
-            return_final_stats=True,
-            **_DEFAULTS,
-        ))
-        assert final_step == 3
-        assert final["resolved_rows"] == 3
-
-    def test_final_stats_include_tail_sample_failures(self):
-        """Rows where the only sample fails count as sample_fails in stats."""
-
-        rows = (
-            _row(i, fail_indices=(0,) if i >= 3 else ())
-            for i in range(5)
-        )
-
-        final_step, final = _run(run_async_rl_loop(
-            rows=rows,
-            train_step_fn=_train_step_fn(_noop_train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            weight_sync_fn=lambda _step: None,
-            return_final_stats=True,
-            **_DEFAULTS,
-        ))
-        # Rows 0,1 train as step 1; row 2 trains as a partial step 2.
-        assert final_step == 2
-        assert final["sample_fails"] == 2
-        assert final["total_accepted"] == 3
-        assert final["resolved_rows"] == 5
-
-    def test_filter_drops_recorded_in_final_stats(self):
-        def filter_fn(_pg):
-            return False  # drop everything
-
-        final_step, final = _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(3)),
-            train_step_fn=_train_step_fn(_noop_train_step),
-            prompt_groups_per_step=1,
-            max_head_offpolicy_versions=0,
-            dynamic_filter_fn=filter_fn,
-            return_final_stats=True,
-            **_DEFAULTS,
-        ))
-        assert final_step == 0
-        assert final["filter_drops"] == 3
-        assert final["sample_fails"] == 0
-        assert final["resolved_rows"] == 3
-
-    def test_resolved_rows_offset_applies_to_metrics(self):
-        snapshots = []
-
-        def train_step(step, groups, extra):
-            snapshots.append(dict(extra))
-            return step + 1, {}
-
-        final_step, final = _run(run_async_rl_loop(
-            rows=(_row(i) for i in range(2)),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=1,
-            max_head_offpolicy_versions=1,
-            resolved_rows_offset=10,
-            return_final_stats=True,
-            **_DEFAULTS,
-        ))
-        assert final_step == 2
-        assert [m["resolved_rows"] for m in snapshots] == [12, 12]
-        assert final["resolved_rows"] == 12
-
-
-class TestPerRunFanout:
-    def test_grpo_fanout_assembles_n_runs_per_row(self):
-        """completions_per_prompt=4 with default GRPO advantages: every row
-        produces a 4-run group."""
-        trained_groups = []
-
-        def train_step(step, groups, extra):
-            trained_groups.extend(groups)
-            return step + 1, {}
-
-        # Two rows -> 1 step at gpb=2.  Each row fans out to 4 runs.
-        _run(run_async_rl_loop(
-            rows=iter([_row(0, reward=1.0), _row(1, reward=2.0)]),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            completions_per_prompt=4,
-            weight_sync_fn=lambda _step: None,
-        ))
-        assert len(trained_groups) == 2
-        # Each PromptGroup has 4 datums (one per one-segment run).
-        assert all(len(g.data) == 4 for g in trained_groups)
-
-    def test_multi_segment_run_expands_datums_not_group_rewards(self):
-        trained_groups = []
-
-        async def run_factory(sub_index: int):
-            if sub_index == 0:
-                return RolloutRun(segments=[_sample(1.0), _sample(1.0)])
-            return _rollout_run(0.0)
-
-        def train_step(step, groups, extra):
-            trained_groups.extend(groups)
-            return step + 1, {}
-
-        _run(run_async_rl_loop(
-            rows=iter([RowRequest(row_id=0, run_factory=run_factory)]),
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=1,
-            max_head_offpolicy_versions=0,
-            completions_per_prompt=2,
-            advantage_fn=_passthrough_advantages,
-            weight_sync_fn=lambda _step: None,
-        ))
-
-        assert len(trained_groups) == 1
-        prompt_group = trained_groups[0]
-        assert sorted(prompt_group.rewards) == [0.0, 1.0]
-        assert len(prompt_group.data) == 3
-        assert sorted(prompt_group.advantages) == [0.0, 1.0, 1.0]
-
-    def test_partial_group_emits_when_min_group_size_satisfied(self):
-        """If 1 of 4 runs fails but min_group_size=2, the row still emits."""
-        trained_groups = []
-
-        def train_step(step, groups, extra):
-            trained_groups.extend(groups)
-            return step + 1, {}
-
-        # Fail 2 of 4 runs per row -> 2 surviving runs meets min=2.
-        rows = iter([
-            _row(0, reward=0.5, fail_indices=(0, 2)),
-            _row(1, reward=1.5, fail_indices=(1, 3)),
-        ])
-        _run(run_async_rl_loop(
-            rows=rows,
-            train_step_fn=_train_step_fn(train_step),
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            completions_per_prompt=4,
-            min_group_size=2,
-            weight_sync_fn=lambda _step: None,
-        ))
-        assert len(trained_groups) == 2
-        assert all(len(g.data) == 2 for g in trained_groups)
-
-    def test_row_fully_dropped_when_below_min_group_size(self):
-        """When more runs fail than min_group_size allows, the row drops
-        entirely and counts as sample_fail."""
-        rows = iter([
-            _row(0, fail_indices=(0, 1, 2, 3)),  # all fail
-            _row(1),                              # all succeed
+        async with coordinator:
+            batch = await coordinator.next_batch()
+            assert batch is not None
+            await _consume(batch)
+            await coordinator.run_blocking(
+                "train_chunk",
+                lambda: None,
+                optimizer_batch=batch,
+            )
+            await coordinator.run_blocking(
+                "optimizer",
+                lambda: None,
+                optimizer_batch=batch,
+            )
+            assert batch._train_started_at is not None
+            assert batch._train_finished_at is not None
+            expected = batch._train_finished_at - batch._train_started_at
+
+            await coordinator.run_blocking(
+                "weight_sync",
+                time.sleep,
+                0.01,
+                optimizer_batch=batch,
+            )
+            metrics = coordinator.publish(batch)
+            assert metrics["perf/train_wall_time"] == expected
+
+    _run(scenario())
+
+
+def test_filter_and_failure_metrics_are_batch_scoped() -> None:
+    async def scenario() -> None:
+        async def dropped(_sub_index: int) -> None:
+            return None
+
+        rows = [
+            _row(0),
+            _row(1),
             _row(2),
-        ])
+            _row(3, run_factory=dropped),
+            _row(4),
+            _row(5),
+        ]
+        coordinator = _coordinator(
+            rows,
+            dynamic_filter_fn=lambda group: group.rewards != [1.0],
+        )
+        async with coordinator:
+            first = await coordinator.next_batch()
+            assert first is not None
+            await _consume(first)
+            first_metrics = coordinator.publish(first)
 
-        def train_step(step, groups, extra, run_optimizer_step):
-            return (step + 1 if run_optimizer_step else step), {}
+            second = await coordinator.next_batch()
+            assert second is not None
+            await _consume(second)
+            second_metrics = coordinator.publish(second)
 
-        final_step, final = _run(run_async_rl_loop(
-            rows=rows,
-            train_step_fn=train_step,
-            prompt_groups_per_step=2,
-            max_head_offpolicy_versions=0,
-            completions_per_prompt=4,
-            min_group_size=2,
-            weight_sync_fn=lambda _step: None,
-            return_final_stats=True,
-        ))
-        # Only 2 surviving rows -> 1 step at gpb=2.
-        assert final_step == 1
-        assert final["sample_fails"] == 1
-        assert final["total_accepted"] == 2
+            assert first_metrics["valid_prompt_groups"] == 2
+            assert first_metrics["filter_drops"] == 1
+            assert first_metrics["sample_fails"] == 0
+            assert first_metrics["total_sampled"] == 3
+            assert second_metrics["valid_prompt_groups"] == 2
+            assert second_metrics["filter_drops"] == 0
+            assert second_metrics["sample_fails"] == 1
+            assert second_metrics["total_sampled"] == 3
+
+    _run(scenario())
+
+
+def test_recoverable_rollout_error_drops_and_continues() -> None:
+    async def scenario() -> None:
+        async def timeout(_sub_index: int) -> RolloutRun:
+            raise TimeoutError("transient deployment timeout")
+
+        coordinator = _coordinator(
+            [_row(0, run_factory=timeout), _row(1)],
+            prompt_groups_per_step=1,
+            training_chunks_per_step=1,
+        )
+        async with coordinator:
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+            assert batch is not None
+            assert await _consume(batch) == [1]
+            coordinator.publish(batch)
+            assert await coordinator.next_batch() is None
+            final = coordinator.final_stats()
+            assert final["recoverable_errors"] == 1
+            assert final["sample_fails"] == 1
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SamplingRequestError(
+            attempts=3,
+            final_status=503,
+            final_error_kind="http_status",
+        ),
+        DeploymentSamplerTimeoutError(
+            attempts=3,
+            final_status=504,
+            final_error_kind="timeout",
+        ),
+        SamplingRequestError(
+            attempts=3,
+            final_error_kind="connection",
+        ),
+    ],
+)
+def test_sdk_terminal_sampling_errors_are_recoverable(error: BaseException) -> None:
+    classification = classify_rollout_error(error)
+    assert classification.disposition is ErrorDisposition.RECOVERABLE
+
+
+def test_sdk_terminal_nonretryable_status_is_fatal() -> None:
+    error = SamplingRequestError(
+        attempts=1,
+        final_status=400,
+        final_error_kind="http_status",
+    )
+    classification = classify_rollout_error(error)
+    assert classification.disposition is ErrorDisposition.FATAL
+
+
+def test_unknown_rollout_error_is_fatal() -> None:
+    async def scenario() -> None:
+        async def broken(_sub_index: int) -> RolloutRun:
+            raise RuntimeError("rollout contract bug")
+
+        coordinator = _coordinator(
+            [_row(0, run_factory=broken)],
+            prompt_groups_per_step=1,
+            training_chunks_per_step=1,
+        )
+        async with coordinator:
+            with pytest.raises(RuntimeError, match="contract bug"):
+                await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+
+    _run(scenario())
+
+
+def test_invalid_rollout_return_is_fatal() -> None:
+    async def scenario() -> None:
+        async def invalid(_sub_index: int):
+            return "not-a-rollout-run"
+
+        coordinator = _coordinator(
+            [_row(0, run_factory=invalid)],  # type: ignore[arg-type]
+            prompt_groups_per_step=1,
+            training_chunks_per_step=1,
+            error_classifier=lambda _error: ErrorClassification(
+                ErrorDisposition.RECOVERABLE,
+                "custom_recoverable_label",
+            ),
+        )
+        async with coordinator:
+            with pytest.raises(TypeError, match="must return RolloutRun or None"):
+                await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+
+    _run(scenario())
+
+
+def test_unexpected_rollout_cancellation_is_fatal() -> None:
+    async def scenario() -> None:
+        async def cancelled(_sub_index: int) -> RolloutRun:
+            raise asyncio.CancelledError
+
+        coordinator = _coordinator(
+            [_row(0, run_factory=cancelled)],
+            prompt_groups_per_step=1,
+            training_chunks_per_step=1,
+        )
+        async with coordinator:
+            with pytest.raises(RuntimeError, match="unexpectedly cancelled"):
+                await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+
+    _run(scenario())
+
+
+def test_circuit_breaker_bounds_transient_failures() -> None:
+    breaker = RecoverableCircuitBreaker(
+        CircuitBreakerConfig(
+            max_consecutive_failures=2,
+            rolling_window_size=4,
+            rolling_min_observations=4,
+            max_failure_rate=1.0,
+        )
+    )
+    error = TimeoutError("deployment unavailable")
+    classification = classify_rollout_error(error)
+    assert classification.disposition is ErrorDisposition.RECOVERABLE
+    breaker.record_failure(error, classification)
+    with pytest.raises(CircuitBreakerTripped, match="consecutive_failures"):
+        breaker.record_failure(error, classification)
+
+
+def test_accepted_cursor_is_not_durable_before_publish() -> None:
+    async def scenario() -> None:
+        resolved: list[tuple[int, str]] = []
+        rows = [
+            _row(
+                index,
+                on_resolved=lambda reason, index=index: resolved.append(
+                    (index, reason)
+                ),
+            )
+            for index in range(2)
+        ]
+        coordinator = _coordinator(rows)
+        async with coordinator:
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+            assert batch is not None
+            await _consume(batch)
+            assert resolved == []
+            metrics = coordinator.publish(batch)
+            assert metrics["resolved_rows"] == 2
+            assert resolved == [(0, "accepted"), (1, "accepted")]
+
+    _run(scenario())
+
+
+def test_lifecycle_forwards_post_step_callback() -> None:
+    def callback(_metrics) -> None:
+        pass
+
+    async def training(received):
+        return received
+
+    assert (
+        _run(run_async_rl_lifecycle(training, post_step_metrics_fn=callback))
+        is callback
+    )
