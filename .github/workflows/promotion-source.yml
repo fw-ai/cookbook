@@ -1,0 +1,52 @@
+name: Promotion Source Gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+# This workflow intentionally runs from the trusted base branch and never
+# checks out PR code. It publishes a status on the PR head SHA so repository
+# rules can require one generated promotion path without trusting fork code.
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  source:
+    name: publish promotion-source status
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pull = context.payload.pull_request;
+            const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+            const expectedBranch = "autogen/promote-cookbook-from-fireworks-main";
+            const expectedAuthor = "bot-fireworks-ai";
+            const labels = new Set(pull.labels.map((label) => label.name));
+            const allowed =
+              pull.base.ref === "main" &&
+              pull.head.repo.full_name === expectedRepo &&
+              pull.head.ref === expectedBranch &&
+              pull.user.login === expectedAuthor &&
+              labels.has("autorelease: pending");
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: pull.head.sha,
+              state: allowed ? "success" : "failure",
+              context: "Promotion source gate",
+              description: allowed
+                ? "Generated from reviewed Fireworks staging"
+                : "Public main accepts only the generated cookbook promotion PR",
+              target_url: `${context.serverUrl}/${expectedRepo}/actions/runs/${context.runId}`,
+            });
+
+            if (!allowed) {
+              core.setFailed(
+                `Expected ${expectedAuthor}'s ${expectedRepo}:${expectedBranch} ` +
+                `with autorelease: pending; received ${pull.user.login}'s ` +
+                `${pull.head.repo.full_name}:${pull.head.ref}`
+              );
+            }
