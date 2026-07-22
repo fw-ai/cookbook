@@ -274,7 +274,7 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
                 models = []
                 for m in client.models.list(
                     account_id="fireworks",
-                    filter="supports_serverless=true",
+                    filter='supports_serverless=true AND kind="HF_BASE_MODEL"',
                 ):
                     name = getattr(m, "name", None) or getattr(m, "id", None)
                     if not name:
