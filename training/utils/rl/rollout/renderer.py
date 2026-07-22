@@ -58,7 +58,7 @@ from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 from training.utils.supervised import (
     has_non_text_chunks,
     normalize_messages,
-    _extract_text_token_ids,
+    _extract_text_only_token_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -566,7 +566,7 @@ def _build_multimodal_rollout_sample(
     finish_reason: str,
     text: str,
 ) -> RolloutRun:
-    prompt_text_ids = _extract_text_token_ids(prompt_model_input)
+    prompt_text_ids = _extract_text_only_token_ids(prompt_model_input)
     completion = [int(t) for t in completion_tokens]
     text_tokens = list(prompt_text_ids) + completion
     if len(completion_logprobs) != len(completion):
