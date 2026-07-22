@@ -5,6 +5,6 @@
   "author": { "name": "Fireworks AI" },
   "homepage": "https://docs.fireworks.ai/fine-tuning/agent/use-with-coding-agents",
   "repository": "https://github.com/fw-ai/cookbook",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["fireworks", "fine-tuning", "training", "sft", "dpo", "orpo", "rft", "rl", "firectl"]
 }

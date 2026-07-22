@@ -1,4 +1,0 @@
-interface:
-  display_name: "Customize RL Loss"
-  short_description: "Switch and extend cookbook RL losses"
-  default_prompt: "Use $customize-rl-loss to customize a cookbook RL loss without adding runtime dispatch."

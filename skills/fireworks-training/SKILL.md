@@ -8,7 +8,9 @@ description: >-
   monitoring, checkpoints, deployment, resume, teardown, and troubleshooting.
   Use whenever the user asks to fine-tune, post-train, SFT, DPO, ORPO, RFT, RL,
   distill, train with custom losses or rollouts, deploy a tuned model, resume a
-  training run, or debug Fireworks training.
+  training run, or debug Fireworks training. Also use for implementing or
+  verifying cookbook renderers and for extending custom RL losses; these are
+  progressive references within this single skill, not separate skills.
 ---
 
 # Fireworks training
@@ -194,6 +196,8 @@ This handoff is identical across Claude Code, Cursor, and Codex.
 | IGPO | Not applicable | [`training/recipes/igpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/igpo_loop.py) | `references/sdk/recipes.md` |
 | Distillation | Not applicable | [`training/recipes/distillation_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/distillation_loop.py) | `references/sdk/distillation.md` |
 | Serverless RL example | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/main/training/examples/serverless_rl) | Live serverless docs |
+| Custom RL loss or research algorithm | Not applicable | Fork the closest maintained RL recipe and replace its documented loss call | `references/sdk/rl/custom-loss.md` |
+| New or changed renderer | Not applicable | [`training/renderer/`](https://github.com/fw-ai/cookbook/tree/main/training/renderer) | `references/sdk/renderer.md`, `references/sdk/renderer-verification.md` |
 
 **Cookbook first.** Inspect and fork the closest maintained recipe before
 writing a loop. Change the loss, reward, rollout, data, or config needed by the
@@ -327,6 +331,8 @@ Read only what the task requires:
 | RL built-in/client losses and normalization | `references/sdk/rl/loss-paths.md`, `references/sdk/rl/custom-loss.md`, `references/sdk/rl/gradient-accumulation.md` |
 | Async RL, concurrency, and filtering | `references/sdk/rl/async-rl.md`, `references/sdk/rl/concurrency.md`, `references/sdk/rl/dynamic-filter.md` |
 | Hotload and sampler failures | `references/sdk/rl/hotload.md`, `references/sdk/rl/sampling-timeouts.md` |
+| Renderer implementation and training-token invariants | `references/sdk/renderer.md` |
+| Renderer parity, live probes, and verifier UI | `references/sdk/renderer-verification.md` |
 
 ## Non-negotiables
 

@@ -569,7 +569,8 @@ def main(
             """Run client-side GRPO with PPO clipping, TIS, and optional reference KL.
 
             To switch to built-in PPO or another loss, replace this call rather
-            than adding dispatch. See ``skills/customize-rl-loss/SKILL.md``.
+            than adding dispatch. See
+            ``skills/fireworks-training/references/sdk/rl/custom-loss.md``.
             """
             return policy.forward_backward_custom(
                 data,

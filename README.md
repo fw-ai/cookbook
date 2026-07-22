@@ -38,27 +38,29 @@ npx --yes skills add fw-ai/cookbook -g -s fireworks-training -a cursor -y
 npx --yes skills add fw-ai/cookbook -g -s fireworks-training -a codex -y
 ```
 
-The skill is portable Agent Skills Markdown. Cursor and Codex installation is
-validated with the `skills` CLI; it is not limited to the Claude compact
-interface. `firectl` may still require mutating commands to be run manually in
-the user's terminal when its AI-agent safety guard is active.
+The repository also includes [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json)
+for packaging the same skill as a Codex plugin. The skill is portable Agent
+Skills Markdown; Cursor and Codex installation is validated with the `skills`
+CLI and is not limited to the Claude compact interface. `firectl` may still
+require mutating commands to be run manually in the user's terminal when its
+AI-agent safety guard is active.
 
 ## Repository Structure
 
 `training/` is the primary development surface. `tools/` holds standalone
-customer-facing scripts (public `firectl` workflows). Other top-level
-directories (`integrations/`, `multimedia/`, `archived/`) are kept for backward
-compatibility.
+customer-facing scripts (public `firectl` workflows). Legacy integrations,
+multimedia examples, and earlier cookbook content live under `archived/`.
 
 ```
 training/           Training API recipes, utilities, and examples
   recipes/          Fork-and-customize training loop scripts
   utils/            Shared config, data loading, losses, metrics
   examples/         Worked examples (RL, SFT, DPO, ORPO)
-  verifier/         Renderer correctness validator + live React viewer
+  renderer/         Local renderers and correctness verifier
   tests/            Unit and end-to-end tests
 tools/              Standalone customer scripts (downloadable from GitHub)
-skills/             Agent skills and reference docs
+skills/             One Fireworks training skill and progressive references
+archived/           Legacy integrations, multimedia, and cookbook content
 ```
 
 ## Training skill
