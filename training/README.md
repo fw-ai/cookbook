@@ -169,7 +169,8 @@ It applies to trainer jobs the recipe creates for that run; a pre-created
 The generic GRPO recipes default to `kl_beta=0.001` and provision a reference
 for the direct client loss. Set `kl_beta=0` to skip it. To switch to the trainer
 built-in or another research loss, follow
-[`skills/customize-rl-loss/SKILL.md`](../skills/customize-rl-loss/SKILL.md).
+[`custom-loss.md`](../skills/fireworks-training/references/rl-custom-loss.md)
+in the canonical training skill.
 
 **DPO / ORPO** -- also requires:
 

@@ -16,6 +16,7 @@ The archived content is organized by its original use cases and purpose:
 2. **Learning-focused examples** in [`./learn`](./learn) — tutorials on audio, batch API, fine-tuning, function calling, RAG, VLMs, video, and more.
 3. **Showcase projects** in [`./showcase`](./showcase) — community-driven projects demonstrating creative uses of Fireworks.
 4. **Integration examples** in [`./integrations`](./integrations) — partner integrations with MongoDB, Portkey, SageMaker, Arcade.dev, Klavis, and AgentCore.
-5. **Experiment notebooks** in [`./experiments`](./experiments)
-6. **Evaluation & Docker recipes** in [`./recipes`](./recipes)
-7. **Legacy training recipes** in [`./old_cookbook`](./old_cookbook)
+5. **Multimedia examples** in [`./multimedia`](./multimedia) — legacy video and vision-language-model notebooks.
+6. **Experiment notebooks** in [`./experiments`](./experiments)
+7. **Evaluation & Docker recipes** in [`./recipes`](./recipes)
+8. **Legacy training recipes** in [`./old_cookbook`](./old_cookbook)

@@ -65,7 +65,7 @@ Whichever RFT route you use, the reward can come from three places:
 
 ## Default workflow: fork a cookbook recipe
 
-> **Cookbook implementation:** use the exact recipe and SDK references routed from the root `SKILL.md`. This file explains managed-versus-Training-API choices; `references/sdk/` and `training/` contain the implementation depth.
+> **Cookbook implementation:** use the exact recipe and SDK references routed from the root `SKILL.md`. This file explains managed-versus-Training-API choices; `references/` and `training/` contain the implementation depth.
 
 **Approval gate still applies.** Training API cookbook recipes can create trainers, rollout deployments, checkpoints, promoted models, and paid inference. Before running a recipe or any create/promote/deploy action, show the account, recipe, dataset, full resolved trainer and deployment config, cost drivers, evaluation plan, and teardown plan; get explicit approval for this run. A deployment or materially expanded sweep gets its own approval.
 

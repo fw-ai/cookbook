@@ -46,7 +46,7 @@ deployment returns any metrics.
    `perf/trainer_wait_for_sampler_time` is high and sampler queue metrics are
    high, the sampler is the slow side. If `perf/sampler_wait_for_trainer_time`
    is high, the trainer or off-policy gate is more likely limiting progress.
-   See [`async-rl.md#diagnosing-waits`](async-rl.md#diagnosing-waits).
+   See [`rl-async.md#diagnosing-waits`](rl-async.md#diagnosing-waits).
 
 ## What not to infer
 
@@ -117,6 +117,6 @@ collapsing to the last traceback line, so a failed stage stays attributable
 
 ## Related
 
-- [`async-rl.md`](async-rl.md): async RL overlap, waits, and off-policy gate.
-- [`concurrency.md`](concurrency.md): sync RL sampler concurrency control.
-- [`hotload.md`](hotload.md): sampler hotload and deployment readiness.
+- [`rl-async.md`](rl-async.md): async RL overlap, waits, and off-policy gate.
+- [`rl-concurrency.md`](rl-concurrency.md): sync RL sampler concurrency control.
+- [`rl-hotload.md`](rl-hotload.md): sampler hotload and deployment readiness.

@@ -2,7 +2,7 @@
 
 > ⚠️ **EXPERIMENTAL — `async_rl_loop` is under active development.**
 > Config/API may change without backward-compat shims.  See
-> [`/skills/fireworks-training/references/sdk/rl/async-rl.md`](/skills/fireworks-training/references/sdk/rl/async-rl.md).
+> [`/skills/fireworks-training/references/rl-async.md`](/skills/fireworks-training/references/rl-async.md).
 
 The recipe is intentionally minimal-surface: **the only thing you customize
 is the rollout function** (`rollout_fn(sample_prompt) -> RolloutRun`).
@@ -25,7 +25,7 @@ Each example exposes `rollout_fn_factory(setup) -> rollout_fn` (signature
 that wires the dataset and factory into `recipes.async_rl_loop.main`.
 
 For the API contract and recipe knobs, see
-[`/skills/fireworks-training/references/sdk/rl/async-rl.md`](/skills/fireworks-training/references/sdk/rl/async-rl.md).
+[`/skills/fireworks-training/references/rl-async.md`](/skills/fireworks-training/references/rl-async.md).
 
 The `train.py` files use placeholder model and tokenizer names — replace with
 your own model and tokenizer identifiers before running.

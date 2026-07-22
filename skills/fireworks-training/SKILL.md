@@ -8,7 +8,9 @@ description: >-
   monitoring, checkpoints, deployment, resume, teardown, and troubleshooting.
   Use whenever the user asks to fine-tune, post-train, SFT, DPO, ORPO, RFT, RL,
   distill, train with custom losses or rollouts, deploy a tuned model, resume a
-  training run, or debug Fireworks training.
+  training run, or debug Fireworks training. Also use for implementing or
+  verifying cookbook renderers and for extending custom RL losses; these are
+  progressive references within this single skill, not separate skills.
 ---
 
 # Fireworks training
@@ -186,14 +188,16 @@ This handoff is identical across Claude Code, Cursor, and Codex.
 | Managed DPO | `firectl dpo-job create --loss-method DPO` | Not applicable | `references/choose-method.md` |
 | Managed ORPO | `firectl dpo-job create --loss-method ORPO` | Not applicable | `references/choose-method.md` |
 | Managed RFT | `firectl rftj create --evaluator <resource>` | Not applicable | `references/preference-data-and-evaluators.md`, `references/training-api.md` |
-| Training API SFT | Not applicable | [`training/recipes/sft_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/sft_loop.py) | `references/sdk/recipes.md` |
-| Training API DPO | Not applicable | [`training/recipes/dpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/dpo_loop.py) | `references/sdk/recipes.md` |
-| Training API ORPO | Not applicable | [`training/recipes/orpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/orpo_loop.py) | `references/sdk/recipes.md` |
-| Training API RL | Not applicable | [`training/recipes/rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/rl_loop.py) | `references/training-api.md`, `references/sdk/rl/loss-paths.md` |
-| Async or agentic RL | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/async_rl_loop.py) | `references/sdk/rl/async-rl.md` |
-| IGPO | Not applicable | [`training/recipes/igpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/igpo_loop.py) | `references/sdk/recipes.md` |
-| Distillation | Not applicable | [`training/recipes/distillation_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/distillation_loop.py) | `references/sdk/distillation.md` |
+| Training API SFT | Not applicable | [`training/recipes/sft_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/sft_loop.py) | `references/sdk-recipes.md` |
+| Training API DPO | Not applicable | [`training/recipes/dpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/dpo_loop.py) | `references/sdk-recipes.md` |
+| Training API ORPO | Not applicable | [`training/recipes/orpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/orpo_loop.py) | `references/sdk-recipes.md` |
+| Training API RL | Not applicable | [`training/recipes/rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/rl_loop.py) | `references/training-api.md`, `references/rl-loss-paths.md` |
+| Async or agentic RL | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/async_rl_loop.py) | `references/rl-async.md` |
+| IGPO | Not applicable | [`training/recipes/igpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/igpo_loop.py) | `references/sdk-recipes.md` |
+| Distillation | Not applicable | [`training/recipes/distillation_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/distillation_loop.py) | `references/sdk-distillation.md` |
 | Serverless RL example | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/main/training/examples/serverless_rl) | Live serverless docs |
+| Custom RL loss or research algorithm | Not applicable | Fork the closest maintained RL recipe and replace its documented loss call | `references/rl-custom-loss.md` |
+| New or changed renderer | Not applicable | [`training/renderer/`](https://github.com/fw-ai/cookbook/tree/main/training/renderer) | `references/renderer.md`, `references/renderer-verification.md` |
 
 **Cookbook first.** Inspect and fork the closest maintained recipe before
 writing a loop. Change the loss, reward, rollout, data, or config needed by the
@@ -319,14 +323,16 @@ Read only what the task requires:
 | Deployment, evaluation, and teardown | `references/deploy-and-troubleshoot.md` |
 | Failure classification and escalation | `references/error-reference.md` |
 | Resume, idempotency, progress, and final report | `references/run-state-and-reporting.md` |
-| Cookbook setup and examples | `references/sdk/setup.md`, `references/sdk/examples.md` |
-| Cookbook recipes | `references/sdk/recipes.md` |
-| Training API shapes and migration | `references/sdk/shapes.md`, `references/sdk/migrate.md` |
-| Checkpoints and tools | `references/sdk/checkpoints.md`, `references/sdk/tools.md` |
-| Distillation | `references/sdk/distillation.md` |
-| RL built-in/client losses and normalization | `references/sdk/rl/loss-paths.md`, `references/sdk/rl/custom-loss.md`, `references/sdk/rl/gradient-accumulation.md` |
-| Async RL, concurrency, and filtering | `references/sdk/rl/async-rl.md`, `references/sdk/rl/concurrency.md`, `references/sdk/rl/dynamic-filter.md` |
-| Hotload and sampler failures | `references/sdk/rl/hotload.md`, `references/sdk/rl/sampling-timeouts.md` |
+| Cookbook setup and examples | `references/sdk-setup.md`, `references/sdk-examples.md` |
+| Cookbook recipes | `references/sdk-recipes.md` |
+| Training API shapes and migration | `references/sdk-shapes.md`, `references/sdk-migrate.md` |
+| Checkpoints and tools | `references/sdk-checkpoints.md`, `references/sdk-tools.md` |
+| Distillation | `references/sdk-distillation.md` |
+| RL built-in/client losses and normalization | `references/rl-loss-paths.md`, `references/rl-custom-loss.md`, `references/rl-gradient-accumulation.md` |
+| Async RL, concurrency, and filtering | `references/rl-async.md`, `references/rl-concurrency.md`, `references/rl-dynamic-filter.md` |
+| Hotload and sampler failures | `references/rl-hotload.md`, `references/rl-sampling-timeouts.md` |
+| Renderer implementation and training-token invariants | `references/renderer.md` |
+| Renderer parity, live probes, and verifier UI | `references/renderer-verification.md` |
 
 ## Non-negotiables
 

@@ -1,6 +1,6 @@
 # Error reference: running jobs, deploying, and debugging
 
-*One place for "my training job failed / is stuck / errored" and "how do I debug it." Source of truth for volatile behavior is the live docs; this is durable field-observed triage. Deep Training API debugging lives under `references/sdk/` in this skill.*
+*One place for "my training job failed / is stuck / errored" and "how do I debug it." Source of truth for volatile behavior is the live docs; this is durable field-observed triage. Deep Training API debugging lives under `references/` in this skill.*
 
 ## First question, always: platform-side or user-side?
 

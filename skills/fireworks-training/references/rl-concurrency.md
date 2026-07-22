@@ -36,6 +36,6 @@ Unbounded fan-out is not supported by the recipe path. If you truly want no SDK-
 
 ## Related
 
-- Weight sync cadence (when the sampler sees new weights) → [`hotload.md`](hotload.md)
+- Weight sync cadence (when the sampler sees new weights) → [`rl-hotload.md`](rl-hotload.md)
 - `prefill_queue_target` is the same signal the deployment exposes to telemetry; if you're tuning it, watch the deployment's server metrics for prefill queue time in the same range.
 - Controller implementations: `fireworks.training.sdk.deployment.AdaptiveConcurrencyController` and `FixedConcurrencyController` (installed under `src/fireworks/training/sdk/deployment.py`).

@@ -6,14 +6,12 @@ description: "Overview of integrating [Partner Name] with Fireworks for enhanced
 ``` Delete this
 Instructions for Fireworks Integration Partners:
 
-If you’re a company interested in creating an integration with Fireworks, please follow these steps:
+This is an archived template retained as a writing aid. The cookbook now
+focuses on Training API recipes and no longer accepts new integration folders.
 
-1. Clone the Fireworks Repository: Clone the [Fireworks Cookbook repository](https://github.com/fireworks-ai/cookbook) and navigate to the `integrations` folder.
-2. Create a Folder: If one doesn’t already exist, create a folder named after your company or tool under the `integrations` directory.
-3. Include Notebooks or Projects: Add any relevant examples, code notebooks, or projects that demonstrate the integration.
-4. Use the Template: Copy this template into a new `.mdx` file within your folder and fill out each section as it applies to your integration.
-5. Submit as a Pull Request: Once complete, submit your folder, examples, and the filled-out template as a PR to the Fireworks Cookbook repository.
-6. Review Process: A member of the Fireworks Developer Relations or Engineering team will review your submission, and pull relevant content into the official Fireworks documentation repository.
+1. Publish relevant examples, notebooks, or projects in your own public repository.
+2. Use the sections below to document the integration and its dependencies.
+3. Follow the current [Fireworks integration process](https://docs.fireworks.ai/ecosystem/integrations_process) and send the public materials to Developer Relations for review.
 -->
 ```
 

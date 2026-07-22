@@ -7,9 +7,11 @@ a probe CLI, a batch triage runner, a single-file React viewer that
 highlights every audit-table row by provenance and inspection-rule
 match, and a YAML-driven rule engine.
 
-> **How to use it**: see [`cookbook/skills/verifier/SKILL.md`](../../../skills/verifier/SKILL.md).
+> **How to use it**: see the canonical training skill's
+> [renderer-verification reference](../../../skills/fireworks-training/references/renderer-verification.md).
 >
-> **Implementing a new renderer to validate**: see [`cookbook/skills/renderer/SKILL.md`](../../../skills/renderer/SKILL.md).
+> **Implementing a new renderer to validate**: see the
+> [renderer implementation reference](../../../skills/fireworks-training/references/renderer.md).
 
 ## Live UI
 

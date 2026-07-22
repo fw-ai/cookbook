@@ -11,7 +11,6 @@ from pathlib import Path
 SKILLS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SKILLS_DIR.parent
 CANONICAL_SKILL = "fireworks-training"
-SKIP_SKILLS = {"customize-rl-loss", "renderer", "verifier"}
 
 REF_RE = re.compile(r"references/[\w./-]+\.md")
 LINK_RE = re.compile(r"\]\((?!https?://|mailto:)([^)#]+\.md)(?:#[^)]+)?\)")
@@ -65,7 +64,20 @@ def check_skill(skill_dir: Path, errors: list[str]) -> None:
     skill_md = skill_dir / "SKILL.md"
     check_frontmatter(skill_md, errors)
     root_text = skill_md.read_text(encoding="utf-8")
-    reference_files = sorted((skill_dir / "references").rglob("*.md"))
+    references_dir = skill_dir / "references"
+    reference_files = sorted(references_dir.rglob("*.md"))
+
+    for ref_file in reference_files:
+        if ref_file.parent != references_dir:
+            errors.append(
+                "SKILL.md: references must stay one level deep: "
+                f"`{ref_file.relative_to(skill_dir)}`"
+            )
+
+    if (skill_dir / ".claude-plugin").exists():
+        errors.append(
+            "fireworks-training: plugin metadata belongs at the repository root"
+        )
 
     mentioned = set(REF_RE.findall(root_text))
     for ref in sorted(mentioned):
@@ -252,24 +264,35 @@ def check_training_contract(
         errors.append(
             ".claude-plugin/marketplace.json: plugin must be `fireworks-training`"
         )
-    elif plugins[0].get("source") != "./skills/fireworks-training":
+    elif plugins[0].get("source") != "./":
         errors.append(
-            ".claude-plugin/marketplace.json: plugin source must be canonical skill"
+            ".claude-plugin/marketplace.json: plugin source must be repository root"
         )
 
-    plugin_path = skill_dir / ".claude-plugin/plugin.json"
+    plugin_path = REPO_ROOT / ".claude-plugin/plugin.json"
     if not plugin_path.exists():
-        errors.append("fireworks-training/.claude-plugin/plugin.json: missing")
+        errors.append(".claude-plugin/plugin.json: missing")
     else:
         plugin = json.loads(plugin_path.read_text(encoding="utf-8"))
         if plugin.get("name") != CANONICAL_SKILL:
             errors.append("plugin.json: name must be `fireworks-training`")
+
+    codex_plugin_path = REPO_ROOT / ".codex-plugin/plugin.json"
+    if not codex_plugin_path.exists():
+        errors.append(".codex-plugin/plugin.json: missing")
+    else:
+        codex_plugin = json.loads(codex_plugin_path.read_text(encoding="utf-8"))
+        if codex_plugin.get("name") != "cookbook":
+            errors.append("Codex plugin name must match the `cookbook` plugin root")
+        if codex_plugin.get("skills") != "./skills/":
+            errors.append("Codex plugin must package the canonical `./skills/` tree")
 
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     for marker in (
         "claude plugin install fireworks-training@fw-ai-cookbook",
         "-a cursor -y",
         "-a codex -y",
+        ".codex-plugin/plugin.json",
         "AI-agent safety guard",
     ):
         if marker not in readme:
@@ -319,9 +342,6 @@ def main() -> int:
     active = []
     for skill_md in skill_mds:
         slug = skill_md.parent.name
-        if slug in SKIP_SKILLS:
-            print(f"skip (out of scope): {slug}")
-            continue
         active.append(slug)
         if slug != CANONICAL_SKILL:
             errors.append(f"unexpected installable skill: `{slug}`")

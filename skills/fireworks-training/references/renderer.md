@@ -1,4 +1,4 @@
-# Implementing a new renderer — Skill
+# Implementing a new renderer
 
 A renderer translates a list of `Message` objects into a flat token
 sequence the trainer optimizes against. It owns the chat template, the
@@ -6,10 +6,10 @@ stop tokens, and the loss-weight assignment. The cookbook's
 `tinker_cookbook.renderers.Renderer` base class is the contract; the
 concrete renderers live in `training/renderer/`.
 
-Use this skill when adding support for a new model family, or when a
-PR touches a renderer's chat template, stop semantics, or weight
-masking. Always pair this skill with [`skills/verifier/SKILL.md`](../verifier/SKILL.md)
-— the verifier is the validation half of the loop.
+Use this reference when adding support for a new model family, or when a PR
+touches a renderer's chat template, stop semantics, or weight masking. Always
+pair it with [renderer verification](renderer-verification.md), which is the
+validation half of the loop.
 
 ## 1. Contract — four methods
 
@@ -96,14 +96,16 @@ Three live conventions:
    `parametrize` case for your renderer + tokenizer. Cookbook CI runs
    this on every PR; passing means the renderer agrees with
    `tokenizer.apply_chat_template` byte-for-byte.
-5. **Smoke-test live in the GUI.** From the workspace root run
-   `./run.sh`, pick your renderer, type a chat, click `Run probe`.
-   The amber-flagged tokens are inspection points; hover for reasons.
+5. **Smoke-test live in the GUI.** From the repository root run
+   `FIREWORKS_API_KEY=... python -m training.renderer.verifier.serve --port 8765`,
+   open <http://localhost:8765/>, pick the renderer, type a chat, and select
+   `Run probe`. The amber-flagged tokens are inspection points; hover for
+   reasons.
 6. **Author a corpus and run triage.** Cover the edge cases that
-   exercise the renderer's surface (empty assistant, multi-turn,
-   tool-call, long content, system-only). Then
-   `./triage.sh <renderer> <tokenizer> ./my-prompts.json` —
-   pre-flight + every case stacked in the GUI.
+   exercise the renderer's surface (empty assistant, multi-turn, tool-call,
+   long content, system-only). Then run the batch triage module described in
+   [renderer verification](renderer-verification.md) and load its session JSON
+   in the GUI.
 
 ## 5. Common gotchas
 
@@ -128,9 +130,8 @@ Three live conventions:
 
 ## 6. See also
 
-- [`skills/verifier/SKILL.md`](../verifier/SKILL.md) — how to validate
-  the renderer against the live Fireworks gateway + upstream HF chat
-  template.
+- [`renderer-verification.md`](renderer-verification.md) — how to validate the
+  renderer against the live Fireworks gateway and upstream HF chat template.
 - `training/renderer/glm5.py`, `training/renderer/minimax_m2.py`,
   `training/renderer/gemma4.py` — concrete implementations covering
   next-role-tag stop, EOS-stop, and multimodal respectively.

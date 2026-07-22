@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "fireworks-training",
-      "source": "./skills/fireworks-training",
+      "source": "./",
       "description": "Managed SFT/DPO/ORPO/RFT and Training API serverless or dedicated workflows from one coding-agent skill."
     }
   ]
