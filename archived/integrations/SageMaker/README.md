@@ -7,7 +7,7 @@ For a broader integration guide, see the Fireworks documentation here: [Firework
 ### Directory layout
 
 ```text
-integrations/SageMaker/
+archived/integrations/SageMaker/
   ├─ README.md                      # This document
   ├─ env_setup.sh                   # One-click local environment setup script
   ├─ deployment_scripts/
@@ -46,7 +46,7 @@ integrations/SageMaker/
 Use the helper script to prepare a local Python environment for running the deploy/test scripts:
 
 ```bash
-cd integrations/SageMaker
+cd archived/integrations/SageMaker
 bash env_setup.sh
 # then activate when needed
 source .venv/bin/activate
@@ -54,7 +54,7 @@ source .venv/bin/activate
 
 What the script does:
 - Installs `uv` if not already available (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
-- Creates a virtual environment `.venv` with Python 3.12 in `integrations/SageMaker/`.
+- Creates a virtual environment `.venv` with Python 3.12 in `archived/integrations/SageMaker/`.
 - Activates the venv and installs `sagemaker` and `boto3`.
 
 ### Usage (deploy)
@@ -62,7 +62,7 @@ What the script does:
 Multi-GPU, replicated (fixed 1 GPU per replica):
 
 ```bash
-uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_replicated.py \
+uv run archived/integrations/SageMaker/deployment_scripts/deploy_multi_gpu_replicated.py \
   --s3-model-path s3://[BUCKET_NAME]/[PATH] \
   --ecr-image-uri [YOUR_AWS_ACCOUNT_ID].dkr.ecr.[YOUR_REGION].amazonaws.com/[IMAGE]:[TAG] \
   --sagemaker-role-arn arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME] \
@@ -73,7 +73,7 @@ uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_replicated.py 
 Multi-GPU, sharded (k GPUs per replica):
 
 ```bash
-uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_sharded.py \
+uv run archived/integrations/SageMaker/deployment_scripts/deploy_multi_gpu_sharded.py \
   --s3-model-path s3://[BUCKET_NAME]/[PATH] \
   --ecr-image-uri [YOUR_AWS_ACCOUNT_ID].dkr.ecr.[YOUR_REGION].amazonaws.com/[IMAGE]:[TAG] \
   --sagemaker-role-arn arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME] \
@@ -85,7 +85,7 @@ uv run integrations/SageMaker/deployment_scripts/deploy_multi_gpu_sharded.py \
 Multi-GPU, sharded with speculative decoding (using draft model):
 
 ```bash
-uv run integrations/SageMaker/deployment_scripts/deploy_spec_decode.py \
+uv run archived/integrations/SageMaker/deployment_scripts/deploy_spec_decode.py \
   --s3-model-path s3://[BUCKET_NAME]/[PATH] \
   --ecr-image-uri [YOUR_AWS_ACCOUNT_ID].dkr.ecr.[YOUR_REGION].amazonaws.com/[IMAGE]:[TAG] \
   --sagemaker-role-arn arn:aws:iam::[YOUR_AWS_ACCOUNT_ID]:role/[ROLE_NAME] \
@@ -108,7 +108,7 @@ Notes:
 ### Usage (test)
 
 ```bash
-uv run integrations/SageMaker/testing_scripts/test_endpoint.py \
+uv run archived/integrations/SageMaker/testing_scripts/test_endpoint.py \
   --endpoint-name [YOUR_ENDPOINT_NAME] \
   --region [YOUR_REGION]
 ```
@@ -116,5 +116,4 @@ uv run integrations/SageMaker/testing_scripts/test_endpoint.py \
 ### Learn more
 
 For end‑to‑end guidance, visit the Fireworks documentation: [Fireworks × SageMaker Integration](https://fireworks.ai/docs/ecosystem/integrations/sagemaker).
-
 

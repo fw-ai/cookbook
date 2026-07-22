@@ -269,8 +269,8 @@ replace behavior logprobs in PPO or TIS.
   rollout
 - `training/examples/rl/multi_turn_message_in/` — multi-turn message rollout
 - `training/examples/rl/coding_agent/` — black-box coding-agent trajectory
-- [`hotload.md`](hotload.md) — sampler weight transfer
-- [`sampling-timeouts.md`](sampling-timeouts.md) — sampler timeout diagnosis
-- [`gradient-accumulation.md`](gradient-accumulation.md) — optimizer gradient
+- [`rl-hotload.md`](rl-hotload.md) — sampler weight transfer
+- [`rl-sampling-timeouts.md`](rl-sampling-timeouts.md) — sampler timeout diagnosis
+- [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md) — optimizer gradient
   normalization
-- [`dynamic-filter.md`](dynamic-filter.md) — prompt-group filtering
+- [`rl-dynamic-filter.md`](rl-dynamic-filter.md) — prompt-group filtering

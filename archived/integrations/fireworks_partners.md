@@ -16,7 +16,7 @@ Please feel free to contribute!
 
 ## How to Contribute an Integration
 
-Interested in contributing an integration? We encourage partners and the community to share their integration examples. Please follow the [Contribution Guide](../Contribution.md) for details on how to submit an integration.
+Interested in contributing an integration? Contact Fireworks Developer Relations using the current process in the [Fireworks documentation](https://docs.fireworks.ai/ecosystem/integrations_process).
 
 Please be sure to also submit the summary information for the table above in the form of: 
 

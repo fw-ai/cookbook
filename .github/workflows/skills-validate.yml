@@ -9,6 +9,7 @@ on:
     paths:
       - "skills/**"
       - ".claude-plugin/**"
+      - ".codex-plugin/**"
       - "training/recipes/**"
       - "training/examples/serverless_rl/**"
   push:
@@ -16,6 +17,7 @@ on:
     paths:
       - "skills/**"
       - ".claude-plugin/**"
+      - ".codex-plugin/**"
       - "training/recipes/**"
       - "training/examples/serverless_rl/**"
   workflow_dispatch:

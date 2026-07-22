@@ -185,7 +185,7 @@ Agent-assisted debugging: first search the Fireworks training cookbook skill for
 
 Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>` or `checkpoint "<name>" not found in GCS`.
 
-1. **First, check the SDK version matches the cookbook's pin** (see the [common workflow](../../../SKILL.md#common-workflow)).
+1. **First, check the SDK version matches the cookbook's pin** (see the [common workflow](../SKILL.md#common-workflow)).
 2. **Check if it's a retention-expired trainer.** `list_checkpoints` / `promote_checkpoint` returning `NOT_FOUND` > 30 days after delete is expected — the row is gone and the checkpoints in GCS have been GC'd too.
 3. **If the error shows expected snapshot `S` but a different current deployment snapshot:** use [Runtime hotload mismatch or stale deployment attachment](#runtime-hotload-mismatch-or-stale-deployment-attachment).
 4. **If the trainer is alive or within retention:** most remaining causes are a `PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up on a `--skip-validations` trainer or a pre-validation run. Ask:

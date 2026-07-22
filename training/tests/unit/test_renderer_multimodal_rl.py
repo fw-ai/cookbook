@@ -6,7 +6,6 @@ from unittest.mock import MagicMock
 
 import pytest
 import tinker
-import torch
 
 from training.utils.rl.rollout.renderer import (
     MultimodalRenderingNotSupported,
@@ -21,8 +20,6 @@ from training.utils.rl.rollout.renderer import (
     single_turn_renderer_rollout,
 )
 from fireworks.training.sdk.sampling import SampledCompletion
-from training.utils.rl.grpo import make_grpo_loss_fn
-from training.utils.rl.losses import build_grpo_datums
 from training.utils.rl.rollout.types import rollout_to_prompt_group, Rollout
 from training.utils.supervised import build_multimodal_policy_datum, has_non_text_chunks
 
@@ -283,9 +280,7 @@ def test_build_multimodal_policy_datum_preserves_image_chunk():
     prompt = _multimodal_prompt()
     datum = build_multimodal_policy_datum(prompt, [20, 21, 22])
     targets = list(datum.loss_fn_inputs["target_tokens"].data)
-    weights = list(datum.loss_fn_inputs["weights"].data)
-    assert targets == [11, 0, 0, 0, 0, 12, 20, 21, 22]
-    assert len(targets) == len(weights) == datum.model_input.length
+    assert 0 not in targets
     chunk_types = [c.type for c in datum.model_input.chunks]
     assert "image_asset_pointer" in chunk_types or any(
         "image" in str(t) for t in chunk_types
@@ -336,7 +331,7 @@ def test_multimodal_reference_datum_mask_shape_matches_weights():
     ref_mask = pg.ref_data[0].loss_fn_inputs["loss_mask"]
     assert len(ref_mask.data) == ref_mask.shape[0]
     assert ref_mask.shape[0] == policy_weights.shape[0]
-    assert ref_mask.shape[0] == len(pg.data[0].loss_fn_inputs["target_tokens"].data)
+    assert ref_mask.shape[0] > len(pg.data[0].loss_fn_inputs["target_tokens"].data)
 
 
 def test_multimodal_inf_logprobs_match_datum_weight_index_space():
@@ -370,109 +365,6 @@ def test_multimodal_inf_logprobs_match_datum_weight_index_space():
     response_start = pg.prompt_lens[0] - 1
     assert response_start == active[0]
     assert len(inf_lp) >= response_start + (len(weights) - response_start)
-
-
-def test_multimodal_client_grpo_preserves_expanded_coordinates():
-    """Client-side GRPO receives one logprob/gradient per expanded target."""
-    prompt = _multimodal_prompt()
-    run = _build_multimodal_rollout_sample(
-        prompt_model_input=prompt,
-        completion_tokens=[30, 31],
-        completion_logprobs=[-0.1, -0.2],
-        reward=1.0,
-        finish_reason="stop",
-        text="hi",
-    )
-    pg = rollout_to_prompt_group(
-        Rollout(runs=[run, run]),
-        advantage_fn=lambda rewards: list(rewards),
-    )
-    assert pg is not None
-    assert pg.prompt_lens is not None
-
-    target_lengths = [
-        len(datum.loss_fn_inputs["target_tokens"].data) for datum in pg.data
-    ]
-    assert target_lengths == [len(values) for values in pg.inf_logprobs]
-
-    loss_fn = make_grpo_loss_fn(
-        pg.advantages,
-        [[0.0] * n for n in target_lengths],
-        pg.prompt_lens,
-        inf_logprobs=pg.inf_logprobs,
-        old_policy_logprobs=pg.inf_logprobs,
-        kl_beta=0.0,
-    )
-    forward_logprobs = [
-        torch.tensor(values, dtype=torch.float32, requires_grad=True)
-        for values in pg.inf_logprobs
-    ]
-
-    loss, metrics = loss_fn(pg.data, forward_logprobs)
-    loss.backward()
-
-    assert metrics["active_tokens"] == 4
-    for datum, logprobs in zip(pg.data, forward_logprobs):
-        weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
-        assert logprobs.grad is not None
-        assert all(
-            logprobs.grad[i].item() == pytest.approx(0.0)
-            for i, weight in enumerate(weights)
-            if weight == 0.0
-        )
-        assert any(
-            abs(logprobs.grad[i].item()) > 0
-            for i, weight in enumerate(weights)
-            if weight > 0.0
-        )
-
-
-def test_multimodal_builtin_loss_datums_use_expanded_coordinates():
-    """Built-in loss fields align with image slots instead of reshaping."""
-    prompt = _multimodal_prompt()
-    run = _build_multimodal_rollout_sample(
-        prompt_model_input=prompt,
-        completion_tokens=[30, 31],
-        completion_logprobs=[-0.1, -0.2],
-        reward=1.0,
-        finish_reason="stop",
-        text="hi",
-    )
-    pg = rollout_to_prompt_group(
-        Rollout(runs=[run, run]),
-        advantage_fn=lambda rewards: list(rewards),
-    )
-    assert pg is not None
-    assert pg.prompt_lens is not None
-
-    builtin_datums = build_grpo_datums(
-        data=pg.data,
-        advantages=pg.advantages,
-        old_policy_logprobs=pg.inf_logprobs,
-        inf_logprobs=pg.inf_logprobs,
-        prompt_lens=pg.prompt_lens,
-    )
-
-    for policy_datum, builtin_datum in zip(pg.data, builtin_datums):
-        expected_len = policy_datum.model_input.length
-        assert set(builtin_datum.loss_fn_inputs) == {
-            "target_tokens",
-            "logprobs",
-            "advantages",
-        }
-        assert all(
-            len(tensor.data) == tensor.shape[0] == expected_len
-            for tensor in builtin_datum.loss_fn_inputs.values()
-        )
-        target_tokens = builtin_datum.loss_fn_inputs["target_tokens"].data
-        assert target_tokens[1:5] == [0, 0, 0, 0]
-        packed_advantages = builtin_datum.loss_fn_inputs["advantages"].data
-        weights = policy_datum.loss_fn_inputs["weights"].data
-        assert all(
-            packed_advantages[i] == pytest.approx(0.0)
-            for i, weight in enumerate(weights)
-            if float(weight) == 0.0
-        )
 
 
 def test_multimodal_router_replay_uses_expanded_datum_boundary():

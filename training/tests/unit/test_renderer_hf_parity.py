@@ -199,7 +199,7 @@ _CASES: list[_Case] = [
             "renderer emits an extra '\\n' after <think> in the generation "
             "suffix — surfaced by the empirical sweep against "
             "accounts/fireworks/models/minimax-m2p7. "
-            "See workspace_batching/renderer-verifier-findings.md."
+            "See skills/fireworks-training/references/renderer-verification.md."
         ),
     ),
 ]

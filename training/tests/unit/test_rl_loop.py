@@ -34,7 +34,7 @@ def test_main_has_direct_client_grpo_customization_boundary() -> None:
     assert "raw_inf_logprobs=raw_inf_lp" in source
     assert "To switch to built-in PPO or another loss" in source
     assert "adding dispatch" in source
-    assert "skills/customize-rl-loss/SKILL.md" in source
+    assert "skills/fireworks-training/references/rl-custom-loss.md" in source
     assert "build_loss_fn" not in source
     assert "loss_path" not in source
 

@@ -1,4 +1,4 @@
-# Renderer Verifier — Skill
+# Verifying a renderer
 
 Validate that a cookbook renderer produces the same tokens the live
 Fireworks gateway emits, and that loss weights are consistent with the
@@ -7,8 +7,7 @@ inspection happens in a local React GUI seeded by a Python probe.
 
 ## 0. Pre-requisites
 
-- Cookbook checked out at `~/workspace_batching/cookbook` (or adapt the
-  paths in the workspace runners).
+- Cookbook checked out locally, with commands run from its repository root.
 - A dev `FIREWORKS_API_KEY` exported in your shell. None of the runners
   carry the key any more — they error out clean if it's not set.
 - `HF_TOKEN` exported if the tokenizer you intend to load is gated /
@@ -96,7 +95,7 @@ stack with delete buttons. Good for ad-hoc questions ("what does this
 specific chat render to?").
 
 ```bash
-./run.sh
+python -m training.renderer.verifier.serve --port 8765
 # open http://localhost:8765/
 ```
 
@@ -125,13 +124,22 @@ Schema (each entry is one probe input):
 
 Optional per-case keys: `tools`, `renderer_config`.
 
+The triage preflight itself sends a one-token paid inference ping before its
+internal prompt. Obtain the user's confirmation before launching this command.
+
 To run:
 
 ```bash
-./triage.sh <renderer> <tokenizer-model> <prompts.json>
-# e.g.:
-./triage.sh glm5  zai-org/GLM-5.1  ./my-prompts.json
-./triage.sh qwen3 Qwen/Qwen3-8B    ./my-prompts.json
+python -m training.renderer.verifier.triage \
+  --renderer <renderer> \
+  --tokenizer-model <tokenizer-model> \
+  --model <accounts/fireworks/models/model-id> \
+  --prompts <prompts.json> \
+  --output /tmp/renderer-session.json
+
+python -m training.renderer.verifier.serve \
+  --port 8765 \
+  --session-file /tmp/renderer-session.json
 ```
 
 ## 4. Pre-flight (the runners do this for you)
@@ -204,15 +212,17 @@ $EDITOR cookbook/training/renderer/verifier/rules/inspect_rules.yaml
 # 2. Pick one of:
 
 #    Interactive — single GUI, type prompts.
-./run.sh
+python -m training.renderer.verifier.serve --port 8765
 
 #    Batch — pre-flight + corpus + GUI auto-seeded.
-./triage.sh glm5  zai-org/GLM-5.1  ./my-prompts.json
-./triage.sh qwen3 Qwen/Qwen3-8B    ./my-prompts.json
-
-#    One-shot smoke checks (advisory only):
-./run-bug-check.sh           # MiniMax newline bug repro
-./run-bug-glm5-think.sh      # GLM5 weight-rule hand-scan
+python -m training.renderer.verifier.triage \
+  --renderer glm5 \
+  --tokenizer-model zai-org/GLM-5.1 \
+  --model accounts/fireworks/models/glm-5p1 \
+  --prompts ./my-prompts.json \
+  --output /tmp/renderer-session.json
+python -m training.renderer.verifier.serve \
+  --session-file /tmp/renderer-session.json
 
 # 3. Stop with Ctrl-C.
 ```
@@ -223,7 +233,7 @@ Layout (everything under `cookbook/training/renderer/verifier/`):
 
 ```
 training/renderer/verifier/
-├── SKILL.md                       this document
+├── README.md                      runtime overview
 ├── cli.py                         python -m training.renderer.verifier render | inspect
 ├── serve.py                       python -m training.renderer.verifier.serve
 ├── triage.py                      python -m training.renderer.verifier.triage
@@ -239,9 +249,6 @@ training/renderer/verifier/
     └── index.html                 React GUI (single-file, CDN-hosted)
 ```
 
-Workspace-root runners (never committed): `run.sh`, `triage.sh`,
-`run-bug-*.sh`.
-
 ## 8. Author a prompt corpus
 
 ```bash
@@ -253,7 +260,12 @@ cat > my-prompts.json <<'EOF'
 }
 EOF
 
-./triage.sh glm5 zai-org/GLM-5.1 ./my-prompts.json
+python -m training.renderer.verifier.triage \
+  --renderer glm5 \
+  --tokenizer-model zai-org/GLM-5.1 \
+  --model accounts/fireworks/models/glm-5p1 \
+  --prompts ./my-prompts.json \
+  --output /tmp/renderer-session.json
 ```
 
 ## 9. Add a new rule

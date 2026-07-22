@@ -127,7 +127,7 @@ An absolute score means little without the before/after delta. Always compare th
 
 ## Troubleshooting a failed or stuck job
 
-Full field-observed error table, platform-vs-user triage, and debug steps are in [`error-reference.md`](error-reference.md). Deep Training API debugging lives in `references/sdk/` within this skill.
+Full field-observed error table, platform-vs-user triage, and debug steps are in [`error-reference.md`](error-reference.md). Deep Training API debugging lives in `references/` within this skill.
 
 ## Critical rules
 

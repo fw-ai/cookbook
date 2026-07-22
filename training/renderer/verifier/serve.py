@@ -90,8 +90,8 @@ import training.renderer  # noqa: F401, E402 — side-effect: register_renderer 
 # Why static: the Fireworks Model proto exposes ``huggingface_files``
 # (uploaded blobs) but not a canonical HF repo id, and there is no
 # registry-side metadata linking a renderer to its tokenizer. Edit
-# this dict when adding a renderer; ``skills/verifier/SKILL.md`` is
-# the user-facing version of the same map.
+# this dict when adding a renderer; the canonical training skill's
+# ``references/renderer-verification.md`` is the user-facing guide.
 RENDERER_TOKENIZER_DEFAULTS: dict[str, str | None] = {
     # tinker_cookbook built-ins (see tinker_cookbook.renderers.get_renderer)
     "role_colon":                  None,
@@ -274,7 +274,7 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
                 models = []
                 for m in client.models.list(
                     account_id="fireworks",
-                    filter="supports_serverless=true",
+                    filter='supports_serverless=true AND kind="HF_BASE_MODEL"',
                 ):
                     name = getattr(m, "name", None) or getattr(m, "id", None)
                     if not name:

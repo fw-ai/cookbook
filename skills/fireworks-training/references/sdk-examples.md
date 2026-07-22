@@ -30,4 +30,4 @@ Every example pulls `FIREWORKS_API_KEY` from the env (or `.env`). If an example 
 
 ## When the example isn't quite right
 
-Fork the recipe instead — see [`recipes.md`](recipes.md). The example is just a thin wrapper around the recipe's `Config`.
+Fork the recipe instead — see [`sdk-recipes.md`](sdk-recipes.md). The example is just a thin wrapper around the recipe's `Config`.
