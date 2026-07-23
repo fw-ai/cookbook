@@ -7,7 +7,6 @@ import logging
 import math
 import os
 import threading
-from math import comb
 from numbers import Integral, Real
 from typing import Any
 
@@ -40,8 +39,8 @@ ASYNC_RL_WANDB_METRIC_STEPS: _MetricSteps = {
     "ctx/*": "rollout/step",
     "batch/*": "rollout/step",
     "async/*": "rollout/step",
-    "pipeline/*": "rollout/step",
-    "version/*": "rollout/step",
+    "producer/event": None,
+    "producer/*": "producer/event",
 }
 
 
@@ -128,32 +127,6 @@ def setup_wandb(
         _define_wandb_metrics(wandb, metric_steps or _DEFAULT_WANDB_METRIC_STEPS)
         logger.info("WandB: %s", wandb.run.url)
     return True
-
-
-def compute_pass_at_k(
-    reward_groups: list[list[float]],
-    k_values: list[int] | None = None,
-) -> dict[str, float]:
-    """Compute pass@k from grouped reward samples.
-
-    Each inner list contains per-sample rewards for one prompt group.
-    A sample is "correct" if its reward > 0.5.
-    """
-    if k_values is None:
-        k_values = [1]
-    results: dict[str, float] = {}
-    for k in k_values:
-        pass_rates: list[float] = []
-        for group_rewards in reward_groups:
-            n = len(group_rewards)
-            c = sum(1 for r in group_rewards if r > 0.5)
-            if n < k:
-                continue
-            denom = comb(n, k)
-            pass_rates.append(1.0 - comb(n - c, k) / denom if denom > 0 else 0.0)
-        if pass_rates:
-            results[f"rollout/pass@{k}"] = sum(pass_rates) / len(pass_rates)
-    return results
 
 
 def wandb_log(metrics: dict[str, Any], step: int | None = None) -> None:

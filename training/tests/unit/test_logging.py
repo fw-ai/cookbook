@@ -239,3 +239,11 @@ def test_sync_and_async_recipes_use_the_shared_metrics_entrypoint():
 
     assert rl_loop.log_metrics is logging_utils.log_metrics
     assert async_rl_loop.log_metrics is logging_utils.log_metrics
+
+
+def test_async_producer_metrics_use_their_own_event_axis():
+    assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["producer/event"] is None
+    assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["producer/*"] == "producer/event"
+    assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["async/*"] == "rollout/step"
+    assert "pipeline/*" not in logging_utils.ASYNC_RL_WANDB_METRIC_STEPS
+    assert "version/*" not in logging_utils.ASYNC_RL_WANDB_METRIC_STEPS

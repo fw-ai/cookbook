@@ -17,9 +17,7 @@ __all__ = [
     "TrainStepFns",
     "run_rl_loop",
     # Metrics helpers
-    "add_response_length_stats",
     "add_train_perf_metrics",
-    "build_loop_metrics",
     "total_target_tokens",
     # IGPO
     "IGPOTurnScorer",
@@ -64,10 +62,8 @@ from training.utils.rl.train import (
 )
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.metrics import (
-    build_loop_metrics,
     total_target_tokens,
     add_train_perf_metrics,
-    add_response_length_stats,
 )
 from training.utils.rl.router_replay import build_r3_routing_matrices
 from training.utils.rl.tis import TISConfig

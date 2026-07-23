@@ -80,6 +80,25 @@ class TestGRPOMetrics:
         assert metrics["inference_diff"] == pytest.approx(diff.abs().mean().item())
         assert metrics["inference_kld"] == pytest.approx(expected_kld)
 
+    def test_omits_raw_inference_metrics_when_sampler_does_not_provide_them(self):
+        pi_vals = [-1.0, -1.2]
+        pi = torch.tensor(pi_vals, requires_grad=True)
+        fn = make_grpo_loss_fn(
+            advantages=[1.0],
+            ref_logprobs=[],
+            prompt_len=1,
+            inf_logprobs=[pi_vals],
+            old_policy_logprobs=[pi_vals],
+            kl_beta=0.0,
+            raw_inf_logprobs=[[]],
+        )
+
+        _, metrics = fn([], [pi])
+
+        assert "raw_inference_logprob_coverage" not in metrics
+        assert "inference_diff" not in metrics
+        assert "inference_kld" not in metrics
+
     def test_raw_inference_logprobs_do_not_change_loss_or_gradient(self):
         pi_vals = [-1.0, -1.2]
 

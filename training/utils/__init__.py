@@ -62,7 +62,6 @@ __all__ = [
     "StepCallback",
     "WandBConfig",
     "compute_advantages",
-    "compute_pass_at_k",
     "CursorDataLoader",
     "CursorItem",
     "read_api_extra_headers_env",
@@ -145,7 +144,6 @@ from training.utils.dataloader import CursorDataLoader, CursorItem
 from training.utils.dataloader_cursor import RawRowCursor
 from training.utils.infra import read_api_extra_headers_env
 from training.utils.logging import (
-    compute_pass_at_k,
     log_metrics,
     log_metrics_json,
     setup_wandb,

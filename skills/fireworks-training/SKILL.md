@@ -369,6 +369,7 @@ Read only what the task requires:
 | Distillation | `references/sdk-distillation.md` |
 | RL built-in/client losses and normalization | `references/rl-loss-paths.md`, `references/rl-custom-loss.md`, `references/rl-gradient-accumulation.md` |
 | Async RL, concurrency, and filtering | `references/rl-async.md`, `references/rl-concurrency.md`, `references/rl-dynamic-filter.md` |
+| Read async RL producer, overlap, gate, and refill metrics | `references/async-rl-metrics.md` |
 | Hotload and sampler failures | `references/rl-hotload.md`, `references/rl-sampling-timeouts.md` |
 | Renderer implementation and training-token invariants | `references/renderer.md` |
 | Renderer parity, live probes, and verifier UI | `references/renderer-verification.md` |

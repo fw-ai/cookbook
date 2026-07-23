@@ -69,6 +69,7 @@ from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
+    AsyncRLTelemetry,
     PostStepMetricsFn,
     TrainingChunk,
     RolloutRow,
@@ -76,10 +77,6 @@ from training.utils.rl.async_rl import (
 )
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
-from training.utils.rl.metrics import (
-    build_accumulated_async_loop_stats,
-    compute_step_metrics,
-)
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
@@ -313,7 +310,10 @@ def main(
             "completions_per_prompt": cfg.completions_per_prompt,
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
+            "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
             "pipeline_chunks_per_step": cfg.pipeline_chunks_per_step,
+            "max_completion_tokens": cfg.max_completion_tokens,
+            "temperature": cfg.temperature,
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
@@ -465,24 +465,6 @@ def main(
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
         rollout_context_param_names = _rollout_fn_context_param_names(rollout_fn)
-
-        ctx_metadata: dict[str, Any] = {
-            "completions_per_prompt": cfg.completions_per_prompt,
-            "prompt_groups_per_step": cfg.prompt_groups_per_step,
-            "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
-            "pipeline_chunks_per_step": cfg.pipeline_chunks_per_step,
-            "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
-            "max_completion_tokens": cfg.max_completion_tokens,
-            "temperature": cfg.temperature,
-            "shuffle": cfg.shuffle,
-            "seed": cfg.seed,
-            "algorithm": "grpo",
-            "trainer_loss": "client",
-            "kl_beta": cfg.kl_beta,
-            "anchor_logp": cfg.anchor_logp,
-            "tokenizer_id": cfg.deployment.tokenizer_model,
-            "model": rollout_model,
-        }
 
         def make_row_requests():
             rows_per_epoch = len(rows)
@@ -648,6 +630,17 @@ def main(
         async def run_training(
             post_step_metrics_fn: PostStepMetricsFn | None,
         ) -> tuple[int, dict[str, Any]]:
+            telemetry = AsyncRLTelemetry(
+                producer_metrics_fn=lambda metrics: log_metrics(
+                    metrics,
+                    step=int(metrics["producer/event"]),
+                ),
+                step_metrics_fn=lambda metrics, step: log_metrics(
+                    metrics,
+                    step=step,
+                ),
+                post_step_metrics_fn=post_step_metrics_fn,
+            )
             coordinator = AsyncRLCoordinator(
                 rows=make_row_requests(),
                 completions_per_prompt=cfg.completions_per_prompt,
@@ -663,111 +656,83 @@ def main(
                 resolved_rows_fn=lambda: row_loader.data_consumed,
             )
             async with coordinator:
-                while (batch := await coordinator.next_batch()) is not None:
-                    chunk_outputs: list[dict[str, Any]] = []
+                telemetry.start(coordinator.snapshot)
+                try:
+                    while (batch := await coordinator.next_batch()) is not None:
+                        chunk_outputs: list[dict[str, Any]] = []
 
-                    async for chunk in batch.chunks():
+                        async for chunk in batch.chunks():
+                            coordinator.raise_if_failed(batch)
+                            output = await coordinator.run_blocking(
+                                "train_chunk",
+                                train_chunk,
+                                chunk,
+                                optimizer_batch=batch,
+                            )
+                            coordinator.raise_if_failed(batch)
+                            chunk_outputs.append(output)
+
                         coordinator.raise_if_failed(batch)
-                        output = await coordinator.run_blocking(
-                            "train_chunk",
-                            train_chunk,
-                            chunk,
+                        optimizer = await coordinator.run_blocking(
+                            "optimizer",
+                            optimizer_step,
+                            batch.batch_id,
                             optimizer_batch=batch,
                         )
-                        coordinator.raise_if_failed(batch)
-                        chunk_outputs.append(output)
 
-                    coordinator.raise_if_failed(batch)
-                    optimizer = await coordinator.run_blocking(
-                        "optimizer",
-                        optimizer_step,
-                        batch.batch_id,
-                        optimizer_batch=batch,
-                    )
+                        # A producer failure here can only affect a future batch.
+                        # Finish this optimizer's hotload and publication so trainer
+                        # and sampler versions cannot diverge on shutdown.
+                        sync_wall_time = await coordinator.run_blocking(
+                            "weight_sync",
+                            sync_weights,
+                            batch.batch_id,
+                            optimizer_batch=batch,
+                        )
+                        published = coordinator.publish(batch)
 
-                    # A producer failure here can only affect a future batch.
-                    # Finish this optimizer's hotload and publication so trainer
-                    # and sampler versions cannot diverge on shutdown.
-                    sync_wall_time = await coordinator.run_blocking(
-                        "weight_sync",
-                        sync_weights,
-                        batch.batch_id,
-                        optimizer_batch=batch,
-                    )
-                    loop_stats = coordinator.publish(batch)
+                        telemetry.finish_step(
+                            batch=batch,
+                            trained_against_version=(published.trained_against_version),
+                            prompt_groups=[
+                                group
+                                for output in chunk_outputs
+                                for group in output["prompt_groups"]
+                            ],
+                            fwd_bwd_results=[
+                                output["fwd_bwd_result"] for output in chunk_outputs
+                            ],
+                            optim_result=optimizer["result"],
+                            timing_metrics=flush_timing(),
+                            weight_sync_time=sync_wall_time,
+                            learning_rate=optimizer["learning_rate"],
+                        )
 
-                    prompt_groups = [
-                        group
-                        for output in chunk_outputs
-                        for group in output["prompt_groups"]
-                    ]
-                    fwd_bwd_results = [
-                        output["fwd_bwd_result"] for output in chunk_outputs
-                    ]
-                    accumulated_stats = build_accumulated_async_loop_stats(
-                        prompt_groups=prompt_groups,
-                        latest_loop_stats=loop_stats,
-                        trainer_wait_for_sampler_time=float(
-                            loop_stats["trainer_wait_for_sampler_time"]
-                        ),
-                        sampler_wait_for_trainer_time=float(
-                            loop_stats["sampler_wait_for_trainer_time"]
-                        ),
-                        train_wall_time=float(loop_stats["perf/train_wall_time"]),
-                    )
-                    metrics = compute_step_metrics(
-                        prompt_groups=prompt_groups,
-                        fwd_bwd_results=fwd_bwd_results,
-                        optim_result=optimizer["result"],
-                        n_accum=len(fwd_bwd_results),
-                        timing_metrics=flush_timing(),
-                        loop_stats=accumulated_stats,
-                        completions_per_prompt=cfg.completions_per_prompt,
-                    )
-                    metrics["perf/weight_sync_time"] = sync_wall_time
-                    metrics["train/lr"] = optimizer["learning_rate"]
-                    metrics["rollout/step"] = batch.batch_id
-                    metrics["train/step"] = batch.batch_id
-                    for key, value in ctx_metadata.items():
-                        if isinstance(value, bool):
-                            metrics[f"ctx/{key}"] = int(value)
-                        elif isinstance(value, (int, float)) and value is not None:
-                            metrics[f"ctx/{key}"] = value
+                        rollouts_completed = batch.batch_id - step_offset
+                        interval = cfg.dcp_save_interval
+                        if (
+                            interval > 0
+                            and rollouts_completed > 0
+                            and rollouts_completed % interval == 0
+                        ):
+                            try:
+                                await coordinator.run_blocking(
+                                    "checkpoint",
+                                    _save_checkpoint,
+                                    ckpt,
+                                    name=f"step-{batch.batch_id}",
+                                    data_consumed=published.resolved_rows,
+                                )
+                            except (OSError, RuntimeError) as error:
+                                logger.warning(
+                                    "[step %d] dcp_save failed: %s",
+                                    batch.batch_id,
+                                    error,
+                                )
+                finally:
+                    await telemetry.aclose()
 
-                    logger.info(
-                        "Rollout %d | Reward %.3f | Acc %.1f%% | RefKL %.4f",
-                        batch.batch_id,
-                        metrics.get("rollout/reward", 0.0),
-                        metrics.get("rollout/accuracy", 0.0) * 100,
-                        metrics.get("train/ref_kl", 0.0),
-                    )
-                    log_metrics(metrics, step=batch.batch_id)
-                    if post_step_metrics_fn is not None:
-                        post_step_metrics_fn(metrics)
-
-                    rollouts_completed = batch.batch_id - step_offset
-                    interval = cfg.dcp_save_interval
-                    if (
-                        interval > 0
-                        and rollouts_completed > 0
-                        and rollouts_completed % interval == 0
-                    ):
-                        try:
-                            await coordinator.run_blocking(
-                                "checkpoint",
-                                _save_checkpoint,
-                                ckpt,
-                                name=f"step-{batch.batch_id}",
-                                data_consumed=int(loop_stats["resolved_rows"]),
-                            )
-                        except (OSError, RuntimeError) as error:
-                            logger.warning(
-                                "[step %d] dcp_save failed: %s",
-                                batch.batch_id,
-                                error,
-                            )
-
-                return coordinator.global_step, coordinator.final_stats()
+                return coordinator.global_step, telemetry.final_stats()
 
         global_step, final_stats = asyncio.run(run_async_rl_lifecycle(run_training))
         # Save resume progress even if all remaining rows were dropped.
