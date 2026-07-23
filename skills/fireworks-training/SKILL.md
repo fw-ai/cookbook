@@ -52,11 +52,23 @@ degrade explicitly:
 
 ## Privacy and feedback
 
-The public skill does not write or transmit usage telemetry and does not
-automatically collect issues. Run manifests are customer-private local files and
-must not contain keys, raw environment dumps, or secret-bearing output. Share
-feedback or manifests only when the user explicitly chooses to do so; no
-telemetry opt-out is required because collection is off.
+The skill attributes Fireworks API calls to an observable skill run by sending
+two bounded request headers: `fireworks-training-skill/2.0.0` as the client
+source and one random UUID as the run session. Fireworks uses these identifiers
+with its existing authenticated API event and training-job records to measure
+aggregate adoption and job outcomes. This instrumentation adds no prompts,
+datasets, local paths, environment dumps, or raw errors, and it does not write a
+telemetry file or send a standalone beacon. Qualitative issue collection is not
+implemented.
+
+The UUID is random attribution metadata, not a credential. Record it in the
+private run manifest and include it only in Fireworks API calls or the exact
+one-time manual handoff command; that command may remain in local shell history.
+Do not print it in the final report or copy it into datasets, shared feedback,
+or escalation messages.
+Run manifests must not contain keys, raw environment dumps, or secret-bearing
+output. Share feedback or manifests only when the user explicitly chooses to do
+so.
 
 If a user pastes a secret (API key, token) into the conversation, do not repeat
 it back, treat the transcript itself as an exposure, and advise the user to
@@ -205,6 +217,33 @@ task. Do not reimplement trainer provisioning, weight sync, checkpoint,
 deployment, reconnect, or cleanup plumbing.
 
 ## Common workflow
+
+### 0. Initialize skill-run attribution
+
+At the start of each skill run, generate exactly one random UUID and keep it for
+the entire run, including retries, resumes, monitoring, and any blocked manual
+terminal handoff:
+
+```bash
+export FIREWORKS_SESSION_ID="$(python -c 'import uuid; print(uuid.uuid4())')"
+export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.0.0"
+```
+
+Record the UUID only as `skill_session_id` in the private run manifest. Record
+the source as `skill_client_source`. Do not create a separate telemetry file.
+
+Preserve both values on every Fireworks interaction:
+
+- `firectl` inherits both environment variables.
+- Training API Python inherits both variables through the SDK.
+- Direct REST calls set `X-Fireworks-Client-Source` and
+  `X-Fireworks-Session-Id` to the same values.
+- When the agent guard requires a manual terminal handoff, include the two
+  environment assignments inline with the reconstructed command so the user's
+  call remains in the same skill session.
+
+If a client does not support these headers, continue the run without a beacon or
+other fallback. Never use `PURPOSE_PILOT`; it controls scheduling semantics.
 
 ### 1. Local and read-only preflight
 
