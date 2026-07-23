@@ -1,8 +1,8 @@
-# Cookbook Tools
+# Archived Cookbook Tools
 
-Standalone scripts for customer-operated Fireworks workflows. These use public
-`firectl` and Fireworks APIs only — no Fireworks-internal credentials or GCP
-access required.
+Legacy standalone scripts for customer-operated Fireworks workflows, retained
+as implementation references. These use public `firectl` and Fireworks APIs
+only — no Fireworks-internal credentials or GCP access required.
 
 ## Prerequisites
 
@@ -32,12 +32,12 @@ python3 list_low_token_deployments.py --account my-account-dev --server gateway-
 
 ```bash
 curl -fsSL -o list_low_token_deployments.py \
-  https://raw.githubusercontent.com/fw-ai/cookbook/main/tools/list_low_token_deployments.py
+  https://raw.githubusercontent.com/fw-ai/cookbook/main/archived/tools/list_low_token_deployments.py
 chmod +x list_low_token_deployments.py
 ```
 
 Or browse the directory on GitHub:
-https://github.com/fw-ai/cookbook/tree/main/tools
+https://github.com/fw-ai/cookbook/tree/main/archived/tools
 
 ## Scripts
 
@@ -122,4 +122,4 @@ model, and token totals.
 - Deployments with no metrics data in the window are treated as **0 tokens/day**.
 
 Related agent skill:
-[`skills/fireworks-training/SKILL.md`](../skills/fireworks-training/SKILL.md)
+[`skills/fireworks-training/SKILL.md`](../../skills/fireworks-training/SKILL.md)

@@ -7,7 +7,7 @@ not billing usage (dedicated deployment billing reports GPU-seconds only).
 
 Download (no clone required):
     curl -fsSL -o list_low_token_deployments.py \\
-      https://raw.githubusercontent.com/fw-ai/cookbook/main/tools/list_low_token_deployments.py
+      https://raw.githubusercontent.com/fw-ai/cookbook/main/archived/tools/list_low_token_deployments.py
     chmod +x list_low_token_deployments.py
 
 Examples:
