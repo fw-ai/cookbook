@@ -109,6 +109,33 @@ def _hf_messages_with_normalized_tool_args(
     return out
 
 
+def _hf_messages_with_minimax_m3_reasoning_parts(
+    messages: list[dict], *, renderer_name: str
+) -> list[dict]:
+    """Map normalized M3 thinking parts to its HF ``reasoning_content`` field."""
+    if renderer_name != "minimax_m3":
+        return messages
+    out: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        if (
+            message.get("role") != "assistant"
+            or "reasoning_content" in message
+            or not isinstance(content, list)
+        ):
+            out.append(message)
+            continue
+        reasoning = "".join(
+            str(part.get("thinking", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "thinking"
+        )
+        out.append(
+            {**message, **({"reasoning_content": reasoning} if reasoning else {})}
+        )
+    return out
+
+
 def compare_renderer_to_hf(
     *,
     renderer_name: str,
@@ -163,12 +190,17 @@ def compare_renderer_to_hf(
         hf_kwargs["tools"] = tools
     else:
         hf_kwargs.pop("tools", None)
-    # The July 2026 Gemma 4 template requires deserialized arguments. Preserve
-    # the production JSON-string representation for other renderer families.
+    # The July 2026 Gemma 4 and MiniMax M3 templates require deserialized
+    # arguments. Preserve the production JSON-string representation for other
+    # renderer families.
+    hf_messages = _hf_messages_with_normalized_tool_args(
+        messages,
+        require_mapping=renderer_name in {"gemma4", "gemma4_thinking", "minimax_m3"},
+    )
     hf_result = tokenizer.apply_chat_template(
-        _hf_messages_with_normalized_tool_args(
-            messages,
-            require_mapping=renderer_name in {"gemma4", "gemma4_thinking"},
+        _hf_messages_with_minimax_m3_reasoning_parts(
+            hf_messages,
+            renderer_name=renderer_name,
         ),
         tokenize=True,
         add_generation_prompt=add_generation_prompt,

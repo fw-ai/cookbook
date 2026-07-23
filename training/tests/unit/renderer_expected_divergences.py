@@ -125,9 +125,13 @@ TEXT_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
 # renders tokens from which the name is literally absent — unrecoverable by any
 # parser. The harness now feeds Kimi its native id shape on the round-trip legs
 # (``RendererCase.tool_call_id_style="kimi"``), matching what Kimi's own
-# generation emits, and every one of these round-trips passes. No renderer's
-# parse_response currently fails the structured round-trip.
-PARSE_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {}
+# generation emits, and every one of those round-trips passes. MiniMax M3's two
+# entries below instead record an ambiguity inherent to its untyped XML scalar
+# format: the wire bytes cannot distinguish the string "101" from the number 101.
+PARSE_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
+    ("minimax_m3", "dangling_tool_call"): "MiniMax M3's XML tool-call wire format carries scalar text without schema/type annotations, so the parser cannot distinguish the string '101' from the number 101.",
+    ("minimax_m3", "nested_tool_call_args"): "MiniMax M3's XML tool-call wire format carries scalar text without schema/type annotations, so the parser cannot distinguish the string '101' from the number 101.",
+}
 
 HISTORICAL_PARSE_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {}
 
@@ -137,4 +141,3 @@ OBSERVATION_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
 
 EXTENSION_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
 }
-
