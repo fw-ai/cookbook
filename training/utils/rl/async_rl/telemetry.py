@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, TypeAlias, TypeVar
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, TypeAlias
 
 from training.utils.rl.async_rl.batch import OptimizerBatch
 from training.utils.rl.losses import PromptGroup
@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
 ProducerSnapshot: TypeAlias = Mapping[str, int | float | bool | None]
 ProducerMetricsFn: TypeAlias = Callable[[dict[str, Any]], None]
 StepMetricsFn: TypeAlias = Callable[[dict[str, Any], int], None]
-PostStepMetricsFn: TypeAlias = Callable[[dict[str, Any]], None]
-T = TypeVar("T")
 
 DEFAULT_PRODUCER_METRICS_INTERVAL_S = 10.0
 
@@ -191,11 +189,9 @@ class AsyncRLTelemetry:
         *,
         producer_metrics_fn: ProducerMetricsFn,
         step_metrics_fn: StepMetricsFn,
-        post_step_metrics_fn: PostStepMetricsFn | None = None,
     ) -> None:
         self._producer_metrics_fn = producer_metrics_fn
         self._step_metrics_fn = step_metrics_fn
-        self._post_step_metrics_fn = post_step_metrics_fn
         self._producer_snapshot_fn: Callable[[], ProducerSnapshot] | None = None
         self._reporter: ProducerMetricsReporter | None = None
 
@@ -295,8 +291,6 @@ class AsyncRLTelemetry:
             metrics.get("train/ref_kl", 0.0),
         )
         self._step_metrics_fn(metrics, batch.batch_id)
-        if self._post_step_metrics_fn is not None:
-            self._post_step_metrics_fn(metrics)
         return metrics
 
     def final_stats(self) -> dict[str, Any]:
@@ -310,22 +304,10 @@ class AsyncRLTelemetry:
         }
 
 
-async def run_async_rl_lifecycle(
-    run_training: Callable[[PostStepMetricsFn | None], Awaitable[T]],
-    *,
-    post_step_metrics_fn: PostStepMetricsFn | None = None,
-) -> T:
-    """Run a recipe-owned lifecycle with an optional step observer."""
-
-    return await run_training(post_step_metrics_fn)
-
-
 __all__ = [
     "AsyncRLTelemetry",
-    "PostStepMetricsFn",
     "ProducerMetricsFn",
     "ProducerMetricsReporter",
     "ProducerStepMetricsReducer",
     "producer_metric_values",
-    "run_async_rl_lifecycle",
 ]

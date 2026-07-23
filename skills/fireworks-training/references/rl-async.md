@@ -172,9 +172,8 @@ For each optimizer batch:
    rows to the durable cursor, records metrics, and wakes the producer.
 
 The recipe performs an unconditional initial sampler sync and one sync per
-optimizer batch. It has no `weight_sync_interval`. The retained
-`weight_sync_before_training` field is deprecated and does not alter this
-behavior.
+optimizer batch. It has no `weight_sync_interval` or conditional initial-sync
+knob.
 
 When the source ends, the producer seals and trains a final partial optimizer
 batch rather than silently dropping accepted prompt groups.

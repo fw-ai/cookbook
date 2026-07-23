@@ -61,10 +61,8 @@ from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
-    PostStepMetricsFn,
     TrainingChunk,
     RolloutRow,
-    run_async_rl_lifecycle,
 )
 from training.utils.rl.rollout import (
     RolloutSample,
@@ -795,13 +793,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         },
                     )
 
-            async def run_training(
-                post_step_metrics_fn: PostStepMetricsFn | None,
-            ) -> tuple[int, dict[str, Any]]:
+            async def run_training() -> tuple[int, dict[str, Any]]:
                 telemetry = AsyncRLTelemetry(
                     producer_metrics_fn=wandb_log,
                     step_metrics_fn=report_step_metrics,
-                    post_step_metrics_fn=post_step_metrics_fn,
                 )
                 coordinator = AsyncRLCoordinator(
                     rows=make_row_requests(),
@@ -881,7 +876,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
                     return coordinator.global_step, telemetry.final_stats()
 
-            global_step, final_stats = asyncio.run(run_async_rl_lifecycle(run_training))
+            global_step, final_stats = asyncio.run(run_training())
 
             # -- Final checkpoint -----------------------------------------------
 

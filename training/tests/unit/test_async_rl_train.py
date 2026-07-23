@@ -23,7 +23,6 @@ from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     OptimizerBatch,
     RolloutRow,
-    run_async_rl_lifecycle,
 )
 from training.utils.rl.async_rl.batch import balanced_chunk_targets
 from training.utils.rl.async_rl.telemetry import AsyncRLTelemetry
@@ -739,16 +738,3 @@ def test_accepted_cursor_is_not_durable_before_publish() -> None:
             assert resolved == [(0, "accepted"), (1, "accepted")]
 
     _run(scenario())
-
-
-def test_lifecycle_forwards_post_step_callback() -> None:
-    def callback(_metrics) -> None:
-        pass
-
-    async def training(received):
-        return received
-
-    assert (
-        _run(run_async_rl_lifecycle(training, post_step_metrics_fn=callback))
-        is callback
-    )

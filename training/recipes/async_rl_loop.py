@@ -70,10 +70,8 @@ from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
-    PostStepMetricsFn,
     TrainingChunk,
     RolloutRow,
-    run_async_rl_lifecycle,
 )
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
@@ -139,8 +137,8 @@ class Config:
     pipeline_chunks_per_step: int = 1
     """Scheduler chunk cap per global optimizer batch.
 
-    The loop sends ready prompt groups without waiting to fill a chunk; trainer
-    continuous batching owns execution-level coalescing/microbatching.
+    The scheduler creates balanced chunk targets and exposes the batch once its
+    first target is full. Later chunks can fill while the trainer is active.
     """
     tis: TISConfig = field(default_factory=TISConfig)
     """TIS (Train-Inference IS) weight correction config."""
@@ -154,8 +152,6 @@ class Config:
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    weight_sync_before_training: bool = False
-    """Deprecated compatibility field; async RL always performs initial sync."""
     dcp_save_interval: int = 0
     weight_sync_timeout: int = 600
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
@@ -245,7 +241,7 @@ def main(
     dynamic_filter_fn: DynamicFilterFn | None = None,
     rows: list[dict] | None = None,
     rollout_extras: dict[str, Any] | None = None,
-) -> None:
+) -> dict[str, Any]:
     """Run the async RL loop with a user-supplied rollout factory.
 
     ``rollout_fn_factory(setup) -> rollout_fn`` is called once at startup
@@ -457,7 +453,7 @@ def main(
             tokenizer=tokenizer,
             tokenizer_id=cfg.deployment.tokenizer_model,
             sample_kwargs=sample_kwargs,
-            inference_base_url="" if sampler is None else sampler.base_url,
+            inference_base_url=sampler.base_url,
             api_key=api_key,
             model=rollout_model,
             completions_per_prompt=cfg.completions_per_prompt,
@@ -476,7 +472,7 @@ def main(
                 end_of_epoch = (
                     row_index == rows_per_epoch - 1 if rows_per_epoch else True
                 )
-                source_row_id = row.get("id") if isinstance(row, dict) else None
+                source_row_id = row.get("id")
 
                 def run_one_rollout(
                     sub_index: int,
@@ -627,9 +623,7 @@ def main(
                 service.hotload_sampler_snapshot(saved.path)
             return sync_span.elapsed
 
-        async def run_training(
-            post_step_metrics_fn: PostStepMetricsFn | None,
-        ) -> tuple[int, dict[str, Any]]:
+        async def run_training() -> tuple[int, dict[str, Any]]:
             telemetry = AsyncRLTelemetry(
                 producer_metrics_fn=lambda metrics: log_metrics(
                     metrics,
@@ -639,7 +633,6 @@ def main(
                     metrics,
                     step=step,
                 ),
-                post_step_metrics_fn=post_step_metrics_fn,
             )
             coordinator = AsyncRLCoordinator(
                 rows=make_row_requests(),
@@ -734,7 +727,7 @@ def main(
 
                 return coordinator.global_step, telemetry.final_stats()
 
-        global_step, final_stats = asyncio.run(run_async_rl_lifecycle(run_training))
+        global_step, final_stats = asyncio.run(run_training())
         # Save resume progress even if all remaining rows were dropped.
         # Promotion still requires at least one optimizer step.
         resume_row_cursor = int(final_stats["resolved_rows"])

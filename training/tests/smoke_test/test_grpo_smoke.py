@@ -101,7 +101,6 @@ def test_grpo_smoke(
             deployment=DeployConfig(
                 tokenizer_model=smoke_tokenizer_model,
             ),
-            weight_sync_before_training=True,
             weight_sync_timeout=600,
             wandb=WandBConfig(),
         )
