@@ -54,8 +54,6 @@ from training.utils import (
     TrainerConfig,
     WandBConfig,
     ReconnectableClient,
-    RunnerIO,
-    RunStatus,
     build_service_client,
     log_metrics,
     load_deployment_tokenizer,
@@ -85,11 +83,6 @@ from training.utils.rl.metrics import (
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
-from training.utils.runner_state import (
-    start_running,
-    write_completed,
-    write_running_progress,
-)
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -275,8 +268,6 @@ def main(
         reference_job_id=cfg.trainer.reference_job_id,
         anchor_logp=cfg.anchor_logp,
     )
-    runner = RunnerIO()
-
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
         "the Config / RolloutSetup API may change. See "
@@ -340,9 +331,7 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    runner.write_status(RunStatus.PENDING, message="provisioning")
-
-    with runner, ExitStack() as stack:
+    with ExitStack() as stack:
         tokenizer = load_deployment_tokenizer(cfg.deployment)
         service = build_service_client(
             api_key=api_key,
@@ -377,11 +366,6 @@ def main(
         accelerator_count = getattr(service, "accelerator_count", None)
         if accelerator_count is None:
             accelerator_count = getattr(training_profile, "accelerator_count", None)
-        runner.set_accelerator_info(
-            accelerator_type,
-            accelerator_count,
-            profile=training_profile,
-        )
         log_metrics({"rollout/step": 0}, step=0)
 
         policy = ReconnectableClient.from_training_client(
@@ -588,8 +572,6 @@ def main(
                 ),
             )
 
-        tokens_processed = 0
-
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
             """Run the visible GRPO forward/backward phase for one chunk."""
 
@@ -663,17 +645,9 @@ def main(
                 service.hotload_sampler_snapshot(saved.path)
             return sync_span.elapsed
 
-        start_running(
-            runner,
-            step=step_offset,
-            total_steps=total_steps_estimate,
-        )
-
         async def run_training(
             post_step_metrics_fn: PostStepMetricsFn | None,
         ) -> tuple[int, dict[str, Any]]:
-            nonlocal tokens_processed
-
             coordinator = AsyncRLCoordinator(
                 rows=make_row_requests(),
                 completions_per_prompt=cfg.completions_per_prompt,
@@ -770,13 +744,6 @@ def main(
                     log_metrics(metrics, step=batch.batch_id)
                     if post_step_metrics_fn is not None:
                         post_step_metrics_fn(metrics)
-                    tokens_processed += int(metrics.get("train/target_tokens", 0))
-                    write_running_progress(
-                        runner,
-                        step=batch.batch_id,
-                        total_steps=total_steps_estimate,
-                        tokens_processed=tokens_processed,
-                    )
 
                     rollouts_completed = batch.batch_id - step_offset
                     interval = cfg.dcp_save_interval
@@ -808,7 +775,6 @@ def main(
         resume_row_cursor = int(final_stats["resolved_rows"])
         has_trained_steps = global_step > step_offset
         has_advanced_dataset = resume_row_cursor > prior_rows_consumed
-        promoted_checkpoint: str | None = None
         if cfg.save_final_checkpoint and (has_trained_steps or has_advanced_dataset):
             cp_name = f"step-{global_step}"
             ckpt.save(
@@ -819,17 +785,6 @@ def main(
             )
             if cfg.output_model_id and has_trained_steps:
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
-                promoted_checkpoint = cp_name
-
-        if promoted_checkpoint is not None and cfg.output_model_id:
-            runner.write_output_model(
-                model_id=cfg.output_model_id,
-                checkpoint=promoted_checkpoint,
-                job_id=service.trainer_job_id,
-            )
-
-        final_step = max(global_step, total_steps_estimate)
-        write_completed(runner, step=final_step, total_steps=final_step)
 
         logger.info(
             "Async RL training complete: %d steps (%d new in this run)",

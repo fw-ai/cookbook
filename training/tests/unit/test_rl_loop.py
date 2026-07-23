@@ -22,6 +22,8 @@ def test_config_has_no_runner_state() -> None:
     cfg = module.Config(log_path="gs://logs")
 
     assert not hasattr(cfg, "runner")
+    assert not hasattr(module, "RunnerIO")
+    assert "write_running_progress" not in inspect.getsource(module.main)
     assert cfg.kl_beta == 0.001
 
 
