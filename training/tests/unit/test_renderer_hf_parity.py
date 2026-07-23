@@ -202,6 +202,20 @@ _CASES: list[_Case] = [
             "See skills/fireworks-training/references/renderer-verification.md."
         ),
     ),
+    _Case(
+        case_id="minimax_m3-single-turn",
+        renderer="minimax_m3",
+        tokenizer_model="MiniMaxAI/MiniMax-M3",
+        messages=_SHORT_MSGS,
+        apply_chat_template_kwargs={"thinking_mode": "adaptive"},
+    ),
+    _Case(
+        case_id="minimax_m3-multi-turn",
+        renderer="minimax_m3",
+        tokenizer_model="MiniMaxAI/MiniMax-M3",
+        messages=_MULTI_TURN_MSGS,
+        apply_chat_template_kwargs={"thinking_mode": "adaptive"},
+    ),
 ]
 
 

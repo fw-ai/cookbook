@@ -47,6 +47,7 @@ _DEFAULT_SYSTEM = (
 _DEFAULT_DEVELOPER = "You are a helpful assistant."
 _DEFAULT_ROOT_SENTINEL = "__MINIMAX_M3_DEFAULT_ROOT__"
 _DEFAULT_DEVELOPER_SENTINEL = "__MINIMAX_M3_DEFAULT_DEVELOPER__"
+_TOOL_PREFIX_SENTINEL = "__MINIMAX_M3_TOOL_PREFIX__:"
 
 _TOOL_CALL_RE = re.compile(
     re.escape(_TOOL_CALL_BEGIN) + r"\n?(.*?)" + re.escape(_TOOL_CALL_END),
@@ -231,6 +232,15 @@ def _parse_tool_block(
 
 
 class MiniMaxM3Renderer(Renderer):
+    """Render MiniMax M3 chats with HF-identical tokens and SFT boundaries.
+
+    Enabled and disabled generation prompts prefill ``<mm:think>`` and
+    ``</mm:think>`` respectively.  When an assistant message starts with the
+    same marker, it is rendered as part of the zero-weight header rather than
+    the trainable output.  This preserves token-for-token template parity while
+    avoiding loss on a token that is already present at inference time.
+    """
+
     def __init__(
         self, tokenizer: Tokenizer, thinking_mode: ThinkingMode = "adaptive"
     ) -> None:
@@ -238,7 +248,6 @@ class MiniMaxM3Renderer(Renderer):
         if thinking_mode not in {"enabled", "disabled", "adaptive"}:
             raise ValueError(f"Unsupported MiniMax M3 thinking mode: {thinking_mode!r}")
         self.thinking_mode = thinking_mode
-        self._pending_tools: list[ToolSpec | Mapping[str, Any]] | None = None
 
     @property
     def has_extension_property(self) -> bool:
@@ -294,6 +303,43 @@ class MiniMaxM3Renderer(Renderer):
     def _preprocess_messages(self, messages: list[Message]) -> list[Message]:
         remaining = list(messages)
         uses_customized_weights = any("trainable" in message for message in remaining)
+        tools: list[Mapping[str, Any]] = []
+        tool_prefix_trainable: bool | None = None
+        if (
+            remaining
+            and remaining[0]["role"] == "system"
+            and isinstance(remaining[0]["content"], str)
+            and remaining[0]["content"].startswith(_TOOL_PREFIX_SENTINEL)
+        ):
+            prefix = remaining.pop(0)
+            payload, separator, system_prompt = prefix["content"][
+                len(_TOOL_PREFIX_SENTINEL) :
+            ].partition("\n")
+            if not separator:
+                raise ValueError("Malformed MiniMax M3 tool prefix.")
+            decoded_tools = json.loads(payload)
+            if not isinstance(decoded_tools, list) or not all(
+                isinstance(tool, Mapping) for tool in decoded_tools
+            ):
+                raise TypeError("MiniMax M3 tool prefix must contain a list of tools.")
+            tools = decoded_tools
+            if "trainable" in prefix:
+                tool_prefix_trainable = bool(prefix["trainable"])
+            # An empty folded prompt followed by root means the original chat
+            # started with that root, whose developer turn receives the tools.
+            # A non-empty folded prompt means the original chat started with
+            # system; restore it as developer and let the official-template
+            # behavior below ignore the now-mid-conversation root.
+            if system_prompt or not (
+                remaining and remaining[0]["role"] == "root"
+            ):
+                restored = Message(
+                    role="system",
+                    content=system_prompt or _DEFAULT_DEVELOPER_SENTINEL,
+                )
+                if tool_prefix_trainable is not None:
+                    restored["trainable"] = tool_prefix_trainable
+                remaining.insert(0, restored)
         root_message = Message(role="root", content=_DEFAULT_ROOT_SENTINEL)
         developer_message = Message(
             role="developer",
@@ -317,12 +363,60 @@ class MiniMaxM3Renderer(Renderer):
         if uses_customized_weights:
             root_message.setdefault("trainable", False)
             developer_message.setdefault("trainable", False)
+        if tools:
+            developer_content = _visible_text(developer_message["content"])
+            if (
+                developer_content == _DEFAULT_DEVELOPER_SENTINEL
+                or not developer_content
+            ):
+                developer_content = _DEFAULT_DEVELOPER
+            developer_message["content"] = developer_content + _format_tools(tools)
         prefix = [root_message, developer_message]
-        return prefix + self._group_tool_messages(remaining)
+        # The official template silently ignores system/developer/root roles
+        # outside the initial root/developer slots.
+        conversation = [
+            message
+            for message in remaining
+            if message["role"] in {"user", "assistant", "tool"}
+        ]
+        return prefix + self._group_tool_messages(conversation)
 
-    def _encode_chunk(self, text: str) -> tinker.types.EncodedTextChunk | None:
-        tokens = list(self.tokenizer.encode(text, add_special_tokens=False))
-        return tinker.types.EncodedTextChunk(tokens=tokens) if tokens else None
+    def _encode_message(
+        self, header_text: str, output_text: str
+    ) -> tuple[
+        tinker.types.EncodedTextChunk | None,
+        tinker.types.EncodedTextChunk | None,
+    ]:
+        """Encode a full turn once, then split it at the stable token prefix.
+
+        Encoding the header and body independently changes BPE boundaries when
+        content starts with whitespace. The HF template tokenizes their
+        concatenation, so use that exact token stream and put any boundary-
+        spanning token in the output side of the loss mask.
+        """
+        combined = list(
+            self.tokenizer.encode(
+                header_text + output_text,
+                add_special_tokens=False,
+            )
+        )
+        header_only = list(self.tokenizer.encode(header_text, add_special_tokens=False))
+        split = 0
+        while (
+            split < len(combined)
+            and split < len(header_only)
+            and combined[split] == header_only[split]
+        ):
+            split += 1
+        header = (
+            tinker.types.EncodedTextChunk(tokens=combined[:split]) if split else None
+        )
+        output = (
+            tinker.types.EncodedTextChunk(tokens=combined[split:])
+            if split < len(combined)
+            else None
+        )
+        return header, output
 
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
         del ctx
@@ -345,9 +439,6 @@ class MiniMaxM3Renderer(Renderer):
                 if content == _DEFAULT_DEVELOPER_SENTINEL or not _visible_text(content)
                 else _visible_text(content)
             )
-            if self._pending_tools:
-                body += _format_tools(self._pending_tools)
-                self._pending_tools = None
             header_text = f"{_BOS}developer\n"
             output_text = body + f"{_EOS}\n"
         elif role == "assistant":
@@ -357,6 +448,10 @@ class MiniMaxM3Renderer(Renderer):
             if message.get("tool_calls"):
                 body += _format_tool_calls(message["tool_calls"])
             header_text = f"{_BOS}ai\n"
+            prefill = self._assistant_prefill
+            if prefill and body.startswith(prefill):
+                header_text += prefill
+                body = body[len(prefill) :]
             output_text = body + f"{_EOS}\n"
         elif role == "user":
             header_text = f"{_BOS}user\n"
@@ -377,9 +472,9 @@ class MiniMaxM3Renderer(Renderer):
         else:
             raise ValueError(f"Unsupported MiniMax M3 role: {role!r}")
 
-        output = self._encode_chunk(output_text)
+        header, output = self._encode_message(header_text, output_text)
         return RenderedMessage(
-            header=self._encode_chunk(header_text),
+            header=header,
             output=[output] if output is not None else [],
         )
 
@@ -388,11 +483,16 @@ class MiniMaxM3Renderer(Renderer):
         rendered_role = "ai" if role == "assistant" else role
         suffix = f"{_BOS}{rendered_role}\n"
         if rendered_role == "ai":
-            if self.thinking_mode == "enabled":
-                suffix += _THINK_BEGIN
-            elif self.thinking_mode == "disabled":
-                suffix += _THINK_END
+            suffix += self._assistant_prefill
         return list(self.tokenizer.encode(suffix, add_special_tokens=False))
+
+    @property
+    def _assistant_prefill(self) -> str:
+        if self.thinking_mode == "enabled":
+            return _THINK_BEGIN
+        if self.thinking_mode == "disabled":
+            return _THINK_END
+        return ""
 
     def build_generation_prompt(
         self,
@@ -421,28 +521,29 @@ class MiniMaxM3Renderer(Renderer):
         tools: list[ToolSpec],
         system_prompt: str = "",
     ) -> list[Message]:
-        self._pending_tools = list(tools)
+        tool_payload = [dict(_tool_function(tool)) for tool in tools]
         return [
             Message(
                 role="system",
-                content=system_prompt or _DEFAULT_DEVELOPER_SENTINEL,
+                content=(
+                    _TOOL_PREFIX_SENTINEL
+                    + json.dumps(tool_payload, ensure_ascii=False)
+                    + "\n"
+                    + system_prompt
+                ),
             )
         ]
 
     def _normalize_response_tokens(self, response: list[int]) -> list[int]:
         if self.thinking_mode == "enabled":
-            prefix = list(
-                self.tokenizer.encode(_THINK_BEGIN, add_special_tokens=False)
-            )
+            prefix = list(self.tokenizer.encode(_THINK_BEGIN, add_special_tokens=False))
             if response[: len(prefix)] == prefix:
                 return response
             if _THINK_END in str(self.tokenizer.decode(response)):
                 return prefix + response
             return response
         if self.thinking_mode == "disabled":
-            prefix = list(
-                self.tokenizer.encode(_THINK_END, add_special_tokens=False)
-            )
+            prefix = list(self.tokenizer.encode(_THINK_END, add_special_tokens=False))
             if response[: len(prefix)] == prefix:
                 return response
             return prefix + response

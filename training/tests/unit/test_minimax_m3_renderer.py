@@ -12,6 +12,7 @@ from tinker_cookbook.renderers.base import ParseTermination, ToolCall, TrainOnWh
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 
 from training.renderer.minimax_m3 import MiniMaxM3Renderer
+from training.utils.supervised import build_tool_prefixed_messages
 
 _LOCAL_PATH = "/shared/MiniMax-M3"
 _HF_REPO = "MiniMaxAI/MiniMax-M3"
@@ -173,6 +174,10 @@ def test_supervised_mask_trains_selected_thinking_and_answer(
 
     expected_last_only = [0.0] * len(tokens)
     expected_last_only[last_assistant] = [1.0] * len(expected_last_only[last_assistant])
+    if thinking_mode == "enabled":
+        # ``<mm:think>`` is part of the enabled-mode generation prefix, so it
+        # remains in the token stream for HF parity but is not a loss target.
+        expected_last_only[last_assistant.start] = 0.0
     assert weight_values == expected_last_only
 
     all_input, all_weights = renderer.build_supervised_example(
@@ -184,6 +189,8 @@ def test_supervised_mask_trains_selected_thinking_and_answer(
     expected_all_assistant[first_assistant] = [1.0] * len(
         expected_all_assistant[first_assistant]
     )
+    if thinking_mode == "enabled":
+        expected_all_assistant[first_assistant.start] = 0.0
     assert all_weights.tolist() == expected_all_assistant
 
     datum = datum_from_model_input_weights(model_input, weights)
@@ -199,6 +206,59 @@ def test_supervised_mask_trains_selected_thinking_and_answer(
     )
     assert list(customized_input.to_ints()) == tokens
     assert customized_weights.tolist() == expected_last_only
+
+
+@pytest.mark.parametrize(
+    ("thinking_mode", "assistant_content", "prefilled_marker"),
+    [
+        (
+            "enabled",
+            [
+                {"type": "thinking", "thinking": "reason"},
+                {"type": "text", "text": "answer"},
+            ],
+            "<mm:think>",
+        ),
+        ("disabled", "answer", "</mm:think>"),
+    ],
+)
+def test_supervised_mask_excludes_prefilled_thinking_marker(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    thinking_mode: str,
+    assistant_content: Any,
+    prefilled_marker: str,
+) -> None:
+    prompt_messages = [{"role": "user", "content": "question"}]
+    messages = prompt_messages + [{"role": "assistant", "content": assistant_content}]
+    renderer = MiniMaxM3Renderer(tokenizer, thinking_mode)
+
+    generation_prompt = list(
+        renderer.build_generation_prompt(prompt_messages).to_ints()
+    )
+    model_input, weights = renderer.build_supervised_example(
+        messages,
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    )
+    tokens = list(model_input.to_ints())
+    hf_assistant: dict[str, Any] = {"role": "assistant", "content": "answer"}
+    if thinking_mode == "enabled":
+        hf_assistant["reasoning_content"] = "reason"
+    expected_tokens = _hf_tokens(
+        tokenizer,
+        prompt_messages + [hf_assistant],
+        thinking_mode=thinking_mode,
+        add_generation_prompt=False,
+    )
+    marker_tokens = list(tokenizer.encode(prefilled_marker, add_special_tokens=False))
+
+    assert tokens == expected_tokens
+    assert tokens[: len(generation_prompt)] == generation_prompt
+    assert generation_prompt[-len(marker_tokens) :] == marker_tokens
+    marker_start = len(generation_prompt) - len(marker_tokens)
+    assert weights[marker_start : len(generation_prompt)].tolist() == [0.0] * len(
+        marker_tokens
+    )
+    assert weights[len(generation_prompt)].item() == 1.0
 
 
 def test_nested_tool_arguments_match_hf(
@@ -259,7 +319,108 @@ def test_nested_tool_arguments_match_hf(
         },
         {"role": "tool", "content": "ok"},
     ]
-    assert list(renderer.build_generation_prompt(messages).to_ints()) == expected
+    first = list(renderer.build_generation_prompt(messages).to_ints())
+    second = list(renderer.build_generation_prompt(messages).to_ints())
+    assert first == expected
+    assert second == expected
+
+
+@pytest.mark.parametrize("add_generation_prompt", [False, True])
+def test_tools_with_root_and_developer_match_hf_production_path(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    add_generation_prompt: bool,
+) -> None:
+    function = {
+        "name": "lookup",
+        "description": "Look up a value",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+        },
+    }
+    tools = [{"type": "function", "function": function}]
+    messages: list[dict[str, Any]] = [
+        {"role": "root", "content": "Root policy"},
+        {"role": "developer", "content": "Be concise"},
+        {"role": "user", "content": "look this up"},
+    ]
+    if not add_generation_prompt:
+        messages.append(
+            {
+                "role": "assistant",
+                "reasoning_content": "check the tool",
+                "content": "done",
+            }
+        )
+    expected = _hf_tokens(
+        tokenizer,
+        messages,
+        thinking_mode="adaptive",
+        add_generation_prompt=add_generation_prompt,
+        tools=tools,
+    )
+
+    renderer = MiniMaxM3Renderer(tokenizer, "adaptive")
+    renderer_messages = build_tool_prefixed_messages(
+        messages,
+        renderer=renderer,
+        tools=tools,
+    )
+
+    if add_generation_prompt:
+        actual = list(renderer.build_generation_prompt(renderer_messages).to_ints())
+    else:
+        actual = list(
+            renderer.build_supervised_example(
+                renderer_messages,
+                train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+            )[0].to_ints()
+        )
+
+    assert actual == expected
+
+
+@pytest.mark.parametrize("add_generation_prompt", [False, True])
+def test_tools_with_leading_system_then_root_match_hf_production_path(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    add_generation_prompt: bool,
+) -> None:
+    function = {
+        "name": "lookup",
+        "description": "Look up a value",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+        },
+    }
+    tools = [{"type": "function", "function": function}]
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "System developer policy"},
+        {"role": "root", "content": "This mid-conversation root is ignored"},
+        {"role": "user", "content": "look this up"},
+    ]
+    if not add_generation_prompt:
+        messages.append({"role": "assistant", "content": "done"})
+    expected = _hf_tokens(
+        tokenizer,
+        messages,
+        thinking_mode="adaptive",
+        add_generation_prompt=add_generation_prompt,
+        tools=tools,
+    )
+
+    renderer = MiniMaxM3Renderer(tokenizer, "adaptive")
+    renderer_messages = build_tool_prefixed_messages(
+        messages,
+        renderer=renderer,
+        tools=tools,
+    )
+    if add_generation_prompt:
+        actual = list(renderer.build_generation_prompt(renderer_messages).to_ints())
+    else:
+        actual = list(renderer.build_supervised_example(renderer_messages)[0].to_ints())
+
+    assert actual == expected
 
 
 @pytest.mark.parametrize(

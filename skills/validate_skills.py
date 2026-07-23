@@ -185,6 +185,10 @@ def check_training_contract(
         "firectl dpo-job create --loss-method ORPO",
         "firectl rftj create",
         "firectl rftj create --evaluator <resource>",
+        "FIREWORKS_CLIENT_SOURCE",
+        "FIREWORKS_SESSION_ID",
+        "Do not create a separate telemetry file",
+        "Never use `PURPOSE_PILOT`",
     )
     for marker in required_markers:
         if marker not in root_text:
@@ -236,6 +240,8 @@ def check_training_contract(
         "docs_urls:",
         "cookbook_commit:",
         "sdk_version:",
+        "skill_session_id:",
+        "skill_client_source:",
     ):
         if marker not in state:
             errors.append(f"run-state-and-reporting.md: missing `{marker}`")

@@ -245,6 +245,21 @@ RENDERER_MATRIX: list[RendererCase] = [
         supervised_hf_parity=False,
         observation_equals_generation=False,
     ),
+    # -- MiniMax M3 --------------------------------------------------------
+    # Adaptive mode has no sampling-only assistant prefill: the model predicts
+    # whether to open or close the thinking channel itself. Supervised and
+    # generation prefixes therefore share the same bytes, and M3 preserves
+    # complete assistant history across turns.
+    RendererCase(
+        renderer="minimax_m3",
+        tokenizer_model="MiniMaxAI/MiniMax-M3",
+        hf_kwargs={"thinking_mode": "adaptive"},
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
+        supervised_hf_parity=True,
+        observation_equals_generation=True,
+    ),
     # -- Nemotron ----------------------------------------------------------
     # Thinking mode (always prepends <think></think>), so HF needs
     # enable_thinking=True. Supervised drops the trailing '\n' the HF
@@ -346,6 +361,7 @@ REQUIRED_RENDERERS: frozenset[str] = frozenset(
         "qwen3_6_preserve_thinking",
         "kimi_k25",
         "minimax_m2",
+        "minimax_m3",
         "nemotron3",
         "gemma4",
     }
