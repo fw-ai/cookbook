@@ -90,6 +90,7 @@ __all__ = [
     "build_datum_from_token_mask",
     "build_datum_from_tokens_and_weights",
     "build_renderer",
+    "build_renderer_from_resolved_name",
     "normalize_messages",
     "parse_train_on_what",
     "populate_render_worker_state",
@@ -97,6 +98,8 @@ __all__ = [
     "render_messages_to_datum",
     "render_messages_to_datums",
     "resolve_renderer_name",
+    "resolve_renderer_plan",
+    "resolve_renderer_snapshot",
     "prepare_sampling_messages",
     "build_service_client",
     "setup_wandb",
@@ -176,6 +179,7 @@ from training.utils.supervised import (
     build_datum_from_tokens_and_weights,
     build_next_token_datum,
     build_renderer,
+    build_renderer_from_resolved_name,
     normalize_messages,
     parse_train_on_what,
     populate_render_worker_state,
@@ -183,6 +187,8 @@ from training.utils.supervised import (
     render_messages_to_datums,
     render_preference_pair,
     resolve_renderer_name,
+    resolve_renderer_plan,
+    resolve_renderer_snapshot,
 )
 from training.utils.timer import flush_timing, timed, timer
 from training.utils.tokenizers import load_deployment_tokenizer, load_tokenizer

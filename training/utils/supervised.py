@@ -39,6 +39,17 @@ import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 �
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
+from training.renderer.thinking_trace import (
+    ResolvedThinkingTraceRendererPlan,
+    ThinkingTraceHistoryMode,
+    get_thinking_trace_model_capability,
+    normalize_thinking_trace_history_mode,
+    resolve_thinking_trace_renderer_plan,
+)
+from training.renderer.reasoning_fields import (
+    ORIGINAL_REASONING,
+    ORIGINAL_REASONING_CONTENT,
+)
 from training.utils.tokenizers import load_tokenizer
 
 
@@ -125,10 +136,12 @@ def build_tool_prefixed_messages(
     if not tool_specs:
         return normalized_messages
     system_prompt = ""
+    has_explicit_empty_system_message = False
     if normalized_messages and normalized_messages[0].get("role") == "system":
         sys_content = normalized_messages.pop(0).get("content")
         if isinstance(sys_content, str):
             system_prompt = sys_content
+            has_explicit_empty_system_message = sys_content == ""
         elif isinstance(sys_content, list):
             system_prompt = "\n".join(
                 part.get("text", "")
@@ -136,6 +149,12 @@ def build_tool_prefixed_messages(
                 if isinstance(part, Mapping) and part.get("type") == "text"
             )
     prefix_messages = list(prefix_builder(tool_specs, system_prompt=system_prompt))
+    if has_explicit_empty_system_message and getattr(
+        renderer,
+        "_preserves_explicit_empty_system_with_tools",
+        False,
+    ):
+        prefix_messages.append(Message(role="system", content=""))
     if any("trainable" in m for m in normalized_messages):
         for prefix_msg in prefix_messages:
             prefix_msg.setdefault("trainable", False)
@@ -146,22 +165,29 @@ def resolve_renderer_name(
     tokenizer_model: str,
     renderer_name: str = "",
 ) -> str:
-    """Choose the renderer used for message -> token rendering."""
+    """Choose the existing/default renderer for message -> token rendering."""
     if renderer_name:
         return renderer_name
     normalized_model_name = tokenizer_model.lower()
-    if "moonshotai/kimi-k2.5" in normalized_model_name:
+    if (
+        "moonshotai/kimi-k2.5" in normalized_model_name
+        or "kimi-k2p5" in normalized_model_name
+    ):
         return "kimi_k25"
-    # Kimi-K2.6 ships the same tiktoken vocab and special tokens as K2.5, and its
-    # default chat template output is identical to K2.5's (K2.6 only adds an
-    # opt-in preserve_thinking flag). Reuse the kimi_k25 renderer until a
-    # dedicated kimi_k26 renderer is registered in tinker_cookbook.
-    if "moonshotai/kimi-k2.6" in normalized_model_name:
+    # Preserve the legacy direct/default alias. Explicit semantic mode
+    # resolution uses the capability registry's dedicated K2.6 names instead.
+    if (
+        "moonshotai/kimi-k2.6" in normalized_model_name
+        or "kimi-k2p6" in normalized_model_name
+    ):
         return "kimi_k25"
     # Kimi-K2.7-Code keeps the K2.6 tokenizer/vocab/tool format, but flips the
     # HF chat-template default to preserve historical thinking and no longer
     # injects Kimi's default system prompt when none is provided.
-    if "moonshotai/kimi-k2.7-code" in normalized_model_name:
+    if (
+        "moonshotai/kimi-k2.7-code" in normalized_model_name
+        or "kimi-k2p7-code" in normalized_model_name
+    ):
         return "kimi_k27_code"
     if "nemotron" in normalized_model_name:
         # Route the Nemotron family to tinker_cookbook's upstream Nemotron-3
@@ -184,11 +210,19 @@ def resolve_renderer_name(
     # adds an opt-in `preserve_thinking` flag (renders historical thinking
     # for ALL assistant turns when true). Default invocation produces output
     # byte-identical to Qwen3.5's template, so the qwen3_5 renderer family
-    # is correct for non-interleave-thinking workflows on Qwen3.6 checkpoints.
+    # is correct for INTERLEAVED-history workflows on Qwen3.6 checkpoints.
     # Same alias pattern as the kimi-k25 → Kimi-K2.6 case above.
-    if "qwen3.6" in normalized_model_name or "qwen3_6" in normalized_model_name:
+    if (
+        "qwen3.6" in normalized_model_name
+        or "qwen3_6" in normalized_model_name
+        or "qwen3p6" in normalized_model_name
+    ):
         return "qwen3_6"
-    if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name:
+    if (
+        "qwen3.5" in normalized_model_name
+        or "qwen3_5" in normalized_model_name
+        or "qwen3p5" in normalized_model_name
+    ):
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
         return "gemma4"
@@ -237,21 +271,151 @@ def resolve_renderer_name(
         ) from exc
 
 
+def resolve_renderer_plan(
+    tokenizer_model: str,
+    renderer_name: str = "",
+    *,
+    thinking_trace_history_mode: (
+        str | ThinkingTraceHistoryMode | None
+    ) = ThinkingTraceHistoryMode.UNSPECIFIED,
+) -> ResolvedThinkingTraceRendererPlan:
+    """Resolve a semantic history mode to a concrete registered renderer.
+
+    This is deliberately separate from :func:`resolve_renderer_name`: legacy
+    callers retain their byte-for-byte default path, while Managed Training can
+    opt into the explicit model capability contract.  The registry performs
+    model validation; no shared ``preserve_thinking`` boolean is forwarded to
+    arbitrary renderers.
+    """
+
+    requested_mode = normalize_thinking_trace_history_mode(thinking_trace_history_mode)
+    default_renderer_name = resolve_renderer_name(tokenizer_model, renderer_name)
+
+    # Preserve the legacy explicit renderer override when the new field is
+    # absent. In particular, an existing `qwen3_6_disable_thinking` config must
+    # not silently become the registry's thinking-enabled INTERLEAVED renderer.
+    if renderer_name and requested_mode is ThinkingTraceHistoryMode.UNSPECIFIED:
+        capability = get_thinking_trace_model_capability(tokenizer_model)
+        matched_plan = (
+            next(
+                (
+                    plan
+                    for plan in capability.plans
+                    if plan.renderer_name == renderer_name
+                ),
+                None,
+            )
+            if capability is not None
+            else None
+        )
+        return ResolvedThinkingTraceRendererPlan(
+            requested_mode=requested_mode,
+            effective_mode=(
+                matched_plan.mode
+                if matched_plan is not None
+                else ThinkingTraceHistoryMode.UNSPECIFIED
+            ),
+            renderer_name=renderer_name,
+            unrolls_multi_turn=(
+                matched_plan.unrolls_multi_turn if matched_plan is not None else None
+            ),
+            canonical_family=(
+                capability.canonical_family if capability is not None else None
+            ),
+        )
+
+    resolved = resolve_thinking_trace_renderer_plan(
+        tokenizer_model,
+        requested_mode=requested_mode,
+        default_renderer_name=default_renderer_name,
+    )
+    if renderer_name and renderer_name != resolved.renderer_name:
+        raise ValueError(
+            f"renderer_name={renderer_name!r} conflicts with "
+            f"thinking_trace_history_mode={requested_mode.value!r}, which "
+            f"requires renderer {resolved.renderer_name!r}."
+        )
+    return resolved
+
+
 def build_renderer(
     tokenizer: Any,
     tokenizer_model: str,
     renderer_name: str = "",
+    *,
+    thinking_trace_history_mode: (
+        str | ThinkingTraceHistoryMode | None
+    ) = ThinkingTraceHistoryMode.UNSPECIFIED,
+    load_image_processor: bool = True,
 ) -> Renderer:
     """Construct the Tinker renderer used for supervised formatting."""
-    resolved_name = resolve_renderer_name(tokenizer_model, renderer_name)
-    if get_image_processor is not None and _renderer_uses_images(resolved_name):
+    resolved_name = resolve_renderer_plan(
+        tokenizer_model,
+        renderer_name,
+        thinking_trace_history_mode=thinking_trace_history_mode,
+    ).renderer_name
+    return build_renderer_from_resolved_name(
+        tokenizer,
+        tokenizer_model,
+        resolved_name,
+        load_image_processor=load_image_processor,
+    )
+
+
+def build_renderer_from_resolved_name(
+    tokenizer: Any,
+    tokenizer_model: str,
+    renderer_name: str,
+    *,
+    load_image_processor: bool = True,
+) -> Renderer:
+    """Construct exactly ``renderer_name`` without consulting capabilities."""
+
+    if (
+        load_image_processor
+        and get_image_processor is not None
+        and _renderer_uses_images(renderer_name)
+    ):
         _ensure_trust_remote_code_for_image_processor(tokenizer_model)
         return get_renderer(
-            resolved_name,
+            renderer_name,
             tokenizer,
             image_processor=get_image_processor(tokenizer_model),
         )
-    return get_renderer(resolved_name, tokenizer)
+    return get_renderer(renderer_name, tokenizer)
+
+
+def resolve_renderer_snapshot(
+    *,
+    tokenizer_model: str,
+    renderer_name: str,
+    thinking_trace_history_mode: str,
+    renderer_name_is_resolved: bool = False,
+) -> str:
+    """Resolve a direct request or reuse a concrete managed renderer.
+
+    ``renderer_name`` alone remains a direct cookbook override and is validated
+    against any explicit semantic mode. Managed Training additionally sets
+    ``renderer_name_is_resolved`` after materializing the renderer; only that
+    provenance makes the concrete name authoritative across retries/resumes.
+    Renderer registrations must stay backward compatible with persisted names.
+    """
+
+    if renderer_name_is_resolved:
+        if not renderer_name:
+            raise ValueError(
+                "renderer_name_is_resolved=True requires a non-empty renderer_name."
+            )
+        return renderer_name
+
+    normalized_mode = normalize_thinking_trace_history_mode(thinking_trace_history_mode)
+    if normalized_mode is not ThinkingTraceHistoryMode.UNSPECIFIED:
+        return resolve_renderer_plan(
+            tokenizer_model,
+            renderer_name,
+            thinking_trace_history_mode=normalized_mode,
+        ).renderer_name
+    return resolve_renderer_name(tokenizer_model, renderer_name)
 
 
 def populate_render_worker_state(
@@ -259,8 +423,13 @@ def populate_render_worker_state(
     *,
     tokenizer_model: str,
     tokenizer_revision: str | None = None,
+    tokenizer_trust_remote_code: bool | None = None,
     renderer_name: str,
     max_seq_len: int,
+    thinking_trace_history_mode: (
+        str | ThinkingTraceHistoryMode | None
+    ) = ThinkingTraceHistoryMode.UNSPECIFIED,
+    renderer_name_is_resolved: bool = False,
     **extras: Any,
 ) -> None:
     """Build a tokenizer + renderer and populate ``state`` for DataLoader workers.
@@ -272,13 +441,31 @@ def populate_render_worker_state(
     top-level render function (also picklable for spawn) can read from it.
 
     Stores ``tokenizer``, ``renderer``, ``max_seq_len`` plus any keyword
-    ``extras`` (e.g. ``train_on_what`` for SFT). Reuses ``trust_remote_code``
-    for HF tokenizer load -- required by Kimi / Qwen image processors.
+    ``extras`` (e.g. ``train_on_what`` for SFT). A ``None`` remote-code policy
+    preserves the legacy permissive load; reviewed plans pass an explicit value.
     """
-    tokenizer = load_tokenizer(tokenizer_model, tokenizer_revision)
+    tokenizer = load_tokenizer(
+        tokenizer_model,
+        tokenizer_revision,
+        tokenizer_trust_remote_code,
+    )
+    renderer = (
+        build_renderer_from_resolved_name(
+            tokenizer,
+            tokenizer_model,
+            renderer_name,
+        )
+        if renderer_name_is_resolved
+        else build_renderer(
+            tokenizer,
+            tokenizer_model,
+            renderer_name,
+            thinking_trace_history_mode=thinking_trace_history_mode,
+        )
+    )
     state.update(
         tokenizer=tokenizer,
-        renderer=build_renderer(tokenizer, tokenizer_model, renderer_name),
+        renderer=renderer,
         max_seq_len=max_seq_len,
         **extras,
     )
@@ -314,6 +501,7 @@ def _renderer_uses_images(renderer_name: str) -> bool:
             "qwen3_5",
             "qwen3_6",
             "kimi_k25",
+            "kimi_k26",
             "kimi_k27",
         )
     )
@@ -553,33 +741,46 @@ def normalize_messages(
         # understand structured thinking (qwen3*, kimi_k2*, kimi_k25*,
         # kimi_k26*, deepseekv3_thinking, gemma4, gemma4_thinking, nemotron3*,
         # gpt_oss_*).
-        # Precedence: ``thinking`` > ``reasoning`` > ``reasoning_content``.
-        # Empty strings are treated as absent, matching jinja truthiness.
+        # Generic precedence uses Jinja truthiness: ``thinking`` > non-empty
+        # ``reasoning`` > non-empty ``reasoning_content``. Kimi is different:
+        # its official template uses field presence for ``reasoning``. Preserve
+        # both original source strings on private metadata keys so Kimi's
+        # concrete adapters can apply that rule without making Qwen/Gemma drop
+        # a non-empty ``reasoning_content`` merely because ``reasoning=""``.
         reasoning = message.get("reasoning")
-        if thinking is None and reasoning is not None:
-            if not isinstance(reasoning, str):
+        reasoning_content = message.get("reasoning_content")
+        if thinking is None:
+            if reasoning is not None and not isinstance(reasoning, str):
                 raise TypeError(
                     f"Unsupported reasoning value type: {type(reasoning)!r}"
                 )
-            if reasoning:
-                normalized_message["content"] = [
-                    {"type": "thinking", "thinking": reasoning},
-                    *_ensure_content_parts(normalized_message["content"]),
-                ]
 
-        reasoning_content = message.get("reasoning_content")
-        if (
-            thinking is None
-            and not (isinstance(reasoning, str) and reasoning)
-            and reasoning_content is not None
-        ):
-            if not isinstance(reasoning_content, str):
+            if reasoning_content is not None and not isinstance(
+                reasoning_content, str
+            ):
                 raise TypeError(
-                    f"Unsupported reasoning_content value type: {type(reasoning_content)!r}"
+                    "Unsupported reasoning_content value type: "
+                    f"{type(reasoning_content)!r}"
                 )
-            if reasoning_content:
+
+            # ``Message`` is a TypedDict owned by tinker_cookbook. These
+            # private keys are intentionally runtime-only metadata consumed by
+            # cookbook-local renderer adapters and ignored by upstream ones.
+            if isinstance(reasoning, str):
+                normalized_message[ORIGINAL_REASONING] = reasoning  # type: ignore[typeddict-unknown-key]
+            if isinstance(reasoning_content, str):
+                normalized_message[ORIGINAL_REASONING_CONTENT] = reasoning_content  # type: ignore[typeddict-unknown-key]
+
+            promoted_reasoning = (
+                reasoning
+                if isinstance(reasoning, str) and reasoning
+                else reasoning_content
+                if isinstance(reasoning_content, str) and reasoning_content
+                else None
+            )
+            if promoted_reasoning is not None:
                 normalized_message["content"] = [
-                    {"type": "thinking", "thinking": reasoning_content},
+                    {"type": "thinking", "thinking": promoted_reasoning},
                     *_ensure_content_parts(normalized_message["content"]),
                 ]
 

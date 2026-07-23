@@ -7,12 +7,14 @@ Background
 HuggingFace chat templates for thinking models (Qwen3, Qwen3.5,
 DeepSeek-V3 thinking, GLM-5.1, gpt-oss reasoning, Kimi K2/K2.5,
 Nemotron3) strip historical ``<think>`` blocks from prior assistant
-turns during inference: only the *last* assistant turn carries its real
-reasoning trace. The shipped ``apply_chat_template`` defaults to this
-"strip-from-history" behavior — opt-in flags
-(``clear_thinking=False``, ``enable_thinking=False``) toggle alternate
-paths but the strip path is what every standard inference stack
-(vLLM, transformers, Fireworks serverless) feeds the model.
+turns during inference while retaining the model-defined current trajectory
+(often every assistant after the last real user query, not merely the final
+assistant message). The shipped ``apply_chat_template`` commonly defaults to this
+"strip-from-history" behavior. History flags use different polarity across
+vendors (for example ``clear_thinking=False`` versus
+``preserve_thinking=True``); the semantic capability registry maps them to
+concrete renderer variants. ``enable_thinking`` is a separate generation axis
+and is not a history-mode switch.
 
 A naive multi-turn ``ALL_ASSISTANT_MESSAGES`` SFT pipeline that renders
 the full conversation as one datum and weights every assistant turn
@@ -104,7 +106,7 @@ class DisaggregateMultiTurnMixin:
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_TURN,
     ):
         # Extension fast-path: if the renderer satisfies the sequence
-        # extension property (e.g. caller opted into preserve-history mode
+        # extension property (e.g. caller opted into PRESERVED history mode
         # on a renderer that supports it), the singular render is correct
         # and disaggregating would N²-blow up token cost for no win.
         if self.has_extension_property:
@@ -155,8 +157,6 @@ class DisaggregateMultiTurnMixin:
                 if train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
                 else train_on_what
             )
-            examples.append(
-                self.build_supervised_example(prefix, train_on_what=mode)
-            )
+            examples.append(self.build_supervised_example(prefix, train_on_what=mode))
 
         return examples

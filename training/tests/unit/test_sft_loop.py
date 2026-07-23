@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import training.recipes.sft_loop as module
+from training.utils import supervised as supervised_utils
 from training.utils.checkpoints import TrainingCheckpoints
 
 
@@ -69,7 +70,7 @@ def _test_datum(test_id: str):
     )
 
 
-def test_init_render_worker_forwards_tokenizer_revision(monkeypatch):
+def test_init_render_worker_forwards_materialized_tokenizer_plan(monkeypatch):
     captured: dict = {}
 
     def fake_populate_render_worker_state(state, **kwargs):
@@ -78,13 +79,100 @@ def test_init_render_worker_forwards_tokenizer_revision(monkeypatch):
 
     monkeypatch.setattr(module, "populate_render_worker_state", fake_populate_render_worker_state)
 
-    module._init_render_worker("moonshotai/Kimi-K2.6", "kimi_k25", "all_assistant_messages", 4096, "2755962")
+    module._init_render_worker(
+        "moonshotai/Kimi-K2.6",
+        "kimi_k25",
+        "all_assistant_messages",
+        4096,
+        "2755962",
+        "interleaved",
+        False,
+    )
 
     assert captured["state"] is module._worker_state
     assert captured["kwargs"]["tokenizer_model"] == "moonshotai/Kimi-K2.6"
     assert captured["kwargs"]["tokenizer_revision"] == "2755962"
+    assert captured["kwargs"]["tokenizer_trust_remote_code"] is False
     assert captured["kwargs"]["renderer_name"] == "kimi_k25"
     assert captured["kwargs"]["max_seq_len"] == 4096
+    assert captured["kwargs"]["thinking_trace_history_mode"] == "interleaved"
+    assert captured["kwargs"]["renderer_name_is_resolved"] is True
+
+
+def test_init_render_worker_uses_exact_main_resolved_renderer(monkeypatch):
+    captured: dict = {}
+
+    def fake_populate_render_worker_state(state, **kwargs):
+        captured["kwargs"] = kwargs
+        state.update(renderer=object(), tokenizer=object())
+
+    monkeypatch.setattr(
+        module, "populate_render_worker_state", fake_populate_render_worker_state
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_renderer_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("live registry was consulted"),
+    )
+
+    module._worker_state.clear()
+    module._init_render_worker(
+        "accounts/fireworks/models/qwen3p6-27b",
+        "qwen3_6_interleaved",
+        "all_assistant_messages",
+        4096,
+    )
+
+    assert captured["kwargs"]["renderer_name"] == "qwen3_6_interleaved"
+    assert captured["kwargs"]["thinking_trace_history_mode"] == ""
+    assert captured["kwargs"]["renderer_name_is_resolved"] is True
+    assert module._worker_state["resolved_renderer_name"] == "qwen3_6_interleaved"
+    assert module._worker_state["thinking_trace_history_mode"] == ""
+
+
+def test_resolved_renderer_name_resolves_unpinned_semantic_mode(monkeypatch):
+    captured: dict = {}
+
+    def fake_resolve(**kwargs):
+        captured.update(kwargs)
+        return "qwen3_6_preserved"
+
+    monkeypatch.setattr(module, "resolve_renderer_snapshot", fake_resolve)
+
+    assert module._resolved_renderer_name(
+        tokenizer_model="accounts/fireworks/models/qwen3p6-27b",
+        renderer_name="",
+        thinking_trace_history_mode="preserved",
+    ) == "qwen3_6_preserved"
+    assert captured == {
+        "tokenizer_model": "accounts/fireworks/models/qwen3p6-27b",
+        "renderer_name": "",
+        "thinking_trace_history_mode": "preserved",
+        "renderer_name_is_resolved": False,
+    }
+
+
+def test_resolved_renderer_name_reuses_persisted_snapshot_without_reresolving(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        supervised_utils,
+        "resolve_thinking_trace_renderer_plan",
+        lambda *_args, **_kwargs: pytest.fail("live registry was consulted"),
+    )
+    assert module._resolved_renderer_name(
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer_name="qwen3_6_preserved",
+        thinking_trace_history_mode="preserved",
+        renderer_name_is_resolved=True,
+    ) == "qwen3_6_preserved"
+
+    assert module._resolved_renderer_name(
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer_name="persisted-renderer-before-registry-drift",
+        thinking_trace_history_mode="interleaved",
+        renderer_name_is_resolved=True,
+    ) == "persisted-renderer-before-registry-drift"
 
 
 def test_configure_render_sample_state_does_not_repopulate_renderer(tmp_path, monkeypatch):
@@ -100,8 +188,14 @@ def test_configure_render_sample_state_does_not_repopulate_renderer(tmp_path, mo
             train_on_what=kwargs["train_on_what"],
         )
 
-    monkeypatch.setattr(module, "populate_render_worker_state", fake_populate_render_worker_state)
-    monkeypatch.setattr(module, "resolve_renderer_name", lambda *args, **kwargs: "unit-renderer")
+    monkeypatch.setattr(
+        module, "populate_render_worker_state", fake_populate_render_worker_state
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_renderer_snapshot",
+        lambda **kwargs: pytest.fail("live registry was consulted"),
+    )
 
     module._worker_state.clear()
     module._init_render_worker("model", "renderer", "all_assistant_messages", 128)
@@ -109,7 +203,7 @@ def test_configure_render_sample_state_does_not_repopulate_renderer(tmp_path, mo
 
     assert calls["populate"] == 1
     assert module._worker_state["tokenizer"] is tokenizer
-    assert module._worker_state["resolved_renderer_name"] == "unit-renderer"
+    assert module._worker_state["resolved_renderer_name"] == "renderer"
     assert module._worker_state["render_samples_local_dir"] == str(tmp_path)
     assert module._worker_state["render_samples_limit"] == 3
     assert module._worker_state["render_samples_written"] == 0

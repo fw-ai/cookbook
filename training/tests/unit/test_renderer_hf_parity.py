@@ -39,6 +39,7 @@ from training.renderer.verifier.utils.hf_parity import (
     compare_renderer_to_hf,
     format_divergence,
 )
+from training.renderer.thinking_trace import get_thinking_trace_model_capability
 
 
 @dataclasses.dataclass
@@ -47,6 +48,7 @@ class _Case:
     renderer: str
     tokenizer_model: str
     messages: list[dict]
+    tokenizer_revision: str | None = None
     apply_chat_template_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
     xfail_reason: str | None = None  # if set, mark the test xfail with this reason
 
@@ -71,7 +73,19 @@ _KIMI_REASONING_MSGS = [
     },
     {"role": "user", "content": "And 3+3?"},
 ]
-_QWEN35_MODEL = "Qwen/Qwen3.5-27B"
+def _verified_source(alias: str) -> tuple[str, str]:
+    capability = get_thinking_trace_model_capability(alias)
+    assert capability is not None
+    return capability.tokenizer.repo, capability.tokenizer.revision
+
+
+_GLM51_MODEL, _GLM51_REVISION = _verified_source("zai-org/GLM-5.1")
+_GLM52_MODEL, _GLM52_REVISION = _verified_source("zai-org/GLM-5.2")
+_QWEN35_MODEL, _QWEN35_REVISION = _verified_source("Qwen/Qwen3.5-35B-A3B")
+_QWEN36_MODEL, _QWEN36_REVISION = _verified_source("Qwen/Qwen3.6-27B")
+_KIMI25_MODEL, _KIMI25_REVISION = _verified_source("moonshotai/Kimi-K2.5")
+_KIMI26_MODEL, _KIMI26_REVISION = _verified_source("moonshotai/Kimi-K2.6")
+_KIMI27_MODEL, _KIMI27_REVISION = _verified_source("moonshotai/Kimi-K2.7-Code")
 _ONE_PIXEL_PNG = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8A"
@@ -82,28 +96,32 @@ _ONE_PIXEL_PNG = (
 _CASES: list[_Case] = [
     _Case(
         case_id="glm5-single-turn",
-        renderer="glm5",
-        tokenizer_model="zai-org/GLM-5.1",
+        renderer="glm5_interleaved",
+        tokenizer_model=_GLM51_MODEL,
         messages=_SHORT_MSGS,
+        tokenizer_revision=_GLM51_REVISION,
     ),
     _Case(
         case_id="glm5-multi-turn",
-        renderer="glm5",
-        tokenizer_model="zai-org/GLM-5.1",
+        renderer="glm5_interleaved",
+        tokenizer_model=_GLM51_MODEL,
         messages=_MULTI_TURN_MSGS,
+        tokenizer_revision=_GLM51_REVISION,
     ),
     _Case(
         case_id="glm_moe_dsa-single-turn",
-        renderer="glm_moe_dsa",
-        tokenizer_model="zai-org/GLM-5.2",
+        renderer="glm_moe_dsa_interleaved",
+        tokenizer_model=_GLM52_MODEL,
         messages=_SHORT_MSGS,
+        tokenizer_revision=_GLM52_REVISION,
         apply_chat_template_kwargs={"reasoning_effort": "max"},
     ),
     _Case(
         case_id="glm_moe_dsa-multi-turn",
-        renderer="glm_moe_dsa",
-        tokenizer_model="zai-org/GLM-5.2",
+        renderer="glm_moe_dsa_interleaved",
+        tokenizer_model=_GLM52_MODEL,
         messages=_MULTI_TURN_MSGS,
+        tokenizer_revision=_GLM52_REVISION,
         apply_chat_template_kwargs={"reasoning_effort": "max"},
     ),
     _Case(
@@ -127,15 +145,17 @@ _CASES: list[_Case] = [
     ),
     _Case(
         case_id="qwen3_5-thinking-single-turn",
-        renderer="qwen3_5",
+        renderer="qwen3_5_interleaved",
         tokenizer_model=_QWEN35_MODEL,
         messages=_SHORT_MSGS,
+        tokenizer_revision=_QWEN35_REVISION,
     ),
     _Case(
         case_id="qwen3_5-disable-thinking",
-        renderer="qwen3_5_disable_thinking",
+        renderer="qwen3_5_disable_thinking_interleaved",
         tokenizer_model=_QWEN35_MODEL,
         messages=_SHORT_MSGS,
+        tokenizer_revision=_QWEN35_REVISION,
         apply_chat_template_kwargs={"enable_thinking": False},
     ),
     # Qwen3.6 aliases the qwen3_5 renderer family
@@ -144,21 +164,24 @@ _CASES: list[_Case] = [
     # (no `preserve_thinking` kwarg → byte-identical to Qwen3.5).
     _Case(
         case_id="qwen3_6-thinking-single-turn",
-        renderer="qwen3_6",
-        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer="qwen3_6_interleaved",
+        tokenizer_model=_QWEN36_MODEL,
         messages=_SHORT_MSGS,
+        tokenizer_revision=_QWEN36_REVISION,
     ),
     _Case(
         case_id="qwen3_6-thinking-multi-turn",
-        renderer="qwen3_6",
-        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer="qwen3_6_interleaved",
+        tokenizer_model=_QWEN36_MODEL,
         messages=_MULTI_TURN_MSGS,
+        tokenizer_revision=_QWEN36_REVISION,
     ),
     _Case(
         case_id="qwen3_6-disable-thinking",
-        renderer="qwen3_6_disable_thinking",
-        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer="qwen3_6_disable_thinking_interleaved",
+        tokenizer_model=_QWEN36_MODEL,
         messages=_SHORT_MSGS,
+        tokenizer_revision=_QWEN36_REVISION,
         apply_chat_template_kwargs={"enable_thinking": False},
     ),
     # Qwen3.6 preserve-thinking against an assistant message that has
@@ -173,22 +196,32 @@ _CASES: list[_Case] = [
     # train-inference parity with the stock HF chat template.
     _Case(
         case_id="qwen3_6-preserve-thinking-multi-turn",
-        renderer="qwen3_6_preserve_thinking",
-        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer="qwen3_6_preserved",
+        tokenizer_model=_QWEN36_MODEL,
         messages=_MULTI_TURN_MSGS,
+        tokenizer_revision=_QWEN36_REVISION,
         apply_chat_template_kwargs={"preserve_thinking": True},
     ),
     _Case(
         case_id="kimi_k25-single-turn",
-        renderer="kimi_k25",
-        tokenizer_model="moonshotai/Kimi-K2.5",
+        renderer="kimi_k25_interleaved",
+        tokenizer_model=_KIMI25_MODEL,
         messages=_SHORT_MSGS,
+        tokenizer_revision=_KIMI25_REVISION,
+    ),
+    _Case(
+        case_id="kimi_k26-interleaved-single-turn",
+        renderer="kimi_k26_interleaved",
+        tokenizer_model=_KIMI26_MODEL,
+        messages=_SHORT_MSGS,
+        tokenizer_revision=_KIMI26_REVISION,
     ),
     _Case(
         case_id="kimi_k27_code-preserve-thinking-multi-turn",
-        renderer="kimi_k27_code",
-        tokenizer_model="moonshotai/Kimi-K2.7-Code",
+        renderer="kimi_k27_code_preserved",
+        tokenizer_model=_KIMI27_MODEL,
         messages=_KIMI_REASONING_MSGS,
+        tokenizer_revision=_KIMI27_REVISION,
     ),
     _Case(
         case_id="minimax_m2-single-turn",
@@ -229,9 +262,16 @@ def test_renderer_matches_hf_chat_template(case: _Case) -> None:
         pytest.xfail(case.xfail_reason)
 
     try:
+        capability = get_thinking_trace_model_capability(case.tokenizer_model)
         result: HFParityResult = compare_renderer_to_hf(
             renderer_name=case.renderer,
             tokenizer_model=case.tokenizer_model,
+            tokenizer_revision=case.tokenizer_revision,
+            tokenizer_trust_remote_code=(
+                capability.tokenizer.trust_remote_code
+                if capability is not None
+                else None
+            ),
             messages=case.messages,
             add_generation_prompt=True,
             apply_chat_template_kwargs=case.apply_chat_template_kwargs,

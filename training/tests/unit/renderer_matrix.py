@@ -116,7 +116,7 @@ RENDERER_MATRIX: list[RendererCase] = [
     # and appends a synthetic terminal role sentinel to supervised examples,
     # so supervised output is not byte-identical to apply_chat_template.
     RendererCase(
-        renderer="glm5",
+        renderer="glm5_interleaved",
         tokenizer_model="zai-org/GLM-5.1",
         supports_thinking=True,
         supports_tools=True,
@@ -125,12 +125,34 @@ RENDERER_MATRIX: list[RendererCase] = [
         observation_equals_generation=False,
     ),
     RendererCase(
-        renderer="glm_moe_dsa",
+        renderer="glm5_preserve_thinking",
+        tokenizer_model="zai-org/GLM-5.1",
+        hf_kwargs={"clear_thinking": False},
+        supports_thinking=True,
+        supports_tools=True,
+        # A historical answer without explicit reasoning collapses from
+        # <think></think> to </think>, even with clear_thinking=False.
+        has_extension_property=False,
+        supervised_hf_parity=False,
+        observation_equals_generation=False,
+    ),
+    RendererCase(
+        renderer="glm_moe_dsa_interleaved",
         tokenizer_model="zai-org/GLM-5.2",
         hf_kwargs={"reasoning_effort": "max"},
         supports_thinking=True,
         supports_tools=True,
         has_extension_property=False,
+        supervised_hf_parity=False,
+        observation_equals_generation=False,
+    ),
+    RendererCase(
+        renderer="glm_moe_dsa_preserve_thinking",
+        tokenizer_model="zai-org/GLM-5.2",
+        hf_kwargs={"reasoning_effort": "max", "clear_thinking": False},
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
         supervised_hf_parity=False,
         observation_equals_generation=False,
     ),
@@ -168,7 +190,7 @@ RENDERER_MATRIX: list[RendererCase] = [
     # preserve-thinking variant keeps history reasoning intact and thus
     # satisfies the extension property.
     RendererCase(
-        renderer="qwen3_6",
+        renderer="qwen3_6_interleaved",
         tokenizer_model="Qwen/Qwen3.6-27B",
         supports_thinking=True,
         supports_tools=True,
@@ -177,7 +199,7 @@ RENDERER_MATRIX: list[RendererCase] = [
         observation_equals_generation=False,
     ),
     RendererCase(
-        renderer="qwen3_6_disable_thinking",
+        renderer="qwen3_6_disable_thinking_interleaved",
         tokenizer_model="Qwen/Qwen3.6-27B",
         hf_kwargs={"enable_thinking": False},
         supports_thinking=False,
@@ -187,7 +209,7 @@ RENDERER_MATRIX: list[RendererCase] = [
         observation_equals_generation=False,
     ),
     RendererCase(
-        renderer="qwen3_6_preserve_thinking",
+        renderer="qwen3_6_preserved",
         tokenizer_model="Qwen/Qwen3.6-27B",
         hf_kwargs={"preserve_thinking": True},
         supports_thinking=True,
@@ -200,26 +222,54 @@ RENDERER_MATRIX: list[RendererCase] = [
         observation_equals_generation=False,
     ),
     # -- Kimi K2.x ---------------------------------------------------------
-    # kimi_k25 strips thinking from history (no extension) but keeps the
-    # same supervised/generation header. kimi_k27_code preserves historical
-    # thinking, but its current upstream base reports no extension property
-    # and opens <think> only in generation prompts, so observation != generation.
+    # K2.5 is INTERLEAVED-only. K2.6 exposes INTERLEAVED/PRESERVED, and K2.7
+    # Code is PRESERVED-only. Preserve variants satisfy the extension property; all
+    # variants open <think> only in generation prompts, so observation !=
+    # generation.
     RendererCase(
-        renderer="kimi_k25",
+        renderer="kimi_k25_interleaved",
         tokenizer_model="moonshotai/Kimi-K2.5",
         supports_thinking=True,
         supports_tools=True,
         has_extension_property=False,
-        supervised_hf_parity=True,
+        # SFT treats the terminal assistant trajectory as the current target
+        # and keeps its thinking; a completed HF INTERLEAVED conversation treats the
+        # same assistant as history and strips it.
+        supervised_hf_parity=False,
         observation_equals_generation=False,
         tool_call_id_style="kimi",
     ),
     RendererCase(
-        renderer="kimi_k27_code",
-        tokenizer_model="moonshotai/Kimi-K2.7-Code",
+        renderer="kimi_k26_interleaved",
+        tokenizer_model="moonshotai/Kimi-K2.6",
+        hf_kwargs={"preserve_thinking": False},
         supports_thinking=True,
         supports_tools=True,
         has_extension_property=False,
+        supervised_hf_parity=False,
+        observation_equals_generation=False,
+        tool_call_id_style="kimi",
+    ),
+    RendererCase(
+        renderer="kimi_k26_preserve_thinking",
+        tokenizer_model="moonshotai/Kimi-K2.6",
+        hf_kwargs={"preserve_thinking": True},
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
+        # Structured ThinkingPart fixtures need a different HF input shape
+        # (top-level reasoning_content); focused parity tests cover that
+        # semantically equivalent representation.
+        supervised_hf_parity=False,
+        observation_equals_generation=False,
+        tool_call_id_style="kimi",
+    ),
+    RendererCase(
+        renderer="kimi_k27_code_preserved",
+        tokenizer_model="moonshotai/Kimi-K2.7-Code",
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
         supervised_hf_parity=True,
         observation_equals_generation=False,
         tool_call_id_style="kimi",
@@ -348,18 +398,20 @@ RENDERER_MATRIX: list[RendererCase] = [
 #
 # Deliberately EXCLUDED (known to require an out-of-band asset, tracked, not
 # silently ignored):
-#   * kimi_k27_code — gated/preview tokenizer, not reliably public yet.
+#   * kimi_k27_code_preserved — gated/preview tokenizer, not reliably public yet.
 #   * deepseek_v4   — preview tokenizer ships no chat_template to diff against.
 REQUIRED_RENDERERS: frozenset[str] = frozenset(
     {
-        "glm5",
-        "glm_moe_dsa",
+        "glm5_interleaved",
+        "glm_moe_dsa_interleaved",
         "qwen3",
         "qwen3_disable_thinking",
-        "qwen3_6",
-        "qwen3_6_disable_thinking",
-        "qwen3_6_preserve_thinking",
-        "kimi_k25",
+        "qwen3_6_interleaved",
+        "qwen3_6_disable_thinking_interleaved",
+        "qwen3_6_preserved",
+        "kimi_k25_interleaved",
+        "kimi_k26_interleaved",
+        "kimi_k26_preserve_thinking",
         "minimax_m2",
         "minimax_m3",
         "nemotron3",

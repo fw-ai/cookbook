@@ -7,11 +7,12 @@ tokenizer and chat template).
 Token-level layout follows ``tokenizer.apply_chat_template`` byte-for-byte
 (verified by the unit tests in ``test_glm5_renderer.py``), modulo a synthetic
 terminal role sentinel used only for supervised examples that end on an
-assistant message. Historical assistant ``<think>`` blocks are always
-stripped, matching the shipped chat template's default ``clear_thinking``
-behavior (the same rendering every standard inference stack feeds the
-model). Multi-turn ``ALL_ASSISTANT_MESSAGES`` SFT is handled by
-disaggregating per user turn — see
+assistant message. Historical assistant ``<think>`` blocks are stripped by
+default, matching the shipped chat template's default ``clear_thinking``
+behavior. The registered ``*_preserve_thinking`` variants instead match
+``apply_chat_template(clear_thinking=False)`` and keep reasoning across user
+turns. Multi-turn ``ALL_ASSISTANT_MESSAGES`` SFT in the default strip mode is
+handled by disaggregating per user turn — see
 :class:`training.renderer._disaggregate_mixin.DisaggregateMultiTurnMixin`.
 
 Role tag layout (as the shipped Jinja template emits them):
@@ -103,6 +104,7 @@ from tinker_cookbook.renderers.base import (
 )
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.reasoning_fields import original_reasoning_content
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 _BOS_TEXT = "[gMASK]<sop>"
@@ -182,7 +184,9 @@ def _format_tool_declarations(tools: list[ToolSpec]) -> str:
     for tool in tools:
         if not isinstance(tool, Mapping):
             raise TypeError(f"GLM5Renderer expected tool mapping, got {type(tool)!r}")
-        tool_spec = tool.get("function") if isinstance(tool.get("function"), Mapping) else tool
+        tool_spec = (
+            tool.get("function") if isinstance(tool.get("function"), Mapping) else tool
+        )
         if tool_spec.get("defer_loading"):
             continue
         filtered = {
@@ -276,23 +280,103 @@ def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
     return "".join(reasoning_parts), "".join(text_parts)
 
 
+def _message_has_explicit_reasoning_field(message: Message) -> bool:
+    """Whether GLM-5.1 considers this assistant explicitly thinking.
+
+    The upstream GLM-5.1 template builds ``thinking_indices`` from
+    ``m.reasoning_content is string``.  A reasoning field retained by
+    cookbook's normalized representation becomes a structured ``thinking``
+    part, so both forms count here.  Presence matters, not truthiness: an empty
+    string still marks the whole user trajectory as having thinking.  A
+    ``<think>`` block embedded in plain string content deliberately does *not*
+    mark the trajectory, matching the template's first pass.
+    """
+    has_reasoning_content, _reasoning_content = original_reasoning_content(message)
+    if has_reasoning_content:
+        return True
+
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(part, Mapping)
+        and part.get("type") == "thinking"
+        and isinstance(part.get("thinking"), str)
+        for part in content
+    )
+
+
+def _user_indices_with_explicit_reasoning(
+    messages: list[Message],
+) -> set[int]:
+    """Mirror GLM-5.1's ``thinking_indices`` pre-pass.
+
+    Each explicit assistant reasoning field marks the most recent user index.
+    Assistants before the first user do not affect ``has_thinking`` because the
+    template only updates that state while rendering a user message.
+    """
+    current_user_idx: int | None = None
+    thinking_user_indices: set[int] = set()
+    for idx, message in enumerate(messages):
+        if message["role"] == "user":
+            current_user_idx = idx
+        elif (
+            message["role"] == "assistant"
+            and current_user_idx is not None
+            and _message_has_explicit_reasoning_field(message)
+        ):
+            thinking_user_indices.add(current_user_idx)
+    return thinking_user_indices
+
+
+def _extract_assistant_reasoning_and_text(message: Message) -> tuple[str, str]:
+    """Return assistant reasoning/text with HF field precedence.
+
+    Direct renderer callers may still supply the OpenAI-style top-level
+    ``reasoning_content`` field.  Honor it before inspecting embedded
+    ``<think>`` text, just as the official template does.  Production's
+    normalized structured ``thinking`` parts continue through the existing
+    content parser.
+    """
+    has_reasoning_content, reasoning_content = original_reasoning_content(message)
+    if has_reasoning_content:
+        return reasoning_content, _visible_text(message.get("content"))
+    return _extract_reasoning_and_text(message.get("content"))
+
+
 class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
     """Renderer for ZhipuAI GLM-5.1 instruct models.
 
-    Thinking is always stripped from historical assistant turns (matching
-    the shipped chat template's default ``clear_thinking`` behavior, i.e.
-    what every standard inference stack feeds the model). Multi-turn
+    Thinking is stripped from historical assistant turns by default (matching
+    the shipped chat template's default ``clear_thinking`` behavior). When
+    ``clear_thinking=False``, historical reasoning is kept, matching the
+    official template flag directly. Default-mode multi-turn
     ``ALL_ASSISTANT_MESSAGES`` SFT is handled by
-    :class:`DisaggregateMultiTurnMixin`, which splits the conversation
-    per user turn so each datum's prompt context byte-equals what
-    ``apply_chat_template`` produces for the same prefix.
+    :class:`DisaggregateMultiTurnMixin`, which splits the conversation per user
+    turn so each datum's prompt context byte-equals what ``apply_chat_template``
+    produces for the same prefix. GLM-5.1 PRESERVED mode also disaggregates: an
+    assistant with no explicit reasoning can change from ``<think></think>``
+    to ``</think>`` when its user turn becomes historical, so the renderer does
+    not satisfy the extension property even though explicit reasoning is kept.
     """
 
     _initial_prompt_text = ""
     _historical_stripped_think_block = "</think>"
+    _preserve_has_extension_property = False
 
-    def __init__(self, tokenizer: Tokenizer) -> None:
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        *,
+        clear_thinking: bool = True,
+        honor_source_reasoning_fields: bool = False,
+    ) -> None:
         super().__init__(tokenizer)
+        self._clear_thinking = clear_thinking
+        self._honor_source_reasoning_fields = honor_source_reasoning_fields
+
+    @property
+    def has_extension_property(self) -> bool:
+        """Whether PRESERVED mode is prefix-stable for this GLM template family."""
+        return not self._clear_thinking and self._preserve_has_extension_property
 
     @property
     def _bos_tokens(self) -> list[int]:
@@ -333,9 +417,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
 
     def _assistant_stop_token(self, message: Message) -> int:
         return (
-            self._observation_token
-            if message.get("tool_calls")
-            else self._user_token
+            self._observation_token if message.get("tool_calls") else self._user_token
         )
 
     def _assistant_stop_overlap(self, message: Message) -> tinker.EncodedTextChunk:
@@ -441,9 +523,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                         )
                     )
             else:
-                model_input_chunks_weights.append(
-                    (output_part, int(output_has_weight))
-                )
+                model_input_chunks_weights.append((output_part, int(output_has_weight)))
 
     def build_supervised_example(
         self,
@@ -466,9 +546,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         if self._initial_prompt_tokens:
             model_input_chunks_weights.append(
                 (
-                    tinker.types.EncodedTextChunk(
-                        tokens=self._initial_prompt_tokens
-                    ),
+                    tinker.types.EncodedTextChunk(tokens=self._initial_prompt_tokens),
                     0.0,
                 )
             )
@@ -477,8 +555,12 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             (idx for idx, message in enumerate(messages) if message["role"] == "user"),
             default=-1,
         )
+        thinking_user_indices = _user_indices_with_explicit_reasoning(messages)
+        current_user_idx: int | None = None
 
         for idx, message in enumerate(messages):
+            if message["role"] == "user":
+                current_user_idx = idx
             if train_on_what == TrainOnWhat.CUSTOMIZED:
                 assert "trainable" in message, (
                     "When using CUSTOMIZED train_on_what, each message must have "
@@ -497,7 +579,14 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 prev_message=messages[idx - 1] if idx > 0 else None,
                 last_user_index=last_user_idx,
             )
-            rendered_message = self.render_message(message, ctx)
+            rendered_message = self.render_message(
+                message,
+                ctx,
+                user_turn_has_explicit_reasoning=(
+                    current_user_idx is not None
+                    and current_user_idx in thinking_user_indices
+                ),
+            )
 
             output_has_weight = self._output_has_weight(
                 message,
@@ -557,15 +646,26 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             (idx for idx, message in enumerate(messages) if message["role"] == "user"),
             default=-1,
         )
+        thinking_user_indices = _user_indices_with_explicit_reasoning(messages)
+        current_user_idx: int | None = None
 
         for idx, message in enumerate(messages):
+            if message["role"] == "user":
+                current_user_idx = idx
             ctx = RenderContext(
                 idx=idx,
                 is_last=(idx == len(messages) - 1),
                 prev_message=messages[idx - 1] if idx > 0 else None,
                 last_user_index=last_user_idx,
             )
-            rendered_message = self.render_message(message, ctx)
+            rendered_message = self.render_message(
+                message,
+                ctx,
+                user_turn_has_explicit_reasoning=(
+                    current_user_idx is not None
+                    and current_user_idx in thinking_user_indices
+                ),
+            )
             if rendered_message.header:
                 chunks.append(rendered_message.header)
             chunks.extend(
@@ -594,10 +694,28 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             )
         return tinker.ModelInput(chunks=chunks)
 
-    def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
+    def render_message(
+        self,
+        message: Message,
+        ctx: RenderContext,
+        *,
+        user_turn_has_explicit_reasoning: bool | None = None,
+    ) -> RenderedMessage:
         role = message["role"]
         if role == "assistant":
-            return self._render_assistant(message, ctx)
+            if user_turn_has_explicit_reasoning is None:
+                # ``render_message`` is also a public low-level hook. With no
+                # conversation available, the current message is the strongest
+                # faithful fallback; full prompt/example builders always pass
+                # the precomputed per-user trajectory state.
+                user_turn_has_explicit_reasoning = (
+                    _message_has_explicit_reasoning_field(message)
+                )
+            return self._render_assistant(
+                message,
+                ctx,
+                user_turn_has_explicit_reasoning=user_turn_has_explicit_reasoning,
+            )
         # GLM-5.1 role tags do not have a trailing newline; content is
         # concatenated directly (e.g. ``<|user|>hello``).
         if role == "user":
@@ -608,8 +726,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             output_str = _visible_text(message["content"])
         elif role == "tool":
             prev_is_tool = (
-                ctx.prev_message is not None
-                and ctx.prev_message.get("role") == "tool"
+                ctx.prev_message is not None and ctx.prev_message.get("role") == "tool"
             )
             header_str = "" if prev_is_tool else "<|observation|>"
             output_str = (
@@ -628,23 +745,31 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         ]
         return RenderedMessage(header=header, output=output)
 
-    def _render_assistant(self, message: Message, ctx: RenderContext) -> RenderedMessage:
+    def _render_assistant(
+        self,
+        message: Message,
+        ctx: RenderContext,
+        *,
+        user_turn_has_explicit_reasoning: bool,
+    ) -> RenderedMessage:
         # The role tag ``<|assistant|>`` is the header. Thinking-mode
         # assistants keep the template's opening ``<think>`` in ``output`` for
         # token parity, but supervised rendering masks that prefix because
         # ``add_generation_prompt=True`` injects it before model generation.
         header_str = "<|assistant|>"
 
-        before_last_user = (
-            ctx.last_user_index >= 0
-            and ctx.idx < ctx.last_user_index
-        )
+        before_last_user = ctx.last_user_index >= 0 and ctx.idx < ctx.last_user_index
 
-        reasoning, visible = _extract_reasoning_and_text(message["content"])
+        reasoning, visible = (
+            _extract_assistant_reasoning_and_text(message)
+            if self._honor_source_reasoning_fields
+            else _extract_reasoning_and_text(message.get("content"))
+        )
 
         think_block = self._assistant_think_block(
             before_last_user=before_last_user,
             reasoning=reasoning,
+            user_turn_has_explicit_reasoning=user_turn_has_explicit_reasoning,
         )
 
         visible_stripped = visible.strip()
@@ -675,11 +800,21 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         *,
         before_last_user: bool,
         reasoning: str,
+        user_turn_has_explicit_reasoning: bool,
     ) -> str:
         # Historical turns strip reasoning using the renderer family's collapse
-        # marker; terminal turns either preserve reasoning or emit an empty
-        # think block.
+        # marker. In GLM-5.1 PRESERVED mode, a no-reasoning assistant uses an
+        # empty block only when another explicit reasoning field marked the same
+        # user trajectory via ``thinking_indices / has_thinking``. GLM-5.2's
+        # collapse marker is already the empty block, so the same branch also
+        # reproduces its simpler behavior.
         if before_last_user:
+            if self._clear_thinking:
+                return self._historical_stripped_think_block
+            if reasoning:
+                return f"<think>{reasoning.strip()}</think>"
+            if user_turn_has_explicit_reasoning:
+                return "<think></think>"
             return self._historical_stripped_think_block
         if reasoning:
             return f"<think>{reasoning.strip()}</think>"
@@ -769,11 +904,33 @@ class GLMMoeDsaRenderer(GLM5Renderer):
 
     _initial_prompt_text = "<|system|>Reasoning Effort: Max"
     _historical_stripped_think_block = "<think></think>"
+    _preserve_has_extension_property = True
 
 
 def _glm5_factory(tokenizer: Tokenizer, image_processor=None) -> GLM5Renderer:
     del image_processor
     return GLM5Renderer(tokenizer)
+
+
+def _glm5_interleaved_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLM5Renderer:
+    del image_processor
+    return GLM5Renderer(tokenizer, honor_source_reasoning_fields=True)
+
+
+def _glm5_preserve_thinking_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLM5Renderer:
+    del image_processor
+    # Public PRESERVED maps to the official inverted flag.
+    return GLM5Renderer(
+        tokenizer,
+        clear_thinking=False,
+        honor_source_reasoning_fields=True,
+    )
 
 
 def _glm_moe_dsa_factory(
@@ -784,5 +941,36 @@ def _glm_moe_dsa_factory(
     return GLMMoeDsaRenderer(tokenizer)
 
 
+def _glm_moe_dsa_interleaved_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLMMoeDsaRenderer:
+    del image_processor
+    return GLMMoeDsaRenderer(tokenizer, honor_source_reasoning_fields=True)
+
+
+def _glm_moe_dsa_preserve_thinking_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLMMoeDsaRenderer:
+    del image_processor
+    # Public PRESERVED maps to the official inverted flag.
+    return GLMMoeDsaRenderer(
+        tokenizer,
+        clear_thinking=False,
+        honor_source_reasoning_fields=True,
+    )
+
+
 register_renderer("glm5", _glm5_factory)
+# Keep the existing concrete names above available for legacy direct callers.
+# Managed semantic modes materialize the new names below, so future
+# correctness work cannot silently reinterpret an already persisted name.
+register_renderer("glm5_interleaved", _glm5_interleaved_factory)
+register_renderer("glm5_preserve_thinking", _glm5_preserve_thinking_factory)
 register_renderer("glm_moe_dsa", _glm_moe_dsa_factory)
+register_renderer("glm_moe_dsa_interleaved", _glm_moe_dsa_interleaved_factory)
+register_renderer(
+    "glm_moe_dsa_preserve_thinking",
+    _glm_moe_dsa_preserve_thinking_factory,
+)

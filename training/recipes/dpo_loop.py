@@ -76,7 +76,7 @@ from training.utils import (
     populate_render_worker_state,
     read_api_extra_headers_env,
     render_preference_pair,
-    resolve_renderer_name,
+    resolve_renderer_snapshot,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -110,7 +110,13 @@ class Config:
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for client-side tokenization
     tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
+    tokenizer_trust_remote_code: bool | None = None
+    """Reviewed remote-code policy; ``None`` retains legacy behavior."""
     renderer_name: str = ""
+    renderer_name_is_resolved: bool = False
+    """Whether ``renderer_name`` is a Managed Training materialized snapshot."""
+    thinking_trace_history_mode: str = ""
+    """Semantic effective mode (``interleaved``/``preserved``) for auditability."""
 
     beta: float = 0.1
     learning_rate: float = 1e-5
@@ -200,6 +206,7 @@ def _init_pair_worker(
     renderer_name: str,
     max_seq_len: int,
     tokenizer_revision: str = "",
+    tokenizer_trust_remote_code: bool | None = None,
     _worker_id: int | None = None,
 ) -> None:
     """DataLoader ``worker_init_fn`` for DPO preference-pair rendering.
@@ -211,8 +218,10 @@ def _init_pair_worker(
         _pair_worker_state,
         tokenizer_model=tokenizer_model,
         tokenizer_revision=tokenizer_revision,
+        tokenizer_trust_remote_code=tokenizer_trust_remote_code,
         renderer_name=renderer_name,
         max_seq_len=max_seq_len,
+        renderer_name_is_resolved=True,
     )
 
 
@@ -660,6 +669,15 @@ def main(
             "Config.tokenizer_model is required for client-side tokenization. "
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
+    # Resolve a direct request or reuse the persisted concrete renderer before
+    # provisioning either GPU service. Chosen and rejected are then rendered by
+    # the same concrete renderer in every worker.
+    resolved_renderer_name = resolve_renderer_snapshot(
+        tokenizer_model=cfg.tokenizer_model,
+        renderer_name=cfg.renderer_name,
+        thinking_trace_history_mode=cfg.thinking_trace_history_mode,
+        renderer_name_is_resolved=cfg.renderer_name_is_resolved,
+    )
 
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     cfg.lr_scheduler = lr_scheduler
@@ -758,9 +776,10 @@ def main(
 
         init_args = (
             cfg.tokenizer_model,
-            cfg.renderer_name,
+            resolved_renderer_name,
             max_seq_len,
             cfg.tokenizer_revision,
+            cfg.tokenizer_trust_remote_code,
         )
         _init_pair_worker(*init_args)
         worker_init_fn = functools.partial(_init_pair_worker, *init_args)
@@ -772,7 +791,7 @@ def main(
         logger.info(
             "Streaming %d raw preference rows from %s (renderer=%s, workers=%d%s)",
             len(pair_dataset), cfg.dataset,
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            resolved_renderer_name,
             cfg.render_workers,
             (
                 f", max_pairs={cfg.max_pairs}"

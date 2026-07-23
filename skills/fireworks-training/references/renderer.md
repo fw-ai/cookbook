@@ -61,13 +61,41 @@ Reference: `training/renderer/glm5.py:_append_output_chunks_with_weights`
 stop_overlap with weight 1).
 
 ### Thinking modes
-Three live conventions:
+
+Thinking generation and thinking-history retention are independent axes. Do
+not implement history retention as one shared renderer boolean. Managed
+Training expresses it with `ThinkingTraceHistoryMode.INTERLEAVED` /
+`PRESERVED`; the manual capability registry in
+`training/renderer/thinking_trace.py` resolves that semantic mode to a
+concrete renderer. `INTERLEAVED` matches inference terminology: reasoning may
+be interleaved with tool calls inside one user turn, but it is removed across
+user-turn boundaries. It is distinct from inference `disabled`, which removes
+all prior reasoning, including same-turn tool trajectories. Models not
+explicitly registered remain default-only.
+
+The adapter must account for vendor flag polarity:
+
+| Family | Official template switch | INTERLEAVED | PRESERVED |
+|---|---|---|---|
+| GLM 5.1/5.2 | `clear_thinking` | `true` | `false` |
+| Qwen 3.6 | `preserve_thinking` | `false` | `true` |
+| Kimi K2.6 | `preserve_thinking` | `false` | `true` |
+
+Qwen 3.5 and Kimi K2.5 are INTERLEAVED-only; Kimi K2.7 Code is
+PRESERVED-only.
+`enable_thinking` / disable-thinking renderers are a separate concern and must
+not be selected by the history-mode enum.
+
 - **GLM5**: `<|assistant|><think>{reasoning}</think>{content}`. The
-  `<think>` opening token is part of the generation prefix —
-  hard-appended, masked out of loss.
-- **Qwen3**: `<think>...</think>` when `enable_thinking=True`; the
-  `_disable_thinking` variant emits `<think></think>` to skip
-  reasoning.
+  `<think>` opening token is part of the generation prefix — hard-appended and
+  masked out of loss. GLM 5.2 PRESERVED has the extension property. GLM 5.1
+  PRESERVED does not, because an assistant without explicit reasoning changes
+  its empty-think marker when it becomes historical.
+- **Qwen 3.5/3.6 INTERLEAVED**: clear before the last real user query, not
+  before the last assistant message. Keep the whole assistant → tool →
+  assistant suffix.
+- **Kimi K2.5/2.6 INTERLEAVED**: keep the current trailing assistant/tool
+  trajectory; SFT unrolls only at user boundaries.
 - **DeepSeek V3**: `<｜Assistant｜><think>` (thinking) or
   `<｜Assistant｜></think>` (non-thinking) prefilled deterministically.
 

@@ -18,6 +18,7 @@ from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.data import prepare_sampling_messages
 from training.utils.supervised import (
     build_renderer,
+    build_renderer_from_resolved_name,
     build_datum_from_token_mask,
     populate_render_worker_state,
     resolve_renderer_name,
@@ -57,6 +58,11 @@ class SequenceRenderer:
     ):
         self.calls.append((messages, train_on_what))
         return self.outputs[len(self.calls) - 1]
+
+
+class AtomicPreferenceRenderer(SequenceRenderer):
+    def build_supervised_examples(self, *args, **kwargs):
+        raise AssertionError("preference pairs must not use SFT unrolling")
 
 
 class ModelInputRenderer:
@@ -615,6 +621,17 @@ def test_normalize_messages_empty_reasoning_falls_back_to_reasoning_content():
     ]
 
 
+@pytest.mark.parametrize("field", ["reasoning", "reasoning_content"])
+def test_normalize_messages_empty_reasoning_is_not_a_generic_thinking_part(
+    field: str,
+):
+    normalized = normalize_messages(
+        [{"role": "assistant", field: "", "content": "answer"}]
+    )
+
+    assert normalized[0]["content"] == "answer"
+
+
 def test_normalize_messages_reasoning_content_with_no_text_content():
     """``reasoning_content`` alone should still produce a ThinkingPart.
 
@@ -871,6 +888,60 @@ def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
     assert calls == [("qwen3_vl_instruct", "image-processor")]
 
 
+def test_build_renderer_from_resolved_name_loads_image_processor_by_default(
+    monkeypatch,
+):
+    calls: list[tuple[str, object | None]] = []
+
+    def fake_get_image_processor(model_name):
+        assert model_name == "Qwen/Qwen3-VL-30B-A3B-Instruct"
+        return "image-processor"
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        calls.append((name, image_processor))
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    renderer = build_renderer_from_resolved_name(
+        tokenizer="tok",
+        tokenizer_model="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        renderer_name="qwen3_vl_instruct",
+    )
+
+    assert renderer == "renderer"
+    assert calls == [("qwen3_vl_instruct", "image-processor")]
+
+
+def test_build_renderer_from_resolved_name_can_skip_image_processor(monkeypatch):
+    calls: list[tuple[str, object | None]] = []
+
+    def fail_get_image_processor(_model_name):
+        pytest.fail("image processor was loaded")
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        calls.append((name, image_processor))
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fail_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    renderer = build_renderer_from_resolved_name(
+        tokenizer="tok",
+        tokenizer_model="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        renderer_name="qwen3_vl_instruct",
+        load_image_processor=False,
+    )
+
+    assert renderer == "renderer"
+    assert calls == [("qwen3_vl_instruct", None)]
+
+
 def test_build_renderer_opts_in_trust_remote_code_for_kimi_k2_6(monkeypatch):
     """Kimi-K2.6 ships a custom image processor not covered by tinker_cookbook's
     hardcoded trust_remote_code=True list; build_renderer must set the
@@ -898,7 +969,7 @@ def test_build_renderer_opts_in_trust_remote_code_for_kimi_k2_6(monkeypatch):
     )
 
     assert env_at_call == ["1"]
-    assert result == ("renderer", "kimi_k25", "image-processor")
+    assert result == ("renderer", "kimi_k26_interleaved", "image-processor")
 
 
 def test_build_renderer_does_not_touch_trust_remote_code_for_kimi_k2_5(monkeypatch):
@@ -958,7 +1029,7 @@ def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_5():
     assert resolve_renderer_name("moonshotai/Kimi-K2.5") == "kimi_k25"
 
 
-def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_6():
+def test_resolve_renderer_name_prefers_kimi_k26_for_kimi_k2_6():
     assert resolve_renderer_name("moonshotai/Kimi-K2.6") == "kimi_k25"
 
 
@@ -1106,7 +1177,7 @@ def test_render_preference_pair_uses_shared_renderer_path():
 
 
 def test_render_preference_pair_preserves_multi_turn_history():
-    renderer = SequenceRenderer(
+    renderer = AtomicPreferenceRenderer(
         outputs=[
             ([1, 2, 3, 4, 5, 6, 7], [0, 0, 0, 0, 1, 1, 1]),
             ([1, 2, 3, 4, 9, 10], [0, 0, 0, 0, 1, 1]),
@@ -1180,7 +1251,9 @@ def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
     fake_tokenizer = object()
     fake_renderer = object()
     monkeypatch.setattr(
-        sup, "load_tokenizer", lambda model, revision=None: fake_tokenizer
+        sup,
+        "load_tokenizer",
+        lambda model, revision=None, trust_remote_code=None: fake_tokenizer,
     )
     monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: fake_renderer)
 
@@ -1201,13 +1274,17 @@ def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
     assert state["custom_extra"] == "hello"
 
 
-def test_populate_render_worker_state_forwards_tokenizer_revision(monkeypatch):
+def test_populate_render_worker_state_forwards_materialized_tokenizer_plan(monkeypatch):
     from training.utils import supervised as sup
 
     captured: dict = {}
 
-    def fake_load_tokenizer(model, revision=None):
-        captured.update(model=model, revision=revision)
+    def fake_load_tokenizer(model, revision=None, trust_remote_code=None):
+        captured.update(
+            model=model,
+            revision=revision,
+            trust_remote_code=trust_remote_code,
+        )
         return object()
 
     monkeypatch.setattr(sup, "load_tokenizer", fake_load_tokenizer)
@@ -1217,8 +1294,80 @@ def test_populate_render_worker_state_forwards_tokenizer_revision(monkeypatch):
         {},
         tokenizer_model="m",
         tokenizer_revision="abc123",
+        tokenizer_trust_remote_code=False,
         renderer_name="r",
         max_seq_len=1,
     )
     assert captured["model"] == "m"
     assert captured["revision"] == "abc123"
+    assert captured["trust_remote_code"] is False
+
+
+def test_populate_render_worker_state_uses_resolved_name_without_live_resolution(
+    monkeypatch,
+):
+    from training.utils import supervised as sup
+
+    fake_tokenizer = object()
+    fake_renderer = object()
+    captured: dict = {}
+    monkeypatch.setattr(
+        sup,
+        "load_tokenizer",
+        lambda _model, _revision=None, _trust_remote_code=None: fake_tokenizer,
+    )
+    monkeypatch.setattr(
+        sup,
+        "build_renderer",
+        lambda *_args, **_kwargs: pytest.fail("live renderer resolution was used"),
+    )
+
+    def fake_build_resolved(tokenizer, tokenizer_model, renderer_name):
+        captured.update(
+            tokenizer=tokenizer,
+            tokenizer_model=tokenizer_model,
+            renderer_name=renderer_name,
+        )
+        return fake_renderer
+
+    monkeypatch.setattr(sup, "build_renderer_from_resolved_name", fake_build_resolved)
+
+    state: dict = {}
+    populate_render_worker_state(
+        state,
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer_name="qwen3_6_preserve_thinking",
+        renderer_name_is_resolved=True,
+        thinking_trace_history_mode="preserved",
+        max_seq_len=4096,
+    )
+
+    assert captured == {
+        "tokenizer": fake_tokenizer,
+        "tokenizer_model": "Qwen/Qwen3.6-27B",
+        "renderer_name": "qwen3_6_preserve_thinking",
+    }
+    assert state["renderer"] is fake_renderer
+
+
+def test_build_renderer_from_resolved_name_bypasses_semantic_resolution(monkeypatch):
+    from training.utils import supervised as sup
+
+    tokenizer = object()
+    monkeypatch.setattr(
+        sup,
+        "resolve_renderer_plan",
+        lambda *_args, **_kwargs: pytest.fail("semantic renderer resolution was used"),
+    )
+    monkeypatch.setattr(
+        sup,
+        "get_renderer",
+        lambda name, actual_tokenizer, **kwargs: (name, actual_tokenizer),
+    )
+    monkeypatch.setattr(sup, "get_image_processor", None)
+
+    assert build_renderer_from_resolved_name(
+        tokenizer,
+        "Qwen/Qwen3.6-27B",
+        "qwen3_6_preserve_thinking",
+    ) == ("qwen3_6_preserve_thinking", tokenizer)

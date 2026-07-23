@@ -20,6 +20,7 @@ shadows the upstream registration.
 from training.renderer import deepseek_v4 as _deepseek_v4  # noqa: F401  (registers "deepseek_v4")
 from training.renderer import gemma4 as _gemma4  # noqa: F401  (registers "gemma4")
 from training.renderer import glm5 as _glm5  # noqa: F401  (registers "glm5")
+from training.renderer import kimi_k26 as _kimi_k26  # noqa: F401  (registers Kimi K2.5/2.6)
 from training.renderer import kimi_k27_code as _kimi_k27_code  # noqa: F401  (registers "kimi_k27_code")
 from training.renderer import minimax_m2 as _minimax_m2  # noqa: F401  (registers "minimax_m2")
 from training.renderer import minimax_m3 as _minimax_m3  # noqa: F401  (registers "minimax_m3")
