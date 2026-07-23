@@ -1,0 +1,26 @@
+job_name: healthbench-professional
+jobs_dir: jobs
+n_attempts: 8
+timeout_multiplier: 1.0
+n_concurrent_trials: 8
+quiet: false
+
+environment:
+  type: docker
+  force_build: false
+  delete: true
+
+agents:
+  - import_path: healthbench_professional.agent:HealthBenchProfessionalAgent
+    model_name: accounts/fireworks/models/kimi-k2p6
+    env:
+      FIREWORKS_API_KEY: "${FIREWORKS_API_KEY}"
+    kwargs:
+      require_token_trajectory: true
+      temperature: 1.0
+      top_p: 0.95
+      max_tokens: 16384
+      request_timeout_seconds: 1800.0
+
+datasets:
+  - path: datasets/healthbench-professional

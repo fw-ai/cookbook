@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fireworks-healthbench-professional"
+version = "0.1.1"
+description = "Harbor adapter and RL trajectory exporter for HealthBench Professional"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fireworks-ai>=1.2.0,<2",
+    "harbor>=0.19,<0.20",
+    "huggingface-hub>=1,<2",
+    "openai>=2,<3",
+    "pyyaml>=6,<7",
+]
+
+[project.scripts]
+healthbench-professional = "healthbench_professional.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+    "pytest-asyncio>=1.2,<2",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/healthbench-professional" = ["job.yaml"]
+"share/healthbench-professional/templates" = ["templates/task.toml"]
+"share/healthbench-professional/templates/environment" = ["templates/environment/*"]
+"share/healthbench-professional/templates/tests" = ["templates/tests/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

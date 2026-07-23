@@ -40,8 +40,6 @@ from training.utils import (
     WandBConfig,
     DeployConfig,
     RawRowCursor,
-    RunnerIO,
-    RunStatus,
     build_service_client,
     log_metrics,
     setup_wandb,
@@ -76,7 +74,6 @@ from training.utils.rl.router_replay import (
     build_r3_routing_matrices,
     warn_if_full_sequence_router_replay,
 )
-from training.utils.runner_state import start_running, write_completed, write_running_progress
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +331,6 @@ def main(
         reference_job_id=cfg.trainer.reference_job_id,
         ppo_n_minibatches=cfg.ppo_n_minibatches,
     )
-    runner = RunnerIO()
     uses_recipe_sampler = sample_prompt_fn is None
     if cfg.router_replay and uses_recipe_sampler:
         warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
@@ -384,9 +380,7 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    runner.write_status(RunStatus.PENDING, message="provisioning")
-
-    with runner, ExitStack() as stack:
+    with ExitStack() as stack:
         service = build_service_client(
             api_key=api_key,
             base_url=base_url,
@@ -423,12 +417,6 @@ def main(
         accelerator_count = getattr(service, "accelerator_count", None)
         if accelerator_count is None:
             accelerator_count = getattr(training_profile, "accelerator_count", None)
-        runner.set_accelerator_info(
-            accelerator_type,
-            accelerator_count,
-            profile=training_profile,
-        )
-
         policy = ReconnectableClient.from_training_client(
             training_client,
             base_model=cfg.base_model,
@@ -767,8 +755,6 @@ def main(
                 ),
             )
 
-        tokens_processed = 0
-
         def train_step(
             step: int,
             prompt_groups: list[PromptGroup],
@@ -783,8 +769,6 @@ def main(
             batches, not optim steps) so resume accounting is independent of
             the minibatch count.
             """
-            nonlocal tokens_processed
-
             if not prompt_groups:
                 raise ValueError("train_step requires at least one prompt group")
 
@@ -911,13 +895,6 @@ def main(
             )
             log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, ref_kl=avg_ref_kl)
             log_metrics(metrics, step=step)
-            tokens_processed += int(metrics.get("train/target_tokens", 0))
-            write_running_progress(
-                runner,
-                step=step,
-                total_steps=total_rl_steps,
-                tokens_processed=tokens_processed,
-            )
 
             if cfg.trajectory_dir:
                 _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
@@ -947,11 +924,6 @@ def main(
             fallback=rollouts_done * prompt_groups_per_step,
         )
         remaining_rows = all_rows[cursor.value:]
-        total_rl_steps = step_offset + (
-            math.ceil(len(remaining_rows) / max(1, prompt_groups_per_step))
-            * max(1, cfg.ppo_n_minibatches)
-        )
-        start_running(runner, step=step_offset, total_steps=total_rl_steps)
 
         global_step = asyncio.run(
             run_batched_training_loop(
@@ -991,16 +963,9 @@ def main(
 
                 if getattr(cfg, "output_model_id", None):
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
-                    runner.write_output_model(
-                        model_id=cfg.output_model_id,
-                        checkpoint=cp_name,
-                        job_id=policy_job_id,
-                    )
             except Exception as e:
                 logger.warning("Failed to save final checkpoint: %s", e)
 
-        final_step = max(global_step, total_rl_steps)
-        write_completed(runner, step=final_step, total_steps=final_step)
         logger.info("Training complete: %d steps", global_step)
         wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
