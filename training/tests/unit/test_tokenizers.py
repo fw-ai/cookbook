@@ -51,7 +51,13 @@ def real_wrapped_tokenizer_http_error(url: str) -> OSError:
             return wrapped
 
 
-def test_load_tokenizer_forwards_optional_revision(monkeypatch):
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [(None, True), (True, True), (False, False)],
+)
+def test_load_tokenizer_forwards_revision_and_remote_code_policy(
+    monkeypatch, policy, expected
+):
     captured: dict = {}
     fake_tokenizer = object()
 
@@ -63,13 +69,13 @@ def test_load_tokenizer_forwards_optional_revision(monkeypatch):
         tokenizers.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
     )
 
-    result = tokenizers.load_tokenizer("moonshotai/Kimi-K2.6", "2755962")
+    result = tokenizers.load_tokenizer("moonshotai/Kimi-K2.6", "2755962", policy)
 
     assert result is fake_tokenizer
     assert captured["model"] == "moonshotai/Kimi-K2.6"
     assert captured["kwargs"] == {
         "revision": "2755962",
-        "trust_remote_code": True,
+        "trust_remote_code": expected,
     }
 
 
@@ -92,17 +98,29 @@ def test_load_tokenizer_treats_empty_revision_as_unset(monkeypatch):
 def test_load_deployment_tokenizer_uses_generic_deploy_config_fields(monkeypatch):
     captured: dict = {}
 
-    def fake_load_tokenizer(model, revision=None):
-        captured.update(model=model, revision=revision)
+    def fake_load_tokenizer(model, revision=None, trust_remote_code=None):
+        captured.update(
+            model=model,
+            revision=revision,
+            trust_remote_code=trust_remote_code,
+        )
         return object()
 
     monkeypatch.setattr(tokenizers, "load_tokenizer", fake_load_tokenizer)
 
     tokenizers.load_deployment_tokenizer(
-        SimpleNamespace(tokenizer_model="model/name", tokenizer_revision="abc123")
+        SimpleNamespace(
+            tokenizer_model="model/name",
+            tokenizer_revision="abc123",
+            tokenizer_trust_remote_code=False,
+        )
     )
 
-    assert captured == {"model": "model/name", "revision": "abc123"}
+    assert captured == {
+        "model": "model/name",
+        "revision": "abc123",
+        "trust_remote_code": False,
+    }
 
 
 @pytest.mark.parametrize("status_code", [404, 504])

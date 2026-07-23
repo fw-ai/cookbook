@@ -242,11 +242,7 @@ async def _run_pipeline_window(
                 train_fns.train_step, global_step, groups, stats,
             )
             if metrics_callback is not None:
-                metrics_callback({
-                    "train/step": global_step,
-                    "rollout/sample_fails": stats["sample_fails"],
-                    "rollout/filter_drops": stats["filter_drops"],
-                })
+                metrics_callback({"train/step": global_step})
 
     await asyncio.gather(
         asyncio.create_task(_sampler()),

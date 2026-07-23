@@ -138,7 +138,6 @@ class TestGRPOResumeE2E:
             deployment=DeployConfig(
                 tokenizer_model=e2e_tokenizer_model,
             ),
-            weight_sync_before_training=True,
             weight_sync_timeout=600,
             dcp_save_interval=2,
             cleanup_on_exit=False,
@@ -227,7 +226,6 @@ class TestGRPOResumeE2E:
                     deployment_id=phase1_deployment_id,
                     tokenizer_model=e2e_tokenizer_model,
                 ),
-                weight_sync_before_training=True,
                 weight_sync_timeout=600,
             )
 

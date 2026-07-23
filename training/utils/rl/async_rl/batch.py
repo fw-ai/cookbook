@@ -70,6 +70,7 @@ class OptimizerBatch:
     _accepted_sequences: list[int] = field(default_factory=list, repr=False)
     _all_groups: list[PromptGroup] = field(default_factory=list, repr=False)
     _all_versions: list[int] = field(default_factory=list, repr=False)
+    _completed_rewards: list[float] = field(default_factory=list, repr=False)
     _realized_chunks: int = 0
     _exposed: bool = False
     _sealed: bool = False
@@ -81,14 +82,7 @@ class OptimizerBatch:
     _trainer_wait_for_rollout_time: float = 0.0
     _train_started_at: float | None = None
     _train_finished_at: float | None = None
-    _counter_start: dict[str, int | float | bool | None] | None = field(
-        default=None,
-        repr=False,
-    )
-    _sample_fails: int = 0
-    _filter_drops: int = 0
-    _max_ready_chunks_during_train: int = 0
-    _max_in_flight_during_train: int = 0
+    _rollout_wait_at_train_start: float = 0.0
 
     @property
     def planned_chunks(self) -> int:
@@ -119,20 +113,14 @@ class OptimizerBatch:
         return tuple(self._all_versions)
 
     @property
+    def completed_rewards(self) -> tuple[float, ...]:
+        """Rewards from every assembled group before dynamic filtering."""
+
+        return tuple(self._completed_rewards)
+
+    @property
     def ready_chunks(self) -> int:
         return self._ready_chunks
-
-    @property
-    def sample_fails(self) -> int:
-        return self._sample_fails
-
-    @property
-    def filter_drops(self) -> int:
-        return self._filter_drops
-
-    @property
-    def sampled_rows(self) -> int:
-        return self.realized_groups + self._sample_fails + self._filter_drops
 
     async def chunks(self) -> AsyncIterator[TrainingChunk]:
         """Yield chunks once, waiting only when the next target is not ready."""
@@ -167,6 +155,7 @@ class OptimizerBatch:
         self._accepted_sequences.append(sequence)
         self._all_groups.append(group)
         self._all_versions.append(submit_version)
+        self._completed_rewards.extend(group.rewards)
         self._pending_groups.append(group)
         self._pending_versions.append(submit_version)
         self._pending_sources.append(source_token)
@@ -200,11 +189,8 @@ class OptimizerBatch:
         self._queue.put_nowait(chunk)
         self._ready_chunks += 1
 
-    def _record_rejections(self, *, sample_fails: int, filter_drops: int) -> None:
-        if sample_fails < 0 or filter_drops < 0:
-            raise ValueError("rejection counts must be nonnegative")
-        self._sample_fails += sample_fails
-        self._filter_drops += filter_drops
+    def _record_filtered_rewards(self, rewards: tuple[float, ...]) -> None:
+        self._completed_rewards.extend(rewards)
 
     def _seal(self) -> None:
         if self._sealed:

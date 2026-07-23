@@ -89,7 +89,7 @@ def compute_inference_observability_metrics(
         raw_inf_num_samples += 1
         compared_active_tokens += active_tokens
 
-    if expected_active_tokens == 0:
+    if expected_active_tokens == 0 or compared_active_tokens == 0:
         return {}
     metrics = {
         "raw_inference_logprob_coverage": (

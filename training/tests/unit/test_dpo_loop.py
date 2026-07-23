@@ -30,6 +30,7 @@ import pytest
 
 import training.recipes.dpo_loop as module
 from training.utils import AppendOnlyPickleLog, JsonlRenderDataset, RawRowCursor
+from training.utils import supervised as supervised_utils
 from training.utils.data import iter_preference_examples, load_preference_dataset
 
 
@@ -132,6 +133,69 @@ def test_main_requests_trainer_cleanup_for_empty_job_id(monkeypatch, tmp_path):
     assert kwargs["cleanup_trainer_on_close"] is True
 
 
+@pytest.mark.parametrize(
+    ("mode", "resolved_renderer"),
+    [
+        ("interleaved", "qwen3_6_interleaved"),
+        ("preserved", "qwen3_6_preserved"),
+    ],
+)
+def test_main_resolves_thinking_history_before_provisioning(
+    monkeypatch,
+    tmp_path,
+    mode,
+    resolved_renderer,
+):
+    captured: dict = {}
+
+    def fake_resolve_renderer_snapshot(**kwargs):
+        captured.update(kwargs)
+        return resolved_renderer
+
+    monkeypatch.setattr(
+        module,
+        "resolve_renderer_snapshot",
+        fake_resolve_renderer_snapshot,
+    )
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        base_model="accounts/fireworks/models/qwen3p6-27b",
+        dataset="/tmp/preferences.jsonl",
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer_name=resolved_renderer,
+        renderer_name_is_resolved=True,
+        thinking_trace_history_mode=mode,
+    )
+
+    _build_service_kwargs(monkeypatch, cfg)
+
+    assert captured == {
+        "tokenizer_model": "Qwen/Qwen3.6-27B",
+        "renderer_name": resolved_renderer,
+        "thinking_trace_history_mode": mode,
+        "renderer_name_is_resolved": True,
+    }
+
+
+def test_stale_renderer_snapshot_reuses_persisted_renderer(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        supervised_utils,
+        "resolve_thinking_trace_renderer_plan",
+        lambda *_args, **_kwargs: pytest.fail("live registry was consulted"),
+    )
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        base_model="accounts/fireworks/models/qwen3p6-27b",
+        dataset="/tmp/preferences.jsonl",
+        tokenizer_model="Qwen/Qwen3.6-27B",
+        renderer_name="qwen3_6_preserved",
+        renderer_name_is_resolved=True,
+        thinking_trace_history_mode="preserved",
+    )
+
+    _build_service_kwargs(monkeypatch, cfg)
+
+
 # ---------------------------------------------------------------------------
 # _render_pair_worker
 # ---------------------------------------------------------------------------
@@ -144,7 +208,7 @@ def _setup_pair_worker(monkeypatch, max_seq_len: int = 8) -> None:
 
 
 class TestRenderPairWorker:
-    def test_init_pair_worker_forwards_tokenizer_revision(self, monkeypatch):
+    def test_init_pair_worker_forwards_materialized_tokenizer_plan(self, monkeypatch):
         captured: dict = {}
 
         def fake_populate_render_worker_state(state, **kwargs):
@@ -155,13 +219,21 @@ class TestRenderPairWorker:
             module, "populate_render_worker_state", fake_populate_render_worker_state
         )
 
-        module._init_pair_worker("moonshotai/Kimi-K2.6", "kimi_k25", 4096, "2755962")
+        module._init_pair_worker(
+            "moonshotai/Kimi-K2.6",
+            "kimi_k25",
+            4096,
+            "2755962",
+            False,
+        )
 
         assert captured["state"] is module._pair_worker_state
         assert captured["kwargs"]["tokenizer_model"] == "moonshotai/Kimi-K2.6"
         assert captured["kwargs"]["tokenizer_revision"] == "2755962"
+        assert captured["kwargs"]["tokenizer_trust_remote_code"] is False
         assert captured["kwargs"]["renderer_name"] == "kimi_k25"
         assert captured["kwargs"]["max_seq_len"] == 4096
+        assert captured["kwargs"]["renderer_name_is_resolved"] is True
 
     def test_returns_none_when_schema_unrecognized(self, monkeypatch):
         _setup_pair_worker(monkeypatch)

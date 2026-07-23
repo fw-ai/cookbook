@@ -740,7 +740,6 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     n_accum=1,
                     timing_metrics=flush_timing(),
                     loop_stats=loop_stats,
-                    completions_per_prompt=completions_per_prompt,
                 )
                 metrics["train/step"] = step
 
@@ -758,7 +757,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                         len(r) for r in all_turn_rewards
                     ) / len(all_turn_rewards)
 
-                avg_reward = metrics.get("rollout/reward", 0.0)
+                avg_reward = metrics.get("rollout/filtered_reward", 0.0)
                 avg_kl = metrics.get("train/mean_kl", 0.0)
                 logger.info(
                     "Step %d | Reward: %.3f | KL: %.4f | Turns: %.1f",

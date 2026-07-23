@@ -25,6 +25,11 @@ class TestConfigDefaults:
         assert not hasattr(async_rl_loop, "RunnerIO")
         assert "write_running_progress" not in inspect.getsource(async_rl_loop.main)
 
+    def test_config_has_no_conditional_initial_sync(self) -> None:
+        cfg = async_rl_loop.Config(log_path="gs://logs")
+
+        assert not hasattr(cfg, "weight_sync_before_training")
+
     def test_config_cleanup_defaults_on(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")
 

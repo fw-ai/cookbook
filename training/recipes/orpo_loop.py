@@ -60,7 +60,7 @@ from training.utils import (
     RunnerIO,
     RunStatus,
     WandBConfig,
-    build_renderer,
+    build_renderer_from_resolved_name,
     build_service_client,
     load_preference_dataset,
     load_tokenizer,
@@ -68,7 +68,7 @@ from training.utils import (
     make_batch_orpo_loss_fn,
     read_api_extra_headers_env,
     render_preference_pair,
-    resolve_renderer_name,
+    resolve_renderer_snapshot,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -94,7 +94,13 @@ class Config:
     dataset: str = ""
     tokenizer_model: str = ""
     tokenizer_revision: str = ""
+    tokenizer_trust_remote_code: bool | None = None
+    """Reviewed remote-code policy; ``None`` retains legacy behavior."""
     renderer_name: str = ""
+    renderer_name_is_resolved: bool = False
+    """Whether ``renderer_name`` is a Managed Training materialized snapshot."""
+    thinking_trace_history_mode: str = ""
+    """Semantic effective mode (``interleaved``/``preserved``) for auditability."""
 
     orpo_lambda: float = 1.0
     learning_rate: float = 1e-5
@@ -268,6 +274,15 @@ def main(
             "Set it to the HuggingFace model name "
             "(e.g. 'Qwen/Qwen3-235B-A22B-Instruct-2507')."
         )
+    # Resolve a direct request or reuse the persisted concrete renderer before
+    # creating a GPU-backed service. Eager tokenization then constructs this
+    # exact renderer.
+    resolved_renderer_name = resolve_renderer_snapshot(
+        tokenizer_model=cfg.tokenizer_model,
+        renderer_name=cfg.renderer_name,
+        thinking_trace_history_mode=cfg.thinking_trace_history_mode,
+        renderer_name_is_resolved=cfg.renderer_name_is_resolved,
+    )
     setup_wandb(
         cfg.wandb,
         {
@@ -332,11 +347,19 @@ def main(
 
         # -- Data ----------------------------------------------------------------
 
-        tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision)
-        renderer = build_renderer(tokenizer, cfg.tokenizer_model, cfg.renderer_name)
+        tokenizer = load_tokenizer(
+            cfg.tokenizer_model,
+            cfg.tokenizer_revision,
+            cfg.tokenizer_trust_remote_code,
+        )
+        renderer = build_renderer_from_resolved_name(
+            tokenizer,
+            cfg.tokenizer_model,
+            resolved_renderer_name,
+        )
         logger.info(
             "Using renderer=%s for preference tokenization",
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            resolved_renderer_name,
         )
 
         raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)

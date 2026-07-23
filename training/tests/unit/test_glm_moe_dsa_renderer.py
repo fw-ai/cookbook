@@ -12,12 +12,14 @@ from tinker_cookbook.renderers import get_renderer
 
 
 _TOKENIZER = "zai-org/GLM-5.2"
+_TOKENIZER_REVISION = "b4734de4facf877f85769a911abafc5283eab3d9"
 
 
 def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
     try:
         return transformers.AutoTokenizer.from_pretrained(
             _TOKENIZER,
+            revision=_TOKENIZER_REVISION,
             trust_remote_code=True,
         )
     except Exception:  # noqa: BLE001 - network/auth/cache availability
@@ -28,7 +30,10 @@ def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
 def tokenizer():
     tok = _load_tokenizer()
     if tok is None:
-        pytest.skip(f"GLM-5.2 tokenizer not available: {_TOKENIZER!r}")
+        pytest.skip(
+            f"GLM-5.2 tokenizer not available: "
+            f"{_TOKENIZER!r}@{_TOKENIZER_REVISION}"
+        )
     if not getattr(tok, "chat_template", None):
         pytest.skip("Loaded GLM-5.2 tokenizer has no chat_template.")
     return tok

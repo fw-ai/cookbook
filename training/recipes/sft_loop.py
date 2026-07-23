@@ -54,7 +54,6 @@ from fireworks.training.sdk.training_spec import (
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
-
 from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
@@ -75,7 +74,7 @@ from training.utils import (
     populate_render_worker_state,
     read_api_extra_headers_env,
     render_messages_to_datums,
-    resolve_renderer_name,
+    resolve_renderer_snapshot,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -288,10 +287,12 @@ def _configure_render_sample_state(
 
 def _init_render_worker(
     tokenizer_model: str,
-    renderer_name: str,
+    resolved_renderer_name: str,
     train_on_what_str: str,
     max_seq_len: int,
     tokenizer_revision: str = "",
+    thinking_trace_history_mode: str = "",
+    tokenizer_trust_remote_code: bool | None = None,
     render_samples_local_dir: str = "",
     render_samples_limit: int | None = 0,
     _worker_id: int | None = None,
@@ -300,23 +301,48 @@ def _init_render_worker(
 
     Module-level (so spawn workers can pickle it) and accepts
     ``_worker_id`` so it can be used as a DataLoader ``worker_init_fn``.
+
+    ``resolved_renderer_name`` is materialized once in :func:`main`. Workers
+    must construct that exact renderer instead of consulting the live registry
+    or inferring snapshot provenance from whether a name is non-empty.
     """
     populate_render_worker_state(
         _worker_state,
         tokenizer_model=tokenizer_model,
         tokenizer_revision=tokenizer_revision,
-        renderer_name=renderer_name,
+        tokenizer_trust_remote_code=tokenizer_trust_remote_code,
+        renderer_name=resolved_renderer_name,
         max_seq_len=max_seq_len,
+        thinking_trace_history_mode=thinking_trace_history_mode,
+        renderer_name_is_resolved=True,
         train_on_what=parse_train_on_what(train_on_what_str),
     )
     _worker_state.update(
-        resolved_renderer_name=resolve_renderer_name(tokenizer_model, renderer_name),
+        resolved_renderer_name=resolved_renderer_name,
+        thinking_trace_history_mode=thinking_trace_history_mode,
         train_on_what_str=train_on_what_str,
     )
     _configure_render_sample_state(
         render_samples_local_dir=render_samples_local_dir,
         render_samples_limit=render_samples_limit,
         _worker_id=_worker_id,
+    )
+
+
+def _resolved_renderer_name(
+    *,
+    tokenizer_model: str,
+    renderer_name: str,
+    thinking_trace_history_mode: str,
+    renderer_name_is_resolved: bool = False,
+) -> str:
+    """Compatibility wrapper around the shared snapshot resolver."""
+
+    return resolve_renderer_snapshot(
+        tokenizer_model=tokenizer_model,
+        renderer_name=renderer_name,
+        thinking_trace_history_mode=thinking_trace_history_mode,
+        renderer_name_is_resolved=renderer_name_is_resolved,
     )
 
 
@@ -485,7 +511,25 @@ class Config:
     dataset: str = ""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
     tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
+    tokenizer_trust_remote_code: bool | None = None
+    """Reviewed remote-code policy for a materialized tokenizer plan.
+
+    ``None`` retains the legacy direct-cookbook behavior.
+    """
     renderer_name: str = ""
+    renderer_name_is_resolved: bool = False
+    """True only for a concrete renderer materialized by Managed Training.
+
+    Direct cookbook ``renderer_name`` overrides leave this false so an
+    explicit thinking-history mode is still checked for conflicts.
+    """
+    thinking_trace_history_mode: str = ""
+    """Semantic effective mode (``interleaved``/``preserved``) for auditability.
+
+    Managed Training also supplies a concrete ``renderer_name``. Once present,
+    that name is authoritative and workers do not consult the live registry.
+    Direct cookbook callers may omit the name and resolve this semantic mode.
+    """
     train_on_what: str = "all_assistant_messages"
 
     learning_rate: float = 1e-4
@@ -718,6 +762,20 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
+    if not cfg.tokenizer_model:
+        raise ValueError(
+            "Config.tokenizer_model is required for chat template formatting. "
+            "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
+        )
+    # Resolve a direct request or reuse the persisted concrete renderer before
+    # a managed GPU trainer is provisioned. A persisted concrete name is
+    # authoritative across retries and resumes.
+    resolved_renderer_name = _resolved_renderer_name(
+        tokenizer_model=cfg.tokenizer_model,
+        renderer_name=cfg.renderer_name,
+        thinking_trace_history_mode=cfg.thinking_trace_history_mode,
+        renderer_name_is_resolved=cfg.renderer_name_is_resolved,
+    )
     validate_warm_start_config(
         warm_start_from_adapter=cfg.warm_start_from_adapter,
         init_from_checkpoint=cfg.init_from_checkpoint,
@@ -737,12 +795,6 @@ def main(
             "batch_size": cfg.batch_size,
         },
     )
-
-    if not cfg.tokenizer_model:
-        raise ValueError(
-            "Config.tokenizer_model is required for chat template formatting. "
-            "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
-        )
 
     # -- SDK-managed Tinker client -----------------------------------------
 
@@ -823,10 +875,12 @@ def main(
         )
         base_init_args = (
             cfg.tokenizer_model,
-            cfg.renderer_name,
+            resolved_renderer_name,
             cfg.train_on_what,
             max_seq_len,
             cfg.tokenizer_revision,
+            cfg.thinking_trace_history_mode,
+            cfg.tokenizer_trust_remote_code,
         )
         _init_render_worker(*base_init_args)
 
@@ -892,7 +946,7 @@ def main(
             " workers=%d, seed=%d) -> ~%d batches/epoch x %d epochs%s",
             training_count,
             cfg.dataset,
-            resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name),
+            resolved_renderer_name,
             cfg.train_on_what,
             num_workers,
             cfg.seed,

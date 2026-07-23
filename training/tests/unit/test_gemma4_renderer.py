@@ -321,6 +321,21 @@ def test_get_reasoning_text_empty_reasoning_falls_back_to_reasoning_content():
     assert _get_reasoning_text(message) == "fallback thought"
 
 
+def test_normalized_empty_reasoning_falls_back_to_reasoning_content():
+    normalized = normalize_messages(
+        [
+            {
+                "role": "assistant",
+                "reasoning": "",
+                "reasoning_content": "normalized fallback thought",
+                "content": "answer",
+            }
+        ]
+    )[0]
+
+    assert _get_reasoning_text(normalized) == "normalized fallback thought"
+
+
 def test_split_thinking_and_text_handles_open_thought_fragment():
     parts = _split_thinking_and_text(
         "<|channel>thought\nstep by step\n <|tool_call>call:fn{}<tool_call|>"

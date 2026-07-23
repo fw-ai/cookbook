@@ -26,8 +26,14 @@ from tinker_cookbook.renderers.base import Message, ToolSpec
 from tinker_cookbook.renderers.kimi_k2_5_tool_declaration_ts import (
     encode_tools_to_typescript_style,
 )
-from tinker_cookbook.renderers.kimi_k26 import KimiK26PreserveThinkingRenderer
+from tinker_cookbook.renderers.kimi_k26 import (
+    KimiK26PreserveThinkingRenderer as _UpstreamKimiK26PreserveThinkingRenderer,
+)
 from tinker_cookbook.tokenizer_utils import Tokenizer
+
+from training.renderer.kimi_k26 import (
+    KimiK26PreserveThinkingRenderer as _CookbookKimiK26PreserveThinkingRenderer,
+)
 
 
 _KIMI_TOOL_STYLE_PROBE = [
@@ -60,8 +66,8 @@ def _tokenizer_tools_branch_uses_typescript(tokenizer: Any) -> bool:
     return isinstance(rendered, str) and "namespace functions" in rendered
 
 
-class KimiK27CodeRenderer(KimiK26PreserveThinkingRenderer):
-    """Kimi K2.7 Code renderer aligned with its HF chat template."""
+class _KimiK27CodeMixin:
+    """K2.7-specific system/tool declaration behavior."""
 
     def _ensure_system_message(self, messages: list[Message]) -> list[Message]:
         return list(messages)
@@ -91,6 +97,20 @@ class KimiK27CodeRenderer(KimiK26PreserveThinkingRenderer):
         return messages
 
 
+class KimiK27CodeRenderer(
+    _KimiK27CodeMixin,
+    _UpstreamKimiK26PreserveThinkingRenderer,
+):
+    """Legacy concrete ``kimi_k27_code`` behavior."""
+
+
+class KimiK27CodePreservedRenderer(
+    _KimiK27CodeMixin,
+    _CookbookKimiK26PreserveThinkingRenderer,
+):
+    """K2.7's corrected PRESERVED mode, without unrolling."""
+
+
 def _kimi_k27_code_factory(
     tokenizer: Tokenizer,
     image_processor: ImageProcessor | None = None,
@@ -98,4 +118,15 @@ def _kimi_k27_code_factory(
     return KimiK27CodeRenderer(tokenizer, image_processor=image_processor)
 
 
+def _kimi_k27_code_preserved_factory(
+    tokenizer: Tokenizer,
+    image_processor: ImageProcessor | None = None,
+) -> KimiK27CodePreservedRenderer:
+    return KimiK27CodePreservedRenderer(
+        tokenizer,
+        image_processor=image_processor,
+    )
+
+
 register_renderer("kimi_k27_code", _kimi_k27_code_factory)
+register_renderer("kimi_k27_code_preserved", _kimi_k27_code_preserved_factory)

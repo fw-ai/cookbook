@@ -79,8 +79,9 @@ The scheduler is split by one owner per concern:
 |---|---|
 | `RolloutProducer` | In-flight rollout tasks, completion-triggered refill, row-atomic admission, group assembly, failure policy, and the durable row cursor |
 | `OptimizerBatch` | One optimizer batch, fixed balanced chunk targets, accepted rows, and the async queue of ready `TrainingChunk`s |
-| `AsyncRLCoordinator` | The producer/batch handoff, one serialized trainer worker, failure boundaries, publication, and scheduler metrics |
-| `async_rl_loop.main` | Visible algorithm phases: reference/old-policy forwards, forward/backward, optimizer, hotload, metrics, and checkpoints |
+| `AsyncRLCoordinator` | The producer/batch handoff, one serialized trainer worker, failure boundaries, and publication |
+| `AsyncRLTelemetry` | Rate-limited producer snapshots, completed-batch metric reduction, and reporting |
+| `async_rl_loop.main` | Visible algorithm phases: reference/old-policy forwards, forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
 
 Blocking trainer calls run on the coordinator's single worker thread. The event
 loop remains free to retire rollout tasks and refill the producer while trainer
@@ -171,9 +172,8 @@ For each optimizer batch:
    rows to the durable cursor, records metrics, and wakes the producer.
 
 The recipe performs an unconditional initial sampler sync and one sync per
-optimizer batch. It has no `weight_sync_interval`. The retained
-`weight_sync_before_training` field is deprecated and does not alter this
-behavior.
+optimizer batch. It has no `weight_sync_interval` or conditional initial-sync
+knob.
 
 When the source ends, the producer seals and trains a final partial optimizer
 batch rather than silently dropping accepted prompt groups.
@@ -216,41 +216,15 @@ weights-only inputs and reset the recipe cursor.
 
 ## Metrics and tuning
 
-The recipe sends one combined train, rollout, and scheduler record per optimizer
-batch through `log_metrics(metrics, step=business_step)`. The logger normalizes
-one flat, finite, JSON-compatible dictionary, appends it to the canonical JSONL
-ledger when `COOKBOOK_METRICS_FILE` is configured, and sends that same payload
-to optional W&B. The producer chooses the business step; W&B's implicit
-transport `_step` and JSONL line order distinguish multiple records that share
-it. There is no event envelope or metric-name-based routing.
+Static settings are stored once in the run configuration. Optimizer-batch
+metrics use `rollout/step`; rate-limited producer gauges and cumulative refill
+counters use the independent `producer/event` axis. Producer records are
+emitted while training is in progress, so refill and admission behavior is not
+reconstructed from one snapshot at publication.
 
-Use the scheduler metrics as operational tuning signals:
-
-| Metric | Interpretation |
-|---|---|
-| `async/completion_refills_during_train` | Successful completion-triggered row submissions while a physical trainer call was active |
-| `async/max_ready_training_chunks_during_train` | Maximum later chunks queued behind the active trainer call |
-| `async/max_in_flight_during_train` | Maximum outstanding rollout calls observed during training |
-| `async/staleness_capacity_at_step` | Remaining sample slots in the version gate |
-| `async/concurrency_capacity_at_step` | Remaining in-flight slots; `-1` means no explicit concurrency cap |
-| `async/version_offset_{min,mean,max}` | Submit-version lag of the trained prompt groups |
-| `perf/trainer_wait_for_sampler_time` | Wait for the next optimizer batch to expose its first chunk |
-| `perf/trainer_wait_for_chunk_time` | Wait for later chunks inside the active optimizer batch |
-| `perf/sampler_wait_for_trainer_time` | Time the producer was blocked on version capacity until publication |
-| `pipeline/{planned,realized}_chunks_per_step` | Requested batch partition versus chunks actually trained |
-
-Interpret common patterns:
-
-- `completion_refills_during_train > 0` proves the critical refill path is
-  working. A zero is valid when the source is exhausted or a gate is full.
-- High trainer wait with concurrency headroom means inference is the bottleneck:
-  add rollout replicas, raise `C`, or reduce rollout length.
-- High sampler wait means publication is the bottleneck: raise `O` if the
-  off-policy budget allows it, or speed up trainer/hotload work.
-- A consistently large ready-chunk queue means trainer RPCs are too fine:
-  lower `K` to create larger chunks.
-- High wait for later chunks with an empty queue means rollout production is
-  too slow; add inference capacity before increasing chunk size.
+Read [`async-rl-metrics.md`](async-rl-metrics.md) for the metric glossary,
+invariants, W&B/JSONL reading procedure, refill proof, and tuning decision
+table.
 
 ## Loss path
 

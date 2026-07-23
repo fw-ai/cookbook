@@ -279,8 +279,7 @@ class ServerlessCountdownRL:
         #    and no learning signal, so we drop it -- standard GRPO filtering).
         datums: list[Any] = []
         raw_rewards: list[float] = []
-        raw_correct = 0
-        kept_groups = 0
+        filtered_rewards: list[float] = []
 
         for result, prompt, row in zip(results, prompts, batch):
             tokens_g: list[list[int]] = []
@@ -299,11 +298,10 @@ class ServerlessCountdownRL:
                 logprobs_g.append([float(x) for x in logprobs])
                 rewards_g.append(reward)
                 raw_rewards.append(reward)
-                raw_correct += 1 if reward >= 0.9 else 0
 
             if not rewards_g or len(set(rewards_g)) <= 1:
                 continue
-            kept_groups += 1
+            filtered_rewards.extend(rewards_g)
 
             advantages = _group_relative_advantages(rewards_g)
             response_start = prompt.length - 1
@@ -333,14 +331,22 @@ class ServerlessCountdownRL:
             self.training_client.optim_step(adam).result()
 
         raw_reward = sum(raw_rewards) / len(raw_rewards) if raw_rewards else 0.0
-        raw_accuracy = raw_correct / len(raw_rewards) if raw_rewards else 0.0
+        filtered_reward = (
+            sum(filtered_rewards) / len(filtered_rewards)
+            if filtered_rewards
+            else 0.0
+        )
+        filter_ratio = (
+            1.0 - len(filtered_rewards) / len(raw_rewards) if raw_rewards else 0.0
+        )
         rec = {
             "step": step,
             "snapshot": snapshot,
             "rollout/raw_reward": raw_reward,
-            "rollout/raw_accuracy": raw_accuracy,
-            "rollout/samples": len(raw_rewards),
-            "rollout/kept_groups": kept_groups,
+            "rollout/filtered_reward": filtered_reward,
+            "rollout/raw_samples": len(raw_rewards),
+            "rollout/filtered_samples": len(filtered_rewards),
+            "rollout/filter_ratio": filter_ratio,
             "train/loss": loss,
             "train/trained": bool(datums),
             "perf/step_wall_time": time.time() - t0,
@@ -348,8 +354,9 @@ class ServerlessCountdownRL:
         with self.metrics_path.open("a") as f:
             f.write(json.dumps(rec) + "\n")
         print(
-            f"step {step:02d} raw_reward={raw_reward:.3f} raw_acc={raw_accuracy:.3f} "
-            f"kept_groups={kept_groups}/{len(batch)} samples={len(raw_rewards)} "
+            f"step {step:02d} reward={raw_reward:.3f}/{filtered_reward:.3f} "
+            f"samples={len(raw_rewards)}/{len(filtered_rewards)} "
+            f"filter={filter_ratio:.1%} "
             f"loss={'n/a' if loss is None else f'{loss:.4f}'} "
             f"elapsed={rec['perf/step_wall_time']:.1f}s",
             flush=True,
@@ -386,7 +393,7 @@ class ServerlessCountdownRL:
         steps = [r["step"] for r in records]
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.plot(steps, [r["rollout/raw_reward"] for r in records], marker="o", label="raw_reward")
-        ax.plot(steps, [r["rollout/raw_accuracy"] for r in records], marker="s", linestyle="--", label="raw_accuracy")
+        ax.plot(steps, [r["rollout/filtered_reward"] for r in records], marker="s", linestyle="--", label="filtered_reward")
         ax.set_xlabel("optimizer step")
         ax.set_ylabel("score")
         ax.set_ylim(bottom=0.0)

@@ -87,6 +87,18 @@ class _Draw:
     submission_index: int
 
 
+@dataclass(slots=True)
+class _ProducerStats:
+    rows_submitted: int = 0
+    rows_accepted: int = 0
+    rows_rejected: int = 0
+    completion_refill_attempts: int = 0
+    completion_refill_rows_submitted: int = 0
+    sample_fails: int = 0
+    filter_drops: int = 0
+    recoverable_errors: int = 0
+
+
 class RolloutProducer:
     """Completion-driven prompt-group producer with exact version admission."""
 
@@ -108,7 +120,6 @@ class RolloutProducer:
         initial_version: int,
         resolved_rows_offset: int,
         resolved_rows_fn: Callable[[], int] | None,
-        trainer_state: Callable[[], tuple[bool, int | None]],
         error_classifier: RolloutErrorClassifier,
         circuit_breaker: CircuitBreakerConfig | None,
     ) -> None:
@@ -137,7 +148,6 @@ class RolloutProducer:
         self._accepted_samples_offset = initial_version * self._samples_per_batch
         self._resolved_rows_offset = resolved_rows_offset
         self._resolved_rows_fn = resolved_rows_fn
-        self._trainer_state = trainer_state
         self._error_classifier = error_classifier
         self._breaker = RecoverableCircuitBreaker(circuit_breaker)
         self._assembler = GroupAssembler(
@@ -160,9 +170,7 @@ class RolloutProducer:
         self._next_publish_batch_id = initial_version + 1
         self._accepted_samples = 0
         self._reserved_samples = 0
-        self._pending_sample_fails = 0
-        self._pending_filter_drops = 0
-        self._max_in_flight = 0
+        self._pending_completed_rewards: list[float] = []
         self._source_exhausted = False
         self._finished = False
         self._closing = False
@@ -171,15 +179,7 @@ class RolloutProducer:
         self._driver_task: asyncio.Task[None] | None = None
         self._rollout_wait_for_trainer_started: float | None = None
         self._rollout_wait_for_trainer_total = 0.0
-        self._counters: dict[str, int] = {
-            "rows_submitted": 0,
-            "rows_accepted": 0,
-            "rows_rejected": 0,
-            "completion_refills_during_train": 0,
-            "sample_fails": 0,
-            "filter_drops": 0,
-            "recoverable_errors": 0,
-        }
+        self._stats = _ProducerStats()
 
     @property
     def published_version(self) -> int:
@@ -251,7 +251,7 @@ class RolloutProducer:
             "accepted_samples": self._accepted_samples,
             "reserved_samples": self._reserved_samples,
             "in_flight_samples": len(self._in_flight),
-            "max_in_flight_samples": self._max_in_flight,
+            "admission_capacity": self._admission_capacity(),
             "staleness_capacity": max(0, self._staleness_capacity()),
             "concurrency_capacity": (
                 None if concurrency is None else max(0, concurrency)
@@ -261,8 +261,19 @@ class RolloutProducer:
             "rollout_wait_for_trainer_time_total": self._rollout_wait_for_trainer_total
             + self._active_rollout_wait_for_trainer(),
             "fatal": self._failure is not None,
+            "rows_submitted": self._stats.rows_submitted,
+            "rows_accepted": self._stats.rows_accepted,
+            "rows_rejected": self._stats.rows_rejected,
+            "completion_refill_attempts": (
+                self._stats.completion_refill_attempts
+            ),
+            "completion_refill_rows_submitted": (
+                self._stats.completion_refill_rows_submitted
+            ),
+            "sample_fails": self._stats.sample_fails,
+            "filter_drops": self._stats.filter_drops,
+            "recoverable_errors": self._stats.recoverable_errors,
         }
-        snapshot.update(self._counters)
         breaker = self._breaker.snapshot
         snapshot.update(
             {
@@ -277,14 +288,14 @@ class RolloutProducer:
 
     async def _drive(self) -> None:
         try:
-            self._refill(triggered_by_completion=False)
+            self._refill()
             while not self._closing and self._failure is None:
                 self._finish_source_if_drained()
                 if self._finished:
                     return
                 if self._in_flight:
                     self._driver_wake.clear()
-                    self._refill(triggered_by_completion=False)
+                    self._refill()
                     wake_task = asyncio.create_task(self._driver_wake.wait())
                     try:
                         done, _ = await asyncio.wait(
@@ -303,10 +314,13 @@ class RolloutProducer:
                         self._retire(task)
                         if self._failure is not None:
                             break
-                        self._refill(triggered_by_completion=True)
+                        submitted = self._refill()
+                        if submitted is not None:
+                            self._stats.completion_refill_attempts += 1
+                            self._stats.completion_refill_rows_submitted += submitted
                     continue
 
-                self._refill(triggered_by_completion=False)
+                self._refill()
                 self._finish_source_if_drained()
                 if self._finished or self._failure is not None:
                     return
@@ -335,10 +349,10 @@ class RolloutProducer:
     async def _invoke(self, request: RolloutRow, sub_index: int) -> RolloutRun | None:
         return await request.run_factory(sub_index)
 
-    def _refill(self, *, triggered_by_completion: bool) -> None:
+    def _refill(self) -> int | None:
         if self._closing or self._failure is not None or self._source_exhausted:
             self._mark_rollout_wait_for_trainer_end()
-            return
+            return None
         submitted = 0
         while self._ensure_prefetched():
             if self._admission_capacity() < self._cpp:
@@ -349,11 +363,8 @@ class RolloutProducer:
             self._prefetched = None
             self._submit_row(request)
             submitted += 1
-        if triggered_by_completion and submitted:
-            active, _ = self._trainer_state()
-            if active:
-                self._counters["completion_refills_during_train"] += 1
         self._record_refill_stop()
+        return submitted
 
     def _record_refill_stop(self) -> None:
         if self._prefetched is None:
@@ -395,7 +406,7 @@ class RolloutProducer:
         self._next_sequence += 1
         self._cursor[sequence] = _CursorEntry(request=request)
         self._reserved_samples += self._cpp
-        self._counters["rows_submitted"] += 1
+        self._stats.rows_submitted += 1
         for sub_index in range(self._cpp):
             self._assembler.note_started(
                 sequence,
@@ -412,8 +423,6 @@ class RolloutProducer:
                 submission_index=self._next_submission_index,
             )
             self._next_submission_index += 1
-        self._max_in_flight = max(self._max_in_flight, len(self._in_flight))
-        self._note_active_batch_in_flight()
 
     def _retire(self, task: asyncio.Task[RolloutRun | None]) -> None:
         draw = self._in_flight.pop(task)
@@ -426,18 +435,19 @@ class RolloutProducer:
             if classification.disposition is ErrorDisposition.FATAL:
                 self._fail(error)
                 return
-            self._counters["recoverable_errors"] += 1
+            self._stats.recoverable_errors += 1
             try:
                 self._breaker.record_failure(error, classification)
             except CircuitBreakerTripped as breaker_error:
                 self._fail(breaker_error)
                 return
-            if self._counters["recoverable_errors"] == 1 or (
-                self._counters["recoverable_errors"] % 10 == 0
+            if (
+                self._stats.recoverable_errors == 1
+                or self._stats.recoverable_errors % 10 == 0
             ):
                 logger.warning(
                     "Async RL recoverable rollout errors: total=%d reason=%s",
-                    self._counters["recoverable_errors"],
+                    self._stats.recoverable_errors,
                     classification.reason,
                 )
             resolution = self._assembler.note_dropped(draw.sequence)
@@ -469,11 +479,15 @@ class RolloutProducer:
         if self._dynamic_filter_fn is not None and not self._dynamic_filter_fn(
             resolution.pg
         ):
-            self._reject_row(entry, reason="filter")
+            self._reject_row(
+                entry,
+                reason="filter",
+                completed_rewards=tuple(resolution.pg.rewards),
+            )
             return
 
         self._accepted_samples += self._cpp
-        self._counters["rows_accepted"] += 1
+        self._stats.rows_accepted += 1
         batch = self._batch_for_next_group()
         entry.batch_id = batch.batch_id
         source_token = entry.request.row_id
@@ -488,25 +502,25 @@ class RolloutProducer:
         if batch.realized_groups == batch.target_groups:
             self._seal_fill_batch()
 
-    def _reject_row(self, entry: _CursorEntry, *, reason: str) -> None:
+    def _reject_row(
+        self,
+        entry: _CursorEntry,
+        *,
+        reason: str,
+        completed_rewards: tuple[float, ...] = (),
+    ) -> None:
         if reason == "none":
-            self._counters["sample_fails"] += 1
-            sample_fails, filter_drops = 1, 0
+            self._stats.sample_fails += 1
         elif reason == "filter":
-            self._counters["filter_drops"] += 1
-            sample_fails, filter_drops = 0, 1
+            self._stats.filter_drops += 1
         else:
             raise ValueError(f"unknown rollout rejection reason: {reason}")
         if self._fill_batch is None:
-            self._pending_sample_fails += sample_fails
-            self._pending_filter_drops += filter_drops
-        else:
-            self._fill_batch._record_rejections(
-                sample_fails=sample_fails,
-                filter_drops=filter_drops,
-            )
+            self._pending_completed_rewards.extend(completed_rewards)
+        elif completed_rewards:
+            self._fill_batch._record_filtered_rewards(completed_rewards)
         entry.durable_reason = reason
-        self._counters["rows_rejected"] += 1
+        self._stats.rows_rejected += 1
         self._flush_cursor()
 
     def _batch_for_next_group(self) -> OptimizerBatch:
@@ -519,12 +533,9 @@ class RolloutProducer:
             self._next_batch_id += 1
             self._fill_batch = batch
             self._batches[batch.batch_id] = batch
-            batch._record_rejections(
-                sample_fails=self._pending_sample_fails,
-                filter_drops=self._pending_filter_drops,
-            )
-            self._pending_sample_fails = 0
-            self._pending_filter_drops = 0
+            if self._pending_completed_rewards:
+                batch._record_filtered_rewards(tuple(self._pending_completed_rewards))
+                self._pending_completed_rewards.clear()
         return self._fill_batch
 
     def _emit_chunk(self, batch: OptimizerBatch, chunk: TrainingChunk) -> None:
@@ -532,13 +543,6 @@ class RolloutProducer:
         if not batch._exposed:
             batch._exposed = True
             self._output.put_nowait(batch)
-        active, active_batch_id = self._trainer_state()
-        if active:
-            if active_batch_id == batch.batch_id:
-                batch._max_ready_chunks_during_train = max(
-                    batch._max_ready_chunks_during_train,
-                    batch.ready_chunks,
-                )
 
     def _seal_fill_batch(self) -> None:
         batch = self._fill_batch
@@ -643,17 +647,6 @@ class RolloutProducer:
         if self._rollout_wait_for_trainer_started is None:
             return 0.0
         return time.monotonic() - self._rollout_wait_for_trainer_started
-
-    def _note_active_batch_in_flight(self) -> None:
-        active, batch_id = self._trainer_state()
-        if not active or batch_id is None:
-            return
-        batch = self._batches.get(batch_id)
-        if batch is not None:
-            batch._max_in_flight_during_train = max(
-                batch._max_in_flight_during_train,
-                len(self._in_flight),
-            )
 
 
 def _validate_producer_args(

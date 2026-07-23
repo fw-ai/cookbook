@@ -30,6 +30,7 @@ from typing import Any
 
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.tokenizer_utils import get_tokenizer
+from transformers import AutoTokenizer
 
 # Importing the cookbook renderer package registers cookbook-local
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
@@ -140,6 +141,8 @@ def compare_renderer_to_hf(
     *,
     renderer_name: str,
     tokenizer_model: str,
+    tokenizer_revision: str | None = None,
+    tokenizer_trust_remote_code: bool | None = None,
     messages: list[dict],
     add_generation_prompt: bool = True,
     apply_chat_template_kwargs: dict[str, Any] | None = None,
@@ -157,7 +160,22 @@ def compare_renderer_to_hf(
     The function intentionally has no side effects beyond loading the
     tokenizer — caller decides what to do with a mismatch.
     """
-    tokenizer = get_tokenizer(tokenizer_model)
+    tokenizer = (
+        AutoTokenizer.from_pretrained(
+            tokenizer_model,
+            revision=tokenizer_revision,
+            # Registered thinking-history renderers pass their reviewed
+            # policy explicitly.  Keep the historical verifier default for
+            # unrelated pinned cases that predate the capability registry.
+            trust_remote_code=(
+                tokenizer_trust_remote_code
+                if tokenizer_trust_remote_code is not None
+                else True
+            ),
+        )
+        if tokenizer_revision
+        else get_tokenizer(tokenizer_model)
+    )
     if not getattr(tokenizer, "chat_template", None):
         raise RuntimeError(
             f"Tokenizer {tokenizer_model!r} has no chat_template; "

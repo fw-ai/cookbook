@@ -26,7 +26,6 @@ import transformers
 
 from training.renderer.glm5 import GLM5Renderer
 from training.tests.glm5_serverless_cases import (
-    GLM5_SERVERLESS_PROMPT_TOKEN_CASES,
     GLM5_SERVERLESS_STOP_TOKEN_IDS,
 )
 from training.utils.supervised import normalize_messages, render_messages_to_datums
@@ -42,26 +41,33 @@ def _make_tool_call(name: str, arguments: dict[str, Any]) -> ToolCall:
         )
     )
 
+
 # Public HF tokenizer (ships the canonical GLM-5.1 chat template).
 _PUBLIC_TOKENIZER = "zai-org/GLM-5.1"
+_PUBLIC_TOKENIZER_REVISION = "26e1bd6e011feb778d25ae34b09b07074139d92d"
 # Optional local fallback path used when the HF Hub isn't reachable. The
 # tokenizer loaded here must also ship a chat_template attribute equivalent
 # to the one on ``zai-org/GLM-5.1``; otherwise the parity tests will flag
 # any drift, which is the intended behaviour.
-_LOCAL_TOKENIZER = "/home/yinghanma/ws2/fireworks/py/fireworks/test/serving/text/tokenizers/glm5"
+_LOCAL_TOKENIZER = (
+    "/home/yinghanma/ws2/fireworks/py/fireworks/test/serving/text/tokenizers/glm5"
+)
 
 
 def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
     """Try the public tokenizer first, fall back to a local checkout."""
     try:
         return transformers.AutoTokenizer.from_pretrained(
-            _PUBLIC_TOKENIZER, trust_remote_code=True,
+            _PUBLIC_TOKENIZER,
+            revision=_PUBLIC_TOKENIZER_REVISION,
+            trust_remote_code=True,
         )
     except Exception:  # noqa: BLE001 — network / auth / missing chat_template
         pass
     if Path(_LOCAL_TOKENIZER).exists():
         return transformers.AutoTokenizer.from_pretrained(
-            _LOCAL_TOKENIZER, trust_remote_code=True,
+            _LOCAL_TOKENIZER,
+            trust_remote_code=True,
         )
     return None
 
@@ -72,7 +78,7 @@ def tokenizer():
     if tok is None:
         pytest.skip(
             f"GLM-5.1 tokenizer not available (tried {_PUBLIC_TOKENIZER!r} "
-            f"and {_LOCAL_TOKENIZER!r})"
+            f"at {_PUBLIC_TOKENIZER_REVISION!r} and {_LOCAL_TOKENIZER!r})"
         )
     if not getattr(tok, "chat_template", None):
         pytest.skip(
@@ -89,6 +95,12 @@ def renderer(tokenizer):
     return GLM5Renderer(tokenizer)
 
 
+@pytest.fixture(scope="module")
+def preserve_renderer(tokenizer):
+    """Registered GLM5 renderer matching ``clear_thinking=False``."""
+    return get_renderer("glm5_preserve_thinking", tokenizer)
+
+
 def test_registered_glm5_default_strips_history(tokenizer):
     default_renderer = get_renderer("glm5", tokenizer)
 
@@ -96,6 +108,15 @@ def test_registered_glm5_default_strips_history(tokenizer):
     # has_extension_property comes from the base Renderer (False by default).
     # The disaggregate mixin handles multi-turn ALL_ASSISTANT_MESSAGES.
     assert default_renderer.has_extension_property is False
+
+
+def test_registered_glm5_preserve_thinking_does_not_claim_extension_property(
+    tokenizer,
+):
+    preserve = get_renderer("glm5_preserve_thinking", tokenizer)
+
+    assert isinstance(preserve, GLM5Renderer)
+    assert preserve.has_extension_property is False
 
 
 def _hf_tokens(tokenizer, messages, add_generation_prompt: bool, **kwargs) -> list[int]:
@@ -107,7 +128,9 @@ def _hf_tokens(tokenizer, messages, add_generation_prompt: bool, **kwargs) -> li
     forwarded to apply_chat_template.
     """
     text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=add_generation_prompt,
+        messages,
+        tokenize=False,
+        add_generation_prompt=add_generation_prompt,
         **kwargs,
     )
     return tokenizer.encode(text, add_special_tokens=False)
@@ -124,7 +147,8 @@ def _renderer_supervised_tokens(
     train_on_what: TrainOnWhat = TrainOnWhat.ALL_ASSISTANT_MESSAGES,
 ) -> tuple[list[int], list[float]]:
     model_input, weights = renderer.build_supervised_example(
-        messages, train_on_what=train_on_what,
+        messages,
+        train_on_what=train_on_what,
     )
     return list(model_input.to_ints()), weights.tolist()
 
@@ -345,7 +369,9 @@ def test_supervised_unicode_content(tokenizer, renderer):
 
 def test_supervised_long_content(tokenizer, renderer):
     """Multi-hundred-token content to catch subtle tokenizer edge cases."""
-    long_prompt = "Summarize this passage:\n\n" + ("The quick brown fox jumps over the lazy dog. " * 40)
+    long_prompt = "Summarize this passage:\n\n" + (
+        "The quick brown fox jumps over the lazy dog. " * 40
+    )
     long_response = "Summary: foxes jump over dogs. " * 20
     messages = [
         {"role": "user", "content": long_prompt},
@@ -553,7 +579,10 @@ def test_supervised_tool_user_assistant(tokenizer, renderer):
 def test_structured_text_content_user(tokenizer, renderer):
     """OpenAI-style structured content list with a single text part."""
     messages = [
-        {"role": "user", "content": [{"type": "text", "text": "hi from structured content"}]},
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "hi from structured content"}],
+        },
         {"role": "assistant", "content": "ack"},
     ]
     hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
@@ -564,10 +593,13 @@ def test_structured_text_content_user(tokenizer, renderer):
 def test_structured_text_content_multi_parts(tokenizer, renderer):
     """Multiple {type:text} items concatenated."""
     messages = [
-        {"role": "user", "content": [
-            {"type": "text", "text": "part1"},
-            {"type": "text", "text": "part2"},
-        ]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "part1"},
+                {"type": "text", "text": "part2"},
+            ],
+        },
         {"role": "assistant", "content": "ack"},
     ]
     hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
@@ -646,6 +678,259 @@ def test_strip_mode_strips_history_reasoning_in_generation(tokenizer, renderer):
     assert "HIST_THINK_A" not in decoded
     # GLM's strip-history collapse marker is a bare closing tag.
     assert "</think>4" in decoded
+
+
+def test_preserve_mode_keeps_history_reasoning_in_generation(
+    tokenizer,
+    preserve_renderer,
+):
+    renderer_messages, hf_messages = _multi_turn_conversation_with_reasoning()
+
+    ours = _renderer_generation_tokens(preserve_renderer, renderer_messages)
+    hf = _hf_tokens(
+        tokenizer,
+        hf_messages,
+        add_generation_prompt=True,
+        clear_thinking=False,
+    )
+    decoded = tokenizer.decode(ours)
+
+    assert ours == hf
+    assert "HIST_THINK_A" in decoded
+    assert "<think>HIST_THINK_A</think>4" in decoded
+
+
+def test_preserve_mode_matches_history_without_explicit_reasoning(
+    tokenizer,
+    preserve_renderer,
+):
+    messages = [
+        {"role": "user", "content": "What is 2+2?"},
+        {"role": "assistant", "content": "4."},
+        {"role": "user", "content": "And 3+3?"},
+    ]
+
+    ours = _renderer_generation_tokens(preserve_renderer, messages)
+    hf = _hf_tokens(
+        tokenizer,
+        messages,
+        add_generation_prompt=True,
+        clear_thinking=False,
+    )
+    decoded = tokenizer.decode(ours)
+
+    assert ours == hf
+    assert "<|assistant|></think>4." in decoded
+
+
+def _mixed_same_user_tool_trajectory() -> list[dict[str, Any]]:
+    """One user turn with a reasoning tool call and no-reasoning final.
+
+    The trailing user message is essential: it makes the entire first user
+    trajectory historical and activates GLM-5.1's ``thinking_indices /
+    has_thinking`` branch.
+    """
+    return [
+        {"role": "user", "content": "U1"},
+        {
+            "role": "assistant",
+            "reasoning_content": "MIXED_REASONING",
+            "content": "CALL",
+            "tool_calls": [
+                {
+                    "id": "call_mixed_1",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": {"q": "x"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_mixed_1",
+            "content": "RESULT",
+        },
+        {"role": "assistant", "content": "FINAL_NO_REASONING"},
+        {"role": "user", "content": "U2"},
+    ]
+
+
+def test_preserve_mode_matches_mixed_same_user_tool_trajectory(
+    tokenizer,
+    preserve_renderer,
+):
+    """A reasoning assistant marks its whole user trajectory as thinking.
+
+    The later assistant has no reasoning field, but GLM-5.1 renders an empty
+    think block for it in PRESERVED mode because the earlier tool-call assistant
+    set ``has_thinking`` for U1.
+    """
+    hf_messages = _mixed_same_user_tool_trajectory()
+    renderer_messages = normalize_messages(hf_messages)
+
+    ours = _renderer_generation_tokens(preserve_renderer, renderer_messages)
+    hf = _hf_tokens(
+        tokenizer,
+        hf_messages,
+        add_generation_prompt=True,
+        clear_thinking=False,
+    )
+    decoded = tokenizer.decode(ours)
+
+    assert ours == hf
+    assert "<think>MIXED_REASONING</think>CALL" in decoded
+    assert "<think></think>FINAL_NO_REASONING" in decoded
+
+
+def test_clear_mode_ignores_mixed_trajectory_thinking_state(tokenizer, renderer):
+    """The per-user ``has_thinking`` state only changes PRESERVED mode."""
+    hf_messages = _mixed_same_user_tool_trajectory()
+    renderer_messages = normalize_messages(hf_messages)
+
+    ours = _renderer_generation_tokens(renderer, renderer_messages)
+    hf = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=True)
+    decoded = tokenizer.decode(ours)
+
+    assert ours == hf
+    assert "MIXED_REASONING" not in decoded
+    assert "<|assistant|></think>CALL" in decoded
+    assert "<|assistant|></think>FINAL_NO_REASONING" in decoded
+
+
+@pytest.mark.parametrize(
+    ("reasoning_representation", "expected_first", "expected_final"),
+    [
+        (
+            "top_level_empty",
+            "<think></think>CALL",
+            "<think></think>FINAL_NO_REASONING",
+        ),
+        (
+            "structured_empty",
+            "<think></think>CALL",
+            "<think></think>FINAL_NO_REASONING",
+        ),
+        (
+            "embedded_only",
+            "<think>EMBEDDED_REASONING</think>CALL",
+            "</think>FINAL_NO_REASONING",
+        ),
+    ],
+)
+def test_preserve_mode_matches_reasoning_field_definedness(
+    tokenizer,
+    preserve_renderer,
+    reasoning_representation: str,
+    expected_first: str,
+    expected_final: str,
+):
+    """GLM-5.1's pre-pass checks field presence, not parsed truthiness.
+
+    An empty string ``reasoning_content`` still marks the user trajectory. An
+    embedded ``<think>`` block is preserved for its own assistant, but does not
+    mark later no-reasoning assistants in that trajectory.
+    """
+    first_assistant: dict[str, Any] = {
+        "role": "assistant",
+        "content": "CALL",
+        "tool_calls": [
+            {
+                "id": "call_definedness_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": {"q": "x"}},
+            }
+        ],
+    }
+    if reasoning_representation == "embedded_only":
+        first_assistant["content"] = "<think>EMBEDDED_REASONING</think>CALL"
+    else:
+        first_assistant["reasoning_content"] = ""
+
+    hf_messages = [
+        {"role": "user", "content": "U1"},
+        first_assistant,
+        {
+            "role": "tool",
+            "tool_call_id": "call_definedness_1",
+            "content": "RESULT",
+        },
+        {"role": "assistant", "content": "FINAL_NO_REASONING"},
+        {"role": "user", "content": "U2"},
+    ]
+    renderer_messages = normalize_messages(hf_messages)
+    if reasoning_representation == "top_level_empty":
+        # Exercise the renderer's direct OpenAI-style input. The equivalent
+        # already-normalized structured representation is covered below; raw
+        # normalization is outside this renderer-only patch.
+        renderer_messages[1]["reasoning_content"] = ""
+    elif reasoning_representation == "structured_empty":
+        renderer_messages[1]["content"] = [
+            {"type": "thinking", "thinking": ""},
+            {"type": "text", "text": "CALL"},
+        ]
+
+    ours = _renderer_generation_tokens(preserve_renderer, renderer_messages)
+    hf = _hf_tokens(
+        tokenizer,
+        hf_messages,
+        add_generation_prompt=True,
+        clear_thinking=False,
+    )
+    decoded = tokenizer.decode(ours)
+
+    assert ours == hf
+    assert expected_first in decoded
+    assert expected_final in decoded
+
+
+def test_glm51_and_glm52_preserve_extension_and_unroll_behavior(tokenizer):
+    """Only GLM-5.2 PRESERVED mode is prefix-stable and stays one datum."""
+    glm51 = get_renderer("glm5_preserve_thinking", tokenizer)
+    glm52 = get_renderer("glm_moe_dsa_preserve_thinking", tokenizer)
+    messages = [
+        {"role": "user", "content": "U1"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "U2"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "R2"},
+                {"type": "text", "text": "A2"},
+            ],
+        },
+    ]
+
+    assert glm51.has_extension_property is False
+    assert glm52.has_extension_property is True
+    assert (
+        len(
+            glm51.build_supervised_examples(
+                messages,
+                train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+            )
+        )
+        == 2
+    )
+    assert (
+        len(
+            glm52.build_supervised_examples(
+                messages,
+                train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+            )
+        )
+        == 1
+    )
+
+    prefix = messages[:2]
+    glm51_prefix = glm51.build_supervised_example(prefix)[0].to_ints()
+    glm51_full = glm51.build_supervised_example(messages)[0].to_ints()
+    glm52_prefix = glm52.build_supervised_example(prefix)[0].to_ints()
+    glm52_full = glm52.build_supervised_example(messages)[0].to_ints()
+
+    assert glm51_full[: len(glm51_prefix)] != glm51_prefix
+    assert glm52_full[: len(glm52_prefix)] == glm52_prefix
 
 
 def _interleaved_tool_raw_messages() -> list[dict[str, Any]]:
@@ -915,7 +1200,9 @@ def test_build_supervised_examples_disaggregate_matches_hf_default(tokenizer, re
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
 
-    user_idxs = [i for i, m in enumerate(messages_with_reasoning) if m["role"] == "user"]
+    user_idxs = [
+        i for i, m in enumerate(messages_with_reasoning) if m["role"] == "user"
+    ]
     assert len(examples) == len(user_idxs), (
         f"Expected {len(user_idxs)} per-turn datums, got {len(examples)}"
     )
@@ -933,6 +1220,67 @@ def test_build_supervised_examples_disaggregate_matches_hf_default(tokenizer, re
         # turn rather than a generation-only prompt.
         hf = _hf_tokens(tokenizer, prefix, add_generation_prompt=False)
         _assert_supervised_parity_with_role_stop(ours, hf, tokenizer, prefix)
+
+
+def test_build_supervised_examples_preserve_history_matches_hf(
+    tokenizer,
+    preserve_renderer,
+):
+    """Each PRESERVED-mode split matches HF with clear_thinking=False."""
+    hf_messages = [
+        {"role": "user", "content": "Q1"},
+        {
+            "role": "assistant",
+            "reasoning_content": "THINK_A",
+            "content": "A1",
+        },
+        {"role": "user", "content": "Q2"},
+        {
+            "role": "assistant",
+            "reasoning_content": "THINK_B",
+            "content": "A2",
+        },
+    ]
+    renderer_messages = [
+        {"role": "user", "content": "Q1"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "THINK_A"},
+                {"type": "text", "text": "A1"},
+            ],
+        },
+        {"role": "user", "content": "Q2"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "THINK_B"},
+                {"type": "text", "text": "A2"},
+            ],
+        },
+    ]
+
+    examples = preserve_renderer.build_supervised_examples(
+        renderer_messages,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+
+    prefix_ends = [2, len(hf_messages)]
+    assert len(examples) == len(prefix_ends)
+    for example, end in zip(examples, prefix_ends):
+        prefix = hf_messages[:end]
+        ours = list(example[0].to_ints())
+        hf = _hf_tokens(
+            tokenizer,
+            prefix,
+            add_generation_prompt=False,
+            clear_thinking=False,
+        )
+        _assert_supervised_parity_with_role_stop(ours, hf, tokenizer, prefix)
+
+    decoded = tokenizer.decode(examples[-1][0].to_ints())
+    assert "THINK_A" in decoded
+    assert "THINK_B" in decoded
 
 
 def test_build_supervised_examples_warns_on_non_assistant_mode(tokenizer, renderer):
@@ -961,9 +1309,7 @@ def test_build_supervised_examples_warns_on_non_assistant_mode(tokenizer, render
     assert "6" in decoded[1]
 
 
-def test_build_supervised_examples_all_assistant_with_tool_calls(
-    tokenizer, renderer
-):
+def test_build_supervised_examples_all_assistant_with_tool_calls(tokenizer, renderer):
     messages = [
         {"role": "user", "content": "Q"},
         {
@@ -1087,9 +1433,7 @@ def test_weight_mask_tool_call_stop_uses_observation(tokenizer, renderer):
     assert _user_token(tokenizer) not in trained_tokens
 
 
-def test_weight_mask_trains_role_stops_after_historical_assistants(
-    tokenizer, renderer
-):
+def test_weight_mask_trains_role_stops_after_historical_assistants(tokenizer, renderer):
     """Only role tags that close assistant turns carry loss."""
     messages = [
         {"role": "user", "content": "q1"},
@@ -1118,17 +1462,14 @@ def test_weight_mask_trains_role_stops_after_historical_assistants(
     assert tokens[first_user_pos] == user
     assert weights[first_user_pos] == 0
     assert all(
-        w == 0
-        for w in weights[first_user_pos + 1 : first_user_pos + len(first_user)]
+        w == 0 for w in weights[first_user_pos + 1 : first_user_pos + len(first_user)]
     )
 
     assert tokens[second_user_pos] == user
     assert weights[second_user_pos] == 1
     assert all(
         w == 0
-        for w in weights[
-            second_user_pos + 1 : second_user_pos + len(second_user)
-        ]
+        for w in weights[second_user_pos + 1 : second_user_pos + len(second_user)]
     )
 
     assert tokens[observation_pos] == observation
@@ -1212,11 +1553,13 @@ def test_stop_sequences_returns_next_role_tags_not_eos(tokenizer, renderer):
         len(tokenizer.encode(tag, add_special_tokens=False)) == 1
         for tag in ("<|user|>", "<|observation|>")
     )
-    assert tokenizer.encode("<|user|>", add_special_tokens=False)[0] == (
-        GLM5_SERVERLESS_STOP_TOKEN_IDS["user"]
+    assert (
+        tokenizer.encode("<|user|>", add_special_tokens=False)[0]
+        == (GLM5_SERVERLESS_STOP_TOKEN_IDS["user"])
     )
-    assert tokenizer.encode("<|observation|>", add_special_tokens=False)[0] == (
-        GLM5_SERVERLESS_STOP_TOKEN_IDS["observation"]
+    assert (
+        tokenizer.encode("<|observation|>", add_special_tokens=False)[0]
+        == (GLM5_SERVERLESS_STOP_TOKEN_IDS["observation"])
     )
 
 
@@ -1280,9 +1623,7 @@ def test_parse_response_restores_prefilled_think(
     content = message["content"]
     assert isinstance(content, list)
     thinking = "".join(
-        part.get("thinking", "")
-        for part in content
-        if part.get("type") == "thinking"
+        part.get("thinking", "") for part in content if part.get("type") == "thinking"
     )
     text = get_text_content(message)
     assert thinking == "reason"
@@ -1298,8 +1639,10 @@ def test_parse_response_stops_at_user_role(tokenizer, renderer):
 
     assert ok is True
     content = message["content"]
-    text = content if isinstance(content, str) else "".join(
-        p.get("text", "") for p in content if p.get("type") == "text"
+    text = (
+        content
+        if isinstance(content, str)
+        else "".join(p.get("text", "") for p in content if p.get("type") == "text")
     )
     assert "first answer" in text
     assert "next question" not in text
@@ -1343,8 +1686,10 @@ def test_parse_response_empty_thinking(tokenizer, renderer):
     message, ok = renderer.parse_response(ids)
     assert ok is True
     content = message["content"]
-    text = content if isinstance(content, str) else "".join(
-        p.get("text", "") for p in content if p.get("type") == "text"
+    text = (
+        content
+        if isinstance(content, str)
+        else "".join(p.get("text", "") for p in content if p.get("type") == "text")
     )
     assert "just the answer" in text
 
@@ -1569,9 +1914,7 @@ def test_tool_call_supervised_parity(tokenizer, renderer, build_messages):
     hf_messages = build_messages(_hf_tool_calls)
     hf = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=False)
     ours, _ = _renderer_supervised_tokens(renderer, renderer_messages)
-    _assert_supervised_parity_with_role_stop(
-        ours, hf, tokenizer, renderer_messages
-    )
+    _assert_supervised_parity_with_role_stop(ours, hf, tokenizer, renderer_messages)
 
 
 def test_tool_call_tokens_are_trained(tokenizer, renderer):

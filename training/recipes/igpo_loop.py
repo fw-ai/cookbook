@@ -697,22 +697,20 @@ def main(
                 n_accum=1,
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
-                completions_per_prompt=completions_per_prompt,
             )
             metrics["train/step"] = step
             metrics["igpo/scoring_time"] = ig_time
             metrics.update(ig_metrics)
 
-            avg_reward = metrics.get("rollout/reward", 0.0)
-            avg_acc = metrics.get("rollout/accuracy", 0.0)
+            avg_reward = metrics.get("rollout/filtered_reward", 0.0)
             avg_kl = metrics.get("train/mean_kl", 0.0)
             logger.info(
-                "Step %d | Reward: %.3f | Acc: %.1f%% | KL: %.4f | IG: %.4f | Turns: %.1f",
-                step, avg_reward, avg_acc * 100, avg_kl,
+                "Step %d | Filtered reward: %.3f | KL: %.4f | IG: %.4f | Turns: %.1f",
+                step, avg_reward, avg_kl,
                 ig_metrics.get("igpo/mean_ig", 0.0),
                 ig_metrics.get("igpo/avg_turns", 0.0),
             )
-            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, kl=avg_kl)
+            log_metrics_json(step, reward=avg_reward, kl=avg_kl)
             wandb_log(metrics, step)
 
             total_rl_steps = len(rl_dataset) - step_offset

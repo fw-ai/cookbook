@@ -7,15 +7,17 @@ from training.utils.rl.async_rl.batch import (
 from training.utils.rl.async_rl.producer import RolloutRow
 from training.utils.rl.async_rl.coordinator import (
     AsyncRLCoordinator,
-    PostStepMetricsFn,
-    run_async_rl_lifecycle,
+    PublishResult,
+)
+from training.utils.rl.async_rl.telemetry import (
+    AsyncRLTelemetry,
 )
 
 __all__ = [
     "AsyncRLCoordinator",
-    "PostStepMetricsFn",
+    "AsyncRLTelemetry",
+    "PublishResult",
     "OptimizerBatch",
     "TrainingChunk",
     "RolloutRow",
-    "run_async_rl_lifecycle",
 ]

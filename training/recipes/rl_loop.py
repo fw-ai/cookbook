@@ -879,21 +879,18 @@ def main(
                 n_accum=len(fwd_bwd_results),
                 timing_metrics=flush_timing(),
                 loop_stats=loop_stats,
-                completions_per_prompt=completions_per_prompt,
             )
             metrics["train/step"] = step
 
-            avg_reward = metrics.get("rollout/reward", 0.0)
-            avg_acc = metrics.get("rollout/accuracy", 0.0)
+            avg_reward = metrics.get("rollout/filtered_reward", 0.0)
             avg_ref_kl = metrics.get("train/ref_kl", 0.0)
             logger.info(
-                "Step %d | Reward: %.3f | Acc: %.1f%% | RefKL: %.4f",
+                "Step %d | Filtered reward: %.3f | RefKL: %.4f",
                 step,
                 avg_reward,
-                avg_acc * 100,
                 avg_ref_kl,
             )
-            log_metrics_json(step, reward=avg_reward, accuracy=avg_acc, ref_kl=avg_ref_kl)
+            log_metrics_json(step, reward=avg_reward, ref_kl=avg_ref_kl)
             log_metrics(metrics, step=step)
 
             if cfg.trajectory_dir:
@@ -935,7 +932,11 @@ def main(
                 prompt_groups_per_step=prompt_groups_per_step,
                 dynamic_filter_fn=should_accept,
                 global_step=step_offset,
-                metrics_callback=_loop_metrics_callback,
+                metrics_callback=(
+                    _loop_metrics_callback
+                    if concurrency_controller is not None
+                    else None
+                ),
                 weight_sync_fn=(
                     lambda step: (
                         service.hotload_sampler_snapshot(

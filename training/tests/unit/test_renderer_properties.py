@@ -519,38 +519,18 @@ def _scenario_supported(case: RendererCase, scenario: Scenario) -> bool:
     return True
 
 
-# kimi_k25 injects Kimi's default system prompt whenever a conversation has no
-# system message, while apply_chat_template does not — so every system-less
-# scenario diverges on HF byte-parity. Real training rows carry a system turn
-# (see the system_user scenario, where the two agree). Rather than enumerate
-# every system-less scenario, gate this by structure.
-_KIMI_DEFAULT_SYSTEM_XFAIL = (
-    "kimi_k25 injects Kimi's default system prompt when a conversation has no "
-    "system message; apply_chat_template does not, so system-less scenarios "
-    "diverge on HF byte-parity. Covered by scenarios that carry a system turn."
-)
-
-
-def _lacks_system_message(scenario: Scenario) -> bool:
-    return not (scenario.messages and scenario.messages[0].get("role") == "system")
-
-
 def _hf_xfail_reason(case: RendererCase, scenario: Scenario) -> str | None:
     """Resolve a documented HF-parity divergence for this pair.
 
     Precedence (all resolve to a documented xfail reason, or ``None`` when the
     pair is expected to match):
 
-    1. kimi_k25's structural default-system-prompt injection (gated by
-       conversation shape, so one predicate covers every system-less scenario);
-    2. a matrix-wide ``case.xfail_hf`` divergence;
-    3. a scenario-wide ``scenario.xfail_reason`` divergence;
-    4. the empirically-built per-(renderer, scenario) HF divergence map
+    1. a matrix-wide ``case.xfail_hf`` divergence;
+    2. a scenario-wide ``scenario.xfail_reason`` divergence;
+    3. the empirically-built per-(renderer, scenario) HF divergence map
        map — the common case, since almost every real divergence is
        renderer-specific rather than scenario-wide.
     """
-    if case.renderer == "kimi_k25" and _lacks_system_message(scenario):
-        return _KIMI_DEFAULT_SYSTEM_XFAIL
     return (
         case.xfail_hf
         or scenario.xfail_reason
@@ -562,8 +542,8 @@ def _parse_xfail_reason(case: RendererCase, scenario: Scenario) -> str | None:
     """Resolve only renderer self-consistency divergences.
 
     HF formatting gaps must not suppress the independent loss-mask and parse
-    checks. This distinction is especially important for Kimi's default-system
-    mismatch and whitespace-only template differences.
+    checks. This distinction is especially important for whitespace-only
+    template differences.
     """
     return PARSE_EXPECTED_DIVERGENCES.get((case.renderer, scenario.id))
 

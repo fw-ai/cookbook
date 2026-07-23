@@ -6,6 +6,8 @@ import asyncio
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,9 +23,9 @@ from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     OptimizerBatch,
     RolloutRow,
-    run_async_rl_lifecycle,
 )
 from training.utils.rl.async_rl.batch import balanced_chunk_targets
+from training.utils.rl.async_rl.telemetry import AsyncRLTelemetry
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 
 
@@ -120,6 +122,44 @@ async def _consume(batch: OptimizerBatch) -> list[int]:
     return sizes
 
 
+def _telemetry() -> AsyncRLTelemetry:
+    return AsyncRLTelemetry(
+        producer_metrics_fn=lambda _metrics: None,
+        step_metrics_fn=lambda _metrics, _step: None,
+    )
+
+
+@asynccontextmanager
+async def _observed(
+    coordinator: AsyncRLCoordinator,
+    telemetry: AsyncRLTelemetry,
+):
+    async with coordinator:
+        telemetry.start(coordinator.snapshot)
+        try:
+            yield
+        finally:
+            await telemetry.aclose()
+
+
+def _finish_step(
+    telemetry: AsyncRLTelemetry,
+    batch: OptimizerBatch,
+    *,
+    trained_against_version: int,
+) -> dict:
+    return telemetry.finish_step(
+        batch=batch,
+        trained_against_version=trained_against_version,
+        prompt_groups=batch.prompt_groups,
+        fwd_bwd_results=[],
+        optim_result=SimpleNamespace(metrics={}),
+        timing_metrics={},
+        weight_sync_time=0.0,
+        learning_rate=1e-5,
+    )
+
+
 class TestValidation:
     @pytest.mark.parametrize(
         ("overrides", "match"),
@@ -169,6 +209,7 @@ def test_completion_refills_during_physical_training() -> None:
 
             return _row(index, run_factory=factory)
 
+        telemetry = _telemetry()
         coordinator = _coordinator(
             (make_row(index) for index in range(5)),
             max_head_off_policy_versions=2,
@@ -181,7 +222,7 @@ def test_completion_refills_during_physical_training() -> None:
             train_started.set()
             assert train_release.wait(timeout=2.0)
 
-        async with coordinator:
+        async with _observed(coordinator, telemetry):
             batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
             assert batch is not None
             chunks = batch.chunks()
@@ -197,11 +238,89 @@ def test_completion_refills_during_physical_training() -> None:
                 )
             )
             await _wait_until(train_started.is_set)
+            before = coordinator.snapshot()
             releases[1].set()
 
             await asyncio.wait_for(submitted[4].wait(), timeout=1.0)
             snapshot = coordinator.snapshot()
-            assert snapshot["completion_refills_during_train"] >= 1
+            assert (
+                snapshot["completion_refill_attempts"]
+                > before["completion_refill_attempts"]
+            )
+            assert (
+                snapshot["completion_refill_rows_submitted"]
+                > before["completion_refill_rows_submitted"]
+            )
+
+            train_release.set()
+            await trainer
+            await chunks.aclose()
+
+    _run(scenario())
+
+
+def test_completion_refill_attempt_is_visible_when_staleness_gate_is_full() -> None:
+    """A completion retry is counted even when it cannot submit another row."""
+
+    async def scenario() -> None:
+        releases = {index: asyncio.Event() for index in (2, 3)}
+        fifth_submitted = asyncio.Event()
+
+        def make_row(index: int) -> RolloutRow:
+            async def factory(_sub_index: int) -> RolloutRun:
+                if index == 4:
+                    fifth_submitted.set()
+                if index in releases:
+                    await releases[index].wait()
+                return _rollout_run(float(index))
+
+            return _row(index, run_factory=factory)
+
+        telemetry = _telemetry()
+        coordinator = _coordinator(
+            (make_row(index) for index in range(5)),
+            max_head_off_policy_versions=1,
+        )
+        train_started = threading.Event()
+        train_release = threading.Event()
+
+        def blocked_train() -> None:
+            train_started.set()
+            assert train_release.wait(timeout=2.0)
+
+        async with _observed(coordinator, telemetry):
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+            assert batch is not None
+            chunks = batch.chunks()
+            await anext(chunks)
+            trainer = asyncio.create_task(
+                coordinator.run_blocking(
+                    "train_chunk",
+                    blocked_train,
+                    optimizer_batch=batch,
+                )
+            )
+            await _wait_until(train_started.is_set)
+            before = coordinator.snapshot()
+            releases[2].set()
+            await _wait_until(
+                lambda: (
+                    int(
+                        coordinator.snapshot()["completion_refill_attempts"]
+                        or 0
+                    )
+                    > int(before["completion_refill_attempts"] or 0)
+                )
+            )
+
+            snapshot = coordinator.snapshot()
+            assert (
+                snapshot["completion_refill_rows_submitted"]
+                == before["completion_refill_rows_submitted"]
+            )
+            assert snapshot["rows_submitted"] == before["rows_submitted"]
+            assert snapshot["staleness_capacity"] == 0
+            assert not fifth_submitted.is_set()
 
             train_release.set()
             await trainer
@@ -224,24 +343,25 @@ def test_staleness_gate_blocks_refill_until_publish() -> None:
 
             return _row(index, run_factory=factory)
 
+        telemetry = _telemetry()
         coordinator = _coordinator(
             (make_row(index) for index in range(3)),
             max_concurrent_rollouts=3,
         )
-        async with coordinator:
+        async with _observed(coordinator, telemetry):
             batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
             assert batch is not None
             assert await _consume(batch) == [1, 1]
 
             await asyncio.sleep(0)
-            before = coordinator.snapshot()
+            before = telemetry.snapshot()
             assert before["rows_submitted"] == 2
             assert before["staleness_capacity"] == 0
             assert not third_submitted.is_set()
 
-            metrics = coordinator.publish(batch)
+            published = coordinator.publish(batch)
             await asyncio.wait_for(third_submitted.wait(), timeout=1.0)
-            assert metrics["ctx/current_version"] == 0
+            assert published.trained_against_version == 0
             assert coordinator.published_version == 1
 
     _run(scenario())
@@ -255,7 +375,10 @@ def test_later_chunk_queues_while_first_chunk_trains() -> None:
             await second_release.wait()
             return _rollout_run(1.0)
 
-        coordinator = _coordinator([_row(0), _row(1, run_factory=second_factory)])
+        telemetry = _telemetry()
+        coordinator = _coordinator(
+            [_row(0), _row(1, run_factory=second_factory)],
+        )
         train_started = threading.Event()
         train_release = threading.Event()
 
@@ -263,7 +386,7 @@ def test_later_chunk_queues_while_first_chunk_trains() -> None:
             train_started.set()
             assert train_release.wait(timeout=2.0)
 
-        async with coordinator:
+        async with _observed(coordinator, telemetry):
             batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
             assert batch is not None
             chunks = batch.chunks()
@@ -284,8 +407,50 @@ def test_later_chunk_queues_while_first_chunk_trains() -> None:
             assert (await anext(chunks)).index == 1
             with pytest.raises(StopAsyncIteration):
                 await anext(chunks)
-            metrics = coordinator.publish(batch)
-            assert metrics["async/max_ready_training_chunks_during_train"] == 1
+            published = coordinator.publish(batch)
+            metrics = _finish_step(
+                telemetry,
+                batch,
+                trained_against_version=published.trained_against_version,
+            )
+            assert metrics["async/realized_training_chunks"] == 2
+
+    _run(scenario())
+
+
+def test_metrics_failure_does_not_poison_active_batch() -> None:
+    async def scenario() -> None:
+        release_second = asyncio.Event()
+
+        async def second_factory(_sub_index: int) -> RolloutRun:
+            await release_second.wait()
+            return _rollout_run(1.0)
+
+        records: list[dict] = []
+
+        def fail_metrics(_metrics: dict) -> None:
+            raise OSError("metrics unavailable")
+
+        telemetry = AsyncRLTelemetry(
+            producer_metrics_fn=fail_metrics,
+            step_metrics_fn=lambda _metrics, _step: records.append(_metrics),
+        )
+        coordinator = _coordinator(
+            [_row(0), _row(1, run_factory=second_factory)],
+        )
+        async with coordinator:
+            telemetry.start(coordinator.snapshot)
+            batch = await coordinator.next_batch()
+            assert batch is not None
+            chunks = batch.chunks()
+            await anext(chunks)
+
+            await _wait_until(lambda: telemetry.failure is not None)
+            release_second.set()
+            assert (await anext(chunks)).index == 1
+
+            with pytest.raises(OSError, match="metrics unavailable"):
+                await telemetry.aclose()
 
     _run(scenario())
 
@@ -334,12 +499,13 @@ def test_one_optimizer_and_hotload_per_full_or_partial_batch() -> None:
 
 def test_train_wall_time_ends_with_optimizer() -> None:
     async def scenario() -> None:
+        telemetry = _telemetry()
         coordinator = _coordinator(
             [_row(0)],
             prompt_groups_per_step=1,
             training_chunks_per_step=1,
         )
-        async with coordinator:
+        async with _observed(coordinator, telemetry):
             batch = await coordinator.next_batch()
             assert batch is not None
             await _consume(batch)
@@ -353,9 +519,6 @@ def test_train_wall_time_ends_with_optimizer() -> None:
                 lambda: None,
                 optimizer_batch=batch,
             )
-            assert batch._train_started_at is not None
-            assert batch._train_finished_at is not None
-            expected = batch._train_finished_at - batch._train_started_at
 
             await coordinator.run_blocking(
                 "weight_sync",
@@ -363,13 +526,18 @@ def test_train_wall_time_ends_with_optimizer() -> None:
                 0.01,
                 optimizer_batch=batch,
             )
-            metrics = coordinator.publish(batch)
-            assert metrics["perf/train_wall_time"] == expected
+            published = coordinator.publish(batch)
+            metrics = _finish_step(
+                telemetry,
+                batch,
+                trained_against_version=published.trained_against_version,
+            )
+            assert 0 < metrics["perf/train_step_wall_time"] < 0.01
 
     _run(scenario())
 
 
-def test_filter_and_failure_metrics_are_batch_scoped() -> None:
+def test_raw_rewards_include_filtered_groups_but_not_failed_rollouts() -> None:
     async def scenario() -> None:
         async def dropped(_sub_index: int) -> None:
             return None
@@ -382,29 +550,37 @@ def test_filter_and_failure_metrics_are_batch_scoped() -> None:
             _row(4),
             _row(5),
         ]
+        telemetry = _telemetry()
         coordinator = _coordinator(
             rows,
             dynamic_filter_fn=lambda group: group.rewards != [1.0],
         )
-        async with coordinator:
+        async with _observed(coordinator, telemetry):
             first = await coordinator.next_batch()
             assert first is not None
             await _consume(first)
-            first_metrics = coordinator.publish(first)
+            first_published = coordinator.publish(first)
+            first_metrics = _finish_step(
+                telemetry,
+                first,
+                trained_against_version=first_published.trained_against_version,
+            )
 
             second = await coordinator.next_batch()
             assert second is not None
             await _consume(second)
-            second_metrics = coordinator.publish(second)
+            second_published = coordinator.publish(second)
+            second_metrics = _finish_step(
+                telemetry,
+                second,
+                trained_against_version=second_published.trained_against_version,
+            )
 
-            assert first_metrics["valid_prompt_groups"] == 2
-            assert first_metrics["filter_drops"] == 1
-            assert first_metrics["sample_fails"] == 0
-            assert first_metrics["total_sampled"] == 3
-            assert second_metrics["valid_prompt_groups"] == 2
-            assert second_metrics["filter_drops"] == 0
-            assert second_metrics["sample_fails"] == 1
-            assert second_metrics["total_sampled"] == 3
+            assert first_metrics["rollout/raw_reward"] == 1.0
+            assert first_metrics["rollout/raw_samples"] == 3
+            assert first_metrics["rollout/filtered_samples"] == 2
+            assert second_metrics["rollout/raw_reward"] == 4.5
+            assert second_metrics["rollout/raw_samples"] == 2
 
     _run(scenario())
 
@@ -414,18 +590,19 @@ def test_recoverable_rollout_error_drops_and_continues() -> None:
         async def timeout(_sub_index: int) -> RolloutRun:
             raise TimeoutError("transient deployment timeout")
 
+        telemetry = _telemetry()
         coordinator = _coordinator(
             [_row(0, run_factory=timeout), _row(1)],
             prompt_groups_per_step=1,
             training_chunks_per_step=1,
         )
-        async with coordinator:
+        async with _observed(coordinator, telemetry):
             batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
             assert batch is not None
             assert await _consume(batch) == [1]
             coordinator.publish(batch)
             assert await coordinator.next_batch() is None
-            final = coordinator.final_stats()
+            final = telemetry.final_stats()
             assert final["recoverable_errors"] == 1
             assert final["sample_fails"] == 1
 
@@ -556,21 +733,8 @@ def test_accepted_cursor_is_not_durable_before_publish() -> None:
             assert batch is not None
             await _consume(batch)
             assert resolved == []
-            metrics = coordinator.publish(batch)
-            assert metrics["resolved_rows"] == 2
+            published = coordinator.publish(batch)
+            assert published.resolved_rows == 2
             assert resolved == [(0, "accepted"), (1, "accepted")]
 
     _run(scenario())
-
-
-def test_lifecycle_forwards_post_step_callback() -> None:
-    def callback(_metrics) -> None:
-        pass
-
-    async def training(received):
-        return received
-
-    assert (
-        _run(run_async_rl_lifecycle(training, post_step_metrics_fn=callback))
-        is callback
-    )
