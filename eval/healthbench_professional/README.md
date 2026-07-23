@@ -51,7 +51,7 @@ Requirements are Python 3.12+, Docker, `uv`, a Fireworks API key for the model,
 and an OpenAI API key for rubric judging.
 
 ```bash
-cd public-repos/cookbook/eval/healthbench_professional
+cd eval/healthbench_professional
 uv sync --group dev
 
 export FIREWORKS_API_KEY="..."

@@ -14,5 +14,6 @@ dist/
 /trials/
 /outputs/
 /artifacts/
+/resolved-job*.json
 /rl-output/
 /rl_outputs/
