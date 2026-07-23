@@ -40,7 +40,7 @@
     "eslint-plugin-node": "11.1.0",
     "form-data": "^4.0.0",
     "lru-cache": "^10.2.2",
-    "next": "^14.2.4",
+    "next": "^16.2.11",
     "next-auth": "latest",
     "node-fetch": "^3.3.2",
     "react": "18.2.0",
