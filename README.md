@@ -48,9 +48,8 @@ AI-agent safety guard is active.
 ## Repository Structure
 
 `training/` is the primary development surface. `eval/` contains reproducible
-evaluation packages, and `tools/` holds standalone customer-facing scripts
-(public `firectl` workflows). Legacy integrations, multimedia examples, and
-earlier cookbook content live under `archived/`.
+evaluation packages. Legacy integrations, standalone customer scripts,
+multimedia examples, and earlier cookbook content live under `archived/`.
 
 ```
 training/           Training API recipes, utilities, and examples
@@ -60,9 +59,9 @@ training/           Training API recipes, utilities, and examples
   renderer/         Local renderers and correctness verifier
   tests/            Unit and end-to-end tests
 eval/               Reproducible evaluation packages and benchmark adapters
-tools/              Standalone customer scripts (downloadable from GitHub)
 skills/             One Fireworks training skill and progressive references
 archived/           Legacy integrations, multimedia, and cookbook content
+  tools/            Archived standalone customer scripts
 ```
 
 ## Evaluations
@@ -71,10 +70,6 @@ archived/           Legacy integrations, multimedia, and cookbook content
   OpenAI's HealthBench Professional through Harbor, preserve exact Fireworks
   input/output token IDs and behavior-policy logprobs, and export validated
   trajectories for RL workflows.
-
-## Training skill
-
-- **[`skills/fireworks-training/SKILL.md`](skills/fireworks-training/SKILL.md)** — install once, then ask your coding agent to plan, run, resume, deploy, or debug training. The skill uses public `firectl` for managed jobs and the cookbook for custom Training API loops.
 
 ## Contributing
 
