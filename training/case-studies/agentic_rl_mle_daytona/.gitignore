@@ -1,0 +1,3 @@
+# Logs / temp artifacts
+*.log
+__pycache__/
