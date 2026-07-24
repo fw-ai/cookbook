@@ -170,11 +170,13 @@ class TrainerConfig:
     inactivity_timeout: str | None = None
     """Trainer inactivity timeout as a protobuf duration string, e.g. ``"7200s"``.
 
-    Leave unset to use the backend default. Set ``disable_inactivity_cleanup``
-    to keep a provisioned trainer alive while idle.
+    Leave unset to use the backend default. Values above 3 hours are rejected.
     """
     disable_inactivity_cleanup: bool = False
-    """Disable automatic trainer cleanup after inactivity."""
+    """Disable trainer inactivity cleanup.
+
+    Only supported for trainers created in the ``fireworks`` account.
+    """
 
     purpose: str | None = None
     """Optional platform ``Purpose`` proto enum name."""
