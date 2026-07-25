@@ -14,6 +14,10 @@ from tinker_cookbook.renderers import get_text_content
 from tinker_cookbook.renderers.base import Message, Renderer
 
 
+class _StopAfterRenderer(RuntimeError):
+    pass
+
+
 class _StopAfterProvisioning(RuntimeError):
     pass
 
@@ -447,3 +451,61 @@ def test_main_collects_trains_and_hotloads_before_next_batch(monkeypatch) -> Non
     assert events.count("optim") == 2
     assert events.count("hotload:/step-1") == 1
     assert events.count("hotload:/step-2") == 1
+
+
+def test_main_passes_renderer_name_to_rollout_renderer(monkeypatch):
+    """cfg.renderer_name must reach build_renderer, not just exist on Config.
+
+    The shape-validation lane pins renderer_name on its glm_moe_dsa shapes; if
+    the recipe accepts the field but never forwards it, those runs silently roll
+    out with a tokenizer-inferred renderer instead and nothing fails loudly.
+    """
+    captured: dict[str, str] = {}
+
+    class _Service:
+        trainer_job_id = "trainer"
+        reference_client_job_id = None
+        max_context_length = 4096
+
+        def create_training_client(self, *_args, **_kwargs):
+            return object()
+
+        def create_deployment_sampler(self, *_args, **_kwargs):
+            return object()
+
+        def close(self):
+            pass
+
+    def fake_build_renderer(_tokenizer, tokenizer_model, renderer_name):
+        captured["tokenizer_model"] = tokenizer_model
+        captured["renderer_name"] = renderer_name
+        raise _StopAfterRenderer
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "resolve_router_replay_enabled", lambda **_kwargs: False)
+    monkeypatch.setattr(module, "load_deployment_tokenizer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "build_service_client", lambda **_kwargs: _Service())
+    monkeypatch.setattr(
+        module,
+        "ReconnectableClient",
+        SimpleNamespace(from_training_client=lambda client, **_kwargs: client),
+    )
+    monkeypatch.setattr(module, "build_renderer", fake_build_renderer)
+
+    cfg = module.Config(
+        log_path="/tmp/rl_test_logs",
+        dataset="/tmp/prompts.jsonl",
+        kl_beta=0,
+        renderer_name="glm_moe_dsa",
+        deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3.5-9B"),
+    )
+
+    with pytest.raises(_StopAfterRenderer):
+        module.main(cfg)
+
+    assert captured == {
+        "tokenizer_model": "Qwen/Qwen3.5-9B",
+        "renderer_name": "glm_moe_dsa",
+    }

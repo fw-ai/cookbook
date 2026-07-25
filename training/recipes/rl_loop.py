@@ -104,6 +104,14 @@ class Config:
     max_rows: int = 100
     max_seq_len: int | None = None
     lora_rank: int = 0
+    renderer_name: str = ""
+    """Cookbook renderer used to build rollout prompts and grade responses.
+
+    Empty = infer from ``deployment.tokenizer_model`` (see
+    :func:`training.utils.supervised.resolve_renderer_name`). Set this when the
+    inferred default is not the format you want to roll out in --
+    ``async_rl_loop`` has no equivalent because there the ``rollout_fn`` owns
+    renderer construction, while this recipe owns the rollout itself."""
 
     prompt_groups_per_step: int = 1
     """Valid prompt groups collected for each optimizer step."""
@@ -226,6 +234,7 @@ def main(
             "max_completion_tokens": cfg.max_completion_tokens,
             "temperature": cfg.temperature,
             "tokenizer_id": cfg.deployment.tokenizer_model,
+            "renderer_name": cfg.renderer_name,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
             "algorithm": "grpo",
@@ -307,6 +316,7 @@ def main(
             response_renderer = build_renderer(
                 tokenizer,
                 cfg.deployment.tokenizer_model,
+                cfg.renderer_name,
             )
 
         checkpoint = TrainingCheckpoints(
