@@ -8,12 +8,37 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+from transformers import PreTrainedTokenizerFast
 from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.utils import hf_raise_for_status
 
 import training.utils.tokenizers as tokenizers
 import training.utils.runner as runner
 from training.utils.runner import RunnerConfig, RunnerIO
+
+
+def tiny_gemma4_tokenizer() -> PreTrainedTokenizerFast:
+    backend = Tokenizer(
+        models.BPE(
+            vocab={
+                "<pad>": 0,
+                "<unk>": 1,
+                "a": 2,
+                "<unused123>": 3,
+                "<unused124>": 4,
+            },
+            merges=[],
+            unk_token="<unk>",
+        )
+    )
+    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    backend.decoder = decoders.ByteLevel()
+    return PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        unk_token="<unk>",
+        pad_token="<pad>",
+    )
 
 
 @contextmanager
@@ -93,6 +118,63 @@ def test_load_tokenizer_treats_empty_revision_as_unset(monkeypatch):
     tokenizers.load_tokenizer("Qwen/Qwen3-8B", "")
 
     assert captured["kwargs"]["revision"] is None
+
+
+def test_configure_gemma4_reserved_tokens_reuses_rows_without_resizing():
+    tokenizer = tiny_gemma4_tokenizer()
+    original_size = len(tokenizer)
+
+    resolved = tokenizers.configure_gemma4_reserved_tokens(
+        tokenizer,
+        {
+            "<start_search>": "<unused123>",
+            "<unused124>": "<unused124>",
+        },
+    )
+
+    assert resolved == {"<start_search>": 3, "<unused124>": 4}
+    assert len(tokenizer) == original_size
+    assert tokenizer.encode("<start_search>", add_special_tokens=False) == [3]
+    assert tokenizer.encode("<unused124>", add_special_tokens=False) == [4]
+    assert tokenizer.decode([3]) == "<start_search>"
+    assert tokenizer.init_kwargs[tokenizers.GEMMA4_RESERVED_TOKEN_MAP_CONFIG_KEY] == {
+        "<start_search>": "<unused123>",
+        "<unused124>": "<unused124>",
+    }
+
+
+def test_load_tokenizer_reapplies_saved_gemma4_mapping(tmp_path):
+    tokenizer = tiny_gemma4_tokenizer()
+    tokenizers.configure_gemma4_reserved_tokens(
+        tokenizer,
+        {"<start_search>": "<unused123>"},
+    )
+    tokenizer.save_pretrained(tmp_path)
+
+    reloaded = tokenizers.load_tokenizer(str(tmp_path), trust_remote_code=False)
+
+    assert len(reloaded) == 5
+    assert reloaded.encode("<start_search>", add_special_tokens=False) == [3]
+    assert reloaded.decode([3]) == "<start_search>"
+
+
+@pytest.mark.parametrize(
+    ("token_map", "message"),
+    [
+        ({"<new>": "<not-unused>"}, "exact '<unusedN>' spelling"),
+        (
+            {"<first>": "<unused123>", "<second>": "<unused123>"},
+            "only one alias",
+        ),
+        ({"a": "<unused123>"}, "already has vocabulary ID"),
+    ],
+)
+def test_configure_gemma4_reserved_tokens_rejects_unsafe_mappings(token_map, message):
+    with pytest.raises(ValueError, match=message):
+        tokenizers.configure_gemma4_reserved_tokens(
+            tiny_gemma4_tokenizer(),
+            token_map,
+        )
 
 
 def test_load_deployment_tokenizer_uses_generic_deploy_config_fields(monkeypatch):

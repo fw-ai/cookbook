@@ -87,16 +87,37 @@ def test_init_render_worker_forwards_materialized_tokenizer_plan(monkeypatch):
         "2755962",
         "interleaved",
         False,
+        {"<start_search>": "<unused123>"},
     )
 
     assert captured["state"] is module._worker_state
     assert captured["kwargs"]["tokenizer_model"] == "moonshotai/Kimi-K2.6"
     assert captured["kwargs"]["tokenizer_revision"] == "2755962"
     assert captured["kwargs"]["tokenizer_trust_remote_code"] is False
+    assert captured["kwargs"]["gemma4_reserved_token_map"] == {
+        "<start_search>": "<unused123>"
+    }
     assert captured["kwargs"]["renderer_name"] == "kimi_k25"
     assert captured["kwargs"]["max_seq_len"] == 4096
     assert captured["kwargs"]["thinking_trace_history_mode"] == "interleaved"
     assert captured["kwargs"]["renderer_name_is_resolved"] is True
+
+
+def test_gemma4_reserved_tokens_require_full_parameter_training(tmp_path, monkeypatch):
+    monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
+    cfg = module.Config(
+        log_path=str(tmp_path / "logs"),
+        dataset=str(tmp_path / "data.jsonl"),
+        tokenizer_model="google/gemma-4-E2B-it",
+        gemma4_reserved_token_map={"<start_search>": "<unused123>"},
+        lora_rank=8,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"requires full-parameter SFT \(lora_rank=0\)",
+    ):
+        module.main(cfg)
 
 
 def test_init_render_worker_uses_exact_main_resolved_renderer(monkeypatch):

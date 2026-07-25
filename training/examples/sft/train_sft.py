@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import signal
@@ -48,6 +49,16 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
+    parser.add_argument(
+        "--gemma4-reserved-token-map",
+        type=json.loads,
+        default={},
+        metavar="JSON",
+        help=(
+            "Gemma 4 token alias -> existing <unusedN> slot, for example "
+            '\'{"<start_search>":"<unused123>"}\'. Requires --lora-rank=0.'
+        ),
+    )
     parser.add_argument("--no-checkpoint", action="store_true",
                         help="Skip final checkpoint save")
     parser.add_argument("--grad-clip-norm", type=float, default=1.0,
@@ -89,6 +100,7 @@ def main():
         batch_size=args.batch_size,
         max_examples=args.max_examples,
         lora_rank=args.lora_rank,
+        gemma4_reserved_token_map=args.gemma4_reserved_token_map,
         output_model_id=args.output_model_id,
         grad_clip_norm=args.grad_clip_norm,
         dcp_save_interval=-1 if args.no_checkpoint else 0,

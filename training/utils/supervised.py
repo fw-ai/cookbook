@@ -424,6 +424,7 @@ def populate_render_worker_state(
     tokenizer_model: str,
     tokenizer_revision: str | None = None,
     tokenizer_trust_remote_code: bool | None = None,
+    gemma4_reserved_token_map: Mapping[str, str] | None = None,
     renderer_name: str,
     max_seq_len: int,
     thinking_trace_history_mode: (
@@ -444,10 +445,18 @@ def populate_render_worker_state(
     ``extras`` (e.g. ``train_on_what`` for SFT). A ``None`` remote-code policy
     preserves the legacy permissive load; reviewed plans pass an explicit value.
     """
-    tokenizer = load_tokenizer(
+    tokenizer_args = [
         tokenizer_model,
         tokenizer_revision,
         tokenizer_trust_remote_code,
+    ]
+    tokenizer = (
+        load_tokenizer(
+            *tokenizer_args,
+            gemma4_reserved_token_map=gemma4_reserved_token_map,
+        )
+        if gemma4_reserved_token_map
+        else load_tokenizer(*tokenizer_args)
     )
     renderer = (
         build_renderer_from_resolved_name(

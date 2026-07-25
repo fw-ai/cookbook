@@ -293,6 +293,7 @@ def _init_render_worker(
     tokenizer_revision: str = "",
     thinking_trace_history_mode: str = "",
     tokenizer_trust_remote_code: bool | None = None,
+    gemma4_reserved_token_map: dict[str, str] | None = None,
     render_samples_local_dir: str = "",
     render_samples_limit: int | None = 0,
     _worker_id: int | None = None,
@@ -311,6 +312,7 @@ def _init_render_worker(
         tokenizer_model=tokenizer_model,
         tokenizer_revision=tokenizer_revision,
         tokenizer_trust_remote_code=tokenizer_trust_remote_code,
+        gemma4_reserved_token_map=gemma4_reserved_token_map,
         renderer_name=resolved_renderer_name,
         max_seq_len=max_seq_len,
         thinking_trace_history_mode=thinking_trace_history_mode,
@@ -515,6 +517,13 @@ class Config:
     """Reviewed remote-code policy for a materialized tokenizer plan.
 
     ``None`` retains the legacy direct-cookbook behavior.
+    """
+    gemma4_reserved_token_map: dict[str, str] = field(default_factory=dict)
+    """Desired token string -> existing Gemma 4 ``<unusedN>`` slot.
+
+    This renames and activates fixed vocabulary rows without resizing the
+    embedding matrix. It is supported only for full-parameter SFT
+    (``lora_rank=0``).
     """
     renderer_name: str = ""
     renderer_name_is_resolved: bool = False
@@ -767,6 +776,11 @@ def main(
             "Config.tokenizer_model is required for chat template formatting. "
             "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
         )
+    if cfg.gemma4_reserved_token_map and cfg.lora_rank != 0:
+        raise ValueError(
+            "gemma4_reserved_token_map requires full-parameter SFT (lora_rank=0) "
+            "so the selected embedding rows are trainable"
+        )
     # Resolve a direct request or reuse the persisted concrete renderer before
     # a managed GPU trainer is provisioned. A persisted concrete name is
     # authoritative across retries and resumes.
@@ -881,6 +895,7 @@ def main(
             cfg.tokenizer_revision,
             cfg.thinking_trace_history_mode,
             cfg.tokenizer_trust_remote_code,
+            cfg.gemma4_reserved_token_map,
         )
         _init_render_worker(*base_init_args)
 
