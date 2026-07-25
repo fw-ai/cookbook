@@ -36,9 +36,9 @@ deployment returns any metrics.
    filter/truncate pathological prompts.
 2. **Check queue and TTFT evidence.** High recent queue p95 or high TTFT
    suggests sampler pressure. For RL rollouts, reduce the actual fan-out knob
-   in use (`max_concurrency_rollout_sample` in `async_rl_loop.py`, or the
-   sync-loop concurrency controller), reduce `max_completion_tokens`, or add
-   sampler capacity.
+   in use (`max_concurrency_rollout_sample` in `async_rl_loop.py`, or
+   `prompt_groups_per_step` in the synchronous recipe), reduce
+   `max_completion_tokens`, or add sampler capacity.
 3. **If queue/TTFT evidence is not high or is absent, do not claim capacity as
    the cause.** Investigate gateway timeout limits, network stability, hotload
    readiness, request size, or an overly short `DeployConfig.sample_timeout`.

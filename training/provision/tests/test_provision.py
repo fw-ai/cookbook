@@ -61,7 +61,12 @@ class _FakeService:
     def create_reference_client(self, _base_model: str, *, lora_rank: int) -> object:
         return object()
 
-    def create_deployment_sampler(self, *, tokenizer: object, concurrency_controller: object) -> object:
+    def create_deployment_sampler(
+        self,
+        *,
+        tokenizer: object,
+        concurrency_controller: object | None = None,
+    ) -> object:
         return object()
 
     def close(self) -> None:
@@ -100,7 +105,7 @@ def test_create_sampler_forwards_rollout_adjustment_interval(
     cfg = _cfg()
     cfg.concurrency.rollout_adjustment_interval = 7
 
-    _, created_controller = module._create_sampler(_FakeService(), cfg)
+    _, created_controller = module._create_adaptive_sampler(_FakeService(), cfg)
 
     assert created_controller is controller
     assert controller_kwargs["adjustment_interval"] == 7

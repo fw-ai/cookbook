@@ -59,6 +59,7 @@ from training.utils import (
     load_deployment_tokenizer,
     load_jsonl_dataset,
     read_api_extra_headers_env,
+    resolve_router_replay_enabled,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -75,6 +76,7 @@ from training.utils.rl.async_rl import (
 )
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
+from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
@@ -123,6 +125,15 @@ class Config:
     must be ``>= completions_per_prompt`` or the gate stalls."""
     min_group_size: int = 1
     """Minimum surviving rollout runs per row to emit a PromptGroup."""
+
+    router_replay: bool = True
+    router_replay_completion_only: bool = True
+    """Replay serving expert routes for MoE alignment.
+
+    Completion-only replay avoids the serving cost of ``echo=True`` while
+    aligning the generated tokens used by the policy loss and KLD metrics.
+    """
+
     grad_accumulation_normalization: GradAccNormalization | str | None = None
     """Optional server-side normalization for accumulated gradients.
     ``None`` leaves accumulated gradients unchanged."""
@@ -326,6 +337,17 @@ def main(
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
+    router_replay_enabled = resolve_router_replay_enabled(
+        requested=cfg.router_replay,
+        api_key=api_key,
+        base_url=base_url,
+        additional_headers=additional_headers,
+        base_model=cfg.base_model,
+    )
+    if cfg.router_replay and not router_replay_enabled:
+        logger.info("Router Replay skipped for dense model %s", cfg.base_model)
+    if router_replay_enabled:
+        warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
 
     with ExitStack() as stack:
         tokenizer = load_deployment_tokenizer(cfg.deployment)
@@ -448,6 +470,11 @@ def main(
             http_timeout=cfg.deployment.sample_timeout,
             logprobs=True,
         )
+        if router_replay_enabled:
+            sample_kwargs.update(
+                include_routing_matrix=True,
+                echo=not cfg.router_replay_completion_only,
+            )
 
         rollout_setup = RolloutSetup(
             tokenizer=tokenizer,
@@ -642,6 +669,7 @@ def main(
                 max_head_off_policy_versions=cfg.max_head_offpolicy_versions,
                 max_concurrent_rollouts=cfg.max_concurrency_rollout_sample,
                 with_reference=(reference is not None),
+                router_replay_completion_only=cfg.router_replay_completion_only,
                 min_group_size=cfg.min_group_size,
                 dynamic_filter_fn=dynamic_filter_fn,
                 global_step=step_offset,

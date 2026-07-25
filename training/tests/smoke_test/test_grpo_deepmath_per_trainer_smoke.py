@@ -78,8 +78,6 @@ def test_grpo_deepmath_per_trainer(
             tokenizer_model=smoke_tokenizer_model,
             sample_timeout=600,
         ),
-        weight_sync_interval=1,
-        weight_sync_before_training=True,
         weight_sync_timeout=600,
         wandb=WandBConfig(),
     )

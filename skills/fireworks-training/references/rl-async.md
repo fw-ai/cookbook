@@ -99,6 +99,12 @@ Use these symbols when reasoning about capacity:
 | `max_head_offpolicy_versions` | `O` | published versions | Admission headroom beyond the current policy version; `0` is fully on-policy |
 | `max_concurrency_rollout_sample` | `C` | samples | Optional hard cap on in-flight rollout calls |
 
+Router Replay (R3) is a numerics-alignment setting, not a scheduling knob.
+Both RL recipes default `router_replay=True` and
+`router_replay_completion_only=True`, replaying MoE routes for generated
+tokens without the serving cost of `echo=True`. Use full-sequence replay only
+when the extra alignment is worth that throughput cost.
+
 One optimizer batch contains `B = P × G` samples. The scheduler creates
 `min(P, K)` non-empty, balanced chunk targets before production begins. For
 example, `P=10, K=4` creates targets `(3, 3, 2, 2)`.

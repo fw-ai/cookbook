@@ -2,7 +2,12 @@
 
 RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-training and pushes them to the serving deployment so new rollouts come from the updated policy. SFT / DPO / ORPO don't typically hotload — they save once at the end and call it a day.
 
-Recipe hotload behaviour is controlled by top-level fields such as `weight_sync_interval`, `weight_sync_before_training`, and `weight_sync_timeout`; the *scope* (who owns the GCS bucket) is set on `DeployConfig.weight_sync_scope`.
+`training/recipes/rl_loop.py` is always strict on-policy: it performs an
+initial hotload and another hotload after every optimizer step. It intentionally
+has no sync-cadence or conditional-initial-sync knob. Async off-policy admission
+is controlled by `max_head_offpolicy_versions`, not by delaying weight sync.
+`weight_sync_timeout` controls the hotload timeout; the *scope* (who owns the
+GCS bucket) is set on `DeployConfig.weight_sync_scope`.
 
 For current user-facing checkpoint and sampling flows, see [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) and [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading.md). This file is the deep scope-mismatch and recovery reference.
 
@@ -49,17 +54,18 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `weight_sync_interval` | `1` | Sync every N optimizer steps. `1` = after every step (on-policy). `0` = no weight sync at all (rollouts always come from the initial policy — you almost never want this for RL). |
 | `first_checkpoint_type` | `"base"` | First sampler save is a full snapshot; subsequent saves can be deltas. Do not change. |
 | `weight_sync_timeout` | `600` | Per-hotload timeout in seconds. Bump if you see `Hotload did not complete within 600s` on large models. |
-| `weight_sync_before_training` | `False` | Push an initial base snapshot before step 0. Useful when the deployment starts from a different snapshot than the trainer's base. |
 | `dcp_save_interval` | `0` | DCP (optimizer + weights) save cadence for **resume**. Orthogonal to sampler hotload. `0` = off; no intermediate resume points. |
 | `dcp_timeout` | `2700` | 45 min default for `save_state` / `load_state_with_optimizer`. |
 
 ## On-policy vs off-policy (weight-sync timing)
 
-- `weight_sync_interval = 1` + strict 1:1 per step (the recipe default) → **on-policy**. Rollouts for step K+1 are sampled from the policy that step K produced.
-- `weight_sync_interval > 1` → **off-policy** between syncs. Rollouts continue to come from an older snapshot until the next sync. CISPO / DRO / IS tolerate this better than vanilla GRPO.
+- `rl_loop` collects one batch, applies one optimizer step, hotloads, and only
+  then starts the next batch. Rollouts for step K+1 therefore use the policy
+  produced by step K.
+- `async_rl_loop` hotloads after every optimizer batch too, while its admission
+  gate allows a bounded number of already-admitted behavior-policy versions.
 
 ## Base vs delta chain
 

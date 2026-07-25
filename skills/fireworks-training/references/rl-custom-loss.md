@@ -32,11 +32,11 @@ reference-trainer settings when KL is disabled instead of ignoring them. The
 client GRPO builder applies a differentiable k3 reference-KL penalty; `ref_kl`
 is not only a logging estimator.
 
-Async also exposes the PPO anchor explicitly:
+Both recipes expose the PPO anchor explicitly:
 
 ```python
-AsyncConfig(anchor_logp="old_policy")  # trainer snapshot + active TIS
-AsyncConfig(anchor_logp="rollout")     # skip snapshot; TIS ratio is identity
+Config(anchor_logp="old_policy")  # trainer snapshot + active TIS
+Config(anchor_logp="rollout")     # skip snapshot; TIS ratio is identity
 ```
 
 Treat this as an estimator choice, not a performance-only switch. Validate
@@ -131,7 +131,7 @@ All live on `rl_loop.Config`:
 | `prompt_groups_per_step` | `1` | Prompt groups per `forward_backward + optim_step` pair. |
 | `kl_beta` | `0.001` | Reference-KL coefficient; `0` skips the reference. |
 | `eps_clip`, `eps_clip_high` | `0.2`, `None` | PPO clip for GRPO. |
-| `router_replay` | `False` | Record routing at rollout time and replay during training for MoE models. |
+| `router_replay`, `router_replay_completion_only` | `True`, `True` | Replay MoE routes for generated tokens by default. Set completion-only to `False` only when full-sequence replay is worth the serving cost of `echo=True`. |
 | `grad_accumulation_normalization` | `None` | No server-side normalization by default. Use `NUM_LOSS_TOKENS` for raw-sum losses. See [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md). |
 
 Shape-owned fields (`accelerator_type`, `node_count`, and `custom_image_tag`)

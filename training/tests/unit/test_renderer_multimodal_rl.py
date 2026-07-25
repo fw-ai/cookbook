@@ -17,6 +17,7 @@ from training.utils.rl.rollout.renderer import (
     build_multimodal_completions_prompt_token_ids,
     build_multimodal_completions_request,
     model_input_to_token_ids,
+    sampled_completion_to_rollout_run,
     single_turn_renderer_rollout,
 )
 from fireworks.training.sdk.sampling import SampledCompletion
@@ -32,6 +33,31 @@ async def _test_messages(_row: object) -> list[dict[str, str]]:
 
 async def _test_reward(_row: object, _msg: object, _ok: bool) -> float:
     return 1.0
+
+
+def test_sampled_completion_to_rollout_run_packs_neutral_contract() -> None:
+    run = sampled_completion_to_rollout_run(
+        SampledCompletion(
+            text="answer",
+            full_tokens=[10, 20, 30, 40],
+            prompt_len=2,
+            finish_reason="length",
+            inference_logprobs=[-0.3, -0.4],
+            sampling_logprobs=[-0.31, -0.41],
+            routing_matrices=["route-30", "route-40"],
+        ),
+        reward=0.75,
+    )
+
+    assert run is not None
+    sample = run.segments[0]
+    assert sample.tokens == [10, 20, 30, 40]
+    assert sample.loss_mask == [0, 0, 1, 1]
+    assert sample.logprobs == [0.0, 0.0, -0.31, -0.41]
+    assert sample.raw_logprobs == [0.0, 0.0, -0.3, -0.4]
+    assert sample.routing_matrices == ["route-30", "route-40"]
+    assert sample.reward == 0.75
+    assert sample.finish_reason == "length"
 
 
 def _multimodal_prompt(*, image_location: str = _BASE64_PNG) -> tinker.ModelInput:
@@ -433,6 +459,7 @@ async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
                 finish_reason="stop",
                 inference_logprobs=[-0.3, -0.4],
                 sampling_logprobs=[-0.31, -0.41],
+                routing_matrices=["route-40", "route-50"],
             )
         ]
 
@@ -453,6 +480,7 @@ async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
     assert segment.logprobs[-2:] == [-0.31, -0.41]
     assert segment.raw_logprobs is not None
     assert segment.raw_logprobs[-2:] == [-0.3, -0.4]
+    assert segment.routing_matrices == ["route-40", "route-50"]
 
 
 @pytest.mark.asyncio

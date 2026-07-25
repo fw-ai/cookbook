@@ -62,8 +62,8 @@ RL details stay in this skill. Open only the relevant reference when working wit
 - [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md) — `optim_step` normalization; the trap custom losses fall into
 - [`rl-dynamic-filter.md`](rl-dynamic-filter.md) — `should_accept`, why zero-variance groups get dropped
 - [`rl-custom-loss.md`](rl-custom-loss.md) — interface + reference implementation + RL `Config` fields
-- [`rl-hotload.md`](rl-hotload.md) — weight-sync cadence, `weight_sync_timeout`, on-policy vs off-policy, base/delta chain
-- [`rl-concurrency.md`](rl-concurrency.md) — rollout concurrency control for the **sync** `rl_loop.py` (adaptive is the default)
+- [`rl-hotload.md`](rl-hotload.md) — strict sync hotload, `weight_sync_timeout`, on-policy vs off-policy, base/delta chain
+- [`rl-concurrency.md`](rl-concurrency.md) — sync batch concurrency vs async sample-level admission
 - [`rl-sampling-timeouts.md`](rl-sampling-timeouts.md) — diagnose `DeploymentSamplerTimeoutError` from request shape and serving metrics
 - [`rl-async.md`](rl-async.md) — `async_rl_loop.py` overlap recipe: sample-level cap, off-policy budget, pipeline chunks
 

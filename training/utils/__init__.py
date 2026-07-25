@@ -102,6 +102,7 @@ __all__ = [
     "resolve_renderer_snapshot",
     "prepare_sampling_messages",
     "build_service_client",
+    "resolve_router_replay_enabled",
     "setup_wandb",
     "flush_timing",
     "timed",
@@ -163,7 +164,7 @@ from training.utils.losses import (
 )
 from training.utils.memlog import MemTracer
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
-from training.utils.service import build_service_client
+from training.utils.service import build_service_client, resolve_router_replay_enabled
 from training.utils.streaming import (
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,

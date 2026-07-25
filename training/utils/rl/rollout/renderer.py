@@ -78,6 +78,7 @@ __all__ = [
     "build_multimodal_completions_request",
     "model_input_to_token_ids",
     "sample_vision_completion",
+    "sampled_completion_to_rollout_run",
     "single_turn_renderer_rollout",
 ]
 
@@ -531,6 +532,7 @@ def _build_text_only_rollout_sample(
     completion_tokens: List[int],
     completion_logprobs: List[float],
     raw_completion_logprobs: List[float] | None = None,
+    routing_matrices: List[str] | None = None,
     logprobs_echoed: bool,
     reward: float,
     finish_reason: str,
@@ -546,6 +548,9 @@ def _build_text_only_rollout_sample(
         reward=float(reward),
         finish_reason=finish_reason,
         text=text,
+        routing_matrices=(
+            list(routing_matrices) if routing_matrices is not None else None
+        ),
         raw_logprobs=(
             [0.0] * len(prompt_token_ids) + raw_completion_logprobs
             if raw_completion_logprobs is not None
@@ -553,6 +558,49 @@ def _build_text_only_rollout_sample(
         ),
     )
     return RolloutRun(segments=[sample])
+
+
+def sampled_completion_to_rollout_run(
+    completion: Any,
+    *,
+    reward: float,
+) -> RolloutRun | None:
+    """Pack one SDK ``SampledCompletion`` into the neutral rollout contract."""
+    prompt_len = int(completion.prompt_len)
+    full_tokens = list(completion.full_tokens)
+    completion_tokens = full_tokens[prompt_len:]
+    if not completion_tokens:
+        return None
+
+    completion_logprobs = _completion_logprobs_from_sampled_completion(
+        completion,
+        prompt_len=prompt_len,
+        completion_len=len(completion_tokens),
+        attr="sampling_logprobs",
+        source="sampling_logprobs",
+        required=True,
+    )
+    if completion_logprobs is None:
+        return None
+    raw_completion_logprobs = _completion_logprobs_from_sampled_completion(
+        completion,
+        prompt_len=prompt_len,
+        completion_len=len(completion_tokens),
+        attr="inference_logprobs",
+        source="raw inference logprobs",
+        required=False,
+    )
+    return _build_text_only_rollout_sample(
+        prompt_token_ids=full_tokens[:prompt_len],
+        completion_tokens=completion_tokens,
+        completion_logprobs=completion_logprobs,
+        raw_completion_logprobs=raw_completion_logprobs,
+        routing_matrices=getattr(completion, "routing_matrices", None),
+        logprobs_echoed=False,
+        reward=reward,
+        finish_reason=getattr(completion, "finish_reason", "stop"),
+        text=getattr(completion, "text", ""),
+    )
 
 
 def _build_multimodal_rollout_sample(
@@ -827,6 +875,7 @@ async def single_turn_renderer_rollout(
         completion_tokens=out_tokens,
         completion_logprobs=out_logprobs,
         raw_completion_logprobs=raw_out_logprobs,
+        routing_matrices=getattr(c, "routing_matrices", None),
         logprobs_echoed=False,
         reward=reward,
         finish_reason=getattr(c, "finish_reason", "stop"),

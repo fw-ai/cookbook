@@ -305,7 +305,6 @@ def _init_rl_infra(
             cfg.trainer, "reference_training_shape_id", None
         ),
         reference_job_id=getattr(cfg.trainer, "reference_job_id", None),
-        ppo_n_minibatches=getattr(cfg, "ppo_n_minibatches", 1),
     )
     service = _build_managed_service(
         cfg,
@@ -332,12 +331,14 @@ def _init_rl_infra(
                 base_model=cfg.base_model,
                 lora_rank=0,
                 job_id=service.reference_client_job_id,
-                default_timeout=cfg.step_timeout or 3600,
+                default_timeout=getattr(cfg, "step_timeout", 0) or 3600,
                 service=service,
                 base_only=True,
             )
             reference_job_id = service.reference_trainer_job_id
-        sampler, concurrency_controller = _create_sampler(service, cfg)
+        sampler = service.create_deployment_sampler(
+            tokenizer=load_deployment_tokenizer(cfg.deployment)
+        )
         return _infra_from_service(
             mode="rl",
             service=service,
@@ -346,7 +347,6 @@ def _init_rl_infra(
             reference=reference,
             reference_job_id=reference_job_id,
             sampler=sampler,
-            concurrency_controller=concurrency_controller,
         )
     except BaseException:
         service.close()
@@ -431,7 +431,7 @@ def _init_distillation_infra(
     cleanup_callbacks: list[Callable[[], None]] = []
     try:
         training_client, policy = _make_policy(service, cfg)
-        sampler, concurrency_controller = _create_sampler(service, cfg)
+        sampler, concurrency_controller = _create_adaptive_sampler(service, cfg)
         return _infra_from_service(
             mode="distillation",
             service=service,
@@ -499,13 +499,16 @@ def _make_policy(
         base_model=cfg.base_model,
         lora_rank=cfg.lora_rank,
         job_id=service.trainer_job_id,
-        default_timeout=cfg.step_timeout or 3600,
+        default_timeout=getattr(cfg, "step_timeout", 0) or 3600,
         service=service,
     )
     return training_client, policy
 
 
-def _create_sampler(service: FiretitanServiceClient, cfg: Any) -> tuple[Any, Any]:
+def _create_adaptive_sampler(
+    service: FiretitanServiceClient,
+    cfg: Any,
+) -> tuple[Any, Any]:
     tokenizer = load_deployment_tokenizer(cfg.deployment)
     initial_window = cfg.concurrency.initial_window or (8 * (cfg.deployment.replica_count or 1))
     concurrency_controller = AdaptiveConcurrencyController(
@@ -951,9 +954,7 @@ def _build_recipe_config(
                 "kl_beta": merged.get("kl_beta", 0.001),
                 "eps_clip": merged.get("eps_clip", 0.2),
                 "eps_clip_high": merged.get("eps_clip_high"),
-                "ppo_n_minibatches": merged.get("ppo_n_minibatches", 1),
                 "deployment": deployment,
-                "concurrency": _resolve_concurrency_config(merged.get("concurrency")),
                 "weight_sync_timeout": merged.get("weight_sync_timeout", 600),
             },
         )
@@ -964,7 +965,6 @@ def _build_recipe_config(
             reference_training_shape_id=cfg.trainer.reference_training_shape_id,
             reference_job_id=cfg.trainer.reference_job_id,
             reference_configured=merged.get("reference_trainer") is not None,
-            ppo_n_minibatches=cfg.ppo_n_minibatches,
         )
         return cfg
     elif mode == "dpo":

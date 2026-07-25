@@ -6,7 +6,7 @@ import pytest
 
 from training.utils import service
 from training.utils.config import DeployConfig, TrainerConfig
-from training.utils.service import build_service_client
+from training.utils.service import build_service_client, resolve_router_replay_enabled
 
 
 def _trainer_config(**overrides) -> TrainerConfig:
@@ -48,6 +48,55 @@ def _deployment_config(**overrides) -> DeployConfig:
     )
     fields.update(overrides)
     return DeployConfig(**fields)
+
+
+def test_router_replay_skips_model_lookup_when_not_requested(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        lambda **_kwargs: pytest.fail("model lookup should not run"),
+    )
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=False,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize("is_moe", [False, True])
+def test_router_replay_follows_model_architecture(monkeypatch, is_moe):
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def model_is_moe(self, model):
+            assert model == "accounts/acct/models/base"
+            return is_moe
+
+    monkeypatch.setattr(service, "FireworksClient", FakeClient)
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+        )
+        is is_moe
+    )
 
 
 def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
