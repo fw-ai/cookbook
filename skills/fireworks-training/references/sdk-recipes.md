@@ -42,7 +42,7 @@ Distillation-specific: use `distillation_loop.py` for OPD/SDFT. Open [`sdk-disti
 
 Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes; the reference trainer is SDK-managed, so there is no separate reference job id to pin), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`sdk-checkpoints.md`](sdk-checkpoints.md) for the full priority order and constraints.
 
-## Init from another job
+## Initialize from another job
 
 ```python
 config = Config(
@@ -52,7 +52,12 @@ config = Config(
 )
 ```
 
-Loads weights from the other job; resets step to 0.
+Loads DCP weights and optimizer state from the other job, then starts the new
+recipe at step/cursor 0. For a full continuation, reattach to the same trainer,
+keep the same `log_path`, and use auto-resume or
+`"<current_job_id>:<checkpoint>"`. See
+[`sdk-checkpoints.md`](sdk-checkpoints.md#cross-run-resume) for the serverless
+cross-run reference format.
 
 ## RL specifics
 

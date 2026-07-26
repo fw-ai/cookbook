@@ -216,9 +216,11 @@ crash during an unfinished batch therefore does not silently advance the
 dataset cursor past uncommitted training data.
 
 `dcp_save_interval=0` disables resumable checkpoints. Set a positive interval
-when resume is required. A bare checkpoint name resumes trainer state and the
-dataset cursor for the same trainer. Checkpoint paths and URIs remain
-weights-only inputs and reset the recipe cursor.
+when resume is required. A serverless bare checkpoint name resumes trainer
+state and the dataset cursor for the current run; a dedicated explicit full
+resume uses `<current_job_id>:<checkpoint>`. Dedicated bare/path/cross-job and
+serverless cross-run references restore trainer weights and optimizer state but
+reset the cookbook-owned recipe step and dataset cursor.
 
 ## Metrics and tuning
 
