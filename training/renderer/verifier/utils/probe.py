@@ -27,6 +27,7 @@ from typing import Any, Iterable, Protocol
 import tinker
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import (
+    ParseTermination,
     Renderer,
     RenderContext,
     RenderedMessage,
@@ -37,7 +38,7 @@ from tinker_cookbook.renderers.base import (
 # renderers ("glm5", "gemma4", etc.) under the names exposed by
 # ``tinker_cookbook.renderers.get_renderer``.
 import training.renderer  # noqa: F401
-from training.utils.supervised import normalize_messages
+from training.utils.supervised import build_tool_prefixed_messages, normalize_messages
 
 logger = logging.getLogger(__name__)
 
@@ -72,21 +73,25 @@ def resolve_dispatch(
       3. ``model`` → use as-is, mode = "explicit".
       4. neither → ``DispatchError``. The verifier carries no static
          renderer→model mapping; the caller picks the live Fireworks model
-         (the dev server's ``/models`` endpoint and ``SKILL.md`` document
-         what's available).
+         (the training skill documents how to list available models).
 
     ``renderer_name`` is accepted for API symmetry with the CLI and the
-    /probe handler but doesn't influence resolution any more.
+    live server but doesn't influence resolution any more.
     """
     if model and deployment_id:
         raise DispatchError("`model` and `deployment_id` are mutually exclusive")
 
     if deployment_id:
+        if deployment_id.startswith("accounts/") and "/deployments/" in deployment_id:
+            return deployment_id, "deployment"
+
         import os as _os
 
         api_key = api_key or _os.environ.get("FIREWORKS_API_KEY")
         if not api_key:
-            raise DispatchError("FIREWORKS_API_KEY not set; cannot resolve deployment_id")
+            raise DispatchError(
+                "FIREWORKS_API_KEY not set; cannot resolve deployment_id"
+            )
         base_url = base_url or _os.environ.get(
             "FIREWORKS_BASE_URL", "https://api.fireworks.ai"
         )
@@ -101,8 +106,7 @@ def resolve_dispatch(
     raise DispatchError(
         "Pass either `model` (e.g. accounts/fireworks/models/glm-5p1) or "
         "`deployment_id`. The verifier no longer ships a renderer→model "
-        "default mapping. List available serverless models from the GUI's "
-        "model dropdown (populated by /models on the dev server) or with "
+        "default mapping. List available serverless models with "
         "`Fireworks().models.list(account_id='fireworks', filter=...)`."
     )
 
@@ -130,6 +134,7 @@ class _ChunkSpan:
 
 def _structural_spans(
     renderer: Renderer,
+    tokenizer: Any,
     messages: list[dict],
     *,
     include_generation_suffix: bool,
@@ -186,7 +191,7 @@ def _structural_spans(
                 )
 
         for chunk in rendered.output:
-            tokens = _chunk_tokens(chunk)
+            tokens = _chunk_tokens(chunk, tokenizer)
             if not tokens:
                 continue
             spans.append(
@@ -234,18 +239,112 @@ def _structural_spans(
     return spans
 
 
-def _chunk_tokens(chunk: tinker.types.ModelInputChunk) -> list[int]:
-    """Extract token IDs from a ModelInputChunk, ignoring non-text chunks.
+def _image_placeholder_token_id(tokenizer: Any) -> int | None:
+    """Return the image-placeholder token ID exposed by a supported tokenizer."""
+    special_ids = getattr(tokenizer, "special_ids", None)
+    image_id = getattr(special_ids, "image", None) if special_ids is not None else None
+    if type(image_id) is int:
+        return image_id
 
-    Image/multimodal chunks have no integer token IDs in the same sense.
-    For the probe's scope (text token alignment), we silently skip them
-    and emit no audit rows for those positions. The probe is text-only
-    in v1; multimodal probing comes with the VL renderer wave.
-    """
+    image_id = getattr(tokenizer, "image_token_id", None)
+    if type(image_id) is int:
+        return image_id
+
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if not callable(convert):
+        return None
+
+    image_token = getattr(tokenizer, "image_token", None)
+    candidates = [image_token] if isinstance(image_token, str) else []
+    candidates.append("<|image_pad|>")
+    unknown_id = getattr(tokenizer, "unk_token_id", None)
+    for candidate in candidates:
+        image_id = convert(candidate)
+        if type(image_id) is int and image_id != unknown_id:
+            return image_id
+    return None
+
+
+def _chunk_tokens(
+    chunk: tinker.types.ModelInputChunk,
+    tokenizer: Any,
+) -> list[int]:
+    """Expand one renderer chunk into the token positions seen by serving."""
     tokens = getattr(chunk, "tokens", None)
-    if tokens is None:
-        return []
-    return list(tokens)
+    if tokens is not None:
+        return [int(token) for token in tokens]
+
+    if isinstance(
+        chunk,
+        (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+    ):
+        expected_tokens = getattr(chunk, "expected_tokens", None)
+        if type(expected_tokens) is not int or expected_tokens < 1:
+            raise ValueError(
+                f"{type(chunk).__name__} must declare a positive expected_tokens"
+            )
+        image_id = _image_placeholder_token_id(tokenizer)
+        if image_id is None:
+            raise ValueError(
+                "multimodal verification requires the tokenizer to expose its "
+                "image placeholder as special_ids.image, image_token_id, or "
+                "image_token"
+            )
+        return [image_id] * expected_tokens
+
+    raise ValueError(
+        f"verifier cannot expand renderer chunk type {type(chunk).__name__}"
+    )
+
+
+def _model_input_tokens(
+    model_input: tinker.ModelInput,
+    tokenizer: Any,
+) -> list[int]:
+    """Return expanded model tokens, including multimodal placeholder spans.
+
+    Text-only ``ModelInput`` objects expose ``to_ints`` directly. Multimodal
+    renderers represent each image as a chunk with an authoritative
+    ``expected_tokens`` length. Serving uses the tokenizer's declared image
+    placeholder at those positions.
+    """
+    try:
+        return [int(token) for token in model_input.to_ints()]
+    except ValueError:
+        if all(
+            isinstance(chunk, tinker.types.EncodedTextChunk)
+            for chunk in model_input.chunks
+        ):
+            raise
+        return [
+            token
+            for chunk in model_input.chunks
+            for token in _chunk_tokens(chunk, tokenizer)
+        ]
+
+
+def _prepare_conversation(
+    renderer: Renderer,
+    messages: list[dict],
+    *,
+    tools: list[dict] | None,
+    request_kwargs: dict[str, Any] | None,
+) -> tuple[list[dict], Any]:
+    """Normalize messages and apply an optional whole-request renderer hook."""
+    normalized = normalize_messages(messages)
+    prepare = getattr(renderer, "prepare_conversation", None)
+    if callable(prepare):
+        conversation = prepare(
+            normalized,
+            tools=tools,
+            request_kwargs=request_kwargs or {},
+        )
+        return normalized, conversation
+    return normalized, build_tool_prefixed_messages(
+        messages,
+        renderer=renderer,
+        tools=tools,
+    )
 
 
 def _flatten_spans(spans: Iterable[_ChunkSpan]) -> tuple[list[int], list[_ChunkSpan]]:
@@ -365,15 +464,17 @@ def _call_completion(
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
-        **PROBE_API_FLAGS,
     }
     if tools:
         kwargs["tools"] = tools
     if extra_kwargs:
         kwargs.update(extra_kwargs)
+    kwargs.update(PROBE_API_FLAGS)
 
     response = client.chat.completions.create(**kwargs)
-    payload = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+    payload = (
+        response.model_dump() if hasattr(response, "model_dump") else dict(response)
+    )
 
     prompt_ids = payload.get("prompt_token_ids")
     completion_ids: list[int] = []
@@ -417,6 +518,7 @@ def run_probe(
     client: FireworksLikeClient,
     model: str,
     messages: list[dict],
+    image_processor: Any | None = None,
     tools: list[dict] | None = None,
     max_tokens: int = 1024,
     temperature: float = 0.0,
@@ -424,24 +526,35 @@ def run_probe(
     extra_completion_kwargs: dict[str, Any] | None = None,
     deployment_id: str | None = None,
     tokenizer_model: str | None = None,
-    renderer_config: dict[str, Any] | None = None,
+    image_processor_model: str | None = None,
     dispatch_mode: str = "explicit",
 ) -> dict[str, Any]:
     """Run the empirical probe end to end and return the artifact dict.
 
-    ``dispatch_mode`` ∈ {"serverless", "deployment", "explicit"} records
-    how the caller chose ``model`` (default-serverless lookup, --deployment-id
-    auto-resolution, or a literal --model override). Recorded in the
-    artifact so reviewers can see at a glance what the probe was talking to.
+    ``dispatch_mode`` records whether the caller selected a deployment or
+    passed a literal model identifier. It is included in the artifact so
+    reviewers can see what the probe addressed.
 
     The artifact is JSON-serialisable. The caller writes it to disk.
     """
-    renderer = get_renderer(renderer_name, tokenizer)
-    normalized = normalize_messages(messages)
+    renderer = get_renderer(
+        renderer_name,
+        tokenizer,
+        image_processor=image_processor,
+    )
+    base_messages, normalized = _prepare_conversation(
+        renderer,
+        messages,
+        tools=tools,
+        request_kwargs=extra_completion_kwargs,
+    )
 
     # 1) Local prompt render
     prompt_input = renderer.build_generation_prompt(normalized, role="assistant")
-    renderer_prompt_tokens: list[int] = list(prompt_input.to_ints())
+    renderer_prompt_tokens = _model_input_tokens(
+        prompt_input,
+        tokenizer,
+    )
 
     # 2) Deployed completion (echo=True for prompt parity, raw_output for token IDs)
     api = _call_completion(
@@ -468,10 +581,8 @@ def run_probe(
         and len(completion_tokens) >= len(api_prompt_tokens)
         and completion_tokens[: len(api_prompt_tokens)] == api_prompt_tokens
     ):
-        completion_tokens = completion_tokens[len(api_prompt_tokens):]
-        completion_text = tokenizer.decode(
-            completion_tokens, skip_special_tokens=False
-        )
+        completion_tokens = completion_tokens[len(api_prompt_tokens) :]
+        completion_text = tokenizer.decode(completion_tokens, skip_special_tokens=False)
         echo_stripped = True
 
     # 3) Round-trip the completion through the renderer's parser so the
@@ -484,51 +595,105 @@ def run_probe(
     # renderer's own definition of "what the assistant turn was", so
     # using it here keeps the round-trip non-circular while not papering
     # over real bugs.
-    parsed_msg, parse_ok = renderer.parse_response(completion_tokens)
-    if parse_ok:
-        completion_message: Any = parsed_msg
+    parsed_msg, parse_termination = renderer.parse_response(completion_tokens)
+    if isinstance(parse_termination, ParseTermination):
+        parse_ok = parse_termination.is_clean
     else:
-        completion_message = {"role": "assistant", "content": completion_text}
-    full_messages_raw = list(messages) + [completion_message]
-    full_messages = normalize_messages(full_messages_raw)
+        parse_ok = bool(parse_termination)
 
-    # Authoritative source for tokens AND per-token weights: the renderer's
-    # own build_supervised_example. This honours per-renderer customization
-    # (e.g. GLM5 splits the leading <think> off and assigns it weight 0).
-    si_input, weights_tensor = renderer.build_supervised_example(
-        full_messages, train_on_what=train_on_what
-    )
-    full_tokens: list[int] = list(si_input.to_ints())
-    weights: list[float] = [float(w) for w in weights_tensor.tolist()]
-
-    # Independently walk render_message to label each token by chunk source.
-    # The two walks must produce the same token sequence; if they don't, the
-    # renderer's customization changed token identity (not just chunk
-    # boundaries) — surface that as a sanity failure rather than silently
-    # producing inconsistent attribution.
-    struct_spans = _structural_spans(
-        renderer,
-        full_messages,
-        include_generation_suffix=False,
-    )
-    struct_tokens, span_refs = _flatten_spans(struct_spans)
-    structural_token_match = struct_tokens == full_tokens
-    if not structural_token_match:
-        # Pad span_refs so downstream indexing doesn't crash; the sanity flag
-        # tells the human something is off and the audit table will look weird.
-        if len(span_refs) < len(full_tokens):
-            span_refs = span_refs + [span_refs[-1]] * (len(full_tokens) - len(span_refs))
+    full_tokens: list[int] = []
+    weights: list[float] = []
+    span_refs: list[_ChunkSpan] = []
+    provenance: list[str] = []
+    structural_token_match: bool | None = None
+    structural_attribution: str | None = None
+    if parse_ok:
+        prepare = getattr(renderer, "prepare_conversation", None)
+        if callable(prepare):
+            full_messages = prepare(
+                [*base_messages, parsed_msg],
+                tools=tools,
+                request_kwargs=extra_completion_kwargs or {},
+            )
         else:
-            span_refs = span_refs[: len(full_tokens)]
+            # ``normalized`` already contains the renderer-specific tool
+            # declaration prefix. ``parsed_msg`` is already a Tinker Message
+            # (including ToolCall objects), so normalizing either a second time
+            # would corrupt that structured response.
+            full_messages = [*normalized, parsed_msg]
 
-    # 4) Provenance overlay
-    prompt_len_for_alignment = len(api_prompt_tokens)
-    provenance = _provenance_per_token(
-        full_len=len(full_tokens),
-        prompt_len=prompt_len_for_alignment,
-        completion_tokens=completion_tokens,
-        full_tokens=full_tokens,
-    )
+        # Authoritative source for tokens AND per-token weights: the renderer's
+        # own build_supervised_example. This honours per-renderer customization
+        # (e.g. GLM5 splits the leading <think> off and assigns it weight 0).
+        si_input, weights_tensor = renderer.build_supervised_example(
+            full_messages,
+            train_on_what=train_on_what,
+        )
+        full_tokens = _model_input_tokens(
+            si_input,
+            tokenizer,
+        )
+        weights = [float(w) for w in weights_tensor.tolist()]
+
+        # Independently walk render_message to label each token by chunk source.
+        # The two walks must produce the same token sequence; if they don't, the
+        # renderer's customization changed token identity (not just chunk
+        # boundaries) — surface that as a sanity failure rather than silently
+        # producing inconsistent attribution.
+        supports_per_message = getattr(
+            renderer,
+            "supports_per_message_rendering",
+            True,
+        )
+        if supports_per_message:
+            struct_spans = _structural_spans(
+                renderer,
+                tokenizer,
+                full_messages,
+                include_generation_suffix=False,
+            )
+            struct_tokens, span_refs = _flatten_spans(struct_spans)
+            structural_token_match = struct_tokens == full_tokens
+            if not structural_token_match:
+                # Pad span_refs so downstream indexing doesn't crash; the sanity
+                # flag tells the human something is off and the audit table will
+                # look weird.
+                if len(span_refs) < len(full_tokens):
+                    fallback_span = (
+                        span_refs[-1]
+                        if span_refs
+                        else _ChunkSpan(
+                            source="conversation",
+                            msg_idx=-1,
+                            role=None,
+                            weight=None,
+                            tokens=full_tokens,
+                        )
+                    )
+                    span_refs = span_refs + [fallback_span] * (
+                        len(full_tokens) - len(span_refs)
+                    )
+                else:
+                    span_refs = span_refs[: len(full_tokens)]
+            structural_attribution = "per_message"
+        else:
+            conversation_span = _ChunkSpan(
+                source="conversation",
+                msg_idx=-1,
+                role=None,
+                weight=None,
+                tokens=full_tokens,
+            )
+            span_refs = [conversation_span] * len(full_tokens)
+            structural_attribution = "whole_conversation"
+
+        # 4) Provenance overlay
+        provenance = _provenance_per_token(
+            full_len=len(full_tokens),
+            prompt_len=len(api_prompt_tokens),
+            completion_tokens=completion_tokens,
+            full_tokens=full_tokens,
+        )
 
     # 5) Sanity checks (recorded, not asserted)
     sanity = {
@@ -539,13 +704,24 @@ def run_probe(
         "api_prompt_len": len(api_prompt_tokens),
         "full_render_prompt_prefix_matches_api": (
             full_tokens[: len(api_prompt_tokens)] == api_prompt_tokens
+            if parse_ok
+            else None
         ),
-        "tokenization_diverged_count": sum(1 for p in provenance if p == _PROV_DIVERGED),
+        "tokenization_diverged_count": (
+            sum(1 for p in provenance if p == _PROV_DIVERGED) if parse_ok else None
+        ),
         "echo_prompt_stripped": echo_stripped,
         "completion_token_count": len(completion_tokens),
         "completion_stop_reason": api.get("stop_reason"),
         "parse_response_ok": parse_ok,
+        "parse_response_termination": (
+            str(parse_termination)
+            if isinstance(parse_termination, ParseTermination)
+            else None
+        ),
+        "sft_roundtrip_available": parse_ok,
         "structural_walk_token_match": structural_token_match,
+        "structural_attribution": structural_attribution,
     }
 
     # 6) Audit table — chunk_source from structural walk, weight from
@@ -573,11 +749,11 @@ def run_probe(
         "produced_at": _dt.datetime.now(_dt.UTC).isoformat(),
         "renderer": {
             "name": renderer_name,
-            "config": renderer_config or {},
             "train_on_what": str(train_on_what),
         },
         "tokenizer": {
             "model": tokenizer_model or getattr(tokenizer, "name_or_path", None),
+            "image_processor_model": image_processor_model,
             "special_tokens": _special_token_map(tokenizer),
         },
         "deployment": {
@@ -600,10 +776,14 @@ def run_probe(
                 "tokens": renderer_prompt_tokens,
                 "decoded": [_decode_one(tokenizer, t) for t in renderer_prompt_tokens],
             },
-            "full": {
-                "tokens": full_tokens,
-                "decoded": [_decode_one(tokenizer, t) for t in full_tokens],
-            },
+            "full": (
+                {
+                    "tokens": full_tokens,
+                    "decoded": [_decode_one(tokenizer, t) for t in full_tokens],
+                }
+                if parse_ok
+                else None
+            ),
         },
         "completion": {
             "text": completion_text,
