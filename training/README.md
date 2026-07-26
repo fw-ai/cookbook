@@ -20,7 +20,7 @@ Each recipe is a single Python file you can fork and customize.
 
 ## Case studies
 
-Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each takes one real problem end-to-end (**build data -> evaluate the base model -> fine-tune -> evaluate again and measure the improvement**). These run on the **Fireworks Python SDK** (`fireworks-ai`) plus the [eval-protocol](https://github.com/eval-protocol/python-sdk) framework — no `firectl` and no cookbook training loop required.
+Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each takes one real problem end-to-end (**build data -> evaluate the base model -> fine-tune -> evaluate again and measure the improvement**). These run on the **Fireworks Python SDK** (`fireworks-ai`) plus the [eval-protocol](https://github.com/eval-protocol/python-sdk) framework — no `firectl` required. Most need no cookbook training loop either; `embedding_support_search` is the exception, since it drives [`recipes/embedding_loop.py`](recipes/embedding_loop.py) directly.
 
 | Case study | Technique | Dataset | "Customer problem" | Open |
 | --- | --- | --- | --- | --- |
@@ -28,6 +28,7 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 | [sft_cord_receipts](case-studies/sft_cord_receipts) | Vision SFT (Python SDK) | CORD receipts | Teach the model a new structured-output task | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_cord_receipts/cord_receipt_sft_sdk.ipynb) |
 | [dpo_style](case-studies/dpo_style) | DPO (Python SDK) | HelpSteer3 | "Write the way we write" (style/quality preferences) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/dpo_style/dpo_helpsteer3_sdk.ipynb) |
 | [reasoning_rl](case-studies/reasoning_rl) | GRPO via managed RFT (Python SDK) | GSM8K | Improve step-by-step reasoning | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/reasoning_rl/rft_grpo_math.ipynb) |
+| [embedding_support_search](case-studies/embedding_support_search) | Contrastive embedding fine-tuning (`embedding_loop` recipe) | Airbnb Help Center scenarios | Retrieve the help article that *governs* a situation, not the one that sounds like it | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/embedding_support_search/airbnb_policy_embedding.ipynb) |
 
 **Setup.** These are independent of the cookbook install above — just `pip install fireworks-ai eval-protocol` (a couple add extras, noted in their own READMEs) and a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
 
