@@ -51,6 +51,11 @@ _RESUMABLE_TYPE_SUFFIXES = ("TRAINING", "TRAINING_LORA")
 
 logger = logging.getLogger(__name__)
 
+_URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_SERVERLESS_CROSS_RUN_RE = re.compile(
+    r"^[^/]+/run-[0-9a-f]{32}/[^/]+(?:/[^/]+)*$"
+)
+
 
 # -- Public types --------------------------------------------------------------
 
@@ -216,12 +221,92 @@ def _newest_first(rows: list[dict]) -> list[dict]:
     )
 
 
-def _parse_cross_job(spec: str) -> tuple[str | None, str]:
-    """Parse ``"job_id:checkpoint_name"`` or a plain path/name."""
-    if ":" in spec and not spec.startswith(("gs://", "/")):
-        job_id, name = spec.split(":", 1)
-        return job_id, name
-    return None, spec
+@dataclass(frozen=True)
+class _ExplicitCheckpointRef:
+    checkpoint_name: str
+    source_job_id: str | None
+    restore_recipe_state: bool
+
+
+def _parse_explicit_checkpoint_ref(
+    spec: str,
+    *,
+    serverless: bool,
+    trainer_id: str,
+) -> _ExplicitCheckpointRef:
+    """Resolve the recipe-facing checkpoint grammar.
+
+    Dedicated trainers accept a local checkpoint name, ``<job>:<name>``, or a
+    supported DCP path. Serverless trainers accept a current-run bare name or a
+    fully-qualified ``<account>/<run>/<name>`` cross-run reference. Keeping
+    this classification explicit is important because only reference forms
+    whose contract denotes continuation can restore cookbook-owned step and
+    dataloader state.
+    """
+    spec = spec.strip()
+    if not spec:
+        raise ValueError("init_from_checkpoint must not be empty")
+    if "\\" in spec:
+        raise ValueError(
+            "init_from_checkpoint must use '/' path separators; "
+            "backslash paths are not supported"
+        )
+
+    is_uri = _URI_RE.match(spec) is not None
+
+    if serverless:
+        if is_uri or spec.startswith("/"):
+            raise ValueError(
+                "serverless init_from_checkpoint does not support raw URI or "
+                "absolute-path references; use a bare checkpoint name for the "
+                "current run or '<account>/<run>/<checkpoint>' for another run"
+            )
+        if ":" in spec:
+            session_id, checkpoint_name = spec.split(":", 1)
+            if not session_id or not checkpoint_name:
+                raise ValueError(
+                    "serverless init_from_checkpoint must be a bare checkpoint "
+                    "name or '<account>/<run>/<checkpoint>'"
+                )
+            if session_id != trainer_id:
+                raise ValueError(
+                    "serverless cross-run checkpoints require a fully-qualified "
+                    "<account>/<run>/<checkpoint> reference"
+                )
+            if "/" in checkpoint_name:
+                raise ValueError(
+                    "a same-session checkpoint reference must use a bare "
+                    "checkpoint name"
+                )
+            return _ExplicitCheckpointRef(checkpoint_name, None, True)
+        if "/" in spec:
+            if not _SERVERLESS_CROSS_RUN_RE.fullmatch(spec):
+                raise ValueError(
+                    "serverless cross-run checkpoints must use "
+                    "'<account>/run-<32 lowercase hex>/<checkpoint>'"
+                )
+            return _ExplicitCheckpointRef(spec, None, False)
+        return _ExplicitCheckpointRef(spec, None, True)
+
+    if is_uri or spec.startswith("/") or "/" in spec:
+        return _ExplicitCheckpointRef(spec, None, False)
+    if ":" not in spec:
+        # Preserve the dedicated recipe contract: a bare name is trainer-state
+        # initialization at recipe step 0. Shape-validation uses this for DPO
+        # -> RL phase handoff on one trainer. Dedicated full resume is explicit
+        # via "<current_job_id>:<checkpoint>" or control-plane auto-resume.
+        return _ExplicitCheckpointRef(spec, None, False)
+
+    source_job_id, checkpoint_name = spec.split(":", 1)
+    if not source_job_id or not checkpoint_name:
+        raise ValueError(
+            "init_from_checkpoint must use '<job_id>:<checkpoint_name>'"
+        )
+    return _ExplicitCheckpointRef(
+        checkpoint_name,
+        None if source_job_id == trainer_id else source_job_id,
+        source_job_id == trainer_id,
+    )
 
 
 # -- Main class ----------------------------------------------------------------
@@ -357,8 +442,10 @@ class TrainingCheckpoints:
 
         Priority:
 
-        1. ``init_from_checkpoint`` — explicit DCP load. Same-trainer loads
-           resume the step/cursor; cross-job loads reset the step counter.
+        1. ``init_from_checkpoint`` — explicit DCP load. A dedicated
+           current-job-qualified ref or serverless current-run ref resumes the
+           recipe step/cursor; dedicated bare/path/cross-job and serverless
+           cross-run refs restore trainer state but reset the recipe position.
         2. Newest resumable row on the control plane — auto-resume.
         3. ``warm_start_from_adapter`` — HF PEFT adapter (weights only).
         4. Fresh start (returns ``None``).
@@ -370,46 +457,42 @@ class TrainingCheckpoints:
         )
 
         if init_from_checkpoint:
-            source_job_id, dcp_name = _parse_cross_job(init_from_checkpoint)
-            if self._serverless:
-                # Serverless resumes from a logical checkpoint name, never a
-                # cross_job://<id>/<name> ref (the pooled trainer rejects those:
-                # a session id is not a source job). Cross-run resume is done by
-                # passing a fully-qualified "<account>/<run>/<name>" ref as
-                # init_from_checkpoint: it has no "<job>:<name>" separator, so it
-                # flows through as the bare dcp_name and the pooled trainer
-                # resolves it against the caller's own account (account-scoped
-                # guard). A bare "<name>" still resumes within the current run
-                # (the trainer prepends the caller's own <account>/<run>/ prefix),
-                # and a legacy "<session>:<name>" shorthand keeps only "<name>".
-                # source_job_id stays None either way so no cross_job:// ref is
-                # built.
-                source_job_id = None
-            elif source_job_id == self._trainer_id:
-                path = self._client.resolve_checkpoint_path(dcp_name)
+            ref = _parse_explicit_checkpoint_ref(
+                init_from_checkpoint,
+                serverless=self._serverless,
+                trainer_id=self._trainer_id,
+            )
+            if ref.restore_recipe_state:
+                path = self._client.resolve_checkpoint_path(ref.checkpoint_name)
                 logger.info(
-                    "Resuming from explicit same-trainer checkpoint: %s", dcp_name
+                    "Resuming from explicit same-trainer checkpoint: %s",
+                    ref.checkpoint_name,
                 )
                 t0 = time.time()
                 self._client.load_state_with_optimizer(path)
                 logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
                 return ResumeInfo(
-                    step=_step_from_name(dcp_name),
-                    data_consumed=self._read_dataloader(dcp_name),
-                    source_job_id=source_job_id,
+                    step=_step_from_name(ref.checkpoint_name),
+                    data_consumed=self._read_dataloader(ref.checkpoint_name),
+                    source_job_id=None if self._serverless else self._trainer_id,
                 )
             path = self._client.resolve_checkpoint_path(
-                dcp_name, source_job_id=source_job_id
+                ref.checkpoint_name,
+                source_job_id=ref.source_job_id,
             )
             logger.info(
-                "Starting at step 0 with weights loaded from %s "
-                "(no resume — step counter resets)",
+                "Initializing trainer state from %s (weights and optimizer "
+                "restored; recipe step and dataset cursor reset to 0)",
                 path,
             )
             t0 = time.time()
             self._client.load_state_with_optimizer(path)
             logger.info("Checkpoint loaded (%.1fs)", time.time() - t0)
-            return ResumeInfo(step=0, data_consumed=0, source_job_id=source_job_id)
+            return ResumeInfo(
+                step=0,
+                data_consumed=0,
+                source_job_id=ref.source_job_id,
+            )
 
         latest = self._latest_resumable()
         if latest:

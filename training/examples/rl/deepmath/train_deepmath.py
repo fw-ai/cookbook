@@ -158,9 +158,6 @@ class TrainArgs:
     lora_rank: int = 0
     """LoRA rank (0 = full-param).  Backend trainer creation selects a
     LoRA-capable shape; LoRA references reuse the policy trainer (no extra GPUs)."""
-    router_replay: bool = False
-    trajectory_dir: str | None = None
-    """Directory to save per-step trajectory JSONL files."""
     deployment_extra_values: dict[str, str] | None = None
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
@@ -213,9 +210,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--lora-rank", type=int,
                         help="LoRA rank (0 = full-param, e.g. 64 or 128 for LoRA)")
 
-    parser.add_argument("--trajectory-dir",
-                        help="Directory to save per-step trajectory JSONL files")
-    parser.add_argument("--router-replay", action="store_true")
     parser.add_argument(
         "--deployment-extra-values",
         nargs="*",
@@ -363,7 +357,7 @@ def main():
     os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
     config = rl_loop.Config(
-        log_path=args.trajectory_dir or "./deepmath_logs",
+        log_path="./deepmath_logs",
         base_model=args.base_model,
         dataset=args.dataset_path,
         learning_rate=args.learning_rate,
@@ -375,10 +369,7 @@ def main():
         max_rows=args.max_rows,
         lora_rank=args.lora_rank,
         prompt_groups_per_step=args.prompt_groups_per_step,
-        trajectory_dir=args.trajectory_dir,
         tis=TISConfig(cap=2.0),
-        router_replay=args.router_replay,
-        router_replay_completion_only=args.router_replay,
         output_model_id=args.output_model_id,
         trainer=TrainerConfig(
             job_id=args.policy_job_id,
@@ -394,10 +385,6 @@ def main():
             sample_timeout=1200,
             extra_values=args.deployment_extra_values,
         ),
-        # Hot-load a base checkpoint before training, then sync the weights
-        # every step (the SDK owns the reference trainer's lifecycle).
-        weight_sync_interval=1,
-        weight_sync_before_training=True,
         weight_sync_timeout=600,
         dcp_save_interval=20,
         cleanup_on_exit=not args.skip_cleanup,

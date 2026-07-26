@@ -7,8 +7,7 @@ group-normalized advantages and call `make_grpo_loss_fn(...)` directly through
 
 There is no loss selector, registry, runtime import, or fallback. The public
 algorithm knobs are `kl_beta`, `eps_clip`, `eps_clip_high`, and `tis`; the
-synchronous recipe also exposes `ppo_n_minibatches` as an update-scheduling
-knob. Async additionally exposes `anchor_logp="old_policy" | "rollout"`.
+two recipes also share `anchor_logp="old_policy" | "rollout"`.
 
 ## Default client path
 
@@ -35,14 +34,14 @@ policy.forward_backward_custom(
 This one closure owns PPO clipping, behavioral TIS, and optional reference KL.
 Set `kl_beta=0` to skip reference provisioning.
 
-Async defaults to `anchor_logp="old_policy"`: snapshot trainer logprobs for the
+Both recipes default to `anchor_logp="old_policy"`: snapshot trainer logprobs for the
 PPO anchor and compute TIS against rollout behavior logprobs. Setting
 `anchor_logp="rollout"` skips the snapshot, anchors PPO directly on rollout
 logprobs, and makes the TIS ratio identity.
 
 ## Switching or adding a loss
 
-Fork the recipe at its documented `fwd_bwd_minibatch` / `fwd_bwd_batch` call.
+Fork the recipe at its documented direct `forward_backward_custom` call.
 For the exact built-in switch and new-algorithm workflow, read
 [`rl-custom-loss.md`](rl-custom-loss.md).
 

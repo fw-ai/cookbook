@@ -1,7 +1,7 @@
-"""E2E test for GRPO training on qwen3-30b-a3b (MoE).
+"""E2E test for synchronous GRPO training.
 
-Full pipeline: policy + reference trainers, deployment with weight sync,
-Router Replay (R3), and Truncated Importance Sampling (TIS).
+Full pipeline: policy + reference trainers, deployment hotload, Router Replay
+(R3), and Truncated Importance Sampling (TIS).
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training/deployment access
@@ -36,7 +36,7 @@ def _gsm8k_reward(completion: str, row: dict) -> float:
 @pytest.mark.e2e
 @pytest.mark.timeout(3600)
 class TestGRPOE2E:
-    """GRPO on qwen3-30b-a3b with R3, TIS, and weight sync."""
+    """Strictly on-policy GRPO with R3, TIS, and per-step weight sync."""
 
     def test_grpo_full_pipeline(
         self,
@@ -64,7 +64,6 @@ class TestGRPOE2E:
             completions_per_prompt=4,
             max_rows=10,
             epochs=1,
-            router_replay=True,
             tis=TISConfig(cap=10.0),
             trainer=TrainerConfig(
                 accelerator_type=e2e_training_accelerator,
@@ -75,8 +74,6 @@ class TestGRPOE2E:
                 deployment_shape=e2e_deployment_shape,
                 tokenizer_model=e2e_tokenizer_model,
             ),
-            weight_sync_interval=1,
-            weight_sync_before_training=True,
             weight_sync_timeout=600,
         )
 

@@ -8,12 +8,9 @@ from tinker_cookbook.renderers import get_renderer
 from training.renderer.thinking_trace import (
     ThinkingTraceHistoryMode,
     get_thinking_trace_model_capability,
-    get_thinking_trace_model_capability_for_renderer,
     iter_thinking_trace_capabilities,
     normalize_thinking_trace_history_mode,
     renderer_unrolls_multi_turn,
-    resolve_tokenizer_plan,
-    resolve_tokenizer_plan_for_renderer,
     resolve_thinking_trace_renderer_plan,
     thinking_trace_renderer_plans,
 )
@@ -150,8 +147,7 @@ def test_legacy_concrete_names_are_not_rebound_to_corrected_adapters() -> None:
         is True
     )
     assert (
-        get_renderer("glm_moe_dsa", tokenizer)._honor_source_reasoning_fields
-        is False
+        get_renderer("glm_moe_dsa", tokenizer)._honor_source_reasoning_fields is False
     )
     assert (
         get_renderer(
@@ -172,45 +168,6 @@ def test_registered_aliases_are_exact_and_case_insensitive() -> None:
     # The legacy default resolver may understand custom/fine-tuned names, but
     # they are deliberately default-only until explicitly onboarded.
     assert get_thinking_trace_model_capability("custom/qwen3_6-finetune") is None
-
-
-def test_renderer_ownership_is_exact_and_independent_of_model_alias() -> None:
-    capability = get_thinking_trace_model_capability_for_renderer(
-        "qwen3_6_preserved"
-    )
-    assert capability is not None
-    assert capability.canonical_family == "qwen3.6"
-
-    # Persisted legacy names still resolve at runtime, but are not guessed into
-    # a current capability contract.
-    assert (
-        get_thinking_trace_model_capability_for_renderer(
-            "qwen3_6_preserve_thinking"
-        )
-        is None
-    )
-
-
-def test_persisted_renderer_owner_materializes_reviewed_tokenizer() -> None:
-    plan = resolve_tokenizer_plan_for_renderer(
-        "qwen3_6_preserved",
-        "gs://catalog-now-points-at-a-different-family",
-    )
-    assert plan.tokenizer_model == "Qwen/Qwen3.6-27B"
-    assert plan.tokenizer_revision == "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
-    assert plan.trust_remote_code is False
-    assert plan.canonical_family == "qwen3.6"
-
-
-def test_unknown_persisted_renderer_retains_legacy_tokenizer_source() -> None:
-    plan = resolve_tokenizer_plan_for_renderer(
-        "retired_legacy_renderer",
-        "gs://legacy/tokenizer",
-    )
-    assert plan.tokenizer_model == "gs://legacy/tokenizer"
-    assert plan.tokenizer_revision == ""
-    assert plan.trust_remote_code is None
-    assert plan.canonical_family is None
 
 
 def test_unspecified_resolves_registered_default() -> None:
@@ -418,84 +375,3 @@ def test_mode_normalization(
 def test_removed_mode_names_are_rejected(removed_mode: str) -> None:
     with pytest.raises(ValueError, match="Unknown thinking_trace_history_mode"):
         normalize_thinking_trace_history_mode(removed_mode)
-
-
-def test_every_capability_pins_an_immutable_template_revision() -> None:
-    for capability in iter_thinking_trace_capabilities():
-        assert capability.tokenizer.repo
-        assert len(capability.tokenizer.revision) == 40
-        int(capability.tokenizer.revision, 16)
-        assert get_thinking_trace_model_capability(capability.tokenizer.repo) is capability
-
-
-@pytest.mark.parametrize(
-    ("alias", "control_plane_source", "repo", "revision", "remote_code"),
-    [
-        (
-            "accounts/fireworks/models/qwen3p5-9b",
-            "Qwen/Qwen3.5-9B",
-            "Qwen/Qwen3.5-35B-A3B",
-            "59d61f3ce65a6d9863b86d2e96597125219dc754",
-            False,
-        ),
-        (
-            "accounts/fireworks/models/kimi-k2p5",
-            "gs://fireworks-models/kimi-k2p5",
-            "moonshotai/Kimi-K2.5",
-            "4d01dfe0332d63057c186e0b262165819efb6611",
-            True,
-        ),
-        (
-            "accounts/fireworks/models/kimi-k2p6",
-            "moonshotai/Kimi-K2.6",
-            "moonshotai/Kimi-K2.6",
-            "7eb5002f6aadc958aed6a9177b7ed26bb94011bb",
-            True,
-        ),
-        (
-            "accounts/fireworks/models/kimi-k2p7-code",
-            "gs://fireworks-models/kimi-k2p7-code",
-            "moonshotai/Kimi-K2.7-Code",
-            "74797c9c62378b951a1f6fcf5c4631024e9b8bef",
-            True,
-        ),
-    ],
-)
-def test_registered_alias_materializes_reviewed_tokenizer_plan(
-    alias: str,
-    control_plane_source: str,
-    repo: str,
-    revision: str,
-    remote_code: bool,
-) -> None:
-    plan = resolve_tokenizer_plan(alias, control_plane_source)
-
-    assert plan.tokenizer_model == repo
-    assert plan.tokenizer_revision == revision
-    assert plan.trust_remote_code is remote_code
-    assert plan.canonical_family is not None
-
-
-def test_registered_plan_is_independent_of_a_moving_control_plane_source() -> None:
-    pinned = resolve_tokenizer_plan(
-        "accounts/fireworks/models/qwen3p6-27b",
-        "Qwen/Qwen3.6-27B",
-    )
-    staged = resolve_tokenizer_plan(
-        "accounts/fireworks/models/qwen3p6-27b",
-        "gs://catalog-snapshot-that-can-change",
-    )
-
-    assert staged == pinned
-
-
-def test_unregistered_alias_preserves_legacy_tokenizer_source() -> None:
-    plan = resolve_tokenizer_plan(
-        "accounts/customer/models/private-model",
-        "gs://customer-models/private-model/tokenizer",
-    )
-
-    assert plan.tokenizer_model == "gs://customer-models/private-model/tokenizer"
-    assert plan.tokenizer_revision == ""
-    assert plan.trust_remote_code is None
-    assert plan.canonical_family is None

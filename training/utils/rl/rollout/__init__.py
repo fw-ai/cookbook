@@ -68,6 +68,7 @@ from training.utils.rl.rollout.renderer import (
     build_multimodal_completions_request,
     model_input_to_token_ids,
     sample_vision_completion,
+    sampled_completion_to_rollout_run,
     single_turn_renderer_rollout,
 )
 from training.utils.rl.rollout.service import (
@@ -166,6 +167,7 @@ __all__ = [
     "make_remote_rollout_fn",
     "model_input_to_token_ids",
     "sample_vision_completion",
+    "sampled_completion_to_rollout_run",
     "pack_payload_to_sample",
     "precompute_chat_suffix",
     "rollout_to_prompt_group",

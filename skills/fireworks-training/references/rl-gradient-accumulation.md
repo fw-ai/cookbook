@@ -2,7 +2,9 @@
 
 Every `forward_backward(...)` / `forward_backward_custom(...)` **accumulates gradients on the server**. Gradients only get applied when you call `optim_step(...)`. Multiple forward-backwards between optim_steps = gradient accumulation.
 
-`rl_loop.py` runs a **strict 1:1 ratio** per step (one forward-backward → one optim_step, see `recipes/rl_loop.py:797` `ref_forward + fwd_bwd + optim_step + metrics (1:1)`). All `prompt_groups_per_step * completions_per_prompt` datums flow through a single call.
+`rl_loop.py` runs a **strict 1:1 ratio** per step: all
+`prompt_groups_per_step * completions_per_prompt` datums flow through one
+forward-backward followed by one `optim_step`.
 
 Do **not** use trainer-job `grad_accum`, `TrainerJobConfig.gradient_accumulation_steps`, or the old REST `gradientAccumulationSteps` field. Cookbook recipes and examples do not expose the server-side knob; SDK compatibility handling rejects values above `1`. Real gradient accumulation is only client-side control flow: call `forward_backward` N times, then call one `optim_step`.
 

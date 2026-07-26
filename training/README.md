@@ -109,7 +109,9 @@ the two.
 | Field | What to set |
 | --- | --- |
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
-| `sampler_refresh_interval` | Refresh the sampler from trainer-saved weights every N optimizer steps. |
+
+The synchronous recipe always hotloads before the first rollout and after
+every optimizer step. It has no sampler-refresh cadence knob.
 
 **Distillation / OPD** (`recipes/distillation_loop.py`) -- also requires:
 

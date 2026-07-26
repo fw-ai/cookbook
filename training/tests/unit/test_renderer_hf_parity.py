@@ -39,7 +39,6 @@ from training.renderer.verifier.utils.hf_parity import (
     compare_renderer_to_hf,
     format_divergence,
 )
-from training.renderer.thinking_trace import get_thinking_trace_model_capability
 
 
 @dataclasses.dataclass
@@ -49,6 +48,7 @@ class _Case:
     tokenizer_model: str
     messages: list[dict]
     tokenizer_revision: str | None = None
+    tokenizer_trust_remote_code: bool | None = None
     apply_chat_template_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
     xfail_reason: str | None = None  # if set, mark the test xfail with this reason
 
@@ -73,19 +73,20 @@ _KIMI_REASONING_MSGS = [
     },
     {"role": "user", "content": "And 3+3?"},
 ]
-def _verified_source(alias: str) -> tuple[str, str]:
-    capability = get_thinking_trace_model_capability(alias)
-    assert capability is not None
-    return capability.tokenizer.repo, capability.tokenizer.revision
-
-
-_GLM51_MODEL, _GLM51_REVISION = _verified_source("zai-org/GLM-5.1")
-_GLM52_MODEL, _GLM52_REVISION = _verified_source("zai-org/GLM-5.2")
-_QWEN35_MODEL, _QWEN35_REVISION = _verified_source("Qwen/Qwen3.5-35B-A3B")
-_QWEN36_MODEL, _QWEN36_REVISION = _verified_source("Qwen/Qwen3.6-27B")
-_KIMI25_MODEL, _KIMI25_REVISION = _verified_source("moonshotai/Kimi-K2.5")
-_KIMI26_MODEL, _KIMI26_REVISION = _verified_source("moonshotai/Kimi-K2.6")
-_KIMI27_MODEL, _KIMI27_REVISION = _verified_source("moonshotai/Kimi-K2.7-Code")
+_GLM51_MODEL = "zai-org/GLM-5.1"
+_GLM51_REVISION = "26e1bd6e011feb778d25ae34b09b07074139d92d"
+_GLM52_MODEL = "zai-org/GLM-5.2"
+_GLM52_REVISION = "b4734de4facf877f85769a911abafc5283eab3d9"
+_QWEN35_MODEL = "Qwen/Qwen3.5-35B-A3B"
+_QWEN35_REVISION = "59d61f3ce65a6d9863b86d2e96597125219dc754"
+_QWEN36_MODEL = "Qwen/Qwen3.6-27B"
+_QWEN36_REVISION = "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+_KIMI25_MODEL = "moonshotai/Kimi-K2.5"
+_KIMI25_REVISION = "4d01dfe0332d63057c186e0b262165819efb6611"
+_KIMI26_MODEL = "moonshotai/Kimi-K2.6"
+_KIMI26_REVISION = "7eb5002f6aadc958aed6a9177b7ed26bb94011bb"
+_KIMI27_MODEL = "moonshotai/Kimi-K2.7-Code"
+_KIMI27_REVISION = "74797c9c62378b951a1f6fcf5c4631024e9b8bef"
 _ONE_PIXEL_PNG = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8A"
@@ -208,6 +209,7 @@ _CASES: list[_Case] = [
         tokenizer_model=_KIMI25_MODEL,
         messages=_SHORT_MSGS,
         tokenizer_revision=_KIMI25_REVISION,
+        tokenizer_trust_remote_code=True,
     ),
     _Case(
         case_id="kimi_k26-interleaved-single-turn",
@@ -215,6 +217,7 @@ _CASES: list[_Case] = [
         tokenizer_model=_KIMI26_MODEL,
         messages=_SHORT_MSGS,
         tokenizer_revision=_KIMI26_REVISION,
+        tokenizer_trust_remote_code=True,
     ),
     _Case(
         case_id="kimi_k27_code-preserve-thinking-multi-turn",
@@ -222,6 +225,7 @@ _CASES: list[_Case] = [
         tokenizer_model=_KIMI27_MODEL,
         messages=_KIMI_REASONING_MSGS,
         tokenizer_revision=_KIMI27_REVISION,
+        tokenizer_trust_remote_code=True,
     ),
     _Case(
         case_id="minimax_m2-single-turn",
@@ -262,16 +266,11 @@ def test_renderer_matches_hf_chat_template(case: _Case) -> None:
         pytest.xfail(case.xfail_reason)
 
     try:
-        capability = get_thinking_trace_model_capability(case.tokenizer_model)
         result: HFParityResult = compare_renderer_to_hf(
             renderer_name=case.renderer,
             tokenizer_model=case.tokenizer_model,
             tokenizer_revision=case.tokenizer_revision,
-            tokenizer_trust_remote_code=(
-                capability.tokenizer.trust_remote_code
-                if capability is not None
-                else None
-            ),
+            tokenizer_trust_remote_code=case.tokenizer_trust_remote_code,
             messages=case.messages,
             add_generation_prompt=True,
             apply_chat_template_kwargs=case.apply_chat_template_kwargs,
