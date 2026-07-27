@@ -58,6 +58,7 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 | `weight_sync_timeout` | `600` | Per-hotload timeout in seconds. Bump if you see `Hotload did not complete within 600s` on large models. |
 | `dcp_save_interval` | `0` | DCP (optimizer + weights) save cadence for **resume**. Orthogonal to sampler hotload. `0` = off; no intermediate resume points. |
 | `dcp_timeout` | `2700` | 45 min default for `save_state` / `load_state_with_optimizer`. |
+| `hot_load_transition_type` | unset (server picks `ASYNC`) | How the deployment treats requests that are mid-generation when the swap lands. See [Inference transition](#inference-transition-async-vs-sync). |
 
 ## On-policy vs off-policy (weight-sync timing)
 
@@ -66,6 +67,43 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
   produced by step K.
 - `async_rl_loop` hotloads after every optimizer batch too, while its admission
   gate allows a bounded number of already-admitted behavior-policy versions.
+
+## Inference transition: ASYNC vs SYNC
+
+Weight-sync *timing* decides which policy version a rollout starts on. The
+inference transition decides what happens to a generation that is still
+streaming when the swap lands. `DeployConfig.hot_load_transition_type` selects
+it; leaving it unset lets the control plane choose, and for hot-load
+deployments that resolves to `ASYNC`.
+
+| | In-flight generation during a swap |
+|---|---|
+| `ASYNC` (default) | Paused, then resumed on the same connection. The turn keeps the KV cache built under the old weights and its remaining tokens decode against the new ones, so a single response can span two policy versions. |
+| `SYNC` | Allowed to finish on the old weights before the swap; new requests queue. No response ever spans two versions, at the cost of a TTFT stall per hot load. |
+
+`ASYNC` is what you want by default: it keeps the rollout fleet busy, and the
+recorded `sampling_logprob` for each token still comes from the version that
+actually sampled it, so the importance ratio stays correct.
+
+Reach for `SYNC` when a mid-generation version boundary is itself suspect — for
+example long multi-turn agentic rollouts where structured output or tool-call
+formatting degrades over many steps and you want to rule out mixed-weight KV as
+the cause. Expect lower rollout throughput while it is on.
+
+```python
+DeployConfig(
+    deployment_id="my-sampler",
+    hot_load_transition_type="SYNC",
+)
+```
+
+Changing it on an existing deployment rolls the serving pod. The SDK-managed
+path folds that change into the same PATCH as a trainer re-attach, so a resume
+that also flips the transition type costs one pod roll rather than two.
+
+Note that neither mode re-prefills: `ASYNC` reuses the old-weight KV and `SYNC`
+avoids the overlap entirely. Fireworks has no mode that discards the prefix KV
+and recomputes it under the new weights mid-generation.
 
 ## Base vs delta chain
 

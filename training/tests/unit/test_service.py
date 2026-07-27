@@ -45,6 +45,7 @@ def _deployment_config(**overrides) -> DeployConfig:
         deployment_timeout_s=5400,
         replica_count=3,
         disable_speculative_decoding=True,
+        hot_load_transition_type="SYNC",
     )
     fields.update(overrides)
     return DeployConfig(**fields)
@@ -171,6 +172,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "deployment_timeout_s": 5400,
             "replica_count": 3,
             "disable_speculative_decoding": True,
+            "hot_load_transition_type": "SYNC",
         }
     ]
 
@@ -231,6 +233,34 @@ def test_build_service_client_defaults_speculative_decoding_enabled(monkeypatch)
 
     assert result == "service-sentinel"
     assert calls[0]["disable_speculative_decoding"] is False
+
+
+def test_build_service_client_leaves_hot_load_transition_type_unset(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_from_firetitan_config(**kwargs):
+        calls.append(kwargs)
+        return "service-sentinel"
+
+    class FakeServiceClient:
+        from_firetitan_config = staticmethod(fake_from_firetitan_config)
+
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    build_service_client(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        lora_rank=None,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-x"),
+        deployment=DeployConfig(deployment_id="dep-1"),
+    )
+
+    assert calls[0]["hot_load_transition_type"] is None
 
 
 def test_train_only_config_disables_deployment(monkeypatch):
