@@ -281,6 +281,88 @@ recipe:
     assert cfg.deployment.replica_count == 2
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("accelerator_type", "NVIDIA_B200"),
+        ("accelerator_count", 8),
+    ],
+)
+def test_load_yaml_provision_rejects_removed_trainer_accelerator_fields(
+    tmp_path: Path,
+    field_name: str,
+    value: object,
+) -> None:
+    config_path = tmp_path / "fireworks.yaml"
+    config_path.write_text(
+        f"""
+common:
+  base_model: accounts/test/models/base
+  tokenizer_model: Qwen/Test
+trainers:
+  policy:
+    training_shape_id: accounts/test/trainingShapes/policy
+    {field_name}: {value}
+recipe:
+  sft:
+    trainer: policy
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            rf"TrainerConfig no longer supports `{field_name}`.*"
+            r"select a training shape with `training_shape_id`"
+        ),
+    ):
+        module._load_yaml_provision(mode=None, recipe="sft", path=config_path)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("accelerator_type", "NVIDIA_B200"),
+        ("accelerator_count", 8),
+    ],
+)
+def test_hydra_override_rejects_removed_trainer_accelerator_fields(
+    tmp_path: Path,
+    field_name: str,
+    value: object,
+) -> None:
+    config_path = tmp_path / "fireworks.yaml"
+    config_path.write_text(
+        """
+common:
+  base_model: accounts/test/models/base
+  tokenizer_model: Qwen/Test
+trainers:
+  policy:
+    training_shape_id: accounts/test/trainingShapes/policy
+recipe:
+  sft:
+    trainer: policy
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            rf"TrainerConfig no longer supports `{field_name}`.*"
+            r"select a training shape with `training_shape_id`"
+        ),
+    ):
+        module._load_yaml_provision(
+            mode=None,
+            recipe="sft",
+            path=config_path,
+            overrides=[f"+trainers.policy.{field_name}={value}"],
+        )
+
+
 def test_load_yaml_provision_applies_hydra_overrides(tmp_path: Path) -> None:
     if importlib.util.find_spec("hydra") is None:
         pytest.skip("hydra is not installed")

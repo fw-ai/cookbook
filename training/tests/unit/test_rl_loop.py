@@ -445,6 +445,8 @@ def test_main_collects_trains_and_hotloads_before_next_batch(monkeypatch) -> Non
     )
 
     assert result["steps"] == 2
+    assert "accelerator_type" not in result
+    assert "accelerator_count" not in result
     assert events.index("hotload:/step-0") < events.index("sample:0")
     assert events.index("sample:1") < events.index("optim")
     assert events.index("hotload:/step-1") < events.index("sample:2")

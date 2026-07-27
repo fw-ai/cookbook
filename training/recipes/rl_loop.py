@@ -618,20 +618,11 @@ def main(
         )
         wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
 
-        training_profile = getattr(service, "training_profile", None)
-        accelerator_type = getattr(service, "accelerator_type", None)
-        if accelerator_type is None:
-            accelerator_type = getattr(training_profile, "accelerator_type", None)
-        accelerator_count = getattr(service, "accelerator_count", None)
-        if accelerator_count is None:
-            accelerator_count = getattr(training_profile, "accelerator_count", None)
         return {
             "steps": global_step,
             "policy_job_id": service.trainer_job_id,
             "reference_job_id": service.reference_trainer_job_id,
             "deployment_id": service.deployment_id,
-            "accelerator_type": accelerator_type,
-            "accelerator_count": accelerator_count,
         }
 
 

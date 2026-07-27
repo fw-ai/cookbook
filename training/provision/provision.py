@@ -36,6 +36,7 @@ from training.utils import (
     load_deployment_tokenizer,
     read_api_extra_headers_env,
 )
+from training.utils.config import _reject_removed_accelerator_config
 from training.utils.rl.grpo import validate_grpo_config
 
 ProvisionMode = Literal["sft", "rl", "distillation", "dpo"]
@@ -1055,6 +1056,7 @@ def _resolve_named_section(doc: dict[str, Any], section: str, ref: Any) -> dict[
 
 
 def _make_dataclass_config(cls: type, values: dict[str, Any]) -> Any:
+    _reject_removed_accelerator_config(values, config_name=cls.__name__)
     allowed = {field.name for field in dataclasses.fields(cls)}
     type_hints = get_type_hints(cls)
     return cls(

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
+
 import pytest
 
 from training.utils import service
@@ -18,8 +21,6 @@ def _trainer_config(**overrides) -> TrainerConfig:
         cleanup_reference_on_close=False,
         region="US_OHIO_1",
         node_count=2,
-        accelerator_type="NVIDIA_B200",
-        accelerator_count=8,
         custom_image_tag="0.0.0-dev",
         extra_args=["--foo"],
         replica_count=4,
@@ -148,8 +149,6 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "learning_rate": 1e-5,
             "gradient_accumulation_steps": None,
             "node_count": 2,
-            "accelerator_type": "NVIDIA_B200",
-            "accelerator_count": 8,
             "custom_image_tag": "0.0.0-dev",
             "extra_args": ["--foo"],
             "trainer_replica_count": 4,
@@ -335,31 +334,36 @@ def test_trainer_region_becomes_sdk_region():
         lora_rank=0,
         max_context_length=None,
         learning_rate=1e-5,
-        trainer=_trainer_config(
-            region="US_OHIO_1",
-            accelerator_type=None,
-            accelerator_count=None,
-        ),
+        trainer=_trainer_config(region="US_OHIO_1"),
         deployment=_deployment_config(),
     )
 
     assert client._managed_config.region == "US_OHIO_1"
 
 
-def test_deprecated_trainer_accelerator_fields_warn_and_are_ignored():
-    with pytest.warns(DeprecationWarning):
-        client = build_service_client(
-            api_key="k",
-            base_url="https://api",
-            additional_headers=None,
-            base_model="accounts/acct/models/base",
-            tokenizer_model=None,
-            lora_rank=0,
-            max_context_length=None,
-            learning_rate=1e-5,
-            trainer=_trainer_config(),
-            deployment=_deployment_config(),
-        )
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("accelerator_type", "NVIDIA_B200"),
+        ("accelerator_count", 8),
+    ],
+)
+def test_trainer_config_rejects_removed_accelerator_fields(field_name, value):
+    with pytest.raises(
+        TypeError,
+        match=(
+            rf"TrainerConfig no longer supports `{field_name}`.*"
+            r"select a training shape with `training_shape_id`"
+        ),
+    ):
+        TrainerConfig(**{field_name: value})
 
-    assert client._managed_config.accelerator_type is None
-    assert client._managed_config.accelerator_count is None
+
+def test_trainer_config_does_not_advertise_removed_accelerator_fields():
+    field_names = {field.name for field in dataclasses.fields(TrainerConfig)}
+    parameters = inspect.signature(TrainerConfig).parameters
+
+    assert "accelerator_type" not in field_names
+    assert "accelerator_count" not in field_names
+    assert "accelerator_type" not in parameters
+    assert "accelerator_count" not in parameters
