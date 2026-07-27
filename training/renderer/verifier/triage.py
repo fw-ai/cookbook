@@ -1,4 +1,4 @@
-"""Batch-probe a corpus of prompts and load every case into the GUI.
+"""Batch-probe a corpus of prompts and write an offline result record.
 
 Workflow:
 
@@ -8,12 +8,9 @@ Workflow:
   3. Print a pre-flight — renderer + dispatch + reachability + every
      prompt snippet — and ask the user to confirm before live calls.
   4. Loop the corpus through ``run_probe`` against the live gateway.
-  5. Write a session JSON containing every successful case. The dev
-     server reads it via ``--session-file`` and seeds the GUI
-     (``/session`` endpoint), so the page comes up with all cases
-     stacked for side-by-side inspection. Per-token visual flagging
-     in the GUI still uses ``inspect_rules.yaml`` — but no filtering
-     happens here.
+  5. Write a result JSON containing every successful case for offline
+     inspection. The web verifier intentionally does not load this output:
+     its only path is fresh sequential execution from ``--input-file``.
 """
 
 from __future__ import annotations
@@ -208,7 +205,6 @@ def _probe_all(
                 train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
                 deployment_id=deployment_id,
                 tokenizer_model=tokenizer_model,
-                renderer_config=p.get("renderer_config") or {},
                 dispatch_mode=dispatch_mode,
             )
         except Exception as exc:  # noqa: BLE001 — per-prompt resilience
@@ -325,8 +321,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m training.renderer.verifier.triage",
         description=(
-            "Batch-probe a corpus of prompts and write a session JSON "
-            "consumed by `serve.py --session-file` (which auto-seeds the GUI)."
+            "Batch-probe a corpus of prompts and write an offline result JSON. "
+            "The web verifier does not load saved outputs."
         ),
     )
     p.add_argument("--renderer", required=True)
@@ -341,7 +337,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--output",
         required=True,
-        help="Session JSON path (read by serve.py --session-file).",
+        help="Offline result JSON path; it is not loaded by the web verifier.",
     )
     p.add_argument("--api-key", default=None)
     p.add_argument("--base-url", default=None)

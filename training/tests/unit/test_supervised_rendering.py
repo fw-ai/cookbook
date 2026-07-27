@@ -249,7 +249,14 @@ def test_render_messages_to_datum_supports_multimodal_model_input():
     assert len(rendered.token_ids) == 7
     assert len(rendered.token_weights) == 7
     assert rendered.token_weights == [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [11, 12, 13]
+    assert rendered.datum.loss_fn_inputs["target_tokens"].data == [
+        11,
+        0,
+        0,
+        0,
+        12,
+        13,
+    ]
     assert rendered.datum.loss_fn_inputs["weights"].data == [
         0.0,
         0.0,
@@ -515,6 +522,23 @@ def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():
         {"type": "thinking", "thinking": "consider options"},
         {"type": "text", "text": "RIGHT"},
     ]
+
+
+def test_normalize_messages_preserves_dynamic_tools_without_aliasing():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "multiply",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+    normalized = normalize_messages([{"role": "system", "content": "", "tools": tools}])
+
+    assert normalized[0]["tools"] == tools
+    assert normalized[0]["tools"] is not tools
+    assert normalized[0]["tools"][0] is not tools[0]
 
 
 def test_normalize_messages_preserves_multipart_text_parts():

@@ -12,6 +12,26 @@ The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/ch
 
 Periodic mid-training saves are usually `resumable=True, promotable=False`. The final save is `resumable=True, promotable=True`. RL weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves.
 
+### Snapshot type is part of the contract
+
+The path returned by `save_weights_for_sampler()` is an HF/PEFT sampler
+snapshot, not a resumable training checkpoint. It may contain files such as
+`adapter_config.json` and `adapter_model.safetensors`, but it has no DCP trainer
+state or optimizer state. Do not pass that path to `load_state()` or
+`create_training_client_from_state()`.
+
+- Exact continuation: call `save_state()` after a successful `optim_step()` and
+  resume from the returned DCP path. This restores weights and optimizer state.
+- Weights-only LoRA initialization: use `load_adapter()` (or recipe
+  `warm_start_from_adapter`) with the HF/PEFT adapter. The optimizer, schedule,
+  recipe step, and data cursor start fresh.
+- Sampling/hotload: use the identity returned by
+  `save_weights_for_sampler()` with the sampler deployment.
+
+The trainer API rejects an existing non-DCP directory before distributed
+checkpoint loading, so a sampler/DCP type mismatch is returned as a
+request-level user error rather than a trainer-wide failure.
+
 ### Managed SFT CMEK outputs
 
 For a CMEK-enabled account, the managed dedicated SFT V2 LoRA path associates

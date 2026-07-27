@@ -12,10 +12,12 @@ token-level ``weights`` so training uses the same spans that the UI shows.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -39,6 +41,7 @@ import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 �
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
 from training.renderer.thinking_trace import (
     ResolvedThinkingTraceRendererPlan,
     ThinkingTraceHistoryMode,
@@ -169,6 +172,11 @@ def resolve_renderer_name(
     if renderer_name:
         return renderer_name
     normalized_model_name = tokenizer_model.lower()
+    if re.search(
+        r"(?:^|[/_.-])kimi[-_]k3(?:$|[/_.-])",
+        normalized_model_name,
+    ):
+        return "kimi_k3"
     if (
         "moonshotai/kimi-k2.5" in normalized_model_name
         or "kimi-k2p5" in normalized_model_name
@@ -479,6 +487,8 @@ def populate_render_worker_state(
 # same module honors HF_TRUST_REMOTE_CODE as an opt-in hook, so set it for
 # those checkpoints before the first (cached) call.
 _MODELS_REQUIRING_TRUST_REMOTE_CODE_FOR_IMAGE_PROCESSOR: tuple[str, ...] = (
+    "kimi-k3",
+    "kimi_k3",
     "moonshotai/kimi-k2.6",
     "moonshotai/kimi-k2.7-code",
 )
@@ -503,33 +513,12 @@ def _renderer_uses_images(renderer_name: str) -> bool:
             "kimi_k25",
             "kimi_k26",
             "kimi_k27",
+            "kimi_k3",
         )
     )
 
 
 logger = logging.getLogger(__name__)
-
-
-def _truncate_model_input(model_input: tinker.ModelInput) -> tinker.ModelInput:
-    """Return a copy of *model_input* with the last text token removed.
-
-    This is the multimodal equivalent of ``tokens[:-1]`` used for the standard
-    next-token prediction shift.
-    """
-    chunks = list(model_input.chunks)
-    for i in range(len(chunks) - 1, -1, -1):
-        chunk = chunks[i]
-        if isinstance(chunk, tinker.types.EncodedTextChunk) and len(chunk.tokens) > 0:
-            remaining = list(chunk.tokens)[:-1]
-            if remaining:
-                chunks[i] = tinker.types.EncodedTextChunk(tokens=remaining)
-            else:
-                chunks.pop(i)
-            result = tinker.ModelInput.empty()
-            for c in chunks:
-                result = result.append(c)
-            return result
-    raise ValueError("ModelInput has no text tokens to truncate")
 
 
 def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
@@ -717,6 +706,24 @@ def normalize_messages(
             "role": role,
             "content": _normalize_content(message.get("content")),
         }
+
+        # Fireworks chat messages may introduce tools mid-conversation through
+        # an empty system message. Keep that request field attached to its
+        # original turn; moving it into the top-level tool prefix changes when
+        # the model sees the declaration. Concrete renderers remain responsible
+        # for validating whether their protocol supports message-level tools.
+        message_tools = message.get("tools")
+        if message_tools is not None:
+            if not isinstance(message_tools, Sequence) or isinstance(
+                message_tools, (str, bytes)
+            ):
+                raise TypeError("Message tools must be a sequence of tool objects")
+            normalized_tools: list[dict[str, Any]] = []
+            for tool in message_tools:
+                if not isinstance(tool, Mapping):
+                    raise TypeError("Each message tool must be an object")
+                normalized_tools.append(copy.deepcopy(dict(tool)))
+            normalized_message["tools"] = normalized_tools  # type: ignore[typeddict-unknown-key]
 
         tool_calls = message.get("tool_calls")
         if tool_calls is not None:
@@ -906,13 +913,11 @@ def _extract_token_ids(model_input: tinker.ModelInput) -> list[int]:
     return ids
 
 
-def _extract_text_only_token_ids(model_input: tinker.ModelInput) -> list[int]:
-    """Extract only text token IDs from a ModelInput, skipping image chunks.
+def _extract_text_token_ids(model_input: tinker.ModelInput) -> list[int]:
+    """Extract text IDs for sampling-side multimodal rollout bookkeeping.
 
-    Non-text chunks are silently skipped.  The returned list contains only
-    actual text token IDs in sequence order, with no placeholders for images.
-    This is required because the server corrupts logprobs when target_tokens
-    contains zeros at image chunk positions.
+    Trainer datums must use :func:`_extract_token_ids` instead so image slots
+    remain represented in the canonical expanded target coordinate space.
     """
     ids: list[int] = []
     for chunk in model_input.chunks:
@@ -980,40 +985,26 @@ def _build_multimodal_datum(
     weights: list[float],
     max_seq_len: int | None = None,
 ) -> tinker.Datum:
-    """Build a next-token-prediction datum that preserves image chunks.
+    """Build a canonical Tinker-shaped multimodal next-token datum.
 
-    ``target_tokens`` contains only text token IDs (no image placeholders).
-    The server uses these for logprob gathering; including zeros at image
-    positions corrupts the logprob computation.
+    Image positions remain in ``target_tokens`` as zero wire placeholders, so
+    ``model_input.length``, ``target_tokens``, and ``weights`` all share the
+    same expanded ``N - 1`` coordinate space. The trainer resolves those wire
+    placeholders to model-specific image token IDs and masks their loss.
+
+    The pinned Tinker cookbook helper also owns chunk-aware truncation: text
+    chunks may be truncated, while image chunks are retained or removed whole.
     """
-    token_ids = _extract_token_ids(model_input)
+    if len(weights) != model_input.length:
+        raise ValueError(
+            "model_input/weights length mismatch: "
+            f"{model_input.length} != {len(weights)}"
+        )
 
-    if max_seq_len is not None and len(token_ids) > max_seq_len:
-        token_ids = token_ids[:max_seq_len]
-        weights = weights[:max_seq_len]
-
-    if len(token_ids) < 2:
-        raise ValueError("Need at least 2 tokens to build a supervised datum.")
-
-    input_mi = _truncate_model_input(model_input)
-    shifted_weights = weights[1:]
-
-    text_target_tokens = _extract_text_only_token_ids(model_input)[1:]
-
-    return tinker.Datum(
-        model_input=input_mi,
-        loss_fn_inputs={
-            "weights": tinker.TensorData(
-                data=shifted_weights,
-                dtype="float32",
-                shape=[len(shifted_weights)],
-            ),
-            "target_tokens": tinker.TensorData(
-                data=[int(x) for x in text_target_tokens],
-                dtype="int64",
-                shape=[len(text_target_tokens)],
-            ),
-        },
+    return datum_from_model_input_weights(
+        model_input,
+        torch.tensor(weights, dtype=torch.float32),
+        max_length=max_seq_len,
     )
 
 
@@ -1028,10 +1019,8 @@ def build_datum_from_model_input_and_weights(
     weights = [float(x) for x in token_weights]
 
     if _has_non_text_chunks(model_input):
-        # Multimodal path: use our datum builder which produces text-only
-        # target_tokens.  The upstream datum_from_model_input_weights includes
-        # image-position zeros in target_tokens that corrupt the server's
-        # logprob computation.
+        # Keep the chunked input while using Tinker's canonical expanded target
+        # coordinates, including zero wire placeholders for image positions.
         datum = _build_multimodal_datum(model_input, weights, max_seq_len)
     elif datum_from_model_input_weights is not None:
         weight_tensor = torch.tensor(weights, dtype=torch.float32)

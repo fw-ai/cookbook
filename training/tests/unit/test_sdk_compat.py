@@ -68,6 +68,7 @@ def test_to_deployment_config_drops_hotload_fields_when_disabled():
         enable_hot_load=False,
         hot_load_bucket_type="FW_HOSTED",
         hot_load_trainer_job="accounts/test/rlorTrainerJobs/job-123",
+        hot_load_transition_type="SYNC",
     )
 
     deployment_config = deploy_cfg.to_deployment_config(
@@ -79,3 +80,29 @@ def test_to_deployment_config_drops_hotload_fields_when_disabled():
     assert deployment_config.enable_hot_load is False
     assert deployment_config.hot_load_bucket_type is None
     assert deployment_config.hot_load_trainer_job is None
+    assert deployment_config.hot_load_transition_type is None
+
+
+def test_to_deployment_config_forwards_hot_load_transition_type():
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        hot_load_transition_type="sync",
+    )
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(),
+    )
+
+    assert deployment_config.hot_load_transition_type == "SYNC"
+
+
+def test_to_deployment_config_leaves_hot_load_transition_type_unset_by_default():
+    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(),
+    )
+
+    assert deployment_config.hot_load_transition_type is None

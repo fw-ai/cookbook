@@ -103,6 +103,7 @@ def _firetitan_service_kwargs(
             "deployment_timeout_s": deployment.deployment_timeout_s,
             "replica_count": deployment.replica_count,
             "disable_speculative_decoding": deployment.disable_speculative_decoding,
+            "hot_load_transition_type": deployment.hot_load_transition_type,
         }
     )
     return service_kwargs

@@ -23,6 +23,7 @@ deployments:
     replica_count: 1
     sample_timeout: 600
     disable_speculative_decoding: false
+    hot_load_transition_type: null # null = ASYNC. SYNC drains in-flight requests so no generation spans two policy versions.
 
 trainers:
   policy:

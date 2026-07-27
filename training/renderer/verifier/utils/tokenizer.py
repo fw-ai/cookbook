@@ -39,3 +39,24 @@ def load_tokenizer(model_id: str) -> Any:
             "  • No network access on first load — once cached under "
             "~/.cache/huggingface/ the tokenizer loads offline."
         ) from exc
+
+
+def load_image_processor(model_id: str) -> Any:
+    """Load an image processor from a HuggingFace id or local directory."""
+    from transformers.models.auto.image_processing_auto import (  # noqa: PLC0415
+        AutoImageProcessor,
+    )
+
+    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    try:
+        return AutoImageProcessor.from_pretrained(
+            model_id,
+            trust_remote_code=True,
+            token=hf_token,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Could not load image processor {model_id!r}: {exc}\n\n"
+            "Pass the HuggingFace id or local directory containing the "
+            "processor config and any trusted custom processor code."
+        ) from exc
