@@ -98,6 +98,12 @@ not be selected by the history-mode enum.
   trajectory; SFT unrolls only at user boundaries.
 - **DeepSeek V3**: `<｜Assistant｜><think>` (thinking) or
   `<｜Assistant｜></think>` (non-thinking) prefilled deterministically.
+- **Kimi K3**: no Jinja string. The release tokenizer's Python
+  `apply_chat_template` delegates XTML construction to `encoding_k3.py`.
+  `kimi_k3` preserves reasoning in every assistant history turn;
+  `kimi_k3_disable_thinking` removes the thinking channel entirely. Use the
+  public `moonshotai/Kimi-K3` tokenizer and pin revision
+  `301be1b88c89c0d3a763da6301352cb8fe399e90` for reproducible training.
 
 ### Tool calls
 - **GLM5** uses XML-ish: `<tool_call>{name}<arg_key>{k}</arg_key><arg_value>{v}</arg_value>...</tool_call>`.
@@ -155,6 +161,9 @@ not be selected by the history-mode enum.
   accept `messages[i].content` as either a string or a list of
   content parts; if you only handle strings, image / audio cases pass
   through tokenized as text.
+- **Treating a Python template as "no template."** Kimi K3 has
+  `chat_template=None` but overrides `apply_chat_template`; compare the
+  renderer to that method instead of skipping parity or inventing Jinja.
 
 ## 6. See also
 

@@ -200,8 +200,19 @@ def _collect_base64_images(
     return images
 
 
-def _image_placeholder_token_id(tokenizer: Any) -> int | None:
-    """Return the model's image-placeholder token id when exposed by the tokenizer."""
+def _image_placeholder_token_id(
+    tokenizer: Any,
+    *,
+    renderer: Any | None = None,
+) -> int | None:
+    """Return the renderer/tokenizer image-placeholder token id."""
+    renderer_image_id = getattr(renderer, "image_placeholder_token_id", None)
+    if isinstance(renderer_image_id, int) and not isinstance(
+        renderer_image_id,
+        bool,
+    ):
+        return renderer_image_id
+
     special_ids = getattr(tokenizer, "special_ids", None)
     image_id = getattr(special_ids, "image", None) if special_ids is not None else None
     if isinstance(image_id, int) and not isinstance(image_id, bool):
@@ -216,7 +227,17 @@ def _image_placeholder_token_id(tokenizer: Any) -> int | None:
     convert = getattr(tokenizer, "convert_tokens_to_ids", None)
     if callable(convert):
         image_id = convert("<|image_pad|>")
-        if isinstance(image_id, int) and not isinstance(image_id, bool):
+        unknown_id = getattr(tokenizer, "unk_token_id", None)
+        is_unknown = (
+            isinstance(unknown_id, int)
+            and not isinstance(unknown_id, bool)
+            and image_id == unknown_id
+        )
+        if (
+            isinstance(image_id, int)
+            and not isinstance(image_id, bool)
+            and not is_unknown
+        ):
             return image_id
     return None
 
@@ -225,6 +246,8 @@ def build_multimodal_completions_prompt_token_ids(
     messages: List[Any],
     model_input: tinker.ModelInput,
     tokenizer: Any,
+    *,
+    renderer: Any | None = None,
 ) -> tuple[List[int], List[str]]:
     """Build ``(prompt_token_ids, images)`` for token-in vision completions.
 
@@ -244,7 +267,10 @@ def build_multimodal_completions_prompt_token_ids(
             "multimodal ModelInput has no base64 images; cannot call completions with images"
         )
 
-    image_placeholder_id = _image_placeholder_token_id(tokenizer)
+    image_placeholder_id = _image_placeholder_token_id(
+        tokenizer,
+        renderer=renderer,
+    )
     if image_placeholder_id is None:
         raise MultimodalRenderingNotSupported(
             "multimodal token-in completions require an image placeholder token ID "
@@ -783,7 +809,10 @@ async def single_turn_renderer_rollout(
             )
 
         prompt_token_ids, images = build_multimodal_completions_prompt_token_ids(
-            messages, model_input, tokenizer
+            messages,
+            model_input,
+            tokenizer,
+            renderer=renderer,
         )
         sk["stop"] = stop_strings if stop_strings is not None else stop
         sk.setdefault("logprobs", True)

@@ -524,6 +524,23 @@ def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():
     ]
 
 
+def test_normalize_messages_preserves_dynamic_tools_without_aliasing():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "multiply",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+    normalized = normalize_messages([{"role": "system", "content": "", "tools": tools}])
+
+    assert normalized[0]["tools"] == tools
+    assert normalized[0]["tools"] is not tools
+    assert normalized[0]["tools"][0] is not tools[0]
+
+
 def test_normalize_messages_preserves_multipart_text_parts():
     """All-text content parts are preserved as a list rather than pre-joined into
     one string. Pre-joining is lossy: it discards per-part boundaries, and each

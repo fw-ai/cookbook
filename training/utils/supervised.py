@@ -12,10 +12,12 @@ token-level ``weights`` so training uses the same spans that the UI shows.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -39,6 +41,7 @@ import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 �
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
 from training.renderer.thinking_trace import (
     ResolvedThinkingTraceRendererPlan,
     ThinkingTraceHistoryMode,
@@ -169,6 +172,11 @@ def resolve_renderer_name(
     if renderer_name:
         return renderer_name
     normalized_model_name = tokenizer_model.lower()
+    if re.search(
+        r"(?:^|[/_.-])kimi[-_]k3(?:$|[/_.-])",
+        normalized_model_name,
+    ):
+        return "kimi_k3"
     if (
         "moonshotai/kimi-k2.5" in normalized_model_name
         or "kimi-k2p5" in normalized_model_name
@@ -479,6 +487,8 @@ def populate_render_worker_state(
 # same module honors HF_TRUST_REMOTE_CODE as an opt-in hook, so set it for
 # those checkpoints before the first (cached) call.
 _MODELS_REQUIRING_TRUST_REMOTE_CODE_FOR_IMAGE_PROCESSOR: tuple[str, ...] = (
+    "kimi-k3",
+    "kimi_k3",
     "moonshotai/kimi-k2.6",
     "moonshotai/kimi-k2.7-code",
 )
@@ -503,6 +513,7 @@ def _renderer_uses_images(renderer_name: str) -> bool:
             "kimi_k25",
             "kimi_k26",
             "kimi_k27",
+            "kimi_k3",
         )
     )
 
@@ -695,6 +706,24 @@ def normalize_messages(
             "role": role,
             "content": _normalize_content(message.get("content")),
         }
+
+        # Fireworks chat messages may introduce tools mid-conversation through
+        # an empty system message. Keep that request field attached to its
+        # original turn; moving it into the top-level tool prefix changes when
+        # the model sees the declaration. Concrete renderers remain responsible
+        # for validating whether their protocol supports message-level tools.
+        message_tools = message.get("tools")
+        if message_tools is not None:
+            if not isinstance(message_tools, Sequence) or isinstance(
+                message_tools, (str, bytes)
+            ):
+                raise TypeError("Message tools must be a sequence of tool objects")
+            normalized_tools: list[dict[str, Any]] = []
+            for tool in message_tools:
+                if not isinstance(tool, Mapping):
+                    raise TypeError("Each message tool must be an object")
+                normalized_tools.append(copy.deepcopy(dict(tool)))
+            normalized_message["tools"] = normalized_tools  # type: ignore[typeddict-unknown-key]
 
         tool_calls = message.get("tool_calls")
         if tool_calls is not None:

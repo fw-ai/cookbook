@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -213,6 +214,24 @@ def test_build_multimodal_completions_prompt_token_ids_accepts_hf_image_token_id
         tokenizer,
     )
     assert prompt_ids == [10, 11, 248056, 12]
+
+
+def test_build_multimodal_completions_prompt_token_ids_prefers_renderer_token_id():
+    tokenizer = MagicMock()
+    tokenizer.special_ids = None
+    tokenizer.image_token_id = None
+    tokenizer.unk_token_id = 0
+    tokenizer.convert_tokens_to_ids.return_value = 0
+    renderer = SimpleNamespace(image_placeholder_token_id=163605)
+
+    prompt_ids, _ = build_multimodal_completions_prompt_token_ids(
+        [],
+        _multimodal_prompt(),
+        tokenizer,
+        renderer=renderer,
+    )
+
+    assert prompt_ids == [10, 11, 163605, 12]
 
 
 def test_build_multimodal_completions_request_uses_renderer_model_input():

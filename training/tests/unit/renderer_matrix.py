@@ -13,8 +13,8 @@ Why the capability flags instead of per-renderer test files:
 * ``has_extension_property`` mirrors the renderer's own
   ``has_extension_property`` and gates the sequence-extension invariant
   (KV-cache-safe prefix growth across turns).
-* ``supervised_hf_parity`` is False for renderers whose supervised
-  rendering diverges from ``apply_chat_template(add_generation_prompt=
+* ``supervised_hf_parity`` is False for renderers whose supervised rendering
+  diverges from their canonical ``apply_chat_template(add_generation_prompt=
   False)`` *by design*: thinking-mode renderers that inject an empty
   ``<think></think>`` block or use a different assistant header for
   supervised vs generation (``<think>`` vs ``</think>``), renderers that
@@ -50,6 +50,10 @@ class RendererCase:
     Attributes:
         renderer: Registered renderer name (cookbook-local or upstream).
         tokenizer_model: HF repo id / local path for the canonical tokenizer.
+        tokenizer_revision: Optional immutable HF revision. Ignored when a
+            local path override is active.
+        tokenizer_trust_remote_code: Explicit remote-code policy for models
+            whose tokenizer is implemented in their HF repository.
         hf_kwargs: Extra kwargs forwarded to ``apply_chat_template`` so the
             HF reference matches the renderer's mode (e.g. ``enable_thinking``,
             ``reasoning_effort``, ``preserve_thinking``).
@@ -57,7 +61,8 @@ class RendererCase:
         supports_tools: Renderer serializes tool calls / tool results.
         has_extension_property: Renderer satisfies the sequence-extension
             prefix property across assistant turns.
-        has_hf_chat_template: The tokenizer exposes an HF chat template, so
+        has_hf_chat_template: The tokenizer exposes a canonical Jinja template
+            or model-owned Python ``apply_chat_template`` override, so
             byte-parity invariants are meaningful.
         supervised_hf_parity: Supervised tokens are byte-identical to
             ``apply_chat_template(add_generation_prompt=False)`` (modulo the
@@ -82,10 +87,20 @@ class RendererCase:
             any parser), so the round-trip must use the id shape Kimi's own
             generation emits. Only affects invariant 3; the HF-parity legs
             (which render both sides from the same messages) are untouched.
+        trailing_hard_append_tokens: Number of final weight-zero tokens kept
+            after the trainable assistant action. K3 retains its one-token
+            ``<|end_of_msg|>`` history delimiter after the serving stop.
+        unsupported_scenarios: Scenario ids the canonical tokenizer explicitly
+            rejects. Dedicated renderer tests must pin those rejection
+            contracts rather than silently coercing them in the shared matrix.
+        local_fixture_env: Optional environment variable that overrides the
+            public tokenizer with a local/offline fixture.
     """
 
     renderer: str
     tokenizer_model: str
+    tokenizer_revision: str | None = None
+    tokenizer_trust_remote_code: bool | None = None
     hf_kwargs: dict[str, Any] = field(default_factory=dict)
     supports_thinking: bool = False
     supports_tools: bool = False
@@ -95,6 +110,21 @@ class RendererCase:
     observation_equals_generation: bool = False
     xfail_hf: str | None = None
     tool_call_id_style: str | None = None
+    trailing_hard_append_tokens: int = 0
+    unsupported_scenarios: frozenset[str] = frozenset()
+    local_fixture_env: str | None = None
+
+    def resolved_tokenizer_model(self) -> str:
+        """Resolve optional local fixtures when the case actually runs."""
+        if self.local_fixture_env:
+            return os.environ.get(self.local_fixture_env, self.tokenizer_model)
+        return self.tokenizer_model
+
+    def resolved_tokenizer_revision(self) -> str | None:
+        """Drop the Hub revision when a local fixture override is active."""
+        if self.local_fixture_env and os.environ.get(self.local_fixture_env):
+            return None
+        return self.tokenizer_revision
 
 
 # Gemma 4's official instruct repos (``google/gemma-4-*-it``) are PUBLIC and
@@ -108,6 +138,8 @@ class RendererCase:
 # ``GEMMA4_MODEL_PATH`` still overrides with a local checkpoint dir (offline
 # dev boxes; the dedicated ``test_gemma4_renderer.py`` uses the same env).
 _GEMMA4_TOKENIZER = os.environ.get("GEMMA4_MODEL_PATH", "google/gemma-4-31B-it")
+_KIMI_K3_TOKENIZER = "moonshotai/Kimi-K3"
+_KIMI_K3_TOKENIZER_REVISION = "301be1b88c89c0d3a763da6301352cb8fe399e90"
 
 
 RENDERER_MATRIX: list[RendererCase] = [
@@ -273,6 +305,39 @@ RENDERER_MATRIX: list[RendererCase] = [
         supervised_hf_parity=True,
         observation_equals_generation=False,
         tool_call_id_style="kimi",
+    ),
+    # -- Kimi K3 ----------------------------------------------------------
+    # K3 has no Jinja string. Its dedicated release-oracle suite calls the
+    # model-owned Python template directly; keep the shared verifier matrix
+    # independent of K3-specific Python-template handling.
+    RendererCase(
+        renderer="kimi_k3",
+        tokenizer_model=_KIMI_K3_TOKENIZER,
+        tokenizer_revision=_KIMI_K3_TOKENIZER_REVISION,
+        tokenizer_trust_remote_code=True,
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
+        has_hf_chat_template=False,
+        supervised_hf_parity=False,
+        observation_equals_generation=True,
+        trailing_hard_append_tokens=1,
+        local_fixture_env="KIMI_K3_MODEL_PATH",
+    ),
+    RendererCase(
+        renderer="kimi_k3_disable_thinking",
+        tokenizer_model=_KIMI_K3_TOKENIZER,
+        tokenizer_revision=_KIMI_K3_TOKENIZER_REVISION,
+        tokenizer_trust_remote_code=True,
+        hf_kwargs={"thinking": False},
+        supports_thinking=False,
+        supports_tools=True,
+        has_extension_property=True,
+        has_hf_chat_template=False,
+        supervised_hf_parity=False,
+        observation_equals_generation=True,
+        trailing_hard_append_tokens=1,
+        local_fixture_env="KIMI_K3_MODEL_PATH",
     ),
     # -- MiniMax M2 --------------------------------------------------------
     # Single-turn generation MATCHES the official HF MiniMax-M2 chat template
