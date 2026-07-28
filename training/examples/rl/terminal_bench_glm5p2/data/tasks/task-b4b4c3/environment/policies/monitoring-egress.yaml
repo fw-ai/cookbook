@@ -1,0 +1,12 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: monitoring-egress
+  namespace: monitoring
+spec:
+  endpointSelector:
+    matchLabels:
+      role: monitoring
+  egress:
+    - toEntities:
+        - cluster

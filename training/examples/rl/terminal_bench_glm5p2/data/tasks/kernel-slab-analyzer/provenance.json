@@ -1,0 +1,19 @@
+{
+  "task": "kernel-slab-analyzer",
+  "source_name": "alexander-popov-linux-kernel-exploitation-conference-talks-k",
+  "source_files": [
+    "data/kernel_hack_drill_readme.md",
+    "data/kernel_hack_drill_tree.json"
+  ],
+  "cite_reason": "Task inspired by kernel-hack-drill's UAF/OOB exploit techniques (drill_uaf_w_msg_msg, drill_uaf_w_pipe_buffer, drill_uaf_w_pte) and its drill_item vulnerable object structure; the cross-cache attack patterns and slab merge semantics central to those exploits shaped the analysis task design.",
+  "source_score": 4.55,
+  "source_domain": "security_and_privacy",
+  "source_subdomain": "systems_security",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "42bb1771-dca8-4d06-9758-d46324162153",
+  "iters": 1,
+  "generated_at": "2026-06-13T20:58:21",
+  "schema": "prov-v1"
+}

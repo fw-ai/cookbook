@@ -1,0 +1,19 @@
+{
+  "task": "slab-schedule-optimize",
+  "source_name": "google-or-tools-examples",
+  "source_files": [
+    "data/examples/python/steel_mill_slab_sat.py",
+    "summary.md"
+  ],
+  "cite_reason": "Task combines the steel mill slab bin-packing model (color constraints, discrete capacities, waste minimization) with temporal scheduling concepts (release dates, due dates, tardiness penalties, period capacity limits), adapted to use scattered heterogeneous data sources requiring exploration.",
+  "source_score": 4.25,
+  "source_domain": "mathematics_of_computing",
+  "source_subdomain": "optimization",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "53065e21-bd1a-4a28-919d-2f4faf64b642",
+  "iters": 3,
+  "generated_at": "2026-06-13T16:55:01",
+  "schema": "prov-v1"
+}

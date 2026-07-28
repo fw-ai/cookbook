@@ -1,0 +1,20 @@
+{
+  "task": "vinaigrette-signature-forge",
+  "source_name": "mysterytwister-c3",
+  "source_files": [
+    "data/vinaigrette-challenge-en.txt",
+    "data/mtc3_detail_level-3_vinaigrette-signature-scheme_text.txt",
+    "data/mtc3_comprehensive_analysis.md"
+  ],
+  "cite_reason": "Task design directly inspired by the MysteryTwister C3 Level-3 Vinaigrette challenge: a simplified MAYO post-quantum signature scheme where the omission of emulsifier matrices enables oil-space recovery attacks. Used the scheme specification, public key format, SHAKE256 hashing procedure, and signature delivery format from the original challenge description, adapted with smaller parameters for computational tractability and reformatted with binary key encoding, SQLite database storage, and compiled C verifier for multi-tool interoperability.",
+  "source_score": 4.0,
+  "source_domain": "security_and_privacy",
+  "source_subdomain": "cryptography",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "9779ef2b-a00c-454c-8aa8-941fcee56181",
+  "iters": 3,
+  "generated_at": "2026-06-10T11:01:25",
+  "schema": "prov-v1"
+}

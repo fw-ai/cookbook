@@ -1,0 +1,24 @@
+{
+  "task": "task-4b08d4",
+  "source_name": "jesse-luehrs-doy-rust-terminal-tui-portfolio-vt100-rust-pty-",
+  "source_files": [
+    "data/vt100_src_screen.rs",
+    "data/vt100_src_grid.rs",
+    "data/vt100_src_attrs.rs",
+    "data/vt100_src_cell.rs",
+    "data/vt100_test_window_contents.rs",
+    "data/vt100_test_quickcheck.rs",
+    "summary.md"
+  ],
+  "cite_reason": "Task design inspired by vt100-rust's contents_diff/contents_formatted screen synchronization architecture: the cell-by-cell diff strategy, SGR attribute transition encoding with reset-vs-incremental logic from attrs.rs, cursor movement optimization from grid.rs, and the property-based verification approach (apply diff to old state, compare with new state) from the quickcheck and window_contents tests.",
+  "source_score": 4.25,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "human_computer_interaction",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "c6bda5fc-0b0e-4fc4-b72a-f76ae2a52829",
+  "iters": 5,
+  "generated_at": "2026-06-12T20:07:03",
+  "schema": "prov-v1"
+}

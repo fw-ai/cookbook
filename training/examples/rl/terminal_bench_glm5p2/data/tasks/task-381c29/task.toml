@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires deep knowledge of RISC-V and AArch64 instruction set architectures to correctly classify hundreds of distinct instruction mnemonics across two architectures. The agent must discover the cross-compilers available in the environment, determine the correct invocation flags from the spec, and parse GCC assembly output handling pseudo-instructions, directives, labels, and architecture-specific syntax differences (.type @function vs %function, instruction suffixes like fadd.s, conditional branches like b.eq). Computing accurate metrics requires understanding calling conventions, stack frame layouts, and the distinction between floating-point arithmetic vs float load/store instructions. The vector analysis adds further complexity around detecting RVV instructions and understanding auto-vectorization behavior across optimization levels."""
+solution_explanation = """Cross-compile the benchmark C files for RISC-V (rv64gc, rv64gcv) and AArch64 using GCC at -O2 and -O3. Parse the generated assembly to identify function boundaries via .type/@function and .size directives. Classify each instruction line by extracting the mnemonic and matching against comprehensive sets of instruction names for each architecture category (ALU, memory, branch, multiply, float, vector, other). Extract register usage via regex, stack frame size from sp adjustments, compute code_size as instruction_count*4. Compare metrics across architectures and detect vectorization by checking for 'v'-prefixed mnemonics in rv64gcv builds."""
+verification_explanation = """Tests validate the output JSON structure and internal consistency: instruction classes sum to total count, ratios match computed values from counts, AArch64 code size is divisible by 4, vectorized flag is consistent with vector instruction count. Cross-validation independently compiles source files and counts instructions to verify reported values are within tolerance. Summary fields are checked for consistency with per-function data."""
+category = "computer_architecture"
+tags = ["cross-compilation", "assembly-analysis", "risc-v", "codegen-comparison"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-381c29"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

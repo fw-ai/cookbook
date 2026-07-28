@@ -1,0 +1,22 @@
+{
+  "task": "restleague-scoring-engine",
+  "source_name": "rest-league-2026-sbft-restful-api-testing-track-wfd-emb-corp",
+  "source_files": [
+    "data/sbft26_rest_league_paper.txt",
+    "data/restleague_readme_main.md",
+    "data/restgym_readme.md",
+    "data/wfd_statistics_table.md",
+    "summary.md"
+  ],
+  "cite_reason": "Task models the REST League SBFT 2026 competition scoring methodology (fault detection, operation coverage, AUC efficiency, Z-score normalization, badge assignment) with multi-API evaluation, OpenAPI path template disambiguation, and parameter reverse-engineering from calibration data, inspired by the competition report, RESTgym infrastructure, and WFD REST API corpus.",
+  "source_score": 4.5,
+  "source_domain": "software_and_its_engineering",
+  "source_subdomain": "software_testing",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "cf0f73a7-5e3d-4454-bb1b-c5f30417e30f",
+  "iters": 5,
+  "generated_at": "2026-06-13T15:28:29",
+  "schema": "prov-v1"
+}

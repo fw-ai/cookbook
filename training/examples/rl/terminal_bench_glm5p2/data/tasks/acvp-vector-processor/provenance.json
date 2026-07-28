@@ -1,0 +1,25 @@
+{
+  "task": "acvp-vector-processor",
+  "source_name": "nist-acvp-protocol-algorithm-json-specifications-pages-nist-",
+  "source_files": [
+    "data/sample_aes_gcm_prompt.json",
+    "data/sample_aes_gcm_expected.json",
+    "data/sample_ctrdrbg_prompt.json",
+    "data/sample_ctrdrbg_expected.json",
+    "data/sample_pbkdf_prompt.json",
+    "data/sample_pbkdf_expected.json",
+    "data/spec_drbg_text.txt",
+    "data/spec_symmetric_text.txt"
+  ],
+  "cite_reason": "Task uses ACVP test vectors from NIST ACVP-Server samples for AES-GCM, CTR-DRBG, and PBKDF; the conformance auditing design requires knowledge of SP800-90A Block_Cipher_df, SP800-38D GCM IV handling, and RFC 8018 PBKDF2 HMAC algorithm selection",
+  "source_score": 4.0,
+  "source_domain": "security_and_privacy",
+  "source_subdomain": "software_construction",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "413fb79d-d4fa-4dd1-9971-fd579710614e",
+  "iters": 5,
+  "generated_at": "2026-06-11T06:20:25",
+  "schema": "prov-v1"
+}

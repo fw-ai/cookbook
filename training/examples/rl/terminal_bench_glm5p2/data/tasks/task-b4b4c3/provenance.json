@@ -1,0 +1,22 @@
+{
+  "task": "task-b4b4c3",
+  "source_name": "cilium-cilium",
+  "source_files": [
+    "data/network_policy_examples.yaml",
+    "data/policy_api_rule.go",
+    "data/policy_index_text.txt",
+    "data/bpf_lxc.c",
+    "data/advanced_troubleshooting_text.txt"
+  ],
+  "cite_reason": "Task design inspired by Cilium's CiliumNetworkPolicy schema (policy_api_rule.go, network_policy_examples.yaml), policy semantics documentation (policy_index_text.txt), eBPF datapath policy enforcement logic (bpf_lxc.c handle_ipv6_from_lxc policy_can_egress/ingress), and troubleshooting workflows for policy debugging (advanced_troubleshooting_text.txt)",
+  "source_score": 4.25,
+  "source_domain": "computer_systems_organization",
+  "source_subdomain": "networking",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "6565d502-a45f-4239-af26-f98153f6d01e",
+  "iters": 1,
+  "generated_at": "2026-06-11T15:04:38",
+  "schema": "prov-v1"
+}

@@ -1,0 +1,20 @@
+{
+  "task": "task-35c6c4",
+  "source_name": "d-richard-hipp-sqlite-",
+  "source_files": [
+    "data/sqlite_fileformat.html",
+    "data/sqlite_wal.html",
+    "data/sqlite_recovery.html"
+  ],
+  "cite_reason": "Task built on SQLite binary file format spec (header layout, B-tree page structure, varint encoding, record format serial types), WAL architecture documentation (journal mode, checkpointing, file naming conventions, frame replay), and corruption/recovery mechanics",
+  "source_score": 4.25,
+  "source_domain": "information_systems",
+  "source_subdomain": "database_systems",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "a19cae6c-0ba3-4900-8653-a1f4e8ccce9c",
+  "iters": 5,
+  "generated_at": "2026-06-02T03:32:51",
+  "schema": "prov-v1"
+}

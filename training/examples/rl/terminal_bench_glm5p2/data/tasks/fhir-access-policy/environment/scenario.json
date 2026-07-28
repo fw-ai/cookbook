@@ -1,0 +1,394 @@
+{
+  "project_admin_resource_types": [
+    "Package", "PackageRelease", "PackageInstallation",
+    "Project", "ProjectMembership", "User", "UserSecurityRequest"
+  ],
+  "default_readonly_resource_types": ["SearchParameter", "StructureDefinition"],
+  "readonly_interactions": ["read", "vread", "history", "search"],
+  "search_param_definitions": {
+    "Patient": {
+      "_id": {"path": "id", "type": "id"},
+      "_compartment": {"path": "meta.compartment", "type": "reference_array"},
+      "organization": {"path": "managingOrganization", "type": "reference"}
+    },
+    "Observation": {
+      "_id": {"path": "id", "type": "id"},
+      "performer": {"path": "performer", "type": "reference_array"},
+      "subject": {"path": "subject", "type": "reference"}
+    },
+    "Condition": {
+      "_id": {"path": "id", "type": "id"},
+      "_compartment": {"path": "meta.compartment", "type": "reference_array"},
+      "subject": {"path": "subject", "type": "reference"}
+    },
+    "DiagnosticReport": {
+      "_id": {"path": "id", "type": "id"},
+      "performer": {"path": "performer", "type": "reference_array"},
+      "subject": {"path": "subject", "type": "reference"}
+    },
+    "Communication": {
+      "_id": {"path": "id", "type": "id"},
+      "subject": {"path": "subject", "type": "reference"}
+    },
+    "MedicationRequest": {
+      "_id": {"path": "id", "type": "id"},
+      "subject": {"path": "subject", "type": "reference"}
+    },
+    "Specimen": {
+      "_id": {"path": "id", "type": "id"},
+      "collector": {"path": "collection.collector", "type": "reference"}
+    },
+    "AllergyIntolerance": {
+      "_id": {"path": "id", "type": "id"},
+      "patient": {"path": "patient", "type": "reference"}
+    }
+  },
+  "access_policies": [
+    {
+      "resourceType": "AccessPolicy",
+      "id": "clinic-practitioner-policy",
+      "name": "Clinic Practitioner Policy",
+      "resource": [
+        {
+          "resourceType": "Patient",
+          "criteria": "Patient?organization=%clinic_org"
+        },
+        {
+          "resourceType": "Observation",
+          "criteria": "Observation?performer=%profile"
+        },
+        {
+          "resourceType": "Condition",
+          "criteria": "Condition?_compartment=%clinic_org"
+        },
+        {
+          "resourceType": "Medication",
+          "readonly": true
+        },
+        {
+          "resourceType": "AllergyIntolerance",
+          "interaction": ["read", "search", "create"]
+        }
+      ]
+    },
+    {
+      "resourceType": "AccessPolicy",
+      "id": "lab-tech-policy",
+      "name": "Lab Technician Policy",
+      "resource": [
+        {
+          "resourceType": "DiagnosticReport",
+          "criteria": "DiagnosticReport?performer=%lab_org"
+        },
+        {
+          "resourceType": "Specimen",
+          "criteria": "Specimen?collector=%profile"
+        },
+        {
+          "resourceType": "Observation",
+          "criteria": "Observation?performer=%lab_org",
+          "readonlyFields": ["interpretation", "note"]
+        },
+        {
+          "resourceType": "Patient",
+          "readonly": true,
+          "hiddenFields": ["address", "telecom", "identifier"]
+        }
+      ]
+    },
+    {
+      "resourceType": "AccessPolicy",
+      "id": "patient-portal-policy",
+      "name": "Patient Portal Policy",
+      "resource": [
+        {
+          "resourceType": "Patient",
+          "criteria": "Patient?_id=%patient.id"
+        },
+        {
+          "resourceType": "Observation",
+          "criteria": "Observation?subject=%patient",
+          "readonly": true
+        },
+        {
+          "resourceType": "DiagnosticReport",
+          "criteria": "DiagnosticReport?subject=%patient",
+          "readonly": true
+        },
+        {
+          "resourceType": "MedicationRequest",
+          "criteria": "MedicationRequest?subject=%patient",
+          "readonly": true
+        },
+        {
+          "resourceType": "Communication",
+          "criteria": "Communication?subject=%patient",
+          "interaction": ["create", "read", "search"]
+        },
+        {
+          "resourceType": "Practitioner",
+          "readonly": true
+        },
+        {
+          "resourceType": "Organization",
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "resourceType": "AccessPolicy",
+      "id": "research-policy",
+      "name": "Research Access Policy",
+      "resource": [
+        {
+          "resourceType": "Patient",
+          "readonly": true,
+          "hiddenFields": ["name", "address", "telecom", "identifier", "birthDate"]
+        },
+        {
+          "resourceType": "Observation",
+          "readonly": true,
+          "hiddenFields": ["performer"]
+        },
+        {
+          "resourceType": "Condition",
+          "readonly": true
+        }
+      ],
+      "ipAccessRule": [
+        {"name": "Research VPN", "value": "10.0.50.", "action": "allow"},
+        {"name": "Block all others", "value": "*", "action": "block"}
+      ]
+    },
+    {
+      "resourceType": "AccessPolicy",
+      "id": "wildcard-readonly-policy",
+      "name": "Wildcard Read-Only Policy",
+      "resource": [
+        {
+          "resourceType": "*",
+          "readonly": true
+        }
+      ]
+    }
+  ],
+  "memberships": [
+    {
+      "id": "membership-dr-smith",
+      "profile": {"reference": "Practitioner/pract-smith"},
+      "admin": false,
+      "access": [
+        {
+          "policy": {"reference": "AccessPolicy/clinic-practitioner-policy"},
+          "parameter": [
+            {"name": "clinic_org", "valueReference": {"reference": "Organization/clinic-a"}}
+          ]
+        },
+        {
+          "policy": {"reference": "AccessPolicy/lab-tech-policy"},
+          "parameter": [
+            {"name": "lab_org", "valueReference": {"reference": "Organization/lab-central"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "membership-dr-jones",
+      "profile": {"reference": "Practitioner/pract-jones"},
+      "admin": false,
+      "access": [
+        {
+          "policy": {"reference": "AccessPolicy/clinic-practitioner-policy"},
+          "parameter": [
+            {"name": "clinic_org", "valueReference": {"reference": "Organization/clinic-b"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "membership-patient-homer",
+      "profile": {"reference": "Patient/patient-homer"},
+      "admin": false,
+      "access": [
+        {
+          "policy": {"reference": "AccessPolicy/patient-portal-policy"},
+          "parameter": []
+        }
+      ]
+    },
+    {
+      "id": "membership-researcher",
+      "profile": {"reference": "Practitioner/pract-alice"},
+      "admin": false,
+      "access": [
+        {
+          "policy": {"reference": "AccessPolicy/research-policy"},
+          "parameter": []
+        }
+      ]
+    },
+    {
+      "id": "membership-receptionist",
+      "profile": {"reference": "Practitioner/pract-bob"},
+      "admin": false,
+      "access": [
+        {
+          "policy": {"reference": "AccessPolicy/wildcard-readonly-policy"},
+          "parameter": []
+        }
+      ]
+    }
+  ],
+  "resources": {
+    "patient-homer": {
+      "resourceType": "Patient",
+      "id": "patient-homer",
+      "name": [{"family": "Simpson", "given": ["Homer"]}],
+      "address": [{"state": "IL", "city": "Springfield"}],
+      "telecom": [{"system": "phone", "value": "555-1234"}],
+      "identifier": [{"system": "http://hospital.org/mrn", "value": "MRN001"}],
+      "birthDate": "1956-05-12",
+      "managingOrganization": {"reference": "Organization/clinic-a"},
+      "meta": {"compartment": [{"reference": "Organization/clinic-a"}]}
+    },
+    "patient-marge": {
+      "resourceType": "Patient",
+      "id": "patient-marge",
+      "name": [{"family": "Simpson", "given": ["Marge"]}],
+      "address": [{"state": "IL", "city": "Springfield"}],
+      "telecom": [{"system": "phone", "value": "555-5678"}],
+      "identifier": [{"system": "http://hospital.org/mrn", "value": "MRN002"}],
+      "managingOrganization": {"reference": "Organization/clinic-b"},
+      "meta": {"compartment": [{"reference": "Organization/clinic-b"}]}
+    },
+    "patient-burns": {
+      "resourceType": "Patient",
+      "id": "patient-burns",
+      "name": [{"family": "Burns", "given": ["Montgomery"]}],
+      "managingOrganization": {"reference": "Organization/clinic-a"},
+      "meta": {"compartment": [{"reference": "Organization/clinic-a"}]}
+    },
+    "obs-homer-bp": {
+      "resourceType": "Observation",
+      "id": "obs-homer-bp",
+      "subject": {"reference": "Patient/patient-homer"},
+      "performer": [{"reference": "Practitioner/pract-smith"}],
+      "code": {"coding": [{"system": "http://loinc.org", "code": "85354-9"}]},
+      "valueQuantity": {"value": 140, "unit": "mmHg"}
+    },
+    "obs-homer-lab": {
+      "resourceType": "Observation",
+      "id": "obs-homer-lab",
+      "subject": {"reference": "Patient/patient-homer"},
+      "performer": [{"reference": "Organization/lab-central"}],
+      "code": {"coding": [{"system": "http://loinc.org", "code": "2339-0"}]},
+      "valueQuantity": {"value": 95, "unit": "mg/dL"},
+      "interpretation": [{"text": "Normal"}],
+      "note": [{"text": "Fasting glucose"}]
+    },
+    "obs-marge-bp": {
+      "resourceType": "Observation",
+      "id": "obs-marge-bp",
+      "subject": {"reference": "Patient/patient-marge"},
+      "performer": [{"reference": "Practitioner/pract-jones"}]
+    },
+    "dr-homer-report": {
+      "resourceType": "DiagnosticReport",
+      "id": "dr-homer-report",
+      "subject": {"reference": "Patient/patient-homer"},
+      "performer": [{"reference": "Organization/lab-central"}]
+    },
+    "medication-aspirin": {
+      "resourceType": "Medication",
+      "id": "medication-aspirin",
+      "code": {"coding": [{"system": "http://www.nlm.nih.gov/research/umls/rxnorm", "code": "1191"}]}
+    },
+    "allergy-homer": {
+      "resourceType": "AllergyIntolerance",
+      "id": "allergy-homer",
+      "patient": {"reference": "Patient/patient-homer"}
+    },
+    "condition-homer": {
+      "resourceType": "Condition",
+      "id": "condition-homer",
+      "subject": {"reference": "Patient/patient-homer"},
+      "meta": {"compartment": [{"reference": "Organization/clinic-a"}]}
+    },
+    "condition-marge": {
+      "resourceType": "Condition",
+      "id": "condition-marge",
+      "subject": {"reference": "Patient/patient-marge"},
+      "meta": {"compartment": [{"reference": "Organization/clinic-b"}]}
+    },
+    "comm-homer": {
+      "resourceType": "Communication",
+      "id": "comm-homer",
+      "subject": {"reference": "Patient/patient-homer"},
+      "status": "completed"
+    },
+    "medrx-homer": {
+      "resourceType": "MedicationRequest",
+      "id": "medrx-homer",
+      "subject": {"reference": "Patient/patient-homer"}
+    },
+    "specimen-homer": {
+      "resourceType": "Specimen",
+      "id": "specimen-homer",
+      "subject": {"reference": "Patient/patient-homer"},
+      "collection": {"collector": {"reference": "Practitioner/pract-smith"}}
+    },
+    "project-main": {
+      "resourceType": "Project",
+      "id": "project-main",
+      "name": "Main Project"
+    },
+    "search-param-name": {
+      "resourceType": "SearchParameter",
+      "id": "search-param-name",
+      "name": "name",
+      "type": "string"
+    }
+  },
+  "queries": [
+    {"id": "q01", "membership_id": "membership-dr-smith", "resource_id": "patient-homer", "interaction": "read"},
+    {"id": "q02", "membership_id": "membership-dr-smith", "resource_id": "patient-homer", "interaction": "update"},
+    {"id": "q03", "membership_id": "membership-dr-smith", "resource_id": "patient-marge", "interaction": "read"},
+    {"id": "q04", "membership_id": "membership-dr-smith", "resource_id": "patient-marge", "interaction": "update"},
+    {"id": "q05", "membership_id": "membership-dr-smith", "resource_id": "obs-homer-bp", "interaction": "read"},
+    {"id": "q06", "membership_id": "membership-dr-smith", "resource_id": "obs-homer-lab", "interaction": "read"},
+    {"id": "q07", "membership_id": "membership-dr-smith", "resource_id": "obs-homer-lab", "interaction": "update"},
+    {"id": "q08", "membership_id": "membership-dr-smith", "resource_id": "medication-aspirin", "interaction": "delete"},
+    {"id": "q09", "membership_id": "membership-dr-smith", "resource_id": "medication-aspirin", "interaction": "read"},
+    {"id": "q10", "membership_id": "membership-dr-smith", "resource_id": "allergy-homer", "interaction": "create"},
+    {"id": "q11", "membership_id": "membership-dr-smith", "resource_id": "allergy-homer", "interaction": "update"},
+    {"id": "q12", "membership_id": "membership-dr-smith", "resource_id": "dr-homer-report", "interaction": "read"},
+    {"id": "q13", "membership_id": "membership-dr-smith", "resource_id": "search-param-name", "interaction": "read"},
+    {"id": "q14", "membership_id": "membership-dr-smith", "resource_id": "project-main", "interaction": "read"},
+    {"id": "q15", "membership_id": "membership-dr-smith", "resource_id": "condition-homer", "interaction": "read"},
+    {"id": "q16", "membership_id": "membership-dr-smith", "resource_id": "condition-marge", "interaction": "read"},
+    {"id": "q17", "membership_id": "membership-dr-smith", "resource_id": "specimen-homer", "interaction": "read"},
+    {"id": "q18", "membership_id": "membership-dr-jones", "resource_id": "patient-homer", "interaction": "read"},
+    {"id": "q19", "membership_id": "membership-dr-jones", "resource_id": "patient-marge", "interaction": "read"},
+    {"id": "q20", "membership_id": "membership-dr-jones", "resource_id": "obs-homer-bp", "interaction": "read"},
+    {"id": "q21", "membership_id": "membership-patient-homer", "resource_id": "patient-homer", "interaction": "read"},
+    {"id": "q22", "membership_id": "membership-patient-homer", "resource_id": "patient-homer", "interaction": "update"},
+    {"id": "q23", "membership_id": "membership-patient-homer", "resource_id": "patient-marge", "interaction": "read"},
+    {"id": "q24", "membership_id": "membership-patient-homer", "resource_id": "obs-homer-bp", "interaction": "read"},
+    {"id": "q25", "membership_id": "membership-patient-homer", "resource_id": "obs-homer-bp", "interaction": "update"},
+    {"id": "q26", "membership_id": "membership-patient-homer", "resource_id": "comm-homer", "interaction": "create"},
+    {"id": "q27", "membership_id": "membership-patient-homer", "resource_id": "comm-homer", "interaction": "delete"},
+    {"id": "q28", "membership_id": "membership-patient-homer", "resource_id": "medrx-homer", "interaction": "read"},
+    {"id": "q29", "membership_id": "membership-researcher", "resource_id": "patient-homer", "interaction": "read", "ip_address": "10.0.50.5"},
+    {"id": "q30", "membership_id": "membership-researcher", "resource_id": "patient-homer", "interaction": "read", "ip_address": "192.168.1.100"},
+    {"id": "q31", "membership_id": "membership-researcher", "resource_id": "patient-homer", "interaction": "update", "ip_address": "10.0.50.5"},
+    {"id": "q32", "membership_id": "membership-researcher", "resource_id": "obs-homer-bp", "interaction": "read", "ip_address": "10.0.50.5"},
+    {"id": "q33", "membership_id": "membership-receptionist", "resource_id": "patient-homer", "interaction": "read"},
+    {"id": "q34", "membership_id": "membership-receptionist", "resource_id": "patient-homer", "interaction": "update"},
+    {"id": "q35", "membership_id": "membership-receptionist", "resource_id": "project-main", "interaction": "read"},
+    {"id": "q36", "membership_id": "membership-receptionist", "resource_id": "search-param-name", "interaction": "read"},
+    {"id": "q37", "membership_id": "membership-dr-smith", "resource_id": "obs-homer-bp", "interaction": "vread"},
+    {"id": "q38", "membership_id": "membership-dr-jones", "resource_id": "medication-aspirin", "interaction": "search"},
+    {"id": "q39", "membership_id": "membership-patient-homer", "resource_id": "medication-aspirin", "interaction": "read"},
+    {"id": "q40", "membership_id": "membership-researcher", "resource_id": "condition-homer", "interaction": "read", "ip_address": "10.0.50.5"}
+  ]
+}

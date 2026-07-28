@@ -1,0 +1,12 @@
+{
+  "source_files": [
+    "/source_data/data/vt100_src_screen.rs",
+    "/source_data/data/vt100_src_grid.rs",
+    "/source_data/data/vt100_src_attrs.rs",
+    "/source_data/data/vt100_src_cell.rs",
+    "/source_data/data/vt100_test_window_contents.rs",
+    "/source_data/data/vt100_test_quickcheck.rs",
+    "/source_data/summary.md"
+  ],
+  "cite_reason": "Task design inspired by vt100-rust's contents_diff/contents_formatted screen synchronization architecture: the cell-by-cell diff strategy, SGR attribute transition encoding with reset-vs-incremental logic from attrs.rs, cursor movement optimization from grid.rs, and the property-based verification approach (apply diff to old state, compare with new state) from the quickcheck and window_contents tests."
+}

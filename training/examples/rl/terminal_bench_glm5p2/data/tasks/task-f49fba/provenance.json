@@ -1,0 +1,21 @@
+{
+  "task": "task-f49fba",
+  "source_name": "mipcc26-the-2026-land-doig-mip-competition",
+  "source_files": [
+    "data/mipcc26_competition_page.txt",
+    "data/solchecker.patch",
+    "data/instance_5m_bounds.txt",
+    "data/tutorial_part1_text.txt"
+  ],
+  "cite_reason": "Competition rules define MPS format, solution verification (feasibility/integer tolerances), primal integral scoring, and the objective offset bug (solchecker.patch) that inspired the core evaluation challenges in this task",
+  "source_score": 4.75,
+  "source_domain": "mathematics_of_computing",
+  "source_subdomain": "optimization",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "3f79ad2c-f0e4-4bcc-80b3-e791ddc0f188",
+  "iters": 5,
+  "generated_at": "2026-06-12T23:44:51",
+  "schema": "prov-v1"
+}

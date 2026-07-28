@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """This task requires implementing a subset of Cilium's network policy resolution engine, which involves understanding and correctly coding multiple interacting subsystems: namespace-scoped endpoint selection, default-deny semantics that activate per-direction based on rule presence, deny-rule precedence over allow rules, cross-namespace label matching with implicit k8s:io.kubernetes.pod.namespace labels, entity type matching (world vs cluster), CIDR matching with exception ranges, L4 port filtering, and bidirectional evaluation (both source egress and destination ingress must allow). The subtle interactions between these features—particularly the default-deny activation logic and deny-override semantics—require expert-level understanding of Kubernetes CNI policy models. Getting any single semantic wrong causes cascading failures across the 20 test queries."""
+solution_explanation = """The solution implements a Python analyzer that: (1) parses the topology YAML to build an endpoint registry with implicit namespace labels, (2) loads all CiliumNetworkPolicy files and indexes them by namespace, (3) for each query evaluates egress policy at the source and ingress policy at the destination independently, (4) determines default-deny activation by checking if any selecting policy has rules in the relevant direction, (5) checks deny rules first (deny overrides), then allow rules, (6) handles entity matching (world = non-managed external, cluster = any managed endpoint), CIDR matching with exceptions via ipaddress module, and cross-namespace endpoint matching via the k8s:io.kubernetes.pod.namespace label, (7) combines egress and ingress verdicts requiring both to allow."""
+verification_explanation = """Tests verify the results.json output against 20 known-correct query verdicts covering: basic allow/deny, port restrictions, deny-rule override of allow rules, deny port specificity, default-deny direction independence, entity matching, CIDR matching with exceptions, cross-namespace matching, and bidirectional evaluation. Individual test functions validate specific semantic properties."""
+category = "networking"
+tags = ["cilium", "network-policy"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-b4b4c3"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

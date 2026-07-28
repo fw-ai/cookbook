@@ -1,0 +1,31 @@
+{
+  "eclasses": {
+    "root": [
+      {"id": "root_top", "op": "top", "cost": 0, "children": ["p", "q"]}
+    ],
+    "p": [
+      {"id": "p_direct", "op": "direct_p", "cost": 15, "children": []},
+      {"id": "p_via", "op": "via_mid_p", "cost": 1, "children": ["mid"]}
+    ],
+    "q": [
+      {"id": "q_direct", "op": "direct_q", "cost": 15, "children": []},
+      {"id": "q_via", "op": "via_mid_q", "cost": 1, "children": ["mid"]}
+    ],
+    "mid": [
+      {"id": "mid_direct", "op": "direct_mid", "cost": 20, "children": []},
+      {"id": "mid_via", "op": "via_leaves", "cost": 1, "children": ["a", "b"]}
+    ],
+    "a": [
+      {"id": "a_direct", "op": "direct_a", "cost": 8, "children": []},
+      {"id": "a_via", "op": "via_leaf_a", "cost": 1, "children": ["leaf"]}
+    ],
+    "b": [
+      {"id": "b_direct", "op": "direct_b", "cost": 8, "children": []},
+      {"id": "b_via", "op": "via_leaf_b", "cost": 1, "children": ["leaf"]}
+    ],
+    "leaf": [
+      {"id": "leaf_val", "op": "leaf_value", "cost": 9, "children": []}
+    ]
+  },
+  "roots": ["root"]
+}

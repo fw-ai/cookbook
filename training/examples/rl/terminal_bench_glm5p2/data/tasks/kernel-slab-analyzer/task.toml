@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level understanding of Linux kernel SLUB allocator internals, slab cache merging semantics, struct field-level memory corruption analysis, and exploitation primitive classification. The solver must correctly implement multi-step merge compatibility checks (constructor, size waste thresholds, blocking flag parity, alignment divisibility), compute precise partial field overlaps for struct memory layouts, and apply a multi-factor scoring formula. Red herrings include func_ptr fields marked with exploit_primitive 'none' that naive type-based classification would miscount."""
+solution_explanation = """The solution parses four interconnected JSON specifications, implements the ordered merge-check pipeline per slab_config rules, iterates over 12 candidate objects to classify each as mergeable or rejected (with first-failing-check reason), computes byte-level field overlaps between each mergeable victim's struct layout and the 64-byte UAF write window, filters exploitable fields by explicit annotation, and applies the three-factor scoring formula (primitive_power * field_count_factor * size_compatibility_factor) to rank 4 viable attack paths. The top-ranked target is pipe_buffer (score 13.0) due to 4 exploitable overlapping fields including control_flow_hijack via ops pointer."""
+verification_explanation = """Tests load the generated attack_plan.json and verify: exact set of 4 mergeable caches, all 8 non-mergeable caches with correct rejection reasons, attack path ranking order (pipe_buffer > sk_filter > msg_msg > xattr_entry), precise feasibility scores within 0.001 tolerance, correct best_primitive per path, exact exploitable field counts, correct partial overlap sizes for partially-overlapping struct fields, correct waste_bytes values, and recommended_target selection."""
+category = "security"
+tags = ["kernel-exploitation", "slab-allocator"]
+expert_time_estimate_hours = 2.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:kernel-slab-analyzer"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

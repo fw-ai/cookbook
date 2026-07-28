@@ -1,0 +1,23 @@
+{
+  "eclasses": {
+    "root": [
+      {"id": "root_triple", "op": "triple", "cost": 0, "children": ["a", "b", "c"]}
+    ],
+    "a": [
+      {"id": "a_standalone", "op": "standalone_a", "cost": 8, "children": []},
+      {"id": "a_shared", "op": "via_shared_a", "cost": 1, "children": ["shared"]}
+    ],
+    "b": [
+      {"id": "b_standalone", "op": "standalone_b", "cost": 8, "children": []},
+      {"id": "b_shared", "op": "via_shared_b", "cost": 1, "children": ["shared"]}
+    ],
+    "c": [
+      {"id": "c_standalone", "op": "standalone_c", "cost": 8, "children": []},
+      {"id": "c_shared", "op": "via_shared_c", "cost": 1, "children": ["shared"]}
+    ],
+    "shared": [
+      {"id": "shared_compute", "op": "shared_compute", "cost": 10, "children": []}
+    ]
+  },
+  "roots": ["root"]
+}

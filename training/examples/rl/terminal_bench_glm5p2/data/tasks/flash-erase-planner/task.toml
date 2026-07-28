@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level embedded systems debugging: the agent must diagnose multiple interacting defects in a flash programming planner that reads Intel HEX firmware, interprets probe-rs/CMSIS-Pack target descriptors, and applies flash memory physics for erase optimization. Bugs span binary format parsing (IHEX extended linear address record endianness), low-level bit manipulation for erase decisions, output format compliance, and correct use of per-algorithm flash parameters. The agent must use binary analysis tools to examine firmware files, understand the IHEX record type system, trace address calculation through the code, and reason about flash memory erase/program asymmetry — all without any hints about what is wrong."""
+solution_explanation = """The solution identifies and fixes four bugs: (1) IHEX type-04 extended linear address record has bytes swapped causing firmware to load at wrong addresses, (2) the erase decision bit-check is inverted (checks current-needs-clear instead of firmware-needs-set), (3) CRC32 output uses Python hex() which gives lowercase without zero-padding instead of the spec-required 0x-prefixed 8-digit uppercase format, (4) partial page fill uses 0x00 instead of the algorithm's erased_byte_value parameter. Each fix requires understanding the relevant domain (IHEX format, flash physics, output spec, algorithm parameters)."""
+verification_explanation = """Tests verify the complete corrected plan: exact erase operation counts and addresses (only sectors requiring 0→1 bit transitions), correct skip identification (identical content, no firmware coverage), page counts per sector, fill byte amounts, CRC32 checksums independently computed from firmware data, ascending address ordering, algorithm selection, and aggregate statistics. Each test class targets a specific flash programming concern."""
+category = "embedded_systems"
+tags = ["flash-programming", "debugging"]
+expert_time_estimate_hours = 2.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:flash-erase-planner"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

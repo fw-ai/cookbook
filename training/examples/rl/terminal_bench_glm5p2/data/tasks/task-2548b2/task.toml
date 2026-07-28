@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level understanding of multi-version concurrency control and distributed transaction protocols. The skeleton provides only bare type definitions (three column families, composite timestamp-keyed storage, Value variants) and function signatures — no algorithmic guidance. The implementer must independently derive: the correct column semantics (which timestamp and value variant to use for each column family), range-query logic over BTreeMap composite keys, conflict detection rules for concurrent transactions, the two-phase commit protocol with primary/secondary key ordering, and the most challenging part — lock cleanup logic that determines a partially-committed transaction's fate by inspecting the primary key's state and decides whether to roll forward or roll back secondary keys. Errors in any of these areas cause cascading failures across the 14-test isolation/recovery suite. Demands holistic understanding of snapshot isolation theory (PMP, lost update, read/write skew, anti-dependency cycles) to reason about why specific column access patterns are correct."""
+solution_explanation = """Implement KvTable read/write/erase using BTreeMap range queries with composite (key, timestamp) keys. MvccStorage.get must check for locks, resolve them via the primary key's status, then read through write→data indirection. MvccStorage.prewrite must detect write-write conflicts and lock conflicts before placing data and lock entries. MvccStorage.commit must verify the lock, write a commit record, and erase the lock. back_off_maybe_clean_up_lock must check the primary's lock, search the write column for the matching start_ts to determine commit vs rollback, then roll forward or roll back accordingly. Transaction.commit orchestrates two-phase commit with primary-first ordering for both prewrite and commit phases."""
+verification_explanation = """cargo test runs 14 embedded Rust tests covering: basic CRUD (4 tests), snapshot isolation anomalies (6 tests verifying PMP read/write predicates, lost update prevention, read skew variants, write skew allowance, anti-dependency cycle handling), and partial-commit recovery (2 tests: primary committed with dangling secondary locks triggers roll-forward, primary rolled back triggers secondary rollback). Tests assert exact return values and transaction success/failure outcomes."""
+category = "systems_programming"
+tags = ["distributed-systems", "rust"]
+expert_time_estimate_hours = 3.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-2548b2"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

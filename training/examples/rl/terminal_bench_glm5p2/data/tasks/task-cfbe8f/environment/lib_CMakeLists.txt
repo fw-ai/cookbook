@@ -1,0 +1,3 @@
+add_library(AffineMBADeobfuscate SHARED AffineMBADeobfuscate.cpp)
+target_link_libraries(AffineMBADeobfuscate
+  "$<$<PLATFORM_ID:Darwin>:-undefined dynamic_lookup>")

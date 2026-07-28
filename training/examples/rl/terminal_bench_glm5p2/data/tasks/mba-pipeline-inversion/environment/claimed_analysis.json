@@ -1,0 +1,12 @@
+{
+  "stages": [
+    {"operation": "add", "constant": "6a09e667f3bcc908"},
+    {"operation": "add", "constant": "bb67ae8584caa73b"},
+    {"operation": "mul", "constant": "3c6ef372fe94f82b"},
+    {"operation": "rol", "constant": "13"},
+    {"operation": "add", "constant": "a54ff53a5f1d36f1"},
+    {"operation": "xor", "constant": "510e527fade682d1"},
+    {"operation": "mul", "constant": "0123456789abcdef"},
+    {"operation": "rol", "constant": "29"}
+  ]
+}

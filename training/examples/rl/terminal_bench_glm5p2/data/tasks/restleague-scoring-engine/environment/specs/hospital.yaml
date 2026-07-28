@@ -1,0 +1,164 @@
+openapi: "3.0.3"
+info:
+  title: Hospital API
+  version: "1.0.0"
+  description: Patient management system with medical records and attachments
+paths:
+  /auth/token:
+    post:
+      operationId: authenticate
+      summary: Obtain authentication token
+      responses:
+        '200':
+          description: Token issued
+  /patients:
+    get:
+      operationId: listPatients
+      summary: List all patients
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+    post:
+      operationId: createPatient
+      summary: Register a new patient
+      responses:
+        '201':
+          description: Created
+  /patients/search:
+    get:
+      operationId: searchPatients
+      summary: Search patients by criteria
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /patients/{patientId}:
+    get:
+      operationId: getPatient
+      summary: Get patient by ID
+      parameters:
+        - name: patientId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    put:
+      operationId: updatePatient
+      summary: Update patient record
+      parameters:
+        - name: patientId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /patients/{patientId}/records:
+    get:
+      operationId: listRecords
+      summary: List medical records for a patient
+      parameters:
+        - name: patientId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    post:
+      operationId: createRecord
+      summary: Create a medical record
+      parameters:
+        - name: patientId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Created
+  /patients/{patientId}/records/summary:
+    get:
+      operationId: getRecordsSummary
+      summary: Get aggregated summary of all records for a patient
+      parameters:
+        - name: patientId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /patients/{patientId}/records/{recordId}:
+    get:
+      operationId: getRecord
+      summary: Get a specific medical record
+      parameters:
+        - name: patientId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    delete:
+      operationId: deleteRecord
+      summary: Delete a medical record
+      parameters:
+        - name: patientId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+  /patients/{patientId}/records/{recordId}/attachments:
+    get:
+      operationId: listAttachments
+      summary: List attachments for a medical record
+      parameters:
+        - name: patientId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK

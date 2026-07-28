@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level knowledge spanning three distinct domains: (1) Flash Attention's tiling algorithm — understanding how causal masking interacts with tile boundaries via the n_block_max formula from the CUDA kernel, including asymmetric sequence lengths; (2) CUDA build systems — reproducing the exact gencode flag generation logic with architecture-specific codes (compute_100f for Blackwell, Thor sm_110→sm_101 renaming) and version-dependent gates; (3) GPU architecture performance modeling — deriving the feeds-and-speeds cycle counting model for tensor cores, SFU (softmax exponentials), and shared memory bandwidth, including the backward pass SMEM traffic formula (4*M*D + 3*N*D + 6*M*N). The block size selection logic also requires matching exact conditional branches that differ between sm80, sm8x (86/89), and sm90. Solving this requires integrating knowledge across GPU kernel programming, build system engineering, and hardware performance analysis."""
+solution_explanation = """The solution implements 8 functions: (1) FLOPS = 4*batch*seqlen^2*nheads*headdim with causal halving and 2.5x/3.5x multipliers for bwd/fwd_bwd; (2) block size selection via branching on SM version and head_dim thresholds; (3) causal tile counting by iterating Q blocks and computing n_block_max = min(ceil(seqlen_k/block_n), ceil(((m+1)*block_m + seqlen_k - seqlen_q)/block_n)); (4) HBM I/O as Q(once) + K/V(per-tile) + O(once) + LSE(once); (5) gencode flags with version-gated architecture support; (6) tile cycles from TC=2*2*M*N*D/tc_rate, SFU=M*N/sfu_rate, SMEM=(M*D+2*N*D)*dtype/smem_bw for fwd and (4*M*D+3*N*D+6*M*N)*dtype/smem_bw for bwd; (7-8) AI=FLOPS/bytes and roofline=min(peak_compute, AI*peak_bw)."""
+verification_explanation = """51 pytest tests verify exact numerical outputs for all 8 functions across diverse configurations: 7 FLOPS tests (fwd/bwd/causal/large), 14 block size tests (all SM variants and head dims), 10 tile counting tests (causal/non-causal/asymmetric/cross-attention), 3 HBM I/O tests, 7 gencode flag tests (CUDA 11.6-13.0 with Blackwell/Thor), 5 tile cycle tests (B200/H100/asymmetric), and 5 roofline tests. All expected values are independently derived from the Flash Attention source code."""
+category = "systems"
+tags = ["gpu-architecture", "cuda", "performance-modeling"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-20f411"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

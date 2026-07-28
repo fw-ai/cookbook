@@ -1,0 +1,33 @@
+{
+  "eclasses": {
+    "set_1": [{"id": "s1_node", "op": "set_1", "cost": 6, "children": []}],
+    "set_2": [{"id": "s2_node", "op": "set_2", "cost": 6, "children": []}],
+    "set_3": [{"id": "s3_node", "op": "set_3", "cost": 5, "children": []}],
+    "set_4": [{"id": "s4_node", "op": "set_4", "cost": 3, "children": []}],
+    "set_5": [{"id": "s5_node", "op": "set_5", "cost": 3, "children": []}],
+    "elt_1": [
+      {"id": "e1_via_s1", "op": "cover_e1_by_s1", "cost": 0, "children": ["set_1"]},
+      {"id": "e1_via_s4", "op": "cover_e1_by_s4", "cost": 0, "children": ["set_4"]}
+    ],
+    "elt_2": [
+      {"id": "e2_via_s1", "op": "cover_e2_by_s1", "cost": 0, "children": ["set_1"]},
+      {"id": "e2_via_s2", "op": "cover_e2_by_s2", "cost": 0, "children": ["set_2"]}
+    ],
+    "elt_3": [
+      {"id": "e3_via_s1", "op": "cover_e3_by_s1", "cost": 0, "children": ["set_1"]},
+      {"id": "e3_via_s2", "op": "cover_e3_by_s2", "cost": 0, "children": ["set_2"]}
+    ],
+    "elt_4": [
+      {"id": "e4_via_s2", "op": "cover_e4_by_s2", "cost": 0, "children": ["set_2"]},
+      {"id": "e4_via_s3", "op": "cover_e4_by_s3", "cost": 0, "children": ["set_3"]}
+    ],
+    "elt_5": [
+      {"id": "e5_via_s3", "op": "cover_e5_by_s3", "cost": 0, "children": ["set_3"]},
+      {"id": "e5_via_s5", "op": "cover_e5_by_s5", "cost": 0, "children": ["set_5"]}
+    ],
+    "unreachable": [
+      {"id": "unreach_node", "op": "never_used", "cost": 999, "children": []}
+    ]
+  },
+  "roots": ["elt_1", "elt_2", "elt_3", "elt_4", "elt_5"]
+}

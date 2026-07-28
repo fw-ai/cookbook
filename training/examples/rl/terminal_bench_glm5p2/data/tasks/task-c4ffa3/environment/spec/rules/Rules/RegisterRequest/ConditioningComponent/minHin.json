@@ -1,0 +1,11 @@
+{
+  "vsfScript": [
+    {
+      "lineType": "Rule",
+      "ruleType": "External",
+      "parameters": {
+        "ruleText": "currentProperty >= 0"
+      }
+    }
+  ]
+}

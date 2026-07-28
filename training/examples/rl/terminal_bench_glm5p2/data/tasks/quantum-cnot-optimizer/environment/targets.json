@@ -1,0 +1,18 @@
+{
+    "circuit_1": {
+        "input_multi_qubit_gates": 6,
+        "target_multi_qubit_gates": 2
+    },
+    "circuit_2": {
+        "input_multi_qubit_gates": 9,
+        "target_multi_qubit_gates": 1
+    },
+    "circuit_3": {
+        "input_multi_qubit_gates": 9,
+        "target_multi_qubit_gates": 3
+    },
+    "circuit_4": {
+        "input_multi_qubit_gates": 10,
+        "target_multi_qubit_gates": 2
+    }
+}

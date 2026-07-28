@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """The solver must implement three cryptographic algorithms from scratch conforming to NIST specifications — AES-GCM (SP 800-38D) including GHASH-based J0 derivation for non-96-bit IVs, CTR_DRBG (SP 800-90A §10.2.1) with the Block_Cipher_df derivation function and BCC chaining, and PBKDF2-HMAC (RFC 8018) — then evaluate three independently-written candidate implementations by running them, comparing outputs, and classifying each candidate's spec violations. Correct CTR_DRBG implementation requires careful tracking of internal state through instantiate/reseed/generate operations, correct 4-byte big-endian encoding of the N parameter (byte count, not bit count) in Block_Cipher_df, and post-generate state updates. Classifying violations requires correlating failure patterns with test group parameters (e.g., recognizing that failures limited to non-96-bit IV groups indicate IV handling errors) and reading candidate source to distinguish between different DRBG bugs (bit/byte confusion vs. omitted state update) that both cause full group failure."""
+solution_explanation = """Build the reference implementation using Python's cryptography library for AES-GCM (letting the library handle GHASH for non-standard IVs) and hashlib for PBKDF2, with a manual CTR_DRBG following SP 800-90A. Run each candidate script against the prompts. Alpha has two bugs: GCM IV truncation to 12 bytes (fails groups with 120-bit IVs, tcIds 4-6 and 10,12) and Block_Cipher_df N=nbits instead of N=nbits//8 (fails all DRBG). Beta maps SHA2-224 to sha256 in PBKDF (fails all PBKDF test cases). Gamma omits the post-generate CTR_DRBG_Update call (fails all DRBG test cases). Compare reference vs candidate JSON outputs element-wise to find failing tcIds, then classify violations by analyzing failure patterns and candidate source code."""
+verification_explanation = """Tests verify the reference implementation produces correct values by checking sampled AES-GCM ct/tag/pt/testPassed values across all four test groups (including 120-bit IV), CTR-DRBG returnedBits for both prediction-resistance and explicit-reseed modes, and PBKDF derivedKey values. The audit report is checked for correct conformant boolean, exact sorted failing_tests lists, and violation classification strings for all nine (candidate, algorithm) combinations."""
+category = "cryptography"
+tags = ["nist", "acvp"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:acvp-vector-processor"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

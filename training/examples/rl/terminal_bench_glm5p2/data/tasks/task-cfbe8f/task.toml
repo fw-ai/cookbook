@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires reverse-engineering two distinct MBA obfuscation patterns from raw LLVM IR (addition using (a^b)+2*(a&b) and subtraction using 2*(a&~b)-(a^b)), deriving the affine-layer constants by computing modular inverses mod 256, implementing bottom-up pattern matching in the LLVM New Pass Manager C++ API with commutative operand handling, managing iterator invalidation during IR mutation, and performing recursive dead-code elimination — all without the formula being given."""
+solution_explanation = """Analyze xvf_add.ll and xvf_sub.ll to extract the two MBA identities and their affine constants (173/91/37/217 for add, 59/67/243/103 for sub). Implement matchMBAAdd and matchMBASub as bottom-up pattern matchers that walk the def-use chain from the final add instruction, checking constant operands with either ordering. In the run() method, iterate basic blocks with a restart loop: on each match, create a replacement add/sub i8, RAUW the old root, call RecursivelyDeleteTriviallyDeadInstructions, break, and re-scan."""
+verification_explanation = """Seven tests: library exists, plugin loads, add pattern produces plain add i8 with no mul i8 residue, sub pattern produces plain sub i8, chained add+sub deobfuscates to exactly 1 add + 1 sub, mixed i8/i32 preserves i32 ops, and runtime equivalence confirms exit code 26 from oadd(10,25)->osub(35,12)->oadd(23,3)."""
+category = "compiler"
+tags = ["llvm", "reverse-engineering"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-cfbe8f"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

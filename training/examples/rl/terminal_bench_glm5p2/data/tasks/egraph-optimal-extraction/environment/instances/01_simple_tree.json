@@ -1,0 +1,19 @@
+{
+  "eclasses": {
+    "root": [
+      {"id": "root_add", "op": "add", "cost": 1, "children": ["left", "right"]}
+    ],
+    "left": [
+      {"id": "left_const3", "op": "const_3", "cost": 2, "children": []},
+      {"id": "left_loadx", "op": "load_x", "cost": 4, "children": []}
+    ],
+    "right": [
+      {"id": "right_const5", "op": "const_5", "cost": 2, "children": []},
+      {"id": "right_mul", "op": "mul", "cost": 3, "children": ["deep"]}
+    ],
+    "deep": [
+      {"id": "deep_const7", "op": "const_7", "cost": 1, "children": []}
+    ]
+  },
+  "roots": ["root"]
+}

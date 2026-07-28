@@ -1,0 +1,20 @@
+{
+  "task": "vault-acl-remediation",
+  "source_name": "hashicorp-vault-operations-professional-hashicorp-certificat",
+  "source_files": [
+    "data/vault_cert_study_guide.txt",
+    "data/vault_readme.md",
+    "source_info.txt"
+  ],
+  "cite_reason": "Vault certification study guide covered multi-tenant operations, policy design, transit engine key management, PKI configuration, and audit logging; Vault readme described core features including ACL policies, secrets engines, and auth methods; source_info confirmed the domain as Vault Operations Professional certification \u2014 all shaped the task's security assessment scenario requiring evaluation of genuine vs false-positive findings across these Vault subsystems",
+  "source_score": 4.0,
+  "source_domain": "security_and_privacy",
+  "source_subdomain": "distributed_systems",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "78b4ab60-9717-462a-b049-e2a6902d52f3",
+  "iters": 5,
+  "generated_at": "2026-06-11T15:23:20",
+  "schema": "prov-v1"
+}

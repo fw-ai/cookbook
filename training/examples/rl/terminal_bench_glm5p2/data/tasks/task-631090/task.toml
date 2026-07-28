@@ -1,0 +1,40 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """SameGame optimization is NP-hard for k>=3 colors. Requires implementing a correct game engine \
+with gravity, column collapse, and connected-component detection, plus a sophisticated search algorithm (beam search, \
+MCTS, or nested Monte Carlo) to meet the score thresholds. The coordinate transform between file format (top-to-bottom) \
+and game coordinates (bottom-left origin) adds implementation complexity. A greedy approach scores ~9500 total across \
+the five boards, well short of the 12000 threshold. Top solvers use carefully tuned evaluation functions and \
+multi-level search strategies."""
+solution_explanation = """The reference solution implements beam search with width 500. At each step, all possible moves \
+are enumerated for each state in the beam, resulting states are evaluated using cumulative score minus a penalty for \
+remaining tiles and a heavier penalty for isolated tiles (tiles with no same-color neighbor), and the top unique board \
+states are retained. The solver processes each of the five boards independently and writes move sequences to \
+/app/solutions/."""
+verification_explanation = """Tests read solution files containing move sequences, independently simulate each move on \
+the corresponding board using a separate SameGame engine implementation, verify every move is legal (targets a non-empty \
+cell with a connected group of size >= 2), compute the cumulative score, and assert both per-board minimums (1500) and \
+the total minimum (12000) are met."""
+category = "optimization"
+tags = ["combinatorial-optimization", "search-algorithms"]
+expert_time_estimate_hours = 4.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-631090"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

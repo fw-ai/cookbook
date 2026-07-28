@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires diagnosing 4 subtle bugs in an existing BPF bytecode verifier by: (1) extracting BPF bytecode from ELF relocatable objects using binary inspection tools (readelf, xxd, or manual ELF parsing), (2) running the buggy verifier against extracted bytecode, (3) independently analyzing each program's bytecode against BPF safety invariants to determine correct verdicts, (4) identifying misclassified programs and root-causing bugs in the verifier's CFG construction (missing JMP32 branch paths), abstract interpretation (incorrect caller-saved register handling after CALL), R10 immutability checking (only MOV, not ALU), and stack bounds validation (missing upper-bound check). Combines ELF binary format expertise, BPF ISA knowledge, abstract interpretation understanding, and systematic debugging skills."""
+solution_explanation = """The solution parses ELF files to extract .text section bytecode, then runs a corrected verifier that fixes 4 bugs: (1) adds offset+size<=0 check for stack bounds, (2) handles JMP32 conditionals as true branches in CFG (both fall-through and taken edges), (3) sets R0=SCALAR after CALL (not NOT_INIT), and (4) checks R10 immutability for all ALU operations, not just MOV. The corrected verifier correctly classifies all 20 programs."""
+verification_explanation = """Tests run /app/bpf_verify on each of the 20 ELF object files and check that the JSON output contains the correct ACCEPT/REJECT verdict. REJECT verdicts must include a non-empty reason string. The 20 programs cover: basic valid/invalid programs, uninitialized register reads, missing R0 at exit, stack bounds, stack initialization, unreachable code, scalar pointer abuse, conditional branches, back-edges, OOB jumps, callee/caller-saved semantics, R10 immutability, context access, R0 return value after CALL, ALU writes to R10, JMP32 branch path coverage, and stack upper-bound overflow."""
+category = "systems"
+tags = ["ebpf", "binary-analysis"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-63d6b5"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

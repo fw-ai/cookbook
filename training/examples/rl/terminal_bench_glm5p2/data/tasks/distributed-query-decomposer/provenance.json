@@ -1,0 +1,19 @@
+{
+  "task": "distributed-query-decomposer",
+  "source_name": "duckdb-developer-meeting-duckcon-talk-recordings-duckdb-libr",
+  "source_files": [
+    "data/slides_gizmoedge.txt",
+    "data/developer_meeting_1_summary.md"
+  ],
+  "cite_reason": "Task directly inspired by GizmoEdge's distributed query decomposition approach \u2014 the AVG problem (SUM/COUNT decomposition), query distribution to workers, and summary query recombination described in the talk slides and meeting summary.",
+  "source_score": 4.0,
+  "source_domain": "information_systems",
+  "source_subdomain": "data_management",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "5a79bd7a-3109-4917-a2d1-7ea1c4b27e06",
+  "iters": 4,
+  "generated_at": "2026-06-10T16:16:59",
+  "schema": "prov-v1"
+}

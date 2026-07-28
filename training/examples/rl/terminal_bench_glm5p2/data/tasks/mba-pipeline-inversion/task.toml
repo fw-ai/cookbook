@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires reverse-engineering a stripped x86-64 ELF binary to identify Mixed Boolean-Arithmetic (MBA) obfuscation patterns across 8 pipeline stages, simplifying each MBA expression to its true arithmetic/bitwise operation, extracting obfuscated constants (some hidden behind runtime XOR or arithmetic derivations), evaluating a flawed third-party analysis to identify which stages were mischaracterized, computing modular multiplicative inverses mod 2^64 for multiply stages to implement the full inverse pipeline, and — critically — synthesizing an original MBA-obfuscated C function that computes XOR without using the XOR operator, requiring the solver to create a novel algebraic identity composition from their deep understanding of MBA theory. This combination of analysis, critical evaluation, and original cryptographic construction demands expertise actively researched at top security conferences."""
+solution_explanation = """Disassemble the stripped binary to find 8 non-inlined stage functions. Each uses MBA-obfuscated expressions: two ADD variants using different MBA ADD identities, two XOR variants (one using (x+y)-2*(x&y), the other using ~XNOR), two MUL stages with constants derived from XOR of embedded values, and two ROL stages with obfuscated rotation amounts. Compare against claimed_analysis.json to find 3 errors: stage 1 has wrong operation (add instead of xor), stage 3 has wrong rotation constant (13 instead of 17), and stage 6 has the raw embedded constant instead of the deobfuscated XOR result. Implement the inverse pipeline: undo ROL->MUL(modinv)->XOR->SUB in reverse. Finally, synthesize a novel MBA function for XOR using the identity x^y = 2*(x|y) - (x+y) with De Morgan sub-expressions for the OR computation, producing a correct function without using the ^ operator."""
+verification_explanation = """Tests verify: (1) answer.txt contains the exact preimage that the binary transforms to the target, (2) analysis.json correctly models all 8 stages by comparing outputs against the binary for 10 diverse inputs, (3) audit.json correctly identifies the 3 specific errors with exact stage indices, fields, claimed values, and actual values, (4) internal consistency between all three output files, (5) novel_mba.c compiles successfully, (6) the novel_xor function produces correct XOR results for 20 fixed inputs plus 100 pseudorandom inputs, (7) the source contains no ^ operator, no inline assembly, and no alternative XOR tokens, and (8) the function has at least 6 intermediate variable declarations demonstrating genuine MBA construction."""
+category = "reverse_engineering"
+tags = ["mba-obfuscation", "binary-analysis"]
+expert_time_estimate_hours = 4.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:mba-pipeline-inversion"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

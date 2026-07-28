@@ -1,0 +1,9 @@
+[rolling_mill]
+available_slab_capacities = [0, 14, 23, 35]
+max_active_slabs = 10
+
+[scheduling]
+planning_horizon_periods = 3
+period_throughput_cap = 3
+grade_diversity_limit = 2
+delay_cost_per_period = 20

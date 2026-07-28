@@ -1,0 +1,4 @@
+# Match rLLM's uv resolver overrides at the pinned recipe revision.
+litellm[proxy]==1.83.0
+numpy>=1.26.0
+rich>=14.1.0

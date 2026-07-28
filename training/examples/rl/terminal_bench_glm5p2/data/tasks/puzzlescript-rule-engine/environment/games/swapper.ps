@@ -1,0 +1,68 @@
+title Gem Swapper
+author Benchmark
+
+========
+OBJECTS
+========
+
+Background
+black
+
+Wall
+grey
+
+Player
+blue
+
+Gem
+yellow
+
+Target
+red
+
+========
+LEGEND
+========
+
+. = Background
+# = Wall
+P = Player
+* = Gem
+O = Target
+  = Background
+
+=======
+COLLISIONLAYERS
+=======
+
+Background
+Target
+Wall, Player, Gem
+
+======
+RULES
+======
+
+[ > Player | Gem ] -> [ > Player | < Gem ]
+
+==============
+WINCONDITIONS
+==============
+
+All Target on Gem
+
+=======
+LEVELS
+=======
+
+#####
+#..O#
+#.*.#
+#.P.#
+#####
+
+#####
+#O..#
+#.*.#
+#..P#
+#####

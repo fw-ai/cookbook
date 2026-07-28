@@ -1,0 +1,5 @@
+{
+  "similarity_threshold": 0.8,
+  "time_budget_seconds": 300,
+  "output_path": "/app/results.json"
+}

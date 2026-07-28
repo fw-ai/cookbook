@@ -1,0 +1,1063 @@
+{
+  "description": "Verified hardware register map for TBENCH_MCU. All addresses and access types are confirmed against silicon validation.",
+  "total_peripherals": 9,
+  "total_registers": 146,
+  "registers": [
+    {
+      "peripheral": "GPIOA",
+      "register": "MODER",
+      "absolute_address": 1073807360,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "OTYPER",
+      "absolute_address": 1073807364,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "OSPEEDR",
+      "absolute_address": 1073807368,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "PUPDR",
+      "absolute_address": 1073807372,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "IDR",
+      "absolute_address": 1073807376,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "ODR",
+      "absolute_address": 1073807380,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "BSRR",
+      "absolute_address": 1073807384,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "LCKR",
+      "absolute_address": 1073807388,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "AFRL",
+      "absolute_address": 1073807392,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOA",
+      "register": "AFRH",
+      "absolute_address": 1073807396,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "MODER",
+      "absolute_address": 1073808384,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "OTYPER",
+      "absolute_address": 1073808388,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "OSPEEDR",
+      "absolute_address": 1073808392,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "PUPDR",
+      "absolute_address": 1073808396,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "IDR",
+      "absolute_address": 1073808400,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "ODR",
+      "absolute_address": 1073808404,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "BSRR",
+      "absolute_address": 1073808408,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "LCKR",
+      "absolute_address": 1073808412,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "AFRL",
+      "absolute_address": 1073808416,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "GPIOB",
+      "register": "AFRH",
+      "absolute_address": 1073808420,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "CR1",
+      "absolute_address": 1073872896,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "CR2",
+      "absolute_address": 1073872900,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "CR3",
+      "absolute_address": 1073872904,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "BRR",
+      "absolute_address": 1073872908,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "ISR",
+      "absolute_address": 1073872912,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "SR",
+      "absolute_address": 1073872912,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "ICR",
+      "absolute_address": 1073872916,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "RDR",
+      "absolute_address": 1073872920,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "TDR",
+      "absolute_address": 1073872924,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "FIFO.TX_DATA",
+      "absolute_address": 1073872928,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "FIFO.RX_DATA",
+      "absolute_address": 1073872932,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "FIFO.STATUS",
+      "absolute_address": 1073872936,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART0",
+      "register": "FIFO.CTRL",
+      "absolute_address": 1073872940,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "CR1",
+      "absolute_address": 1073873152,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "CR2",
+      "absolute_address": 1073873156,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "CR3",
+      "absolute_address": 1073873160,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "BRR",
+      "absolute_address": 1073873164,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "ISR",
+      "absolute_address": 1073873168,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "SR",
+      "absolute_address": 1073873168,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "ICR",
+      "absolute_address": 1073873172,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "RDR",
+      "absolute_address": 1073873176,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "TDR",
+      "absolute_address": 1073873180,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "FIFO.TX_DATA",
+      "absolute_address": 1073873184,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "FIFO.RX_DATA",
+      "absolute_address": 1073873188,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "FIFO.STATUS",
+      "absolute_address": 1073873192,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "UART1",
+      "register": "FIFO.CTRL",
+      "absolute_address": 1073873196,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CR",
+      "absolute_address": 1073938432,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "SR",
+      "absolute_address": 1073938436,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CNT",
+      "absolute_address": 1073938440,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "PSC",
+      "absolute_address": 1073938444,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "ARR",
+      "absolute_address": 1073938448,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CCR0",
+      "absolute_address": 1073938452,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CCR1",
+      "absolute_address": 1073938456,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CCR2",
+      "absolute_address": 1073938460,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CCR3",
+      "absolute_address": 1073938464,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH0.CCMR",
+      "absolute_address": 1073938480,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH0.CCER",
+      "absolute_address": 1073938484,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH0.FILTER",
+      "absolute_address": 1073938488,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH1.CCMR",
+      "absolute_address": 1073938496,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH1.CCER",
+      "absolute_address": 1073938500,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH1.FILTER",
+      "absolute_address": 1073938504,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH2.CCMR",
+      "absolute_address": 1073938512,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH2.CCER",
+      "absolute_address": 1073938516,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH2.FILTER",
+      "absolute_address": 1073938520,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH3.CCMR",
+      "absolute_address": 1073938528,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH3.CCER",
+      "absolute_address": 1073938532,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "CH3.FILTER",
+      "absolute_address": 1073938536,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "DIER",
+      "absolute_address": 1073938544,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "DCR",
+      "absolute_address": 1073938548,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "TIMER0",
+      "register": "DMAR",
+      "absolute_address": 1073938552,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SPI0",
+      "register": "CR1",
+      "absolute_address": 1074003968,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SPI0",
+      "register": "CR2",
+      "absolute_address": 1074003972,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SPI0",
+      "register": "SR",
+      "absolute_address": 1074003976,
+      "size_bits": 16,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "SPI0",
+      "register": "DR16",
+      "absolute_address": 1074003980,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SPI0",
+      "register": "DR8",
+      "absolute_address": 1074003980,
+      "size_bits": 8,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SPI0",
+      "register": "CRCPR",
+      "absolute_address": 1074003984,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SPI0",
+      "register": "RXCRCR",
+      "absolute_address": 1074003988,
+      "size_bits": 16,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "SPI0",
+      "register": "TXCRCR",
+      "absolute_address": 1074003992,
+      "size_bits": 16,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "ISR",
+      "absolute_address": 1074069504,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "IFCR",
+      "absolute_address": 1074069508,
+      "size_bits": 32,
+      "access": "write-only"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH0.CR",
+      "absolute_address": 1074069512,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH0.NDTR",
+      "absolute_address": 1074069516,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH0.PAR",
+      "absolute_address": 1074069520,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH0.M0AR",
+      "absolute_address": 1074069524,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH0.M1AR",
+      "absolute_address": 1074069528,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH1.CR",
+      "absolute_address": 1074069532,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH1.NDTR",
+      "absolute_address": 1074069536,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH1.PAR",
+      "absolute_address": 1074069540,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH1.M0AR",
+      "absolute_address": 1074069544,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH1.M1AR",
+      "absolute_address": 1074069548,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH2.CR",
+      "absolute_address": 1074069552,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH2.NDTR",
+      "absolute_address": 1074069556,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH2.PAR",
+      "absolute_address": 1074069560,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH2.M0AR",
+      "absolute_address": 1074069564,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH2.M1AR",
+      "absolute_address": 1074069568,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH3.CR",
+      "absolute_address": 1074069572,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH3.NDTR",
+      "absolute_address": 1074069576,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH3.PAR",
+      "absolute_address": 1074069580,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH3.M0AR",
+      "absolute_address": 1074069584,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH3.M1AR",
+      "absolute_address": 1074069588,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH4.CR",
+      "absolute_address": 1074069592,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH4.NDTR",
+      "absolute_address": 1074069596,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH4.PAR",
+      "absolute_address": 1074069600,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH4.M0AR",
+      "absolute_address": 1074069604,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH4.M1AR",
+      "absolute_address": 1074069608,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH5.CR",
+      "absolute_address": 1074069612,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH5.NDTR",
+      "absolute_address": 1074069616,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH5.PAR",
+      "absolute_address": 1074069620,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH5.M0AR",
+      "absolute_address": 1074069624,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH5.M1AR",
+      "absolute_address": 1074069628,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH6.CR",
+      "absolute_address": 1074069632,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH6.NDTR",
+      "absolute_address": 1074069636,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH6.PAR",
+      "absolute_address": 1074069640,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH6.M0AR",
+      "absolute_address": 1074069644,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH6.M1AR",
+      "absolute_address": 1074069648,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH7.CR",
+      "absolute_address": 1074069652,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH7.NDTR",
+      "absolute_address": 1074069656,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH7.PAR",
+      "absolute_address": 1074069660,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH7.M0AR",
+      "absolute_address": 1074069664,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "DMA0",
+      "register": "CH7.M1AR",
+      "absolute_address": 1074069668,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SYSCFG",
+      "register": "MEMRMP",
+      "absolute_address": 1074135040,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SYSCFG",
+      "register": "CFGR1",
+      "absolute_address": 1074135044,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SYSCFG",
+      "register": "EXTICR1",
+      "absolute_address": 1074135048,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SYSCFG",
+      "register": "EXTICR2",
+      "absolute_address": 1074135052,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SYSCFG",
+      "register": "EXTICR3",
+      "absolute_address": 1074135056,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SYSCFG",
+      "register": "COMP_SR",
+      "absolute_address": 1074135060,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "SYSCFG",
+      "register": "EXTICR4",
+      "absolute_address": 1074135060,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "SYSCFG",
+      "register": "CFGR2",
+      "absolute_address": 1074135064,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CR",
+      "absolute_address": 1074200576,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CFGR",
+      "absolute_address": 1074200580,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "SR",
+      "absolute_address": 1074200584,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "DR_LEFT",
+      "absolute_address": 1074200588,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "DR_RIGHT",
+      "absolute_address": 1074200588,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CH0.SQR",
+      "absolute_address": 1074200592,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CH0.OFR",
+      "absolute_address": 1074200596,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CH1.SQR",
+      "absolute_address": 1074200600,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CH1.OFR",
+      "absolute_address": 1074200604,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CH2.SQR",
+      "absolute_address": 1074200608,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CH2.OFR",
+      "absolute_address": 1074200612,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CH3.SQR",
+      "absolute_address": 1074200616,
+      "size_bits": 32,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CH3.OFR",
+      "absolute_address": 1074200620,
+      "size_bits": 16,
+      "access": "read-write"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "JDR0",
+      "absolute_address": 1074200624,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "JDR1",
+      "absolute_address": 1074200628,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "JDR2",
+      "absolute_address": 1074200632,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "JDR3",
+      "absolute_address": 1074200636,
+      "size_bits": 32,
+      "access": "read-only"
+    },
+    {
+      "peripheral": "ADC0",
+      "register": "CALFACT",
+      "absolute_address": 1074200640,
+      "size_bits": 32,
+      "access": "read-write"
+    }
+  ],
+  "alternate_pairs": [
+    {
+      "peripheral": "UART0",
+      "register_a": "ISR",
+      "register_b": "SR",
+      "absolute_address": 1073872912
+    },
+    {
+      "peripheral": "UART1",
+      "register_a": "ISR",
+      "register_b": "SR",
+      "absolute_address": 1073873168
+    },
+    {
+      "peripheral": "SPI0",
+      "register_a": "DR16",
+      "register_b": "DR8",
+      "absolute_address": 1074003980
+    },
+    {
+      "peripheral": "ADC0",
+      "register_a": "DR_LEFT",
+      "register_b": "DR_RIGHT",
+      "absolute_address": 1074200588
+    }
+  ],
+  "non_alternate_conflicts": [
+    {
+      "peripheral": "SYSCFG",
+      "register_a": "COMP_SR",
+      "register_b": "EXTICR4",
+      "absolute_address": 1074135060
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "task": "task-c4ffa3",
+  "source_name": "nist-entropy-source-validation-esv-server-protocol-usnistgov",
+  "source_files": [
+    "data/protocol.md",
+    "data/validation_rules_readme.md",
+    "data/vtree_RegisterRequest_registerEntropySource.json",
+    "data/vtree_CertifyRequest_new.json",
+    "data/domainrule_bitsPerSample.json",
+    "data/domainrule_hMinEstimate.json",
+    "data/domainrule_primaryNoiseSource.json",
+    "data/domainrule_entropyId.json",
+    "data/domainrule_moduleId.json",
+    "data/rule_notNull.json",
+    "data/rule_notNullAndNotWhitespace.json",
+    "data/rule_listMinCount.json",
+    "data/rule_listIsUnique.json"
+  ],
+  "cite_reason": "Task design based on the NIST ESV protocol's Validation Script Framework: validation tree structure, rule script line types, domain-specific validation expressions, and conditioning component vetted/non-vetted mutual exclusion rules from the actual ESVTS repository",
+  "source_score": 4.0,
+  "source_domain": "security_and_privacy",
+  "source_subdomain": "cryptographic_standards_and_conformance",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "f9061067-a031-4636-a8eb-74ad7641bf9a",
+  "iters": 5,
+  "generated_at": "2026-06-12T20:21:57",
+  "schema": "prov-v1"
+}

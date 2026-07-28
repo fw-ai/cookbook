@@ -1,0 +1,87 @@
+{
+  "atom_types": {
+    "CT": {
+      "type_id": 1,
+      "mass": 12.011,
+      "element": "C",
+      "charge": 0.145,
+      "epsilon": 0.066,
+      "sigma": 3.500,
+      "description": "sp3 carbon in methanol"
+    },
+    "OH": {
+      "type_id": 2,
+      "mass": 15.999,
+      "element": "O",
+      "charge": -0.683,
+      "epsilon": 0.170,
+      "sigma": 3.120,
+      "description": "hydroxyl oxygen"
+    },
+    "HC": {
+      "type_id": 3,
+      "mass": 1.008,
+      "element": "H",
+      "charge": 0.040,
+      "epsilon": 0.030,
+      "sigma": 2.500,
+      "description": "hydrogen on sp3 carbon"
+    },
+    "HO": {
+      "type_id": 4,
+      "mass": 1.008,
+      "element": "H",
+      "charge": 0.418,
+      "epsilon": 0.000,
+      "sigma": 0.000,
+      "description": "hydrogen on hydroxyl oxygen"
+    },
+    "OW": {
+      "type_id": 5,
+      "mass": 15.999,
+      "element": "O",
+      "charge": -0.834,
+      "epsilon": 0.1553,
+      "sigma": 3.166,
+      "description": "water oxygen (TIP3P)"
+    },
+    "HW": {
+      "type_id": 6,
+      "mass": 1.008,
+      "element": "H",
+      "charge": 0.417,
+      "epsilon": 0.000,
+      "sigma": 0.000,
+      "description": "water hydrogen (TIP3P)"
+    }
+  },
+  "bond_types": {
+    "CT-OH": {"type_id": 1, "K": 320.0, "r0": 1.410},
+    "CT-HC": {"type_id": 2, "K": 340.0, "r0": 1.090},
+    "OH-HO": {"type_id": 3, "K": 553.0, "r0": 0.945},
+    "OW-HW": {"type_id": 4, "K": 600.0, "r0": 0.9572}
+  },
+  "angle_types": {
+    "HC-CT-HC": {"type_id": 1, "K": 33.0, "theta0": 107.8},
+    "HC-CT-OH": {"type_id": 2, "K": 35.0, "theta0": 109.5},
+    "CT-OH-HO": {"type_id": 3, "K": 55.0, "theta0": 108.5},
+    "HW-OW-HW": {"type_id": 4, "K": 75.0, "theta0": 104.52}
+  },
+  "dihedral_types": {
+    "HC-CT-OH-HO": {"type_id": 1, "K1": -0.356, "K2": -0.174, "K3": 0.492, "K4": 0.0}
+  },
+  "molecules": {
+    "methanol": {
+      "formula": "CH3OH",
+      "natoms": 6,
+      "type_composition": {"CT": 1, "OH": 1, "HC": 3, "HO": 1},
+      "total_charge": 0.0
+    },
+    "water": {
+      "formula": "H2O",
+      "natoms": 3,
+      "type_composition": {"OW": 1, "HW": 2},
+      "total_charge": 0.0
+    }
+  }
+}

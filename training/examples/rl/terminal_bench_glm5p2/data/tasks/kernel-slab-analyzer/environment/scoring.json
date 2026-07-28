@@ -1,0 +1,22 @@
+{
+  "primitive_values": {
+    "control_flow_hijack": 10,
+    "arbitrary_write": 9,
+    "arbitrary_read": 7,
+    "bounds_bypass": 6,
+    "security_bypass": 5,
+    "type_confusion": 3,
+    "info_leak": 2,
+    "none": 0
+  },
+  "scoring_formula": {
+    "description": "feasibility_score = primitive_power * field_count_factor * size_compatibility_factor",
+    "primitive_power": "Maximum value from primitive_values among all overlapping fields whose exploit_primitive is not 'none'.",
+    "field_count_factor": "1.0 + 0.1 * (N - 1), where N is the count of overlapping fields with exploit_primitive != 'none'.",
+    "size_compatibility_factor": "1.0 - (waste_bytes / (pointer_size * 10)), where waste_bytes = abs(vuln_object_size - victim_object_size) and pointer_size comes from slab_config.json."
+  },
+  "output_requirements": {
+    "scores_rounded_to": 4,
+    "note": "Round all feasibility_score values to 4 decimal places."
+  }
+}

@@ -1,0 +1,18 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: deny-monitoring-postgres
+  namespace: data
+spec:
+  endpointSelector:
+    matchLabels:
+      app: postgres
+  ingressDeny:
+    - fromEndpoints:
+        - matchLabels:
+            role: monitoring
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP

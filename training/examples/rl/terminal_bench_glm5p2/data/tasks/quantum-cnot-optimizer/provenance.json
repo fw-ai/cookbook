@@ -1,0 +1,20 @@
+{
+  "task": "quantum-cnot-optimizer",
+  "source_name": "unitary-compiler-collection-ucc-fosdem-2025-talk-by-nate-ste",
+  "source_files": [
+    "data/ucc_readme.md",
+    "data/ucc_bench_readme.md",
+    "source_info.txt"
+  ],
+  "cite_reason": "Task design inspired by UCC's custom transpiler pass contribution model and ucc-bench's multi-qubit gate count metric for benchmarking quantum compiler optimization quality.",
+  "source_score": 4.15,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "quantum_computing",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "de5ea81c-dbfa-426b-ab79-e816712f414d",
+  "iters": 1,
+  "generated_at": "2026-06-11T14:21:17",
+  "schema": "prov-v1"
+}

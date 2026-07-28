@@ -1,0 +1,3 @@
+# Vendor configuration
+model_type=null
+feature_size=4

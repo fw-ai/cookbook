@@ -1,0 +1,82 @@
+{
+  "description": "Cross-architecture GCC codegen comparison report format specification",
+  "output_file": "/app/results.json",
+  "required_structure": {
+    "metadata": {
+      "compiler": "GCC version string",
+      "optimization_level": "optimization flags used",
+      "architectures": ["riscv64", "aarch64"],
+      "riscv_march_base": "rv64gc",
+      "riscv_march_vector": "rv64gcv",
+      "aarch64_march": "armv8-a"
+    },
+    "functions": {
+      "<function_name>": {
+        "riscv64": {
+          "instruction_count": "total instructions in function body (int > 0)",
+          "instruction_classes": {
+            "alu": "arithmetic/logic/shift/comparison (int >= 0)",
+            "memory": "load/store including float loads/stores (int >= 0)",
+            "branch": "conditional/unconditional branches, jumps, calls, returns (int >= 0)",
+            "multiply": "mul/div/rem operations (int >= 0)",
+            "float": "floating-point arithmetic (not loads/stores) (int >= 0)",
+            "vector": "vector extension instructions - 0 for rv64gc base (int >= 0)",
+            "other": "fence, csr, ecall, nop, unrecognized (int >= 0)"
+          },
+          "registers_used": ["sorted list of register names used in function body"],
+          "stack_frame_size": "bytes allocated on stack via sp adjustment (int >= 0)",
+          "code_size_bytes": "instruction_count * 4 (int > 0)"
+        },
+        "aarch64": {
+          "instruction_count": "total instructions (int > 0)",
+          "instruction_classes": {
+            "alu": "int >= 0",
+            "memory": "int >= 0",
+            "branch": "int >= 0",
+            "multiply": "int >= 0",
+            "float": "int >= 0",
+            "vector": "int >= 0",
+            "other": "int >= 0"
+          },
+          "registers_used": ["sorted list"],
+          "stack_frame_size": "int >= 0",
+          "code_size_bytes": "instruction_count * 4 (all A64 insns are 4 bytes)"
+        },
+        "comparison": {
+          "instruction_count_ratio": "float: riscv64_count / aarch64_count",
+          "code_size_ratio": "float: riscv64_code_size / aarch64_code_size",
+          "riscv_advantage": "bool: true if riscv64 uses strictly fewer instructions"
+        }
+      }
+    },
+    "vector_analysis": {
+      "<function_name>": {
+        "rv64gc_instruction_count": "instruction count compiled with -O3 -march=rv64gc",
+        "rv64gcv_instruction_count": "instruction count compiled with -O3 -march=rv64gcv",
+        "rv64gcv_vector_instructions": "count of vector instructions in rv64gcv build",
+        "vectorized": "bool: true if rv64gcv build has any vector instructions"
+      }
+    },
+    "summary": {
+      "total_functions_analyzed": "int: number of functions in 'functions'",
+      "functions_where_riscv_better": "int: count where riscv64 instruction_count < aarch64",
+      "functions_where_aarch64_better": "int: count where aarch64 < riscv64",
+      "avg_instruction_count_ratio": "float: mean of all per-function ratios",
+      "vectorizable_functions": ["list of function names where vectorized == true"]
+    }
+  },
+  "expected_functions": [
+    "matmul_4x4", "matmul_nxn",
+    "partition", "quicksort",
+    "horner", "poly_eval_batch",
+    "my_memcpy", "my_memset", "my_memcmp"
+  ],
+  "notes": [
+    "All instruction_classes values must sum exactly to instruction_count",
+    "RISC-V instruction classification: ALU includes pseudo-insns (li, mv, neg, etc.); memory includes float loads/stores (flw, fld, fsw, fsd); branch includes pseudo-branches (beqz, ret, call, tail, j); multiply includes div/rem; float is FP arithmetic only; vector is any mnemonic starting with 'v'",
+    "AArch64 instruction classification: conditional branches (b.eq etc.) are 'branch'; ldr/str variants are 'memory'; sdiv/udiv/mul/madd are 'multiply'; scalar FP ops (fadd, fmul, etc.) are 'float'",
+    "Register names should match GCC assembly output (RISC-V: a0-a7, s0-s11, t0-t6, ra, sp, etc.; AArch64: x0-x30, w0-w30, sp, d0-d31, s0-s31, etc.)",
+    "code_size_bytes = instruction_count * 4 for this analysis",
+    "The cross-architecture comparison uses -O2; the vector analysis uses -O3 to enable auto-vectorization"
+  ]
+}

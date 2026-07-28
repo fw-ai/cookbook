@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expertise in three intersecting domains: (1) numerical analysis — understanding floating-point precision limits, catastrophic cancellation, and stable reformulations of mathematical functions; (2) automatic differentiation theory — implementing custom JVP rules via JAX's custom_jvp API, understanding how higher-order derivatives are computed by differentiating through the JVP rule, and handling the "safe-where" pattern to prevent NaN propagation through jnp.where branches during reverse-mode differentiation; (3) JAX transformation composability — ensuring all implementations work correctly under jit, vmap, and nested grad. The log1mexp function in particular requires the non-obvious safe-where pattern where each branch of a conditional receives clamped inputs to prevent NaN*0=NaN in unselected branches during higher-order differentiation."""
+solution_explanation = """Implement 6 numerically stable functions using custom_jvp: sigmoid for log1pexp derivative, max-shift for logaddexp, two-branch expm1/log1p with safe-where for log1mexp, expm1 with branch for softplus_inverse, abs+log1p for log_cosh value with tanh for derivative, and piecewise log1p for logexpit with sigmoid(-x) derivative. The framework uses central finite differences for JVP approximation, recursive gradient-of-gradient checking, and try/except-guarded evaluation scanning. The critical insight is that jnp.where evaluates both branches, and in reverse-mode AD the gradient of the unselected branch is multiplied by 0 — but if that gradient is NaN, 0*NaN=NaN propagates. The fix is to feed each branch a clamped input that keeps it finite regardless of selection."""
+verification_explanation = """121 pytest tests verify: (1) framework functions produce correct finite-difference JVPs, pass recursive gradient checks on known functions, and detect instabilities in the unstable implementations; (2) stable function values match unstable values at moderate inputs within 1e-5; (3) first-order gradients are finite at extreme inputs |x| up to 500; (4) gradients match known analytical formulas (sigmoid, tanh, etc.); (5) second-order derivatives are finite at moderate and extreme inputs including x=100 for log1mexp which specifically tests the safe-where pattern; (6) jit and vmap produce identical results; (7) detect_instabilities finds no issues in the stable implementations over [-500,500]."""
+category = "numerical_computing"
+tags = ["automatic-differentiation", "numerical-stability"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:stable-custom-derivatives"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

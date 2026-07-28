@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires PhD-level knowledge spanning quantum mechanics (spin-chain Hamiltonians, time-evolution operators), linear algebra (matrix exponentiation of Hermitian operators), quantum information theory (compilation fidelity metrics), and quantum compilation (unitary-to-circuit synthesis, gate set retargeting). The agent must independently determine how to compute evolution operators from Hamiltonian matrices, discover and use a quantum compiler framework from what is available in the environment, synthesize circuits targeting a non-default native gate set, verify compilation fidelity, and produce correct output across 2-qubit and 3-qubit Hamiltonians."""
+solution_explanation = """The solution computes U=exp(-iHt) for each Hamiltonian using scipy.linalg.expm, wraps each as a BQSKit UnitaryMatrix, builds a MachineModel with the CZ+RZ+SX gate set, and calls bqskit.compile() with optimization_level=2 to synthesize topology-free circuits. It saves QASM files and computes Hilbert-Schmidt distance via BQSKit's get_distance_from method for the report."""
+verification_explanation = """Tests independently recompute the evolution operator from raw Hamiltonian matrices using scipy, load compiled QASM circuits via BQSKit, extract their unitaries, and verify Hilbert-Schmidt distance is below threshold. Additional tests check two-qubit gate count budgets, report JSON structure, QASM file existence, and absence of default-gate-set gates (CNOT) confirming proper retargeting."""
+category = "quantum_computing"
+tags = ["quantum_compilation", "hamiltonian_simulation"]
+expert_time_estimate_hours = 2.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:hamiltonian-circuit-synth"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

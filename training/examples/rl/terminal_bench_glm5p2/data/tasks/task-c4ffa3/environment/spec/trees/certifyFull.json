@@ -1,0 +1,190 @@
+[
+  {
+    "modelName": "CertifyRequestPayloadFullSubmission",
+    "rootNode": {
+      "nodeData": {
+        "vsfScriptFiles": [
+          {
+            "scriptFile": "CommonRules/notNull.json"
+          }
+        ]
+      },
+      "nodes": [
+        {
+          "nodeType": "leaf",
+          "property": {
+            "internalIdentifier": "entropyId"
+          },
+          "nodeData": {
+            "vsfScriptFiles": [
+              {
+                "scriptFile": "Rules/CertifyRequest/entropyId.json"
+              }
+            ]
+          }
+        },
+        {
+          "nodeType": "leaf",
+          "property": {
+            "internalIdentifier": "limitEntropyAssessmentToSingleModule"
+          },
+          "nodeData": {
+            "vsfScriptFiles": [
+              {
+                "scriptFile": "CommonRules/notNull.json"
+              }
+            ]
+          }
+        },
+        {
+          "nodeType": "leaf",
+          "property": {
+            "internalIdentifier": "moduleId"
+          },
+          "nodeData": {
+            "vsfScriptFiles": [
+              {
+                "scriptFile": "Rules/CertifyRequest/moduleId.json"
+              }
+            ]
+          }
+        },
+        {
+          "nodeType": "list",
+          "property": {
+            "internalIdentifier": "supportingDocumentation"
+          },
+          "nodeData": {
+            "vsfScriptFiles": [
+              {
+                "scriptFile": "CommonRules/listMinCount.json"
+              }
+            ]
+          },
+          "listItem": {
+            "branchNodeData": {
+              "runBeforeListItem": {
+                "vsfScriptFiles": [
+                  {
+                    "scriptFile": "CommonRules/notNull.json"
+                  }
+                ]
+              }
+            },
+            "nodes": [
+              {
+                "nodeType": "leaf",
+                "property": {
+                  "internalIdentifier": "sdId"
+                },
+                "nodeData": {
+                  "vsfScriptFiles": [
+                    {
+                      "scriptFile": "CommonRules/notNull.json"
+                    },
+                    {
+                      "scriptFile": "CommonRules/validObjectId.json"
+                    }
+                  ]
+                }
+              },
+              {
+                "nodeType": "leaf",
+                "property": {
+                  "internalIdentifier": "accessToken"
+                },
+                "nodeData": {
+                  "vsfScriptFiles": [
+                    {
+                      "scriptFile": "CommonRules/notNull.json"
+                    },
+                    {
+                      "scriptFile": "CommonRules/notNullAndNotWhitespace.json"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "nodeType": "list",
+          "property": {
+            "internalIdentifier": "entropyAssessments"
+          },
+          "nodeData": {
+            "vsfScriptFiles": [
+              {
+                "scriptFile": "CommonRules/listMinCount.json"
+              },
+              {
+                "scriptFile": "Rules/CertifyRequest/EntropyAssessmentReference/eaIdIsDistinct.json"
+              }
+            ]
+          },
+          "listItem": {
+            "branchNodeData": {
+              "runBeforeListItem": {
+                "vsfScriptFiles": [
+                  {
+                    "scriptFile": "CommonRules/notNull.json"
+                  }
+                ]
+              }
+            },
+            "nodes": [
+              {
+                "nodeType": "leaf",
+                "property": {
+                  "internalIdentifier": "eaId"
+                },
+                "nodeData": {
+                  "vsfScriptFiles": [
+                    {
+                      "scriptFile": "CommonRules/notNull.json"
+                    },
+                    {
+                      "scriptFile": "CommonRules/validObjectId.json"
+                    }
+                  ]
+                }
+              },
+              {
+                "nodeType": "leaf",
+                "property": {
+                  "internalIdentifier": "oeId"
+                },
+                "nodeData": {
+                  "vsfScriptFiles": [
+                    {
+                      "scriptFile": "CommonRules/notNull.json"
+                    },
+                    {
+                      "scriptFile": "CommonRules/validObjectId.json"
+                    }
+                  ]
+                }
+              },
+              {
+                "nodeType": "leaf",
+                "property": {
+                  "internalIdentifier": "accessToken"
+                },
+                "nodeData": {
+                  "vsfScriptFiles": [
+                    {
+                      "scriptFile": "CommonRules/notNull.json"
+                    },
+                    {
+                      "scriptFile": "CommonRules/notNullAndNotWhitespace.json"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+]

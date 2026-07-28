@@ -1,0 +1,12 @@
+{
+  "description": "Binary LJ mixture: 20 type-1 (A) + 20 type-2 (B) atoms in 8.0 Angstrom cubic box with periodic boundaries. 3 trajectory frames from LAMMPS custom dump.",
+  "species": {
+    "1": {"name": "A", "mass": 39.948},
+    "2": {"name": "B", "mass": 83.798}
+  },
+  "rdf_parameters": {
+    "r_max": 4.0,
+    "n_bins": 20,
+    "dr": 0.2
+  }
+}

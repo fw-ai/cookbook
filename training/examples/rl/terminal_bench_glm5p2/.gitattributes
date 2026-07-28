@@ -1,0 +1,5 @@
+# PuzzleScript section delimiters look like conflict markers to git diff.
+data/tasks/puzzlescript-rule-engine/environment/games/*.ps -diff
+
+# Preserve the approved fixture byte-for-byte, including its final blank line.
+data/tasks/lammps-ff-validator/environment/system.data -diff

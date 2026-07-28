@@ -1,0 +1,26 @@
+{
+  "merge_enabled": true,
+  "merge_rules": {
+    "check_order": ["constructor", "size", "flags", "alignment"],
+    "constructor_blocks_merge": true,
+    "size_check": {
+      "description": "Compute waste = abs(vuln_object_size - candidate_size). Reject if waste >= pointer_size (strictly less than required)."
+    },
+    "flag_check": {
+      "description": "For each flag in blocking_flags: if the flag is present in one cache's slab_flags but absent from the other, reject.",
+      "blocking_flags": ["SLAB_TYPESAFE_BY_RCU", "SLAB_CACHE_DMA"]
+    },
+    "alignment_check": {
+      "description": "Reject if neither alignment value evenly divides the other."
+    },
+    "rejection_reasons": {
+      "constructor": "has_constructor",
+      "size": "size_incompatible",
+      "flags": "blocking_flag:<flag_name>",
+      "alignment": "alignment_incompatible"
+    }
+  },
+  "pointer_size": 8,
+  "page_size": 4096,
+  "cache_line_size": 64
+}

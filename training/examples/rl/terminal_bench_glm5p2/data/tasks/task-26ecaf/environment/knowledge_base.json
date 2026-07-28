@@ -1,0 +1,36 @@
+{
+  "business_rules": [
+    {
+      "rule_id": "BR001",
+      "title": "Express shipping surcharge",
+      "description": "Orders fulfilled via express shipping include a $25.00 surcharge added to the order total. This surcharge is not represented as a separate line item in order_items; it appears only as a difference between the order total_amount and the sum of line item costs. This is expected behavior, not a data error.",
+      "affected_records": ["O018"],
+      "effective_date": "2023-01-01"
+    },
+    {
+      "rule_id": "BR002",
+      "title": "Foreign currency rounding adjustment",
+      "description": "Payments processed through the foreign currency gateway may include a rounding adjustment of up to $1.00. This adjustment accounts for exchange rate micro-fluctuations at settlement time. The adjustment appears as a difference between the transaction amount and the corresponding invoice amount. These are legitimate financial adjustments, not errors.",
+      "affected_records": ["T020"],
+      "effective_date": "2023-01-01"
+    },
+    {
+      "rule_id": "BR003",
+      "title": "Date format standardization policy",
+      "description": "All date fields across systems must use ISO 8601 format (YYYY-MM-DD). Records with dates in other formats (e.g., MM/DD/YYYY, DD-Mon-YYYY) should be flagged as data quality issues requiring normalization. The data itself is correct; only the formatting is non-compliant.",
+      "effective_date": "2022-01-01"
+    },
+    {
+      "rule_id": "BR004",
+      "title": "Duplicate customer identification criteria",
+      "description": "Customer records should be checked for potential duplicates using the following criteria: names with similarity of 80% or higher (using standard sequence matching) within the same geographic region. Such pairs should be flagged for manual review and deduplication. Different email addresses do not rule out duplication, as customers may register with multiple emails.",
+      "effective_date": "2023-02-01"
+    }
+  ],
+  "reconciliation_procedures": {
+    "order_item_validation": "For each order, the total_amount should equal the sum of (quantity * unit_price) for all associated order_items. Discrepancies should be reported unless a business rule explicitly accounts for the difference (e.g., express shipping surcharges per BR001).",
+    "invoice_referential_integrity": "Every invoice must reference a valid order_id that exists in the sales system. Invoices referencing non-existent orders are classified as orphaned and must be flagged.",
+    "payment_reconciliation": "Each payment transaction should match its corresponding invoice amount. Differences should be reported as mismatches unless a business rule (e.g., FX rounding per BR002) explains the discrepancy.",
+    "cross_system_revenue": "Total revenue should be computed independently from both the sales system (sum of order totals) and the finance system (sum of invoice amounts). The difference constitutes the revenue discrepancy."
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "task": "task-381c29",
+  "source_name": "risc-v-summit-europe-2025-per-talk-video-slides-poster-archi",
+  "source_files": [
+    "data/presentations_text.txt",
+    "data/conference_summary.md"
+  ],
+  "cite_reason": "Task inspired by the 'Compared Analysis of GCC Codegen for AArch64 and RISC-V' talk (Arras, BayLibre) and 'Improvements to RISC-V Vector code generation in LLVM' talk (Lau/Bradbury, Igalia) from RISC-V Summit Europe 2025, which motivated a cross-architecture codegen differential analysis task with vector extension assessment.",
+  "source_score": 4.0,
+  "source_domain": "computer_systems_organization",
+  "source_subdomain": "computer_architecture",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "38164bb3-394f-4351-ad2f-209591c82619",
+  "iters": 4,
+  "generated_at": "2026-06-13T01:11:21",
+  "schema": "prov-v1"
+}

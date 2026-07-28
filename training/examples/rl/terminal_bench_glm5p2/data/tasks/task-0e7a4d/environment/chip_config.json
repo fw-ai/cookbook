@@ -1,0 +1,26 @@
+{
+  "grid": {"cols": 10, "rows": 12},
+  "noc": {
+    "0": {"x_direction": 1, "y_direction": 1, "description": "+X then +Y (right then down)"},
+    "1": {"x_direction": -1, "y_direction": -1, "description": "-X then -Y (left then up)"}
+  },
+  "wrap": true,
+  "noc_link_bandwidth_gbps": 32,
+  "dram_banks": [
+    {"id": 0,  "x": 0, "y": 0,  "bandwidth_gbps": 24},
+    {"id": 1,  "x": 0, "y": 2,  "bandwidth_gbps": 24},
+    {"id": 2,  "x": 0, "y": 4,  "bandwidth_gbps": 24},
+    {"id": 3,  "x": 0, "y": 7,  "bandwidth_gbps": 24},
+    {"id": 4,  "x": 0, "y": 9,  "bandwidth_gbps": 24},
+    {"id": 5,  "x": 0, "y": 11, "bandwidth_gbps": 24},
+    {"id": 6,  "x": 5, "y": 0,  "bandwidth_gbps": 24},
+    {"id": 7,  "x": 5, "y": 2,  "bandwidth_gbps": 24},
+    {"id": 8,  "x": 5, "y": 4,  "bandwidth_gbps": 24},
+    {"id": 9,  "x": 5, "y": 7,  "bandwidth_gbps": 24},
+    {"id": 10, "x": 5, "y": 9,  "bandwidth_gbps": 24},
+    {"id": 11, "x": 5, "y": 11, "bandwidth_gbps": 24}
+  ],
+  "worker_columns": [1, 2, 3, 4, 6, 7, 8, 9],
+  "worker_rows": [1, 2, 3, 4, 5, 7, 8, 9, 10, 11],
+  "vcs_per_noc": 2
+}

@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires exploring a multi-format experiment workspace (SQLite database with split tables + JSONL files + audit records), discovering the data schema and join strategy, applying data quality corrections from audit records that reclassify cheating cases as failures, then implementing from scratch — using only Python's standard library — the appropriate exact statistical tests for sparse categorical association (Fisher's exact test via log-space hypergeometric computation and two-sided p-value summation), the Mantel-Haenszel pooled odds ratio estimator for stratified 2x2 tables to control for confounding, and the Cochran-Mantel-Haenszel chi-squared test for conditional independence. The solver must discover the audit exclusion file, recognize which statistical methods are appropriate from outcome descriptions alone, handle edge cases (zero cells, degenerate distributions, numerical overflow), and correctly implement the chi-squared survival function."""
+solution_explanation = """The solution first explores the experiment_data directory to discover all data sources. It queries the SQLite database schema, discovers two metadata tables (vulnerability_core and vulnerability_attributes), and joins them on vuln_id. It loads JSONL run results and discovers the audit/cheating_cases.json file, applying exclusions by setting model_a reproduction results to 0 for cheating vuln_ids. It then implements Fisher's exact test using log-space hypergeometric PMF (math.lgamma) with two-sided p-value. The Mantel-Haenszel odds ratio is computed as sum(a_k*d_k/n_k)/sum(b_k*c_k/n_k). The CMH test statistic uses [sum(a_k-E[a_k])]^2/sum(Var(a_k)) with p-value from math.erfc(sqrt(chi2/2))."""
+verification_explanation = """Tests install scipy and statsmodels as reference implementations. Each test reconstructs the dataset from the same multi-format sources (SQLite join + JSONL + audit corrections) and independently computes expected values using scipy.stats.fisher_exact and statsmodels.stats.contingency_tables.StratifiedTable. Numerical comparisons use appropriate tolerances: exact match for counts, 1e-6 for rates, 0.02 for p-values, and 0.05 for odds ratios and chi-squared statistics. Tests verify both the correct application of audit exclusions (via model_a success counts) and statistical computations."""
+category = "data_analysis"
+tags = ["statistics", "security-analysis"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-17f1c3"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

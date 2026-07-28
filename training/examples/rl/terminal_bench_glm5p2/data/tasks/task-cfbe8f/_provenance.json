@@ -1,0 +1,1 @@
+{"source_files": ["/source_data/data/source_files_all.txt", "/source_data/data/readme.md"], "cite_reason": "MBAAdd/MBASub pass implementations and LLVM out-of-tree pass architecture from llvm-tutor inspired the Affine-MBA deobfuscation task with custom dual-pattern design"}

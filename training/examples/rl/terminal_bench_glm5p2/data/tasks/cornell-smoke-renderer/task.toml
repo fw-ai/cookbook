@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires designing and implementing a complete importance sampling framework for a Monte Carlo path tracer from scratch. The solver must create an orthonormal basis class, a PDF class hierarchy (cosine-weighted, geometry-directed, and mixture), upgrade the material system to support scatter records with PDF pointers and scattering PDF evaluation, add PDF evaluation and random sampling support to hittable geometry classes, redesign the camera's rendering equation to correctly apply importance weights (scattering_pdf / sampling_pdf), and integrate a lights list for direct light sampling. This spans 8+ interconnected file modifications requiring deep understanding of Monte Carlo integration, the rendering equation, probability density functions, and physically-based material models."""
+solution_explanation = """Create onb.h (orthonormal basis from surface normal), pdf.h (cosine_pdf for hemisphere sampling, hittable_pdf for geometry-directed sampling, mixture_pdf for 50/50 combination), add random_cosine_direction() to vec3.h. Rewrite material.h with scatter_record (attenuation, pdf_ptr, skip_pdf flag), scattering_pdf() virtual method, lambertian using cosine_pdf, metal/dielectric using skip_pdf. Add pdf_value() and random() virtual methods to hittable.h, implement them in quad.h (area-based PDF) and sphere.h (solid-angle-based PDF). Add pdf_value/random delegation to hittable_list.h. Rewrite camera.h ray_color to use mixture_pdf combining hittable_pdf (lights) and material pdf, with correct importance weight computation. Add lights list to main.cc scene definition."""
+verification_explanation = """Tests verify both structural and functional correctness. Structural tests check: PDF framework classes exist in source headers, scattering_pdf method defined in materials, orthonormal basis code present, hittable classes support pdf_value, camera accepts a lights parameter and uses PDF-based importance weights, and samples_per_pixel remains at most 64. Functional tests build the project, render the scene, parse the PPM output, and verify: correct 200x200 dimensions, non-black image, average brightness in expected range, visible bright ceiling light, green-tinted left wall, and red-tinted right wall."""
+category = "computer_graphics"
+tags = ["importance-sampling", "path-tracing"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:cornell-smoke-renderer"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

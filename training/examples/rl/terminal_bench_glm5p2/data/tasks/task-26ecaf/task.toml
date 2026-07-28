@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level data engineering and healthcare informatics knowledge. The agent must: (1) reverse-engineer two independently designed clinical database schemas with different normalization levels, column naming, and data modeling conventions; (2) implement patient entity resolution using fuzzy matching criteria across systems with no shared identifier — requiring parsing of composite name fields, date format normalization, and prefix-based fuzzy matching; (3) apply an ICD-9-to-ICD-10 crosswalk and acuity-to-severity semantic mappings that demand healthcare domain understanding; (4) perform unit conversions for laboratory measurements across different measurement systems; (5) design a unified star-schema data warehouse from scratch (no target schema prescribed) with proper PostgreSQL types, referential integrity, and source provenance tracking; (6) write four complex analytical queries using advanced PostgreSQL features (window functions with PARTITION BY, LAG, ROW_NUMBER, CTEs, FILTER clauses, BOOL_OR aggregates, date arithmetic, conditional aggregation); (7) create an indexing strategy that eliminates sequential scans. Each component interacts with every other — schema design decisions constrain query possibilities, entity resolution affects all downstream counts, and unit conversion correctness propagates through statistical calculations."""
+solution_explanation = """Start PostgreSQL and create clinical_dw database. Parse both SQLite schemas to understand structural differences. Implement patient matching: parse South's full_name into first/last tokens, convert MM/DD/YYYY dates to ISO, then match on exact DOB + case-insensitive last name + first-3-char prefix. Build unified patient table with North demographics taking priority for matched patients, standardizing South gender/insurance values via rules mappings. Insert all encounters (North encounters + South visits) with date format normalization and source_division tracking. Convert South ICD-9 conditions to ICD-10 using crosswalk and map acuity strings to severity integers. Convert South lab values using multiplication factors (glucose/cholesterol: mg/dL→mmol/L, hemoglobin: g/dL→g/L, creatinine: mg/dL→umol/L). Write 4 analytical queries: Q1 uses CTE to find cross-system patients then applies ROW_NUMBER/LAG window functions; Q2 uses BOOL_OR aggregates with FILTER clauses for source attribution; Q3 uses FILTER-based conditional aggregation with pooled variance calculation; Q4 uses DATE_TRUNC with LAG for growth rates and RANK for department ordering."""
+verification_explanation = """Tests verify: PostgreSQL clinical_dw database exists with required tables (patients, encounters, diagnoses, lab_results); exact row counts (65 patients after deduplication of 10 matched pairs from 40+35, 150 encounters, 300 diagnoses, 450 lab results); all ICD codes are ICD-10 format (regex check: no codes starting with digit); lab units are metric (glucose in mmol/L, hemoglobin in g/L, creatinine in umol/L, cholesterol in mmol/L); glucose values <30 confirming conversion from mg/dL; hemoglobin values >50 confirming conversion from g/dL; proper PostgreSQL types for dates and numeric values; at least 4 non-PK indexes; all 4 output queries execute successfully; Q1 returns exactly 40 rows (10 cross-system patients × 4 encounters) and uses OVER clause; Q2 returns 10 rows (10 ICD-10 codes); Q3 covers all 6 test types; Q4 uses window functions; reconciliation_report.json contains exact expected values for all 9 fields."""
+category = "data_engineering"
+tags = ["entity-resolution", "clinical-data"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-26ecaf"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

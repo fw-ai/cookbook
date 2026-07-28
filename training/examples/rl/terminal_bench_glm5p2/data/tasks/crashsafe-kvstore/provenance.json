@@ -1,0 +1,20 @@
+{
+  "task": "crashsafe-kvstore",
+  "source_name": "dan-luu-blog",
+  "source_files": [
+    "data/post_file_consistency.html",
+    "data/post_filesystem_errors.html",
+    "data/post_cache_eviction.html"
+  ],
+  "cite_reason": "Task directly inspired by Dan Luu's 'Files are hard' post on crash consistency (fsync ordering, rename atomicity, directory durability barriers, WAL design) and his filesystem error handling post on LD_PRELOAD-style fault injection testing. The power-of-two-choices cache post inspired the multi-strategy comparative evaluation structure.",
+  "source_score": 4.0,
+  "source_domain": "software_and_its_engineering",
+  "source_subdomain": "software_construction",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "912d4228-7acf-424d-832c-6746383afbe6",
+  "iters": 5,
+  "generated_at": "2026-06-11T21:54:29",
+  "schema": "prov-v1"
+}

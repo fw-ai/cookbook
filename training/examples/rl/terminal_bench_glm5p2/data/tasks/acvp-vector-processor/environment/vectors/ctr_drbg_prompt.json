@@ -1,0 +1,80 @@
+{
+  "vsId": 0,
+  "algorithm": "ctrDRBG",
+  "revision": "1.0",
+  "isSample": false,
+  "testGroups": [
+    {
+      "tgId": 1,
+      "testType": "AFT",
+      "derFunc": true,
+      "reSeed": true,
+      "predResistance": true,
+      "entropyInputLen": 256,
+      "nonceLen": 256,
+      "persoStringLen": 256,
+      "additionalInputLen": 256,
+      "returnedBitsLen": 4096,
+      "mode": "AES-128",
+      "tests": [
+        {
+          "tcId": 1,
+          "entropyInput": "841AE74F90E836829473171E009DE5C9C24890A9E435318AFAAF3D4B508A9A21",
+          "nonce": "A2AA1E5414CDF5270AA3293EA4A470F107CDABE66A66558F227101ADEB23E0A8",
+          "persoString": "70CE5D34B7C4183D7F467543DF9EE169D7AE09B0C8707A73C8155C6DC83CB017",
+          "otherInput": [
+            {"intendedUse": "generate", "additionalInput": "47B171D2CDBA1DB5B574306FD43B37D0E0B1D5ED6F5A6280DA3DFB1A57D170FF", "entropyInput": "4520F2CCA5C12F50AA68BE9E29056E64F2835B9E08B2E2397D1793FD0BC71D74"},
+            {"intendedUse": "generate", "additionalInput": "C129DB896E333A9776901C9BF1503F60BC51388645A2D25FA45682CB7FAD13B1", "entropyInput": "0E086F40FDA21BFBCFD54BB694D5E07D7BBDF8633BA92A3169D82C8A2E096DC2"}
+          ]
+        },
+        {
+          "tcId": 2,
+          "entropyInput": "88FAA32F1DEF84D261FC295257B340468DB10669B27D7ABE50E65895F6F75E73",
+          "nonce": "1A21C868102496624AD37ADA9A903C31D2B1255F09D89958DF2C32CF333E06A7",
+          "persoString": "8F761B0E39D1F3332CAE6013F2EC1DD3AC01F351B8FFD31313BD7EC8620BF47F",
+          "otherInput": [
+            {"intendedUse": "generate", "additionalInput": "046FD3CF33255AF6CBFD71E68DE08EB2C117285B4EAFAE538F70BA45F93B52B5", "entropyInput": "9F220B2101FA610F7C8352E433C2D122BED58170DD31D11091D4C99535D6791D"},
+            {"intendedUse": "generate", "additionalInput": "25D18DDAD6C9E3D81AD8DC8396EA3E38C129C792B22C7915D57AF901C89FAB3E", "entropyInput": "80BF3C95EB026F5444B9952B924F3949E72134A236DF33616778DC461E2792AF"}
+          ]
+        }
+      ]
+    },
+    {
+      "tgId": 2,
+      "testType": "AFT",
+      "derFunc": true,
+      "reSeed": true,
+      "predResistance": false,
+      "entropyInputLen": 256,
+      "nonceLen": 256,
+      "persoStringLen": 256,
+      "additionalInputLen": 256,
+      "returnedBitsLen": 4096,
+      "mode": "AES-128",
+      "tests": [
+        {
+          "tcId": 3,
+          "entropyInput": "C3680E8231CE7F1B69363200BECCACE8ADE99676BF1C80D80D0668526AE51480",
+          "nonce": "C98BD49AD24E7CDD4E2E0E4E3614F8C5477A44DA4ABB77C5A54D0485EA705281",
+          "persoString": "F00B7AB5090C2224727531F9896C8605D78FEB7688F9265EE427FE26233D5818",
+          "otherInput": [
+            {"intendedUse": "reSeed", "additionalInput": "11F09777BBB22362F8AF143735A6D37860E7761258314F993E403CFDAD4FC8FC", "entropyInput": "BE2DB4CD44441C5D271BBB94AF84F594F3DBA487922415C6BEDBBCD8104A7DB3"},
+            {"intendedUse": "generate", "additionalInput": "01C6858ADA4B5718E787F70EFACBE335E614C289441646B457F52E54BE9666E8", "entropyInput": ""},
+            {"intendedUse": "generate", "additionalInput": "2ECD1AE2FDA6AEDEF003F6CB9485CB0E9F6E6BFEF0814FDE4A0B28E0AC701F5F", "entropyInput": ""}
+          ]
+        },
+        {
+          "tcId": 4,
+          "entropyInput": "4A22C591B1A831A73B68DA94E1A6D129ECECD56F6FAB87A73C0FD5358B8CFF00",
+          "nonce": "E1AA5D2C04E45197250401663374287D850377A87FBEA2C4E5F5014B4A8FD1CB",
+          "persoString": "66B8F11DFAB26ACCCAE3EF516833232D2F92E91CF11CC1DB27A0A2459EA46164",
+          "otherInput": [
+            {"intendedUse": "reSeed", "additionalInput": "0457B570C1FE9205A7F5B9D07544C42BB781BDC3F193E724B034B3F3035EBBF0", "entropyInput": "354F61C7DAC164E89BCBAD0493F2404A6006B39691F59C661F903126E72ED155"},
+            {"intendedUse": "generate", "additionalInput": "6E4072B460FDB6C53765D91D03AF0AE32BD8DA1A1D6E410B966D0254DAA1BF4D", "entropyInput": ""},
+            {"intendedUse": "generate", "additionalInput": "98E20C059D156A5A73E7540665DED3BA2B8DD84A8F69AD572862A61C03A48E90", "entropyInput": ""}
+          ]
+        }
+      ]
+    }
+  ]
+}

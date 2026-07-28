@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires calibrating a Johnson-Cook constitutive model with coupled thermomechanical effects from multi-rate tensile data. The core difficulty is deconvolving strain-rate hardening from thermal softening in high-rate adiabatic tests, which requires implementing forward-Euler integration of the coupled stress-temperature ODE system. Additionally, the agent must correctly convert raw force-displacement data to true stress-strain, fit nonlinear models with potential local minima, calibrate a triaxiality-dependent fracture model, and make predictions at untested conditions. This is a standard workflow in computational fracture mechanics but demands graduate-level continuum mechanics and constitutive modeling expertise."""
+solution_explanation = """1. Process tensile CSV data: convert force-displacement to engineering stress-strain using specimen geometry, then to true stress-strain. Extract plastic strain by subtracting elastic contribution. 2. Fit JC hardening (A, B, n) to quasi-static data via nonlinear least squares. 3. Determine rate sensitivity C by comparing isothermal intermediate-rate and quasi-static stresses. 4. Fit thermal softening exponent m by minimizing residuals between an adiabatic coupled integration model and high-rate data. 5. Fit fracture parameters D1, D2, D3 from notched specimen data. 6. Make coupled thermomechanical predictions at untested conditions."""
+verification_explanation = """Tests verify the calibrated model by checking: (1) quasi-static stress predictions at specific plastic strains within 3% of ground truth, (2) adiabatic stress prediction at an untested strain rate within 5%, (3) predicted adiabatic temperature rise within 15%, (4) fracture strain predictions within 10%, and (5) that the model parameters produce physically reasonable stress-strain curves across multiple strain levels. Ground truth is computed numerically from known parameters used to generate the synthetic data."""
+category = "applied_computing"
+tags = ["computational-mechanics", "constitutive-modeling"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:jc-model-calibration"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

@@ -1,0 +1,21 @@
+{
+  "task": "task-0e7a4d",
+  "source_name": "tenstorrent-jim-keller-risc-v-ai-",
+  "source_files": [
+    "data/tt_tech_Saturating_DRAM_bandwidth_Saturating_DRAM_bandwidth.md",
+    "data/corsix_wormhole_part1_text.txt",
+    "data/corsix_wormhole_part4_text.txt",
+    "data/corsix_wormhole_part5_text.txt"
+  ],
+  "cite_reason": "DRAM bandwidth saturation tech report provided the core algorithmic challenge (reader placement, NoC route conflict avoidance, VC assignment, harvesting). Corsix Wormhole parts 1/4/5 provided the grid topology, NoC routing model, and tile architecture details.",
+  "source_score": 4.5,
+  "source_domain": "applied_computing",
+  "source_subdomain": "hardware_design",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "52beb000-4222-48c8-be8b-0c773cfed780",
+  "iters": 5,
+  "generated_at": "2026-06-12T23:14:12",
+  "schema": "prov-v1"
+}

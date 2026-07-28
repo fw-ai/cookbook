@@ -1,0 +1,40 @@
+{
+  "_note": "Verified metrics for calibration. Use to validate your implementation and determine any unspecified scoring parameters. All values have been independently verified against ground-truth data.",
+  "per_api": {
+    "AlphaTester": {
+      "blog": {
+        "avg_ops_covered": 6.0,
+        "avg_coverage_rate": 0.5454545454545454,
+        "avg_faults": 1.5,
+        "avg_ops_auc": 1455.0,
+        "avg_fault_auc": 230.0
+      }
+    },
+    "GammaProbe": {
+      "hospital": {
+        "avg_ops_covered": 7.5,
+        "avg_coverage_rate": 0.625,
+        "avg_faults": 1.0,
+        "avg_ops_auc": 1622.5,
+        "avg_fault_auc": 190.0
+      }
+    }
+  },
+  "overall": {
+    "AlphaTester": {
+      "avg_ops_covered": 6.96969696969697,
+      "avg_coverage_rate": 0.6212121212121212,
+      "avg_faults": 1.0151515151515151,
+      "avg_ops_auc": 1528.939393939394,
+      "avg_fault_auc": 167.87878787878788
+    }
+  },
+  "scores": {
+    "AlphaTester": {
+      "effectiveness": 0.4038843478450709
+    },
+    "BetaFuzz": {
+      "effectiveness": 0.7818195041687256
+    }
+  }
+}

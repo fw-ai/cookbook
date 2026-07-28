@@ -1,0 +1,33 @@
+{
+  "vsfScript": [
+    {
+      "lineType": "Branch",
+      "conditions": [
+        {
+          "if": {
+            "scriptLines": [
+              {
+                "lineType": "Rule",
+                "ruleType": "External",
+                "parameters": {
+                  "ruleText": "parentProperty.vetted == false"
+                }
+              }
+            ]
+          },
+          "then": {
+            "scriptLines": [
+              {
+                "lineType": "Rule",
+                "ruleType": "External",
+                "parameters": {
+                  "ruleText": "currentProperty == null"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

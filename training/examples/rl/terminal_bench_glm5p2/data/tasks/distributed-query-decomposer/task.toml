@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires deep understanding of aggregate function algebra (distributive vs algebraic aggregates), SQL AST parsing and transformation using tools like sqlglot, and the mathematics of distributed query decomposition. The solver must correctly implement variance/stddev decomposition (sum-of-squares identity), handle complex expressions inside aggregates, rewrite HAVING clauses to reference summary-level expressions, and handle aggregates appearing only in HAVING. Combines distributed systems theory, compiler-style AST transformation, and statistical computation."""
+solution_explanation = """Uses sqlglot to parse SQL into an AST, walks SELECT expressions to identify aggregate functions, and decomposes each into worker-level partial aggregates and a summary-level final expression. AVG(x) becomes SUM(x)/COUNT(x), VAR_POP(x) uses the identity Var=E[x^2]-(E[x])^2 requiring SUM(x*x)/SUM(x)/COUNT(x), STDDEV_POP wraps VAR_POP with SQRT. HAVING clause aggregates are independently decomposed and rewritten. Worker query retains WHERE and GROUP BY; summary query gets GROUP BY, rewritten HAVING, ORDER BY, and LIMIT."""
+verification_explanation = """Tests generate TPC-H SF=0.01 data in DuckDB, shard the lineitem table into 4 deterministic partitions via ROW_NUMBER, and verify that decomposed query results match original query results within 1e-6 relative tolerance across 8 test cases covering all aggregate types (SUM/COUNT/MIN/MAX/AVG/VAR_POP/STDDEV_POP), complex expressions inside aggregates, HAVING clause rewriting (including aggregates not in SELECT), no-GROUP-BY whole-table aggregation, and API contract validation."""
+category = "data_engineering"
+tags = ["sql", "distributed-systems"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:distributed-query-decomposer"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

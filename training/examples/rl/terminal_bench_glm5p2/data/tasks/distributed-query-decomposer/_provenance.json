@@ -1,0 +1,1 @@
+{"source_files": ["/source_data/data/slides_gizmoedge.txt", "/source_data/data/developer_meeting_1_summary.md"], "cite_reason": "Task directly inspired by GizmoEdge's distributed query decomposition approach — the AVG problem (SUM/COUNT decomposition), query distribution to workers, and summary query recombination described in the talk slides and meeting summary."}

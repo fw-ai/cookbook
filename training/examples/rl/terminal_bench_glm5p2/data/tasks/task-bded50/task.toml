@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level understanding of Restate's Virtual Object concurrency model — specifically that each key has a single-writer lock held for the entire handler execution, including while suspended on outgoing calls. The system deadlocks because TicketPool.reserveTickets and WalletService.holdFunds make synchronous HTTP callbacks (via ctx.run + fetch through the ingress) to BookingLedger.recordStep, while BookingLedger.processBooking holds the lock on the same booking key and is suspended waiting for these calls to return. Diagnosing this requires: (1) building and starting the system, (2) triggering a booking and observing the hang, (3) using Restate's SQL introspection (sys_invocation, sys_journal) to trace the circular call chain, (4) understanding that the ctx.run/fetch calls to the ingress create new Restate invocations queued behind the holding handler. Fixing it requires evaluating multiple architectural approaches — removing callbacks vs. using fire-and-forget sends vs. restructuring as a Workflow — and choosing one that preserves auditability while breaking the circular dependency. Additionally, the solver must design and implement saga compensation from scratch, reasoning about which failure paths require which rollback operations and ensuring atomicity within Restate's journal-based durable execution model."""
+solution_explanation = """Remove the synchronous HTTP callbacks from TicketPool.reserveTickets and WalletService.holdFunds — these create circular Virtual Object dependencies that deadlock. Simplify the handler signatures to accept only the business parameters (count/amount) without bookingId. In BookingLedger.processBooking, use ctx.objectClient() for proper Restate SDK calls (which are journaled and exactly-once), and track booking state locally after each step. Add try/catch around the holdFunds call to implement saga compensation: if holdFunds throws a TerminalError (insufficient funds), call releaseTickets to undo the reservation before re-throwing. Build TypeScript, start restate-server, start the service, and register the deployment."""
+verification_explanation = """Tests verify: (1) Restate server health and registration of all three services; (2) a booking completes within 30 seconds — failure indicates the deadlock persists; (3) after a successful booking, TicketPool shows tickets sold (not held) and WalletService shows the correct debited balance; (4) a booking with insufficient funds results in zero net state change — tickets released and balance unchanged, proving saga compensation works; (5) a booking with insufficient ticket availability also produces zero side effects; (6) three sequential bookings maintain the invariant total = available + held + sold with held always returning to zero."""
+category = "debugging"
+tags = ["distributed-systems", "restate"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-bded50"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

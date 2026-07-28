@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires evaluating two competing PostGIS analysis pipelines against complex spatial data to judge which strategy produces correct results for each of six metrics. No single pipeline is fully correct — each handles some edge cases properly and fails on others, demanding the solver compare, judge, and synthesize. The solver must: (1) evaluate why ST_Overlaps misses containment relationships (eta fully inside alpha) while an area-based intersection check correctly detects all pairs sharing 2D area, requiring deep understanding of the OGC spatial predicate hierarchy; (2) judge that a self-intersecting bowtie polygon produces zero algebraic area and that geometry repair via ST_MakeValid is necessary, requiring knowledge of polygon validity semantics; (3) compare endpoint-based network walking against ST_Intersects-based walking to determine that interior line crossings create false connectivity, requiring understanding of topological vs geometric intersection; (4) evaluate why measuring distance to pipe startpoints produces incorrect nearest-pipe assignments compared to full-geometry distance measurement; (5) assess why strict containment filtering (ST_Within) underreports pipe coverage for boundary-crossing pipes compared to geometric clipping with ST_Intersection. The solver must independently verify each judgment by querying the spatial data to understand its geometric characteristics."""
+solution_explanation = """Start PostgreSQL, run both candidate pipelines, and compare their divergent outputs. For each metric where results disagree, query the spatial data to determine ground truth. Pipeline Alpha correctly uses area-based intersection for zone conflicts (handles containment where ST_Overlaps fails) and endpoint matching for network reachability (excludes false connectivity from interior line crossings). Pipeline Beta correctly applies ST_MakeValid for zone area (fixes zero-area bowtie polygon), uses full-geometry distance for well assignments (avoids startpoint-only bias), and clips pipes with ST_Intersection for proportional coverage (captures partial boundary-crossing pipes). Synthesize the correct approach from each pipeline into the final report."""
+verification_explanation = """Tests parse /app/report.json and verify each of the six metrics against analytically computed expected values: integers via exact match, floats within 0.1 tolerance, well assignment pipe IDs and fractions within 0.001 tolerance, and array structure validation."""
+category = "spatial_databases"
+tags = ["postgis", "spatial-evaluation"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:spatial-network-audit"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

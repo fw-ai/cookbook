@@ -1,0 +1,20 @@
+{
+  "task": "puzzlescript-rule-engine",
+  "source_name": "puzzlejax-a-benchmark-for-reasoning-and-learning",
+  "source_files": [
+    "data/readme.md",
+    "data/arxiv_abstract.html",
+    "data/paper_text.txt"
+  ],
+  "cite_reason": "PuzzleJAX paper's description of PuzzleScript as a DSL based on local pattern rewrite rules, collision layers, late rules, and win conditions inspired the task of building a solver for PuzzleScript games with varied mechanics (push, destroy, swap).",
+  "source_score": 4.0,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "games_puzzles",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "de18a1cb-afc7-4e35-92e8-6c092c4af8f6",
+  "iters": 5,
+  "generated_at": "2026-06-11T10:55:45",
+  "schema": "prov-v1"
+}

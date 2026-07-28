@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires reverse-engineering the PuzzleScript DSL semantics from game files and a provided simulator tool, then designing and implementing a complete automated solver. The agent must: (1) discover and learn the pssim CLI tool's interface, (2) understand the PuzzleScript rule language including directional movement markers, collision layer constraints, late rule application, and win conditions, (3) recognize that different games use fundamentally different rule mechanics (push, destroy-on-overlap, position-swap) requiring a general simulation engine, (4) design a state-space search strategy with efficient state hashing, and (5) integrate everything into a reliable pipeline. No algorithms or approaches are specified — the agent must independently determine the solution architecture."""
+solution_explanation = """The solution implements a PuzzleScript engine in Python with: a parser for .ps files, a simulation engine handling movement marker resolution, collision layers, late rules, and a BFS solver over hashable game states. A shell script orchestrates solving all games and writing solution files."""
+verification_explanation = """Tests independently replay each solution through a self-contained PuzzleScript simulator (separate from both pssim and the agent's code) to verify move sequences reach win states. Additional tests verify game-specific behaviors: crate pushing/blocking in Sokoban, block-fills-hole in Fillholes (late rule), and position-swap mechanics in Swapper. Structural tests verify the engine directory, Python files, and executable solve_all.sh exist."""
+category = "systems"
+tags = ["dsl-implementation", "search-algorithms", "tool-integration"]
+expert_time_estimate_hours = 5.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:puzzlescript-rule-engine"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

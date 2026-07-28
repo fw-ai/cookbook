@@ -1,0 +1,230 @@
+{
+  "objects": {
+    "drill_item": {
+      "size": 192,
+      "cache_name": "drill_item_cache",
+      "slab_flags": [],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "data", "offset": 0, "size": 128, "type": "char_array", "exploit_primitive": "none"},
+        {"name": "callback", "offset": 128, "size": 8, "type": "func_ptr", "exploit_primitive": "control_flow_hijack"},
+        {"name": "length", "offset": 136, "size": 8, "type": "size_t", "exploit_primitive": "bounds_bypass"},
+        {"name": "refcount", "offset": 144, "size": 4, "type": "refcount_t", "exploit_primitive": "none"},
+        {"name": "pad0", "offset": 148, "size": 4, "type": "padding", "exploit_primitive": "none"},
+        {"name": "next", "offset": 152, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "prev", "offset": 160, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "flags", "offset": 168, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "owner_uid", "offset": 172, "size": 4, "type": "uid_t", "exploit_primitive": "none"},
+        {"name": "priv_data", "offset": 176, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "lock", "offset": 184, "size": 8, "type": "spinlock_t", "exploit_primitive": "none"}
+      ]
+    },
+    "msg_msg": {
+      "size": 192,
+      "cache_name": "msg_msg_cache",
+      "slab_flags": [],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "m_list_next", "offset": 0, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "m_list_prev", "offset": 8, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "m_type", "offset": 16, "size": 8, "type": "long", "exploit_primitive": "none"},
+        {"name": "m_ts", "offset": 24, "size": 8, "type": "size_t", "exploit_primitive": "bounds_bypass"},
+        {"name": "next", "offset": 32, "size": 8, "type": "ptr", "exploit_primitive": "arbitrary_read"},
+        {"name": "security", "offset": 40, "size": 8, "type": "ptr", "exploit_primitive": "security_bypass"},
+        {"name": "data", "offset": 48, "size": 144, "type": "char_array", "exploit_primitive": "none"}
+      ]
+    },
+    "sk_filter": {
+      "size": 188,
+      "cache_name": "sk_filter_cache",
+      "slab_flags": [],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "refcnt", "offset": 0, "size": 4, "type": "refcount_t", "exploit_primitive": "none"},
+        {"name": "pad0", "offset": 4, "size": 4, "type": "padding", "exploit_primitive": "none"},
+        {"name": "prog", "offset": 8, "size": 8, "type": "func_ptr", "exploit_primitive": "control_flow_hijack"},
+        {"name": "rcu_next", "offset": 16, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "rcu_func", "offset": 24, "size": 8, "type": "func_ptr", "exploit_primitive": "none"},
+        {"name": "sock", "offset": 32, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "filter_data", "offset": 40, "size": 148, "type": "char_array", "exploit_primitive": "none"}
+      ]
+    },
+    "xattr_entry": {
+      "size": 190,
+      "cache_name": "xattr_entry_cache",
+      "slab_flags": [],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "e_hash", "offset": 0, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "e_name_len", "offset": 4, "size": 2, "type": "uint16", "exploit_primitive": "none"},
+        {"name": "e_value_len", "offset": 6, "size": 2, "type": "uint16", "exploit_primitive": "bounds_bypass"},
+        {"name": "e_name_index", "offset": 8, "size": 1, "type": "uint8", "exploit_primitive": "none"},
+        {"name": "pad0", "offset": 9, "size": 7, "type": "padding", "exploit_primitive": "none"},
+        {"name": "e_value_ptr", "offset": 16, "size": 8, "type": "ptr", "exploit_primitive": "arbitrary_read"},
+        {"name": "e_next", "offset": 24, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "e_data", "offset": 32, "size": 158, "type": "char_array", "exploit_primitive": "none"}
+      ]
+    },
+    "pipe_buffer": {
+      "size": 192,
+      "cache_name": "pipe_buf_cache",
+      "slab_flags": [],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "page", "offset": 0, "size": 8, "type": "ptr", "exploit_primitive": "arbitrary_write"},
+        {"name": "offset_field", "offset": 8, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "len", "offset": 12, "size": 4, "type": "uint32", "exploit_primitive": "bounds_bypass"},
+        {"name": "ops", "offset": 16, "size": 8, "type": "func_ptr", "exploit_primitive": "control_flow_hijack"},
+        {"name": "flags", "offset": 24, "size": 4, "type": "uint32", "exploit_primitive": "type_confusion"},
+        {"name": "pad0", "offset": 28, "size": 4, "type": "padding", "exploit_primitive": "none"},
+        {"name": "private", "offset": 32, "size": 8, "type": "ulong", "exploit_primitive": "none"},
+        {"name": "buf_data", "offset": 40, "size": 152, "type": "char_array", "exploit_primitive": "none"}
+      ]
+    },
+    "cred_jar": {
+      "size": 192,
+      "cache_name": "cred_jar_cache",
+      "slab_flags": ["SLAB_TYPESAFE_BY_RCU"],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "usage", "offset": 0, "size": 4, "type": "atomic_t", "exploit_primitive": "none"},
+        {"name": "uid", "offset": 4, "size": 4, "type": "uid_t", "exploit_primitive": "none"},
+        {"name": "gid", "offset": 8, "size": 4, "type": "gid_t", "exploit_primitive": "none"},
+        {"name": "suid", "offset": 12, "size": 4, "type": "uid_t", "exploit_primitive": "none"},
+        {"name": "sgid", "offset": 16, "size": 4, "type": "gid_t", "exploit_primitive": "none"},
+        {"name": "euid", "offset": 20, "size": 4, "type": "uid_t", "exploit_primitive": "none"},
+        {"name": "egid", "offset": 24, "size": 4, "type": "gid_t", "exploit_primitive": "none"},
+        {"name": "fsuid", "offset": 28, "size": 4, "type": "uid_t", "exploit_primitive": "none"},
+        {"name": "fsgid", "offset": 32, "size": 4, "type": "gid_t", "exploit_primitive": "none"},
+        {"name": "securebits", "offset": 36, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "cap_inheritable", "offset": 40, "size": 8, "type": "uint64", "exploit_primitive": "none"},
+        {"name": "cap_permitted", "offset": 48, "size": 8, "type": "uint64", "exploit_primitive": "none"},
+        {"name": "cap_effective", "offset": 56, "size": 8, "type": "uint64", "exploit_primitive": "none"},
+        {"name": "cap_bset", "offset": 64, "size": 8, "type": "uint64", "exploit_primitive": "none"},
+        {"name": "cap_ambient", "offset": 72, "size": 8, "type": "uint64", "exploit_primitive": "none"},
+        {"name": "security_ptr", "offset": 80, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "user_ptr", "offset": 88, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "user_ns", "offset": 96, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "group_info", "offset": 104, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "rcu_head", "offset": 112, "size": 16, "type": "rcu_head", "exploit_primitive": "none"},
+        {"name": "cred_pad", "offset": 128, "size": 64, "type": "padding", "exploit_primitive": "none"}
+      ]
+    },
+    "pid_namespace": {
+      "size": 192,
+      "cache_name": "pid_ns_cache",
+      "slab_flags": [],
+      "has_constructor": true,
+      "align": 8,
+      "fields": [
+        {"name": "idr", "offset": 0, "size": 40, "type": "struct", "exploit_primitive": "none"},
+        {"name": "rcu", "offset": 40, "size": 16, "type": "rcu_head", "exploit_primitive": "none"},
+        {"name": "pid_allocated", "offset": 56, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "pid_pad", "offset": 60, "size": 4, "type": "padding", "exploit_primitive": "none"},
+        {"name": "child_reaper", "offset": 64, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "ns_common", "offset": 72, "size": 48, "type": "struct", "exploit_primitive": "none"},
+        {"name": "bacct", "offset": 120, "size": 72, "type": "struct", "exploit_primitive": "none"}
+      ]
+    },
+    "bio_vec": {
+      "size": 184,
+      "cache_name": "bio_vec_cache",
+      "slab_flags": [],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "bv_page", "offset": 0, "size": 8, "type": "ptr", "exploit_primitive": "arbitrary_write"},
+        {"name": "bv_len", "offset": 8, "size": 4, "type": "uint32", "exploit_primitive": "bounds_bypass"},
+        {"name": "bv_offset", "offset": 12, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "bv_entries", "offset": 16, "size": 168, "type": "char_array", "exploit_primitive": "none"}
+      ]
+    },
+    "inet_timewait": {
+      "size": 192,
+      "cache_name": "inet_tw_cache",
+      "slab_flags": ["SLAB_TYPESAFE_BY_RCU"],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "skc_common", "offset": 0, "size": 104, "type": "struct", "exploit_primitive": "none"},
+        {"name": "tw_timeout", "offset": 104, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "tw_substate", "offset": 108, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "tw_sport", "offset": 112, "size": 2, "type": "uint16", "exploit_primitive": "none"},
+        {"name": "tw_dport", "offset": 114, "size": 2, "type": "uint16", "exploit_primitive": "none"},
+        {"name": "tw_pad", "offset": 116, "size": 76, "type": "padding", "exploit_primitive": "none"}
+      ]
+    },
+    "file_struct": {
+      "size": 256,
+      "cache_name": "files_cache",
+      "slab_flags": [],
+      "has_constructor": false,
+      "align": 8,
+      "fields": [
+        {"name": "f_count", "offset": 0, "size": 8, "type": "atomic_long_t", "exploit_primitive": "none"},
+        {"name": "f_lock", "offset": 8, "size": 4, "type": "spinlock_t", "exploit_primitive": "none"},
+        {"name": "f_mode", "offset": 12, "size": 4, "type": "fmode_t", "exploit_primitive": "none"},
+        {"name": "f_op", "offset": 16, "size": 8, "type": "func_ptr", "exploit_primitive": "control_flow_hijack"},
+        {"name": "f_mapping", "offset": 24, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "f_data", "offset": 32, "size": 224, "type": "char_array", "exploit_primitive": "none"}
+      ]
+    },
+    "radix_tree_node": {
+      "size": 576,
+      "cache_name": "radix_tree_node_cache",
+      "slab_flags": [],
+      "has_constructor": true,
+      "align": 8,
+      "fields": [
+        {"name": "shift", "offset": 0, "size": 1, "type": "uint8", "exploit_primitive": "none"},
+        {"name": "offset_val", "offset": 1, "size": 1, "type": "uint8", "exploit_primitive": "none"},
+        {"name": "count", "offset": 2, "size": 1, "type": "uint8", "exploit_primitive": "none"},
+        {"name": "exceptional", "offset": 3, "size": 1, "type": "uint8", "exploit_primitive": "none"},
+        {"name": "radix_pad", "offset": 4, "size": 4, "type": "padding", "exploit_primitive": "none"},
+        {"name": "parent", "offset": 8, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "slots", "offset": 16, "size": 512, "type": "ptr_array", "exploit_primitive": "none"},
+        {"name": "tags", "offset": 528, "size": 48, "type": "bitmap", "exploit_primitive": "none"}
+      ]
+    },
+    "dentry": {
+      "size": 256,
+      "cache_name": "dentry_cache",
+      "slab_flags": ["SLAB_TYPESAFE_BY_RCU"],
+      "has_constructor": true,
+      "align": 64,
+      "fields": [
+        {"name": "d_flags", "offset": 0, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "d_seq", "offset": 4, "size": 4, "type": "seqcount_t", "exploit_primitive": "none"},
+        {"name": "d_hash_next", "offset": 8, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "d_hash_pprev", "offset": 16, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "d_parent", "offset": 24, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "d_name", "offset": 32, "size": 16, "type": "struct", "exploit_primitive": "none"},
+        {"name": "d_inode", "offset": 48, "size": 8, "type": "ptr", "exploit_primitive": "none"},
+        {"name": "d_iname", "offset": 56, "size": 40, "type": "char_array", "exploit_primitive": "none"},
+        {"name": "d_rest", "offset": 96, "size": 160, "type": "struct", "exploit_primitive": "none"}
+      ]
+    },
+    "inode_cache_obj": {
+      "size": 640,
+      "cache_name": "inode_cache",
+      "slab_flags": [],
+      "has_constructor": true,
+      "align": 8,
+      "fields": [
+        {"name": "i_mode", "offset": 0, "size": 2, "type": "uint16", "exploit_primitive": "none"},
+        {"name": "i_opflags", "offset": 2, "size": 2, "type": "uint16", "exploit_primitive": "none"},
+        {"name": "i_uid", "offset": 4, "size": 4, "type": "uid_t", "exploit_primitive": "none"},
+        {"name": "i_gid", "offset": 8, "size": 4, "type": "gid_t", "exploit_primitive": "none"},
+        {"name": "i_flags", "offset": 12, "size": 4, "type": "uint32", "exploit_primitive": "none"},
+        {"name": "i_op", "offset": 16, "size": 8, "type": "func_ptr", "exploit_primitive": "control_flow_hijack"},
+        {"name": "i_rest", "offset": 24, "size": 616, "type": "struct", "exploit_primitive": "none"}
+      ]
+    }
+  }
+}

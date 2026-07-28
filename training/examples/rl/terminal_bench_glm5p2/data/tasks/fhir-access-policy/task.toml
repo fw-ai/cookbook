@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires reverse-engineering Medplum's FHIR access control semantics from TypeScript source code and translating them to a working Python implementation. The agent must read and understand two interconnected TypeScript modules (policy compilation with parameterized variable resolution and policy-to-resource matching with interaction checking), bridge the gap between the full FHIR search infrastructure used in the source and the simplified search_param_definitions in the scenario, handle IP access rule evaluation from documentation alone, and correctly implement subtle behaviors like variable substitution ordering, multi-policy merge semantics, wildcard type exclusion, readonly interaction expansion, criteria-based filtering with nested field paths and reference arrays, and field-level access restrictions — all without explicit algorithmic guidance."""
+solution_explanation = """Build a Python engine that: (1) parses scenario.json with policies, memberships, resources, and queries, (2) for each membership constructs a compound policy by resolving parameterized AccessPolicy bindings with correct variable substitution order and auto-injected profile/patient params, (3) for each query checks IP rules first (sequential prefix matching), then finds the first matching resource rule by evaluating resource type (with wildcard admin-type exclusion), interaction permissions, and criteria matching (using search_param_definitions for field path resolution), (4) outputs PERMIT/DENY with field-level restrictions from the matching rule."""
+verification_explanation = """Tests run the engine and compare each of the 40 query results against expected decisions. Tests cover: criteria-based access with parameterized variables, multi-policy merge ordering, readonly interaction expansion, wildcard admin-type exclusion, IP prefix matching, variable substitution order sensitivity, default resource type addition, nested field path resolution, reference array matching, and field-level hidden/readonly propagation."""
+category = "security_and_privacy"
+tags = ["fhir", "access-control"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:fhir-access-policy"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

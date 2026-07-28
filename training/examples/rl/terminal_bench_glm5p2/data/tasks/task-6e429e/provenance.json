@@ -1,0 +1,26 @@
+{
+  "task": "task-6e429e",
+  "source_name": "nist-frte-fate-formerly-frvt-usnistgov-frvt-validation-packa",
+  "source_files": [
+    "data/frvt_structs.h",
+    "data/11_src_include_frvt11.h",
+    "data/11_src_nullImpl_nullimplfrvt11.cpp",
+    "data/11_src_testdriver_validate11.cpp",
+    "data/11_run_validate_11.sh",
+    "data/11_scripts_compile_and_link.sh",
+    "data/11_scripts_run_testdriver.sh",
+    "data/11_CMakeLists.txt",
+    "data/11_nullImpl_CMakeLists.txt"
+  ],
+  "cite_reason": "Task requires creating a vendor library conforming to a C++ abstract API modeled on the NIST FRVT 1:1 interface (frvt11.h, frvt_structs.h). The validation harness, test driver architecture, CMake shared-library build conventions, shell-script validation pipeline (version checking, config-dir detection, score sanity checks), and naming conventions are all derived from these FRVT source materials.",
+  "source_score": 4.0,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "algorithms",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "0851a90a-490a-402a-b4fe-73a21ac8b695",
+  "iters": 3,
+  "generated_at": "2026-06-10T18:39:37",
+  "schema": "prov-v1"
+}

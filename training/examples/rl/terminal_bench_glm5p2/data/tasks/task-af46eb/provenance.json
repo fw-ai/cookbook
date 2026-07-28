@@ -1,0 +1,20 @@
+{
+  "task": "task-af46eb",
+  "source_name": "servo-web-engine-talks-servo-org-talks-catalog-igalia-team",
+  "source_files": [
+    "data/servo_readme.md",
+    "data/servo_main_page.html",
+    "source_info.txt"
+  ],
+  "cite_reason": "Servo's CSS style resolution pipeline and CSS Selectors Level 4 implementation inspired a task about building a CSS cascade engine from scratch and auditing a buggy resolver for specification-compliance violations.",
+  "source_score": 4.65,
+  "source_domain": "software_and_its_engineering",
+  "source_subdomain": "software_system_structures_rendering_engines",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "e3b1b894-4fa6-4e79-a505-b21b7f64ab43",
+  "iters": 5,
+  "generated_at": "2026-06-11T12:16:18",
+  "schema": "prov-v1"
+}

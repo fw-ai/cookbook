@@ -1,0 +1,157 @@
+Vinaigrette Signature Scheme
+============================
+
+Vinaigrette is a simplified variant of the MAYO post-quantum signature
+scheme, based on the Unbalanced Oil and Vinegar (UOV) construction.
+
+1. MULTIVARIATE QUADRATIC MAPPING
+
+The public key is a mapping P: F_q^n -> F_q^m consisting of m homogeneous
+quadratic polynomials over the finite field F_q:
+
+  P(x_1, ..., x_n) = (p_1(x), ..., p_m(x))
+
+Each polynomial p_k can be written as:
+
+  p_k(x) = sum_{1 <= i <= j <= n} (P_k)_{ij} * x_i * x_j = x^T P_k x
+
+where P_k is an n x n upper triangular matrix over F_q.
+
+2. OIL SPACE
+
+There exists a secret linear subspace O of F_q^n (the "oil space") of
+dimension o on which the mapping vanishes: P(v) = 0 for all v in O.
+
+The oil space O is the secret key.
+
+3. WHIPPED-UP MAPPING
+
+To allow signing with a small oil space (o < m), Vinaigrette uses a
+"whipped up" mapping P*: F_q^{kn} -> F_q^m defined as:
+
+  P*(x_1, ..., x_k) = P(x_1) + ... + P(x_k)
+
+where each x_i is in F_q^n and k is chosen so that k*o >= m.
+
+4. SIGNING
+
+The signature for a message lambda is s = (s_1, ..., s_k) such that:
+
+  P*(s_1, ..., s_k) = H(lambda)
+
+where H is the hash function (see below).
+
+To compute s, the signer (who knows O):
+  - Chooses random "vinegar" vectors v_1, ..., v_k in F_q^n
+  - Uses the bilinear differential P'(x,y) = P(x+y) - P(x) - P(y)
+  - Since P(o) = 0 for o in O:
+      P(v_i + o_i) = P(v_i) + P'(v_i, o_i)  for o_i in O
+  - Solves the LINEAR system:
+      sum_i P'(v_i, o_i) = H(lambda) - sum_i P(v_i)
+    for o_1, ..., o_k in O (this has k*o unknowns and m equations)
+  - Returns s_i = v_i + o_i
+
+5. VERIFICATION
+
+Given public key P and signature s = (s_1, ..., s_k), verify:
+
+  P(s_1) + ... + P(s_k) = H(lambda)
+
+6. HASH FUNCTION
+
+The hash H uses the extendable-output function SHAKE256.
+
+Take the first ceil(ceil(log2(q)) * m / 8) bytes of SHAKE256(message).
+Break the output into ceil(log2(q))-bit pieces. Each piece, reduced mod q,
+gives one component of H(lambda) in F_q.
+
+For q=31: ceil(log2(31)) = 5 bits per element.
+Extract 5*m bits total, split into m groups of 5 bits each,
+reduce each mod q.
+
+7. BINARY PUBLIC KEY FORMAT (VNRT)
+
+The public key is stored in a packed binary format with the following
+byte layout:
+
+  Offset  Size     Description
+  ------  ----     -----------
+  0       4        Magic bytes: ASCII "VNRT" (0x56 0x4E 0x52 0x54)
+  4       1        Format version (currently 0x01)
+  5       1        q — field modulus (unsigned byte)
+  6       1        n — number of variables (unsigned byte)
+  7       1        m — number of equations (unsigned byte)
+  8       1        o — oil space dimension (unsigned byte)
+  9       1        k — whipping factor (unsigned byte)
+  10      2        Reserved (0x00 0x00)
+  12      varies   Matrix data
+
+Matrix data section:
+  Contains m consecutive blocks. Each block stores one upper-triangular
+  matrix P_k as n*(n+1)/2 unsigned bytes in row-major order:
+    - Row 0: entries P_k[0][0], P_k[0][1], ..., P_k[0][n-1]   (n bytes)
+    - Row 1: entries P_k[1][1], P_k[1][2], ..., P_k[1][n-1]   (n-1 bytes)
+    - ...
+    - Row n-1: entry P_k[n-1][n-1]                              (1 byte)
+
+  Each byte value is the coefficient mod q. Total matrix data size:
+  m * n*(n+1)/2 bytes.
+
+  For the challenge parameters (q=31, n=8, m=4):
+  Each matrix = 8*9/2 = 36 bytes. Total matrix data = 144 bytes.
+  Total file size = 12 + 144 = 156 bytes.
+
+8. CHALLENGE DATABASE SCHEMA
+
+The challenge parameters and target message are stored in an SQLite
+database (challenge.db) with the following schema:
+
+  TABLE params (
+    key   TEXT PRIMARY KEY,   -- parameter name: 'q', 'n', 'm', 'o', 'k'
+    value INTEGER             -- parameter value
+  )
+
+  TABLE message (
+    id      INTEGER PRIMARY KEY,
+    content TEXT                -- the target message to sign
+  )
+
+  TABLE hash_target (
+    idx   INTEGER PRIMARY KEY, -- index 0..m-1
+    value INTEGER              -- H(message)[idx] mod q
+  )
+
+9. HASH TARGET FILE
+
+The file hash_target.bin contains the m bytes of H(message), one byte
+per hash component, in index order. This is the same data as in the
+hash_target table but in raw binary form for use by the verifier.
+
+10. VERIFIER USAGE
+
+A compiled verification binary is provided at /challenge/verifier.
+It reads the binary public key and hash target, then checks a
+candidate signature:
+
+  /challenge/verifier <signature_file>
+
+  Exit code 0: signature is valid
+  Exit code 1: signature is invalid
+  Exit code 2: input error (missing file, bad format, etc.)
+
+The signature file must contain k*n space-separated integers, each
+in the range [0, q-1].
+
+11. SIGNATURE FORMAT
+
+The signature s = (s_1, ..., s_k), where each s_i is in F_q^n,
+is written as a flat list of k*n integers separated by spaces.
+
+Example: s = ((1,2,3), (4,5,6)) is written as: 1 2 3 4 5 6
+
+12. DIFFERENCE FROM MAYO
+
+The MAYO scheme uses "emulsifier" matrices to obscure the relationship
+between P and P*. Vinaigrette omits these emulsifiers -- the public key
+directly reveals the original mapping P, making it potentially vulnerable
+to attacks that recover the oil space from the public key structure.

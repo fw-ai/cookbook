@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires deep understanding of PyTorch internals including operator dispatch mechanisms, autograd backward pass semantics, per-module attribution across both forward and backward execution, and GPU roofline performance modeling with cache alignment and wave quantization analysis."""
+solution_explanation = """Implement a dispatch-level interceptor for ATen matmul operations with module hooks for attribution. Compute backward FLOPs analytically based on autograd structure, handling the requires_grad asymmetry for the first layer. For shape analysis, compute arithmetic intensity against the hardware roofline, check cache alignment, and compute wave quantization from tiling and SM count."""
+verification_explanation = """Tests verify: (1) per-module forward FLOP counts match expected values for each linear layer, (2) backward FLOPs reflect the correct 2x/1x ratio depending on requires_grad, (3) all module names appear in the result, (4) matmul shape analysis produces correct cache alignment flags and padding recommendations, (5) wave quantization computation yields correct grid sizes, wave counts, and efficiencies for known shapes, (6) roofline classification correctly distinguishes compute-bound from memory-bound regimes."""
+category = "machine_learning"
+tags = ["pytorch", "performance-analysis"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:torch-dispatch-profiler"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

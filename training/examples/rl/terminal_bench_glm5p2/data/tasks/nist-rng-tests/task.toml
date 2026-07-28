@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level synthesis across four distinct domains—none of which is explicitly guided in the instructions. The agent must: (1) implement 7 NIST SP 800-22 statistical tests from mathematical specifications involving erfc, regularized incomplete gamma, FFT spectral analysis, and overlapping m-bit circular pattern counting with correct numerical handling; (2) independently determine that Fisher's method (-2Σln(p) ~ χ²(2k)) is the appropriate omnibus combination technique for independent p-values, handle zero p-value edge cases without guidance, and correctly evaluate the chi-squared survival function; (3) recognize that the Benjamini-Hochberg step-up procedure is the standard FDR-controlling method, implement the reverse-cumulative-minimum adjusted p-value algorithm, and validate monotonicity; (4) compute min-entropy H∞ = -log₂(p_max) from byte-level frequency distributions, requiring information-theoretic reasoning not specified anywhere in the task; (5) design and implement FFT-based normalized bit-level autocorrelation with correct zero-padding and (n-τ) normalization to detect periodic structure—a signal processing technique the agent must derive independently. The instruction names no algorithms and gives no formulas beyond the NIST test specs, so the agent must draw on deep cross-domain expertise to select and implement each analytical method."""
+solution_explanation = """Implement all 7 NIST tests using numpy for FFT and vectorized pattern counting, scipy for special functions (erfc, gammaincc). For combined significance, apply Fisher's method: compute -2*sum(ln(max(p,1e-300))) and evaluate against chi2(2k) using scipy.stats.chi2.sf. For FDR correction, implement BH step-up: collect all 21 p-values, sort ascending, compute adjusted p-values via reverse cumulative minimum of m*p[i]/(i+1), cap at 1.0. Min-entropy via collections.Counter on raw bytes: H=-log2(max_freq/n). Autocorrelation via FFT: zero-pad bipolar signal to next power of 2, compute |FFT|^2, IFFT, normalize by (n-tau), find peak absolute value for lags 1-4096. The LCG's 256-byte period produces near-perfect autocorrelation at lag 2048 bits."""
+verification_explanation = """Verifies: (1) Complete JSON structure with all 5 top-level sections and required keys, (2) P-value accuracy for frequency/runs/block_frequency/DFT via independent reference implementations on all three streams, (3) LCG weakness detection (DFT and serial test failures, >=2 total failures), (4) Combined significance statistic internal consistency (matches -2*sum(ln(p)) from reported test p-values for SHA-256 and MT) and p-value correctness (matches chi2.sf), (5) FDR correction properties: adjusted >= original, monotonicity under sorted original p, correct rejection counts (>=2 for LCG, 0 for SHA-256), original_p matches test_results, (6) Min-entropy accuracy against independent byte-frequency computation for all 3 streams, (7) LCG autocorrelation peak at lag 2048 with value >0.99, SHA-256 and MT autocorrelation peaks <0.01."""
+category = "security_and_privacy"
+tags = ["statistical-testing", "cryptographic-analysis"]
+expert_time_estimate_hours = 3.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:nist-rng-tests"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

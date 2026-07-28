@@ -1,0 +1,45 @@
+{
+  "gauge_block": {
+    "mcm": {
+      "estimate_nm": "float: expectation of delta_L Monte Carlo samples (nanometers)",
+      "standard_uncertainty_nm": "float: standard deviation of delta_L samples (nm)",
+      "shortest_coverage_interval_nm": "[float, float]: endpoints of shortest coverage interval",
+      "num_trials": "int: total number of Monte Carlo trials from adaptive procedure"
+    },
+    "guf": {
+      "estimate_nm": "float: model evaluated at input estimates (nm)",
+      "standard_uncertainty_nm": "float: combined standard uncertainty from law of propagation (nm)",
+      "coverage_interval_nm": "[float, float]: symmetric CI from scaled/shifted t-distribution",
+      "effective_dof": "int: effective degrees of freedom (floor)"
+    },
+    "validation": {
+      "d_low_nm": "float: |GUF_lower - MCM_lower| endpoint discrepancy",
+      "d_high_nm": "float: |GUF_upper - MCM_upper| endpoint discrepancy",
+      "numerical_tolerance_nm": "float: numerical tolerance based on MCM u(y)",
+      "is_valid": "bool: true if both d_low and d_high <= numerical_tolerance"
+    }
+  },
+  "comparison_loss": [
+    {
+      "x1": "float: input estimate x1",
+      "r": "float: correlation coefficient",
+      "mcm": {
+        "estimate": "float: expectation of delta_Y samples (dimensionless)",
+        "standard_uncertainty": "float: standard deviation of delta_Y samples",
+        "shortest_coverage_interval": "[float, float]: endpoints of shortest coverage interval",
+        "num_trials": "int: total adaptive Monte Carlo trials"
+      },
+      "guf": {
+        "estimate": "float: model evaluated at input estimates",
+        "standard_uncertainty": "float: combined standard uncertainty (first-order)",
+        "coverage_interval": "[float, float]: symmetric CI using Gaussian quantile"
+      },
+      "validation": {
+        "d_low": "float: lower endpoint discrepancy",
+        "d_high": "float: upper endpoint discrepancy",
+        "numerical_tolerance": "float: numerical tolerance",
+        "is_valid": "bool: both discrepancies within tolerance"
+      }
+    }
+  ]
+}

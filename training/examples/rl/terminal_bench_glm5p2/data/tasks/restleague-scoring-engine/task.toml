@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires simultaneously reverse-engineering multiple interacting scoring parameters from calibration data: the string similarity algorithm (Levenshtein ratio vs alternatives), the deduplication threshold (~0.8), the AUC integration method (trapezoidal vs rectangular), the composite effectiveness weights (0.6/0.4 inferred by solving a 2-equation system from calibration), and the cross-API aggregation scheme (operation-count-weighted vs simple mean, detectable only when calibration overall values don't match simple averages). Additionally demands expert-level OpenAPI path template matching with multi-level nesting disambiguation (/records/summary vs /records/{recordId}), handling of 4 distinct edge case categories (tool_crash exclusion, api_crash exclusion, zero-interaction completed sessions, unmatched methods on valid paths), and holistic understanding of REST API testing competition scoring methodology."""
+solution_explanation = """Query SQLite database for sessions and interactions. Parse YAML config for time budget. Load OpenAPI specs and build path template matchers that disambiguate by static segment count. For each session: match requests to operations, compute operation coverage (2XX), coverage rate (ops/total), and fault detection (5XX) with Levenshtein-based deduplication (threshold 0.8 inferred from calibration). Compute AUC via trapezoidal rule. Aggregate across repetitions excluding crashes, then compute overall metrics using API-operation-count-weighted averages (weights: blog=11, shop=10, hospital=12). Z-score normalize across 4 tools using population std. Effectiveness = 0.6*z_faults + 0.4*z_coverage_rate (weights solved from two calibration effectiveness scores). Efficiency = z_fault_auc + z_ops_auc. Assign badges by ranking."""
+verification_explanation = """Tests verify output JSON structure (4 tools, 3 APIs, required metric keys), exact badge assignments (Bug Hunter=BetaFuzz, Gold=BetaFuzz, Silver=AlphaTester, Roadrunner=BetaFuzz), per-tool per-API metric values within tight tolerances, AUC values, score rankings, effectiveness score values matching calibration, and 10 distinct edge cases including crashed session exclusion, api_crash exclusion, zero-interaction sessions, unmatched paths, near-duplicate error deduplication, multi-level path template disambiguation, unmatched HTTP methods, and weighted-vs-simple overall averaging."""
+category = "software_testing"
+tags = ["rest-api", "scoring-engine"]
+expert_time_estimate_hours = 3.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:restleague-scoring-engine"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

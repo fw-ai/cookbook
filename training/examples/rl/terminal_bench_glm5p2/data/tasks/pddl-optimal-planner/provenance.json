@@ -1,0 +1,22 @@
+{
+  "task": "pddl-optimal-planner",
+  "source_name": "ipc-benchmarks-international-planning-competition-",
+  "source_files": [
+    "data/sample_blocksworld_domain.pddl",
+    "data/sample_blocksworld_problem1.pddl",
+    "data/sample_logistics_domain.pddl",
+    "data/sample_logistics_problem1.pddl",
+    "summary.md"
+  ],
+  "cite_reason": "Task domains (blocksworld, logistics) adapted from IPC benchmark instances; PDDL specification features from source documentation; task concept inspired by IPC competition format",
+  "source_score": 4.25,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "artificial_intelligence",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "22b3df7b-ab86-47ee-8f86-120a6d56a6f9",
+  "iters": 3,
+  "generated_at": "2026-06-12T02:40:33",
+  "schema": "prov-v1"
+}

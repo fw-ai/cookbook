@@ -1,0 +1,20 @@
+{
+  "task": "task-63d6b5",
+  "source_name": "alexei-starovoitov-ebpf-",
+  "source_files": [
+    "data/bpf_instruction_set.rst",
+    "data/bpf_verifier_doc.rst",
+    "data/bpf_verifier_top200.c"
+  ],
+  "cite_reason": "Task design based on BPF ISA spec (instruction encoding, classes, opcodes), kernel verifier documentation (register type tracking, CFG validation, stack discipline, caller/callee-saved semantics), and verifier source code (abstract interpretation approach, JMP32 handling, R10 immutability checks, stack bounds validation).",
+  "source_score": 4.75,
+  "source_domain": "computer_systems_organization",
+  "source_subdomain": "operating_systems",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "f96cad90-211f-4d14-8901-42eba04b6b39",
+  "iters": 2,
+  "generated_at": "2026-06-12T02:14:02",
+  "schema": "prov-v1"
+}

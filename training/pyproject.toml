@@ -36,6 +36,9 @@ dev = [
 coding-agent = [
     "swebench @ git+https://github.com/SWE-Gym/SWE-Bench-Fork.git",
 ]
+terminal-bench = [
+    "rllm[harbor] @ git+https://github.com/rllm-org/rllm.git@5f2fed491589790457c6bb292734415ea108463a",
+]
 
 [tool.setuptools.packages.find]
 where = [".."]

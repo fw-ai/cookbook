@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires building a join query execution engine handling 30 queries over five binary columnar relations (4K–25K rows). The binary on-disk format is intentionally undocumented — the agent must use sqlite3 CLI to explore the catalog database (discovering table schemas, relation metadata, column statistics, foreign key relationships, and the workload queries stored in the 'workload' table), use xxd/od/hexdump to reverse-engineer the binary column-store layout (16-byte header with uint64 num_tuples and num_columns, followed by column-major uint64 arrays), and use jq to navigate the deeply nested per-column histogram statistics in JSON. These three tools must be used together: sqlite3 reveals what data exists and its logical schema, hex inspection reveals how it is physically stored on disk, and jq provides selectivity estimates for understanding data distributions. The workload queries are only available in the SQLite catalog's workload table — not as a plain text file — forcing sqlite3 CLI proficiency for query extraction. The workload spans two-way through five-way joins with cyclic join graphs, self-joins, and selective filters. Cyclic join graphs demand that the engine verify all join predicates after the hash-join pipeline. The subtle distinction between join predicates (dot on both sides of '=') and filter predicates (integer constant on the right) is a correctness-critical parsing challenge. The engine is tested against freshly regenerated data with a different random seed, preventing hardcoded answers. Inspired by SIGMOD 2018 and 2025 join processing contests."""
+solution_explanation = """The solution uses sqlite3 (Python module) to extract relation file paths and workload queries from the catalog, parses binary relation files using struct.unpack with little-endian uint64 format (format discovered via hex inspection of the 16-byte header), builds an in-memory columnar store, then executes each query via incremental hash joins. For each query: (1) parse relation bindings, distinguish join predicates from filter predicates by checking for dots in the RHS of '=' operators; (2) apply filter predicates per-binding for early cardinality reduction; (3) join bindings incrementally using hash tables; (4) perform a final verification pass re-checking ALL join predicates to catch cycle-closing conditions. Projection SUMs use uint64 modular arithmetic."""
+verification_explanation = """Tests first regenerate all relation data using a different random seed (preserving schema structure and workload queries but changing all values), then run the engine on this fresh data before installing verification dependencies. A DuckDB-based verifier independently loads the regenerated binary data, extracts queries from the catalog's workload table, translates each query to equivalent SQL, and compares results line-by-line. This data regeneration ensures the engine is general-purpose and not overfitted to the pre-loaded dataset, preventing hardcoded answers. Additional tests target specific query categories: cyclic joins, self-joins, five-way joins, empty results, and each batch."""
+category = "systems"
+tags = ["query-optimization", "database-internals"]
+expert_time_estimate_hours = 3.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-c02ae5"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

@@ -1,0 +1,68 @@
+{
+  "packages": {
+    "framework": {
+      "3.0.0": {"depends": {"utils": ">=2.0.0", "logging": ">=1.0.0"}},
+      "2.1.0": {"depends": {"utils": ">=1.1.0,<3.0.0", "logging": ">=0.2.0"}},
+      "2.0.0": {"depends": {"utils": ">=1.0.0,<3.0.0", "logging": ">=0.2.0"}},
+      "1.0.0": {"depends": {"utils": ">=1.0.0,<2.0.0"}}
+    },
+    "database": {
+      "3.0.0": {"depends": {"serializer": ">=2.0.0", "logging": ">=1.0.0", "utils": ">=2.1.0"}},
+      "2.1.0": {"depends": {"serializer": ">=1.0.0,<3.0.0", "logging": ">=0.2.0", "utils": ">=1.1.0"}},
+      "2.0.0": {"depends": {"serializer": ">=1.0.0,<3.0.0", "logging": ">=0.1.0", "utils": ">=1.0.0"}},
+      "1.1.0": {"depends": {"serializer": ">=1.0.0,<2.0.0", "utils": ">=1.0.0,<2.0.0"}},
+      "1.0.0": {"depends": {"utils": ">=1.0.0,<2.0.0"}}
+    },
+    "auth": {
+      "2.0.0": {"depends": {"crypto": ">=2.0.0", "utils": ">=2.0.0", "cache": ">=2.0.0"}},
+      "1.1.0": {"depends": {"crypto": ">=1.0.0,<2.0.0", "utils": ">=1.1.0", "cache": ">=1.0.0"}},
+      "1.0.0": {"depends": {"crypto": ">=1.0.0,<2.0.0", "utils": ">=1.0.0"}}
+    },
+    "cache": {
+      "2.1.0": {"depends": {"serializer": ">=2.0.0", "utils": ">=2.0.0"}},
+      "2.0.0": {"depends": {"serializer": ">=2.0.0", "utils": ">=1.1.0"}},
+      "1.0.0": {"depends": {"utils": ">=1.0.0,<2.0.0"}}
+    },
+    "logging": {
+      "2.0.0": {"depends": {"utils": ">=2.0.0"}},
+      "1.1.0": {"depends": {"utils": ">=1.1.0"}},
+      "1.0.0": {"depends": {"utils": ">=1.0.0"}},
+      "0.2.0": {"depends": {}},
+      "0.1.0": {"depends": {}}
+    },
+    "crypto": {
+      "2.1.0": {"depends": {"utils": ">=2.0.0"}},
+      "2.0.0": {"depends": {"utils": ">=1.1.0"}},
+      "1.1.0": {"depends": {"utils": ">=1.0.0,<3.0.0"}},
+      "1.0.0": {"depends": {"utils": ">=1.0.0,<2.0.0"}}
+    },
+    "serializer": {
+      "3.0.0": {"depends": {"utils": ">=2.1.0"}},
+      "2.0.0": {"depends": {"utils": ">=1.1.0"}},
+      "1.0.0": {"depends": {"utils": ">=1.0.0,<2.0.0"}}
+    },
+    "utils": {
+      "3.0.0": {"depends": {}},
+      "2.1.0": {"depends": {}},
+      "2.0.0": {"depends": {}},
+      "1.1.0": {"depends": {}},
+      "1.0.0": {"depends": {}}
+    },
+    "config": {
+      "2.0.0": {"depends": {"serializer": ">=2.0.0", "validator": ">=2.0.0"}},
+      "1.1.0": {"depends": {"serializer": ">=1.0.0", "validator": ">=1.0.0"}},
+      "1.0.0": {"depends": {"serializer": ">=1.0.0,<2.0.0"}}
+    },
+    "networking": {
+      "2.1.0": {"depends": {"crypto": ">=2.0.0", "logging": ">=1.0.0", "utils": ">=2.0.0"}},
+      "2.0.0": {"depends": {"crypto": ">=1.1.0", "logging": ">=0.2.0", "utils": ">=1.1.0"}},
+      "1.1.0": {"depends": {"crypto": ">=1.0.0", "logging": ">=0.1.0", "utils": ">=1.0.0"}},
+      "1.0.0": {"depends": {"crypto": ">=1.0.0,<2.0.0", "utils": ">=1.0.0,<2.0.0"}}
+    },
+    "validator": {
+      "2.1.0": {"depends": {"utils": ">=2.0.0"}},
+      "2.0.0": {"depends": {"utils": ">=1.1.0"}},
+      "1.0.0": {"depends": {"utils": ">=1.0.0"}}
+    }
+  }
+}

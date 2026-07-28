@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires PhD-level expertise in metaheuristic optimization and energy systems. The agent must: (1) implement the FairMix composite fairness metric with three interdependent components (benefit coverage, CV-based equity, loss burden) including edge cases for zero/one winners; (2) implement a self-adaptive Differential Evolution variant (HyDE-DF pattern) with per-individual mutation/crossover parameters, exponential decay function, and boundary repair; (3) achieve competitive optimization results on a 96-dimensional continuous problem within a tight 5000-evaluation budget; (4) understand the zero-sum nature of P2P pricing where total community savings always equal zero. The interplay between the three FairMix components creates a non-trivial multi-objective landscape that requires sophisticated algorithm design."""
+solution_explanation = """The solution implements the FairMix metric (C1: benefit coverage as 1-N+/N, C2: coefficient of variation of positive savings, C3: mean absolute loss normalized by mean BAU bill), then uses HyDE-DF (Hybrid-adaptive Differential Evolution with Decay Function) with population size 20, per-individual self-adaptive F (3-column) and CR parameters regenerated with 10% probability, exponential decay ginv=exp(1-1/a^2) controlling mutation toward the best solution, and greedy selection. The optimizer runs 20 independent trials with different seeds, achieving average FairMix well below 0.25."""
+verification_explanation = """Tests verify: (1) FairMix metric correctness via a synthetic 3-household test case with manually computed expected bills, BAU bills, savings, and FairMix value; (2) mid-market prices produce FairMix exactly 1/3; (3) savings sum to zero (P2P balance); (4) optimizer returns valid structure with correct shapes; (5) all prices respect bounds; (6) optimizer improves over mid-market baseline; (7) fitness history is monotonically non-increasing; (8) average FairMix across 5 sample trials < 0.25; (9) summary.json has correct structure with 20 trials and avg_fitness < 0.25; (10) reported prices reproduce the claimed fitness value."""
+category = "optimization"
+tags = ["evolutionary-computation", "energy-systems"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-ac67d9"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

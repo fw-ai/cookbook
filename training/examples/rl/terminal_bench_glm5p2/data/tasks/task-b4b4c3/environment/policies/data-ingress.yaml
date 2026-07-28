@@ -1,0 +1,16 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: data-ingress
+  namespace: data
+spec:
+  endpointSelector: {}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            role: backend
+            k8s:io.kubernetes.pod.namespace: backend
+    - fromEndpoints:
+        - matchLabels:
+            role: monitoring
+            k8s:io.kubernetes.pod.namespace: monitoring

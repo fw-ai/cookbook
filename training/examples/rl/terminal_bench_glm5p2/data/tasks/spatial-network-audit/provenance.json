@@ -1,0 +1,22 @@
+{
+  "task": "spatial-network-audit",
+  "source_name": "postgis-paul-ramsey-",
+  "source_files": [
+    "data/workshop_de9im_text.txt",
+    "data/workshop_validity_text.txt",
+    "data/blog_network_walking.html",
+    "data/workshop_linear_referencing_text.txt",
+    "data/workshop_spatial_relationships_text.txt"
+  ],
+  "cite_reason": "Task requires evaluating competing PostGIS strategies drawing on: DE9IM overlap vs containment semantics (workshop DE9IM), geometry validity and ST_MakeValid for self-intersecting polygons (workshop validity), recursive CTE network walking with endpoint vs intersection connectivity (blog post), linear referencing for well-to-pipe projection (workshop linear referencing), and spatial predicate hierarchy for coverage computation (workshop spatial relationships)",
+  "source_score": 4.75,
+  "source_domain": "information_systems",
+  "source_subdomain": "spatial_databases",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "33563c20-33ff-4d4f-9888-9188b0b351e0",
+  "iters": 4,
+  "generated_at": "2026-06-13T15:41:24",
+  "schema": "prov-v1"
+}

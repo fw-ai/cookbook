@@ -1,0 +1,124 @@
+openapi: "3.0.3"
+info:
+  title: Blog API
+  version: "1.0.0"
+  description: Multi-user blogging platform with posts, comments, and tagging
+paths:
+  /auth/login:
+    post:
+      operationId: login
+      summary: Authenticate user
+      responses:
+        '200':
+          description: Login successful
+  /posts:
+    get:
+      operationId: listPosts
+      summary: List all posts
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+    post:
+      operationId: createPost
+      summary: Create a new post
+      responses:
+        '201':
+          description: Created
+  /posts/featured:
+    get:
+      operationId: getFeaturedPosts
+      summary: Get featured posts
+      responses:
+        '200':
+          description: OK
+  /posts/drafts:
+    get:
+      operationId: getDrafts
+      summary: Get current user draft posts
+      responses:
+        '200':
+          description: OK
+  /posts/{postId}:
+    get:
+      operationId: getPost
+      summary: Get post by ID
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    put:
+      operationId: updatePost
+      summary: Update post
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    patch:
+      operationId: patchPost
+      summary: Partially update post
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /posts/{postId}/comments:
+    get:
+      operationId: listComments
+      summary: List comments on a post
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    post:
+      operationId: addComment
+      summary: Add a comment to a post
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Created
+  /posts/{postId}/tags:
+    get:
+      operationId: listTags
+      summary: List tags on a post
+      parameters:
+        - name: postId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK

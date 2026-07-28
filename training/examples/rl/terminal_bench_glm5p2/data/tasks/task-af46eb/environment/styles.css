@@ -1,0 +1,39 @@
+body { color: #333333; font-size: 16px; }
+h1 { font-size: 32px; }
+h2 { font-size: 24px; }
+h3 { font-size: 20px; }
+p { color: #333333; }
+a { color: #0066cc; }
+.dark-theme { color: #e0e0e0; }
+.primary { color: #1a1a2e; }
+#site-title { color: #ff6600; font-size: 36px; }
+.nav-link { color: #4488bb; font-size: 14px; }
+.nav-link.active { color: #ffffff; }
+.nav-link.special { color: #ff4444; }
+:is(#content, .wrapper) p { color: #2d2d2d; }
+:where(#content, .wrapper) p { font-size: 15px; }
+.hero .intro-text { color: #555555; font-size: 18px; }
+.intro-text.highlight { color: #cc0000; }
+p:not(.highlight) { color: #444444; }
+#intro p { font-size: 17px; }
+.card { color: #222222; }
+.card-title { color: #111111; font-size: 20px; }
+.card-desc { color: #666666; font-size: 14px; }
+:is(#gallery) .card-desc { color: #555500; }
+:where(#gallery) .card-desc { font-size: 13px; }
+.card.featured .card-desc { color: #007700 !important; }
+#card-2-desc { color: #990000; font-size: 15px; }
+.card-title.special { color: #0000ff; }
+.card-desc.important { color: #cc00cc; }
+section > div > p.card-desc { color: #888888; }
+aside .widget-label { color: #775500; }
+.panel .widget.active .widget-label { color: #00aa00; }
+:not(.active) > .widget-label { color: #aa5500; }
+#page-footer { color: #cccccc; }
+.footer-item { color: #aaaaaa; font-size: 12px; }
+:is(.dark, .dark-theme) .footer-item { color: #bbbbbb; }
+.footer-item:nth-child(2) { color: #ff8800; }
+.copyright { color: #999999; font-size: 11px; }
+p:not(.card-desc):not(.intro-text) { font-size: 14px; }
+#intro-heading { font-size: 28px; }
+:where(.hero, .featured) h2 { color: #003366; }

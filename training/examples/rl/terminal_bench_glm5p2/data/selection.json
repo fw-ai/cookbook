@@ -1,0 +1,295 @@
+{
+  "eligible_count": 52,
+  "seed": "20260727",
+  "selected": [
+    {
+      "successes": [
+        4
+      ],
+      "task_id": "fhir-access-policy"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "vinaigrette-signature-forge"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-190047"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-0e7a4d"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "vault-acl-remediation"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "egraph-optimal-extraction"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "mba-pipeline-inversion"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-381c29"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-af46eb"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "hamiltonian-circuit-synth"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "torch-dispatch-profiler"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-35c6c4"
+    },
+    {
+      "successes": [
+        4
+      ],
+      "task_id": "mcm-gum-validation"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "distributed-query-decomposer"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "puzzlescript-rule-engine"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-ac67d9"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-631090"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-f49fba"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-c4ffa3"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "nist-rng-tests"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "pddl-optimal-planner"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "rop-pivot-vault"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-4b08d4"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-26ecaf"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "slab-schedule-optimize"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-cfbe8f"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "crashsafe-kvstore"
+    },
+    {
+      "successes": [
+        4
+      ],
+      "task_id": "task-20f411"
+    },
+    {
+      "successes": [
+        5,
+        3
+      ],
+      "task_id": "nix-overlay-fixpoint"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "stable-custom-derivatives"
+    },
+    {
+      "successes": [
+        4
+      ],
+      "task_id": "quantum-cnot-optimizer"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-63d6b5"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-b8fd0d"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "kernel-slab-analyzer"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "restleague-scoring-engine"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-b4b4c3"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "cornell-smoke-renderer"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-7c9d2f"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "flash-erase-planner"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "lammps-ff-validator"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-6e429e"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "jc-model-calibration"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-2548b2"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "acvp-vector-processor"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-17f1c3"
+    },
+    {
+      "successes": [
+        3
+      ],
+      "task_id": "task-bded50"
+    },
+    {
+      "successes": [
+        5
+      ],
+      "task_id": "task-c02ae5"
+    },
+    {
+      "successes": [
+        4
+      ],
+      "task_id": "spatial-network-audit"
+    }
+  ]
+}

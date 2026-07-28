@@ -1,0 +1,16 @@
+{
+  "name": "restate-booking-platform",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/service.js"
+  },
+  "dependencies": {
+    "@restatedev/restate-sdk": "^1.11.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.5.4",
+    "@types/node": "^22.0.0"
+  }
+}

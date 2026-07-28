@@ -1,0 +1,42 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires understanding of dimension-ordered routing on toroidal NoC grids,
+conflict detection via directed-edge analysis, combinatorial placement optimization under harvesting
+constraints, and virtual channel assignment as a graph coloring problem. The domain knowledge
+(Tenstorrent Wormhole architecture, DRAM bandwidth saturation strategies, NoC routing conventions)
+is specialized and not covered in standard textbooks."""
+solution_explanation = """For each scenario: (1) determine valid worker positions by excluding harvested
+rows, (2) greedily place readers near their DRAM banks preferring the adjacent column and downward rows
+for efficient NoC 0 routing, (3) trace dimension-ordered return routes and detect shared directed edges,
+(4) resolve conflicts by assigning virtual channels via greedy graph 2-coloring on the conflict graph.
+The key insight is that NoC 0 (+X,+Y) is always efficient for reaching the adjacent worker column from
+DRAM columns 0/5, so readers should be placed at or below their bank row. VC assignment handles the
+remaining edge conflicts between vertically cascading displaced readers."""
+verification_explanation = """Tests independently re-implement dimension-ordered route tracing on the
+toroidal grid and verify: (1) output structure and completeness, (2) all placements on valid non-harvested
+worker positions with no duplicates, (3) correct NoC/VC values, (4) zero shared directed edges among
+same-(NoC,VC) routes via independent conflict recomputation, (5) correct total hop counts, and
+(6) bandwidth utilization above the 0.92 threshold."""
+category = "hardware_design"
+tags = ["noc-routing", "combinatorial-optimization"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-0e7a4d"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

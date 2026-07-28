@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires building a domain-independent PDDL planner that produces length-optimal plans. The agent must parse S-expression PDDL syntax with multi-level type hierarchies (e.g., truck -> vehicle -> physobj -> object), perform type-consistent action grounding across the full cross-product of typed objects, implement a search strategy that guarantees optimality, and interface with available system tools. The 10-block blocksworld problem has ~1.3M reachable states making naive BFS infeasible under the memory limit; the logistics domain specifically tests multi-level type hierarchies that most naive implementations fail on. Requires deep understanding of automated planning, formal languages, and search algorithms."""
+solution_explanation = """Build a complete domain-independent PDDL planner: parse the S-expression PDDL files, resolve type hierarchies recursively to ground all action schemas, implement an optimal search strategy that scales to large state spaces, and produce valid plans in IPC format. The five problem instances have optimal plan lengths that the agent must discover through correct implementation."""
+verification_explanation = """Tests parse the original PDDL domain and problem files, ground all actions, then simulate each plan step-by-step: checking that every action's preconditions are satisfied in the current state, applying effects to advance the state, verifying the goal is reached after the final action, and confirming the plan length matches the known optimal via hash-based verification."""
+category = "artificial_intelligence"
+tags = ["automated-planning", "pddl"]
+expert_time_estimate_hours = 4.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:pddl-optimal-planner"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

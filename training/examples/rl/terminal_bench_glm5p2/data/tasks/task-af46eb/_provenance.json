@@ -1,0 +1,1 @@
+{"source_files": ["/source_data/data/servo_readme.md", "/source_data/data/servo_main_page.html", "/source_data/source_info.txt"], "cite_reason": "Servo's CSS style resolution pipeline and CSS Selectors Level 4 implementation inspired a task about building a CSS cascade engine from scratch and auditing a buggy resolver for specification-compliance violations."}

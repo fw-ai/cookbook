@@ -1,0 +1,77 @@
+title Sokoban Classic
+author Benchmark
+
+========
+OBJECTS
+========
+
+Background
+black
+
+Wall
+brown
+
+Player
+blue
+
+Crate
+orange
+
+Target
+green
+
+========
+LEGEND
+========
+
+. = Background
+# = Wall
+P = Player
+* = Crate
+O = Target
+  = Background
+
+=======
+COLLISIONLAYERS
+=======
+
+Background
+Target
+Player, Wall, Crate
+
+======
+RULES
+======
+
+[ > Player | Crate ] -> [ > Player | > Crate ]
+
+==============
+WINCONDITIONS
+==============
+
+All Target on Crate
+
+=======
+LEVELS
+=======
+
+#####
+#O..#
+#...#
+#.*.#
+#.P.#
+#####
+
+#####
+#O.O#
+#...#
+#*.*#
+#.P.#
+#####
+
+######
+#O...#
+#.#..#
+#.*..#
+#..P.#
+######

@@ -1,0 +1,21 @@
+{
+  "task": "task-c02ae5",
+  "source_name": "sigmod-programming-contest-archive",
+  "source_files": [
+    "data/search_2018.txt",
+    "data/github_sigmod_2018_readme.md",
+    "data/github_sigmod_2025_readme.md",
+    "data/github_top1_umbra_readme.md"
+  ],
+  "cite_reason": "Task directly inspired by the SIGMOD 2018 join processing contest (binary columnar format, query syntax with binding semantics, checksum projections, batch protocol) and the 2025 in-memory join pipeline contest (columnar data layout, hash join execution). Winning solution readme informed difficulty calibration for cyclic join handling and query optimization.",
+  "source_score": 4.25,
+  "source_domain": "information_systems",
+  "source_subdomain": "data_processing",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "16d7af3a-405e-4244-9988-5d577d473ebe",
+  "iters": 5,
+  "generated_at": "2026-06-12T10:56:06",
+  "schema": "prov-v1"
+}

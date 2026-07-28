@@ -1,0 +1,21 @@
+{
+  "task": "task-2548b2",
+  "source_name": "pingcap-talent-plan-distributed-systems-in-rust",
+  "source_files": [
+    "data/percolator_src_client.rs",
+    "data/percolator_src_server.rs",
+    "data/percolator_src_tests.rs",
+    "data/percolator_readme.md"
+  ],
+  "cite_reason": "Task design is based on the Percolator distributed transaction lab: the MVCC storage model (KvTable with Write/Data/Lock columns), snapshot isolation test scenarios (PMP, lost update, read skew, write skew, anti-dependency cycles), and partial-commit recovery via lock cleanup are all derived from these source materials.",
+  "source_score": 4.5,
+  "source_domain": "computer_systems_organization",
+  "source_subdomain": "distributed_systems",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "8e1d920d-b814-4e01-82bd-bfc8e82094a8",
+  "iters": 4,
+  "generated_at": "2026-06-12T13:48:10",
+  "schema": "prov-v1"
+}

@@ -1,0 +1,19 @@
+{
+  "task": "task-17f1c3",
+  "source_name": "patch-to-poc-k-repro-a-systematic-study-of-agentic-llm-syste",
+  "source_files": [
+    "data/krepro_paper_clean.txt",
+    "summary.md"
+  ],
+  "cite_reason": "Task design directly inspired by K-REPRO paper's statistical methodology: Fisher's exact tests for factor analysis, Mantel-Haenszel stratified odds ratios, CMH tests, cheating detection via trajectory audit, and the multi-format experimental dataset modeled after KernelCTF evaluation with split metadata and JSONL run results.",
+  "source_score": 4.5,
+  "source_domain": "computer_systems_organization",
+  "source_subdomain": "operating_systems",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "bc1620f7-8af5-4f55-8132-844dfc1413ea",
+  "iters": 4,
+  "generated_at": "2026-06-12T19:35:55",
+  "schema": "prov-v1"
+}

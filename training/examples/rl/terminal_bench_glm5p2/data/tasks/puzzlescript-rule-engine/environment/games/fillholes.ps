@@ -1,0 +1,71 @@
+title Fill The Holes
+author Benchmark
+
+========
+OBJECTS
+========
+
+Background
+black
+
+Wall
+brown
+
+Player
+blue
+
+Block
+orange
+
+Hole
+green
+
+========
+LEGEND
+========
+
+. = Background
+# = Wall
+P = Player
+B = Block
+H = Hole
+  = Background
+
+=======
+COLLISIONLAYERS
+=======
+
+Background
+Hole
+Player, Wall, Block
+
+======
+RULES
+======
+
+[ > Player | Block ] -> [ > Player | > Block ]
+
+late [ Block Hole ] -> [ ]
+
+==============
+WINCONDITIONS
+==============
+
+No Hole
+
+=======
+LEVELS
+=======
+
+#####
+#...#
+#HB.#
+#..P#
+#####
+
+######
+#....#
+#HB..#
+#..BH#
+#..P.#
+######

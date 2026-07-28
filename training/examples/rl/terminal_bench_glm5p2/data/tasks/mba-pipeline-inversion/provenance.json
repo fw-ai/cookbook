@@ -1,0 +1,20 @@
+{
+  "task": "mba-pipeline-inversion",
+  "source_name": "recon-montreal-reverse-engineering-conference-talk-archive-2",
+  "source_files": [
+    "data/recon_2025_sessions.html",
+    "data/recon_2025_training.html",
+    "data/recon_2026_sessions.html"
+  ],
+  "cite_reason": "Inspired by REcon talks on MBA deobfuscation (Altamura & Blazytko 'Breaking Mixed Boolean-Arithmetic Obfuscation', REcon 2025; 'Deobfuscation in the Age of Agentic RE', REcon 2026; 'Black-box deobfuscation', REcon 2026) and Blazytko's 'Software Deobfuscation Techniques' training, plus '8 Years of Reverse-Engineering Interpreters' (Usui, REcon 2026) for the VM/pipeline analysis aspect. The novel MBA synthesis requirement draws from the constructive side of MBA research presented at these conferences.",
+  "source_score": 4.35,
+  "source_domain": "security_and_privacy",
+  "source_subdomain": "systems_security",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "55e34244-abd5-4372-9596-cf1d631ac793",
+  "iters": 3,
+  "generated_at": "2026-06-13T07:39:20",
+  "schema": "prov-v1"
+}

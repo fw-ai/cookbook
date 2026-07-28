@@ -1,0 +1,8 @@
+{
+  "source_files": [
+    "/source_data/data/jax_custom_derivatives_text.txt",
+    "/source_data/data/jax_autodidax.md",
+    "/source_data/summary.md"
+  ],
+  "cite_reason": "Task design inspired by JAX custom derivative rules documentation (custom_jvp for numerical stability, e.g. log1pexp example) and the autodidax tutorial (understanding JVP/VJP internals and how higher-order derivatives are computed by differentiating through JVP rules)"
+}

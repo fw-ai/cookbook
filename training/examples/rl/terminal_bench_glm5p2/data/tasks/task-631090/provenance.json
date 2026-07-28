@@ -1,0 +1,20 @@
+{
+  "task": "task-631090",
+  "source_name": "codingame-optimization-games-leaderboard-archive",
+  "source_files": [
+    "data/codingame_optim_statements_clean.txt",
+    "data/codingame_optim_complete_reference.md",
+    "summary.md"
+  ],
+  "cite_reason": "Task design directly inspired by the SameGame optimization game from CodinGame (rules, scoring formula, coordinate system, board format) as documented in the problem statements and reference files.",
+  "source_score": 4.0,
+  "source_domain": "theory_of_computation",
+  "source_subdomain": "games_puzzles",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "5484fe89-e66c-4720-b262-4d9bbebb0bab",
+  "iters": 5,
+  "generated_at": "2026-06-13T16:43:01",
+  "schema": "prov-v1"
+}

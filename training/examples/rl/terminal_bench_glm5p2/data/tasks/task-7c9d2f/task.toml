@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level understanding of CMSIS-SVD specification and multi-tool diagnostic workflow across two distinct challenge phases. Phase 1 (Evaluate): The solver must independently discover 7 distinct defects spanning peripheral derivedFrom chains, register array dim/dimIndex consistency, cluster addressOffset arithmetic, alternateRegister reference integrity, access type correctness, and array index uniqueness — then evaluate each against the hardware reference to determine the correct fix among possible alternatives. Phase 2 (Create): The solver must design from scratch a complete ADC0 peripheral SVD definition from a hardware specification, making architectural decisions about how to represent channel blocks (cluster arrays vs flat registers), arrayed data registers (dim arrays vs individual definitions), and dual-view registers (alternateRegister vs separate entries). The solver must produce a design rationale document evaluating and justifying each encoding choice against alternatives. No defect list, structural hints, or SVD templates are provided."""
+solution_explanation = """Parse the buggy SVD with ElementTree, identify each defect by comparing extracted register maps against hwref.json and checking SVD structural rules. Fix: (1) GPIOA PUPDR addressOffset 0x00→0x0C, (2) UART1 derivedFrom USART0→UART0, (3) TIMER0 CCR dimIndex 0-2→0-3, (4) TIMER0 SR access read-write→read-only, (5) SPI0 DR8 alternateRegister DR_16→DR16, (6) DMA0 CH cluster addressOffset 0x0C→0x08, (7) SYSCFG EXTICR dimIndex 1,2,3,1→1-4. Then create ADC0 peripheral using cluster array for 4 channels (dim=4, dimIncrement=0x08), dim array for JDR registers (dim=4, dimIncrement=4), and alternateRegister for DR_LEFT/DR_RIGHT dual-view. Write corrected SVD, defect report, and design rationale."""
+verification_explanation = """Tests parse the fixed SVD with a Python XML parser implementing full CMSIS-SVD semantics (derivedFrom resolution, dim/dimIndex expansion, cluster nesting, alternateRegister tracking). 100+ assertions verify: total register count (146 across 9 peripherals), per-peripheral counts, specific register absolute addresses and access types, alternate pair detection (4 pairs including ADC0 DR_LEFT/DR_RIGHT), conflict detection, presence of diagnostic report with entries for all affected peripherals, and ADC0 design rationale document with required keys and non-trivial justifications."""
+category = "embedded_systems"
+tags = ["svd-debugging", "peripheral-design"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-7c9d2f"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

@@ -1,0 +1,20 @@
+{
+  "task": "nist-rng-tests",
+  "source_name": "nist-sp-800-22-rev-1a-statistical-test-suite-for-rngs-with-r",
+  "source_files": [
+    "data/nist_sp800-22_page_text.txt",
+    "data/nist_sts_readme.md",
+    "source_info.txt"
+  ],
+  "cite_reason": "Task design inspired by NIST SP 800-22 Rev 1a statistical test suite for RNG validation: the 7 specific tests, their mathematical formulations, test parameters, and the concept of using known reference sequences to validate implementations. Extended with meta-statistical analysis (combined significance, FDR control), information-theoretic (min-entropy), and signal processing (autocorrelation) layers for holistic RNG quality assessment.",
+  "source_score": 4.05,
+  "source_domain": "security_and_privacy",
+  "source_subdomain": "cryptographic_primitives_rng_statistical_testing",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "63188c29-a54f-4f94-b587-ec6621d63bff",
+  "iters": 4,
+  "generated_at": "2026-06-13T02:48:13",
+  "schema": "prov-v1"
+}

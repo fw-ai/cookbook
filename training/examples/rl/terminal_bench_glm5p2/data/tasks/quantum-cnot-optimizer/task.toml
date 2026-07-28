@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires graduate-level quantum computing knowledge: understanding quantum gate commutation relations (which single-qubit gates commute with CNOT controls vs targets), DAG-based circuit analysis, and iterative/cascading optimization where removing one redundancy reveals new opportunities. The four benchmark circuits test progressively harder patterns including phase-on-control commutation, disjoint-qubit commutation, X-on-target commutation, and nested onion-like CNOT structures requiring multiple optimization passes."""
+solution_explanation = """Iteratively apply commutation-aware gate cancellation: identify pairs of identical CNOT gates separated only by gates that commute with them (phase gates on the control qubit, X-type gates on the target qubit, or gates on disjoint qubits), cancel such pairs, and repeat until convergence. Qiskit's CommutativeCancellation and CXCancellation transpiler passes implement this logic; running them in a loop handles cascading patterns where inner cancellations expose outer ones."""
+verification_explanation = """For each circuit, the test loads the original and optimized QASM, constructs qiskit.quantum_info.Operator for both, and asserts Operator.equiv() (unitary equality up to global phase). It also counts all gates with num_qubits >= 2 in the optimized circuit and asserts the count is at or below the target from targets.json."""
+category = "quantum_computing"
+tags = ["quantum-compilation", "circuit-optimization"]
+expert_time_estimate_hours = 1.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:quantum-cnot-optimizer"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

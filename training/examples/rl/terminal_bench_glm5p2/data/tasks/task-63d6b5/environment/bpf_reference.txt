@@ -1,0 +1,136 @@
+BPF Instruction Set Architecture — Quick Reference
+===================================================
+
+INSTRUCTION ENCODING (8 bytes, little-endian)
+----------------------------------------------
+  Byte 0:    opcode
+  Byte 1:    regs = (src_reg << 4) | dst_reg
+  Bytes 2-3: offset (signed 16-bit, little-endian)
+  Bytes 4-7: imm    (signed 32-bit, little-endian)
+
+INSTRUCTION CLASSES (opcode & 0x7)
+-----------------------------------
+  0x0  LD     non-standard load (64-bit immediate uses wide encoding)
+  0x1  LDX    load into register
+  0x2  ST     store from immediate
+  0x3  STX    store from register
+  0x4  ALU    32-bit arithmetic
+  0x5  JMP    64-bit jump operations
+  0x6  JMP32  32-bit jump operations (same branch semantics as JMP)
+  0x7  ALU64  64-bit arithmetic
+
+ARITHMETIC INSTRUCTIONS (ALU / ALU64)
+--------------------------------------
+  Opcode format: code(4 bits) | source(1 bit) | class(3 bits)
+
+  source: 0 = K (immediate from 'imm' field)
+          1 = X (register from 'src_reg')
+
+  code  name   description
+  0x0   ADD    dst += src
+  0x1   SUB    dst -= src
+  0x2   MUL    dst *= src
+  0x3   DIV    dst /= src (0 if src==0)
+  0x4   OR     dst |= src
+  0x5   AND    dst &= src
+  0x6   LSH    dst <<= src
+  0x7   RSH    dst >>= src (logical)
+  0x8   NEG    dst = -dst (source must be K)
+  0x9   MOD    dst %= src
+  0xa   XOR    dst ^= src
+  0xb   MOV    dst = src
+  0xc   ARSH   dst >>= src (arithmetic)
+
+  Common opcodes:
+    0xb7 = MOV64_IMM  (code=MOV, src=K, class=ALU64)  dst = imm
+    0xbf = MOV64_REG  (code=MOV, src=X, class=ALU64)  dst = src_reg
+    0x07 = ADD64_IMM  (code=ADD, src=K, class=ALU64)  dst += imm
+
+JUMP INSTRUCTIONS (JMP / JMP32)
+--------------------------------
+  Opcode format: code(4 bits) | source(1 bit) | class(3 bits)
+
+  Jump target = (current_insn_index + 1) + offset
+
+  code  name   description
+  0x0   JA     goto +offset (unconditional)
+  0x1   JEQ    if dst == src goto +offset
+  0x2   JGT    if dst >  src goto +offset (unsigned)
+  0x3   JGE    if dst >= src goto +offset (unsigned)
+  0x4   JSET   if dst &  src goto +offset
+  0x5   JNE    if dst != src goto +offset
+  0x6   JSGT   if dst >  src goto +offset (signed)
+  0x7   JSGE   if dst >= src goto +offset (signed)
+  0x8   CALL   call helper function (helper ID in imm)
+  0x9   EXIT   return from program (return value in R0)
+  0xa   JLT    if dst <  src goto +offset (unsigned)
+  0xb   JLE    if dst <= src goto +offset (unsigned)
+  0xc   JSLT   if dst <  src goto +offset (signed)
+  0xd   JSLE   if dst <= src goto +offset (signed)
+
+  Common opcodes:
+    0x05 = JA       (code=JA,   src=K, class=JMP)
+    0x15 = JEQ_IMM  (code=JEQ,  src=K, class=JMP)
+    0x55 = JNE_IMM  (code=JNE,  src=K, class=JMP)
+    0x85 = CALL     (code=CALL, src=K, class=JMP)
+    0x95 = EXIT     (code=EXIT, src=K, class=JMP)
+
+  JMP32 uses class 0x6 instead of 0x5 but otherwise identical semantics
+  (comparison is 32-bit instead of 64-bit).
+
+LOAD/STORE INSTRUCTIONS (LD/LDX/ST/STX)
+-----------------------------------------
+  Opcode format: mode(3 bits) | size(2 bits) | class(3 bits)
+
+  mode:
+    0x0  IMM     64-bit immediate (wide encoding, 16 bytes total)
+    0x3  MEM     regular load/store
+
+  size:
+    0x0  W   word      (4 bytes)
+    0x1  H   half word (2 bytes)
+    0x2  B   byte      (1 byte)
+    0x3  DW  double    (8 bytes)
+
+  Semantics:
+    {MEM, sz, LDX}:  dst = *(unsigned_sz *)(src_reg + offset)
+    {MEM, sz, ST}:   *(sz *)(dst_reg + offset) = imm
+    {MEM, sz, STX}:  *(sz *)(dst_reg + offset) = src_reg
+
+  Common opcodes:
+    0x79 = LDX_MEM_DW   r_dst = *(u64 *)(r_src + offset)
+    0x61 = LDX_MEM_W    r_dst = *(u32 *)(r_src + offset)
+    0x7a = ST_MEM_DW    *(u64 *)(r_dst + offset) = imm
+    0x7b = STX_MEM_DW   *(u64 *)(r_dst + offset) = r_src
+    0x63 = STX_MEM_W    *(u32 *)(r_dst + offset) = r_src
+
+REGISTERS
+----------
+  R0       return value from program and from helper function calls
+  R1       pointer to context (bpf_context) at program start
+  R1-R5    function arguments; caller-saved (invalidated after CALL)
+  R6-R9    callee-saved (preserved across CALL)
+  R10      frame pointer (read-only, points to top of 512-byte stack)
+
+STACK
+------
+  BPF stack is 512 bytes, accessed via R10 (frame pointer).
+  Valid byte offsets: [-512, 0)
+  Stack must be written before it can be read.
+  R10 itself cannot be modified by any instruction.
+
+VERIFIER SAFETY PROPERTIES
+----------------------------
+  The BPF verifier ensures programs are safe to execute:
+  - Programs must form a directed acyclic graph (no backward jumps)
+  - All instructions must be reachable from the entry point
+  - Jump targets must be within program bounds
+  - Register values must be initialized before use
+  - R0 must hold a defined value at every EXIT instruction
+  - R10 (frame pointer) is immutable — it cannot be the target of any write
+  - Memory loads/stores require a valid pointer-typed base register
+  - Stack accesses must stay within the 512-byte frame boundaries
+  - Stack slots must be written before they can be read
+  - Helper function calls invalidate caller-saved registers (R1-R5)
+    and produce a return value in R0
+  - Both branches of every conditional jump must be verified independently

@@ -1,0 +1,23 @@
+{
+  "eclasses": {
+    "root": [
+      {"id": "root_combine", "op": "combine", "cost": 0, "children": ["x", "y"]}
+    ],
+    "x": [
+      {"id": "x_direct", "op": "direct_x", "cost": 9, "children": []},
+      {"id": "x_chain", "op": "chain_x", "cost": 1, "children": ["mid"]}
+    ],
+    "y": [
+      {"id": "y_direct", "op": "direct_y", "cost": 9, "children": []},
+      {"id": "y_chain", "op": "chain_y", "cost": 1, "children": ["mid"]}
+    ],
+    "mid": [
+      {"id": "mid_deep", "op": "use_deep", "cost": 2, "children": ["deep"]},
+      {"id": "mid_standalone", "op": "standalone_mid", "cost": 12, "children": []}
+    ],
+    "deep": [
+      {"id": "deep_leaf", "op": "leaf", "cost": 5, "children": []}
+    ]
+  },
+  "roots": ["root"]
+}

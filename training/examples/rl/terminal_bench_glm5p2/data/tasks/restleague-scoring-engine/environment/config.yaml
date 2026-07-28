@@ -1,0 +1,16 @@
+competition:
+  name: "REST League 2026"
+  edition: 1
+  venue: "ICSE 2026 / SBFT Workshop"
+
+scoring:
+  time_budget_seconds: 300
+  metrics:
+    - operation_coverage
+    - operation_coverage_rate
+    - fault_detection
+    - efficiency
+
+output:
+  path: /app/results.json
+  format: json

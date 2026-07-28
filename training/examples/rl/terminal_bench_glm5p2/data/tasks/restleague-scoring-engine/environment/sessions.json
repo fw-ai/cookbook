@@ -1,0 +1,175 @@
+{
+  "sessions": [
+    {
+      "tool": "AlphaTester",
+      "api": "blog",
+      "repetition": 1,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 10, "method": "POST", "path": "/auth/login", "status_code": 200, "error_message": null},
+        {"timestamp": 30, "method": "GET", "path": "/posts", "status_code": 200, "error_message": null},
+        {"timestamp": 50, "method": "POST", "path": "/posts", "status_code": 201, "error_message": null},
+        {"timestamp": 70, "method": "GET", "path": "/posts/1", "status_code": 200, "error_message": null},
+        {"timestamp": 100, "method": "PUT", "path": "/posts/1", "status_code": 200, "error_message": null},
+        {"timestamp": 130, "method": "GET", "path": "/posts/1/comments", "status_code": 200, "error_message": null},
+        {"timestamp": 200, "method": "POST", "path": "/posts", "status_code": 500, "error_message": "NullPointerException in PostService.create at line 42"},
+        {"timestamp": 250, "method": "GET", "path": "/posts/999", "status_code": 500, "error_message": "NullPointerException in PostService.create at line 43"},
+        {"timestamp": 270, "method": "PUT", "path": "/posts/1", "status_code": 500, "error_message": "ValidationException: field 'title' is required"},
+        {"timestamp": 280, "method": "POST", "path": "/admin/hack", "status_code": 500, "error_message": "SecurityException: unauthorized access attempt"}
+      ]
+    },
+    {
+      "tool": "AlphaTester",
+      "api": "blog",
+      "repetition": 2,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 15, "method": "POST", "path": "/auth/login", "status_code": 200, "error_message": null},
+        {"timestamp": 35, "method": "GET", "path": "/posts", "status_code": 200, "error_message": null},
+        {"timestamp": 55, "method": "POST", "path": "/posts", "status_code": 201, "error_message": null},
+        {"timestamp": 80, "method": "GET", "path": "/posts/2", "status_code": 200, "error_message": null},
+        {"timestamp": 110, "method": "PUT", "path": "/posts/2", "status_code": 200, "error_message": null},
+        {"timestamp": 140, "method": "GET", "path": "/posts/2/comments", "status_code": 200, "error_message": null},
+        {"timestamp": 210, "method": "POST", "path": "/posts", "status_code": 500, "error_message": "NullPointerException in PostService.create at line 42"}
+      ]
+    },
+    {
+      "tool": "AlphaTester",
+      "api": "shop",
+      "repetition": 1,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 10, "method": "POST", "path": "/auth/register", "status_code": 201, "error_message": null},
+        {"timestamp": 30, "method": "GET", "path": "/products", "status_code": 200, "error_message": null},
+        {"timestamp": 50, "method": "POST", "path": "/products", "status_code": 201, "error_message": null},
+        {"timestamp": 80, "method": "GET", "path": "/products/1", "status_code": 200, "error_message": null},
+        {"timestamp": 110, "method": "DELETE", "path": "/products/1", "status_code": 204, "error_message": null}
+      ]
+    },
+    {
+      "tool": "AlphaTester",
+      "api": "shop",
+      "repetition": 2,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 15, "method": "POST", "path": "/auth/register", "status_code": 201, "error_message": null},
+        {"timestamp": 40, "method": "GET", "path": "/products", "status_code": 200, "error_message": null},
+        {"timestamp": 60, "method": "POST", "path": "/products", "status_code": 201, "error_message": null},
+        {"timestamp": 90, "method": "GET", "path": "/products/2", "status_code": 200, "error_message": null},
+        {"timestamp": 120, "method": "DELETE", "path": "/products/2", "status_code": 204, "error_message": null},
+        {"timestamp": 200, "method": "POST", "path": "/products", "status_code": 500, "error_message": "ConstraintViolationException: unique key violation on email"}
+      ]
+    },
+    {
+      "tool": "BetaFuzz",
+      "api": "blog",
+      "repetition": 1,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 5, "method": "GET", "path": "/posts", "status_code": 200, "error_message": null},
+        {"timestamp": 8, "method": "GET", "path": "/posts/featured", "status_code": 200, "error_message": null},
+        {"timestamp": 10, "method": "POST", "path": "/posts", "status_code": 201, "error_message": null},
+        {"timestamp": 15, "method": "GET", "path": "/posts/1", "status_code": 200, "error_message": null},
+        {"timestamp": 25, "method": "POST", "path": "/posts", "status_code": 500, "error_message": "NullPointerException in PostService.create at line 42"},
+        {"timestamp": 35, "method": "GET", "path": "/posts/1", "status_code": 500, "error_message": "NullPointerException in PostService.create at line 42"},
+        {"timestamp": 45, "method": "PUT", "path": "/posts/1", "status_code": 500, "error_message": "ValidationException: field 'title' is required"},
+        {"timestamp": 55, "method": "POST", "path": "/auth/login", "status_code": 500, "error_message": "ConnectionTimeoutException: database pool exhausted"},
+        {"timestamp": 65, "method": "GET", "path": "/posts/2/comments", "status_code": 500, "error_message": "IllegalArgumentException: invalid ID format"}
+      ]
+    },
+    {
+      "tool": "BetaFuzz",
+      "api": "blog",
+      "repetition": 2,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 5, "method": "GET", "path": "/posts", "status_code": 200, "error_message": null},
+        {"timestamp": 8, "method": "GET", "path": "/posts/featured", "status_code": 200, "error_message": null},
+        {"timestamp": 10, "method": "POST", "path": "/posts", "status_code": 201, "error_message": null},
+        {"timestamp": 20, "method": "GET", "path": "/posts/3", "status_code": 200, "error_message": null},
+        {"timestamp": 30, "method": "POST", "path": "/posts", "status_code": 500, "error_message": "NullPointerException in PostService.create at line 42"},
+        {"timestamp": 40, "method": "PUT", "path": "/posts/3", "status_code": 500, "error_message": "ValidationException: field 'title' is required"},
+        {"timestamp": 50, "method": "POST", "path": "/auth/login", "status_code": 500, "error_message": "ConnectionTimeoutException: database pool exhausted"}
+      ]
+    },
+    {
+      "tool": "BetaFuzz",
+      "api": "shop",
+      "repetition": 1,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 10, "method": "GET", "path": "/products", "status_code": 200, "error_message": null},
+        {"timestamp": 20, "method": "POST", "path": "/products", "status_code": 201, "error_message": null},
+        {"timestamp": 30, "method": "GET", "path": "/products/1", "status_code": 200, "error_message": null},
+        {"timestamp": 40, "method": "POST", "path": "/products", "status_code": 500, "error_message": "ConstraintViolationException: unique key violation on email"},
+        {"timestamp": 50, "method": "DELETE", "path": "/products/99", "status_code": 500, "error_message": "ResourceNotFoundException: product with id 99 not found"},
+        {"timestamp": 55, "method": "DELETE", "path": "/products/100", "status_code": 500, "error_message": "ResourceNotFoundException: product with id 100 not found"},
+        {"timestamp": 60, "method": "POST", "path": "/auth/register", "status_code": 500, "error_message": "IllegalStateException: registration service unavailable"}
+      ]
+    },
+    {
+      "tool": "BetaFuzz",
+      "api": "shop",
+      "repetition": 2,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 10, "method": "GET", "path": "/products", "status_code": 200, "error_message": null},
+        {"timestamp": 20, "method": "POST", "path": "/products", "status_code": 201, "error_message": null},
+        {"timestamp": 35, "method": "GET", "path": "/products/2", "status_code": 200, "error_message": null},
+        {"timestamp": 45, "method": "POST", "path": "/products", "status_code": 500, "error_message": "ConstraintViolationException: unique key violation on email"},
+        {"timestamp": 55, "method": "DELETE", "path": "/products/100", "status_code": 500, "error_message": "ResourceNotFoundException: product with id 100 not found"}
+      ]
+    },
+    {
+      "tool": "GammaProbe",
+      "api": "blog",
+      "repetition": 1,
+      "status": "tool_crash",
+      "interactions": [
+        {"timestamp": 5, "method": "GET", "path": "/posts", "status_code": 200, "error_message": null},
+        {"timestamp": 10, "method": "POST", "path": "/posts", "status_code": 201, "error_message": null}
+      ]
+    },
+    {
+      "tool": "GammaProbe",
+      "api": "blog",
+      "repetition": 2,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 10, "method": "POST", "path": "/auth/login", "status_code": 200, "error_message": null},
+        {"timestamp": 30, "method": "GET", "path": "/posts", "status_code": 200, "error_message": null},
+        {"timestamp": 50, "method": "POST", "path": "/posts", "status_code": 201, "error_message": null},
+        {"timestamp": 80, "method": "GET", "path": "/posts/4", "status_code": 200, "error_message": null},
+        {"timestamp": 150, "method": "POST", "path": "/posts", "status_code": 500, "error_message": "NullPointerException in PostService.create at line 42"},
+        {"timestamp": 160, "method": "DELETE", "path": "/posts", "status_code": 500, "error_message": "MethodNotAllowedException: DELETE not supported on /posts"}
+      ]
+    },
+    {
+      "tool": "GammaProbe",
+      "api": "shop",
+      "repetition": 1,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 10, "method": "POST", "path": "/auth/register", "status_code": 201, "error_message": null},
+        {"timestamp": 30, "method": "GET", "path": "/products", "status_code": 200, "error_message": null},
+        {"timestamp": 50, "method": "POST", "path": "/products", "status_code": 201, "error_message": null},
+        {"timestamp": 70, "method": "GET", "path": "/products/1", "status_code": 200, "error_message": null},
+        {"timestamp": 100, "method": "DELETE", "path": "/products/1", "status_code": 500, "error_message": "ResourceNotFoundException: product with id 99 not found"}
+      ]
+    },
+    {
+      "tool": "GammaProbe",
+      "api": "shop",
+      "repetition": 2,
+      "status": "completed",
+      "interactions": [
+        {"timestamp": 15, "method": "POST", "path": "/auth/register", "status_code": 201, "error_message": null},
+        {"timestamp": 40, "method": "GET", "path": "/products", "status_code": 200, "error_message": null},
+        {"timestamp": 60, "method": "POST", "path": "/products", "status_code": 201, "error_message": null},
+        {"timestamp": 85, "method": "GET", "path": "/products/3", "status_code": 200, "error_message": null},
+        {"timestamp": 110, "method": "DELETE", "path": "/products/3", "status_code": 204, "error_message": null},
+        {"timestamp": 180, "method": "POST", "path": "/products", "status_code": 500, "error_message": "ConstraintViolationException: unique key violation on email"}
+      ]
+    }
+  ]
+}

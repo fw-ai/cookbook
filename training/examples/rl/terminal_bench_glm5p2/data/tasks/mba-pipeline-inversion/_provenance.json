@@ -1,0 +1,8 @@
+{
+  "source_files": [
+    "/source_data/data/recon_2025_sessions.html",
+    "/source_data/data/recon_2025_training.html",
+    "/source_data/data/recon_2026_sessions.html"
+  ],
+  "cite_reason": "Inspired by REcon talks on MBA deobfuscation (Altamura & Blazytko 'Breaking Mixed Boolean-Arithmetic Obfuscation', REcon 2025; 'Deobfuscation in the Age of Agentic RE', REcon 2026; 'Black-box deobfuscation', REcon 2026) and Blazytko's 'Software Deobfuscation Techniques' training, plus '8 Years of Reverse-Engineering Interpreters' (Usui, REcon 2026) for the VM/pipeline analysis aspect. The novel MBA synthesis requirement draws from the constructive side of MBA research presented at these conferences."
+}

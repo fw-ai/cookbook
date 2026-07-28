@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires implementing a complete CSS Selectors Level 4 cascade engine from scratch given only stub functions and a tokenizer/parser. The agent must holistically understand CSS specificity (including the subtle :is()/:not() MAX-of-arguments vs :where() zero-specificity distinction), right-to-left selector matching with descendant and child combinators, 1-based :nth-child() indexing, cascade ordering with !important/specificity/source-order tiebreaking, and property inheritance. Additionally, the agent must evaluate a buggy reference resolver by comparing its output against expected results using jq and diff, then classify each deviation by root cause — requiring code-level analysis to distinguish specificity calculation errors from cascade ordering bugs and selector matching failures. The bugs interact: inflated :where() specificity masks cascade ordering issues, and wrong nth-child indexing shifts matches to different elements. The agent must combine proficiency in Python implementation, jq JSON processing, and diff-based comparison to produce both a working engine and a structured conformance report."""
+solution_explanation = """Implement three modules: (1) engine/specificity.py — recursive token-based specificity with :where()=zero, :is()/:not()=MAX, :nth-child()=(0,1,0). (2) engine/matcher.py — right-to-left matching with 1-based child_index, descendant/child combinators, and :is/:where/:not/:nth-child pseudo-class support. (3) engine/cascade.py — DOM walk with per-property candidate collection, !important partitioning, sort by (specificity, source_order) with last-wins tiebreaking, and recursive inheritance. For the conformance audit: run the buggy resolver, diff against expected output, analyze root causes in the resolver source code (0-based nth-child, :where treated as SUM not ZERO, negated source-order sort key), and generate the structured JSON report."""
+verification_explanation = """35+ assertions across 12 test classes verify both the engine implementation and the conformance audit. Unit tests independently verify: :is() uses MAX specificity, :where() contributes zero, :not() uses argument specificity, :nth-child uses 1-based matching, descendant/child combinators work, later source-order wins, !important overrides specificity, and inheritance propagates correctly. Bug-interaction tests verify that the engine handles cases where multiple CSS cascade rules interact. Integration tests compare full engine output against expected_output.json for all 30+ DOM elements. Conformance tests verify: the report has correct structure, all deviations are captured with correct expected/actual values, no false deviations are reported, root causes are valid categories, summary counts match, and the buggy resolver was not silently fixed."""
+category = "software_engineering"
+tags = ["css-engine-implementation", "conformance-analysis"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-af46eb"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

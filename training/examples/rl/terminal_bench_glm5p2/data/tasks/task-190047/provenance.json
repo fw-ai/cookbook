@@ -1,0 +1,21 @@
+{
+  "task": "task-190047",
+  "source_name": "veribench-end-to-end-formal-verification-benchmark-for-ai-co",
+  "source_files": [
+    "summary.md",
+    "data/veribench_cs_set_full.txt",
+    "data/veribench_system_prompt_with_examples.txt",
+    "data/veribench_install.sh"
+  ],
+  "cite_reason": "Task design inspired by VeriBench's approach of testing LLM ability to produce formally verified Lean 4 code with complete proofs; the sorry-completion and bug-fix patterns mirror VeriBench's evaluation methodology",
+  "source_score": 4.25,
+  "source_domain": "software_and_its_engineering",
+  "source_subdomain": "programming_languages",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "a2ae710f-9224-4561-9e84-272ab8d3949d",
+  "iters": 5,
+  "generated_at": "2026-06-12T08:40:40",
+  "schema": "prov-v1"
+}

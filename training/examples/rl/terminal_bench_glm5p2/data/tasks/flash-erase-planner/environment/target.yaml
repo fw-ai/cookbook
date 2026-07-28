@@ -1,0 +1,43 @@
+name: TestChipFamily
+chip: TC407VG
+
+memory_map:
+  - type: ram
+    name: SRAM
+    start: 0x20000000
+    end: 0x20020000
+
+  - type: flash
+    name: MainFlash
+    start: 0x08000000
+    end: 0x08100000
+    algorithm: bank1_algo
+
+  - type: flash
+    name: ExtFlash
+    start: 0x08100000
+    end: 0x08180000
+    algorithm: bank2_algo
+
+flash_algorithms:
+  bank1_algo:
+    page_size: 1024
+    erased_byte_value: 0xFF
+    program_page_timeout_ms: 100
+    erase_sector_timeout_ms: 2000
+    sectors:
+      - size: 0x4000
+        address: 0x0
+      - size: 0x10000
+        address: 0x10000
+      - size: 0x20000
+        address: 0x20000
+
+  bank2_algo:
+    page_size: 2048
+    erased_byte_value: 0xFF
+    program_page_timeout_ms: 150
+    erase_sector_timeout_ms: 4000
+    sectors:
+      - size: 0x20000
+        address: 0x0

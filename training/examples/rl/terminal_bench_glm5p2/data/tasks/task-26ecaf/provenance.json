@@ -1,0 +1,20 @@
+{
+  "task": "task-26ecaf",
+  "source_name": "bird-sql-big-bench-for-large-scale-database-grounded-text-to",
+  "source_files": [
+    "summary.md",
+    "data/bird_critic_samples.txt",
+    "data/livesqlbench_readme.md"
+  ],
+  "cite_reason": "BIRD-SQL summary's multi-dialect translation and knowledge-grounded query ideas shaped the cross-system schema reconciliation with ICD-9/ICD-10 crosswalk; BIRD-Critic's SQL debugging paradigm inspired the divergent-schema entity resolution challenge; LiveSQLBench's hierarchical knowledge base concept motivated the external reconciliation_rules.json driving patient matching, unit conversions, and conflict resolution.",
+  "source_score": 4.0,
+  "source_domain": "information_systems",
+  "source_subdomain": "data_management",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "a883f288-d70a-44e9-a3a1-5c078a212b7f",
+  "iters": 5,
+  "generated_at": "2026-06-12T10:48:40",
+  "schema": "prov-v1"
+}

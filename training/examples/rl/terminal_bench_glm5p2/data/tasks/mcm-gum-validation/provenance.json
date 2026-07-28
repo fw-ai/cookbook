@@ -1,0 +1,18 @@
+{
+  "task": "mcm-gum-validation",
+  "source_name": "bipm-jcgm-gum-supplement-1-jcgm-101-2008-monte-carlo-validat",
+  "source_files": [
+    "data/jcgm101_2008_full.txt"
+  ],
+  "cite_reason": "Task implements measurement uncertainty evaluation from JCGM 101:2008, applying Monte Carlo and GUM analytical methods to gauge block calibration (Section 9.5) and comparison loss (Section 9.4) examples",
+  "source_score": 4.4,
+  "source_domain": "mathematics_of_computing",
+  "source_subdomain": "probability_statistics",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "d17e62b4-2b73-40a5-98aa-32364dc41761",
+  "iters": 5,
+  "generated_at": "2026-06-11T19:00:17",
+  "schema": "prov-v1"
+}

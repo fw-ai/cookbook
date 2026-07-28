@@ -1,0 +1,21 @@
+{
+  "task": "torch-dispatch-profiler",
+  "source_name": "horace-he-torch-compile-",
+  "source_files": [
+    "data/pytorch_flop_counter_text.txt",
+    "data/horace_brrr_text.txt",
+    "data/substack_matmul_shapes_text.txt",
+    "data/substack_matmul_shapes_answers_text.txt"
+  ],
+  "cite_reason": "FLOP counter article inspired the TorchDispatchMode-based profiler with backward module hierarchy; Brrrr article inspired the roofline model and compute/memory-bound classification; matmul shapes articles inspired the cache alignment and wave quantization analysis",
+  "source_score": 4.25,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "machine_learning",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "c54855ef-2409-4573-91c4-12dd7de92624",
+  "iters": 5,
+  "generated_at": "2026-06-10T17:32:22",
+  "schema": "prov-v1"
+}

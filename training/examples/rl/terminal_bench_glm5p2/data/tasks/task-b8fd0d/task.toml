@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires reducing a package dependency resolution problem to Boolean satisfiability, generating well-formed DIMACS input for minisat, correctly handling minisat's non-standard exit codes, implementing a strategy to guarantee that the latest compatible version of every package is selected (not just any satisfying assignment), and extracting the smallest irreconcilable subset of root requirements when no solution exists. Each component is non-trivial individually; integrating them into a correct end-to-end CLI tool demands proficient-level understanding of propositional logic, constraint satisfaction, and algorithmic problem solving."""
+solution_explanation = """Encode each (package, version) pair as a Boolean variable. Root requirements become disjunction clauses over matching versions. Mutual exclusion uses pairwise negation. Dependencies become implication clauses. Write DIMACS CNF and invoke minisat. For prefer-latest: iteratively try each package's versions from highest to lowest, forcing via unit clauses, keeping the first SAT assignment. For minimal conflict: use deletion-based MUS extraction—remove each root requirement, check if remaining is still UNSAT; keep only essential requirements."""
+verification_explanation = """Tests validate: (1) satisfiable scenarios produce valid resolutions satisfying all constraints, (2) prefer-latest selects the correct version for every package, (3) unsatisfiable scenarios are correctly detected, (4) minimal conflict extraction identifies the smallest conflicting subset of root requirements, (5) DIMACS output is well-formed, (6) all transitive dependencies are included in resolutions."""
+category = "algorithms_and_data_structures"
+tags = ["sat-solving", "dependency-resolution"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-b8fd0d"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

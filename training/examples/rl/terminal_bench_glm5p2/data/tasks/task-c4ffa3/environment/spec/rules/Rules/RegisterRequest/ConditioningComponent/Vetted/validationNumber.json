@@ -1,0 +1,38 @@
+{
+  "vsfScript": [
+    {
+      "lineType": "Branch",
+      "conditions": [
+        {
+          "if": {
+            "scriptLines": [
+              {
+                "lineType": "Rule",
+                "ruleType": "External",
+                "parameters": {
+                  "ruleText": "parentProperty.vetted == true"
+                }
+              }
+            ]
+          },
+          "then": {
+            "scriptLines": [
+              {
+                "lineType": "ImportScript",
+                "parameters": {
+                  "scriptFile": "CommonRules/notNull.json"
+                }
+              },
+              {
+                "lineType": "ImportScript",
+                "parameters": {
+                  "scriptFile": "CommonRules/notNullAndNotWhitespace.json"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

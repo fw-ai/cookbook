@@ -1,0 +1,97 @@
+{
+  "gauge_block": {
+    "description": "Gauge block calibration (JCGM 101:2008 Section 9.5). Approximate linear model (eq. 37): delta_L = L_s + D + d1 + d2 - L_s * (delta_alpha * (theta_0 + Delta) + alpha_s * delta_theta) - L_nom",
+    "L_nom_nm": 50000000,
+    "coverage_probability": 0.99,
+    "n_sig_digits": 2,
+    "validation_n_sig_digits": 1,
+    "inputs": {
+      "L_s": {
+        "mcm_distribution": "scaled_shifted_t",
+        "mcm_params": {"mu": 50000623, "sigma": 25, "nu": 18},
+        "guf_estimate": 50000623,
+        "guf_std_uncertainty": 25,
+        "guf_dof": 18,
+        "unit": "nm"
+      },
+      "D": {
+        "mcm_distribution": "scaled_shifted_t",
+        "mcm_params": {"mu": 215, "sigma": 6, "nu": 24},
+        "guf_estimate": 215,
+        "guf_std_uncertainty": 6,
+        "guf_dof": 24,
+        "unit": "nm"
+      },
+      "d1": {
+        "mcm_distribution": "scaled_shifted_t",
+        "mcm_params": {"mu": 0, "sigma": 4, "nu": 5},
+        "guf_estimate": 0,
+        "guf_std_uncertainty": 4,
+        "guf_dof": 5,
+        "unit": "nm"
+      },
+      "d2": {
+        "mcm_distribution": "scaled_shifted_t",
+        "mcm_params": {"mu": 0, "sigma": 7, "nu": 8},
+        "guf_estimate": 0,
+        "guf_std_uncertainty": 7,
+        "guf_dof": 8,
+        "unit": "nm"
+      },
+      "alpha_s": {
+        "mcm_distribution": "rectangular",
+        "mcm_params": {"a": 9.5e-6, "b": 13.5e-6},
+        "guf_estimate": 11.5e-6,
+        "guf_std_uncertainty": 1.1547005383792517e-6,
+        "guf_dof": null,
+        "unit": "per_degC"
+      },
+      "theta_0": {
+        "mcm_distribution": "gaussian",
+        "mcm_params": {"mu": -0.1, "sigma": 0.2},
+        "guf_estimate": -0.1,
+        "guf_std_uncertainty": 0.2,
+        "guf_dof": null,
+        "unit": "degC"
+      },
+      "Delta": {
+        "mcm_distribution": "arcsine",
+        "mcm_params": {"a": -0.5, "b": 0.5},
+        "guf_estimate": 0.0,
+        "guf_std_uncertainty": 0.35355339059327373,
+        "guf_dof": null,
+        "unit": "degC"
+      },
+      "delta_alpha": {
+        "mcm_distribution": "curvilinear_trapezoidal",
+        "mcm_params": {"a": -1.0e-6, "b": 1.0e-6, "d": 0.1e-6},
+        "guf_estimate": 0.0,
+        "guf_std_uncertainty": 5.773502691896258e-7,
+        "guf_dof": 50,
+        "unit": "per_degC"
+      },
+      "delta_theta": {
+        "mcm_distribution": "curvilinear_trapezoidal",
+        "mcm_params": {"a": -0.050, "b": 0.050, "d": 0.025},
+        "guf_estimate": 0.0,
+        "guf_std_uncertainty": 0.028867513459481287,
+        "guf_dof": 2,
+        "unit": "degC"
+      }
+    }
+  },
+  "comparison_loss": {
+    "description": "Comparison loss in microwave power meter calibration (JCGM 101:2008 Section 9.4). Model (eq. 28): delta_Y = X1^2 + X2^2, where (X1, X2) follow a bivariate Gaussian distribution.",
+    "coverage_probability": 0.95,
+    "n_sig_digits": 1,
+    "validation_n_sig_digits": 1,
+    "cases": [
+      {"x1": 0.0,   "x2": 0.0, "u_x1": 0.005, "u_x2": 0.005, "r": 0.0},
+      {"x1": 0.010, "x2": 0.0, "u_x1": 0.005, "u_x2": 0.005, "r": 0.0},
+      {"x1": 0.050, "x2": 0.0, "u_x1": 0.005, "u_x2": 0.005, "r": 0.0},
+      {"x1": 0.0,   "x2": 0.0, "u_x1": 0.005, "u_x2": 0.005, "r": 0.9},
+      {"x1": 0.010, "x2": 0.0, "u_x1": 0.005, "u_x2": 0.005, "r": 0.9},
+      {"x1": 0.050, "x2": 0.0, "u_x1": 0.005, "u_x2": 0.005, "r": 0.9}
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert understanding of POSIX crash-consistency semantics (fsync ordering relative to rename, directory durability barriers, write-ahead log design with CRC integrity) combined with proficiency in dynamic binary analysis. The solver receives 5 stripped binaries with no source code and must use an LD_PRELOAD crash injection library to empirically determine each program's crash-safety properties by observing file state after injected crashes at different syscall invocation points. The evaluation demands synthesizing crash injection results and POSIX filesystem knowledge to produce a correct comparative ranking — a task that even experienced systems programmers find non-trivial, as documented in Pillai et al. OSDI'14 and Dan Luu's analysis of real-world crash-consistency bugs."""
+solution_explanation = """Use the LD_PRELOAD crash injection library to empirically determine each program's crash-safety properties: (1) Atomicity: crash on 1st write — if data.txt is empty (O_TRUNC), no atomicity; if original data preserved, uses temp+rename. (2) Data durability: crash on 1st fsync — if process exits 137, it calls fsync before rename. (3) Dir durability: probe fsync at increasing NTH values — if any crash shows data.txt already updated (post-rename), a directory fsync exists. (4) WAL recovery: crash on rename, check for wal.log, run --recover, verify data restoration. Final ranking: azure=1 (direct overwrite), amber=2 (temp+rename, no fsync), crimson=3 (temp+fsync+rename, no dir fsync), onyx=4 (full atomic+durable, no WAL), jade=5 (WAL+CRC+all fsyncs+recovery)."""
+verification_explanation = """Tests load /app/audit_report.json and verify: (1) correct ranking order from most to least safe, (2) correct safety scores per program, (3) correct boolean flags for atomicity, data_durability, dir_durability, and wal_recovery, (4) vulnerability descriptions containing appropriate technical keywords. Additionally, crash injection tests independently verify azure's non-atomicity (O_TRUNC leaves empty file on crash) and jade's WAL recovery (crash before rename leaves WAL intact, --recover restores data)."""
+category = "systems-analysis"
+tags = ["crash-consistency", "dynamic-analysis"]
+expert_time_estimate_hours = 2.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:crashsafe-kvstore"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

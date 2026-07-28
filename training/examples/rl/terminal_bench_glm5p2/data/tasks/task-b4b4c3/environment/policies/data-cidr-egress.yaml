@@ -1,0 +1,18 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: data-cidr-egress
+  namespace: data
+spec:
+  endpointSelector:
+    matchLabels:
+      role: database
+  egress:
+    - toCIDRSet:
+        - cidr: "10.0.0.0/8"
+          except:
+            - "10.96.0.0/12"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

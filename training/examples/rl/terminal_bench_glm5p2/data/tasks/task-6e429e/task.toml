@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires creating a conformant C++ shared library from scratch given only an abstract API specification, a test driver harness, and validation scripts — then evaluating and fixing bugs in the surrounding infrastructure that only manifest once the implementation is correct. The solver must: (1) reverse-engineer the full interface contract from C++ headers defining 4 pure virtual methods with specific type semantics (Image with shared_ptr data, TemplateRole enum, EyePair struct, ReturnStatus), (2) design a template representation strategy that extracts meaningful data from Image byte arrays into template vectors satisfying non-empty-size constraints, (3) design a similarity scoring algorithm that simultaneously satisfies non-negativity and >=50% uniqueness across all match pairs — a constraint discoverable only from reading the validation script's sanity-check logic, (4) create a CMake build configuration producing a shared library matching a naming convention (libbvt_11_*_???.so with 3-digit sequence) discoverable only from the compile-and-link shell script, (5) discover and fix a version mismatch in bvt_structs.h (declares 2.1 but test driver requires 3.1) via the extern/define version handshake mechanism, (6) evaluate whether pipeline failures stem from the implementation or from bugs in the harness — specifically an inverted conditional in the config-directory detection test and a wrong awk column in the score uniqueness check. The primary demand is creation (novel implementation from specification); the secondary demand is evaluation (judging whether the harness or the implementation is at fault when validation fails). Dreyfus: proficient (cross-layer pattern recognition across C++ API semantics, CMake conventions, and bash validation logic). Bloom: create/evaluate."""
+solution_explanation = """Create vendor_impl.cpp with VendorImpl class inheriting BVT_11::Interface: initialize() stores configDir; createTemplate(vector<Image>) extracts raw pixel bytes from Image::data into template byte vector with EyePair metadata; createTemplate(single Image) wraps into vector-of-vectors format; matchTemplates() computes dot-product similarity from template bytes (always non-negative, unique across different image pairs). Create impl/CMakeLists.txt targeting shared library bvt_11_vendor_001 with include path ${CMAKE_CURRENT_SOURCE_DIR}/../include. Fix bvt_structs.h BVT_STRUCTS_MAJOR_VERSION 2->3 to pass runtime version check. Fix run_validate.sh awk column $4->$3 for score uniqueness. Fix run_testdriver.sh config-dir check logic from $retCode!=0 to $retCode==0."""
+verification_explanation = """Tests clean all build artifacts, then run the full pipeline via run_validate.sh. Separate pytest assertions verify: pipeline exit code 0, shared library exists with correct naming pattern (libbvt_11_*_???.so), validate11 binary exists, enrollment/verification/match log line counts match input manifests, all template sizes non-zero, all match scores non-negative, >=50% unique scores, and all return codes 0."""
+category = "systems-programming"
+tags = ["cpp-api-implementation", "build-system-design", "validation-harness"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-6e429e"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

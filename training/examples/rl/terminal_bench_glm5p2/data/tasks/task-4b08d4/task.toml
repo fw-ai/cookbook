@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert knowledge of VT100/ANSI escape sequences (CSI cursor movement codes, SGR attribute encoding including 256-color mode, attribute reset semantics), understanding of terminal emulator internals (how pyte represents colors as named strings vs numeric indices, the SGR state machine for incremental vs reset-based attribute transitions), and implementation of a non-trivial optimization algorithm (minimal diff generation with cursor movement cost optimization, gap-bridging heuristics, and correct handling of cell erasure). The pyte-specific color naming (e.g. "brown" for SGR 33) adds a reverse-engineering element."""
+solution_explanation = """The solution implements a cell-by-cell screen diff that: (1) resets attributes to establish known SGR state, (2) scans each row for changed cells and groups them into contiguous runs with gap-bridging (gaps <= 3 cells are bridged to avoid expensive cursor moves), (3) generates optimal cursor movements by choosing the shortest among absolute CUP, relative CUU/CUD/CUF/CUB, and CR-based positioning, (4) encodes SGR transitions incrementally when only adding attributes or changing colors, or via reset-and-reapply when attributes need to be turned off, and (5) maps pyte's color string representation back to SGR codes using the FG/BG lookup tables and 256-color encoding."""
+verification_explanation = """Tests feed the diff output into a pyte terminal initialized with the old byte stream and compare the resulting screen state cell-by-cell (characters + all attributes + cursor position) against the expected new state. Efficiency tests verify the diff is strictly smaller than a full re-render for sparse-change scenarios."""
+category = "systems_programming"
+tags = ["terminal_emulation", "ansi_escape_sequences"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-4b08d4"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

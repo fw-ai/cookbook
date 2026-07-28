@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires graduate-level statistical mechanics: parsing multi-frame LAMMPS custom dump format, implementing minimum image convention for periodic boundary conditions, computing histogram-based partial radial distribution functions with correct ordered-pair normalization (handling same-species vs cross-species pair counts differently), frame averaging, extrema detection in noisy data, numerical integration for coordination numbers with appropriate density definitions, Kirkwood-Buff integral computation from g(r), and Warren-Cowley short-range order parameter derivation. Getting the normalization factors right for partial g(r) in a binary system is a well-known stumbling block even for experienced computational scientists."""
+solution_explanation = """The solution parses the LAMMPS dump file frame by frame, extracts atom positions and types, computes all pairwise minimum-image distances, bins them into histograms separated by pair type (1-1, 1-2, 2-2), normalizes each histogram by the appropriate ideal gas reference count (N_X*(N_X-1) for same-type, 2*N_1*N_2 for cross-type), averages over frames, then derives coordination numbers via numerical quadrature to the first minimum, Kirkwood-Buff integrals over the full range, and the Warren-Cowley SRO parameter."""
+verification_explanation = """Tests parse the results.json and verify: correct array lengths, specific g(r) values at multiple bin positions for all three partial RDFs (values that can only be obtained through correct computation over the unique trajectory data), first peak positions and heights, coordination numbers, Kirkwood-Buff integrals, and Warren-Cowley parameter. Each test uses appropriate numerical tolerances."""
+category = "applied_computing"
+tags = ["molecular_simulation", "statistical_mechanics"]
+expert_time_estimate_hours = 2.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:lammps-ff-validator"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

@@ -1,0 +1,8 @@
+{
+    "peak_flops": 312000000000000,
+    "peak_bandwidth_bytes_per_sec": 2000000000000,
+    "sm_count": 108,
+    "cache_line_bytes": 128,
+    "tile_m": 128,
+    "tile_n": 128
+}

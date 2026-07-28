@@ -1,0 +1,20 @@
+{
+  "task": "task-b8fd0d",
+  "source_name": "dependency-resolution-made-simple-fernando-borretti",
+  "source_files": [
+    "data/blog_post_text.md",
+    "data/code_blocks_clean.py",
+    "data/version_sat.txt"
+  ],
+  "cite_reason": "Blog post's SAT-based dependency resolution approach, Python encoding of constraints as CNF, and Russ Cox's NP-completeness proof for version selection inspired the task of building a full resolver with minisat integration, prefer-latest optimization, and minimal conflict extraction",
+  "source_score": 4.0,
+  "source_domain": "software_and_its_engineering",
+  "source_subdomain": "software_configuration",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "9f815f86-fe33-45a0-ab91-39606d082524",
+  "iters": 2,
+  "generated_at": "2026-06-11T18:48:44",
+  "schema": "prov-v1"
+}

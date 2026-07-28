@@ -1,0 +1,19 @@
+{
+  "eclasses": {
+    "root": [
+      {"id": "root_pair", "op": "pair", "cost": 0, "children": ["left", "right"]}
+    ],
+    "left": [
+      {"id": "left_standalone", "op": "standalone_l", "cost": 5, "children": []},
+      {"id": "left_shared", "op": "use_shared_l", "cost": 2, "children": ["shared"]}
+    ],
+    "right": [
+      {"id": "right_standalone", "op": "standalone_r", "cost": 5, "children": []},
+      {"id": "right_shared", "op": "use_shared_r", "cost": 2, "children": ["shared"]}
+    ],
+    "shared": [
+      {"id": "shared_val", "op": "compute_shared", "cost": 4, "children": []}
+    ]
+  },
+  "roots": ["root"]
+}

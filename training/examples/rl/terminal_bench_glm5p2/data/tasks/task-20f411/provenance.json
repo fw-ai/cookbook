@@ -1,0 +1,24 @@
+{
+  "task": "task-20f411",
+  "source_name": "tri-dao-flash-attention-",
+  "source_files": [
+    "data/benchmark_flash_attention.py",
+    "data/flash_attn_interface.py",
+    "data/flash_fwd_kernel_h.txt",
+    "data/flash_attention_setup_py.txt",
+    "data/flash3_blog_text.txt",
+    "data/flash4_blog_text.txt",
+    "data/hopper_setup_py.txt"
+  ],
+  "cite_reason": "FLOPS formula from benchmark script, block size selection from interface.py, causal tile counting from kernel's n_block_max logic, gencode flags from setup.py, feeds-and-speeds cycle model from FA3/FA4 blog posts",
+  "source_score": 4.75,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "machine_learning",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "cd172511-9db8-46a6-a029-e888c61f93ae",
+  "iters": 4,
+  "generated_at": "2026-06-14T01:08:19",
+  "schema": "prov-v1"
+}

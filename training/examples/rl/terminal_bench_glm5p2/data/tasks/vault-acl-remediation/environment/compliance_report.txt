@@ -1,0 +1,110 @@
+EXTERNAL SECURITY ASSESSMENT — CONFIDENTIAL
+Report Date: 2024-11-20
+Assessment Target: Multi-Tenant Production Vault Deployment
+
+EXECUTIVE SUMMARY
+==================
+Eight findings of varying severity were identified during the security
+assessment of the HashiCorp Vault deployment serving multiple application
+teams (app-team, data-team, platform). Each finding must be evaluated
+and, if confirmed as a genuine vulnerability, remediated before the
+deployment can be approved for continued production use.
+
+
+FINDING 1 — CRITICAL: Cross-Tenant Secret Access
+==================================================
+During penetration testing, an assessor authenticated with credentials
+belonging to one team and was able to read secrets belonging to a different
+team. Vault's policy engine authorized the access, indicating a policy
+misconfiguration rather than a software exploit. The assessor's simulated
+breach evidence is preserved in the log file at /var/log/vault/audit.log.
+After remediation, each team's credentials must only be able to access
+that team's own secret paths.
+
+
+FINDING 2 — CRITICAL: Unrestricted Certificate Issuance
+=========================================================
+The assessor obtained a valid TLS certificate for a domain not owned by
+the organization through the PKI secrets engine. Certificate issuance
+must be restricted so that only certificates for subdomains of
+example.com can be issued.
+
+
+FINDING 3 — HIGH: Encryption Key Management Deficiencies
+==========================================================
+Multiple issues were found with the transit encryption configuration:
+
+(a) At least one encryption key uses a cipher strength below the
+    organization's mandatory 256-bit minimum.
+
+(b) At least one key's configuration permits raw cryptographic material
+    to be extracted from Vault, defeating the purpose of centralized
+    key management. Note that certain Vault key properties are immutable
+    once set at creation time.
+
+
+FINDING 4 — HIGH: Authentication Bypass Vector
+================================================
+An application authentication role was discovered that does not require
+presentation of a secret credential to obtain a Vault token. Combined
+with the privilege level associated with this role, this represents a
+critical escalation vector. Any authentication role that does not enforce
+credential verification must either be removed or secured, while
+preserving other legitimate application authentication roles.
+
+
+FINDING 5 — HIGH: Audit Trail Integrity
+==========================================
+While a log file exists on disk at the expected path, the assessor could
+not confirm that Vault's own audit subsystem is actively recording
+operations through a properly configured audit device. A file on disk
+is not equivalent to a Vault-managed audit device. The organization
+requires tamper-evident audit logging through Vault's audit framework
+using a file audit device.
+
+
+FINDING 6 — MEDIUM: Data Retention and Session Controls
+=========================================================
+(a) The KV secrets engine retains an unlimited number of secret versions,
+    violating the organization's 10-version maximum retention policy.
+
+(b) Authentication session durations significantly exceed the
+    organization's limits of 8 hours (default session length) and
+    24 hours (absolute maximum session length). Both the authentication
+    mount configuration and individual user configurations must comply.
+
+
+FINDING 7 — HIGH: Transit Key Cryptographic Non-Compliance
+============================================================
+A transit engine key named 'signing-key' was found using the ed25519
+algorithm. This does not conform to the organization's mandatory 256-bit
+AES encryption standard (AES-256-GCM96). All transit keys must use
+AES-256-GCM96 to meet the minimum cryptographic requirements. This key
+should be replaced with a compliant AES-256-GCM96 key.
+
+
+FINDING 8 — MEDIUM: PKI Role Subdomain Wildcard Exposure
+==========================================================
+The PKI intermediate CA contains a role named 'internal-certs' configured
+with allow_subdomains=true, matching the risky configuration pattern
+identified in Finding 2. Subdomain wildcard issuance has been shown to
+enable unauthorized certificate generation. This role's subdomain
+issuance capability should be disabled and certificates should be issued
+only for explicitly named hosts.
+
+
+REMEDIATION REQUIREMENTS
+=========================
+All findings must be evaluated. Confirmed vulnerabilities must be
+addressed. The deployment must remain fully operational throughout
+remediation — the server must stay running and unsealed. After remediation:
+
+  - Strict tenant isolation must be enforced in access control
+  - Certificate issuance must be restricted to authorized domains only
+  - All encryption keys must meet the 256-bit minimum standard
+  - No encryption key material may be extractable from the system
+  - All authentication paths must require proper credential verification
+  - Vault's audit framework must be actively logging via a file device
+  - Secret version retention must be limited to 10 versions maximum
+  - Session durations must be within organizational limits
+  - All legitimate team access patterns must continue to function

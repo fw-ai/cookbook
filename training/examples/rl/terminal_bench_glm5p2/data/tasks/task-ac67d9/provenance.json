@@ -1,0 +1,22 @@
+{
+  "task": "task-ac67d9",
+  "source_name": "competition-on-evolutionary-computation-in-the-energy-domain",
+  "source_files": [
+    "data/WCCI_GECCO_Guidelines_2026_v1_text.txt",
+    "data/gecad_2026_competition_text.txt",
+    "data/CEC2026_HyDE.m",
+    "data/CEC2026_DEparameters.m",
+    "data/CEC2026_main.m"
+  ],
+  "cite_reason": "Task design based on the CEC/GECCO 2026 competition on fairness-aware pricing in energy communities: the FairMix metric specification, HyDE-DF algorithm structure, community model with prosumers/consumers, and 96-dimensional price optimization problem all derive from the competition guidelines, reference MATLAB implementation, and competition description.",
+  "source_score": 4.15,
+  "source_domain": "applied_computing",
+  "source_subdomain": "physics_engineering",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "712c87b9-653a-4507-89c9-56a702f20fa4",
+  "iters": 1,
+  "generated_at": "2026-06-13T19:13:48",
+  "schema": "prov-v1"
+}

@@ -1,0 +1,18 @@
+{
+  "vsfScript": [
+    {
+      "lineType": "State",
+      "parameters": {
+        "key": "eaIds",
+        "value": "ExtractField(currentProperty, \"eaId\")"
+      }
+    },
+    {
+      "lineType": "Rule",
+      "ruleType": "External",
+      "parameters": {
+        "ruleText": "eaIds.Distinct().Count() == eaIds.Count()"
+      }
+    }
+  ]
+}

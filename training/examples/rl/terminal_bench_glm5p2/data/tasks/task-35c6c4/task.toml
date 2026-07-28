@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert knowledge of the SQLite binary file format combined with proficiency across multiple specialized tools and recovery protocols. The agent must: (1) diagnose and repair 5 distinct header corruptions by determining correct values from file structure analysis (magic string, page size, text encoding, database size, schema format); (2) scan a 256 KiB raw disk image using binary examination tools (dd, xxd, od) to locate a hidden B-tree leaf page among noise and decoy pages, then extract and parse it at the byte level — decoding varints, interpreting serial type codes, handling INTEGER PRIMARY KEY alias storage and IEEE 754 floats; (3) understand SQLite WAL (Write-Ahead Log) architecture — file naming conventions (database-wal), journal mode header bytes, WAL frame/page replay semantics — to reunite a detached WAL file with its database and recover uncheckpointed transactions via sqlite3 PRAGMA commands. This combination of binary forensics, disk image analysis, and WAL recovery protocol knowledge requires complex multi-tool interoperability well beyond standard database administration."""
+solution_explanation = """1) Read evidence.db in binary mode and fix 5 header fields: restore magic string 'SQLite format 3\\0', set page size to 4096 at offset 16, set text encoding to 1/UTF-8 at offset 56, compute correct database size in pages at offset 28, set schema format to 4 at offset 44. 2) Query repaired database to export transfers CSV and compute sum. 3) Scan disk_fragment.img at 4096-byte aligned boundaries for pages with type byte 0x0d and non-zero cell count, filter out decoys by attempting to parse cell structures, extract the valid page and decode its records using the SQLite record format. 4) Copy seized_journal.wal to ledger.db-wal (standard WAL path), open ledger.db with sqlite3 which triggers automatic WAL frame replay, then query all 8 journal entries."""
+verification_explanation = """Tests verify: database passes PRAGMA integrity_check, correct row counts for all 3 tables, specific transfer records match expected data, transfer amount sum equals 9045003.5, CSV has correct structure and row count, total_active_amount.txt is correct, recovered_records.json contains exactly 5 records with correct id/code/destination/amount/timestamp values, ledger_entries.json contains all 8 entries including 3 WAL-recovered entries (ids 6-8) with specific amounts (1500000.0, 2300000.0, 750000.0) and descriptions."""
+category = "database_systems"
+tags = ["sqlite", "binary_forensics"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-35c6c4"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

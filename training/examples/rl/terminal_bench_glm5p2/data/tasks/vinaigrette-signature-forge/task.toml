@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires deep understanding of multivariate quadratic (MQ) cryptography, specifically the Unbalanced Oil and Vinegar (UOV) construction, combined with multi-tool terminal proficiency. The solver must: (1) use sqlite3 to query scheme parameters and the target message from a SQLite database, (2) parse a packed binary public key file (VNRT format) using xxd/hex analysis and structured binary I/O, (3) understand the Vinaigrette scheme specification to identify that the deliberately small oil space dimension makes the scheme vulnerable to algebraic key-recovery attacks, (4) implement the attack — finding common zeros of the public quadratic forms and distinguishing true oil-space vectors from parasitic solutions using the bilinear isotropy criterion, (5) recover the full oil space via linear algebra, (6) implement the signing procedure using the recovered secret key, and (7) validate the forged signature using the compiled C verification binary before submission. This spans post-quantum cryptography, algebraic geometry over finite fields, binary format reverse-engineering, database querying, and compiled-tool interoperability."""
+solution_explanation = """Query parameters from the SQLite database using sqlite3 CLI. Parse the VNRT binary public key using xxd inspection and Python struct module to extract the m upper-triangular matrices over F_31. Symmetrize to get bilinear forms Q_k. Fix 4 of 8 coordinates to [1,0,0,0] and brute-force the remaining 4 (31^4 ~ 923K trials) to find common zeros of all quadratic forms. For each zero, verify it is a true oil vector by checking that its bilinear companion subspace is totally isotropic. Extend the single oil vector to the full 4-dimensional oil space via kernel computation. Sign by choosing random vinegar vectors, computing the hash target via SHAKE256, and solving the resulting linear system over the oil space coordinates. Validate the signature with the compiled verifier binary before writing the final output."""
+verification_explanation = """The test parses the VNRT binary public key, queries the message from the SQLite database, computes the SHAKE256 hash, and verifies that P(s_1) + P(s_2) = H(message) mod 31 for all 4 equations. It also runs the compiled verifier binary as an independent cross-check. This is a deterministic, purely mathematical verification independent of the attack method used."""
+category = "cryptography"
+tags = ["post-quantum", "multivariate-quadratic"]
+expert_time_estimate_hours = 3.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:vinaigrette-signature-forge"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

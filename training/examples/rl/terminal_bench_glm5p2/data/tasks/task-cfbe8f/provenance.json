@@ -1,0 +1,19 @@
+{
+  "task": "task-cfbe8f",
+  "source_name": "llvm-tutor-out-of-tree-llvm-passes-for-teaching",
+  "source_files": [
+    "data/source_files_all.txt",
+    "data/readme.md"
+  ],
+  "cite_reason": "MBAAdd/MBASub pass implementations and LLVM out-of-tree pass architecture from llvm-tutor inspired the Affine-MBA deobfuscation task with custom dual-pattern design",
+  "source_score": 4.2,
+  "source_domain": "software_and_its_engineering",
+  "source_subdomain": "compilers",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "f454b33b-eee1-4696-bfbd-e4eda03dd689",
+  "iters": 3,
+  "generated_at": "2026-06-13T05:20:51",
+  "schema": "prov-v1"
+}

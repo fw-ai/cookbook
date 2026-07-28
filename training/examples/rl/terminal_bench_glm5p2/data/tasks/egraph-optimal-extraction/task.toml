@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires understanding e-graphs (a niche data structure from compiler optimization research), recognizing that the extraction problem is NP-hard due to shared substructure (reducible from weighted set cover), and formulating a correct integer linear program or branch-and-bound search. The agent must handle subtleties including conditional reachability, multiple roots, unreachable classes, and correct cost accounting. This is graduate-level combinatorial optimization applied to a specialized compiler engineering domain."""
+solution_explanation = """The solution formulates e-graph extraction as an integer linear program (ILP). Binary variables x_n indicate whether each e-node is selected; binary variables y_c indicate whether each e-class is reachable. Root classes are forced reachable (y=1). For each class, exactly one node is selected iff the class is reachable (sum of x = y). Selecting a node forces all its child classes to be reachable (y_child >= x_node). The objective minimizes the sum of selected node costs. This correctly accounts for shared substructure because a shared child class contributes its cost only once regardless of how many parents reference it. PuLP is used as the ILP solver."""
+verification_explanation = """Tests validate each of 6 fixed instances against known optimal costs (computed by hand and cross-verified with ILP). Structural validation ensures the selection is valid: one node per reachable class, all children covered, no extraneous classes, cost sum matches. Two dynamically constructed instances are verified against an exhaustive brute-force search to prevent hardcoding. A dedicated test confirms greedy-suboptimal instances achieve strictly lower cost than greedy."""
+category = "optimization"
+tags = ["compiler-optimization", "integer-programming"]
+expert_time_estimate_hours = 1.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:egraph-optimal-extraction"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

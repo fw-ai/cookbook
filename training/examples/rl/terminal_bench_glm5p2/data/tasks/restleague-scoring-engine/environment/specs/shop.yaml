@@ -1,0 +1,118 @@
+openapi: "3.0.3"
+info:
+  title: Shop API
+  version: "1.0.0"
+  description: E-commerce platform with product catalog and order management
+paths:
+  /auth/register:
+    post:
+      operationId: register
+      summary: Register a new user
+      responses:
+        '201':
+          description: Created
+  /products:
+    get:
+      operationId: listProducts
+      summary: List all products
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: sort
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    post:
+      operationId: createProduct
+      summary: Create a product
+      responses:
+        '201':
+          description: Created
+  /products/search:
+    get:
+      operationId: searchProducts
+      summary: Search products by keyword
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /products/{productId}:
+    get:
+      operationId: getProduct
+      summary: Get product by ID
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    patch:
+      operationId: patchProduct
+      summary: Partially update product
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    delete:
+      operationId: deleteProduct
+      summary: Delete a product
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+  /products/{productId}/reviews:
+    get:
+      operationId: listReviews
+      summary: List reviews for a product
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /orders:
+    post:
+      operationId: createOrder
+      summary: Place a new order
+      responses:
+        '201':
+          description: Created
+  /orders/{orderId}:
+    get:
+      operationId: getOrder
+      summary: Get order by ID
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK

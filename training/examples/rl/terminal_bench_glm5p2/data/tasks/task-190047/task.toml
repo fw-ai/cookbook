@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level Lean 4 formal verification skills: diagnosing a semantic bug in a tail-recursive definition, identifying an incorrect theorem statement, and completing 10 inductive proofs ranging from trivial (rfl) to challenging (generalizing accumulator for tail-recursion equivalence, proving injectivity via involution). Claude 3.7 Sonnet achieves only 12.5% compilation rate on similar VeriBench tasks. Combines theorem proving, functional programming, and build system debugging."""
+solution_explanation = """Fix myRevTR base case (return acc instead of []), fix myRev_append statement (swap order to myRev ys ++ myRev xs), then complete all 10 proofs using structural induction on lists with simp tactics. Key insights: T6 requires 'generalizing acc' for the induction hypothesis to be strong enough; T10 uses T4 (involutivity) via congrArg to derive injectivity."""
+verification_explanation = """Tests run 'lake build' on the project and verify: (1) build exits with code 0, (2) no 'sorry' remains in source code outside comments, (3) build output contains no sorry-related warnings, (4) myRevTR base case returns acc not [], (5) myRev_append states correct order, (6) a separate verification Lean file that type-checks the expected theorem signatures compiles successfully, preventing trivial statement weakening."""
+category = "formal_verification"
+tags = ["lean4", "theorem-proving"]
+expert_time_estimate_hours = 1.5
+
+[verifier]
+timeout_sec = 600.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-190047"
+build_timeout_sec = 1200.0
+cpus = 1
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

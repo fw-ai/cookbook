@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert understanding of NixOS-style functional configuration patterns: recursive dict merging with list concatenation semantics, overlay composition with the self/super convention, and modular configuration evaluation. Five bugs are spread across four files spanning the library layer (missing list-concatenation branch in recursive_update, shallow dict-unpack in apply_overlays instead of deep merge), a module (misnamed attribute key sshd/ssh), the evaluation entrypoint (merge-order inversion so base defaults override module values), and an overlay (wrong attribute reference for FQDN derivation). Bug interactions create a debugging cascade: the merge-order inversion masks the list-concatenation omission because base empty-list defaults replace module values before lists could be concatenated; the shallow merge in apply_overlays causes dramatic nested-key loss that obscures the module-level sshd typo and wrong FQDN attribute. The solver must iteratively fix, re-run, and re-diagnose as each fix reveals previously hidden failures."""
+solution_explanation = """Fix 1 (lib.py): Add an elif branch in recursive_update that detects when both values are lists and concatenates them. Fix 2 (lib.py): Replace the shallow dict-unpack merge ({**a, **b}) in apply_overlays with a call to recursive_update so overlay modifications deep-merge without destroying existing nested keys. Fix 3 (modules/security.py): Rename the 'sshd' key to 'ssh' so hardening settings merge into the correct service definition. Fix 4 (eval.py): Swap arguments to recursive_update from (module, config) to (config, module) so module values override accumulated defaults. Fix 5 (overlays/customization.py): Change the .get("hostName") call to .get("domain") so the FQDN is built from the domain, not the hostname."""
+verification_explanation = """Tests run 'python3 /app/eval.py', parse the JSON output, and verify 27 assertions covering structure (top-level keys), networking (hostname, domain, FQDN, firewall enable/ports/policy/logging, nameservers, interfaces), services (ssh settings including hardening from security module, postgresql, nginx virtual hosts including the overlay-added API vhost), and users. Each bug maps to specific failing assertions, and bug interactions mean some tests fail for multiple simultaneous reasons."""
+category = "debugging"
+tags = ["nix-patterns", "functional-programming"]
+expert_time_estimate_hours = 1.0
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:nix-overlay-fixpoint"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

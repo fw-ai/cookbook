@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires building a mini programming language interpreter: tokenizer, recursive-descent parser, and evaluator for a C#-like expression language with property access, method chaining, static function calls, and null semantics. Additionally requires implementing a JSON-driven validation tree traversal engine with four node types (leaf, parent, list with item hooks, root), a rule script interpreter with six line types (Rule, ImportScript, State, Assert, Branch, Information), and correct handling of Branch evaluation semantics where if-conditions are boolean tests but then-blocks are validation assertions. Cross-property references (parentProperty.field) and proper context scoping add further complexity."""
+solution_explanation = """Build a Python module with: (1) expression tokenizer handling identifiers, operators, strings, numbers, null/bool literals; (2) recursive-descent parser producing an AST for boolean/comparison/property-access/method-call/function-call expressions; (3) evaluator with variable resolution (currentProperty, parentProperty, state vars), method dispatch (.Length, .Count(), .Distinct(), .ToUpper()), static method dispatch (string.IsNullOrWhiteSpace, Regex.IsMatch, String.Format, ExtractField); (4) script interpreter executing line types in order with proper short-circuit on Rule failure and Assert skip-remaining semantics; (5) tree traverser matching payload dict keys to internalIdentifier nodes, handling leaf/parent/list node types with runBeforeListItem/runAfterListItem hooks and breakOnError between scripts."""
+verification_explanation = """22 pytest tests validate specific payload/request-type combinations against the spec files. Tests cover: valid payloads pass, out-of-range fields fail (bitsPerSample, hminEstimate, primaryNoiseSource length), missing required fields fail (notNull), conditioning component vetted/non-vetted mutual exclusion rules via Branch evaluation, certify request field format (entropyId length and regex), list validation (empty lists, duplicate eaIds via ExtractField+Distinct), and cross-property constraints (hminEstimate <= bitsPerSample). Each test checks the 'valid' boolean and verifies errors are non-empty for failure cases."""
+category = "security_and_privacy"
+tags = ["validation-engine", "expression-parser"]
+expert_time_estimate_hours = 3.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-c4ffa3"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

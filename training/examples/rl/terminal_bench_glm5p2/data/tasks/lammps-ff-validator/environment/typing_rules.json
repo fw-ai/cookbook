@@ -1,0 +1,60 @@
+{
+  "element_from_mass": {
+    "12.011": "C",
+    "15.999": "O",
+    "1.008": "H"
+  },
+  "mass_tolerance": 0.01,
+  "covalent_radii": {
+    "C": 0.77,
+    "O": 0.73,
+    "H": 0.37
+  },
+  "bond_tolerance": 0.45,
+  "typing_rules": [
+    {
+      "type_name": "CT",
+      "type_id": 1,
+      "element": "C",
+      "description": "sp3 carbon bonded to 3 H and 1 O",
+      "neighbor_elements": {"O": 1, "H": 3}
+    },
+    {
+      "type_name": "OH",
+      "type_id": 2,
+      "element": "O",
+      "description": "hydroxyl oxygen bonded to 1 C and 1 H",
+      "neighbor_elements": {"C": 1, "H": 1}
+    },
+    {
+      "type_name": "HC",
+      "type_id": 3,
+      "element": "H",
+      "description": "hydrogen bonded to sp3 carbon",
+      "bonded_to_element": "C"
+    },
+    {
+      "type_name": "HO",
+      "type_id": 4,
+      "element": "H",
+      "description": "hydrogen on hydroxyl oxygen (O bonded to C and H)",
+      "bonded_to_element": "O",
+      "bonded_oxygen_has_carbon_neighbor": true
+    },
+    {
+      "type_name": "OW",
+      "type_id": 5,
+      "element": "O",
+      "description": "water oxygen bonded to 2 H only",
+      "neighbor_elements": {"H": 2}
+    },
+    {
+      "type_name": "HW",
+      "type_id": 6,
+      "element": "H",
+      "description": "hydrogen on water oxygen (O bonded to 2 H only)",
+      "bonded_to_element": "O",
+      "bonded_oxygen_has_carbon_neighbor": false
+    }
+  ]
+}

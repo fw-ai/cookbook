@@ -1,0 +1,245 @@
+{
+  "tag": "body",
+  "id": "page",
+  "classes": ["dark-theme"],
+  "attrs": {},
+  "children": [
+    {
+      "tag": "header",
+      "id": "main-header",
+      "classes": ["primary"],
+      "attrs": {},
+      "children": [
+        {
+          "tag": "h1",
+          "id": "site-title",
+          "classes": ["logo"],
+          "attrs": {},
+          "children": []
+        },
+        {
+          "tag": "nav",
+          "id": "main-nav",
+          "classes": [],
+          "attrs": {},
+          "children": [
+            {
+              "tag": "a",
+              "id": "link-home",
+              "classes": ["nav-link", "active"],
+              "attrs": {},
+              "children": []
+            },
+            {
+              "tag": "a",
+              "id": "link-about",
+              "classes": ["nav-link"],
+              "attrs": {},
+              "children": []
+            },
+            {
+              "tag": "a",
+              "id": "link-contact",
+              "classes": ["nav-link", "special"],
+              "attrs": {},
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "main",
+      "id": "content",
+      "classes": ["wrapper"],
+      "attrs": {},
+      "children": [
+        {
+          "tag": "section",
+          "id": "intro",
+          "classes": ["hero", "featured"],
+          "attrs": {},
+          "children": [
+            {
+              "tag": "h2",
+              "id": "intro-heading",
+              "classes": [],
+              "attrs": {},
+              "children": []
+            },
+            {
+              "tag": "p",
+              "id": "intro-para",
+              "classes": ["intro-text"],
+              "attrs": {},
+              "children": []
+            },
+            {
+              "tag": "p",
+              "id": "intro-highlight",
+              "classes": ["intro-text", "highlight"],
+              "attrs": {},
+              "children": []
+            }
+          ]
+        },
+        {
+          "tag": "section",
+          "id": "gallery",
+          "classes": [],
+          "attrs": {},
+          "children": [
+            {
+              "tag": "div",
+              "id": "card-1",
+              "classes": ["card"],
+              "attrs": {},
+              "children": [
+                {
+                  "tag": "h3",
+                  "id": "card-1-title",
+                  "classes": ["card-title"],
+                  "attrs": {},
+                  "children": []
+                },
+                {
+                  "tag": "p",
+                  "id": "card-1-desc",
+                  "classes": ["card-desc"],
+                  "attrs": {},
+                  "children": []
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "id": "card-2",
+              "classes": ["card", "featured"],
+              "attrs": {},
+              "children": [
+                {
+                  "tag": "h3",
+                  "id": "card-2-title",
+                  "classes": ["card-title"],
+                  "attrs": {},
+                  "children": []
+                },
+                {
+                  "tag": "p",
+                  "id": "card-2-desc",
+                  "classes": ["card-desc", "important"],
+                  "attrs": {},
+                  "children": []
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "id": "card-3",
+              "classes": ["card"],
+              "attrs": {},
+              "children": [
+                {
+                  "tag": "h3",
+                  "id": "card-3-title",
+                  "classes": ["card-title", "special"],
+                  "attrs": {},
+                  "children": []
+                },
+                {
+                  "tag": "p",
+                  "id": "card-3-desc",
+                  "classes": ["card-desc"],
+                  "attrs": {},
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "tag": "aside",
+          "id": "sidebar",
+          "classes": ["panel"],
+          "attrs": {},
+          "children": [
+            {
+              "tag": "div",
+              "id": "widget-1",
+              "classes": ["widget"],
+              "attrs": {},
+              "children": [
+                {
+                  "tag": "span",
+                  "id": "wlabel-1",
+                  "classes": ["widget-label"],
+                  "attrs": {},
+                  "children": []
+                }
+              ]
+            },
+            {
+              "tag": "div",
+              "id": "widget-2",
+              "classes": ["widget", "active"],
+              "attrs": {},
+              "children": [
+                {
+                  "tag": "span",
+                  "id": "wlabel-2",
+                  "classes": ["widget-label", "highlight"],
+                  "attrs": {},
+                  "children": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "footer",
+      "id": "page-footer",
+      "classes": ["dark"],
+      "attrs": {},
+      "children": [
+        {
+          "tag": "p",
+          "id": "copyright",
+          "classes": ["copyright"],
+          "attrs": {},
+          "children": []
+        },
+        {
+          "tag": "ul",
+          "id": "footer-nav",
+          "classes": ["footer-links"],
+          "attrs": {},
+          "children": [
+            {
+              "tag": "li",
+              "id": "flink-1",
+              "classes": ["footer-item"],
+              "attrs": {},
+              "children": []
+            },
+            {
+              "tag": "li",
+              "id": "flink-2",
+              "classes": ["footer-item"],
+              "attrs": {},
+              "children": []
+            },
+            {
+              "tag": "li",
+              "id": "flink-3",
+              "classes": ["footer-item"],
+              "attrs": {},
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

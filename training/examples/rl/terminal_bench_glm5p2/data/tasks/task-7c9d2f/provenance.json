@@ -1,0 +1,20 @@
+{
+  "task": "task-7c9d2f",
+  "source_name": "rust-embedded-svd2rust",
+  "source_files": [
+    "source_info.txt",
+    "data/src_generate_peripheral_rs.txt",
+    "data/src_generate_register_rs.txt"
+  ],
+  "cite_reason": "Task inspired by svd2rust's core challenge of correctly parsing and generating code from CMSIS-SVD XML \u2014 peripheral derivation, register/cluster array expansion, alternateRegister semantics, and address arithmetic \u2014 extended into a two-phase task: diagnosing defects in existing SVD and designing a new peripheral definition from a hardware specification.",
+  "source_score": 4.15,
+  "source_domain": "computer_systems_organization",
+  "source_subdomain": "embedded_systems",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "e2bffb24-155f-4a63-a16e-024b66131166",
+  "iters": 3,
+  "generated_at": "2026-06-11T12:38:24",
+  "schema": "prov-v1"
+}

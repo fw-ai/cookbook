@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires deep understanding of MPS file format (including the subtle objective offset via RHS entries for the N-row), MIP feasibility checking with dual tolerance regimes (1e-6 for constraints, 1e-5 for integer feasibility), and primal integral computation — a non-trivial optimization performance metric. The agent must correctly handle edge cases: near-integer solutions that pass tolerance, solutions that barely violate constraint tolerance, infeasible solutions from integer violations on binary variables, equality constraints, and the interaction between objective offsets and gap computation. Combines file format parsing, numerical precision, and optimization theory."""
+solution_explanation = """Parse gzipped MPS files extracting constraint matrix, objective coefficients, variable types, bounds, and critically the objective offset (negation of RHS value for the N-row). Implement feasibility checker enforcing constraint tolerance (|violation| <= 1e-6) and integer tolerance (|x - round(x)| <= 1e-5). Compute objective as offset + c^T x. For primal integral, track best feasible objective over time, compute gap = max(0, (best_obj - ref)/max(|ref|, 1)) at each time segment, and integrate over [0, T]. Rank teams by average primal integral across instances."""
+verification_explanation = """Tests verify: (1) correct objective offset handling (knapsack offset=3, assignment offset=1.5), (2) infeasible solutions detected from constraint violations and integer infeasibility, (3) near-integer solutions within tolerance correctly accepted, (4) near-integer solutions with subtle constraint violation correctly rejected, (5) primal integrals match expected values within 1e-3, (6) final ranking is correct. All expected values are computed analytically from known problem data."""
+category = "optimization"
+tags = ["mip", "evaluation-pipeline"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:task-f49fba"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

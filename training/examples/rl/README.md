@@ -24,6 +24,10 @@ Each example exposes `rollout_fn_factory(setup) -> rollout_fn` (signature
 `async def rollout_fn(sample_prompt) -> RolloutRun | None`) and a `train.py`
 that wires the dataset and factory into `recipes.async_rl_loop.main`.
 
+The `terminal_bench_glm5p2/` example preserves the exact rLLM-based
+full-parameter OpenCode recipe and its approved 48-task curriculum used for
+the linked Terminal-Bench 2.1 experiment.
+
 For the API contract and recipe knobs, see
 [`/skills/fireworks-training/references/rl-async.md`](/skills/fireworks-training/references/rl-async.md).
 

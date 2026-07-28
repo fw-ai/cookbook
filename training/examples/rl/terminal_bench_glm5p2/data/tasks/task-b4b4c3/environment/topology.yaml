@@ -1,0 +1,117 @@
+namespaces:
+  - frontend
+  - backend
+  - data
+  - monitoring
+  - default
+
+endpoints:
+  - name: web
+    namespace: frontend
+    labels:
+      app: web
+      role: frontend
+      env: prod
+    ip: "10.0.1.10"
+    ports:
+      - port: 80
+        protocol: TCP
+      - port: 443
+        protocol: TCP
+
+  - name: admin
+    namespace: frontend
+    labels:
+      app: admin
+      role: frontend
+      env: prod
+      access: restricted
+    ip: "10.0.1.11"
+    ports:
+      - port: 80
+        protocol: TCP
+      - port: 9090
+        protocol: TCP
+
+  - name: api
+    namespace: backend
+    labels:
+      app: api
+      role: backend
+      env: prod
+    ip: "10.0.2.10"
+    ports:
+      - port: 8080
+        protocol: TCP
+      - port: 8443
+        protocol: TCP
+
+  - name: worker
+    namespace: backend
+    labels:
+      app: worker
+      role: backend
+      env: prod
+    ip: "10.0.2.11"
+    ports:
+      - port: 8080
+        protocol: TCP
+
+  - name: postgres
+    namespace: data
+    labels:
+      app: postgres
+      role: database
+      env: prod
+    ip: "10.0.3.10"
+    ports:
+      - port: 5432
+        protocol: TCP
+
+  - name: redis
+    namespace: data
+    labels:
+      app: redis
+      role: cache
+      env: prod
+    ip: "10.0.3.11"
+    ports:
+      - port: 6379
+        protocol: TCP
+
+  - name: prometheus
+    namespace: monitoring
+    labels:
+      app: prometheus
+      role: monitoring
+      env: infra
+    ip: "10.0.4.10"
+    ports:
+      - port: 9090
+        protocol: TCP
+
+  - name: grafana
+    namespace: monitoring
+    labels:
+      app: grafana
+      role: monitoring
+      env: infra
+    ip: "10.0.4.11"
+    ports:
+      - port: 3000
+        protocol: TCP
+
+  - name: debug-pod
+    namespace: default
+    labels:
+      app: debug
+      env: dev
+    ip: "10.0.0.100"
+    ports:
+      - port: 8080
+        protocol: TCP
+
+external_entities:
+  - name: external-client
+    ip: "1.2.3.4"
+    entity: world

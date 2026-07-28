@@ -1,0 +1,26 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: backend-ingress
+  namespace: backend
+spec:
+  endpointSelector:
+    matchLabels:
+      role: backend
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            role: frontend
+            k8s:io.kubernetes.pod.namespace: frontend
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            role: monitoring
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

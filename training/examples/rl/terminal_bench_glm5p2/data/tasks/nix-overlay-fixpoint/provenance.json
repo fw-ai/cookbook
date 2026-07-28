@@ -1,0 +1,21 @@
+{
+  "task": "nix-overlay-fixpoint",
+  "source_name": "nixos-discourse",
+  "source_files": [
+    "summary.md",
+    "data/readable_41404_flake_override.md",
+    "data/readable_691_debug_nix_expr.md",
+    "data/readable_45752_iterative_debug.md"
+  ],
+  "cite_reason": "NixOS discourse summary inspired the module/overlay composition patterns and recursive merge semantics; flake override thread shaped the self/super overlay design; Nix expression debugging thread informed the multi-bug iterative debugging approach; iterative debug thread guided the cascade-of-failures task structure.",
+  "source_score": 4.0,
+  "source_domain": "DEEP DIVE: Niche Discourse",
+  "source_subdomain": "Zulip Communities (by subdomain)",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "bc6ffa63-9487-4166-9e5b-432344a528b3",
+  "iters": 5,
+  "generated_at": "2026-06-11T05:20:33",
+  "schema": "prov-v1"
+}

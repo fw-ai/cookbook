@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires: (1) exploring a heterogeneous environment to discover a SQLite database with a normalized schema (work_orders + steel_grades tables requiring a JOIN on grade codes) and a TOML configuration file with domain-specific parameter names; (2) understanding the mapping between database fields and optimization parameters (e.g., grade_id → color, planning_horizon_periods → num_periods); (3) building a coupled constraint programming model that integrates bin packing (order-to-slab with discrete capacity selection and color constraints) with scheduling (slab-to-period with release dates, throughput limits, and tardiness penalties); (4) correctly formulating element constraints for waste computation, implication constraints for grade tracking, and temporal constraints linking assignment to scheduling. The tight interaction between 10 grade groups, 3-slab-per-period limits, and staggered release/due dates forces non-trivial trade-offs between waste and tardiness."""
+solution_explanation = """First explore /app/ to discover the SQLite database and TOML config. Query the database schema, join work_orders with steel_grades to extract order data with numeric grade IDs. Parse the TOML config for capacities and scheduling parameters. Then build a CP-SAT model with: (1) Boolean assignment variables for order-to-slab mapping, (2) integer period variables for each slab, (3) element constraints to compute waste from the discrete capacity set, (4) implication-based color tracking with at-most-2 constraints, (5) release date enforcement via conditional constraints, (6) period capacity limits using reified Boolean counting, (7) tardiness computation via max(0, period-due). Add symmetry breaking by ordering slabs by descending load. Solve with ortools CP-SAT within 120 seconds."""
+verification_explanation = """Tests reconstruct the problem instance independently from the same scattered sources (SQLite + TOML), then verify the solution JSON against all nine hard constraints: (1) each order assigned exactly once, (2) loads within max capacity, (3) correct smallest-capacity selection and waste computation, (4) at most 2 grades per slab, (5) release date satisfaction, (6) at most 3 slabs per period, (7) valid period range, (8) slab count within limit, (9) consistent objective computation. Also verifies objective ≤ 55."""
+category = "optimization"
+tags = ["constraint-programming", "operations-research"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:slab-schedule-optimize"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

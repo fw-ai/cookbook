@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires combining multiple advanced ROP techniques: stack pivoting to bypass limited overflow space, GOT-based function resolution to call an unexported library function, indirect register manipulation (no pop rdx gadget available), and dynamic address parsing. The agent must reverse-engineer two binaries, understand PLT/GOT lazy binding mechanics, compute inter-function offsets, and construct a two-stage exploit payload that handles runtime ASLR."""
+solution_explanation = """The solution analyzes the binary to find a 40-byte buffer overflow with 56 bytes of controllable overflow in a 96-byte read. Since only ~6 ROP gadgets fit on the stack, a stack pivot to a heap buffer (whose address is leaked at runtime) is required. Stage 1 uses pop rax; xchg rax,rsp to pivot. Stage 2 on the heap: (1) calls gateway@plt to populate its GOT entry, (2) sets rdx via mov rdx,rbp; pop rbp since no pop rdx gadget exists, (3) sets rdi and rsi with pop gadgets, (4) reads gateway@got, adds the vault-gateway offset to resolve vault's address, and (5) jumps to vault via jmp *rax. The vault function validates three 64-bit key arguments and prints the flag."""
+verification_explanation = """test.sh generates a random flag, writes it to /app/flag.txt, then runs the agent's exploit script. pytest checks that (1) /app/exploit.py exists and (2) running it produces output containing the random flag string, confirming the exploit successfully triggers vault() to read and print the flag."""
+category = "security"
+tags = ["rop", "binary-exploitation"]
+expert_time_estimate_hours = 1.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:rop-pivot-vault"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

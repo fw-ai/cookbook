@@ -1,0 +1,7 @@
+[
+  {"id": "s1", "harvested_rows": []},
+  {"id": "s2", "harvested_rows": [2]},
+  {"id": "s3", "harvested_rows": [1, 2]},
+  {"id": "s4", "harvested_rows": [4, 5]},
+  {"id": "s5", "harvested_rows": [2, 9]}
+]

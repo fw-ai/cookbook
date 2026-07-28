@@ -1,0 +1,21 @@
+{
+  "task": "fhir-access-policy",
+  "source_name": "medplum",
+  "source_files": [
+    "data/src_packages_core_src_access.ts",
+    "data/src_packages_server_src_fhir_accesspolicy.ts",
+    "data/doc_access_access-policies.md",
+    "data/doc_access_ip-access-rules.md"
+  ],
+  "cite_reason": "Task design uses Medplum's actual TypeScript access control source (core_access.ts and server_accesspolicy.ts) as reference material the agent must reverse-engineer, plus IP access rules documentation for IP matching semantics",
+  "source_score": 4.15,
+  "source_domain": "security_and_privacy",
+  "source_subdomain": "medical_legal",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "e426faac-4a6e-48b0-9911-4c089ebfd7d3",
+  "iters": 5,
+  "generated_at": "2026-06-12T07:26:57",
+  "schema": "prov-v1"
+}

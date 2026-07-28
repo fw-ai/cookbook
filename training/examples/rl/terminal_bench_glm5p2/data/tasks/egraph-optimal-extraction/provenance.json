@@ -1,0 +1,18 @@
+{
+  "task": "egraph-optimal-extraction",
+  "source_name": "chris-fallin-cfallin-org-blog",
+  "source_files": [
+    "data/post_aegraph.html"
+  ],
+  "cite_reason": "Task directly inspired by the acyclic e-graph extraction problem described in the aegraph blog post, including the NP-hardness proof via weighted set cover reduction and the greedy vs optimal extraction tradeoff",
+  "source_score": 4.25,
+  "source_domain": "software_and_its_engineering",
+  "source_subdomain": "compilers",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "b63c83ae-2e1f-4f9f-ac1e-301e84ca9c08",
+  "iters": 1,
+  "generated_at": "2026-06-13T02:12:05",
+  "schema": "prov-v1"
+}

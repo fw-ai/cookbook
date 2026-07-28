@@ -1,0 +1,24 @@
+{
+  "task": "cornell-smoke-renderer",
+  "source_name": "ray-tracing-in-one-weekend-next-week-rest-of-life-",
+  "source_files": [
+    "data/src_book3_pdf.h",
+    "data/src_book3_camera.h",
+    "data/src_book3_main.cc",
+    "data/src_book3_material.h",
+    "data/src_book3_onb.h",
+    "data/src_book2_camera.h",
+    "data/src_book2_quad.h"
+  ],
+  "cite_reason": "Task requires transitioning from Book 2 naive sampling to Book 3 importance-sampled rendering. The PDF framework, ONB, scatter_record, scattering_pdf, hittable sampling, and importance-sampled camera ray_color are drawn from Book 3 source. The Cornell Box scene combines Book 2 and Book 3 elements.",
+  "source_score": 4.25,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "computer_graphics",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "db4c6bd2-8580-4254-a4c2-9ba19b1818a6",
+  "iters": 5,
+  "generated_at": "2026-06-11T18:13:43",
+  "schema": "prov-v1"
+}

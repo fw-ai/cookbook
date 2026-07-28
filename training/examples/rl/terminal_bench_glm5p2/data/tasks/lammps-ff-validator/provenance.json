@@ -1,0 +1,20 @@
+{
+  "task": "lammps-ff-validator",
+  "source_name": "lammps-forum-on-materials-science-community-discourse-matsci",
+  "source_files": [
+    "data/matsci_topic_24426.json",
+    "data/matsci_topic_51987.json",
+    "source_info.txt"
+  ],
+  "cite_reason": "Task inspired by LAMMPS community forum discussions on coordinate format parsing and topology inference with PBC-aware distance calculations (topic 24426), and force field parameter handling and atom type classification challenges (topic 51987) \u2014 combined into a pair correlation analysis task requiring minimum image convention, RDF normalization, and derived structural quantities from LAMMPS trajectory data.",
+  "source_score": 4.15,
+  "source_domain": "applied_computing",
+  "source_subdomain": "physics_engineering",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "5df24f84-19a6-4949-ad14-b26996fdd405",
+  "iters": 5,
+  "generated_at": "2026-06-12T20:52:02",
+  "schema": "prov-v1"
+}

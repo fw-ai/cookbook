@@ -1,0 +1,45 @@
+{
+  "vsfScript": [
+    {
+      "lineType": "ImportScript",
+      "parameters": {
+        "scriptFile": "CommonRules/notNull.json"
+      }
+    },
+    {
+      "lineType": "ImportScript",
+      "parameters": {
+        "scriptFile": "CommonRules/notNullAndNotWhitespace.json"
+      }
+    },
+    {
+      "lineType": "Rule",
+      "ruleType": "External",
+      "parameters": {
+        "ruleText": "currentProperty.Length == 4"
+      }
+    },
+    {
+      "lineType": "Rule",
+      "ruleType": "External",
+      "description": "EntropyId should only contain alphanumeric characters.",
+      "parameters": {
+        "ruleText": "Regex.IsMatch(currentProperty, \"^[a-zA-Z0-9]+$\")"
+      }
+    },
+    {
+      "lineType": "State",
+      "parameters": {
+        "key": "upperId",
+        "value": "currentProperty.ToUpper()"
+      }
+    },
+    {
+      "lineType": "Information",
+      "description": "EID - Entropy ID used to identify the review",
+      "parameters": {
+        "ruleText": "String.Format(\"Entropy ID: {0}\", upperId)"
+      }
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+schema_version = "1.2"
+
+[metadata]
+author_name = "Task Generator"
+author_email = "tianhaowu@meta.com"
+difficulty_explanation = """Requires expert-level HashiCorp Vault operations knowledge across multiple domains. The solver must evaluate eight security assessment findings, correctly identifying two as false positives — one where the assessor conflates ed25519 asymmetric signing keys with AES symmetric encryption standards (requiring deep understanding of cryptographic primitive categories), and one where the assessor pattern-matches a correctly domain-restricted PKI role against an unrelated vulnerability (requiring nuanced understanding of Vault's PKI role configuration model). Blindly remediating false positives breaks legitimate signing and certificate issuance workflows. For genuine findings, the solver must: understand Vault's path-segment wildcard (+) semantics in ACL policies; recognize that transit key properties like exportable and cipher type are immutable once set; distinguish a planted filesystem audit log from a real Vault audit device; identify an unauthenticated AppRole among multiple auth methods; and tune TTLs at both mount and user levels. The solver must also design a break-glass emergency access AppRole from security requirements, balancing privileged access with CIDR restrictions, token use limits, and short TTLs — a novel creation task requiring architectural judgment about Vault's AppRole security model."""
+solution_explanation = """Bootstrap the deployment, then systematically evaluate all 8 findings by querying actual Vault state. Classify findings 7 (ed25519 signing key flagged under AES encryption standard) and 8 (properly domain-restricted internal-certs role) as false positives — write assessment.json. Remediate genuine findings: (1) rewrite data-team policy replacing + wildcard with explicit data-team paths; (2) restrict web-certs PKI role to example.com subdomains; (3) delete and recreate payments-key (aes128→aes256) and backup-key (remove exportable), understanding immutability; (4) remove legacy-migration AppRole; (5) enable file audit device; (6) set KV max_versions=10 and tune TTLs. Design emergency-responder AppRole with platform-admin policy, CIDR restriction to localhost, 5 token uses, 30m/1h TTLs, and mandatory secret_id."""
+verification_explanation = """31 pytest tests verify all aspects through the Vault HTTP API: genuine finding remediations are tested as before (tenant isolation, PKI controls, transit key compliance, auth controls, audit device, retention/TTL compliance). Additionally: false positive preservation tests verify signing-key remains ed25519 and can sign/verify data, and internal-certs role preserves subdomain issuance for internal.example.com. Assessment tests verify /app/assessment.json correctly classifies findings 1-6 as genuine and 7-8 as false_positive. Break-glass tests verify emergency-responder AppRole exists with platform-admin policy, bind_secret_id=true, token_num_uses=5, TTLs within 30m/1h bounds, and CIDR restriction to localhost."""
+category = "security_and_privacy"
+tags = ["vault", "security-assessment"]
+expert_time_estimate_hours = 2.5
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+replay_dockerfile = false
+docker_image = "docker.io/tianhao0122/optimbench-tb:vault-acl-remediation"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []

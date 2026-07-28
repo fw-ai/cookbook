@@ -1,0 +1,22 @@
+{
+  "task": "task-bded50",
+  "source_name": "restate",
+  "source_files": [
+    "summary.md",
+    "data/docs_services_text.txt",
+    "data/docs_introspection_text.txt",
+    "data/docs_durable_execution_text.txt",
+    "data/sdk_typescript_readme.md"
+  ],
+  "cite_reason": "Task design inspired by Restate's Virtual Object single-writer concurrency model from the services docs, the SQL introspection capabilities for diagnosing stuck invocations, durable execution journal semantics for understanding ctx.run side effects, and the TypeScript SDK API patterns for inter-service calls.",
+  "source_score": 4.75,
+  "source_domain": "software_and_its_engineering",
+  "source_subdomain": "distributed_systems",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "25abbac0-5bb9-442c-be37-368e9a3b9dfd",
+  "iters": 5,
+  "generated_at": "2026-06-13T08:35:31",
+  "schema": "prov-v1"
+}

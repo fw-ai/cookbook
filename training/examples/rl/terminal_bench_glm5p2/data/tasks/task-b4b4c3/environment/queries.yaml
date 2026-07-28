@@ -1,0 +1,197 @@
+queries:
+  - id: 1
+    source:
+      name: web
+      namespace: frontend
+    destination:
+      name: api
+      namespace: backend
+    port: 8080
+    protocol: TCP
+
+  - id: 2
+    source:
+      name: web
+      namespace: frontend
+    destination:
+      name: api
+      namespace: backend
+    port: 9090
+    protocol: TCP
+
+  - id: 3
+    source:
+      name: web
+      namespace: frontend
+    destination:
+      name: worker
+      namespace: backend
+    port: 8080
+    protocol: TCP
+
+  - id: 4
+    source:
+      name: admin
+      namespace: frontend
+    destination:
+      name: api
+      namespace: backend
+    port: 8080
+    protocol: TCP
+
+  - id: 5
+    source:
+      name: api
+      namespace: backend
+    destination:
+      name: postgres
+      namespace: data
+    port: 5432
+    protocol: TCP
+
+  - id: 6
+    source:
+      name: api
+      namespace: backend
+    destination:
+      name: redis
+      namespace: data
+    port: 6379
+    protocol: TCP
+
+  - id: 7
+    source:
+      name: api
+      namespace: backend
+    destination:
+      name: postgres
+      namespace: data
+    port: 80
+    protocol: TCP
+
+  - id: 8
+    source:
+      name: prometheus
+      namespace: monitoring
+    destination:
+      name: api
+      namespace: backend
+    port: 8080
+    protocol: TCP
+
+  - id: 9
+    source:
+      name: prometheus
+      namespace: monitoring
+    destination:
+      name: redis
+      namespace: data
+    port: 6379
+    protocol: TCP
+
+  - id: 10
+    source:
+      name: prometheus
+      namespace: monitoring
+    destination:
+      name: postgres
+      namespace: data
+    port: 5432
+    protocol: TCP
+
+  - id: 11
+    source:
+      name: prometheus
+      namespace: monitoring
+    destination:
+      name: postgres
+      namespace: data
+    port: 80
+    protocol: TCP
+
+  - id: 12
+    source:
+      ip: "1.2.3.4"
+      entity: world
+    destination:
+      name: web
+      namespace: frontend
+    port: 80
+    protocol: TCP
+
+  - id: 13
+    source:
+      ip: "1.2.3.4"
+      entity: world
+    destination:
+      name: web
+      namespace: frontend
+    port: 8080
+    protocol: TCP
+
+  - id: 14
+    source:
+      ip: "1.2.3.4"
+      entity: world
+    destination:
+      name: admin
+      namespace: frontend
+    port: 80
+    protocol: TCP
+
+  - id: 15
+    source:
+      name: web
+      namespace: frontend
+    destination:
+      name: postgres
+      namespace: data
+    port: 5432
+    protocol: TCP
+
+  - id: 16
+    source:
+      name: grafana
+      namespace: monitoring
+    destination:
+      name: api
+      namespace: backend
+    port: 8080
+    protocol: TCP
+
+  - id: 17
+    source:
+      name: postgres
+      namespace: data
+    destination:
+      ip: "10.0.5.5"
+    port: 443
+    protocol: TCP
+
+  - id: 18
+    source:
+      name: postgres
+      namespace: data
+    destination:
+      ip: "10.100.0.1"
+    port: 443
+    protocol: TCP
+
+  - id: 19
+    source:
+      name: postgres
+      namespace: data
+    destination:
+      ip: "10.0.5.5"
+    port: 80
+    protocol: TCP
+
+  - id: 20
+    source:
+      name: debug-pod
+      namespace: default
+    destination:
+      name: api
+      namespace: backend
+    port: 8080
+    protocol: TCP

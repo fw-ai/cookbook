@@ -1,0 +1,18 @@
+{
+  "vsfScript": [
+    {
+      "lineType": "ImportScript",
+      "parameters": {
+        "scriptFile": "CommonRules/notNull.json"
+      }
+    },
+    {
+      "lineType": "Rule",
+      "ruleType": "External",
+      "description": "At least 1 list item is required",
+      "parameters": {
+        "ruleText": "currentProperty.Count() > 0"
+      }
+    }
+  ]
+}

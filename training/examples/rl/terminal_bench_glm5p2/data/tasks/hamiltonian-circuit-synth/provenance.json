@@ -1,0 +1,21 @@
+{
+  "task": "hamiltonian-circuit-synth",
+  "source_name": "ieee-quantum-week-qce25-hands-on-tutorials-with-companion-co",
+  "source_files": [
+    "data/bqskit_tutorial_1_comping_with_bqskit_cells.txt",
+    "data/bqskit_tutorial_2_customizing_workflows_cells.txt",
+    "data/bqskit_tutorial_3_towards_fault_tolerance_cells.txt",
+    "summary.md"
+  ],
+  "cite_reason": "Task design inspired by BQSKit tutorial series: gate set retargeting and MachineModel construction from Tutorial 1, Hamiltonian simulation with VQE/Hubbard model from Tutorial 2, and unitary synthesis workflow from Tutorial 3. The spin-chain Hamiltonians and compilation verification approach draw directly from these materials.",
+  "source_score": 4.0,
+  "source_domain": "computing_methodologies",
+  "source_subdomain": "quantum_computing",
+  "generator_model": "opus",
+  "generator_model_resolved": null,
+  "prompt_version": "gen-v2",
+  "gen_session_id": "c762191e-ff3c-42bc-87e7-7d85cadb0efc",
+  "iters": 3,
+  "generated_at": "2026-06-11T19:44:34",
+  "schema": "prov-v1"
+}
