@@ -4,16 +4,16 @@ Embeds a corpus and a query set through ``/v1/embeddings``, runs exact
 nearest-neighbour search, and scores the run with ``pytrec_eval`` -- the same
 library MTEB uses, so the numbers are comparable to published benchmarks.
 
-The subtlety that matters: Qwen3-Embedding is *asymmetric*. Queries carry an
-instruction prefix, documents never do. ``training/recipes/embedding_loop.py``
-applies that prefix at training time (see ``_build_batch_datums``)::
+Qwen3-Embedding is *asymmetric*: queries carry an instruction prefix, documents
+never do. ``training/recipes/embedding_loop.py`` applies that prefix at training
+time (see ``_build_batch_datums``)::
 
     query_texts = _QWEN3_INSTRUCTION_TEMPLATE.format(query_instruction) + q
     doc_texts   = d                       # no prefix
 
-Embed queries without it at eval time and you are measuring a different input
-distribution than you trained on. This module imports the recipe's own template
-so the two cannot drift apart.
+Evaluation has to match, or it measures a different input distribution than the
+model trained on. This module reads the recipe's own template so the two cannot
+drift apart.
 """
 
 from __future__ import annotations
@@ -38,12 +38,6 @@ def instruction_template() -> str:
     Resolving this dynamically rather than binding it at import means a caller can
     monkeypatch ``embedding_loop._QWEN3_INSTRUCTION_TEMPLATE`` once and have both
     training and evaluation pick up the same value -- they cannot drift apart.
-
-    Worth knowing: the recipe ships ``"Instruct: {}\\nQuery:"`` with no trailing
-    space, so the query text abuts the colon. Both the Qwen3-Embedding convention
-    and the reference repro kit use ``"Query: "`` with a space. The notebook patches
-    the recipe to the spaced form for exact parity; self-consistency is what
-    protects the measured lift, but the absolute numbers shift with the difference.
     """
     try:
         import training.recipes.embedding_loop as _el
