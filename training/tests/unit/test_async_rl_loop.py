@@ -47,6 +47,8 @@ class TestConfigDefaults:
         assert cfg.eps_clip == 0.2
         assert cfg.eps_clip_high is None
         assert cfg.anchor_logp == "old_policy"
+        assert cfg.router_replay is True
+        assert cfg.router_replay_completion_only is True
         assert not hasattr(cfg, "policy_loss")
         assert not hasattr(cfg, "loss_path")
 
@@ -121,6 +123,11 @@ def _build_service_kwargs(
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(async_rl_loop, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(async_rl_loop, "validate_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        async_rl_loop,
+        "resolve_router_replay_enabled",
+        lambda **kwargs: kwargs["requested"],
+    )
     monkeypatch.setattr(
         async_rl_loop, "load_deployment_tokenizer", lambda *args, **kwargs: object()
     )

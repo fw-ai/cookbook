@@ -5,6 +5,5 @@
     {"role": "assistant", "content": "4."},
     {"role": "user", "content": "And 3+3?"}
   ],
-  "tools": [],
-  "renderer_config": {}
+  "tools": []
 }

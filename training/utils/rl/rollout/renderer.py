@@ -58,7 +58,7 @@ from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 from training.utils.supervised import (
     has_non_text_chunks,
     normalize_messages,
-    _extract_text_only_token_ids,
+    _extract_text_token_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,7 @@ __all__ = [
     "build_multimodal_completions_request",
     "model_input_to_token_ids",
     "sample_vision_completion",
+    "sampled_completion_to_rollout_run",
     "single_turn_renderer_rollout",
 ]
 
@@ -199,8 +200,19 @@ def _collect_base64_images(
     return images
 
 
-def _image_placeholder_token_id(tokenizer: Any) -> int | None:
-    """Return the model's image-placeholder token id when exposed by the tokenizer."""
+def _image_placeholder_token_id(
+    tokenizer: Any,
+    *,
+    renderer: Any | None = None,
+) -> int | None:
+    """Return the renderer/tokenizer image-placeholder token id."""
+    renderer_image_id = getattr(renderer, "image_placeholder_token_id", None)
+    if isinstance(renderer_image_id, int) and not isinstance(
+        renderer_image_id,
+        bool,
+    ):
+        return renderer_image_id
+
     special_ids = getattr(tokenizer, "special_ids", None)
     image_id = getattr(special_ids, "image", None) if special_ids is not None else None
     if isinstance(image_id, int) and not isinstance(image_id, bool):
@@ -215,7 +227,17 @@ def _image_placeholder_token_id(tokenizer: Any) -> int | None:
     convert = getattr(tokenizer, "convert_tokens_to_ids", None)
     if callable(convert):
         image_id = convert("<|image_pad|>")
-        if isinstance(image_id, int) and not isinstance(image_id, bool):
+        unknown_id = getattr(tokenizer, "unk_token_id", None)
+        is_unknown = (
+            isinstance(unknown_id, int)
+            and not isinstance(unknown_id, bool)
+            and image_id == unknown_id
+        )
+        if (
+            isinstance(image_id, int)
+            and not isinstance(image_id, bool)
+            and not is_unknown
+        ):
             return image_id
     return None
 
@@ -224,6 +246,8 @@ def build_multimodal_completions_prompt_token_ids(
     messages: List[Any],
     model_input: tinker.ModelInput,
     tokenizer: Any,
+    *,
+    renderer: Any | None = None,
 ) -> tuple[List[int], List[str]]:
     """Build ``(prompt_token_ids, images)`` for token-in vision completions.
 
@@ -243,7 +267,10 @@ def build_multimodal_completions_prompt_token_ids(
             "multimodal ModelInput has no base64 images; cannot call completions with images"
         )
 
-    image_placeholder_id = _image_placeholder_token_id(tokenizer)
+    image_placeholder_id = _image_placeholder_token_id(
+        tokenizer,
+        renderer=renderer,
+    )
     if image_placeholder_id is None:
         raise MultimodalRenderingNotSupported(
             "multimodal token-in completions require an image placeholder token ID "
@@ -531,6 +558,7 @@ def _build_text_only_rollout_sample(
     completion_tokens: List[int],
     completion_logprobs: List[float],
     raw_completion_logprobs: List[float] | None = None,
+    routing_matrices: List[str] | None = None,
     logprobs_echoed: bool,
     reward: float,
     finish_reason: str,
@@ -546,6 +574,9 @@ def _build_text_only_rollout_sample(
         reward=float(reward),
         finish_reason=finish_reason,
         text=text,
+        routing_matrices=(
+            list(routing_matrices) if routing_matrices is not None else None
+        ),
         raw_logprobs=(
             [0.0] * len(prompt_token_ids) + raw_completion_logprobs
             if raw_completion_logprobs is not None
@@ -553,6 +584,49 @@ def _build_text_only_rollout_sample(
         ),
     )
     return RolloutRun(segments=[sample])
+
+
+def sampled_completion_to_rollout_run(
+    completion: Any,
+    *,
+    reward: float,
+) -> RolloutRun | None:
+    """Pack one SDK ``SampledCompletion`` into the neutral rollout contract."""
+    prompt_len = int(completion.prompt_len)
+    full_tokens = list(completion.full_tokens)
+    completion_tokens = full_tokens[prompt_len:]
+    if not completion_tokens:
+        return None
+
+    completion_logprobs = _completion_logprobs_from_sampled_completion(
+        completion,
+        prompt_len=prompt_len,
+        completion_len=len(completion_tokens),
+        attr="sampling_logprobs",
+        source="sampling_logprobs",
+        required=True,
+    )
+    if completion_logprobs is None:
+        return None
+    raw_completion_logprobs = _completion_logprobs_from_sampled_completion(
+        completion,
+        prompt_len=prompt_len,
+        completion_len=len(completion_tokens),
+        attr="inference_logprobs",
+        source="raw inference logprobs",
+        required=False,
+    )
+    return _build_text_only_rollout_sample(
+        prompt_token_ids=full_tokens[:prompt_len],
+        completion_tokens=completion_tokens,
+        completion_logprobs=completion_logprobs,
+        raw_completion_logprobs=raw_completion_logprobs,
+        routing_matrices=getattr(completion, "routing_matrices", None),
+        logprobs_echoed=False,
+        reward=reward,
+        finish_reason=getattr(completion, "finish_reason", "stop"),
+        text=getattr(completion, "text", ""),
+    )
 
 
 def _build_multimodal_rollout_sample(
@@ -566,7 +640,7 @@ def _build_multimodal_rollout_sample(
     finish_reason: str,
     text: str,
 ) -> RolloutRun:
-    prompt_text_ids = _extract_text_only_token_ids(prompt_model_input)
+    prompt_text_ids = _extract_text_token_ids(prompt_model_input)
     completion = [int(t) for t in completion_tokens]
     text_tokens = list(prompt_text_ids) + completion
     if len(completion_logprobs) != len(completion):
@@ -735,7 +809,10 @@ async def single_turn_renderer_rollout(
             )
 
         prompt_token_ids, images = build_multimodal_completions_prompt_token_ids(
-            messages, model_input, tokenizer
+            messages,
+            model_input,
+            tokenizer,
+            renderer=renderer,
         )
         sk["stop"] = stop_strings if stop_strings is not None else stop
         sk.setdefault("logprobs", True)
@@ -827,6 +904,7 @@ async def single_turn_renderer_rollout(
         completion_tokens=out_tokens,
         completion_logprobs=out_logprobs,
         raw_completion_logprobs=raw_out_logprobs,
+        routing_matrices=getattr(c, "routing_matrices", None),
         logprobs_echoed=False,
         reward=reward,
         finish_reason=getattr(c, "finish_reason", "stop"),

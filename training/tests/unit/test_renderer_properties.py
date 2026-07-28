@@ -56,6 +56,7 @@ from training.renderer.verifier.utils.hf_parity import (
     format_divergence,
 )
 from training.utils.supervised import build_tool_prefixed_messages
+from training.utils.tokenizers import load_tokenizer
 
 from training.tests.unit.renderer_expected_divergences import (
     EXTENSION_EXPECTED_DIVERGENCES,
@@ -352,19 +353,30 @@ def _assert_parsed_assistant(
 
 
 def _split_by_weights(
-    tokens: list[int], weights: list[float]
+    tokens: list[int],
+    weights: list[float],
+    *,
+    trailing_hard_append_tokens: int = 0,
 ) -> tuple[list[int], list[int]]:
-    """Split tokens into (observation, action) asserting a ``000...111`` mask.
+    """Split tokens into (observation, action) asserting ``000...111[000]``.
 
     The supervised loss mask for ``LAST_ASSISTANT_MESSAGE`` must be a run of
-    zeros (the prompt the model conditions on) followed by a run of ones (the
-    tokens it is trained to produce). Any interior transition back to zero
-    means the mask is malformed. Returns ``(ob, ac)`` where ``ob`` are the
-    weight-0 tokens and ``ac`` the weight-1 tokens.
+    zeros followed by a run of ones. A renderer may explicitly retain a fixed
+    trailing hard-append suffix with weight zero. Any other transition back to
+    zero is malformed. The suffix is excluded from the returned action.
     """
     assert len(tokens) == len(
         weights
     ), f"Token/weight length mismatch: {len(tokens)} vs {len(weights)}"
+    assert trailing_hard_append_tokens >= 0
+    if trailing_hard_append_tokens:
+        assert len(tokens) >= trailing_hard_append_tokens
+        assert not any(weights[-trailing_hard_append_tokens:]), (
+            "Expected the declared trailing hard-append tokens to have "
+            "weight zero"
+        )
+        tokens = tokens[:-trailing_hard_append_tokens]
+        weights = weights[:-trailing_hard_append_tokens]
 
     first_nonzero: int | None = None
     for i, w in enumerate(weights):
@@ -435,9 +447,70 @@ def _verify_extension_property(
 
 def _load_renderer(case: RendererCase) -> tuple[Tokenizer, Renderer]:
     """Load the case's tokenizer and renderer, or raise to trigger a skip."""
-    tokenizer = get_tokenizer(case.tokenizer_model)
+    if (
+        case.tokenizer_revision is not None
+        or case.tokenizer_trust_remote_code is not None
+    ):
+        tokenizer = load_tokenizer(
+            case.resolved_tokenizer_model(),
+            case.resolved_tokenizer_revision(),
+            case.tokenizer_trust_remote_code,
+        )
+    else:
+        tokenizer = get_tokenizer(case.resolved_tokenizer_model())
     renderer = get_renderer(case.renderer, tokenizer)
     return tokenizer, renderer
+
+
+def test_hf_case_loads_pinned_public_repo_by_default(monkeypatch) -> None:
+    case = next(case for case in RENDERER_MATRIX if case.renderer == "kimi_k3")
+    monkeypatch.delenv("KIMI_K3_MODEL_PATH", raising=False)
+    tokenizer = object()
+    renderer = object()
+    loaded: list[tuple[str, str | None, bool | None]] = []
+
+    def fake_load_tokenizer(model, revision, trust):
+        loaded.append((model, revision, trust))
+        return tokenizer
+
+    monkeypatch.setitem(
+        globals(),
+        "load_tokenizer",
+        fake_load_tokenizer,
+    )
+    monkeypatch.setitem(globals(), "get_renderer", lambda _name, _tokenizer: renderer)
+
+    assert _load_renderer(case) == (tokenizer, renderer)
+    assert loaded == [
+        (
+            "moonshotai/Kimi-K3",
+            "301be1b88c89c0d3a763da6301352cb8fe399e90",
+            True,
+        )
+    ]
+
+
+def test_local_fixture_path_resolves_at_load_time(monkeypatch) -> None:
+    case = next(case for case in RENDERER_MATRIX if case.renderer == "kimi_k3")
+    fixture_path = "/tmp/runtime-kimi-k3-fixture"
+    tokenizer = object()
+    renderer = object()
+    loaded: list[tuple[str, str | None, bool | None]] = []
+
+    def fake_load_tokenizer(model, revision, trust):
+        loaded.append((model, revision, trust))
+        return tokenizer
+
+    monkeypatch.setenv("KIMI_K3_MODEL_PATH", fixture_path)
+    monkeypatch.setitem(
+        globals(),
+        "load_tokenizer",
+        fake_load_tokenizer,
+    )
+    monkeypatch.setitem(globals(), "get_renderer", lambda _name, _tokenizer: renderer)
+
+    assert _load_renderer(case) == (tokenizer, renderer)
+    assert loaded == [(fixture_path, None, True)]
 
 
 def _native_tool_call_ids(
@@ -512,6 +585,8 @@ def _case_id(case: RendererCase, scenario: Scenario) -> str:
 
 def _scenario_supported(case: RendererCase, scenario: Scenario) -> bool:
     """Whether the case advertises every capability the scenario needs."""
+    if scenario.id in case.unsupported_scenarios:
+        return False
     if scenario.requires_thinking and not case.supports_thinking:
         return False
     if scenario.requires_tools and not case.supports_tools:
@@ -754,7 +829,7 @@ def test_hf_generation_parity(case: RendererCase, scenario: Scenario) -> None:
 
     result = compare_renderer_to_hf(
         renderer_name=case.renderer,
-        tokenizer_model=case.tokenizer_model,
+        tokenizer_model=case.resolved_tokenizer_model(),
         messages=scenario.messages,
         add_generation_prompt=True,
         apply_chat_template_kwargs=case.hf_kwargs,
@@ -776,7 +851,7 @@ def test_hf_supervised_parity(case: RendererCase, scenario: Scenario) -> None:
 
     result = compare_renderer_to_hf(
         renderer_name=case.renderer,
-        tokenizer_model=case.tokenizer_model,
+        tokenizer_model=case.resolved_tokenizer_model(),
         messages=scenario.messages,
         add_generation_prompt=False,
         apply_chat_template_kwargs=case.hf_kwargs,
@@ -808,7 +883,11 @@ def test_supervised_generation_parse_consistency(
     tokens = [int(t) for t in model_input.to_ints()]
     weights_list = [float(w) for w in weights.tolist()]
 
-    _, ac = _split_by_weights(tokens, weights_list)
+    _, ac = _split_by_weights(
+        tokens,
+        weights_list,
+        trailing_hard_append_tokens=case.trailing_hard_append_tokens,
+    )
     assert ac, "Expected a non-empty trained action span for the last assistant turn"
 
     parsed_message, termination = renderer.parse_response(ac)
@@ -859,6 +938,7 @@ def test_final_structured_assistant_content_round_trips(
     _, action = _split_by_weights(
         [int(token) for token in model_input.to_ints()],
         [float(weight) for weight in weights.tolist()],
+        trailing_hard_append_tokens=case.trailing_hard_append_tokens,
     )
     assert action, "Expected a non-empty trained action span for the last assistant turn"
     parsed_message, termination = renderer.parse_response(action)
@@ -894,6 +974,7 @@ def test_supervised_observation_equals_generation_prompt(
     observation, action = _split_by_weights(
         [int(token) for token in model_input.to_ints()],
         [float(weight) for weight in weights.tolist()],
+        trailing_hard_append_tokens=case.trailing_hard_append_tokens,
     )
     assert action, "Expected a non-empty trained action span for the last assistant turn"
     generation = [
@@ -944,6 +1025,7 @@ def test_historical_assistant_turns_parse_consistently(
     _, action = _split_by_weights(
         [int(token) for token in model_input.to_ints()],
         [float(weight) for weight in weights.tolist()],
+        trailing_hard_append_tokens=case.trailing_hard_append_tokens,
     )
     assert action, (
         f"empty historical assistant action for {case.renderer} / "
@@ -1140,7 +1222,7 @@ def test_required_renderers_load_in_strict_mode(case: RendererCase) -> None:
     canonical = next(scenario for scenario in ALL_SCENARIOS if scenario.id == "system_user")
     result = compare_renderer_to_hf(
         renderer_name=case.renderer,
-        tokenizer_model=case.tokenizer_model,
+        tokenizer_model=case.resolved_tokenizer_model(),
         messages=canonical.messages,
         add_generation_prompt=True,
         apply_chat_template_kwargs=case.hf_kwargs,

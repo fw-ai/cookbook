@@ -2,7 +2,12 @@
 
 RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-training and pushes them to the serving deployment so new rollouts come from the updated policy. SFT / DPO / ORPO don't typically hotload — they save once at the end and call it a day.
 
-Recipe hotload behaviour is controlled by top-level fields such as `weight_sync_interval`, `weight_sync_before_training`, and `weight_sync_timeout`; the *scope* (who owns the GCS bucket) is set on `DeployConfig.weight_sync_scope`.
+`training/recipes/rl_loop.py` is always strict on-policy: it performs an
+initial hotload and another hotload after every optimizer step. It intentionally
+has no sync-cadence or conditional-initial-sync knob. Async off-policy admission
+is controlled by `max_head_offpolicy_versions`, not by delaying weight sync.
+`weight_sync_timeout` controls the hotload timeout; the *scope* (who owns the
+GCS bucket) is set on `DeployConfig.weight_sync_scope`.
 
 For current user-facing checkpoint and sampling flows, see [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) and [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading.md). This file is the deep scope-mismatch and recovery reference.
 
@@ -49,17 +54,56 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `weight_sync_interval` | `1` | Sync every N optimizer steps. `1` = after every step (on-policy). `0` = no weight sync at all (rollouts always come from the initial policy — you almost never want this for RL). |
 | `first_checkpoint_type` | `"base"` | First sampler save is a full snapshot; subsequent saves can be deltas. Do not change. |
 | `weight_sync_timeout` | `600` | Per-hotload timeout in seconds. Bump if you see `Hotload did not complete within 600s` on large models. |
-| `weight_sync_before_training` | `False` | Push an initial base snapshot before step 0. Useful when the deployment starts from a different snapshot than the trainer's base. |
 | `dcp_save_interval` | `0` | DCP (optimizer + weights) save cadence for **resume**. Orthogonal to sampler hotload. `0` = off; no intermediate resume points. |
 | `dcp_timeout` | `2700` | 45 min default for `save_state` / `load_state_with_optimizer`. |
+| `hot_load_transition_type` | unset (server picks `ASYNC`) | How the deployment treats requests that are mid-generation when the swap lands. See [Inference transition](#inference-transition-async-vs-sync). |
 
 ## On-policy vs off-policy (weight-sync timing)
 
-- `weight_sync_interval = 1` + strict 1:1 per step (the recipe default) → **on-policy**. Rollouts for step K+1 are sampled from the policy that step K produced.
-- `weight_sync_interval > 1` → **off-policy** between syncs. Rollouts continue to come from an older snapshot until the next sync. CISPO / DRO / IS tolerate this better than vanilla GRPO.
+- `rl_loop` collects one batch, applies one optimizer step, hotloads, and only
+  then starts the next batch. Rollouts for step K+1 therefore use the policy
+  produced by step K.
+- `async_rl_loop` hotloads after every optimizer batch too, while its admission
+  gate allows a bounded number of already-admitted behavior-policy versions.
+
+## Inference transition: ASYNC vs SYNC
+
+Weight-sync *timing* decides which policy version a rollout starts on. The
+inference transition decides what happens to a generation that is still
+streaming when the swap lands. `DeployConfig.hot_load_transition_type` selects
+it; leaving it unset lets the control plane choose, and for hot-load
+deployments that resolves to `ASYNC`.
+
+| | In-flight generation during a swap |
+|---|---|
+| `ASYNC` (default) | Paused, then resumed on the same connection. The turn keeps the KV cache built under the old weights and its remaining tokens decode against the new ones, so a single response can span two policy versions. |
+| `SYNC` | Allowed to finish on the old weights before the swap; new requests queue. No response ever spans two versions, at the cost of a TTFT stall per hot load. |
+
+`ASYNC` is what you want by default: it keeps the rollout fleet busy, and the
+recorded `sampling_logprob` for each token still comes from the version that
+actually sampled it, so the importance ratio stays correct.
+
+Reach for `SYNC` when a mid-generation version boundary is itself suspect — for
+example long multi-turn agentic rollouts where structured output or tool-call
+formatting degrades over many steps and you want to rule out mixed-weight KV as
+the cause. Expect lower rollout throughput while it is on.
+
+```python
+DeployConfig(
+    deployment_id="my-sampler",
+    hot_load_transition_type="SYNC",
+)
+```
+
+Changing it on an existing deployment rolls the serving pod. The SDK-managed
+path folds that change into the same PATCH as a trainer re-attach, so a resume
+that also flips the transition type costs one pod roll rather than two.
+
+Note that neither mode re-prefills: `ASYNC` reuses the old-weight KV and `SYNC`
+avoids the overlap entirely. Fireworks has no mode that discards the prefix KV
+and recomputes it under the new weights mid-generation.
 
 ## Base vs delta chain
 

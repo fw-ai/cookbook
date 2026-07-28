@@ -53,8 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Fireworks model identifier passed to chat.completions.create "
         "(e.g. accounts/fireworks/models/glm-5p1). One of --model or "
         "--deployment-id is required. List available serverless models with "
-        "`Fireworks().models.list(account_id='fireworks')` or via the dev "
-        "server's /models endpoint.",
+        "`Fireworks().models.list(account_id='fireworks')`.",
     )
     p.add_argument(
         "--deployment-id",
@@ -222,7 +221,6 @@ def main(argv: list[str] | None = None) -> int:
         train_on_what=train_on_what,
         deployment_id=args.deployment_id,
         tokenizer_model=args.tokenizer_model,
-        renderer_config=payload.get("renderer_config") or {},
         dispatch_mode=dispatch_mode,
     )
 

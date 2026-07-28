@@ -88,7 +88,9 @@ def render_inspect(artifact: dict[str, Any], *, show_all: bool, filter_prov: str
     out_lines.append(f"PROBE  schema_version={a.get('schema_version')}  produced_at={a.get('produced_at')}")
     r = a.get("renderer", {}) or {}
     d = a.get("deployment", {}) or {}
-    out_lines.append(f"  renderer: {r.get('name')}  config={r.get('config') or {}}  train_on_what={r.get('train_on_what')}")
+    out_lines.append(
+        f"  renderer: {r.get('name')}  train_on_what={r.get('train_on_what')}"
+    )
     out_lines.append(f"  deployment.model: {d.get('model')}")
     if d.get("deployment_id"):
         out_lines.append(f"  deployment.id:    {d['deployment_id']}")

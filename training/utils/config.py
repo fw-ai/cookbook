@@ -170,11 +170,13 @@ class TrainerConfig:
     inactivity_timeout: str | None = None
     """Trainer inactivity timeout as a protobuf duration string, e.g. ``"7200s"``.
 
-    Leave unset to use the backend default. Set ``disable_inactivity_cleanup``
-    to keep a provisioned trainer alive while idle.
+    Leave unset to use the backend default. Values above 3 hours are rejected.
     """
     disable_inactivity_cleanup: bool = False
-    """Disable automatic trainer cleanup after inactivity."""
+    """Disable trainer inactivity cleanup.
+
+    Only supported for trainers created in the ``fireworks`` account.
+    """
 
     purpose: str | None = None
     """Optional platform ``Purpose`` proto enum name."""
@@ -232,6 +234,16 @@ class DeployConfig:
     When set, the deployment copies the trainer's bucket URL at creation."""
     enable_hot_load: bool = True
     """Whether to create a hot-load-capable deployment."""
+    hot_load_transition_type: str | None = None
+    """How the deployment transitions in-flight requests during a weight sync.
+
+    ``"ASYNC"`` pauses generation mid-flight and resumes it on the new weights,
+    reusing the KV cache built under the previous ones. ``"SYNC"`` lets
+    in-flight requests finish on the old weights before the swap, so no single
+    generation ever spans two policy versions -- at the cost of a TTFT stall
+    per hot load.
+
+    Leave unset to let the control plane choose (``ASYNC``)."""
     deployment_timeout_s: float = 5400
     reattach_settle_timeout_s: int = 600
     """How long to wait for the serving pod to cycle after a re-attach PATCH
@@ -270,6 +282,7 @@ class DeployConfig:
             deployment_shape=self.deployment_shape,
             hot_load_bucket_type=self.hot_load_bucket_type if self.enable_hot_load else None,
             hot_load_trainer_job=self.hot_load_trainer_job if self.enable_hot_load else None,
+            hot_load_transition_type=self.hot_load_transition_type if self.enable_hot_load else None,
             enable_hot_load=self.enable_hot_load,
             skip_shape_validation=skip_validation,
             extra_args=self.deployment_extra_args,

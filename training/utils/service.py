@@ -6,12 +6,32 @@ from typing import Any
 
 from fireworks.training.sdk import (
     DeploymentCleanupOnClose,
+    FireworksClient,
     FiretitanServiceClient,
 )
 
 from training.utils.config import DeployConfig, TrainerConfig
 
 _MISSING = object()
+
+
+def resolve_router_replay_enabled(
+    *,
+    requested: bool,
+    api_key: str,
+    base_url: str,
+    additional_headers: dict[str, str] | None,
+    base_model: str,
+) -> bool:
+    """Enable Router Replay only when the base model can produce routing data."""
+    if not requested:
+        return False
+    with FireworksClient(
+        api_key=api_key,
+        base_url=base_url,
+        additional_headers=additional_headers,
+    ) as client:
+        return client.model_is_moe(base_model)
 
 
 def _firetitan_service_kwargs(
@@ -83,6 +103,7 @@ def _firetitan_service_kwargs(
             "deployment_timeout_s": deployment.deployment_timeout_s,
             "replica_count": deployment.replica_count,
             "disable_speculative_decoding": deployment.disable_speculative_decoding,
+            "hot_load_transition_type": deployment.hot_load_transition_type,
         }
     )
     return service_kwargs

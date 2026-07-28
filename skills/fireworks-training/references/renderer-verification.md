@@ -34,9 +34,6 @@ for m in Fireworks(api_key=...).models.list(account_id="fireworks"):
     print(m.name)
 ```
 
-…or just open the GUI — the dev server's `/models` endpoint feeds the
-`model` dropdown live.
-
 Reference table of common pairings (verify before each session — the
 serverless ids drift over time):
 
@@ -51,8 +48,7 @@ serverless ids drift over time):
 | `minimax_m2` | `MiniMaxAI/MiniMax-M2` | `accounts/fireworks/models/minimax-m2p7` |
 | `llama3` | `meta-llama/Llama-3.3-70B-Instruct` | `accounts/fireworks/models/llama-v3p3-70b-instruct` |
 
-If the table looks stale, the live `/models` listing wins. Treat this
-as a starting point, not a contract.
+Treat this table as a starting point, not a contract.
 
 ## 2. Confirm the inspection rules
 
@@ -84,45 +80,66 @@ The Python evaluator and the JS evaluator are pure equality matchers
 with zero hardcoded knowledge — delete the YAML and both surfaces
 flag nothing.
 
-## 3. Pick a workflow
+## 3. Run the JSON-driven live UI
 
-You have two paths. They use the same underlying probe.
+The web verifier has one path: load a validated JSON input catalog, execute
+its cases sequentially against the configured live model or deployment, and
+display only the fresh results from that run. It does not accept form-edited
+requests or load saved output artifacts.
 
-### 3a. Interactive (one prompt at a time)
-
-Type messages in a form. Each `Run probe` appends a case below; cases
-stack with delete buttons. Good for ad-hoc questions ("what does this
-specific chat render to?").
-
-```bash
-python -m training.renderer.verifier.serve --port 8765
-# open http://localhost:8765/
-```
-
-### 3b. Batch (many prompts from a JSON file)
-
-Author your own JSON file with multiple prompts. The runner probes
-them all and the GUI opens with every case stacked side-by-side. Good
-for regression sweeps after a renderer change. **There is no default
-corpus** — pick the cases that exercise the surface you care about.
-
-Schema (each entry is one probe input):
+Catalog schema:
 
 ```json
 {
-  "cases": [
+  "schema_version": 1,
+  "profiles": [
     {
-      "name": "simple-math",
-      "messages": [
-        {"role": "system", "content": "Answer with one integer."},
-        {"role": "user",   "content": "2 + 2 = ?"}
+      "id": "local-model",
+      "label": "Local model checks",
+      "defaults": {
+        "renderer": "glm5",
+        "tokenizer_model": "zai-org/GLM-5.1",
+        "deployment_id": "accounts/your-account/deployments/your-deployment",
+        "max_tokens": 256,
+        "temperature": 0,
+        "train_on_what": "last_assistant_turn"
+      },
+      "examples": [
+        {
+          "id": "simple-math",
+          "label": "Simple math",
+          "messages": [
+            {"role": "system", "content": "Answer with one integer."},
+            {"role": "user", "content": "2 + 2 = ?"}
+          ]
+        }
       ]
     }
   ]
 }
 ```
 
-Optional per-case keys: `tools`, `renderer_config`.
+Profiles provide shared defaults; examples can override probe fields. Optional
+fields include `image_processor_model`, `tools`, and
+`extra_completion_kwargs`. Keep credentials out of this file; the validator
+rejects credential-bearing completion arguments.
+
+```bash
+python -m training.renderer.verifier.serve \
+  --port 8765 \
+  --input-file /path/to/verifier-input.json
+# open http://localhost:8765/
+```
+
+The server re-reads and validates the input file for every case. The browser
+posts only the selected profile and example IDs, clears previous results at
+the beginning of a run, and sends the cases in file order.
+
+### Offline triage
+
+`training.renderer.verifier.triage` remains available for confirmed batch
+inference and writes an offline result JSON. The web verifier intentionally
+does not load that output.
 
 The triage preflight itself sends a one-token paid inference ping before its
 internal prompt. Obtain the user's confirmation before launching this command.
@@ -135,11 +152,7 @@ python -m training.renderer.verifier.triage \
   --tokenizer-model <tokenizer-model> \
   --model <accounts/fireworks/models/model-id> \
   --prompts <prompts.json> \
-  --output /tmp/renderer-session.json
-
-python -m training.renderer.verifier.serve \
-  --port 8765 \
-  --session-file /tmp/renderer-session.json
+  --output /tmp/renderer-results.json
 ```
 
 ## 4. Pre-flight (the runners do this for you)
@@ -170,7 +183,8 @@ skip the prompt in scripted contexts.
 
 ## 5. Inspect in the GUI
 
-The page opens with all cases loaded:
+The page opens with the validated input cases and a `Run all sequentially`
+button. Fresh completed results appear below:
 
 - Each case has its own token stream (left) and **sticky** detail
   sidebar (right). Below 900 px viewport the layout collapses to one
@@ -188,8 +202,8 @@ The page opens with all cases loaded:
   every case.
 - **`Sanity flags / Renderer args / Deployment / API args`** are
   collapsed under each case — open when you need them.
-- Per-case **× delete** removes a case; **Clear all** wipes the page.
-  The form values stay, so you can tweak and run again.
+- A malformed renderer parse keeps the raw completion and parse status but
+  omits the supervised round-trip and token audit.
 
 ## 5b. Reachability check
 
@@ -209,22 +223,20 @@ export FIREWORKS_API_KEY=fw_...
 # 1. (Optional) Edit the rules.
 $EDITOR cookbook/training/renderer/verifier/rules/inspect_rules.yaml
 
-# 2. Pick one of:
+# 2. Run the live JSON suite.
+python -m training.renderer.verifier.serve \
+  --port 8765 \
+  --input-file ./verifier-input.json
 
-#    Interactive — single GUI, type prompts.
-python -m training.renderer.verifier.serve --port 8765
-
-#    Batch — pre-flight + corpus + GUI auto-seeded.
+# 3. Optional offline triage (requires confirmation before paid inference).
 python -m training.renderer.verifier.triage \
   --renderer glm5 \
   --tokenizer-model zai-org/GLM-5.1 \
   --model accounts/fireworks/models/glm-5p1 \
   --prompts ./my-prompts.json \
-  --output /tmp/renderer-session.json
-python -m training.renderer.verifier.serve \
-  --session-file /tmp/renderer-session.json
+  --output /tmp/renderer-results.json
 
-# 3. Stop with Ctrl-C.
+# 4. Stop the live UI with Ctrl-C.
 ```
 
 ## 7. Files
@@ -249,7 +261,7 @@ training/renderer/verifier/
     └── index.html                 React GUI (single-file, CDN-hosted)
 ```
 
-## 8. Author a prompt corpus
+## 8. Author an offline triage corpus
 
 ```bash
 cat > my-prompts.json <<'EOF'
@@ -265,7 +277,7 @@ python -m training.renderer.verifier.triage \
   --tokenizer-model zai-org/GLM-5.1 \
   --model accounts/fireworks/models/glm-5p1 \
   --prompts ./my-prompts.json \
-  --output /tmp/renderer-session.json
+  --output /tmp/renderer-results.json
 ```
 
 ## 9. Add a new rule

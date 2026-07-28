@@ -324,26 +324,67 @@ class TestResume:
         client.resolve_checkpoint_path.assert_called_once_with("step-3")
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-3")
 
+    def test_dedicated_bare_checkpoint_preserves_initialization_semantics(
+        self, log_dir
+    ):
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-3": 24}, f)
+
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+        info = ckpt.resume(init_from_checkpoint="step-3")
+
+        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with(
+            "step-3", source_job_id=None
+        )
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-3")
+
+    @pytest.mark.parametrize(
+        "checkpoint_ref",
+        [
+            "gs://bucket/checkpoints/step-3",
+            "tinker://run/weights/step-3",
+            "s3://bucket/checkpoints/step-3",
+            "https://example.test/checkpoints/step-3",
+            "cross_job://other-job/step-3",
+            "/checkpoints/step-3",
+            "relative/checkpoints/step-3",
+        ],
+    )
+    def test_external_dcp_ref_restores_optimizer_and_resets_recipe_state(
+        self, log_dir, checkpoint_ref
+    ):
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+        info = ckpt.resume(init_from_checkpoint=checkpoint_ref)
+
+        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with(
+            checkpoint_ref, source_job_id=None
+        )
+        client.load_state_with_optimizer.assert_called_once_with(
+            f"path://self/{checkpoint_ref}"
+        )
+
     def test_init_from_checkpoint_serverless_uses_bare_name(self, log_dir):
         # Serverless: init_from_checkpoint must resume from the bare name, not
         # cross_job://<session>/<name> (the pool trainer rejects that). A spec
         # naming THIS session is accepted with its prefix stripped.
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-5": 40}, f)
         ckpt, client, _ = _make(
             log_dir, serverless=True
         )  # trainer_id/session == "job-1"
         info = ckpt.resume(init_from_checkpoint="job-1:step-5")
-        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
-        client.resolve_checkpoint_path.assert_called_once_with(
-            "step-5", source_job_id=None
-        )
+        assert info == ResumeInfo(step=5, data_consumed=40, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with("step-5")
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
     def test_init_from_checkpoint_serverless_allows_cross_run(self, log_dir):
-        # Cross-run resume on the shared pool: a fully-qualified
-        # "<account>/<run>/<name>" ref has no "<job>:<name>" separator, so it
-        # flows through as the bare dcp_name (source_job_id=None, no cross_job://
-        # wrapping) and the pooled trainer resolves it against the caller's own
-        # account (account-scoped guard). No ValueError anymore.
+        # The trainer resolves this logical name inside the caller's account.
+        # Trainer weights and optimizer resume, while cookbook-owned step and
+        # cursor intentionally begin a new recipe run.
         ckpt, client, _ = _make(log_dir, serverless=True)  # session == "job-1"
         ref = "pyroworks-dev/run-0123456789abcdef0123456789abcdef/step-5"
         info = ckpt.resume(init_from_checkpoint=ref)
@@ -352,16 +393,57 @@ class TestResume:
         client.load_state_with_optimizer.assert_called_once_with(f"path://self/{ref}")
 
     def test_init_from_checkpoint_serverless_bare_name_stays_current_run(self, log_dir):
-        # A legacy "<session>:<name>" shorthand still keeps only "<name>": the
-        # trainer prepends the caller's own run prefix, so this resumes within
-        # the current run (unchanged behavior).
+        # The trainer prepends the caller's own run prefix for a bare name.
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-5": 40}, f)
         ckpt, client, _ = _make(log_dir, serverless=True)  # session == "job-1"
-        info = ckpt.resume(init_from_checkpoint="job-1:step-5")
-        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
-        client.resolve_checkpoint_path.assert_called_once_with(
-            "step-5", source_job_id=None
-        )
+        info = ckpt.resume(init_from_checkpoint="step-5")
+        assert info == ResumeInfo(step=5, data_consumed=40, source_job_id=None)
+        client.resolve_checkpoint_path.assert_called_once_with("step-5")
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
+
+    def test_init_from_checkpoint_serverless_rejects_other_session_shorthand(
+        self, log_dir
+    ):
+        ckpt, client, _ = _make(log_dir, serverless=True)
+
+        with pytest.raises(ValueError, match="fully-qualified"):
+            ckpt.resume(init_from_checkpoint="other-session:step-5")
+
+        client.load_state_with_optimizer.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "checkpoint_ref",
+        [
+            "gs://bucket/checkpoints/step-5",
+            "tinker://run/weights/step-5",
+            "cross_job://other-job/step-5",
+            "/checkpoints/step-5",
+            "relative/checkpoints/step-5",
+        ],
+    )
+    def test_init_from_checkpoint_serverless_rejects_raw_paths(
+        self, log_dir, checkpoint_ref
+    ):
+        ckpt, client, _ = _make(log_dir, serverless=True)
+
+        with pytest.raises(ValueError, match="serverless"):
+            ckpt.resume(init_from_checkpoint=checkpoint_ref)
+
+        client.resolve_checkpoint_path.assert_not_called()
+        client.load_state_with_optimizer.assert_not_called()
+
+    def test_init_from_checkpoint_serverless_rejects_malformed_cross_run_ref(
+        self, log_dir
+    ):
+        ckpt, client, _ = _make(log_dir, serverless=True)
+
+        with pytest.raises(ValueError, match="run-<32 lowercase hex>"):
+            ckpt.resume(init_from_checkpoint="pyroworks-dev/run-short/step-5")
+
+        client.resolve_checkpoint_path.assert_not_called()
+        client.load_state_with_optimizer.assert_not_called()
 
     def test_warm_start_adapter_when_no_resume(self, log_dir):
         ckpt, client, _ = _make(log_dir, fw_rows=[], lora_rank=8)

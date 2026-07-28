@@ -24,11 +24,12 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 
 | Case study | Technique | Dataset | "Customer problem" | Open |
 | --- | --- | --- | --- | --- |
-| [sft_prompt_router](case-studies/sft_prompt_router) | Text SFT / classification (Python SDK) | Prompt-Routing-Dataset | Route prompts to a small vs big model (multi-field classifier) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_sft_sdk.ipynb) |
+| [sft_prompt_router](case-studies/sft_prompt_router) | Text SFT / classification (Python SDK), dedicated + serverless | Prompt-Routing-Dataset | Route prompts to a small vs big model (multi-field classifier) | dedicated [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_dedicated.ipynb) · serverless [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_serverless.ipynb) |
 | [sft_cord_receipts](case-studies/sft_cord_receipts) | Vision SFT (Python SDK) | CORD receipts | Teach the model a new structured-output task | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_cord_receipts/cord_receipt_sft_sdk.ipynb) |
 | [dpo_style](case-studies/dpo_style) | DPO (Python SDK) | HelpSteer3 | "Write the way we write" (style/quality preferences) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/dpo_style/dpo_helpsteer3_sdk.ipynb) |
 | [reasoning_rl](case-studies/reasoning_rl) | GRPO via managed RFT (Python SDK) | GSM8K | Improve step-by-step reasoning | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/reasoning_rl/rft_grpo_math.ipynb) |
 | [embedding_support_search](case-studies/embedding_support_search) | Contrastive embedding fine-tuning (`embedding_loop` recipe) | Airbnb Help Center scenarios | Retrieve the help article that *governs* a situation, not the one that sounds like it | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/embedding_support_search/airbnb_policy_embedding.ipynb) |
+| [multilora_fleet](case-studies/multilora_fleet) | LoRA SFT + multi-LoRA serving (Python SDK) | MASSIVE (51 locales) | One deployment, a per-tenant specialist for every locale | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/multilora_fleet/multilora_fleet.ipynb) |
 
 **Setup.** These are independent of the cookbook install above — just `pip install fireworks-ai eval-protocol` (a couple add extras, noted in their own READMEs) and a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
 
@@ -110,7 +111,9 @@ the two.
 | Field | What to set |
 | --- | --- |
 | `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
-| `sampler_refresh_interval` | Refresh the sampler from trainer-saved weights every N optimizer steps. |
+
+The synchronous recipe always hotloads before the first rollout and after
+every optimizer step. It has no sampler-refresh cadence knob.
 
 **Distillation / OPD** (`recipes/distillation_loop.py`) -- also requires:
 

@@ -38,7 +38,7 @@ grep -rn -E 'InfraConfig|setup_infra|ResourceCleanup|make_reference_client|creat
 | `InfraConfig.ref_training_shape_id` | `TrainerConfig.reference_training_shape_id` |
 | `InfraConfig.trainer_timeout_s` | `TrainerConfig.timeout_s` |
 | `InfraConfig.trainer_replica_count` | `TrainerConfig.replica_count` |
-| `Config(weight_sync=WeightSyncConfig(weight_sync_interval=N))` | `Config(weight_sync_interval=N)` (top-level, RL family) |
+| `Config(weight_sync=WeightSyncConfig(...))` | Omit for `rl_loop` / `async_rl_loop`; both hotload after every optimizer batch |
 | `weight_sync.dcp_save_interval=N` | `Config(dcp_save_interval=N)` (top-level, all recipes) |
 | top-level `policy_job_id=...` | `TrainerConfig(job_id=...)` |
 | `setup_infra(rlor_mgr, deploy_mgr, ...)` | recipe `main(cfg)`, or `FiretitanServiceClient.from_firetitan_config(...)` plus `service.create_*` for raw clients |
@@ -83,10 +83,13 @@ cfg = rl_loop.Config(
         reference_training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200-lora",
         replica_count=2,
     ),
-    weight_sync_interval=1,   # top-level (RL family)
     dcp_save_interval=10,     # top-level (all recipes)
 )
 ```
+
+The GRPO recipes now own their sampler-sync invariant: initial sync and one
+hotload per optimizer batch. Research recipes with a different scheduling
+contract may still expose their own cadence.
 
 `main(cfg)` is unchanged — drop any `rlor_mgr=` / `deploy_mgr=` arguments; the
 recipe provisions internally.

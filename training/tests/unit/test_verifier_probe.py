@@ -17,13 +17,14 @@ from typing import Any
 
 import pytest
 import tinker
+import torch
 from tinker_cookbook.renderers import register_renderer, unregister_renderer
 from tinker_cookbook.renderers.base import (
     Message,
+    ParseTermination,
     RenderContext,
     RenderedMessage,
     Renderer,
-    Role,
     TrainOnWhat,
 )
 
@@ -32,7 +33,9 @@ from training.renderer.verifier.utils.probe import (
     _PROV_NATIVE,
     _PROV_PROMPT,
     _PROV_TRAILING,
+    _model_input_tokens,
     SCHEMA_VERSION,
+    resolve_dispatch,
     run_probe,
 )
 
@@ -150,24 +153,32 @@ class _StubClient:
     own render of the conversation, so the probe's alignment check
     classifies tokens cleanly."""
 
-    def __init__(self, prompt_token_ids: list[int], completion_token_ids: list[int], completion_text: str):
+    def __init__(
+        self,
+        prompt_token_ids: list[int],
+        completion_token_ids: list[int],
+        completion_text: str,
+    ):
         self._prompt_token_ids = prompt_token_ids
         self._completion_token_ids = completion_token_ids
         self._completion_text = completion_text
+        self.last_kwargs: dict[str, Any] | None = None
 
         # Mimic the .chat.completions.create surface
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **kwargs: Any):
+        self.last_kwargs = kwargs
         # The probe sends echo=True, raw_output=True, return_token_ids=True
         return SimpleNamespace(
             model_dump=lambda: {
                 "prompt_token_ids": self._prompt_token_ids,
                 "choices": [
                     {
-                        "message": {"role": "assistant", "content": self._completion_text},
+                        "message": {
+                            "role": "assistant",
+                            "content": self._completion_text,
+                        },
                         "finish_reason": "stop",
                         "raw_output": {
                             "completion_token_ids": self._completion_token_ids,
@@ -189,8 +200,10 @@ def test_run_probe_artifact_shape_and_provenance(toy_renderer):
     # The toy renderer's prompt for these messages would be:
     #   <sys> hello <user> world <asst>
     expected_prompt_ids = [
-        _T["<sys>"], _T["hello"],
-        _T["<user>"], _T["world"],
+        _T["<sys>"],
+        _T["hello"],
+        _T["<user>"],
+        _T["world"],
         _T["<asst>"],
     ]
     completion_text = "fine thanks"
@@ -284,6 +297,59 @@ def test_run_probe_strips_echoed_prompt(toy_renderer):
     assert artifact["sanity"]["tokenization_diverged_count"] == 0
 
 
+def test_run_probe_uses_renderer_tool_prefix_and_forwards_tools(monkeypatch):
+    tokenizer = _StubTokenizer()
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up a value.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    messages = [{"role": "user", "content": "world"}]
+    prompt_ids = [
+        _T["<sys>"],
+        _T["hello"],
+        _T["<user>"],
+        _T["world"],
+        _T["<asst>"],
+    ]
+
+    class _ToolRenderer(_ToyRenderer):
+        def create_conversation_prefix_with_tools(self, tool_specs, system_prompt=""):
+            assert tool_specs[0]["name"] == "lookup"
+            assert system_prompt == ""
+            return [Message(role="system", content="hello")]
+
+    renderer = _ToolRenderer(tokenizer)
+    monkeypatch.setattr(
+        "training.renderer.verifier.utils.probe.get_renderer",
+        lambda *args, **kwargs: renderer,
+    )
+    client = _StubClient(prompt_ids, [_T["fine"]], "fine")
+
+    artifact = run_probe(
+        renderer_name="tool-renderer",
+        tokenizer=tokenizer,
+        client=client,
+        model="test/model",
+        messages=messages,
+        tools=tools,
+        extra_completion_kwargs={"top_p": 0.8},
+    )
+
+    assert artifact["sanity"]["renderer_prompt_matches_api_prompt"] is True
+    assert client.last_kwargs is not None
+    assert client.last_kwargs["tools"] == tools
+    assert client.last_kwargs["top_p"] == 0.8
+    assert client.last_kwargs["echo"] is True
+    assert client.last_kwargs["raw_output"] is True
+    assert client.last_kwargs["return_token_ids"] is True
+
+
 def test_inspect_renders_structured_summary(toy_renderer):
     """``inspect`` should print sanity, provenance counts, and key audit rows
     for any well-formed probe artifact, without crashing on optional fields."""
@@ -318,3 +384,129 @@ def test_inspect_renders_structured_summary(toy_renderer):
     assert "shown=" in only_native
     # Filter view should not include any header rows (those are prompt_hard_append)
     assert "src=header" not in only_native or "filter='native_generated'" in only_native
+
+
+def test_resolve_dispatch_accepts_full_deployment_resource_without_credentials():
+    resource = "accounts/test-account/deployments/test-deployment"
+    assert resolve_dispatch(
+        renderer_name="unused",
+        model=None,
+        deployment_id=resource,
+    ) == (resource, "deployment")
+
+
+def test_model_input_tokens_expands_existing_renderer_vision_chunks():
+    model_input = tinker.ModelInput(
+        chunks=[
+            tinker.types.EncodedTextChunk(tokens=[10]),
+            tinker.types.ImageChunk(
+                data=b"not-decoded-by-this-test",
+                format="png",
+                expected_tokens=2,
+            ),
+            tinker.types.EncodedTextChunk(tokens=[11]),
+        ]
+    )
+
+    class _VisionTokenizer:
+        image_token_id = 99
+
+    assert _model_input_tokens(
+        model_input,
+        _VisionTokenizer(),
+    ) == [10, 99, 99, 11]
+
+
+def test_model_input_tokens_requires_declared_vision_placeholder():
+    model_input = tinker.ModelInput(
+        chunks=[
+            tinker.types.ImageChunk(
+                data=b"not-decoded-by-this-test",
+                format="png",
+                expected_tokens=2,
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="tokenizer to expose"):
+        _model_input_tokens(model_input, object())
+
+
+def test_run_probe_falls_back_to_whole_conversation_attribution(monkeypatch):
+    tokenizer = _StubTokenizer()
+    messages = [{"role": "user", "content": "hello"}]
+    prompt_ids = [_T["<user>"], _T["hello"], _T["<asst>"]]
+    completion_ids = [_T["fine"]]
+
+    class _WholeConversationRenderer(_ToyRenderer):
+        supports_per_message_rendering = False
+
+        def render_message(self, message, ctx):
+            raise AssertionError("per-message rendering must not be called")
+
+        def build_generation_prompt(self, messages, role="assistant", prefill=None):
+            del messages, role, prefill
+            return tinker.ModelInput(
+                chunks=[tinker.types.EncodedTextChunk(tokens=prompt_ids)]
+            )
+
+        def build_supervised_example(self, messages, train_on_what):
+            del messages, train_on_what
+            tokens = prompt_ids + completion_ids + [_T["<eot>"]]
+            return (
+                tinker.ModelInput(
+                    chunks=[tinker.types.EncodedTextChunk(tokens=tokens)]
+                ),
+                torch.tensor([0.0] * len(prompt_ids) + [1.0, 1.0]),
+            )
+
+    renderer = _WholeConversationRenderer(tokenizer)
+    monkeypatch.setattr(
+        "training.renderer.verifier.utils.probe.get_renderer",
+        lambda *args, **kwargs: renderer,
+    )
+
+    artifact = run_probe(
+        renderer_name="whole-conversation",
+        tokenizer=tokenizer,
+        client=_StubClient(prompt_ids, completion_ids, "fine"),
+        model="test/model",
+        messages=messages,
+    )
+
+    assert artifact["sanity"]["structural_attribution"] == "whole_conversation"
+    assert artifact["sanity"]["structural_walk_token_match"] is None
+    assert {row["chunk_source"] for row in artifact["audit_table"]} == {"conversation"}
+
+
+def test_run_probe_records_malformed_parse_termination(monkeypatch):
+    tokenizer = _StubTokenizer()
+    messages = [{"role": "user", "content": "hello"}]
+    prompt_ids = [_T["<user>"], _T["hello"], _T["<asst>"]]
+    completion_ids = [_T["fine"]]
+
+    class _MalformedRenderer(_ToyRenderer):
+        def parse_response(self, response):
+            message, _ = super().parse_response(response)
+            return message, ParseTermination.MALFORMED
+
+    renderer = _MalformedRenderer(tokenizer)
+    monkeypatch.setattr(
+        "training.renderer.verifier.utils.probe.get_renderer",
+        lambda *args, **kwargs: renderer,
+    )
+
+    artifact = run_probe(
+        renderer_name="malformed",
+        tokenizer=tokenizer,
+        client=_StubClient(prompt_ids, completion_ids, "fine"),
+        model="test/model",
+        messages=messages,
+    )
+
+    assert artifact["sanity"]["parse_response_ok"] is False
+    assert artifact["sanity"]["parse_response_termination"] == "malformed"
+    assert artifact["sanity"]["sft_roundtrip_available"] is False
+    assert artifact["sanity"]["full_render_prompt_prefix_matches_api"] is None
+    assert artifact["render"]["full"] is None
+    assert artifact["audit_table"] == []

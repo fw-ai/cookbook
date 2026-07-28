@@ -12,6 +12,26 @@ The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/ch
 
 Periodic mid-training saves are usually `resumable=True, promotable=False`. The final save is `resumable=True, promotable=True`. RL weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves.
 
+### Snapshot type is part of the contract
+
+The path returned by `save_weights_for_sampler()` is an HF/PEFT sampler
+snapshot, not a resumable training checkpoint. It may contain files such as
+`adapter_config.json` and `adapter_model.safetensors`, but it has no DCP trainer
+state or optimizer state. Do not pass that path to `load_state()` or
+`create_training_client_from_state()`.
+
+- Exact continuation: call `save_state()` after a successful `optim_step()` and
+  resume from the returned DCP path. This restores weights and optimizer state.
+- Weights-only LoRA initialization: use `load_adapter()` (or recipe
+  `warm_start_from_adapter`) with the HF/PEFT adapter. The optimizer, schedule,
+  recipe step, and data cursor start fresh.
+- Sampling/hotload: use the identity returned by
+  `save_weights_for_sampler()` with the sampler deployment.
+
+The trainer API rejects an existing non-DCP directory before distributed
+checkpoint loading, so a sampler/DCP type mismatch is returned as a
+request-level user error rather than a trainer-wide failure.
+
 ### Managed SFT CMEK outputs
 
 For a CMEK-enabled account, the managed dedicated SFT V2 LoRA path associates
@@ -76,7 +96,11 @@ Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; 
 
 Priority inside `TrainingCheckpoints.resume` (highest first):
 
-1. `init_from_checkpoint` — explicit cross-job DCP resume (weights + optimizer). Step counter resets.
+1. `init_from_checkpoint` — explicit DCP load. A dedicated
+   `<current_job_id>:<checkpoint>` or serverless current-run bare reference
+   restores weights, optimizer, recipe step, and the local dataset cursor.
+   Dedicated bare/path/cross-job and serverless cross-run references restore
+   weights and optimizer but start a new recipe position at step/cursor 0.
 2. Newest resumable row on the control plane for the current trainer — auto-resume.
 3. `warm_start_from_adapter` — fresh start with adapter weights.
 4. None — fresh start from `base_model`.
@@ -86,16 +110,38 @@ Priority inside `TrainingCheckpoints.resume` (highest first):
 - `warm_start_from_adapter` and `init_from_checkpoint` are mutually exclusive.
 - Requires `lora_rank > 0`. Full-parameter continue-training uses `base_model` instead.
 
-Supported in all recipe loops: `sft_loop`, `dpo_loop`, `orpo_loop`, `rl_loop`, `async_rl_loop`, `igpo_loop`.
+Exposed by `sft_loop`, `dpo_loop`, `orpo_loop`, and `igpo_loop`. The generic
+GRPO recipes keep the smaller shared resume surface and use
+`init_from_checkpoint` instead.
 
 ## Cross-run resume
 
 Auto-resume (priority 2) is **scoped to one trainer job**. If you re-run with the same `log_path` but provision a fresh trainer, the new trainer's `list_checkpoints` is empty and resume falls through to fresh start.
 
-To resume across separate `main()` invocations, either:
+For a full continuation, pin both invocations to the same trainer via
+`cfg.trainer.job_id`, keep the same `log_path`, and use auto-resume. An explicit
+dedicated full resume uses `"<current_job_id>:<checkpoint>"`; an explicit
+serverless current-run full resume uses a bare checkpoint name. The local
+`dataloader.json` is cookbook-owned; it must still be present to recover the
+dataset cursor.
 
-- Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes). The reference trainer is SDK-managed, so there is no separate reference job id to pin. The second run reattaches and the CP rows are visible.
-- Or use `init_from_checkpoint=f"{prior_job_id}:step-N"` for explicit cross-job DCP load. This resets the step counter to 0 — fine for warm-start scenarios, not for "continue training and skip to step N".
+To initialize a new recipe run from another DCP checkpoint:
+
+- Dedicated: use `init_from_checkpoint=f"{prior_job_id}:step-N"`, an opaque DCP
+  URI such as `tinker://` or `gs://`, an absolute/relative DCP path, or a bare
+  checkpoint name. A bare dedicated name deliberately keeps the existing
+  step-0 initialization behavior used for phase handoffs on one trainer.
+- Serverless: use the fully-qualified
+  `"<account>/run-<32 lowercase hex>/<checkpoint>"` logical name. Bare names
+  refer to the current run. Raw URI (including `gs://`, `tinker://`, and
+  `cross_job://`) and absolute-path references are not supported by pooled
+  trainers, and `<other-session>:<checkpoint>` is rejected rather than silently
+  redirected to the current run.
+
+Cross-job/cross-run DCP initialization restores both weights and optimizer
+state, but resets cookbook-owned step and dataset cursor to 0. Use
+`warm_start_from_adapter` when you specifically want LoRA weights only and a
+fresh optimizer.
 
 ---
 

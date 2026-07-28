@@ -1,6 +1,9 @@
 # RL: dynamic rollout filter
 
-`rl_loop.py` passes `dynamic_filter_fn=should_accept` into `run_rl_loop` (see `recipes/rl_loop.py`, search `should_accept`). The default predicate rejects **zero-variance** groups — groups where every response in the group got the same reward:
+`rl_loop.py` passes `should_accept` to its synchronous batch collector (see
+`recipes/rl_loop.py`, search `collect_prompt_groups`). The default predicate
+rejects **zero-variance** groups — groups where every response in the group got
+the same reward:
 
 ```python
 def should_accept(pg: PromptGroup) -> bool:
@@ -21,4 +24,7 @@ Replace `should_accept` in a fork when you want different filtering:
 - Tool-call count: `return all(has_expected_tool(c) for c in pg.completions)`
 - Combination: `AND` them together
 
-The filter runs **after rollouts complete and before the train step**, so filtered groups still cost rollout time — use it to protect gradient quality, not to save rollout cost. For the latter, cull prompts upstream.
+The filter runs **after rollouts complete and before the train step**. The
+synchronous collector pulls another row until the batch is full or the dataset
+is exhausted. Filtered groups still cost rollout time — use the filter to
+protect gradient quality, not to save rollout cost.

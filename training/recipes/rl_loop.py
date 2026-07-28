@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""GRPO training loop with concurrent rollout.
+"""A small, synchronous GRPO training recipe.
 
-A readable, modifiable RL training loop using the Fireworks RLOR API.
-Fork this script and customise the reward function, loss, or sampling
-strategy to fit your task.
+Each iteration has four visible phases:
 
-Each optimizer step samples ``prompt_groups_per_step`` prompts concurrently,
-computes group-normalized advantages, and runs the client-side GRPO loss
-directly. The loss call keeps PPO clipping, TIS, and optional reference KL
-visible in this file without a registry or runtime dispatch.
+1. collect one rollout batch,
+2. compute reference and old-policy logprobs,
+3. run one GRPO forward/backward and one optimizer step,
+4. hotload the new policy before collecting the next batch.
+
+Fork this file to customize the reward, rollout, or loss. For independent
+rollout and training workers with bounded off-policy sampling, use
+``recipes.async_rl_loop`` instead.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -17,204 +19,139 @@ Usage:
 
 from __future__ import annotations
 
-import os
-import re
-import json
-import math
-import signal
 import asyncio
 import logging
+import math
+import os
+import re
+import signal
+import time
+from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
-from typing import Any, Awaitable, Callable, List, Literal, Optional
-from dataclasses import field, dataclass
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import tinker
+from fireworks.training.sdk.training_spec import (
+    LRSchedulerSpec,
+    compute_lr,
+    default_constant_schedule,
+    normalize_lr_scheduler_spec,
+)
+from tinker_cookbook.renderers import get_text_content
 
-from training.utils.client import GradAccNormalization
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
-    AdaptiveConcurrencyController,
-    ConcurrencyConfig,
+    DeployConfig,
+    ReconnectableClient,
     TrainerConfig,
     WandBConfig,
-    DeployConfig,
-    RawRowCursor,
-    build_service_client,
-    log_metrics,
-    setup_wandb,
-    wandb_finish,
-    validate_config,
-    log_metrics_json,
-    compute_advantages,
-    load_deployment_tokenizer,
-    read_api_extra_headers_env,
-    load_jsonl_dataset,
-    prepare_sampling_messages,
     build_renderer,
-    ReconnectableClient,
+    build_service_client,
+    load_deployment_tokenizer,
+    load_jsonl_dataset,
+    log_metrics,
+    log_metrics_json,
+    prepare_sampling_messages,
+    read_api_extra_headers_env,
+    resolve_router_replay_enabled,
+    setup_wandb,
+    validate_config,
+    wandb_finish,
 )
-from tinker_cookbook.renderers import get_text_content
-from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.checkpoints import TrainingCheckpoints
+from training.utils.client import GradAccNormalization
+from training.utils.dataloader import CursorDataLoader
 from training.utils.rl import PromptGroup
-from training.utils.rl.common import align_sample_logprobs_to_target_tokens
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
-from training.utils.rl.tis import TISConfig
-from training.utils.rl.rollout.renderer import model_input_to_token_ids
-from training.utils.timer import timer, flush_timing
-import time as _time
-from training.train_loop import (
-    TrainStepFns,
-    raw_rows_from_stats,
-    run_batched_training_loop,
-)
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
-from training.utils.rl.router_replay import (
-    build_r3_routing_matrices,
-    warn_if_full_sequence_router_replay,
+from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
+from training.utils.rl.rollout import (
+    Rollout,
+    model_input_to_token_ids,
+    rollout_to_prompt_group,
+    sampled_completion_to_rollout_run,
 )
+from training.utils.rl.sync_batch import collect_prompt_groups
+from training.utils.rl.tis import TISConfig
+from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class Config:
-    log_path: str
-    """Directory for checkpoints and logs. Required, no default."""
+    """Configuration shared with the synchronous parts of ``async_rl_loop``."""
 
+    log_path: str
     base_model: str = "accounts/fireworks/models/qwen3-8b"
-    dataset: str = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
+    dataset: str | None = None
+    """JSONL path/URL; optional when passing ``rows=`` to ``main()``."""
 
     learning_rate: float = 1e-5
+    lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
     kl_beta: float = 0.001
     """Reference-KL coefficient. Set to ``0`` to skip reference provisioning."""
+
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
     temperature: float = 1.0
     epochs: int = 1
+    shuffle: bool = True
+    seed: int = 0
     max_rows: int = 100
     max_seq_len: int | None = None
-    """Max sequence length for sampling and training.  When using training
-    shapes, this is auto-populated from the shape's
-    ``max_supported_context_length``.  Must be set manually on the
-    manual path (no training shape)."""
-    renderer_name: str = ""
-    """Cookbook renderer used for response grading, and — only when the HF
-    tokenizer ships no ``chat_template`` (e.g. DeepSeek-V4) — for building
-    rollout prompt tokens via ``renderer.build_generation_prompt(...)`` +
-    ``sample_with_prompt_tokens`` instead of ``tokenizer.apply_chat_template``.
-    Models whose tokenizer has a chat template keep the apply_chat_template
-    rollout path regardless of this field. Empty = infer from
-    ``deployment.tokenizer_model`` (see
-    :func:`training.utils.supervised.resolve_renderer_name`)."""
     lora_rank: int = 0
-    lora_alpha: int | None = 32
-    """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
+    renderer_name: str = ""
+    """Cookbook renderer used to build rollout prompts and grade responses.
 
-    Defaults to ``32`` to match Tinker and the Training API SDK client
-    ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
+    Empty = infer from ``deployment.tokenizer_model`` (see
+    :func:`training.utils.supervised.resolve_renderer_name`). Set this when the
+    inferred default is not the format you want to roll out in --
+    ``async_rl_loop`` has no equivalent because there the ``rollout_fn`` owns
+    renderer construction, while this recipe owns the rollout itself."""
+
     prompt_groups_per_step: int = 1
-    """Number of prompt groups per optimizer step.
+    """Valid prompt groups collected for each optimizer step."""
 
-    All groups are collected before a single ``forward_backward_custom`` +
-    ``optim_step`` pair fires (1:1 ratio)."""
-
-    router_replay: bool = False
+    router_replay: bool = True
     router_replay_completion_only: bool = True
-    """Keep R3 on completion-only replay by default.
+    """Replay serving expert routes for MoE alignment.
 
-    Full-sequence replay requires echo=True, which currently causes a
-    significant serving slowdown. Do not set this to False until the echo
-    performance bug is fixed."""
-
-    grad_accumulation_normalization: GradAccNormalization | str | None = None
-    """Optional server-side normalization for accumulated gradients.
-    ``None`` leaves accumulated gradients unchanged."""
-
-    grad_clip_norm: float = 0.0
-    """Max gradient norm for clipping. 0 disables clipping."""
-
-    emit_grad_norm_metrics: Literal["off", "basic", "detailed"] | bool | None = None
-    """Optional trainer-side gradient-norm telemetry for optimizer steps.
-
-    ``"basic"`` emits the global norm; ``"detailed"`` also emits coarse
-    parameter-category norms. ``None`` preserves the default zero-overhead
-    behavior.
+    Completion-only replay avoids the serving cost of ``echo=True`` while
+    aligning the generated tokens used by the policy loss and KLD metrics.
     """
 
+    grad_accumulation_normalization: GradAccNormalization | str | None = None
+    grad_clip_norm: float = 0.0
     eps_clip: float = 0.2
-    """Lower/upper PPO clip epsilon used by the client-side GRPO update."""
     eps_clip_high: float | None = None
-    """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
-    ppo_n_minibatches: int = 1
-    """Number of inner PPO minibatches per rollout batch.
-
-    Each rollout batch snapshots ``old_policy_logprobs`` followed by
-    ``ppo_n_minibatches`` × (``forward_backward`` + ``optim_step``). When
-    >1, the policy drifts across inner steps, so ``old_policy_logprobs`` anchors the
-    PPO ratio and the clip does real work. ``1`` uses the default 1:1
-    behavior."""
     tis: TISConfig = field(default_factory=TISConfig)
-    """TIS (Train-Inference IS) weight correction config."""
-
-    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
-    """Concurrency control for inference sampling.  ``"fixed"`` (default)
-    uses a static semaphore; ``"adaptive"`` adjusts the window based on
-    server-side prefill queue latency.  Adaptive mode requires ``stream=True``."""
-
-    trajectory_dir: str | None = None
-    """Directory to save per-step trajectory JSONL files.  Each file contains
-    prompts, completions, and rewards for every prompt group in that step."""
-
-    init_from_checkpoint: str | None = None
-    """Load pretrained DCP weights on a fresh dataset. Supports cross-job
-    format ``"job_id:checkpoint_name"``."""
-
-    warm_start_from_adapter: str | None = None
-    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
-    weights from the adapter at training start (weights-only, fresh optimizer).
-    Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
-
-    output_model_id: str | None = None
-    save_final_checkpoint: bool = True
-
-    step_timeout: int = 0
-    """Timeout in seconds for forward_backward / optim_step calls.
-    0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
+    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
+    """PPO anchor source; matches ``async_rl_loop.Config.anchor_logp``."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    weight_sync_interval: int = 1
-    weight_sync_before_training: bool = False
-    weight_sync_timeout: int = 600
     dcp_save_interval: int = 0
+    weight_sync_timeout: int = 600
     wandb: WandBConfig = field(
         default_factory=lambda: WandBConfig(project="grpo-tinker")
     )
     cleanup_on_exit: bool = True
-    """Clean up SDK-created trainer/deployment resources on close."""
 
-
-def _build_adam_params(cfg: Config) -> tinker.AdamParams:
-    adam_kwargs = dict(DEFAULT_ADAM)
-    adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
-    if cfg.emit_grad_norm_metrics is not None:
-        adam_kwargs["emit_grad_norm_metrics"] = cfg.emit_grad_norm_metrics
-    return tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
+    init_from_checkpoint: str | None = None
+    save_final_checkpoint: bool = True
+    output_model_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# Reward function -- customise this for your task
+# Reward and filter -- customize these for your task
 # ---------------------------------------------------------------------------
 
 
-def extract_answer(text: str) -> Optional[str]:
+def extract_answer(text: str) -> str | None:
     match = re.search(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
     if not match:
         return None
@@ -232,96 +169,30 @@ def reward_fn(completion: str, row: dict) -> float:
 
 
 def _response_text_for_grading(renderer, sampled) -> str:
-    """Return the model's response-channel text for reward grading.
-
-    Parses the completion TOKENS through the renderer's ``parse_response``
-    (which restores the prompt-prefilled ``<think>`` via
-    ``_normalize_response_tokens`` and splits off the think block) and returns
-    ``get_text_content`` -- the post-think answer, matching how the chat
-    template structures generations. This grades the model's response channel
-    rather than the raw completion text (which, for thinking models, still
-    contains the reasoning because the prefilled ``<think>`` lives in the
-    prompt).
-    """
+    """Parse the generated tokens and return the assistant response text."""
     message, _termination = renderer.parse_response(
         sampled.full_tokens[sampled.prompt_len :]
     )
     return get_text_content(message)
 
 
-# ---------------------------------------------------------------------------
-# Rollout filter -- customise this for your task
-# ---------------------------------------------------------------------------
-
-
-def should_accept(pg: PromptGroup) -> bool:
-    """Reject groups where all rewards are identical (zero-variance).
-
-    Passed to ``run_rl_loop`` as a pluggable filter.  Replace with your
-    own logic (e.g. minimum reward threshold, response length filter).
-    """
-    return len(set(pg.rewards)) > 1
-
-
-# ---------------------------------------------------------------------------
-# Trajectory logging
-# ---------------------------------------------------------------------------
-
-
-def _dump_trajectory(
-    trajectory_dir: str, step: int, prompt_groups: list[PromptGroup]
-) -> None:
-    """Write per-step trajectory JSONL: one line per individual completion."""
-    os.makedirs(trajectory_dir, exist_ok=True)
-    path = os.path.join(trajectory_dir, f"step_{step:04d}.jsonl")
-    n_records = 0
-    with open(path, "w") as f:
-        for pg_idx, pg in enumerate(prompt_groups):
-            completions = pg.completions or []
-            for comp_idx, comp_text in enumerate(completions):
-                record = {
-                    "step": step,
-                    "prompt_group": pg_idx,
-                    "completion_index": comp_idx,
-                    "prompt": pg.prompt,
-                    "completion": comp_text,
-                    "reward": pg.rewards[comp_idx]
-                    if comp_idx < len(pg.rewards)
-                    else None,
-                    "advantage": pg.advantages[comp_idx]
-                    if comp_idx < len(pg.advantages)
-                    else None,
-                    "completion_len": pg.completion_lens[comp_idx]
-                    if comp_idx < len(pg.completion_lens)
-                    else None,
-                    "truncated": pg.truncated[comp_idx]
-                    if comp_idx < len(pg.truncated)
-                    else None,
-                    "ground_truth": pg.row_meta.get("ground_truth")
-                    if pg.row_meta
-                    else None,
-                }
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                n_records += 1
-    logger.info(
-        "[step %d] Saved trajectory to %s (%d completions from %d groups)",
-        step,
-        path,
-        n_records,
-        len(prompt_groups),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def should_accept(prompt_group: PromptGroup) -> bool:
+    """Keep groups with non-zero reward variance."""
+    return len(set(prompt_group.rewards)) > 1
 
 
 def main(
     config: Config,
     *,
     sample_prompt_fn: Callable[..., Awaitable[PromptGroup | None]] | None = None,
-):
+    rows: list[dict] | None = None,
+) -> dict[str, Any]:
+    """Run strict on-policy GRPO.
+
+    ``sample_prompt_fn(row, *, cursor_index)`` is the optional rollout
+    customization boundary. It returns one trainer-ready ``PromptGroup`` or
+    ``None`` for a recoverable row-level drop.
+    """
     cfg = config
     validate_grpo_config(
         kl_beta=cfg.kl_beta,
@@ -329,16 +200,19 @@ def main(
         eps_clip_high=cfg.eps_clip_high,
         reference_training_shape_id=cfg.trainer.reference_training_shape_id,
         reference_job_id=cfg.trainer.reference_job_id,
-        ppo_n_minibatches=cfg.ppo_n_minibatches,
+        anchor_logp=cfg.anchor_logp,
     )
-    uses_recipe_sampler = sample_prompt_fn is None
-    if cfg.router_replay and uses_recipe_sampler:
-        warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
+    if cfg.completions_per_prompt < 2:
+        raise ValueError("completions_per_prompt must be >= 2 for GRPO.")
+    if cfg.prompt_groups_per_step < 1:
+        raise ValueError("prompt_groups_per_step must be >= 1.")
+    if rows is None and not cfg.dataset:
+        raise ValueError("Provide either cfg.dataset or rows= to main().")
+    if not cfg.deployment.tokenizer_model:
+        raise ValueError("deployment.tokenizer_model is required.")
 
-    # Convert SIGTERM/SIGINT into exceptions so the finally block runs cleanup.
-    def _signal_handler(signum, frame):
+    def _signal_handler(signum, _):
         name = signal.Signals(signum).name
-        logger.warning("Received %s — raising SystemExit for cleanup", name)
         raise SystemExit(f"Terminated by {name}")
 
     signal.signal(signal.SIGTERM, _signal_handler)
@@ -349,38 +223,46 @@ def main(
         cfg.dataset,
         deploy=cfg.deployment,
         output_model_id=cfg.output_model_id,
+        require_dataset=(rows is None),
     )
-    validate_warm_start_config(
-        warm_start_from_adapter=cfg.warm_start_from_adapter,
-        init_from_checkpoint=cfg.init_from_checkpoint,
-        lora_rank=cfg.lora_rank,
-    )
-    completions_per_prompt = cfg.completions_per_prompt
-    prompt_groups_per_step = cfg.prompt_groups_per_step
-    if not cfg.deployment.tokenizer_model:
-        raise ValueError(
-            "deployment.tokenizer_model is required for client-side tokenization. "
-            "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
-        )
+    lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     setup_wandb(
         cfg.wandb,
         {
-            "completions_per_prompt": completions_per_prompt,
-            "prompt_groups_per_step": prompt_groups_per_step,
+            "completions_per_prompt": cfg.completions_per_prompt,
+            "prompt_groups_per_step": cfg.prompt_groups_per_step,
+            "max_completion_tokens": cfg.max_completion_tokens,
+            "temperature": cfg.temperature,
+            "tokenizer_id": cfg.deployment.tokenizer_model,
+            "renderer_name": cfg.renderer_name,
+            "shuffle": cfg.shuffle,
+            "seed": cfg.seed,
             "algorithm": "grpo",
             "trainer_loss": "client",
             "kl_beta": cfg.kl_beta,
+            "anchor_logp": cfg.anchor_logp,
             "lr": cfg.learning_rate,
+            "lr_schedule": lr_scheduler.type,
         },
     )
-
-    # -- SDK-managed Tinker clients -----------------------------------------
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
+    router_replay_enabled = sample_prompt_fn is None and resolve_router_replay_enabled(
+        requested=cfg.router_replay,
+        api_key=api_key,
+        base_url=base_url,
+        additional_headers=additional_headers,
+        base_model=cfg.base_model,
+    )
+    if cfg.router_replay and sample_prompt_fn is None and not router_replay_enabled:
+        logger.info("Router Replay skipped for dense model %s", cfg.base_model)
+    if router_replay_enabled:
+        warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
 
     with ExitStack() as stack:
+        tokenizer = load_deployment_tokenizer(cfg.deployment)
         service = build_service_client(
             api_key=api_key,
             base_url=base_url,
@@ -388,7 +270,6 @@ def main(
             base_model=cfg.base_model,
             tokenizer_model=cfg.deployment.tokenizer_model,
             lora_rank=cfg.lora_rank,
-            lora_alpha=cfg.lora_alpha,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
@@ -403,13 +284,340 @@ def main(
             reference_required=cfg.kl_beta > 0,
         )
         stack.callback(service.close)
-        training_client = service.create_training_client(
-            cfg.base_model,
+
+        policy = ReconnectableClient.from_training_client(
+            service.create_training_client(
+                cfg.base_model,
+                lora_rank=cfg.lora_rank,
+            ),
+            base_model=cfg.base_model,
             lora_rank=cfg.lora_rank,
-            lora_alpha=cfg.lora_alpha,
+            job_id=service.trainer_job_id,
+            service=service,
         )
-        policy_job_id = service.trainer_job_id
-        deployment_id = service.deployment_id
+        reference = None
+        if cfg.kl_beta > 0:
+            reference = ReconnectableClient.from_training_client(
+                service.create_reference_client(
+                    cfg.base_model,
+                    lora_rank=cfg.lora_rank,
+                ),
+                base_model=cfg.base_model,
+                lora_rank=0,
+                job_id=service.reference_client_job_id,
+                service=service,
+                base_only=True,
+            )
+
+        sampler = None
+        response_renderer = None
+        if sample_prompt_fn is None:
+            sampler = service.create_deployment_sampler(tokenizer=tokenizer)
+            response_renderer = build_renderer(
+                tokenizer,
+                cfg.deployment.tokenizer_model,
+                cfg.renderer_name,
+            )
+
+        checkpoint = TrainingCheckpoints(
+            policy,
+            service,
+            trainer_id=service.trainer_job_id,
+            log_path=cfg.log_path,
+            lora_rank=cfg.lora_rank,
+        )
+        resume_info = checkpoint.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+        )
+        step_offset = resume_info.step if resume_info else 0
+        prior_rows_consumed = resume_info.data_consumed if resume_info else 0
+        log_metrics({"train/step": step_offset}, step=step_offset)
+
+        # The synchronous recipe is always strict on-policy: initialize the
+        # sampler from the trainer, then repeat this sync after every update.
+        with elapsed_timer("weight_sync") as span:
+            saved = policy.save_weights_for_sampler(
+                f"step-{step_offset}",
+                checkpoint_type="base",
+            )
+            service.hotload_sampler_snapshot(saved.path)
+        logger.info("[step %d] initial weight sync (%.1fs)", step_offset, span.elapsed)
+        flush_timing()
+
+        if rows is None:
+            rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+        else:
+            rows = list(rows)
+        row_loader = CursorDataLoader(
+            rows,
+            start_cursor=prior_rows_consumed,
+            epochs=cfg.epochs,
+            shuffle=cfg.shuffle,
+            seed=cfg.seed,
+        )
+        row_iterator = iter(row_loader)
+        remaining_rows = max(0, row_loader.total_items - prior_rows_consumed)
+        total_steps_estimate = step_offset + math.ceil(
+            remaining_rows / cfg.prompt_groups_per_step
+        )
+
+        sample_kwargs: dict[str, Any] = {
+            "max_tokens": cfg.max_completion_tokens,
+            "temperature": cfg.temperature,
+            "top_p": 1.0,
+            "top_k": 0,
+            "max_seq_len": service.max_context_length,
+            "http_timeout": cfg.deployment.sample_timeout,
+            "logprobs": True,
+        }
+        if router_replay_enabled:
+            sample_kwargs.update(
+                include_routing_matrix=True,
+                echo=not cfg.router_replay_completion_only,
+            )
+
+        # -- Rollout function (VISIBLE -- customize this) ---------------------
+
+        async def sample_one_prompt(
+            row: dict,
+            *,
+            cursor_index: int,
+        ) -> PromptGroup | None:
+            if sample_prompt_fn is not None:
+                return await sample_prompt_fn(row, cursor_index=cursor_index)
+
+            messages = prepare_sampling_messages(row.get("messages", []))
+            if not messages:
+                return None
+            model_input = response_renderer.build_generation_prompt(messages)
+            prompt_token_ids = model_input_to_token_ids(model_input)
+            try:
+                sampled = await sampler.sample_with_prompt_tokens(
+                    prompt_token_ids,
+                    n=cfg.completions_per_prompt,
+                    stop=response_renderer.get_stop_sequences(),
+                    **sample_kwargs,
+                )
+            except Exception as error:
+                logger.warning("Sampling row %d failed: %s", cursor_index, error)
+                return None
+            if not sampled or len(sampled) != cfg.completions_per_prompt:
+                return None
+
+            rewards = [
+                reward_fn(
+                    _response_text_for_grading(response_renderer, sample),
+                    row,
+                )
+                for sample in sampled
+            ]
+            runs = []
+            for sample, reward in zip(sampled, rewards, strict=True):
+                run = sampled_completion_to_rollout_run(sample, reward=reward)
+                if run is None:
+                    return None
+                runs.append(run)
+            return rollout_to_prompt_group(
+                Rollout(runs=runs),
+                with_reference=(reference is not None),
+                router_replay_completion_only=cfg.router_replay_completion_only,
+            )
+
+        logger.info(
+            "Synchronous GRPO: %d prompt groups x %d completions per step",
+            cfg.prompt_groups_per_step,
+            cfg.completions_per_prompt,
+        )
+
+        # -- Synchronous training loop (VISIBLE algorithm phases) -------------
+
+        adam_kwargs = dict(DEFAULT_ADAM)
+        adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+
+        async def run_training() -> int:
+            step = step_offset
+            while True:
+                prompt_groups, row_indices, loop_stats = await collect_prompt_groups(
+                    row_iterator,
+                    target_size=cfg.prompt_groups_per_step,
+                    sample_prompt=sample_one_prompt,
+                    should_accept=should_accept,
+                )
+                if not row_indices:
+                    break
+                if not prompt_groups:
+                    for index in row_indices:
+                        row_loader.mark_resolved(index)
+                    continue
+
+                train_started = time.monotonic()
+
+                # 1. Reference and old-policy logprobs.
+                if reference is not None:
+                    with elapsed_timer("ref_forward"):
+                        reference_data = [
+                            datum
+                            for group in prompt_groups
+                            for datum in group.ref_data
+                        ]
+                        reference_result = reference.forward(
+                            reference_data,
+                            "cross_entropy",
+                        )
+                        offset = 0
+                        for group in prompt_groups:
+                            group_size = len(group.ref_data)
+                            group.ref_logprobs = [
+                                reference_result.loss_fn_outputs[offset + i][
+                                    "logprobs"
+                                ].data
+                                for i in range(group_size)
+                            ]
+                            offset += group_size
+
+                (
+                    data,
+                    advantages,
+                    reference_logprobs,
+                    prompt_lengths,
+                    rollout_logprobs,
+                    raw_inference_logprobs,
+                ) = combine_prompt_groups(prompt_groups, include_raw=True)
+
+                if cfg.anchor_logp == "old_policy":
+                    with elapsed_timer("old_policy_forward"):
+                        old_policy_result = policy.forward(data, "cross_entropy")
+                        old_policy_logprobs = [
+                            output["logprobs"].data
+                            for output in old_policy_result.loss_fn_outputs
+                        ]
+                else:
+                    if len(rollout_logprobs) != len(data) or any(
+                        not row for row in rollout_logprobs
+                    ):
+                        raise ValueError(
+                            "anchor_logp='rollout' requires one non-empty "
+                            "rollout_logprobs row per training datum."
+                        )
+                    old_policy_logprobs = rollout_logprobs
+
+                # 2. One GRPO forward/backward.
+                # To switch to built-in PPO or another loss, replace this
+                # direct call. See
+                # skills/fireworks-training/references/rl-custom-loss.md.
+                with elapsed_timer("fwd_bwd"):
+                    fwd_bwd_result = policy.forward_backward_custom(
+                        data,
+                        make_grpo_loss_fn(
+                            advantages=advantages,
+                            ref_logprobs=reference_logprobs,
+                            prompt_len=prompt_lengths,
+                            inf_logprobs=rollout_logprobs,
+                            old_policy_logprobs=old_policy_logprobs,
+                            kl_beta=cfg.kl_beta,
+                            eps_clip=cfg.eps_clip,
+                            eps_clip_high=cfg.eps_clip_high,
+                            tis_config=cfg.tis,
+                            raw_inf_logprobs=raw_inference_logprobs,
+                        ),
+                    )
+
+                # 3. Exactly one optimizer mutation.
+                next_step = step + 1
+                step_lr = compute_lr(
+                    lr_scheduler,
+                    step=next_step,
+                    base_lr=cfg.learning_rate,
+                    total_steps=total_steps_estimate,
+                )
+                with elapsed_timer("optim_step"):
+                    optim_result = policy.optim_step(
+                        tinker.AdamParams(
+                            learning_rate=step_lr,
+                            **adam_kwargs,
+                        ),
+                        grad_accumulation_normalization=(
+                            cfg.grad_accumulation_normalization
+                        ),
+                    )
+                step = next_step
+
+                # 4. Publish this policy before the next rollout batch.
+                with elapsed_timer("weight_sync"):
+                    saved = policy.save_weights_for_sampler(f"step-{step}")
+                    service.hotload_sampler_snapshot(saved.path)
+
+                for index in row_indices:
+                    row_loader.mark_resolved(index)
+
+                loop_stats["train_wall_time"] = time.monotonic() - train_started
+                loop_stats["scheduler_step_wall_time"] = (
+                    loop_stats["rollout_batch_wall_time"]
+                    + loop_stats["train_wall_time"]
+                )
+                metrics = compute_step_metrics(
+                    prompt_groups=prompt_groups,
+                    fwd_bwd_results=[fwd_bwd_result],
+                    optim_result=optim_result,
+                    n_accum=1,
+                    timing_metrics=flush_timing(),
+                    loop_stats=loop_stats,
+                )
+                metrics["train/step"] = step
+                metrics["train/learning_rate"] = step_lr
+                reward = metrics.get("rollout/filtered_reward", 0.0)
+                ref_kl = metrics.get("train/ref_kl", 0.0)
+                logger.info(
+                    "Step %d | reward %.3f | RefKL %.4f",
+                    step,
+                    reward,
+                    ref_kl,
+                )
+                log_metrics_json(step, reward=reward, ref_kl=ref_kl)
+                log_metrics(metrics, step=step)
+
+                if (
+                    cfg.dcp_save_interval > 0
+                    and (step - step_offset) % cfg.dcp_save_interval == 0
+                ):
+                    with elapsed_timer("dcp_save") as span:
+                        checkpoint.save(
+                            f"step-{step}",
+                            resumable=True,
+                            promotable=False,
+                            data_consumed=row_loader.data_consumed,
+                        )
+                    logger.info(
+                        "[step %d] checkpoint saved (%.1fs)",
+                        step,
+                        span.elapsed,
+                    )
+
+            return step
+
+        global_step = asyncio.run(run_training())
+
+        has_trained_steps = global_step > step_offset
+        has_advanced_dataset = row_loader.data_consumed > prior_rows_consumed
+        if cfg.save_final_checkpoint and (
+            has_trained_steps or has_advanced_dataset
+        ):
+            checkpoint.save(
+                f"step-{global_step}",
+                resumable=True,
+                promotable=has_trained_steps,
+                data_consumed=row_loader.data_consumed,
+            )
+            if cfg.output_model_id and has_trained_steps:
+                checkpoint.promote_latest(cfg.output_model_id, cfg.base_model)
+
+        logger.info(
+            "Synchronous RL training complete: %d steps (%d new)",
+            global_step,
+            global_step - step_offset,
+        )
+        wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
+
         training_profile = getattr(service, "training_profile", None)
         accelerator_type = getattr(service, "accelerator_type", None)
         if accelerator_type is None:
@@ -417,563 +625,11 @@ def main(
         accelerator_count = getattr(service, "accelerator_count", None)
         if accelerator_count is None:
             accelerator_count = getattr(training_profile, "accelerator_count", None)
-        policy = ReconnectableClient.from_training_client(
-            training_client,
-            base_model=cfg.base_model,
-            lora_rank=cfg.lora_rank,
-            job_id=policy_job_id,
-            default_timeout=cfg.step_timeout or 3600,
-            service=service,
-        )
-        max_seq_len = service.max_context_length
-
-        # The KL reference is optional in RL (only needed when kl_beta > 0).
-        # The SDK owns the shared-vs-separate decision: LoRA without an explicit
-        # reference shape reuses the policy session; full-param (or an explicit
-        # reference_training_shape_id) provisions a separate frozen reference
-        # trainer that `service` owns. Backend trainer creation selects a
-        # LoRA-capable shape unless a LoRA-capable shape is pinned.
-        # reference_job_id mirrors the policy job when shared, else the
-        # separate reference trainer's id.
-        reference = None
-        reference_job_id = None
-        if cfg.kl_beta > 0:
-            reference = ReconnectableClient.from_training_client(
-                service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
-                base_model=cfg.base_model,
-                lora_rank=0,
-                job_id=service.reference_client_job_id,
-                default_timeout=cfg.step_timeout or 3600,
-                service=service,
-                base_only=True,
-            )
-            reference_job_id = service.reference_trainer_job_id
-
-        tokenizer = load_deployment_tokenizer(cfg.deployment)
-        # Renderer used to grade the model's response channel (see
-        # _response_text_for_grading): restores the prompt-prefilled <think>
-        # and strips the think block so reward sees the post-think answer.
-        response_renderer = build_renderer(
-            tokenizer, cfg.deployment.tokenizer_model, cfg.renderer_name
-        )
-        # Rollout prompt construction. Models whose HF tokenizer ships no
-        # chat_template (e.g. DeepSeek-V4, whose template source of truth is
-        # DeepSeek's encoding package) cannot go through
-        # tokenizer.apply_chat_template inside sample_with_tokens; build
-        # prompt tokens with the cookbook renderer (selected by
-        # cfg.renderer_name) + sample_with_prompt_tokens instead. Models whose
-        # tokenizer does ship a chat template keep the existing
-        # apply_chat_template path unchanged.
-        use_renderer_prompts = getattr(tokenizer, "chat_template", None) is None
-        if use_renderer_prompts:
-            logger.info(
-                "Rollout prompts: renderer-backed (renderer_name=%r; tokenizer ships no chat_template)",
-                cfg.renderer_name,
-            )
-        concurrency_controller = None
-        sampler = None
-        if uses_recipe_sampler:
-            # Adaptive concurrency — window adjusts based on server-side prefill queue.
-            # For fixed (no rate limiting), use FixedConcurrencyController instead.
-            # Fallback scales with deployment replicas (see ConcurrencyConfig.initial_window).
-            initial_window = cfg.concurrency.initial_window or (
-                8 * (cfg.deployment.replica_count or 1)
-            )
-            concurrency_controller = AdaptiveConcurrencyController(
-                initial_window=initial_window,
-                min_window=cfg.concurrency.min_window,
-                max_window=cfg.concurrency.max_window,
-                prefill_queue_target=cfg.concurrency.prefill_queue_target,
-                adjustment_interval=cfg.concurrency.rollout_adjustment_interval,
-            )
-            logger.info(
-                "Concurrency: adaptive (initial=%d, range=%d-%d, target_pq=%.2fs, "
-                "adjustment_interval=%d)",
-                initial_window,
-                cfg.concurrency.min_window,
-                cfg.concurrency.max_window,
-                cfg.concurrency.prefill_queue_target,
-                cfg.concurrency.rollout_adjustment_interval,
-            )
-            sampler = service.create_deployment_sampler(
-                tokenizer=tokenizer,
-                concurrency_controller=concurrency_controller,
-            )
-
-        ckpt = TrainingCheckpoints(
-            policy,
-            service,
-            trainer_id=policy_job_id,
-            log_path=cfg.log_path,
-            lora_rank=cfg.lora_rank,
-        )
-
-        logger.info(
-            "Training: prompt_groups_per_step=%d | completions_per_prompt=%d",
-            prompt_groups_per_step,
-            completions_per_prompt,
-        )
-
-        # -- Resume ---------------------------------------------------------------
-
-        resume_info = ckpt.resume(
-            init_from_checkpoint=cfg.init_from_checkpoint,
-            warm_start_from_adapter=cfg.warm_start_from_adapter,
-        )
-        step_offset = resume_info.step if resume_info else 0
-        log_metrics(
-            {"train/step": step_offset},
-            step=step_offset,
-        )
-
-        if cfg.weight_sync_before_training or service.requires_initial_sampler_sync():
-            logger.info("[step %d] weight sync: saving + loading...", step_offset)
-            t0 = _time.time()
-            with timer("weight_sync"):
-                saved = policy.save_weights_for_sampler(
-                    f"step-{step_offset}",
-                    checkpoint_type="base",
-                )
-                service.hotload_sampler_snapshot(saved.path)
-            logger.info(
-                "[step %d] weight sync: done (%.1fs)", step_offset, _time.time() - t0
-            )
-
-        # -- Prepare sampling and training --------------------------------------
-
-        raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
-        all_rows = raw_dataset * cfg.epochs
-        cursor = RawRowCursor(max_rows=len(all_rows))
-        adam_params = _build_adam_params(cfg)
-        sample_kwargs: dict = dict(
-            max_tokens=cfg.max_completion_tokens,
-            temperature=cfg.temperature,
-            # Full-distribution on-policy sampling. Without explicit top_p/top_k
-            # the serving stack applies the model's generation_config.json
-            # defaults (e.g. Qwen3.5: top_k=20/top_p=0.95), which truncate
-            # rollouts and bias the policy-gradient estimator.
-            top_p=1.0,
-            top_k=0,
-            max_seq_len=max_seq_len,
-            http_timeout=cfg.deployment.sample_timeout,
-        )
-        if cfg.router_replay:
-            sample_kwargs.update(
-                include_routing_matrix=True,
-                echo=not cfg.router_replay_completion_only,
-                logprobs=True,
-            )
-        sample_kwargs["logprobs"] = True
-
-        # -- Sample one prompt (VISIBLE -- customise this) ----------------------
-
-        async def sample_one_prompt(
-            row: dict, *, cursor_index: int
-        ) -> PromptGroup | None:
-            """Sample completions for one prompt and return a PromptGroup."""
-            if sample_prompt_fn is not None:
-                return await sample_prompt_fn(row, cursor_index=cursor_index)
-            if sampler is None:
-                raise RuntimeError("live sampling requires a deployment sampler")
-            messages = row.get("messages", [])
-            input_messages = prepare_sampling_messages(messages)
-            if not input_messages:
-                return None
-
-            try:
-                if use_renderer_prompts:
-                    model_input = response_renderer.build_generation_prompt(
-                        input_messages
-                    )
-                    prompt_token_ids = model_input_to_token_ids(model_input)
-                    sampled = await sampler.sample_with_prompt_tokens(
-                        prompt_token_ids,
-                        n=completions_per_prompt,
-                        stop=response_renderer.get_stop_sequences(),
-                        **sample_kwargs,
-                    )
-                else:
-                    sampled = await sampler.sample_with_tokens(
-                        messages=input_messages,
-                        n=completions_per_prompt,
-                        **sample_kwargs,
-                    )
-            except Exception as e:
-                # HTTP 425 during deployment hot-load is counted as a sample failure.
-                logger.warning("Sampling failed: %s", e)
-                return None
-
-            if not sampled or len(sampled) < completions_per_prompt:
-                return None
-
-            rewards = [
-                reward_fn(_response_text_for_grading(response_renderer, s), row)
-                for s in sampled
-            ]
-            advantages = compute_advantages(rewards)
-
-            prompt_len = sampled[0].prompt_len
-            policy_data: List[tinker.Datum] = []
-            reference_data: List[tinker.Datum] = []
-            adv_filtered: List[float] = []
-            inf_logprobs_aligned: List[List[float]] = []
-            raw_inf_logprobs_aligned: List[List[float]] = []
-
-            for idx, s in enumerate(sampled):
-                tokens = s.full_tokens
-                if len(tokens) < 2:
-                    continue
-                model_input_len = len(tokens) - 1
-
-                rm = None
-                if cfg.router_replay:
-                    rm = build_r3_routing_matrices(
-                        s.routing_matrices,
-                        s.prompt_len,
-                        model_input_len,
-                        completion_only=cfg.router_replay_completion_only,
-                    )
-
-                policy_datum = tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(
-                        tokens[:-1], routing_matrices=rm
-                    ),
-                    loss_fn_inputs={
-                        "target_tokens": tinker.TensorData(
-                            data=tokens[1:], dtype="int64", shape=[model_input_len]
-                        ),
-                    },
-                )
-                policy_data.append(policy_datum)
-
-                if reference is not None:
-                    reference_datum = tinker.Datum(
-                        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
-                        loss_fn_inputs={
-                            "target_tokens": tinker.TensorData(
-                                data=tokens[1:], dtype="int64", shape=[model_input_len]
-                            ),
-                        },
-                    )
-                    reference_data.append(reference_datum)
-
-                adv_filtered.append(advantages[idx])
-
-                rollout_logprobs = align_sample_logprobs_to_target_tokens(
-                    s,
-                    attr="sampling_logprobs",
-                    source="rollout_logprobs",
-                    sample_idx=idx,
-                    required=True,
-                )
-                raw_logprobs = align_sample_logprobs_to_target_tokens(
-                    s,
-                    attr="inference_logprobs",
-                    source="raw inference logprobs",
-                    sample_idx=idx,
-                    required=False,
-                )
-                inf_logprobs_aligned.append(rollout_logprobs)
-                raw_inf_logprobs_aligned.append(raw_logprobs or [])
-
-            if not policy_data:
-                return None
-
-            comp_lens = [len(s.full_tokens) - s.prompt_len for s in sampled]
-            trunc = [s.finish_reason == "length" for s in sampled]
-
-            return PromptGroup(
-                data=policy_data,
-                ref_data=reference_data,
-                advantages=adv_filtered,
-                ref_logprobs=None,
-                prompt_len=prompt_len,
-                rewards=rewards,
-                inf_logprobs=inf_logprobs_aligned,
-                raw_inf_logprobs=raw_inf_logprobs_aligned,
-                completion_lens=comp_lens,
-                truncated=trunc,
-                prompt=input_messages if cfg.trajectory_dir else None,
-                completions=[s.text for s in sampled] if cfg.trajectory_dir else None,
-                row_meta={"ground_truth": row.get("ground_truth", "")}
-                if cfg.trajectory_dir
-                else None,
-            )
-
-        # -- Training callbacks ----------------------------------------------------
-
-        logger.info("algorithm=grpo trainer_loss=client kl_beta=%g", cfg.kl_beta)
-
-        def ref_forward(groups: list[PromptGroup]) -> None:
-            """Compute reference logprobs for all prompt groups (one call)."""
-            if reference is None:
-                return
-            all_ref_data = [d for pg in groups for d in pg.ref_data]
-            try:
-                ref_fwd = reference.forward(all_ref_data, "cross_entropy")
-            except Exception as e:
-                raise RuntimeError(
-                    f"Reference forward failed (batch of {len(all_ref_data)} datums): {e}\n"
-                    "Possible causes: reference trainer crashed, NCCL timeout, or "
-                    "request exceeded the default timeout. Check reference trainer "
-                    "logs and consider increasing the client timeout."
-                ) from e
-            idx = 0
-            for pg in groups:
-                n = len(pg.ref_data)
-                pg.ref_logprobs = [ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)]
-                idx += n
-
-        def fwd_bwd_minibatch(
-            data,
-            adv,
-            ref_lp,
-            prompt_lens,
-            inf_lp,
-            raw_inf_lp,
-            old_policy_logprobs,
-        ):
-            """Run client-side GRPO with PPO clipping, TIS, and optional reference KL.
-
-            To switch to built-in PPO or another loss, replace this call rather
-            than adding dispatch. See
-            ``skills/fireworks-training/references/rl-custom-loss.md``.
-            """
-            return policy.forward_backward_custom(
-                data,
-                make_grpo_loss_fn(
-                    advantages=adv,
-                    ref_logprobs=ref_lp,
-                    prompt_len=prompt_lens,
-                    inf_logprobs=inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
-                    kl_beta=cfg.kl_beta,
-                    eps_clip=cfg.eps_clip,
-                    eps_clip_high=cfg.eps_clip_high,
-                    tis_config=cfg.tis,
-                    raw_inf_logprobs=raw_inf_lp,
-                ),
-            )
-
-        def train_step(
-            step: int,
-            prompt_groups: list[PromptGroup],
-            loop_stats: dict | None = None,
-        ) -> tuple[int, dict]:
-            """Old-policy snapshot + num_minibatches x (fwd_bwd + optim_step) + metrics.
-
-            ``num_minibatches = cfg.ppo_n_minibatches``. ``old_policy_logprobs``
-            is snapshotted once per rollout batch and reused across every inner
-            optim step so the PPO ratio measures genuine policy drift. DCP
-            checkpoints fire only at rollout boundaries (cadence in rollout
-            batches, not optim steps) so resume accounting is independent of
-            the minibatch count.
-            """
-            if not prompt_groups:
-                raise ValueError("train_step requires at least one prompt group")
-
-            train_step_start = _time.time()
-            t0 = _time.time()
-            ref_forward(prompt_groups)
-            logger.info(
-                "[step %d] ref_forward: done (%.1fs)",
-                step + 1,
-                _time.time() - t0,
-            )
-            data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combine_prompt_groups(
-                prompt_groups,
-                include_raw=True,
-            )
-            t0 = _time.time()
-            old_policy_fwd = policy.forward(data, "cross_entropy")
-            old_policy_logprobs = [
-                old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
-                for i in range(len(data))
-            ]
-            logger.info(
-                "[step %d] old_policy_forward: done (%.1fs)",
-                step + 1,
-                _time.time() - t0,
-            )
-
-            n = len(data)
-            num_minibatches = cfg.ppo_n_minibatches
-            minibatch_size = max(1, math.ceil(n / num_minibatches))
-            fwd_bwd_results: list = []
-            optim_result: Any = None
-            for minibatch_idx in range(num_minibatches):
-                minibatch_start = minibatch_idx * minibatch_size
-                minibatch_end = min(minibatch_start + minibatch_size, n)
-                if minibatch_start >= minibatch_end:
-                    break
-
-                t0 = _time.time()
-                fwd_bwd_results.append(
-                    fwd_bwd_minibatch(
-                        data[minibatch_start:minibatch_end],
-                        adv[minibatch_start:minibatch_end],
-                        ref_lp[minibatch_start:minibatch_end] if ref_lp else [],
-                        prompt_lens[minibatch_start:minibatch_end],
-                        inf_lp[minibatch_start:minibatch_end],
-                        raw_inf_lp[minibatch_start:minibatch_end],
-                        old_policy_logprobs[minibatch_start:minibatch_end],
-                    )
-                )
-                logger.info(
-                    "[step %d] fwd_bwd (mb %d/%d): done (%.1fs)",
-                    step + 1,
-                    minibatch_idx + 1,
-                    num_minibatches,
-                    _time.time() - t0,
-                )
-
-                t0 = _time.time()
-                optim_result = policy.optim_step(
-                    adam_params,
-                    grad_accumulation_normalization=cfg.grad_accumulation_normalization,
-                )
-                step += 1
-                logger.info(
-                    "[step %d] optim_step (mb %d/%d): done (%.1fs)",
-                    step,
-                    minibatch_idx + 1,
-                    num_minibatches,
-                    _time.time() - t0,
-                )
-
-            cursor.record(
-                raw_rows_from_stats(loop_stats, accepted_rows=len(prompt_groups))
-            )
-
-            rollouts_completed = (step - step_offset) // num_minibatches
-            dcp_interval = cfg.dcp_save_interval
-            if (
-                dcp_interval > 0
-                and rollouts_completed > 0
-                and rollouts_completed % dcp_interval == 0
-            ):
-                logger.info("[step %d] dcp_save...", step)
-                t0 = _time.time()
-                ckpt.save(
-                    f"step-{step}",
-                    resumable=True,
-                    promotable=False,
-                    data_consumed=cursor.value,
-                )
-                logger.info("[step %d] dcp_save: done (%.1fs)", step, _time.time() - t0)
-
-            if loop_stats is not None:
-                train_wall_time = _time.time() - train_step_start
-                loop_stats["train_wall_time"] = train_wall_time
-                rollout_wall_time = float(
-                    loop_stats.get("rollout_batch_wall_time", 0.0)
-                )
-                loop_stats["scheduler_step_wall_time"] = (
-                    rollout_wall_time + train_wall_time
-                )
-
-            metrics = compute_step_metrics(
-                prompt_groups=prompt_groups,
-                fwd_bwd_results=fwd_bwd_results,
-                optim_result=optim_result,
-                n_accum=len(fwd_bwd_results),
-                timing_metrics=flush_timing(),
-                loop_stats=loop_stats,
-            )
-            metrics["train/step"] = step
-
-            avg_reward = metrics.get("rollout/filtered_reward", 0.0)
-            avg_ref_kl = metrics.get("train/ref_kl", 0.0)
-            logger.info(
-                "Step %d | Filtered reward: %.3f | RefKL: %.4f",
-                step,
-                avg_reward,
-                avg_ref_kl,
-            )
-            log_metrics_json(step, reward=avg_reward, ref_kl=avg_ref_kl)
-            log_metrics(metrics, step=step)
-
-            if cfg.trajectory_dir:
-                _dump_trajectory(cfg.trajectory_dir, step, prompt_groups)
-
-            return step, metrics
-
-        # -- Run ----------------------------------------------------------------
-
-        def _loop_metrics_callback(loop_metrics: dict) -> None:
-            """Called by run_rl_loop after each train step with loop-level metrics."""
-            if concurrency_controller is not None:
-                cc_summary = concurrency_controller.step_completed()
-                for k, v in cc_summary.items():
-                    loop_metrics[f"concurrency/{k}"] = v
-            log_metrics(
-                loop_metrics,
-                step=int(loop_metrics["train/step"]),
-            )
-
-        train_fns = TrainStepFns(train_step=train_step)
-
-        # Prefer the persisted raw-row cursor; fall back to step-derived
-        # progress for older checkpoints.
-        rollouts_done = step_offset // cfg.ppo_n_minibatches
-        cursor.resume(
-            resume_info.data_consumed if resume_info else None,
-            fallback=rollouts_done * prompt_groups_per_step,
-        )
-        remaining_rows = all_rows[cursor.value:]
-
-        global_step = asyncio.run(
-            run_batched_training_loop(
-                sample_fns=(
-                    sample_one_prompt(row, cursor_index=cursor.value + offset)
-                    for offset, row in enumerate(remaining_rows)
-                ),
-                train_fns=train_fns,
-                prompt_groups_per_step=prompt_groups_per_step,
-                dynamic_filter_fn=should_accept,
-                global_step=step_offset,
-                metrics_callback=(
-                    _loop_metrics_callback
-                    if concurrency_controller is not None
-                    else None
-                ),
-                weight_sync_fn=(
-                    lambda step: (
-                        service.hotload_sampler_snapshot(
-                            policy.save_weights_for_sampler(f"step-{step}").path
-                        )
-                        if cfg.weight_sync_interval > 0
-                        else None
-                    )
-                ),
-                weight_sync_interval=cfg.weight_sync_interval,
-            )
-        )
-
-        # -- Final checkpoint ----------------------------------------------------
-
-        if cfg.save_final_checkpoint and global_step > step_offset:
-            try:
-                cp_name = f"step-{global_step}"
-                ckpt.save(
-                    cp_name,
-                    resumable=True,
-                    promotable=True,
-                    data_consumed=cursor.value,
-                )
-
-                if getattr(cfg, "output_model_id", None):
-                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
-            except Exception as e:
-                logger.warning("Failed to save final checkpoint: %s", e)
-
-        logger.info("Training complete: %d steps", global_step)
-        wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
             "steps": global_step,
-            "policy_job_id": policy_job_id,
-            "reference_job_id": reference_job_id,
-            "deployment_id": deployment_id,
+            "policy_job_id": service.trainer_job_id,
+            "reference_job_id": service.reference_trainer_job_id,
+            "deployment_id": service.deployment_id,
             "accelerator_type": accelerator_type,
             "accelerator_count": accelerator_count,
         }
@@ -981,13 +637,16 @@ def main(
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
     )
-    cfg = Config(
-        log_path="./rl_logs",
-        base_model="accounts/fireworks/models/qwen3-8b",
-        deployment=DeployConfig(
-            tokenizer_model="Qwen/Qwen3-8B",
-        ),
+    main(
+        Config(
+            log_path="./rl_logs",
+            dataset=(
+                "https://raw.githubusercontent.com/eval-protocol/python-sdk/"
+                "main/development/gsm8k_sample.jsonl"
+            ),
+            deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
+        )
     )
-    main(cfg)

@@ -25,8 +25,8 @@
          1. base + page
          2. banner + section headers
          3. disclosure (details/summary)
-         4. forms + buttons
-         5. data tables (table-compact, meta-grid, pills)
+         4. input suite + buttons
+         5. data tables (table-compact, pills)
          6. token stream (legend, filters, .stream, .tok)
          7. status (empty-state, error-banner, footer)
        Keep changes inside one of those blocks.
@@ -51,7 +51,6 @@
       /* Brand — Claude clay */
       --accent:       #cc785c;
       --accent-deep:  #a85a3f;
-      --accent-soft:  #f3ddcf;
 
       /* Status chips */
       --ok-bg:    #edf3e8;  --ok-fg:    #5e7a55;  --ok-bd:    #d6e0cc;
@@ -69,15 +68,7 @@
       --warn-token-bg:  #ffd966;
       --warn-token-bd:  #d9a625;
 
-      /* Chunk-source left borders (muted) */
-      --chunk-bos:        #9b6db8;
-      --chunk-header:     #7a6db8;
-      --chunk-output:     #6b9762;
-      --chunk-stopover:   #cc785c;
-      --chunk-genprefix:  #5b7494;
-
       --special-fg:    #a05d54;
-      --trainable-bar: #6b9762;
 
       /* Type stack */
       --serif: "Fraunces", "Iowan Old Style", "Palatino", Georgia, serif;
@@ -225,139 +216,26 @@
     }
     details > *:not(summary) { padding: 0 4px 24px 30px; }
 
-    /* -- 4. forms + buttons ----------------------------------------- */
+    /* -- 4. input suite + buttons ----------------------------------- */
 
-    .form-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 18px 20px;
-    }
-    .form-grid label {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--fg-dim);
-    }
-    .form-grid label.span-2,
-    .form-grid .span-2 { grid-column: span 2; }
-
-    .form-grid input,
-    .form-grid select,
-    .form-grid textarea {
-      font-family: var(--sans);
-      font-size: 14px;
-      font-weight: 400;
-      letter-spacing: 0;
-      text-transform: none;
-      color: var(--fg);
+    .json-editor {
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: pre;
+      overflow-x: auto;
+      tab-size: 2;
       background: var(--bg-card);
-      border: 1px solid var(--border-strong);
-      border-radius: 5px;
-      padding: 8px 11px;
-      outline: none;
-      transition: border-color 120ms ease, box-shadow 120ms ease;
-    }
-    .form-grid input:focus,
-    .form-grid select:focus,
-    .form-grid textarea:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-soft);
-    }
-    .form-grid input:disabled,
-    .form-grid select:disabled,
-    .form-grid textarea:disabled {
-      background: var(--bg-soft);
-      color: var(--fg-mute);
-      cursor: not-allowed;
-    }
-    .form-grid textarea { resize: vertical; min-height: 38px; line-height: 1.5; }
-
-    /* Inline note shown next to the model field when a serverless
-       model is selected. Amber, not red — it's a reminder, not an error. */
-    .billing-note {
-      display: block;
-      margin-top: 4px;
-      font-size: 11px;
-      font-weight: 400;
-      letter-spacing: 0;
-      text-transform: none;
-      color: var(--warn-fg);
-    }
-
-    .form-grid fieldset {
-      grid-column: span 2;
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 14px 16px 12px;
-      margin: 0;
-      background: var(--bg-card);
+      color: var(--fg-soft);
     }
-    .form-grid legend {
-      font-size: 11px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      font-weight: 500;
-      padding: 0 8px;
+    .preset-description {
+      margin: -6px 0 2px;
       color: var(--fg-dim);
-    }
-
-    .msg-row {
-      display: grid;
-      grid-template-columns: max-content 1fr max-content;
-      gap: 8px;
-      margin-bottom: 6px;
-      align-items: stretch;
-    }
-
-    .dispatch-preview {
-      grid-column: span 2;
-      padding: 12px 14px;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-left: 3px solid var(--accent);
-      border-radius: 5px;
-      font-size: 13px;
-      color: var(--fg);
-    }
-    .dispatch-preview .label {
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--fg-dim);
-      font-weight: 500;
-      margin-right: 8px;
-    }
-    .dispatch-preview code { background: transparent; padding: 0; color: var(--fg-soft); }
-
-    .api-flags-note {
-      grid-column: span 2;
-      padding: 10px 14px;
-      background: var(--bg-soft);
-      border-radius: 5px;
       font-size: 12.5px;
-      color: var(--fg-dim);
-      line-height: 1.55;
-    }
-    .api-flags-note code { background: var(--bg-card); }
-
-    .form-actions {
-      grid-column: span 2;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      margin-top: 4px;
-    }
-    .form-actions .hint {
-      font-size: 12.5px;
-      color: var(--fg-dim);
       line-height: 1.5;
     }
 
-    /* Generic buttons (the +user / +assistant / etc.). */
     button {
       font-family: var(--sans);
       font-size: 13px;
@@ -398,19 +276,6 @@
       cursor: wait;
     }
 
-    .btn-icon {
-      background: transparent;
-      color: var(--fg-mute);
-      border: 1px solid var(--border-strong);
-      border-radius: 4px;
-      padding: 0 10px;
-      cursor: pointer;
-      font-family: var(--sans);
-      font-size: 14px;
-      line-height: 1;
-    }
-    .btn-icon:hover { color: var(--fail-fg); border-color: var(--fail-fg); }
-
     /* -- 5. data tables -------------------------------------------- */
 
     .table-compact {
@@ -437,22 +302,6 @@
       font-size: 11px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-    }
-
-    .meta-grid {
-      display: grid;
-      grid-template-columns: max-content 1fr;
-      column-gap: 24px;
-      row-gap: 6px;
-      font-size: 13px;
-    }
-    .meta-grid dt { color: var(--fg-dim); font-weight: 500; }
-    .meta-grid dd {
-      margin: 0;
-      word-break: break-all;
-      color: var(--fg-soft);
-      font-family: var(--mono);
-      font-size: 12.5px;
     }
 
     .pill {
@@ -488,18 +337,6 @@
       color: var(--fg-dim);
       font-weight: 500;
     }
-    .cases-bar .btn-clear {
-      background: transparent;
-      border: 1px solid var(--border-strong);
-      color: var(--fg-dim);
-      padding: 5px 12px;
-      font-family: var(--sans);
-      font-size: 12px;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    .cases-bar .btn-clear:hover { color: var(--fail-fg); border-color: var(--fail-fg); }
-
     .case {
       margin-top: 28px;
       padding-top: 18px;
@@ -553,19 +390,6 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .btn-icon-danger {
-      background: transparent;
-      color: var(--fg-mute);
-      border: 1px solid var(--border-strong);
-      border-radius: 4px;
-      padding: 4px 12px;
-      cursor: pointer;
-      font-family: var(--sans);
-      font-size: 12px;
-      flex-shrink: 0;
-    }
-    .btn-icon-danger:hover { color: var(--fail-fg); border-color: var(--fail-fg); }
-
     /* -- 6. token stream ------------------------------------------- */
 
     .legend {
@@ -748,7 +572,7 @@
       font-weight: 300;
     }
 
-    /* -- 7. status (empty-state, error-banner, footer, file-row) ---- */
+    /* -- 7. status (empty-state, error-banner, footer) -------------- */
 
     .empty-state {
       padding: 56px 32px;
@@ -787,55 +611,6 @@
       overflow-wrap: anywhere;
     }
 
-    .file-row {
-      display: flex;
-      gap: 14px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    /* Hide the native file input and render a styled label-as-button
-       that triggers it. Matches the rest of the form's button style. */
-    .file-row input[type=file] {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-      border: 0;
-    }
-    .file-row .file-button {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      background: var(--bg-card);
-      color: var(--fg);
-      border: 1px solid var(--border-strong);
-      border-radius: 4px;
-      padding: 6px 14px;
-      cursor: pointer;
-      font-family: var(--sans);
-      font-size: 13px;
-      font-weight: 500;
-      transition: border-color 120ms ease, color 120ms ease;
-    }
-    .file-row .file-button:hover {
-      border-color: var(--fg-soft);
-      color: var(--fg);
-    }
-    .file-row .file-button:focus-within {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-soft);
-    }
-    .file-row .file-name {
-      font-family: var(--mono);
-      font-size: 12.5px;
-      color: var(--fg-soft);
-    }
-    .file-row .hint { color: var(--fg-dim); font-size: 12.5px; }
-
     .footer {
       margin-top: 56px;
       padding-top: 20px;
@@ -863,26 +638,6 @@
       trailing_hard_append:  "var(--prov-trailing)",
       tokenization_diverged: "var(--prov-diverged)",
     };
-
-    const CHUNK_BORDER = {
-      bos:               "var(--chunk-bos)",
-      header:            "var(--chunk-header)",
-      output:            "var(--chunk-output)",
-      stop_overlap:      "var(--chunk-stopover)",
-      generation_suffix: "var(--chunk-genprefix)",
-    };
-
-    const PROVENANCES = [
-      "prompt_hard_append",
-      "native_generated",
-      "trailing_hard_append",
-      "tokenization_diverged",
-    ];
-
-    /* Renderer + Fireworks model lists are loaded live at runtime
-       (see /renderers and /models in serve.py). The viewer carries
-       no static mappings — pairing renderer ↔ tokenizer ↔ model is
-       documented in training/renderer/verifier/SKILL.md. */
 
     /* ----------------------------------------------------------------- */
     /* Helpers                                                            */
@@ -936,7 +691,7 @@
 
     const FILTER_DIMENSIONS = [
       { key: "provenance",   label: "provenance",   options: ["prompt_hard_append", "native_generated", "trailing_hard_append", "tokenization_diverged"] },
-      { key: "chunk_source", label: "chunk_source", options: ["bos", "header", "output", "stop_overlap", "generation_suffix"] },
+      { key: "chunk_source", label: "chunk_source", options: ["bos", "header", "output", "stop_overlap", "generation_suffix", "conversation"] },
       { key: "trainable",    label: "trainable",    options: ["yes", "no"] },
       { key: "special",      label: "special",      options: ["yes", "no"] },
       { key: "inspect",      label: "inspect",      options: ["flagged", "clean"] },
@@ -966,276 +721,93 @@
     /* Components                                                         */
     /* ----------------------------------------------------------------- */
 
-    function LiveProbeForm({ onArtifact, onError, busy, setBusy }) {
-      const [renderer, setRenderer] = useState("");
-      const [tokenizerModel, setTokenizerModel] = useState("");
-      const [model, setModel] = useState("");
-      const [deploymentId, setDeploymentId] = useState("");
-      const [maxTokens, setMaxTokens] = useState(1024);
-      const [temperature, setTemperature] = useState(0.0);
-      const [trainOnWhat, setTrainOnWhat] = useState("last_assistant_turn");
-      const [messages, setMessages] = useState([
-        { role: "system", content: "Answer with a single integer and nothing else." },
-        { role: "user",   content: "2 + 2 = ?" },
-      ]);
-      const [tools, setTools] = useState("");
-      const [registeredRenderers, setRegisteredRenderers] = useState([]);
-      const [availableModels, setAvailableModels] = useState([]);
-      const [modelsError, setModelsError] = useState(null);
-
-      // /renderers returns [{name, tokenizer_default, registered}, ...]
-      // Build a name→tokenizer lookup so the renderer dropdown can
-      // auto-fill the tokenizer field on change.
-      useEffect(() => {
-        fetch("/renderers")
-          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-          .then((d) => {
-            const list = Array.isArray(d.renderers) ? d.renderers : [];
-            setRegisteredRenderers(list);
-            if (list.length > 0) {
-              setRenderer((cur) => {
-                const next = cur || list[0].name;
-                const found = list.find((x) => x.name === next);
-                if (found && found.tokenizer_default) setTokenizerModel((t) => t || found.tokenizer_default);
-                return next;
-              });
-            }
-          })
-          .catch((e) => console.warn("could not load /renderers:", e));
-
-        fetch("/models")
-          .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
-          .then(({ ok, body }) => {
-            if (!ok || body.error) {
-              setModelsError(body.error || "/models failed");
-              return;
-            }
-            setAvailableModels(Array.isArray(body.models) ? body.models : []);
-          })
-          .catch((e) => setModelsError(e.message));
-      }, []);
-
-      const updateMessage = (i, patch) =>
-        setMessages((prev) => prev.map((m, idx) => (idx === i ? { ...m, ...patch } : m)));
-      const removeMessage = (i) =>
-        setMessages((prev) => prev.filter((_, idx) => idx !== i));
-      const addMessage = (role) =>
-        setMessages((prev) => [...prev, { role, content: "" }]);
-
-      const dispatchPreview = useMemo(() => {
-        if (model && deploymentId) return "ERROR: pass at most one of `model` and `deployment_id`";
-        if (deploymentId) return `mode=deployment  →  accounts/<account>/deployments/${deploymentId}`;
-        if (model) return `mode=explicit  →  ${model}`;
-        return "ERROR: pick a model from the dropdown or enter a deployment_id";
-      }, [model, deploymentId]);
-
-      const onSubmit = useCallback(async (e) => {
-        e.preventDefault();
-        if (busy) return;
-
-        let toolsParsed = [];
-        if (tools.trim()) {
-          try {
-            toolsParsed = JSON.parse(tools);
-            if (!Array.isArray(toolsParsed)) throw new Error("must be a JSON array");
-          } catch (err) {
-            onError(`Tools field is not a JSON array: ${err.message}`);
-            return;
-          }
-        }
-
-        setBusy(true);
-        try {
-          const res = await fetch("/probe", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              renderer,
-              tokenizer_model: tokenizerModel,
-              model: model.trim() || null,
-              deployment_id: deploymentId.trim() || null,
-              messages,
-              tools: toolsParsed,
-              max_tokens: Number(maxTokens),
-              temperature: Number(temperature),
-              train_on_what: trainOnWhat,
-            }),
-          });
-          const data = await res.json();
-          if (!res.ok || data.error) {
-            onError(data.error || `HTTP ${res.status}`);
-            return;
-          }
-          onArtifact(data, "live");
-        } catch (err) {
-          onError(`fetch failed: ${err.message}`);
-        } finally {
-          setBusy(false);
-        }
-      }, [
-        busy, renderer, tokenizerModel, model, deploymentId,
-        messages, tools, maxTokens, temperature, trainOnWhat,
-        onArtifact, onError, setBusy,
-      ]);
-
-      return (
-        <details open>
-          <summary>Live probe — form input</summary>
-          <form onSubmit={onSubmit} className="form-grid">
-            <label>renderer
-              <select value={renderer} onChange={(e) => {
-                const next = e.target.value;
-                setRenderer(next);
-                const found = registeredRenderers.find((x) => x.name === next);
-                if (found && found.tokenizer_default) setTokenizerModel(found.tokenizer_default);
-              }}>
-                {registeredRenderers.length === 0 && <option value="">(loading…)</option>}
-                {registeredRenderers.map((r) => (
-                  <option key={r.name} value={r.name}>
-                    {r.name}{r.registered ? "" : "  ·  not registered"}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>tokenizer_model (HuggingFace id)
-              <input value={tokenizerModel} placeholder="e.g. zai-org/GLM-5.1" onChange={(e) => setTokenizerModel(e.target.value)} />
-            </label>
-            <label>model (Fireworks serverless)
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                disabled={!!deploymentId}
-              >
-                <option value="">— pick one —</option>
-                {availableModels.map((m) => (
-                  <option key={m.name} value={m.name}>{m.name}</option>
-                ))}
-              </select>
-              {modelsError && (
-                <span style={{ color: "var(--fail-fg)", fontSize: 11, fontWeight: 400 }}>
-                  /models error: {modelsError}
-                </span>
-              )}
-              {model && (
-                <span className="billing-note">
-                  ⚠ Serverless probes hit the live API and are billed at this
-                  model's standard per-token rate.
-                </span>
-              )}
-            </label>
-            <label>deployment_id (your RL deployment — recommended)
-              <input
-                value={deploymentId}
-                placeholder="e.g. my-glm5-probe"
-                onChange={(e) => setDeploymentId(e.target.value)}
-                disabled={!!model}
-              />
-            </label>
-            <label>max_tokens
-              <input type="number" min="1" step="1" value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} />
-            </label>
-            <label>temperature
-              <input type="number" min="0" max="2" step="0.05" value={temperature} onChange={(e) => setTemperature(e.target.value)} />
-            </label>
-            <label>train_on_what
-              <select value={trainOnWhat} onChange={(e) => setTrainOnWhat(e.target.value)}>
-                <option value="last_assistant_message">last_assistant_message</option>
-                <option value="last_assistant_turn">last_assistant_turn</option>
-                <option value="all_assistant_messages">all_assistant_messages</option>
-                <option value="all_messages">all_messages</option>
-                <option value="all_tokens">all_tokens</option>
-              </select>
-            </label>
-            <label className="span-2">tools (optional, JSON array)
-              <textarea rows="2" value={tools} onChange={(e) => setTools(e.target.value)} placeholder="[]" />
-            </label>
-
-            <div className="dispatch-preview">
-              <span className="label">Dispatch</span>
-              <code>{dispatchPreview}</code>
-            </div>
-            <div className="api-flags-note">
-              The probe always sends <code>echo=true</code>, <code>raw_output=true</code>,
-              {" "}<code>return_token_ids=true</code> to the gateway. They are required for
-              token-id ground truth and are recorded verbatim in the artifact.
-            </div>
-
-            <fieldset className="span-2">
-              <legend>messages</legend>
-              {messages.map((m, i) => (
-                <div key={i} className="msg-row">
-                  <select value={m.role} onChange={(e) => updateMessage(i, { role: e.target.value })}>
-                    <option value="system">system</option>
-                    <option value="user">user</option>
-                    <option value="assistant">assistant</option>
-                    <option value="tool">tool</option>
-                  </select>
-                  <textarea
-                    rows="2"
-                    value={m.content}
-                    onChange={(e) => updateMessage(i, { content: e.target.value })}
-                  />
-                  <button type="button" className="btn-icon" onClick={() => removeMessage(i)} title="remove this message">×</button>
-                </div>
-              ))}
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                <button type="button" onClick={() => addMessage("user")}>+ user</button>
-                <button type="button" onClick={() => addMessage("assistant")}>+ assistant</button>
-                <button type="button" onClick={() => addMessage("system")}>+ system</button>
-                <button type="button" onClick={() => addMessage("tool")}>+ tool</button>
-              </div>
-            </fieldset>
-
-            <div className="form-actions">
-              <button type="submit" disabled={busy} className="btn-primary">
-                {busy ? "Running probe…" : "Run probe"}
-              </button>
-              <span className="hint">
-                POST <code>/probe</code> on the local server, runs <code>run_probe</code>,
-                returns the same JSON the CLI writes.
-              </span>
-            </div>
-          </form>
-        </details>
-      );
+    function displayInput(value) {
+      if (typeof value === "string" && value.startsWith("data:image/")) {
+        return `<inline image data URL: ${value.length} chars>`;
+      }
+      if (Array.isArray(value)) return value.map(displayInput);
+      if (value && typeof value === "object") {
+        return Object.fromEntries(
+          Object.entries(value).map(([key, item]) => [key, displayInput(item)])
+        );
+      }
+      return value;
     }
 
-    function FilePicker({ onLoad }) {
-      const [fileName, setFileName] = useState(null);
+    function flattenInput(catalog) {
+      const rows = [];
+      for (const profile of catalog?.profiles || []) {
+        for (const example of profile.examples || []) {
+          const overrides = Object.fromEntries(
+            Object.entries(example).filter(
+              ([key]) => !["id", "label", "description"].includes(key)
+            )
+          );
+          rows.push({
+            key: `${profile.id}/${example.id}`,
+            profileId: profile.id,
+            profileLabel: profile.label,
+            exampleId: example.id,
+            exampleLabel: example.label,
+            description: example.description || "",
+            request: { ...(profile.defaults || {}), ...overrides },
+          });
+        }
+      }
+      return rows;
+    }
 
-      const consume = useCallback((file) => {
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          try {
-            const artifact = JSON.parse(ev.target.result);
-            onLoad(artifact, file.name);
-            setFileName(file.name);
-          } catch (err) {
-            alert("Could not parse JSON: " + err.message);
-          }
-        };
-        reader.readAsText(file);
-      }, [onLoad]);
+    async function fetchInputCatalog() {
+      const response = await fetch("/input", { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok || body.error) {
+        throw new Error(body.error || "input load failed");
+      }
+      return body;
+    }
 
-      const handleChange = useCallback((e) => {
-        consume(e.target.files && e.target.files[0]);
-      }, [consume]);
-
-      const handleDrop = useCallback((e) => {
-        e.preventDefault();
-        consume(e.dataTransfer.files && e.dataTransfer.files[0]);
-      }, [consume]);
-
+    function InputSuite({ rows, runs, busy, onRunAll }) {
+      const completed = rows.filter((row) => runs[row.key]?.status === "complete").length;
+      const failed = rows.filter((row) => runs[row.key]?.status === "failed").length;
       return (
-        <div className="file-row" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop}>
-          <label className="file-button">
-            ▸ Choose JSON
-            <input type="file" accept=".json,application/json" onChange={handleChange} />
-          </label>
-          {fileName && <span className="file-name">{fileName}</span>}
-          <span className="hint">…or drop a probe JSON onto this row.</span>
-        </div>
+        <section>
+          <div className="cases-bar">
+            <span className="cases-count">
+              {rows.length} JSON input case{rows.length === 1 ? "" : "s"}
+              {busy || completed || failed
+                ? ` · ${completed} complete · ${failed} failed`
+                : ""}
+            </span>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={onRunAll}
+              disabled={busy || rows.length === 0}
+            >
+              {busy ? "Running sequentially…" : `Run all ${rows.length} sequentially`}
+            </button>
+          </div>
+          <p className="preset-description">
+            Settings and prompts below come only from the server's validated JSON
+            input. Starting a run clears every prior response and calls the deployment
+            once per case, in this order.
+          </p>
+          {rows.map((row, index) => {
+            const run = runs[row.key] || { status: "pending" };
+            return (
+              <details className="case" key={row.key} open={index < 3}>
+                <summary>
+                  #{index + 1} · {row.profileLabel} · {row.exampleLabel} · {run.status}
+                </summary>
+                {row.description && <p className="preset-description">{row.description}</p>}
+                {run.error && <div className="error-banner">{run.error}</div>}
+                <pre className="json-editor">
+                  {JSON.stringify(displayInput(row.request), null, 2)}
+                </pre>
+              </details>
+            );
+          })}
+        </section>
       );
     }
 
@@ -1244,20 +816,36 @@
       const msgs = artifact?.input?.messages || [];
       let snippet = "";
       for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === "user" && typeof msgs[i].content === "string") {
-          snippet = msgs[i].content.trim();
+        if (msgs[i].role === "user") {
+          const content = msgs[i].content;
+          if (typeof content === "string") {
+            snippet = content.trim();
+          } else if (Array.isArray(content)) {
+            const text = content
+              .filter((part) => part?.type === "text" && typeof part.text === "string")
+              .map((part) => part.text)
+              .join(" ");
+            const imageCount = content.filter(
+              (part) => part?.type === "image" || part?.type === "image_url"
+            ).length;
+            snippet = `${imageCount ? `[${imageCount} image${imageCount === 1 ? "" : "s"}] ` : ""}${text}`.trim();
+          }
+        }
+        if (snippet) {
           break;
         }
       }
-      if (!snippet && msgs.length) snippet = String(msgs[0].content || "").trim();
+      if (!snippet && msgs.length) {
+        snippet = typeof msgs[0].content === "string"
+          ? msgs[0].content.trim()
+          : JSON.stringify(msgs[0].content || "");
+      }
       if (snippet.length > 80) snippet = snippet.slice(0, 77) + "…";
       return { renderer, snippet };
     }
 
     function RendererArgs({ artifact }) {
       const r = artifact.renderer || {};
-      const cfg = r.config || {};
-      const cfgKeys = Object.keys(cfg);
       return (
         <details>
           <summary>Renderer args</summary>
@@ -1265,14 +853,6 @@
             <tbody>
               <tr><td>name</td><td><code>{r.name}</code></td></tr>
               <tr><td>train_on_what</td><td><code>{r.train_on_what}</code></td></tr>
-              {cfgKeys.length === 0 ? (
-                <tr><td>config</td><td style={{ color: "var(--fg-dim)" }}>(default — no overrides)</td></tr>
-              ) : cfgKeys.map((k) => (
-                <tr key={k}>
-                  <td>config.{k}</td>
-                  <td><code>{JSON.stringify(cfg[k])}</code></td>
-                </tr>
-              ))}
             </tbody>
           </table>
         </details>
@@ -1339,7 +919,10 @@
         "tokenization_diverged_count",
         "echo_prompt_stripped",
         "parse_response_ok",
+        "parse_response_termination",
+        "sft_roundtrip_available",
         "structural_walk_token_match",
+        "structural_attribution",
         "completion_token_count",
         "completion_stop_reason",
       ];
@@ -1366,7 +949,7 @@
       );
     }
 
-    function CaseView({ index, caseObj, onDelete, filters, rules }) {
+    function CaseView({ index, caseObj, filters, rules }) {
       const { artifact } = caseObj;
       const { renderer, snippet } = caseLabel(artifact);
       return (
@@ -1377,9 +960,6 @@
               <span className="case-name">{renderer}</span>
               <span className="case-snippet" title={snippet}>{snippet || "(no user message)"}</span>
             </h3>
-            <button type="button" className="btn-icon-danger" onClick={onDelete} title="Delete this case">
-              × delete
-            </button>
           </header>
           <TokenStream artifact={artifact} filters={filters} rules={rules} />
           <Sanity sanity={artifact.sanity} />
@@ -1559,56 +1139,91 @@
     }
 
     function App() {
-      // Batch-native: each "Run probe" or file-drop appends a case.
-      // Filters (top) and inspection rules (YAML) are shared across cases.
-      const [cases, setCases] = useState([]);
+      const [catalog, setCatalog] = useState(null);
+      const [runs, setRuns] = useState({});
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState(null);
       const [filters, setFilters] = useState(makeDefaultFilters);
       const [rules, setRules] = useState([]);
 
-      // Inspection rules live in inspect_rules.yaml on the server.
-      // Fetch once on mount; the server re-reads the file per request
-      // so editing the YAML and refreshing the page picks up changes.
       useEffect(() => {
         fetch("/inspect_rules")
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
           .then((d) => setRules(Array.isArray(d.rules) ? d.rules : []))
           .catch((e) => console.warn("could not load inspect_rules:", e));
+
+        fetchInputCatalog()
+          .then(setCatalog)
+          .catch((e) => setError(`Could not load verifier input JSON: ${e.message}`));
       }, []);
 
-      // If the dev server was started with --session-file, /session
-      // returns a probe-batch with the flagged cases. Auto-seed them
-      // so the page comes up showing exactly what needs review.
-      useEffect(() => {
-        fetch("/session")
-          .then((r) => (r.ok ? r.json() : null))
-          .then((d) => {
-            if (!d || d.kind !== "probe-batch" || !Array.isArray(d.cases)) return;
-            if (d.cases.length === 0) return;
-            setCases(
-              d.cases.map((c, i) => ({
-                id: `seed-${i}-${Math.random().toString(36).slice(2, 6)}`,
-                artifact: c.artifact,
-                source: c.name || `seed-${i + 1}`,
-              }))
-            );
-          })
-          .catch(() => { /* no session is fine */ });
-      }, []);
+      const inputRows = useMemo(() => flattenInput(catalog), [catalog]);
+      const completedCases = useMemo(
+        () => inputRows
+          .map((row) => runs[row.key])
+          .filter((run) => run?.status === "complete" && run.artifact)
+          .map((run) => ({ id: run.key, artifact: run.artifact })),
+        [inputRows, runs],
+      );
 
-      const addCase = useCallback((a, source) => {
-        const id = `c-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        setCases((prev) => [...prev, { id, artifact: a, source }]);
+      const runAll = useCallback(async () => {
+        if (busy || inputRows.length === 0) return;
+        setBusy(true);
         setError(null);
-      }, []);
-      const removeCase = useCallback((id) => {
-        setCases((prev) => prev.filter((c) => c.id !== id));
-      }, []);
-      const clearCases = useCallback(() => setCases([]), []);
-      const handleError = useCallback((msg) => {
-        setError(msg);
-      }, []);
+
+        try {
+          const freshCatalog = await fetchInputCatalog();
+          const freshRows = flattenInput(freshCatalog);
+          setCatalog(freshCatalog);
+          setRuns(Object.fromEntries(
+            freshRows.map((row) => [row.key, { key: row.key, status: "pending" }])
+          ));
+
+          for (const row of freshRows) {
+            setRuns((previous) => ({
+              ...previous,
+              [row.key]: { key: row.key, status: "running" },
+            }));
+            try {
+              const response = await fetch("/run-case", {
+                method: "POST",
+                cache: "no-store",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  profile_id: row.profileId,
+                  example_id: row.exampleId,
+                }),
+              });
+              const body = await response.json();
+              if (!response.ok || body.error) {
+                throw new Error(body.error || `HTTP ${response.status}`);
+              }
+              setRuns((previous) => ({
+                ...previous,
+                [row.key]: {
+                  key: row.key,
+                  status: "complete",
+                  artifact: body.artifact,
+                },
+              }));
+            } catch (runError) {
+              setRuns((previous) => ({
+                ...previous,
+                [row.key]: {
+                  key: row.key,
+                  status: "failed",
+                  error: runError.message,
+                },
+              }));
+            }
+          }
+        } catch (loadError) {
+          setRuns({});
+          setError(`Could not reload verifier input JSON: ${loadError.message}`);
+        } finally {
+          setBusy(false);
+        }
+      }, [busy, inputRows]);
 
       return (
         <>
@@ -1616,62 +1231,47 @@
             Renderer <em>Verifier</em>
           </h1>
           <p className="banner-sub">
-            Render a chat locally, complete on a deployed model, and audit every
-            token side by side. Each <strong>Run probe</strong> or file-drop
-            appends a new case below; cases stay until you delete them.
+            Load one JSON input suite, execute every deployment request
+            sequentially, and inspect only the fresh responses from that run.
           </p>
           <hr className="banner-rule" />
 
           <aside className="advisory">
-            <span className="label">Heads up</span>
-            Serverless models may render and tokenize differently from your
-            actual RL deployment — different runtimes, optimization passes,
-            sometimes different chat templates. <strong>Probe a real
-            deployment when you can</strong>: enter its id in the{" "}
-            <code>deployment_id</code> field below. Treat serverless probes
-            as approximations of how the deployed model behaves.
+            <span className="label">Fresh evidence only</span>
+            The browser cannot load saved probe outputs. A run clears previous
+            responses, re-reads the server-side JSON input, and requests the
+            configured deployment one case at a time.
           </aside>
 
-          <LiveProbeForm
-            onArtifact={addCase}
-            onError={handleError}
+          <InputSuite
+            rows={inputRows}
+            runs={runs}
             busy={busy}
-            setBusy={setBusy}
+            onRunAll={runAll}
           />
-
-          <details>
-            <summary>Or load an existing probe JSON artifact</summary>
-            <FilePicker onLoad={(a, n) => addCase(a, n)} />
-          </details>
 
           {error && <div className="error-banner" style={{ marginTop: 24 }}>{error}</div>}
 
-          {cases.length === 0 ? (
+          {completedCases.length === 0 ? (
             <div className="empty-state" style={{ marginTop: 32 }}>
-              Type a few messages above and click <strong>Run probe</strong>,
-              or drop a JSON artifact produced by{" "}
-              <code>python -m training.renderer.verifier render</code>. Run more probes
-              and they'll stack here for side-by-side comparison.
+              Review the JSON inputs above, then run the suite. Fresh results
+              will appear here as each sequential deployment request completes.
             </div>
           ) : (
             <>
               <div className="cases-bar">
                 <span className="cases-count">
-                  {cases.length} probe{cases.length !== 1 ? "s" : ""} in this session
+                  {completedCases.length} fresh response{completedCases.length !== 1 ? "s" : ""}
                 </span>
-                <button type="button" className="btn-clear" onClick={clearCases}>
-                  Clear all
-                </button>
               </div>
               <h2>Token stream</h2>
               <Legend />
               <Filters filters={filters} setFilters={setFilters} />
-              {cases.map((c, i) => (
+              {completedCases.map((c, i) => (
                 <CaseView
                   key={c.id}
                   index={i + 1}
                   caseObj={c}
-                  onDelete={() => removeCase(c.id)}
                   filters={filters}
                   rules={rules}
                 />
@@ -1686,8 +1286,8 @@
             ids appear in <code>tokenizer.special_tokens</code>. Hover any
             token to see its full audit row + the matching rule reasons in
             the detail panel below the stream. Edit the YAML and reload to
-            change which combinations are flagged. Live form posts to{" "}
-            <code>/probe</code> on this server
+            change which combinations are flagged. Sequential execution posts
+            JSON case identifiers to <code>/run-case</code> on this server
             (<code>python -m training.renderer.verifier.serve</code>).
           </div>
         </>

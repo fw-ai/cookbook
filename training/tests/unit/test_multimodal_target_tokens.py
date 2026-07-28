@@ -1,13 +1,9 @@
-"""Tests that multimodal datum building excludes image placeholders from target_tokens.
+"""Tests for the canonical expanded multimodal datum contract.
 
-The RLOR server uses ``target_tokens`` to gather logprobs at each position.
-If ``target_tokens`` contains zeros at image-chunk positions, the server
-interprets them as real token IDs and gathers logprobs for token-0, which
-corrupts the loss computation (producing CE loss ~20 instead of ~1).
-
-The fix: ``_build_multimodal_datum`` strips image positions from
-``target_tokens`` so only real text token IDs are sent.  These tests verify
-that invariant for several multimodal input shapes.
+Tinker represents each image position with a zero wire placeholder in
+``target_tokens``. The shifted model input, targets, and weights therefore all
+have the same expanded length. The trainer resolves placeholders to its
+model-specific image token ID and keeps image positions masked out of loss.
 """
 
 from __future__ import annotations
@@ -20,7 +16,6 @@ from training.utils.supervised import (
     build_datum_from_model_input_and_weights,
     render_messages_to_datum,
 )
-from tinker_cookbook.renderers import TrainOnWhat
 
 
 def _make_multimodal_model_input(
@@ -42,8 +37,8 @@ def _make_multimodal_model_input(
     )
 
 
-class TestMultimodalTargetTokensExcludeImageZeros:
-    """Core invariant: target_tokens must contain zero placeholder zeros."""
+class TestMultimodalTargetTokensUseExpandedCoordinates:
+    """Targets include image wire placeholders in sequence order."""
 
     def test_simple_image_between_text(self):
         model_input = _make_multimodal_model_input(
@@ -56,13 +51,11 @@ class TestMultimodalTargetTokensExcludeImageZeros:
         rendered = build_datum_from_model_input_and_weights(model_input, weights)
         targets = list(rendered.datum.loss_fn_inputs["target_tokens"].data)
 
-        assert 0 not in targets, (
-            f"target_tokens must not contain image placeholder zeros, got {targets}"
-        )
-        assert targets == [11, 12, 13]
+        assert targets == [11, 0, 0, 0, 12, 13]
+        assert len(targets) == rendered.datum.model_input.length
 
     def test_large_image_chunk(self):
-        """192 image tokens (typical Qwen3-VL) must not leak into target_tokens."""
+        """A typical Qwen3-VL image span stays explicit in target coordinates."""
         model_input = _make_multimodal_model_input(
             prefix_tokens=[1, 2, 3],
             image_expected_tokens=192,
@@ -74,11 +67,11 @@ class TestMultimodalTargetTokensExcludeImageZeros:
         rendered = build_datum_from_model_input_and_weights(model_input, weights)
         targets = list(rendered.datum.loss_fn_inputs["target_tokens"].data)
 
-        assert 0 not in targets
-        assert targets == [2, 3, 4, 5, 6, 7]
+        assert targets == [2, 3] + [0] * 192 + [4, 5, 6, 7]
+        assert len(targets) == n - 1
 
     def test_multiple_images(self):
-        """Two image chunks — neither should produce zeros in target_tokens."""
+        """Two image chunks retain both placeholder spans."""
         model_input = tinker.ModelInput(
             chunks=[
                 tinker.EncodedTextChunk(tokens=[10, 11]),
@@ -98,11 +91,11 @@ class TestMultimodalTargetTokensExcludeImageZeros:
         rendered = build_datum_from_model_input_and_weights(model_input, weights)
         targets = list(rendered.datum.loss_fn_inputs["target_tokens"].data)
 
-        assert 0 not in targets
-        assert targets == [11, 12, 13, 14]
+        assert targets == [11, 0, 0, 12, 0, 0, 13, 14]
+        assert len(targets) == total - 1
 
     def test_all_text_tokens_preserved_in_order(self):
-        """Text tokens from all chunks appear in target_tokens in sequence order."""
+        """Text and image placeholders appear in sequence order."""
         model_input = _make_multimodal_model_input(
             prefix_tokens=[100, 200],
             image_expected_tokens=5,
@@ -113,7 +106,7 @@ class TestMultimodalTargetTokensExcludeImageZeros:
         rendered = build_datum_from_model_input_and_weights(model_input, weights)
         targets = list(rendered.datum.loss_fn_inputs["target_tokens"].data)
 
-        assert targets == [200, 300, 400, 500]
+        assert targets == [200] + [0] * 5 + [300, 400, 500]
 
 
 class TestMultimodalWeightsAlignment:
@@ -181,9 +174,61 @@ class TestMultimodalModelInputPreservesChunks:
         rendered = build_datum_from_model_input_and_weights(model_input, weights)
         assert rendered.datum.model_input.length == model_input.length - 1
 
+    def test_max_seq_len_truncates_input_targets_and_weights_together(self):
+        model_input = _make_multimodal_model_input(
+            prefix_tokens=[10, 11],
+            image_expected_tokens=3,
+            suffix_tokens=[12, 13],
+        )
+        weights = [0.0] * 5 + [1.0] * 2
+
+        rendered = build_datum_from_model_input_and_weights(
+            model_input,
+            weights,
+            max_seq_len=6,
+        )
+        targets = list(rendered.datum.loss_fn_inputs["target_tokens"].data)
+        shifted_weights = list(rendered.datum.loss_fn_inputs["weights"].data)
+
+        assert rendered.datum.model_input.length == 5
+        assert targets == [11, 0, 0, 0, 12]
+        assert shifted_weights == [0.0, 0.0, 0.0, 0.0, 1.0]
+        assert len(targets) == len(shifted_weights)
+
+    def test_max_seq_len_never_partially_truncates_an_image(self):
+        model_input = _make_multimodal_model_input(
+            prefix_tokens=[10, 11],
+            image_expected_tokens=4,
+            suffix_tokens=[12, 13, 14],
+        )
+        weights = [0.0] * model_input.length
+
+        rendered = build_datum_from_model_input_and_weights(
+            model_input,
+            weights,
+            max_seq_len=4,
+        )
+
+        assert rendered.datum.model_input.to_ints() == [10]
+        assert list(rendered.datum.loss_fn_inputs["target_tokens"].data) == [11]
+        assert list(rendered.datum.loss_fn_inputs["weights"].data) == [0.0]
+
+    def test_rejects_misaligned_unshifted_weights(self):
+        model_input = _make_multimodal_model_input(
+            prefix_tokens=[10, 11],
+            image_expected_tokens=3,
+            suffix_tokens=[12, 13],
+        )
+
+        with pytest.raises(ValueError, match="model_input/weights length mismatch"):
+            build_datum_from_model_input_and_weights(
+                model_input,
+                [0.0] * (model_input.length - 1),
+            )
+
 
 class TestRendererIntegrationWithMultimodalDatum:
-    """Verify the full render_messages_to_datum path excludes image zeros."""
+    """Verify renderer output uses expanded target coordinates."""
 
     def test_via_stub_renderer(self):
         """A renderer returning ModelInput with images routes through _build_multimodal_datum."""
@@ -210,8 +255,9 @@ class TestRendererIntegrationWithMultimodalDatum:
         )
 
         targets = list(rendered.datum.loss_fn_inputs["target_tokens"].data)
-        assert 0 not in targets
-        assert targets == [11, 12, 13, 14]
+        shifted_weights = list(rendered.datum.loss_fn_inputs["weights"].data)
+        assert targets == [11, 0, 0, 0, 0, 12, 13, 14]
+        assert len(targets) == len(shifted_weights)
 
 
 class TestTextOnlyPathUnchanged:

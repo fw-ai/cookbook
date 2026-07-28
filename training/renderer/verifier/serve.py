@@ -1,38 +1,16 @@
-"""Local dev HTTP server: live UI for the renderer probe.
+"""Local live UI for sequential, JSON-driven renderer verification.
 
-Serves ``training/renderer/verifier/viewer/index.html`` plus a single POST
-``/probe`` endpoint that takes the form data the React page submits and
-runs ``run_probe`` on the server. Purely stdlib — no Flask / FastAPI
-dependency. Single-threaded by design; one probe at a time is fine for
-interactive use and keeps state simple.
+The browser has one execution path:
 
-Usage::
+1. ``GET /input`` loads a validated JSON catalog containing every setting,
+   renderer option, and prompt.
+2. The browser reviews that input and calls ``POST /run-case`` sequentially.
+3. Each response is a fresh probe result rendered only in browser memory.
 
-    FIREWORKS_API_KEY=... python -m training.renderer.verifier.serve --port 8765
-    open http://localhost:8765/
-
-The viewer hits ``/probe`` with a JSON body shaped like::
-
-    {
-      "renderer": "glm5",
-      "tokenizer_model": "zai-org/GLM-5.1",
-      "deployment_id": null,        // mutually exclusive with "model"
-      "model": null,                // explicit override; null = serverless default
-      "messages": [{"role": "system", "content": "..."},
-                   {"role": "user", "content": "..."}],
-      "tools": [],
-      "max_tokens": 1024,
-      "temperature": 0.0,
-      "train_on_what": "last_assistant_turn"
-    }
-
-…and gets back the same probe-artifact JSON the CLI writes (with a
-``deployment.mode`` of "deployment" / "explicit"), or
-``{"error": "...", "type": "..."}`` on failure.
-
-Tokenizers and the Fireworks client are cached at module level so
-repeated probes from the same browser session don't re-pay the
-HuggingFace + auth cost on every keystroke.
+The server never accepts or serves saved output artifacts. HTTP responses use
+``Cache-Control: no-store``. Tokenizer, image-processor, and SDK client objects
+remain process-resident because they are immutable execution dependencies, not
+cached deployment results.
 """
 
 from __future__ import annotations
@@ -40,23 +18,29 @@ from __future__ import annotations
 import argparse
 import functools
 import http.server
+import ipaddress
 import json
 import logging
 import os
 import threading
-import traceback
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from tinker_cookbook.renderers.base import TrainOnWhat
 
+from training.renderer.verifier.utils.inspect_rules import (
+    load_rules as _load_inspect_rules,
+)
+from training.renderer.verifier.utils.presets import (
+    load_preset_catalog,
+    resolve_preset_case,
+)
 from training.renderer.verifier.utils.probe import (
     DispatchError,
     resolve_dispatch,
     run_probe,
 )
-from training.renderer.verifier.utils.inspect_rules import load_rules as _load_inspect_rules
 
 logger = logging.getLogger(__name__)
 
@@ -65,68 +49,10 @@ INDEX_PATH = VIEWER_DIR / "index.html"
 
 _CLIENT_LOCK = threading.Lock()
 _CLIENT = None
+_INPUT_FILE: Path | None = None
 
-# When ``--session-file`` is passed, the GUI fetches /session on mount
-# and auto-seeds cases from the file (typically a triage output).
-_SESSION_FILE: Path | None = None
-
-# Force the cookbook's local renderers to register at server start.
-# Without this, tinker_cookbook's custom-renderer registry is empty
-# until something else triggers the import.
-import training.renderer  # noqa: F401, E402 — side-effect: register_renderer calls
-
-# Static catalog of (renderer name → suggested HF tokenizer id) for the
-# UI's auto-fill. Covers:
-#   - ``tinker_cookbook`` built-ins (hardcoded in ``get_renderer``'s
-#     elif ladder, NOT in ``_CUSTOM_RENDERER_REGISTRY`` — there's no
-#     iterable accessor for them).
-#   - cookbook-local renderers (registered when ``training.renderer``
-#     is imported).
-#   - Anticipated future renderers that share the cookbook's naming
-#     convention (e.g. kimi_k26, qwen3_6) so the dropdown surfaces
-#     them; selecting one before its renderer module exists yields a
-#     clear "renderer not registered" error from get_renderer().
-#
-# Why static: the Fireworks Model proto exposes ``huggingface_files``
-# (uploaded blobs) but not a canonical HF repo id, and there is no
-# registry-side metadata linking a renderer to its tokenizer. Edit
-# this dict when adding a renderer; the canonical training skill's
-# ``references/renderer-verification.md`` is the user-facing guide.
-RENDERER_TOKENIZER_DEFAULTS: dict[str, str | None] = {
-    # tinker_cookbook built-ins (see tinker_cookbook.renderers.get_renderer)
-    "role_colon":                  None,
-    "llama3":                      "meta-llama/Llama-3.3-70B-Instruct",
-    "qwen3":                       "Qwen/Qwen3-8B",
-    "qwen3_vl":                    "Qwen/Qwen3-VL-7B-Instruct",
-    "qwen3_vl_instruct":           "Qwen/Qwen3-VL-7B-Instruct",
-    "qwen3_disable_thinking":      "Qwen/Qwen3-8B",
-    "qwen3_instruct":              "Qwen/Qwen3-8B-Instruct-2507",
-    "qwen3_5":                     "Qwen/Qwen3.5-VL-8B-Instruct",
-    "qwen3_5_disable_thinking":    "Qwen/Qwen3.5-VL-8B-Instruct",
-    "qwen3_6":                     "Qwen/Qwen3.6-VL-8B-Instruct",
-    "qwen3_6_disable_thinking":    "Qwen/Qwen3.6-VL-8B-Instruct",
-    "deepseekv3":                  "deepseek-ai/DeepSeek-V3",
-    "deepseekv3_disable_thinking": "deepseek-ai/DeepSeek-V3",
-    "deepseekv3_thinking":         "deepseek-ai/DeepSeek-V3",
-    "kimi_k2":                     "moonshotai/Kimi-K2-Instruct",
-    "kimi_k25":                    "moonshotai/Kimi-K2.5",
-    "kimi_k25_disable_thinking":   "moonshotai/Kimi-K2.5",
-    "kimi_k26":                    "moonshotai/Kimi-K2.6",
-    "kimi_k26_disable_thinking":   "moonshotai/Kimi-K2.6",
-    "kimi_k27_code":               "moonshotai/Kimi-K2.7-Code",
-    "nemotron3":                   "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
-    "nemotron3_disable_thinking":  "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
-    "gpt_oss_no_sysprompt":        "openai/gpt-oss-120b",
-    "gpt_oss_low_reasoning":       "openai/gpt-oss-120b",
-    "gpt_oss_medium_reasoning":    "openai/gpt-oss-120b",
-    "gpt_oss_high_reasoning":      "openai/gpt-oss-120b",
-    # cookbook-local (training/renderer/)
-    "gemma4":      "google/gemma-4-E2B-it",
-    "glm5":        "zai-org/GLM-5.1",
-    "glm_moe_dsa":      "zai-org/GLM-5.2",
-    "minimax_m2":  "MiniMaxAI/MiniMax-M2",
-    "nemotron":    "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
-}
+# Register cookbook-local renderers at server start.
+import training.renderer  # noqa: F401, E402
 
 
 @functools.lru_cache(maxsize=8)
@@ -136,17 +62,50 @@ def _tokenizer(name: str):
     return load_tokenizer(name)
 
 
+@functools.lru_cache(maxsize=8)
+def _image_processor(name: str):
+    from training.renderer.verifier.utils.tokenizer import (  # noqa: PLC0415
+        load_image_processor,
+    )
+
+    return load_image_processor(name)
+
+
+def _is_loopback_url(value: str | None) -> bool:
+    if not value:
+        return False
+    hostname = urlparse(value).hostname
+    if hostname == "localhost":
+        return True
+    try:
+        return bool(hostname and ipaddress.ip_address(hostname).is_loopback)
+    except ValueError:
+        return False
+
+
+def _sdk_base_url(value: str | None) -> str | None:
+    """Remove a trailing ``/v1`` for the Fireworks SDK on loopback servers."""
+    if not value or not _is_loopback_url(value):
+        return value
+    parsed = urlparse(value)
+    if parsed.path.rstrip("/") != "/v1":
+        return value
+    return parsed._replace(path="", params="", query="", fragment="").geturl()
+
+
 def _client(api_key: str | None, base_url: str | None):
-    """Single Fireworks client per process (the SDK is thread-safe enough
-    for our single-threaded handler)."""
+    """Return one process-local SDK client; no completion results are cached."""
     global _CLIENT
     with _CLIENT_LOCK:
         if _CLIENT is not None:
             return _CLIENT
+        base_url = _sdk_base_url(base_url or os.environ.get("FIREWORKS_BASE_URL"))
         api_key = api_key or os.environ.get("FIREWORKS_API_KEY")
+        if not api_key and _is_loopback_url(base_url):
+            api_key = "local-no-auth"
         if not api_key:
             raise RuntimeError("FIREWORKS_API_KEY not set")
-        base_url = base_url or os.environ.get("FIREWORKS_BASE_URL")
+
         from fireworks import Fireworks  # type: ignore[import-not-found]  # noqa: PLC0415
 
         kwargs: dict[str, Any] = {"api_key": api_key}
@@ -157,161 +116,118 @@ def _client(api_key: str | None, base_url: str | None):
 
 
 def _run_one_probe(body: dict[str, Any]) -> dict[str, Any]:
-    """Translate the React form payload into ``run_probe`` kwargs."""
-    renderer = body.get("renderer")
-    tokenizer_model = body.get("tokenizer_model")
-    if not renderer or not tokenizer_model:
-        raise ValueError("`renderer` and `tokenizer_model` are required")
+    """Execute one already-validated request resolved from the input JSON."""
+    renderer = str(body["renderer"]).strip()
+    tokenizer_model = str(body["tokenizer_model"]).strip()
 
-    messages = body.get("messages") or []
-    if not isinstance(messages, list) or not messages:
-        raise ValueError("`messages` must be a non-empty list")
+    def optional_string(key: str) -> str | None:
+        value = body.get(key)
+        if value is None or value == "":
+            return None
+        return str(value).strip() or None
 
-    model_str = (body.get("model") or "").strip() or None
-    deployment_id = (body.get("deployment_id") or "").strip() or None
-
+    model_str = optional_string("model")
+    deployment_id = optional_string("deployment_id")
+    image_processor_model = optional_string("image_processor_model")
     model, dispatch_mode = resolve_dispatch(
         renderer_name=renderer,
         model=model_str,
         deployment_id=deployment_id,
     )
-    train_on_what = TrainOnWhat(body.get("train_on_what") or TrainOnWhat.LAST_ASSISTANT_TURN.value)
 
     tokenizer = _tokenizer(tokenizer_model)
-    client = _client(None, None)
-
-    artifact = run_probe(
+    image_processor = (
+        _image_processor(image_processor_model) if image_processor_model else None
+    )
+    return run_probe(
         renderer_name=renderer,
         tokenizer=tokenizer,
-        client=client,
+        image_processor=image_processor,
+        client=_client(None, None),
         model=model,
-        messages=messages,
+        messages=body["messages"],
         tools=body.get("tools") or None,
         max_tokens=int(body.get("max_tokens") or 1024),
         temperature=float(body.get("temperature") or 0.0),
-        train_on_what=train_on_what,
+        train_on_what=TrainOnWhat(
+            body.get("train_on_what") or TrainOnWhat.LAST_ASSISTANT_TURN.value
+        ),
         deployment_id=deployment_id,
         tokenizer_model=tokenizer_model,
-        renderer_config=body.get("renderer_config") or {},
+        image_processor_model=image_processor_model,
+        extra_completion_kwargs=body.get("extra_completion_kwargs") or {},
         dispatch_mode=dispatch_mode,
     )
-    return artifact
+
+
+def _load_input() -> dict[str, Any]:
+    if _INPUT_FILE is None:
+        raise RuntimeError("verifier input file is not configured")
+    # Re-read and re-validate for every request. The input and results are never
+    # cached, so editing the JSON then rerunning always uses the current file.
+    return load_preset_catalog(_INPUT_FILE)
+
+
+def _run_input_case(profile_id: str, example_id: str) -> dict[str, Any]:
+    catalog = _load_input()
+    profile, example, request = resolve_preset_case(
+        catalog,
+        profile_id=profile_id,
+        example_id=example_id,
+    )
+    artifact = _run_one_probe(request)
+    return {
+        "profile_id": profile_id,
+        "profile_label": profile["label"],
+        "example_id": example_id,
+        "example_label": example["label"],
+        "description": example.get("description", ""),
+        "artifact": artifact,
+    }
 
 
 class ProbeHandler(http.server.BaseHTTPRequestHandler):
-    server_version = "RendererVerifier/0.1"
-
-    # -- helpers ---------------------------------------------------------
+    server_version = "RendererVerifier/0.2"
 
     def _send_json(self, payload: Any, *, status: int = 200) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
 
-    def _send_file(self, path: Path, ctype: str) -> None:
+    def _send_file(self, path: Path, content_type: str) -> None:
         data = path.read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib API
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         logger.info("%s %s", self.address_string(), format % args)
 
-    # -- handlers --------------------------------------------------------
-
-    def do_GET(self) -> None:  # noqa: N802 - stdlib API
+    def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path in ("/", "/index.html"):
+        if path in {"/", "/index.html"}:
             return self._send_file(INDEX_PATH, "text/html; charset=utf-8")
         if path == "/health":
             return self._send_json({"ok": True})
-        if path == "/renderers":
-            # Catalog of renderer names with the suggested HF tokenizer
-            # for each. Combines:
-            #   1. tinker_cookbook built-ins (hardcoded in get_renderer's
-            #      elif ladder — not in any registry we can iterate)
-            #   2. The custom registry (cookbook renderers register
-            #      themselves at module import).
-            # We surface the union so the GUI dropdown shows everything.
-            from tinker_cookbook.renderers import (  # noqa: PLC0415
-                get_registered_renderer_names,
-            )
-            registered = set(get_registered_renderer_names())
-            names = sorted(set(RENDERER_TOKENIZER_DEFAULTS.keys()) | registered)
-            payload = [
-                {
-                    "name": name,
-                    "tokenizer_default": RENDERER_TOKENIZER_DEFAULTS.get(name),
-                    "registered": name in registered,
-                }
-                for name in names
-            ]
-            return self._send_json({"renderers": payload})
-        if path == "/models":
-            # Live list of *serverless-eligible* Fireworks models in the
-            # public account. `supports_serverless` is an output-only bool
-            # on the gateway Model proto (see fireworks control_plane
-            # protos/gateway/model.proto) and ListModels supports an
-            # AIP-160 filter, so a server-side filter avoids paginating
-            # through the entire catalogue. Used by the GUI to populate
-            # the model dropdown; not cached so a page refresh picks up
-            # new serverless additions.
+        if path == "/input":
             try:
-                from fireworks import Fireworks  # noqa: PLC0415
-                api_key = os.environ.get("FIREWORKS_API_KEY")
-                if not api_key:
-                    return self._send_json(
-                        {"error": "FIREWORKS_API_KEY not set"}, status=503,
-                    )
-                client = Fireworks(api_key=api_key)
-                models = []
-                for m in client.models.list(
-                    account_id="fireworks",
-                    filter='supports_serverless=true AND kind="HF_BASE_MODEL"',
-                ):
-                    name = getattr(m, "name", None) or getattr(m, "id", None)
-                    if not name:
-                        continue
-                    models.append({
-                        "name": name,
-                        "display_name": getattr(m, "display_name", None),
-                        "kind": getattr(m, "kind", None),
-                        "state": getattr(m, "state", None),
-                    })
-                return self._send_json({"models": models})
-            except Exception as exc:  # noqa: BLE001 — surface to the page
-                logger.exception("models listing failed")
-                return self._send_json(
-                    {"error": str(exc), "type": type(exc).__name__},
-                    status=500,
-                )
-        if path == "/inspect_rules":
-            # Re-read on every request so the user can edit the YAML
-            # without restarting the server. Trivially cheap; it's a
-            # tiny file and only fetched once per page load.
-            try:
-                rules = _load_inspect_rules()
+                return self._send_json(_load_input())
             except Exception as exc:  # noqa: BLE001
                 return self._send_json(
                     {"error": str(exc), "type": type(exc).__name__},
                     status=500,
                 )
-            return self._send_json({"rules": rules})
-        if path == "/session":
-            # Surfaces the triage session file (if any) so the GUI can
-            # auto-seed flagged cases on mount. Re-reads each request.
-            if _SESSION_FILE is None or not _SESSION_FILE.exists():
-                return self._send_json({"kind": "probe-batch", "cases": []})
+        if path == "/inspect_rules":
             try:
-                with open(_SESSION_FILE, "r", encoding="utf-8") as f:
-                    return self._send_json(json.load(f))
+                return self._send_json({"rules": _load_inspect_rules()})
             except Exception as exc:  # noqa: BLE001
                 return self._send_json(
                     {"error": str(exc), "type": type(exc).__name__},
@@ -319,72 +235,79 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
                 )
         self.send_error(404, "Not found")
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib API
-        if urlparse(self.path).path != "/probe":
+    def do_POST(self) -> None:  # noqa: N802
+        if urlparse(self.path).path != "/run-case":
             self.send_error(404, "Not found")
             return
+
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            self._send_json({"error": f"invalid JSON body: {exc}"}, status=400)
-            return
-
-        try:
-            artifact = _run_one_probe(body)
-        except DispatchError as exc:
-            self._send_json({"error": str(exc), "type": "DispatchError"}, status=400)
-            return
-        except Exception as exc:  # noqa: BLE001 - surface anything to the page
-            logger.exception("probe failed")
-            self._send_json(
-                {
-                    "error": str(exc),
-                    "type": type(exc).__name__,
-                    "traceback": traceback.format_exc(),
-                },
+            if not isinstance(body, dict):
+                raise ValueError("request body must be a JSON object")
+            profile_id = body.get("profile_id")
+            example_id = body.get("example_id")
+            if not isinstance(profile_id, str) or not profile_id:
+                raise ValueError("profile_id is required")
+            if not isinstance(example_id, str) or not example_id:
+                raise ValueError("example_id is required")
+            result = _run_input_case(profile_id, example_id)
+        except (DispatchError, ValueError, json.JSONDecodeError) as exc:
+            return self._send_json(
+                {"error": str(exc), "type": type(exc).__name__},
+                status=400,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("input case failed")
+            return self._send_json(
+                {"error": str(exc), "type": type(exc).__name__},
                 status=500,
             )
-            return
 
-        self._send_json(artifact)
+        self._send_json(result)
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="python -m training.renderer.verifier.serve",
-        description="Local dev server for the live renderer probe UI.",
+        description="Sequential JSON-input renderer verifier.",
     )
-    p.add_argument("--host", default="127.0.0.1", help="Bind host. Default 127.0.0.1.")
-    p.add_argument("--port", type=int, default=8765, help="Bind port. Default 8765.")
-    p.add_argument(
-        "--session-file",
-        default=None,
-        help="Path to a triage session JSON. When set, the GUI fetches "
-        "/session on mount and auto-seeds the flagged cases.",
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--input-file",
+        required=True,
+        help="Validated JSON catalog containing every setting and prompt.",
     )
-    return p
+    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    args = _build_parser().parse_args(argv)
+    global _INPUT_FILE
 
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
+    args = _build_parser().parse_args(argv)
     if not INDEX_PATH.exists():
         raise SystemExit(f"viewer not found at {INDEX_PATH}")
 
-    if not os.environ.get("FIREWORKS_API_KEY"):
+    _INPUT_FILE = Path(args.input_file)
+    try:
+        catalog = load_preset_catalog(_INPUT_FILE)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid input file {_INPUT_FILE}: {exc}") from exc
+
+    if not os.environ.get("FIREWORKS_API_KEY") and not _is_loopback_url(
+        os.environ.get("FIREWORKS_BASE_URL")
+    ):
         logger.warning(
-            "FIREWORKS_API_KEY is not set; /probe will fail until you export one."
+            "FIREWORKS_API_KEY is not set; live cases will fail until it is exported"
         )
 
-    if args.session_file:
-        global _SESSION_FILE
-        _SESSION_FILE = Path(args.session_file)
-        logger.info("session-file: %s (%s)", _SESSION_FILE,
-                    "exists" if _SESSION_FILE.exists() else "MISSING")
-
+    case_count = sum(len(profile["examples"]) for profile in catalog["profiles"])
+    logger.info("input-file: %s (%d cases)", _INPUT_FILE, case_count)
     server = http.server.HTTPServer((args.host, args.port), ProbeHandler)
     logger.info("verifier viewer up on http://%s:%d/", args.host, args.port)
     try:
