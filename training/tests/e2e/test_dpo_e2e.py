@@ -50,7 +50,6 @@ class TestDPOE2E:
         self,
         sdk_managers,
         e2e_model,
-        e2e_training_accelerator,
         custom_image_tag,
     ):
         rlor_mgr, deploy_mgr = sdk_managers
@@ -69,7 +68,6 @@ class TestDPOE2E:
                 epochs=2,
                 max_pairs=10,
                 trainer=TrainerConfig(
-                    accelerator_type=e2e_training_accelerator,
                     custom_image_tag=custom_image_tag,
                 ),
                 deployment=DeployConfig(),

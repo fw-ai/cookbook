@@ -45,9 +45,11 @@ grep -rn -E 'InfraConfig|setup_infra|ResourceCleanup|make_reference_client|creat
 | `create_base_reference()` / `make_reference_client()` | `service.create_reference_client(...)` |
 | `with ResourceCleanup(...)` | `service.close()` / context-managed cleanup owned by the SDK service lifetime |
 
-`accelerator_type` / `accelerator_count` are deprecated and ignored by the SDK;
-the training shape owns accelerator selection. `node_count` and
-`custom_image_tag` remain advanced controls; prefer a training shape.
+`accelerator_type` / `accelerator_count` have been removed from cookbook
+trainer configuration. Passing either field now raises a clear error because
+clients cannot select trainer accelerators; set `training_shape_id` instead.
+`node_count` and `custom_image_tag` remain advanced controls; prefer a training
+shape.
 
 Trainer provisioning has two independent wait budgets. Set
 `TrainerConfig.pending_timeout_s` for capacity placement while the job is

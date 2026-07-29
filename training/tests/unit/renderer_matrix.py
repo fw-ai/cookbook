@@ -307,9 +307,10 @@ RENDERER_MATRIX: list[RendererCase] = [
         tool_call_id_style="kimi",
     ),
     # -- Kimi K3 ----------------------------------------------------------
-    # K3 has no Jinja string. Its dedicated release-oracle suite calls the
-    # model-owned Python template directly; keep the shared verifier matrix
-    # independent of K3-specific Python-template handling.
+    # K3 has no Jinja string, but its tokenizer owns a Python
+    # ``apply_chat_template`` implementation. Treat that implementation as the
+    # canonical upstream oracle just like a Jinja template: the shared QA gate
+    # must catch renderer drift for generation and supervised rendering.
     RendererCase(
         renderer="kimi_k3",
         tokenizer_model=_KIMI_K3_TOKENIZER,
@@ -318,8 +319,8 @@ RENDERER_MATRIX: list[RendererCase] = [
         supports_thinking=True,
         supports_tools=True,
         has_extension_property=True,
-        has_hf_chat_template=False,
-        supervised_hf_parity=False,
+        has_hf_chat_template=True,
+        supervised_hf_parity=True,
         observation_equals_generation=True,
         trailing_hard_append_tokens=1,
         local_fixture_env="KIMI_K3_MODEL_PATH",
@@ -333,8 +334,8 @@ RENDERER_MATRIX: list[RendererCase] = [
         supports_thinking=False,
         supports_tools=True,
         has_extension_property=True,
-        has_hf_chat_template=False,
-        supervised_hf_parity=False,
+        has_hf_chat_template=True,
+        supervised_hf_parity=True,
         observation_equals_generation=True,
         trailing_hard_append_tokens=1,
         local_fixture_env="KIMI_K3_MODEL_PATH",
@@ -477,6 +478,7 @@ REQUIRED_RENDERERS: frozenset[str] = frozenset(
         "kimi_k25_interleaved",
         "kimi_k26_interleaved",
         "kimi_k26_preserve_thinking",
+        "kimi_k3",
         "minimax_m2",
         "minimax_m3",
         "nemotron3",

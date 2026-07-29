@@ -43,7 +43,6 @@ class TestGRPOE2E:
         sdk_managers,
         e2e_model,
         e2e_tokenizer_model,
-        e2e_training_accelerator,
         e2e_deployment_accelerator,
         e2e_deployment_shape,
         custom_image_tag,
@@ -66,7 +65,6 @@ class TestGRPOE2E:
             epochs=1,
             tis=TISConfig(cap=10.0),
             trainer=TrainerConfig(
-                accelerator_type=e2e_training_accelerator,
                 custom_image_tag=custom_image_tag,
             ),
             deployment=DeployConfig(

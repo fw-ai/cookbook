@@ -262,19 +262,9 @@ def _last_action(
     "messages",
     [
         pytest.param([], id="empty"),
-        pytest.param([{"role": "user", "content": "Hello"}], id="single-turn"),
         pytest.param(
             [{"role": "assistant", "content": "Already answered."}],
             id="assistant-only",
-        ),
-        pytest.param(
-            [
-                {"role": "system", "content": "Be concise."},
-                {"role": "user", "content": "First"},
-                {"role": "assistant", "content": "One"},
-                {"role": "user", "content": "Second\n\t你好 🙂"},
-            ],
-            id="multi-turn-unicode-whitespace",
         ),
         pytest.param(
             [
@@ -361,72 +351,6 @@ def test_request_controls_match_release_python_oracle(
         options=options,
         add_generation_prompt=True,
     )
-
-
-@pytest.mark.parametrize(
-    "messages",
-    [
-        pytest.param(
-            [
-                {"role": "user", "content": "Say hello."},
-                {"role": "assistant", "content": "Hello."},
-            ],
-            id="single-turn-sft",
-        ),
-        pytest.param(
-            [
-                {"role": "user", "content": "What is 3 * 3?"},
-                {
-                    "role": "assistant",
-                    "reasoning_content": "Three groups of three make nine.",
-                    "content": "9️⃣",
-                },
-                {"role": "user", "content": "Again?"},
-                {
-                    "role": "assistant",
-                    "reasoning_content": "The result is unchanged.",
-                    "content": "9",
-                },
-            ],
-            id="multiturn-thinking-sft",
-        ),
-        pytest.param(PARALLEL_TOOL_MESSAGES, id="parallel-tools-reversed-results"),
-    ],
-)
-def test_supervised_tokens_match_release_python_oracle(
-    tokenizer,
-    renderer,
-    messages,
-) -> None:
-    tools = TOOLS if any(message.get("tool_calls") for message in messages) else None
-    actual, weights = _supervised(renderer, messages, tools=tools)
-    assert actual == _oracle_ids(
-        tokenizer,
-        messages,
-        tools=tools,
-        add_generation_prompt=False,
-    )
-    assert len(actual) == len(weights)
-    assert weights[-1] == 0.0
-
-
-def test_developer_role_is_ignored_exactly_like_release(tokenizer, renderer) -> None:
-    messages = [
-        {"role": "developer", "content": "Be terse."},
-        {"role": "user", "content": "Hello"},
-    ]
-    without_developer = messages[1:]
-    oracle = _oracle_ids(
-        tokenizer,
-        messages,
-        add_generation_prompt=True,
-    )
-    assert oracle == _oracle_ids(
-        tokenizer,
-        without_developer,
-        add_generation_prompt=True,
-    )
-    assert _ids(renderer.build_generation_prompt(messages)) == oracle
 
 
 def test_verl_slime_areal_multiturn_assistant_loss_spans(

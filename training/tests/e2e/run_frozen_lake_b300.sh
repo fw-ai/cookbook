@@ -33,7 +33,6 @@ FIRECTL_BIN="${FIRECTL_BIN:-$REPO_ROOT/../fireworks/firectl/bin/firectl-admin}"
 FIRECTL_PROFILE="${FIRECTL_PROFILE:-dev-bennychen}"
 TRAINING_SHAPE="${TRAINING_SHAPE:-qwen3-4b-b300}"
 DEPLOYMENT_ID="${DEPLOYMENT_ID:-rl-qwen3-4b-b300-v10}"
-ACCELERATOR="${ACCELERATOR:-NVIDIA_B300_288GB}"
 JOB_WAIT_TIMEOUT="${JOB_WAIT_TIMEOUT:-80}"
 JOB_CREATE_RETRIES="${JOB_CREATE_RETRIES:-3}"
 
@@ -95,7 +94,6 @@ create_job() {
         output=$("$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" rlor create \
             --base-model "accounts/fireworks/models/qwen3-4b" \
             --training-shape "$TRAINING_SHAPE" \
-            --accelerator-type "$ACCELERATOR" --accelerator-count 8 \
             --display-name "frozen-lake-ci-$label" \
             --service-mode \
             "$@" \

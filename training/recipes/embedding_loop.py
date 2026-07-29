@@ -245,7 +245,7 @@ class Config:
 
     temperature: float = 0.02
     learning_rate: float = 1e-5
-    grad_clip_norm: float = 1.0
+    grad_clip_norm: float = 0.0
 
     epochs: int = 1
     batch_size: int = 16

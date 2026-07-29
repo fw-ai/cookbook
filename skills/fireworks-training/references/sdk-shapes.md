@@ -1,6 +1,10 @@
 # Training and deployment shapes — always use a profile
 
-Shapes are the required entry point for both trainer and deployment. Never hand-set `accelerator_type`, `accelerator_count`, `node_count`, or `custom_image_tag` when a shape is in use — the backend will reject or silently ignore them.
+Shapes are the required entry point for both trainer and deployment. Cookbook
+trainer config rejects `accelerator_type` and `accelerator_count`; clients
+cannot select trainer accelerators, so set `training_shape_id` instead.
+`node_count` and `custom_image_tag` remain advanced controls but should not be
+hand-set when a shape is in use.
 
 ## Training shape
 
