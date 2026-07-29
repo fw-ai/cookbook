@@ -1,0 +1,8 @@
+data/
+cache/
+export/
+embedding_logs/
+__pycache__/
+results*.json
+*.png
+!results.png
