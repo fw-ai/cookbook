@@ -383,6 +383,11 @@ Read only what the task requires:
 - Let training shapes own infrastructure; do not hand-set shape-owned fields.
 - For RL, align trainer and inference numerics; use Router Replay for MoE when
   required.
+- Diagnose large-batch transport by direction: metadata-only future retrieval
+  backpressures large completed response downloads; it does not shrink request
+  uploads or repair sequence-arrival gaps. Keep the cookbook opt-out in place
+  until the trainer is compatible and Fireworks provides a supported opt-in;
+  read `references/rl-concurrency.md`.
 - Separate quota, billing, scheduler capacity, user configuration, and platform
   failures.
 - Never expose API keys, raw environment dumps, customer data, or private paths
