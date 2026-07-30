@@ -1,16 +1,17 @@
 # Manual infra tests
 
-Two scripts that drive `training/recipes/rl_loop.py` against real
-trainers + deployments to cover paths the unit tests and regular
-single-shape e2e CI do not hit.
+Manual scripts that drive real trainers + deployments to cover paths the unit
+tests and regular single-shape e2e CI do not hit.
 
 | Script | Scope under test | What it runs |
 |---|---|---|
 | `test_reattach_manual.py` | `WeightSyncScope.PER_TRAINER` **re-attach** path | `rl_loop.main` twice sharing one `deployment_id`; the second run must PATCH `hot_load_trainer_job` onto the existing deployment. |
 | `test_per_deployment_manual.py` | `WeightSyncScope.PER_DEPLOYMENT` | Single `rl_loop.main` run where `setup_infra` provisions the deployment-owned bucket, then launches trainers with `hot_load_deployment_id`. |
+| `full_param_load_test.py` | Full-parameter service-mode trainer throughput | Reattaches to an existing trainer job, sends a fixed 20-request synthetic token-length ladder, interleaves optimizer steps, and reports stable tokens/sec. |
+| `run_glm5p2_full_param_experiments.sh` | Manual GLM-5.2 full-param AP/RFTJ sweep | Launches the five pyroworks/AP_MALAYSIA_2/RFTJ service-mode cases one at a time, runs `full_param_load_test.py`, snapshots trainer/Kubernetes logs, and deletes each job before the next case. |
 
-Both scripts reuse the deepmath reward + dataset from
-`training/examples/rl/deepmath/` and pin to the 1×GPU qwen3-4b minimum
+The re-attach and PER_DEPLOYMENT scripts reuse the deepmath reward + dataset
+from `training/examples/rl/deepmath/` and pin to the 1×GPU qwen3-4b minimum
 shapes so one run is ~15–20 min on shared dev.
 
 ## Usage
@@ -22,6 +23,31 @@ export FIREWORKS_API_KEY=<pyroworks key>
 python training/examples/manual/test_reattach_manual.py
 python training/examples/manual/test_per_deployment_manual.py
 ```
+
+For the deterministic full-param trainer load test, first create the service-mode
+trainer job separately, wait for it to become ready, then run:
+
+```bash
+python training/examples/manual/full_param_load_test.py \
+  --job-id <policy-job-id> \
+  --base-model glm-5p2-fp8
+```
+
+For the GLM-5.2 full-param sweep requested for AP_MALAYSIA_2:
+
+```bash
+export FIREWORKS_API_KEY=<pyroworks key>
+ACCOUNT_ID=pyroworks \
+REGION=AP_MALAYSIA_2 \
+KUBE_CONTEXT='AP_MALAYSIA_2 (alicloud ap-southeast-3)' \
+bash training/examples/manual/run_glm5p2_full_param_experiments.sh
+```
+
+The runner uses no reservation, passes `tolerationKey=fireworks.ai/rftj`,
+checks local `nvidia-smi` before launching, and deletes each trainer with
+`--wait` before it starts the next case. Set `CASE_FILTER=<case-name>` to run
+one case, or `CONTINUE_ON_FAILURE=0` to stop at the first failed admission,
+startup, OOM, or load-test result.
 
 Flags worth knowing:
 
