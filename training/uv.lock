@@ -1054,7 +1054,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.4"
+version = "1.2.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1066,9 +1066,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/86/3d4f2cf0c92ec6465f6d3a714cebe0e061b8eb55d9fe1808dd15353dc347/fireworks_ai-1.2.4.tar.gz", hash = "sha256:e74b175ca92c098fcb5b7ead3136dc0c8456370393d63f3066d12e74daac8bb7", size = 478185 }
+sdist = { url = "https://files.pythonhosted.org/packages/90/ac/ef9342fdada34a8675582960f154fe32b8d794cee59bbf884458f32382c3/fireworks_ai-1.2.5.tar.gz", hash = "sha256:938f8b9ef3b29800b383d8acc657fb640de5326e4f14aee907dbd72bd694a91c", size = 480803 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6d/ba/215ad9dfbf7cb3d5652506157e1722b2d26759fd81f7a64e7eddc9bcc6d9/fireworks_ai-1.2.4-py3-none-any.whl", hash = "sha256:d2c394c02ecc6978cb521c64885e06b475ff64dbdba0e97a8e08b34da49ec406", size = 480913 },
+    { url = "https://files.pythonhosted.org/packages/c1/2b/62807d6c7b6564ad34b86049da810dc7e5cc5da71eb04e26b486531b0a8d/fireworks_ai-1.2.5-py3-none-any.whl", hash = "sha256:d19a8ba1b2fd536a72692cbc6ae3978a9b497c3594cba4f7c772e80f10bc63a9", size = 482189 },
 ]
 
 [package.optional-dependencies]
@@ -1125,7 +1125,7 @@ eval = [
 requires-dist = [
     { name = "datasets" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = ">=0.3.32" },
-    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.4,<2" },
+    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.5,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "hydra-core", specifier = ">=1.3,<2" },
     { name = "math-verify", marker = "extra == 'dev'" },

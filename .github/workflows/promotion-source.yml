@@ -14,6 +14,9 @@ permissions:
 jobs:
   source:
     name: publish promotion-source status
+    # Release automation changes labels after merge. Closed PRs no longer need
+    # a merge-gating status, while every open PR must still fail closed.
+    if: github.event.pull_request.state == 'open'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
