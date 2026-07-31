@@ -289,6 +289,8 @@ class DeployConfig:
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
     """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
+    preemptible: bool = False
+    """Request preemptible deployment scheduling. Requires an admin API key."""
 
     def to_deployment_config(
         self,
@@ -315,6 +317,7 @@ class DeployConfig:
             accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
+            preemptible=self.preemptible or getattr(infra, "preemptible", False),
         )
 
 
