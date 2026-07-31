@@ -92,6 +92,8 @@ __all__ = [
     "main",
 ]
 
+FIREWORKS_CMEK_RESOURCE_METADATA_KEY = "fireworks_cmek_resource"
+
 
 @dataclass
 class Config:
@@ -115,6 +117,9 @@ class Config:
     max_rows: int = 100
     max_seq_len: int | None = None
     lora_rank: int = 0
+    cmek_output_model_resource: str | None = None
+    """Internal managed-RFT contract. When set, the dedicated LoRA policy
+    trainer encrypts checkpoints and sampler snapshots for this output model."""
 
     prompt_groups_per_step: int = 1
     max_head_offpolicy_versions: int = 0
@@ -176,6 +181,16 @@ class Config:
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
     """Promote the final checkpoint to this 4-segment model id on clean exit."""
+
+
+def _cmek_user_metadata(cfg: Config) -> dict[str, str] | None:
+    if not cfg.cmek_output_model_resource:
+        return None
+    if cfg.lora_rank <= 0:
+        raise ValueError("CMEK output encryption requires lora_rank > 0")
+    return {
+        FIREWORKS_CMEK_RESOURCE_METADATA_KEY: cfg.cmek_output_model_resource,
+    }
 
 
 @dataclass
@@ -264,6 +279,7 @@ def main(
     Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
     cfg = config
+    cmek_user_metadata = _cmek_user_metadata(cfg)
     validate_grpo_config(
         kl_beta=cfg.kl_beta,
         eps_clip=cfg.eps_clip,
@@ -373,7 +389,9 @@ def main(
         )
         stack.callback(service.close)
         training_client = service.create_training_client(
-            cfg.base_model, lora_rank=cfg.lora_rank
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            user_metadata=cmek_user_metadata,
         )
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
         rollout_model = sampler.model

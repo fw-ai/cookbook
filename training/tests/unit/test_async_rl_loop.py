@@ -53,6 +53,38 @@ class TestConfigDefaults:
         assert not hasattr(cfg, "loss_path")
 
 
+def test_cmek_metadata_is_policy_only_reserved_key() -> None:
+    cfg = async_rl_loop.Config(
+        log_path="gs://logs",
+        lora_rank=8,
+        cmek_output_model_resource="models/output-model",
+    )
+
+    assert async_rl_loop._cmek_user_metadata(cfg) == {
+        "fireworks_cmek_resource": "models/output-model"
+    }
+
+
+def test_cmek_metadata_rejects_full_parameter_policy() -> None:
+    cfg = async_rl_loop.Config(
+        log_path="gs://logs",
+        lora_rank=0,
+        cmek_output_model_resource="models/output-model",
+    )
+
+    with pytest.raises(ValueError, match="lora_rank > 0"):
+        async_rl_loop._cmek_user_metadata(cfg)
+
+
+def test_reference_client_call_does_not_receive_policy_cmek_metadata() -> None:
+    source = inspect.getsource(async_rl_loop.main)
+    reference_call = source.split("service.create_reference_client(", 1)[1].split(
+        ")", 1
+    )[0]
+
+    assert "user_metadata" not in reference_call
+
+
 def test_main_has_direct_client_grpo_customization_boundary() -> None:
     source = inspect.getsource(async_rl_loop.main)
 
