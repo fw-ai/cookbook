@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from functools import cache
 from typing import Any
 
@@ -41,6 +42,7 @@ from training.utils.supervised import (
     build_tool_prefixed_messages,
     renderer_declares_tools,
 )
+from training.utils.tokenizers import needs_mistral_regex_fix
 
 
 @cache
@@ -55,6 +57,20 @@ def _load_tokenizer(
     tokenizers. Reconstructing remote-code tokenizers for every scenario makes
     the test runtime scale with scenario count instead of renderer count.
     """
+    if needs_mistral_regex_fix(tokenizer_model):
+        kwargs: dict[str, Any] = {
+            "token": os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
+            "trust_remote_code": (
+                tokenizer_trust_remote_code
+                if tokenizer_trust_remote_code is not None
+                else True
+            ),
+            "fix_mistral_regex": True,
+        }
+        if tokenizer_revision:
+            kwargs["revision"] = tokenizer_revision
+        return AutoTokenizer.from_pretrained(tokenizer_model, **kwargs)
     if tokenizer_revision:
         return AutoTokenizer.from_pretrained(
             tokenizer_model,

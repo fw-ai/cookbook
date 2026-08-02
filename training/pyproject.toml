@@ -8,13 +8,13 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "fireworks-ai[training]>=1.2.5,<2",
-    "tinker-cookbook==0.4.1",
+    "tinker-cookbook==0.4.3",
     "tqdm",
     "torch",
     "datasets",
     "tiktoken",
     "numpy",
-    "transformers",
+    "transformers==5.5.4",
     "python-dotenv",
     "wandb",
     "orjson",

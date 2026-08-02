@@ -21,6 +21,7 @@ import pytest
 import transformers
 
 from training.renderer.mistral import MistralRenderer
+from training.utils.tokenizers import load_tokenizer
 from tinker_cookbook.renderers.base import RenderContext, ToolCall, TrainOnWhat
 
 
@@ -31,7 +32,7 @@ TOKENIZER_MODEL = _LOCAL_PATH if Path(_LOCAL_PATH).exists() else _HF_REPO
 
 @pytest.fixture(scope="module")
 def tokenizer() -> transformers.PreTrainedTokenizerBase:
-    return transformers.AutoTokenizer.from_pretrained(
+    return load_tokenizer(
         TOKENIZER_MODEL,
         trust_remote_code=True,
     )
@@ -42,6 +43,15 @@ def renderer(
     tokenizer: transformers.PreTrainedTokenizerBase,
 ) -> MistralRenderer:
     return MistralRenderer(tokenizer)
+
+
+def test_uses_correct_mistral_regex(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+) -> None:
+    assert tokenizer.backend_tokenizer.pre_tokenizer.pre_tokenize_str("'The'") == [
+        ("'The", (0, 4)),
+        ("'", (4, 5)),
+    ]
 
 
 def _hf_tokens(

@@ -11,6 +11,14 @@ import transformers
 
 
 _HTTP_STATUS_PATTERN = re.compile(r"\b([45]\d\d)\b")
+_MISTRAL_TOKENIZER_NAME_PARTS = ("mistral", "ministral")
+
+
+def needs_mistral_regex_fix(tokenizer_model: str | None) -> bool:
+    if tokenizer_model is None:
+        return False
+    normalized_model = tokenizer_model.casefold()
+    return any(part in normalized_model for part in _MISTRAL_TOKENIZER_NAME_PARTS)
 
 
 def _huggingface_http_status_code(exc: BaseException) -> int | None:
@@ -90,11 +98,16 @@ def load_tokenizer(
     the legacy remote-code policy (enabled), while a reviewed tokenizer plan
     can explicitly enable or disable it.
     """
-    return transformers.AutoTokenizer.from_pretrained(
-        tokenizer_model,
-        revision=tokenizer_revision or None,
-        trust_remote_code=True if trust_remote_code is None else trust_remote_code,
-    )
+    kwargs: dict[str, Any] = {
+        "revision": tokenizer_revision or None,
+        "trust_remote_code": True if trust_remote_code is None else trust_remote_code,
+    }
+    if needs_mistral_regex_fix(tokenizer_model):
+        # Use Transformers' upstream Mistral pre-tokenizer repair. The corrected
+        # implementation is available in the pinned Transformers 5.5.4 release.
+        kwargs["fix_mistral_regex"] = True
+
+    return transformers.AutoTokenizer.from_pretrained(tokenizer_model, **kwargs)
 
 
 def load_deployment_tokenizer(deployment: Any) -> Any:

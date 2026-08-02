@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import socket
 import threading
 from contextlib import contextmanager
@@ -8,11 +9,15 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+import tokenizers as tokenizers_lib
 from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.utils import hf_raise_for_status
+from transformers.tokenization_utils_tokenizers import TokenizersBackend
 
 import training.utils.tokenizers as tokenizers
 import training.utils.runner as runner
+from training.renderer.verifier.utils import hf_parity
+from training.renderer.verifier.utils import tokenizer as verifier_tokenizers
 from training.utils.runner import RunnerConfig, RunnerIO
 
 
@@ -77,6 +82,108 @@ def test_load_tokenizer_forwards_revision_and_remote_code_policy(
         "revision": "2755962",
         "trust_remote_code": expected,
     }
+
+
+def test_load_mistral_tokenizer_uses_upstream_regex_fix(monkeypatch):
+    captured: dict = {}
+
+    def fake_from_pretrained(model, **kwargs):
+        captured.update(model=model, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        tokenizers.transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
+    )
+
+    tokenizers.load_tokenizer(
+        "accounts/fireworks/models/mistral-small-24b-instruct-2501"
+    )
+
+    assert captured["kwargs"]["fix_mistral_regex"] is True
+
+
+def test_verifier_tokenizer_paths_repair_mistral_model(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setenv("HF_TOKEN", "test-token")
+
+    def fake_from_pretrained(model, **kwargs):
+        captured.update(model=model, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        tokenizers.transformers.AutoTokenizer,
+        "from_pretrained",
+        fake_from_pretrained,
+    )
+
+    verifier_tokenizers.load_tokenizer(
+        "mistralai/Mistral-Small-24B-Instruct-2501",
+    )
+
+    assert captured["kwargs"]["fix_mistral_regex"] is True
+
+    captured.clear()
+    hf_parity._load_tokenizer.cache_clear()
+    try:
+        hf_parity._load_tokenizer(
+            "mistralai/Mistral-Small-24B-Instruct-2501",
+            "abc123",
+            False,
+        )
+    finally:
+        hf_parity._load_tokenizer.cache_clear()
+
+    assert captured["kwargs"] == {
+        "revision": "abc123",
+        "token": "test-token",
+        "trust_remote_code": False,
+        "fix_mistral_regex": True,
+    }
+
+
+def test_upstream_mistral_regex_fix_accepts_raw_tokenizer_backend(tmp_path):
+    model_dir = tmp_path / "legacy-mistral"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "mistral",
+                "transformers_version": "4.57.2",
+            }
+        )
+    )
+    legacy_regex = (
+        r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}|"
+        r" ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+    )
+    backend = tokenizers_lib.Tokenizer(
+        tokenizers_lib.models.WordLevel({"[UNK]": 0}, unk_token="[UNK]")
+    )
+    backend.pre_tokenizer = tokenizers_lib.pre_tokenizers.Sequence(
+        [
+            tokenizers_lib.pre_tokenizers.Split(
+                tokenizers_lib.Regex(legacy_regex),
+                behavior="isolated",
+            ),
+            tokenizers_lib.pre_tokenizers.ByteLevel(
+                add_prefix_space=False,
+                use_regex=False,
+            ),
+        ]
+    )
+
+    patched_backend = TokenizersBackend._patch_mistral_regex(
+        backend,
+        str(model_dir),
+        is_local=True,
+        init_kwargs={},
+        fix_mistral_regex=True,
+    )
+
+    assert patched_backend.pre_tokenizer.pre_tokenize_str("'The'") == [
+        ("'The", (0, 4)),
+        ("'", (4, 5)),
+    ]
 
 
 def test_load_tokenizer_treats_empty_revision_as_unset(monkeypatch):
