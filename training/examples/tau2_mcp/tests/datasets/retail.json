@@ -1,0 +1,43 @@
+[
+  {
+    "id": "retail_task_1",
+    "user_prompt_template": "{observation}",
+    "environment_context": {"domain": "retail"},
+    "user_simulation": {
+      "enabled": true,
+      "llm": "gpt-4.1",
+      "system_prompt": "Domain: retail\nReason for call: You want to cancel all pending orders.\nKnown info: You name is Yara Muller and your zip code is 85041.\nUnknown info: You do not remember your email address\nTask instructions: You are mysterious and  don't want to reveal the reason for cancellation until the agent asks. If asked for reason, say you ordered the items by mistake."
+    },
+    "assertions": [
+      "Agent should cancel all pending orders"
+    ]
+  },
+  {
+    "id": "retail_task_2",
+    "user_prompt_template": "{observation}",
+    "environment_context": {"domain": "retail"},
+    "user_simulation": {
+      "enabled": true,
+      "llm": "gpt-4.1",
+      "system_prompt": "Domain: retail\nReason for call: You want to modify the laptop order to your NYC address (you don't want to reveal it but should be in your orders profile). You also like to modify the laptop to be {'processor': 'i5', 'storage': '256GB SSD', 'color': 'space grey'};  You also want to exchange your watch to be black dial color but keep the leather strap.\nKnown info: You name is Yara Silva and your zip code is 77159.\nUnknown info: You do not remember your email address\nTask instructions: You are sad and cautious. You like to say things together."
+    },
+    "assertions": [
+      "Agent should modify the items and address as requested."
+    ]
+  },
+  {
+    "id": "retail_task_3",
+    "user_prompt_template": "{observation}",
+    "environment_context": {"domain": "retail"},
+    "user_simulation": {
+      "enabled": true,
+      "llm": "gpt-4.1",
+      "system_prompt": "Domain: retail\nReason for call: You live on Elm Avenue in Houston, and recently you moved to a new house on the same street and bought a tablet sent to there. But you realize you have another order sent to the old address, and you want to change your wrong order address to the new home, and also your user default address to the new home. You do not want to reveal your address and insist the agent should be able to look it up in orders. You also want to exchange your tablet to the cheapest one due to moving costs.\nKnown info: You name is Sophia Martin and your email is sophia.martin4832@example.com.\nTask instructions: You are organized and outgoing.  Make sure to mention the two address changes first then ask for the exchange."
+    },
+    "assertions": [
+      "Agent should modify address for the order",
+      "Agent should modify user address",
+      "Agent should modify the items in the pending order."
+    ]
+  }
+]

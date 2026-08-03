@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Provider speed comparison</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --border: #2a2f3a; --text: #e6e8ee;
+    --muted: #8a93a6; --accent: #6C4FF6; --good: #2E8B57; --warn: #D97757; --bad: #C2185B;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  header {
+    padding: 18px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .composer {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  }
+  .composer textarea {
+    flex: 1 1 480px; min-height: 70px; max-height: 200px; resize: vertical;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; font: inherit; font-size: 14px;
+  }
+  .composer textarea:focus { outline: none; border-color: var(--accent); }
+  .composer button {
+    background: var(--accent); color: white; border: 0; border-radius: 8px;
+    padding: 12px 20px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .composer button:hover { filter: brightness(1.1); }
+  .composer button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .composer .ghost {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+  }
+  .composer .ghost:hover { color: var(--text); border-color: var(--text); }
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; }
+  .presets button {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  .presets button:hover { color: var(--text); border-color: var(--text); }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px; padding: 20px 24px;
+  }
+  .col {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    display: flex; flex-direction: column; min-height: 360px;
+  }
+  .col header {
+    padding: 12px 14px; border-bottom: 1px solid var(--border); border-radius: 12px 12px 0 0;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .col h2 { font-size: 13px; margin: 0; font-weight: 600; }
+  .badges { display: flex; gap: 6px; }
+  .badge {
+    font-size: 11px; padding: 3px 7px; border-radius: 6px;
+    background: #0c0e13; border: 1px solid var(--border); color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .badge.live { color: var(--accent); border-color: var(--accent); }
+  .badge.done { color: var(--good); border-color: var(--good); }
+  .col .body {
+    padding: 14px; font-size: 14px; line-height: 1.5; white-space: pre-wrap;
+    word-wrap: break-word; overflow-wrap: anywhere; flex: 1; overflow-y: auto;
+    min-height: 120px;
+  }
+  .col .body.empty { color: var(--muted); font-style: italic; }
+  .col .body .cursor { display: inline-block; width: 7px; height: 15px;
+    background: var(--accent); margin-left: 1px; vertical-align: text-bottom;
+    animation: blink 1s steps(2, start) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .col .body.error { color: var(--bad); }
+  .col footer {
+    padding: 8px 14px; border-top: 1px solid var(--border); font-size: 11px;
+    color: var(--muted); display: flex; justify-content: space-between;
+    font-variant-numeric: tabular-nums;
+  }
+  .note { padding: 0 24px 24px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Provider speed comparison</h1>
+  <span class="sub">Type a prompt, hit Race, watch three providers stream back live. Each column shows TTFT (time to first token) and decode tok/s (excludes prefill).</span>
+</header>
+
+<div class="composer">
+  <textarea id="prompt" placeholder="Ask anything... e.g. 'Explain why the sky is blue in two sentences.'"></textarea>
+  <button id="race">Race</button>
+  <button id="clear" class="ghost">Clear</button>
+</div>
+<div class="composer" style="padding-top: 0; border-bottom: none;">
+  <div class="presets" id="presets"></div>
+</div>
+
+<div class="grid" id="grid"></div>
+<div class="note" id="note"></div>
+
+<script>
+const PRESETS = [
+  "Explain why the sky is blue in two sentences.",
+  "Write a haiku about a server that's on fire.",
+  "What are the first 10 Fibonacci numbers?",
+  "Give me three catchy names for a coffee shop that's also a bookstore.",
+];
+
+let columns = [];   // {id, name, bodyEl, ttftEl, tpsEl, footerEl}
+
+async function buildColumns() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  columns = [];
+  let providers = [];
+  try {
+    const r = await fetch('/api/providers');
+    if (r.ok) providers = await r.json();
+  } catch (e) {}
+  if (!providers.length) {
+    providers = [{id:0,name:'Provider 1'},{id:1,name:'Provider 2'},{id:2,name:'Provider 3'}];
+  }
+  for (const p of providers) {
+    const col = document.createElement('section');
+    col.className = 'col';
+    col.innerHTML = `
+      <header>
+        <h2>${escapeHtml(p.name)}</h2>
+        <div class="badges">
+          <span class="badge" data-kind="ttft">TTFT -</span>
+          <span class="badge" data-kind="tps">- tok/s</span>
+        </div>
+      </header>
+      <div class="body empty">Waiting for a prompt…</div>
+      <footer><span class="status">idle</span><span class="tokens">0 tokens</span></footer>
+    `;
+    grid.appendChild(col);
+    columns.push({
+      id: p.id, name: p.name,
+      bodyEl: col.querySelector('.body'),
+      ttftEl: col.querySelector('.badge[data-kind="ttft"]'),
+      tpsEl: col.querySelector('.badge[data-kind="tps"]'),
+      footerEl: col.querySelector('footer'),
+      statusEl: col.querySelector('footer .status'),
+      tokensEl: col.querySelector('footer .tokens'),
+    });
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function resetColumns() {
+  for (const c of columns) {
+    c.bodyEl.className = 'body empty';
+    c.bodyEl.textContent = 'Waiting for a prompt…';
+    c.ttftEl.textContent = 'TTFT -';
+    c.ttftEl.className = 'badge';
+    c.tpsEl.textContent = '- tok/s';
+    c.tpsEl.className = 'badge';
+    c.statusEl.textContent = 'idle';
+    c.tokensEl.textContent = '0 tokens';
+    c._text = '';
+  }
+}
+
+function setStreaming(c) {
+  c.bodyEl.className = 'body';
+  c.bodyEl.textContent = '';
+  c._text = '';
+  c._cursor = document.createElement('span');
+  c._cursor.className = 'cursor';
+  c.bodyEl.appendChild(c._cursor);
+  c.statusEl.textContent = 'streaming…';
+  c.ttftEl.className = 'badge live';
+  c.tpsEl.className = 'badge live';
+}
+
+function appendText(c, text) {
+  c._text += text;
+  if (c._cursor) {
+    c.bodyEl.insertBefore(document.createTextNode(text), c._cursor);
+  } else {
+    c.bodyEl.appendChild(document.createTextNode(text));
+  }
+}
+
+function setMetrics(c, ttft, tps) {
+  if (ttft != null) c.ttftEl.textContent = `TTFT ${ttft.toFixed(2)}s`;
+  if (tps != null) c.tpsEl.textContent = `${tps.toFixed(1)} tok/s`;
+}
+
+function setDone(c, ev) {
+  if (c._cursor) { c._cursor.remove(); c._cursor = null; }
+  c.ttftEl.className = 'badge done';
+  c.tpsEl.className = 'badge done';
+  c.statusEl.textContent = 'done';
+  if (ev && ev.out_tokens != null) c.tokensEl.textContent = `${ev.out_tokens} tokens`;
+  if (ev && ev.latency != null) c.statusEl.textContent = `done in ${ev.latency.toFixed(2)}s`;
+}
+
+function setError(c, msg) {
+  if (c._cursor) { c._cursor.remove(); c._cursor = null; }
+  c.bodyEl.className = 'body error';
+  c.bodyEl.textContent = `Error: ${msg || 'unknown'}`;
+  c.statusEl.textContent = 'error';
+  c.ttftEl.className = 'badge';
+  c.tpsEl.className = 'badge';
+}
+
+async function race() {
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) return;
+  resetColumns();
+  for (const c of columns) setStreaming(c);
+  document.getElementById('race').disabled = true;
+
+  let reader, decoder, buf = '';
+  try {
+    const r = await fetch('/api/race', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt}),
+    });
+    if (!r.ok || !r.body) {
+      const txt = await r.text();
+      for (const c of columns) setError(c, `HTTP ${r.status}: ${txt}`);
+      return;
+    }
+    reader = r.body.getReader();
+    decoder = new TextDecoder();
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          let ev; try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          const c = columns[ev.column];
+          if (!c) continue;
+          if (ev.type === 'tok') appendText(c, ev.text);
+          else if (ev.type === 'metric') setMetrics(c, ev.ttft, ev.tok_s);
+          else if (ev.type === 'error') setError(c, ev.error);
+          else if (ev.type === 'done') setDone(c, ev);
+        }
+      }
+    }
+  } catch (e) {
+    for (const c of columns) if (c.statusEl.textContent === 'streaming…') setError(c, String(e));
+  } finally {
+    document.getElementById('race').disabled = false;
+  }
+}
+
+function init() {
+  document.getElementById('race').addEventListener('click', race);
+  document.getElementById('clear').addEventListener('click', () => {
+    resetColumns();
+    document.getElementById('prompt').value = '';
+  });
+  document.getElementById('prompt').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) race();
+  });
+  const presets = document.getElementById('presets');
+  for (const p of PRESETS) {
+    const b = document.createElement('button');
+    b.textContent = p.length > 40 ? p.slice(0, 40) + '…' : p;
+    b.title = p;
+    b.addEventListener('click', () => { document.getElementById('prompt').value = p; });
+    presets.appendChild(b);
+  }
+  buildColumns();
+  document.getElementById('note').textContent =
+    'Note: each Race click sends 3 paid requests. tok/s excludes prefill (AA Output Speed definition). ' +
+    'Cmd/Ctrl+Enter to Race.';
+}
+
+init();
+</script>
+</body>
+</html>

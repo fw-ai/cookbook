@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Provider speed comparison</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --border: #e2e5ec; --text: #1a1d24;
+    --muted: #6b7280; --accent: #6C4FF6; --accent-soft: #efeafe;
+    --field: #f0f1f4; --good: #2E8B57; --warn: #D97757; --bad: #C2185B;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  header.top {
+    padding: 18px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header.top h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header.top .sub { color: var(--muted); font-size: 13px; flex: 1 1 320px; }
+  .composer {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  }
+  .composer textarea {
+    flex: 1 1 480px; min-height: 70px; max-height: 200px; resize: vertical;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; font: inherit; font-size: 14px;
+  }
+  .composer textarea:focus { outline: none; border-color: var(--accent); }
+  button.primary {
+    background: var(--accent); color: white; border: 0; border-radius: 8px;
+    padding: 12px 20px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.primary:hover { filter: brightness(1.1); }
+  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.ghost {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; font: inherit; cursor: pointer;
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--text); }
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; }
+  .presets button {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  .presets button:hover { color: var(--text); border-color: var(--text); }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px; padding: 20px 24px;
+  }
+  .col {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    display: flex; flex-direction: column; min-height: 360px;
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.04);
+  }
+  /* First column highlighted in purple. */
+  .col.featured {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent), 0 6px 20px rgba(108, 79, 246, 0.12);
+  }
+  .col.featured .chead { background: var(--accent-soft); }
+  .col.featured h2 { color: var(--accent); }
+  .col .chead {
+    padding: 12px 14px; border-bottom: 1px solid var(--border); border-radius: 12px 12px 0 0;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .col h2 { font-size: 13px; margin: 0; font-weight: 600; }
+  .badges { display: flex; gap: 6px; }
+  .badge {
+    font-size: 11px; padding: 3px 7px; border-radius: 6px;
+    background: var(--field); border: 1px solid var(--border); color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .badge.live { color: var(--accent); border-color: var(--accent); }
+  .badge.done { color: var(--good); border-color: var(--good); }
+  .badge .medal { font-size: 20px; line-height: 1; margin-right: 3px; vertical-align: -3px; }
+  .col .reasoning {
+    margin: 0 14px 10px; padding: 8px 10px; border-left: 2px solid var(--border);
+    color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-wrap;
+    max-height: 120px; overflow-y: auto; display: none;
+  }
+  .col .reasoning.show { display: block; }
+  .col .body {
+    padding: 14px; font-size: 14px; line-height: 1.5; white-space: pre-wrap;
+    word-wrap: break-word; overflow-wrap: anywhere; height: 280px; overflow-y: auto;
+  }
+  .col .body.empty { color: var(--muted); font-style: italic; }
+  .col .body .cursor { display: inline-block; width: 7px; height: 15px;
+    background: var(--accent); margin-left: 1px; vertical-align: text-bottom;
+    animation: blink 1s steps(2, start) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .col .body.error { color: var(--bad); }
+  .col footer {
+    padding: 8px 14px; border-top: 1px solid var(--border); font-size: 11px;
+    color: var(--muted); display: flex; justify-content: space-between;
+    font-variant-numeric: tabular-nums;
+  }
+  .note { padding: 0 24px 24px; color: var(--muted); font-size: 12px; }
+  /* settings modal */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(16,24,40,0.35); display: none;
+    align-items: center; justify-content: center; z-index: 10;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 22px; width: min(460px, 92vw); max-height: 90vh; overflow-y: auto;
+  }
+  .modal h3 { margin: 0 0 4px; font-size: 15px; }
+  .modal p { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
+  .modal label { display: block; font-size: 12px; margin: 12px 0 4px; color: var(--text); }
+  .modal input, .modal select {
+    width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font: inherit; font-size: 13px;
+  }
+  .modal input:focus, .modal select:focus { outline: none; border-color: var(--accent); }
+  .modal .row { display: flex; gap: 10px; align-items: flex-end; }
+  .modal .row > div { flex: 1; }
+  .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+  .modal .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  /* clean-sweep celebration */
+  .confetti-piece {
+    position: fixed; width: 9px; height: 14px; border-radius: 2px;
+    pointer-events: none; z-index: 9999; will-change: transform, opacity;
+  }
+  @keyframes champPop {
+    0% { transform: scale(1); } 40% { transform: scale(1.04); } 100% { transform: scale(1); }
+  }
+  .col.champion {
+    animation: champPop 0.6s ease;
+    box-shadow: 0 0 0 2px var(--accent), 0 12px 32px rgba(108, 79, 246, 0.35) !important;
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Provider speed comparison</h1>
+  <span class="sub">Type a prompt, hit Race, watch providers stream back live. Each column shows TTFT and decode tok/s (excludes prefill).</span>
+</header>
+
+<div class="composer">
+  <textarea id="prompt" placeholder="Ask anything... e.g. 'Explain why the sky is blue in two sentences.'"></textarea>
+  <button class="primary" id="race">Race</button>
+  <button class="ghost" id="clear">Clear</button>
+</div>
+<div class="composer" style="padding-top: 0; border-bottom: none;">
+  <div class="presets" id="presets"></div>
+</div>
+
+<div class="grid" id="grid"></div>
+<div class="note" id="note"></div>
+
+<!-- settings modal (no API keys here -- keys live server-side) -->
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <h3>Settings</h3>
+    <p>Provider URLs and API keys live on the server and are never sent to your
+       browser. These options only tune the request.</p>
+    <div class="row">
+      <div>
+        <label for="reasoning">Reasoning effort</label>
+        <select id="reasoning">
+          <option value="none" selected>none (off)</option>
+          <option value="">provider default</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+        <div class="hint">"none" = no reasoning (fair speed test). "high"/"max" = longer thinking, longer TTFT.</div>
+      </div>
+      <div>
+        <label for="max-tokens">Max tokens</label>
+        <input id="max-tokens" type="number" min="16" max="8192" value="1024">
+      </div>
+    </div>
+    <label style="margin-top:14px;"><input type="checkbox" id="show-reasoning" style="width:auto;margin-right:6px;">Show reasoning stream</label>
+    <div class="actions">
+      <button class="ghost" id="settings-cancel">Cancel</button>
+      <button class="primary" id="settings-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const PRESETS = [
+  "Explain why the sky is blue in two sentences.",
+  "Write a haiku about a server that's on fire.",
+  "What are the first 10 Fibonacci numbers?",
+  "Give me three catchy names for a coffee shop that's also a bookstore.",
+];
+
+const LS_SETTINGS = "provider_compare_settings";
+function loadSettings() {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(LS_SETTINGS) || "{}"); } catch {}
+  return { reasoning: "none", maxTokens: 1024, showReasoning: true, ...s };
+}
+function saveSettings(s) { localStorage.setItem(LS_SETTINGS, JSON.stringify(s)); }
+
+let columns = [];
+let SETTINGS = loadSettings();
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function buildColumns() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  columns = [];
+  let providers = [];
+  try {
+    const r = await fetch('/api/providers');
+    if (r.ok) providers = await r.json();
+  } catch (e) {}
+  if (!providers.length) {
+    providers = [{id:0,name:'Provider A'},{id:1,name:'Provider B'},{id:2,name:'Provider C'}];
+  }
+  providers.forEach((p, i) => {
+    const col = document.createElement('section');
+    col.className = i === 0 ? 'col featured' : 'col';
+    col.innerHTML = `
+      <div class="chead">
+        <h2>${escapeHtml(p.name)}</h2>
+        <div class="badges">
+          <span class="badge" data-kind="ttft">TTFT -</span>
+          <span class="badge" data-kind="tps">- tok/s</span>
+        </div>
+      </div>
+      <div class="reasoning"></div>
+      <div class="body empty">Waiting for a prompt…</div>
+      <footer><span class="status">idle</span><span class="tokens">0 tokens</span></footer>
+    `;
+    grid.appendChild(col);
+    columns.push({
+      id: p.id, name: p.name,
+      bodyEl: col.querySelector('.body'),
+      reasoningEl: col.querySelector('.reasoning'),
+      ttftEl: col.querySelector('.badge[data-kind="ttft"]'),
+      tpsEl: col.querySelector('.badge[data-kind="tps"]'),
+      statusEl: col.querySelector('footer .status'),
+      tokensEl: col.querySelector('footer .tokens'),
+    });
+  });
+}
+
+function resetColumns() {
+  for (const c of columns) {
+    c.bodyEl.className = 'body empty';
+    c.bodyEl.textContent = 'Waiting for a prompt…';
+    c.reasoningEl.className = 'reasoning';
+    c.reasoningEl.textContent = '';
+    c.ttftEl.textContent = 'TTFT -'; c.ttftEl.className = 'badge';
+    c.tpsEl.textContent = '- tok/s'; c.tpsEl.className = 'badge';
+    c.statusEl.textContent = 'idle';
+    c.tokensEl.textContent = '0 tokens';
+    c._ttft = null; c._tps = null; c._answerChars = 0;
+  }
+}
+
+function setStreaming(c) {
+  c.bodyEl.className = 'body';
+  c.bodyEl.textContent = '';
+  c._cursor = document.createElement('span');
+  c._cursor.className = 'cursor';
+  c.bodyEl.appendChild(c._cursor);
+  c.statusEl.textContent = 'streaming…';
+  c.ttftEl.className = 'badge live';
+  c.tpsEl.className = 'badge live';
+  c._answerChars = 0;
+}
+function appendText(c, text) {
+  if (c._answerChars === 0) c.statusEl.textContent = 'streaming…';
+  c._answerChars = (c._answerChars || 0) + text.length;
+  if (c._cursor) c.bodyEl.insertBefore(document.createTextNode(text), c._cursor);
+  else c.bodyEl.appendChild(document.createTextNode(text));
+  c.bodyEl.scrollTop = c.bodyEl.scrollHeight;   // tail the bottom
+}
+function appendReasoning(c, text) {
+  if (!SETTINGS.showReasoning) return;
+  if (!c._answerChars) c.statusEl.textContent = 'thinking…';
+  c.reasoningEl.classList.add('show');
+  c.reasoningEl.textContent += text;
+  c.reasoningEl.scrollTop = c.reasoningEl.scrollHeight;   // tail the bottom
+}
+function setMetrics(c, ttft, tps) {
+  if (ttft != null) c.ttftEl.textContent = `TTFT ${ttft.toFixed(2)}s`;
+  if (tps != null) c.tpsEl.textContent = `${tps.toFixed(1)} tok/s`;
+}
+function setDone(c, ev) {
+  if (c._cursor) { c._cursor.remove(); c._cursor = null; }
+  c.ttftEl.className = 'badge done';
+  c.tpsEl.className = 'badge done';
+  if (ev && ev.ttft != null) c.ttftEl.textContent = `TTFT ${ev.ttft.toFixed(2)}s`;
+  if (ev && ev.tok_s != null) c.tpsEl.textContent = `${ev.tok_s.toFixed(1)} tok/s`;
+  if (ev && ev.out_tokens != null) c.tokensEl.textContent = `${ev.out_tokens} tokens`;
+  c.statusEl.textContent = (ev && ev.latency != null) ? `done in ${ev.latency.toFixed(2)}s` : 'done';
+  const ttft = ev ? ev.ttft : null, tps = ev ? ev.tok_s : null;
+  c._ttft = (ttft != null && isFinite(ttft) && ttft > 0) ? ttft : null;
+  c._tps = (tps != null && isFinite(tps) && tps > 0) ? tps : null;
+}
+function setError(c, msg) {
+  if (c._cursor) { c._cursor.remove(); c._cursor = null; }
+  c.bodyEl.className = 'body error';
+  c.bodyEl.textContent = `Error: ${msg || 'unknown'}`;
+  c.statusEl.textContent = 'error';
+  c.ttftEl.className = 'badge'; c.tpsEl.className = 'badge';
+}
+
+// Award 🥇🥈🥉 across columns: lowest TTFT and highest tok/s win.
+const MEDALS = ["🥇", "🥈", "🥉"];
+function awardMedals() {
+  const byTtft = columns.filter(c => c._ttft != null).sort((a, b) => a._ttft - b._ttft);
+  const byTps = columns.filter(c => c._tps != null).sort((a, b) => b._tps - a._tps);
+  const medal = (el, i) => {
+    if (i >= 3) return;
+    el.innerHTML = `<span class="medal">${MEDALS[i]}</span>${escapeHtml(el.textContent)}`;
+  };
+  byTtft.forEach((c, i) => medal(c.ttftEl, i));
+  byTps.forEach((c, i) => medal(c.tpsEl, i));
+  // Clean sweep: the same column is #1 in BOTH TTFT and tok/s -> celebrate.
+  if (columns.length > 1 && byTtft.length && byTps.length && byTtft[0] === byTps[0]) {
+    celebrateChampion(byTtft[0]);
+  }
+}
+
+const CONFETTI_COLORS = ['#6C4FF6', '#2E8B57', '#D97757', '#C2185B', '#f5c542', '#3b82f6'];
+function celebrateChampion(c) {
+  const colEl = c.bodyEl.closest('.col');
+  if (colEl) {
+    colEl.classList.remove('champion');
+    void colEl.offsetWidth;   // reflow so the animation restarts on repeat wins
+    colEl.classList.add('champion');
+  }
+  fireConfetti(colEl);
+}
+function fireConfetti(originEl) {
+  const rect = (originEl || document.body).getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + Math.min(rect.height / 2, 160);
+  const N = 130;
+  for (let i = 0; i < N; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.background = CONFETTI_COLORS[i % CONFETTI_COLORS.length];
+    piece.style.left = cx + 'px';
+    piece.style.top = cy + 'px';
+    document.body.appendChild(piece);
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 6 + Math.random() * 9;
+    let vx = Math.cos(angle) * speed;
+    let vy = Math.sin(angle) * speed - 7;   // bias the initial burst upward
+    let x = 0, y = 0, rot = Math.random() * 360;
+    const rotSpeed = (Math.random() - 0.5) * 22;
+    const maxLife = 90 + Math.random() * 40;
+    let life = 0;
+    (function step() {
+      life++;
+      vy += 0.35;            // gravity
+      vx *= 0.99;
+      x += vx; y += vy; rot += rotSpeed;
+      piece.style.transform = `translate(${x}px, ${y}px) rotate(${rot}deg)`;
+      piece.style.opacity = String(Math.max(0, 1 - life / maxLife));
+      if (life < maxLife) requestAnimationFrame(step);
+      else piece.remove();
+    })();
+  }
+}
+
+async function race() {
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) return;
+  resetColumns();
+  for (const c of columns) setStreaming(c);
+  document.getElementById('race').disabled = true;
+
+  let reader, decoder, buf = '';
+  try {
+    const r = await fetch('/api/race', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ prompt, reasoning: SETTINGS.reasoning, maxTokens: SETTINGS.maxTokens }),
+    });
+    if (!r.ok || !r.body) {
+      const txt = await r.text();
+      for (const c of columns) setError(c, `HTTP ${r.status}: ${txt}`);
+      return;
+    }
+    reader = r.body.getReader();
+    decoder = new TextDecoder();
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          let ev; try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          const c = columns[ev.column];
+          if (!c) continue;
+          if (ev.type === 'tok') appendText(c, ev.text);
+          else if (ev.type === 'reason') appendReasoning(c, ev.text);
+          else if (ev.type === 'metric') setMetrics(c, ev.ttft, ev.tok_s);
+          else if (ev.type === 'error') setError(c, ev.error);
+          else if (ev.type === 'done') setDone(c, ev);
+        }
+      }
+    }
+  } catch (e) {
+    for (const c of columns) if (c.statusEl.textContent === 'streaming…' || c.statusEl.textContent === 'thinking…') setError(c, String(e));
+  } finally {
+    awardMedals();
+    document.getElementById('race').disabled = false;
+  }
+}
+
+// ---- settings modal --------------------------------------------------------
+function openSettings() {
+  document.getElementById('reasoning').value = SETTINGS.reasoning;
+  document.getElementById('max-tokens').value = SETTINGS.maxTokens;
+  document.getElementById('show-reasoning').checked = SETTINGS.showReasoning;
+  document.getElementById('modal-bg').classList.add('show');
+}
+function closeSettings() { document.getElementById('modal-bg').classList.remove('show'); }
+function saveSettingsFromModal() {
+  SETTINGS = {
+    reasoning: document.getElementById('reasoning').value,
+    maxTokens: parseInt(document.getElementById('max-tokens').value, 10) || 1024,
+    showReasoning: document.getElementById('show-reasoning').checked,
+  };
+  saveSettings(SETTINGS);
+  closeSettings();
+}
+
+function init() {
+  document.getElementById('race').addEventListener('click', race);
+  document.getElementById('clear').addEventListener('click', () => {
+    resetColumns();
+    document.getElementById('prompt').value = '';
+  });
+  document.getElementById('prompt').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) race();
+  });
+  document.getElementById('settings-cancel').addEventListener('click', closeSettings);
+  document.getElementById('settings-save').addEventListener('click', saveSettingsFromModal);
+  document.getElementById('modal-bg').addEventListener('click', e => {
+    if (e.target.id === 'modal-bg') closeSettings();
+  });
+  const presets = document.getElementById('presets');
+  for (const p of PRESETS) {
+    const b = document.createElement('button');
+    b.textContent = p.length > 40 ? p.slice(0, 40) + '…' : p;
+    b.title = p;
+    b.addEventListener('click', () => { document.getElementById('prompt').value = p; });
+    presets.appendChild(b);
+  }
+  buildColumns();
+  
+}
+
+init();
+</script>
+</body>
+</html>

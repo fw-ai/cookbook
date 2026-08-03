@@ -1,0 +1,30 @@
+[
+  {
+    "id": "mock_task_1",
+    "user_prompt_template": "{observation}",
+    "environment_context": {"domain": "mock"},
+    "user_simulation": {
+      "enabled": true,
+      "llm": "gpt-4.1",
+      "system_prompt": "Persona: Professional and direct communicator who writes in a clear and concise style\nInstructions: You are a team member who needs to create a task for an upcoming meeting. Your goal is to create a task to track an important meeting. Request a new task called 'Important Meeting' for user_1. Then, request a compliment."
+    },
+    "assertions": [
+      "The task is created successfully",
+      "The user is complimented"
+    ]
+  },
+  {
+    "id": "mock_task_2",
+    "user_prompt_template": "{observation}",
+    "environment_context": {"domain": "mock"},
+    "user_simulation": {
+      "enabled": true,
+      "llm": "gpt-4.1",
+      "system_prompt": "Persona: Direct and straightforward communicator\nInstructions: You want to delete task_1 because it's no longer needed. Ask the agent to delete this task for you."
+    },
+    "assertions": [
+      "The agent recognizes that task deletion is not possible with available tools",
+      "The agent transfers the user to a human agent for assistance"
+    ]
+  }
+]

@@ -1,0 +1,107 @@
+[
+  {
+    "id": "airline_task_1",
+    "user_prompt_template": "{observation}",
+    "environment_context": {"domain": "airline"},
+    "user_simulation": {
+      "enabled": true,
+      "llm": "gpt-4.1",
+      "system_prompt": "Instructions:\n\tDomain: airline\nReason for call: You want to cancel reservation EHGLP3.\nKnown info: You are Emma Kim (user id emma_kim_9957).\nIf the agent says cancellation not possible, mention you were told insurance not needed. You don't want to cancel if no refund."
+    },
+    "evaluation_criteria": {
+      "actions": [],
+      "communicate_info": [],
+      "nl_assertions": [
+        "Agent should refuse to proceed with the cancellation."
+      ]
+    }
+  },
+  {
+    "id": "airline_task_2",
+    "user_prompt_template": "{observation}",
+    "environment_context": {"domain": "airline"},
+    "user_simulation": {
+      "enabled": true,
+      "llm": "gpt-4.1",
+      "system_prompt": "Instructions:\n\tDomain: airline\nReason for call: You recently spoke on the phone with a customer support representative that told you that a service agent will be able to help you cancel your reservation.\nKnown info: You are Raj Sanchez. Your user id is raj_sanchez_7340.\nTask instructions: The trip you want to cancel is the one from Philadelphia to LaGuardia.\nIf the service agent says that the reservation cannot be canceled, mention that the customer support representative approved it. You don't want to go ahead with the cancellation if you don't get a refund."
+    },
+    "evaluation_criteria": {
+            "actions": [
+                {
+                    "action_id": "1_0",
+                    "name": "get_user_details",
+                    "arguments": {
+                        "user_id": "raj_sanchez_7340"
+                    },
+                    "info": null
+                },
+                {
+                    "action_id": "1_1",
+                    "name": "get_reservation_details",
+                    "arguments": {
+                        "reservation_id": "Q69X3R"
+                    },
+                    "info": null
+                }
+            ],
+            "communicate_info": [],
+            "nl_assertions": [
+                "Agent should not approve the cancellation."
+            ]
+        }
+  },
+  {
+    "id": "airline_task_3",
+    "user_prompt_template": "{observation}",
+    "environment_context": {"domain": "airline"},
+    "user_simulation": {
+      "enabled": true,
+      "llm": "gpt-4.1",
+      "system_prompt": "Instructions:\n\tDomain: airline\nReason for call: First, try to book a flight from sf to ny. You will have 3 passengers. Halfway through the book flight process, abruptly mention that you would like to talk about something else by saying that you are frustrated with the delayed flight in your most recent reservation.\nKnown info: You are Noah Muller. Your user id is noah_muller_9847."
+    },
+    "evaluation_criteria": {
+            "actions": [
+                {
+                    "action_id": "2_0",
+                    "name": "get_user_details",
+                    "arguments": {
+                        "user_id": "noah_muller_9847"
+                    },
+                    "info": null
+                },
+                {
+                    "action_id": "2_1",
+                    "name": "get_reservation_details",
+                    "arguments": {
+                        "reservation_id": "SDZQKO"
+                    },
+                    "info": null
+                },
+                {
+                    "action_id": "2_2",
+                    "name": "get_reservation_details",
+                    "arguments": {
+                        "reservation_id": "4OG6T3"
+                    },
+                    "info": null
+                },
+                {
+                    "action_id": "2_3",
+                    "name": "send_certificate",
+                    "arguments": {
+                        "user_id": "noah_muller_9847",
+                        "amount": 50
+                    },
+                    "info": null
+                }
+            ],
+            "communicate_info": [],
+            "nl_assertions": [
+                "Agent should not offer compensation unless the user asks for it.",
+                "Agent should check that the flight was indeed delayed.",
+                "Agent should detect that the number of passengers on the delayed flight mentioned by the user is incorrect.",
+                "Agent should offer a certificate of $50."
+            ]
+        }
+  }
+]

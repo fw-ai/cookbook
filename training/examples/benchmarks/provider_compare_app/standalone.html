@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Provider speed comparison (standalone)</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --border: #e2e5ec; --text: #1a1d24;
+    --muted: #6b7280; --accent: #6C4FF6; --accent-soft: #efeafe;
+    --field: #f0f1f4; --good: #2E8B57; --warn: #D97757; --bad: #C2185B;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  header.top {
+    padding: 18px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header.top h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header.top .sub { color: var(--muted); font-size: 13px; flex: 1 1 320px; }
+  .composer {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  }
+  .composer textarea {
+    flex: 1 1 480px; min-height: 70px; max-height: 200px; resize: vertical;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; font: inherit; font-size: 14px;
+  }
+  .composer textarea:focus { outline: none; border-color: var(--accent); }
+  button.primary {
+    background: var(--accent); color: white; border: 0; border-radius: 8px;
+    padding: 12px 20px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.primary:hover { filter: brightness(1.1); }
+  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.ghost {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; font: inherit; cursor: pointer;
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--text); }
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; }
+  .presets button {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  .presets button:hover { color: var(--text); border-color: var(--text); }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px; padding: 20px 24px;
+  }
+  .col {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    display: flex; flex-direction: column; min-height: 360px;
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.04);
+  }
+  /* First column = Fireworks: purple highlight. */
+  .col.featured {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent), 0 6px 20px rgba(108, 79, 246, 0.12);
+  }
+  .col.featured .chead { background: var(--accent-soft); }
+  .col.featured h2 { color: var(--accent); }
+  .col .chead {
+    padding: 12px 14px; border-bottom: 1px solid var(--border); border-radius: 12px 12px 0 0;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .col h2 { font-size: 13px; margin: 0; font-weight: 600; }
+  .badges { display: flex; gap: 6px; }
+  .badge {
+    font-size: 11px; padding: 3px 7px; border-radius: 6px;
+    background: var(--field); border: 1px solid var(--border); color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .badge.live { color: var(--accent); border-color: var(--accent); }
+  .badge.done { color: var(--good); border-color: var(--good); }
+  .col .body {
+    padding: 14px; font-size: 14px; line-height: 1.5; white-space: pre-wrap;
+    word-wrap: break-word; overflow-wrap: anywhere; height: 280px; overflow-y: auto;
+  }
+  /* Medal awarded to the fastest/highest column, shown big on the badge. */
+  .badge .medal { font-size: 20px; line-height: 1; margin-right: 3px; vertical-align: -3px; }
+  .col .body.empty { color: var(--muted); font-style: italic; }
+  .col .body .cursor { display: inline-block; width: 7px; height: 15px;
+    background: var(--accent); margin-left: 1px; vertical-align: text-bottom;
+    animation: blink 1s steps(2, start) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .col .body.error { color: var(--bad); }
+  .col .reasoning {
+    margin: 0 14px 10px; padding: 8px 10px; border-left: 2px solid var(--border);
+    color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-wrap;
+    max-height: 120px; overflow-y: auto; display: none;
+  }
+  .col .reasoning.show { display: block; }
+  .col footer {
+    padding: 8px 14px; border-top: 1px solid var(--border); font-size: 11px;
+    color: var(--muted); display: flex; justify-content: space-between;
+    font-variant-numeric: tabular-nums;
+  }
+  .note { padding: 0 24px 24px; color: var(--muted); font-size: 12px; }
+  /* settings modal */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(16,24,40,0.35); display: none;
+    align-items: center; justify-content: center; z-index: 10;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 22px; width: min(520px, 92vw); max-height: 90vh; overflow-y: auto;
+  }
+  .modal h3 { margin: 0 0 4px; font-size: 15px; }
+  .modal p { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
+  .modal label { display: block; font-size: 12px; margin: 12px 0 4px; color: var(--text); }
+  .modal input, .modal select {
+    width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font: inherit; font-size: 13px;
+  }
+  .modal input:focus, .modal select:focus { outline: none; border-color: var(--accent); }
+  .modal .row { display: flex; gap: 10px; align-items: flex-end; }
+  .modal .row > div { flex: 1; }
+  .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+  .modal .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  code { background: var(--field); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Provider speed comparison</h1>
+  <span class="sub">Static page — talks to each provider directly from your browser (no backend). Each column shows TTFT and decode tok/s (excludes prefill).</span>
+  <button class="ghost" id="settings-btn">Settings</button>
+</header>
+
+<div class="composer">
+  <textarea id="prompt" placeholder="Ask anything... e.g. 'Explain why the sky is blue in two sentences.'"></textarea>
+  <button class="primary" id="race">Race</button>
+  <button class="ghost" id="clear">Clear</button>
+</div>
+<div class="composer" style="padding-top: 0; border-bottom: none;">
+  <div class="presets" id="presets"></div>
+</div>
+
+<div class="grid" id="grid"></div>
+<div class="note" id="note"></div>
+
+<!-- settings modal -->
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <h3>API keys &amp; settings</h3>
+    <p>Keys are stored only in this browser (<code>localStorage</code>) and sent directly to each
+       provider. Nothing is uploaded anywhere else. For local/personal use only.</p>
+    <div id="key-inputs"></div>
+    <div class="row">
+      <div>
+        <label for="reasoning">Reasoning effort</label>
+        <select id="reasoning">
+          <option value="none" selected>none (off)</option>
+          <option value="">provider default</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+        <div class="hint">"none" = no reasoning (fair speed test). "high"/"max" = longer thinking, longer TTFT.</div>
+      </div>
+      <div>
+        <label for="max-tokens">Max tokens</label>
+        <input id="max-tokens" type="number" min="16" max="8192" value="4096">
+      </div>
+    </div>
+    <label style="margin-top:14px;"><input type="checkbox" id="show-reasoning" style="width:auto;margin-right:6px;">Show reasoning stream</label>
+    <div class="actions">
+      <button class="ghost" id="settings-cancel">Cancel</button>
+      <button class="primary" id="settings-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- provider config -------------------------------------------------------
+// Direct browser -> provider calls. All three send permissive CORS headers so
+// the browser is allowed to POST to them cross-origin. `key` is resolved at
+// run time from window.PROVIDER_KEYS (optional config.local.js) or localStorage.
+// `reasoningOff` = body fields merged in to DISABLE reasoning. The switch is
+// provider-specific (verified by probing): Fireworks honors reasoning_effort,
+// Together ignores it and needs chat_template_kwargs.enable_thinking=false,
+// Baseten never reasons regardless.
+const PROVIDERS = [
+  {
+    name: "Fireworks GLM-5.2 Fast",
+    url: "https://api.fireworks.ai/inference/v1/chat/completions",
+    model: "accounts/fireworks/routers/glm-5p2-fast",
+    keyName: "FIREWORKS_API_KEY",
+    reasoningOff: { reasoning_effort: "none" },
+  },
+  {
+    name: "Baseten GLM-5.2",
+    url: "https://inference.baseten.co/v1/chat/completions",
+    model: "zai-org/GLM-5.2",
+    keyName: "BASETEN_API_KEY",
+    reasoningOff: { reasoning_effort: "none" },
+  },
+  {
+    name: "Together GLM-5.2",
+    url: "https://api.together.xyz/v1/chat/completions",
+    model: "zai-org/GLM-5.2",
+    keyName: "TOGETHER_API_KEY",
+    reasoningOff: { chat_template_kwargs: { enable_thinking: false } },
+  },
+];
+
+const PRESETS = [
+  "Explain why the sky is blue in two sentences.",
+  "Write a haiku about a server that's on fire.",
+  "What are the first 10 Fibonacci numbers?",
+  "Give me three catchy names for a coffee shop that's also a bookstore.",
+];
+
+const LS_KEYS = "provider_compare_keys";
+const LS_SETTINGS = "provider_compare_settings";
+
+function loadKeys() {
+  // Precedence: optional config.local.js (window.PROVIDER_KEYS) overrides, then
+  // localStorage. config.local.js lets you inject keys from your .env via a
+  // gitignored file instead of pasting them into the UI.
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(LS_KEYS) || "{}"); } catch {}
+  const injected = window.PROVIDER_KEYS || {};
+  return { ...stored, ...injected };
+}
+function saveKeys(obj) { localStorage.setItem(LS_KEYS, JSON.stringify(obj)); }
+
+function loadSettings() {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(LS_SETTINGS) || "{}"); } catch {}
+  return { reasoning: "none", maxTokens: 4096, showReasoning: true, ...s };
+}
+function saveSettings(s) { localStorage.setItem(LS_SETTINGS, JSON.stringify(s)); }
+
+let columns = [];
+let SETTINGS = loadSettings();
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function buildColumns() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  columns = [];
+  PROVIDERS.forEach((p, i) => {
+    const col = document.createElement('section');
+    col.className = i === 0 ? 'col featured' : 'col';
+    col.innerHTML = `
+      <div class="chead">
+        <h2>${escapeHtml(p.name)}</h2>
+        <div class="badges">
+          <span class="badge" data-kind="ttft">TTFT -</span>
+          <span class="badge" data-kind="tps">- tok/s</span>
+        </div>
+      </div>
+      <div class="reasoning"></div>
+      <div class="body empty">Waiting for a prompt…</div>
+      <footer><span class="status">idle</span><span class="tokens">0 tokens</span></footer>
+    `;
+    grid.appendChild(col);
+    columns.push({
+      idx: i, cfg: p,
+      bodyEl: col.querySelector('.body'),
+      reasoningEl: col.querySelector('.reasoning'),
+      ttftEl: col.querySelector('.badge[data-kind="ttft"]'),
+      tpsEl: col.querySelector('.badge[data-kind="tps"]'),
+      statusEl: col.querySelector('footer .status'),
+      tokensEl: col.querySelector('footer .tokens'),
+    });
+  });
+}
+
+function resetColumns() {
+  for (const c of columns) {
+    c.bodyEl.className = 'body empty';
+    c.bodyEl.textContent = 'Waiting for a prompt…';
+    c.reasoningEl.className = 'reasoning';
+    c.reasoningEl.textContent = '';
+    c.ttftEl.textContent = 'TTFT -'; c.ttftEl.className = 'badge';
+    c.tpsEl.textContent = '- tok/s'; c.tpsEl.className = 'badge';
+    c.statusEl.textContent = 'idle';
+    c.tokensEl.textContent = '0 tokens';
+    c._ttft = null; c._tps = null;
+  }
+}
+
+function setStreaming(c) {
+  c.bodyEl.className = 'body';
+  c.bodyEl.textContent = '';
+  c._cursor = document.createElement('span');
+  c._cursor.className = 'cursor';
+  c.bodyEl.appendChild(c._cursor);
+  c.statusEl.textContent = 'streaming…';
+  c.ttftEl.className = 'badge live';
+  c.tpsEl.className = 'badge live';
+}
+function appendText(c, text) {
+  if (c._cursor) c.bodyEl.insertBefore(document.createTextNode(text), c._cursor);
+  else c.bodyEl.appendChild(document.createTextNode(text));
+  c.bodyEl.scrollTop = c.bodyEl.scrollHeight;   // tail the bottom
+}
+function appendReasoning(c, text) {
+  if (!SETTINGS.showReasoning) return;
+  c.reasoningEl.classList.add('show');
+  c.reasoningEl.textContent += text;
+  c.reasoningEl.scrollTop = c.reasoningEl.scrollHeight;   // tail the bottom
+}
+function setMetrics(c, ttft, tps) {
+  if (ttft != null) c.ttftEl.textContent = `TTFT ${ttft.toFixed(2)}s`;
+  if (tps != null) c.tpsEl.textContent = `${tps.toFixed(1)} tok/s`;
+}
+function setDone(c, { ttft, tps, outTokens, latency }) {
+  if (c._cursor) { c._cursor.remove(); c._cursor = null; }
+  c.ttftEl.className = 'badge done';
+  c.tpsEl.className = 'badge done';
+  if (ttft != null) c.ttftEl.textContent = `TTFT ${ttft.toFixed(2)}s`;
+  if (tps != null) c.tpsEl.textContent = `${tps.toFixed(1)} tok/s`;
+  if (outTokens != null) c.tokensEl.textContent = `${outTokens} tokens`;
+  c.statusEl.textContent = latency != null ? `done in ${latency.toFixed(2)}s` : 'done';
+  // Stash final metrics so we can rank columns once the whole race finishes.
+  c._ttft = (ttft != null && isFinite(ttft) && ttft > 0) ? ttft : null;
+  c._tps = (tps != null && isFinite(tps) && tps > 0) ? tps : null;
+}
+
+// Award 🥇🥈🥉 across columns: lowest TTFT and highest tok/s win.
+const MEDALS = ["🥇", "🥈", "🥉"];
+function awardMedals() {
+  const byTtft = columns.filter(c => c._ttft != null).sort((a, b) => a._ttft - b._ttft);
+  const byTps = columns.filter(c => c._tps != null).sort((a, b) => b._tps - a._tps);
+  const medal = (el, i) => {
+    if (i >= 3) return;
+    el.innerHTML = `<span class="medal">${MEDALS[i]}</span>${escapeHtml(el.textContent)}`;
+  };
+  byTtft.forEach((c, i) => medal(c.ttftEl, i));
+  byTps.forEach((c, i) => medal(c.tpsEl, i));
+}
+function setError(c, msg) {
+  if (c._cursor) { c._cursor.remove(); c._cursor = null; }
+  c.bodyEl.className = 'body error';
+  c.bodyEl.textContent = `Error: ${msg || 'unknown'}`;
+  c.statusEl.textContent = 'error';
+  c.ttftEl.className = 'badge'; c.tpsEl.className = 'badge';
+}
+
+// ---- one streaming request, parsed as SSE ---------------------------------
+async function streamProvider(c, prompt, key) {
+  const cfg = c.cfg;
+  const body = {
+    model: cfg.model,
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: SETTINGS.maxTokens,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  if (SETTINGS.reasoning === "none") {
+    // Provider-specific way to turn thinking OFF (see PROVIDERS.reasoningOff).
+    Object.assign(body, cfg.reasoningOff || { reasoning_effort: "none" });
+  } else if (SETTINGS.reasoning) {
+    body.reasoning_effort = SETTINGS.reasoning;
+  }
+
+  const t0 = performance.now();
+  let ttft = null, answerChars = 0, outTokens = null;
+
+  const r = await fetch(cfg.url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok || !r.body) {
+    const txt = await r.text().catch(() => "");
+    throw new Error(`HTTP ${r.status}: ${txt.slice(0, 200)}`);
+  }
+
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (payload === "[DONE]") continue;
+      let ev; try { ev = JSON.parse(payload); } catch { continue; }
+      const delta = ev.choices && ev.choices[0] ? ev.choices[0].delta : null;
+      const piece = delta ? delta.content : null;
+      // Reasoning field name varies by provider: Fireworks uses
+      // `reasoning_content`, Together uses `reasoning`. Baseten emits no
+      // separate reasoning channel (it streams thinking inline as content).
+      const rPiece = delta ? (delta.reasoning_content ?? delta.reasoning) : null;
+      if (piece || rPiece) {
+        if (ttft === null) {
+          ttft = (performance.now() - t0) / 1000;
+          setMetrics(c, ttft, 0);
+        }
+        if (piece) {
+          if (answerChars === 0) c.statusEl.textContent = 'streaming…';
+          appendText(c, piece);
+          answerChars += piece.length;
+        } else if (rPiece && answerChars === 0) {
+          // Only reasoning so far -- the model is thinking, no visible answer yet.
+          c.statusEl.textContent = 'thinking…';
+        }
+        if (rPiece) appendReasoning(c, rPiece);
+        const elapsedDecode = (performance.now() - t0) / 1000 - ttft;
+        if (elapsedDecode > 0 && answerChars > 0) setMetrics(c, ttft, (answerChars / 4) / elapsedDecode);
+      }
+      if (ev.usage && ev.usage.completion_tokens != null) outTokens = ev.usage.completion_tokens;
+    }
+  }
+  const dt = (performance.now() - t0) / 1000;
+  if (outTokens == null) outTokens = Math.round(answerChars / 4); // rough fallback
+  const tps = (outTokens && ttft != null && dt > ttft) ? outTokens / (dt - ttft) : 0;
+  setDone(c, { ttft, tps, outTokens, latency: dt });
+}
+
+async function race() {
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) return;
+  const keys = loadKeys();
+  const missing = PROVIDERS.filter(p => !keys[p.keyName]).map(p => p.keyName);
+  if (missing.length === PROVIDERS.length) { openSettings(); return; }
+
+  resetColumns();
+  document.getElementById('race').disabled = true;
+  await Promise.all(columns.map(async c => {
+    const key = keys[c.cfg.keyName];
+    if (!key) { setError(c, `Missing ${c.cfg.keyName} — add it in Settings.`); return; }
+    setStreaming(c);
+    try { await streamProvider(c, prompt, key); }
+    catch (e) { setError(c, String(e.message || e)); }
+  }));
+  awardMedals();
+  document.getElementById('race').disabled = false;
+}
+
+// ---- settings modal --------------------------------------------------------
+function renderKeyInputs() {
+  const keys = loadKeys();
+  const wrap = document.getElementById('key-inputs');
+  wrap.innerHTML = '';
+  for (const p of PROVIDERS) {
+    const injected = window.PROVIDER_KEYS && window.PROVIDER_KEYS[p.keyName];
+    const div = document.createElement('div');
+    div.innerHTML = `
+      <label>${escapeHtml(p.keyName)} <span style="color:var(--muted)">(${escapeHtml(p.name)})</span></label>
+      <input type="password" data-key="${escapeHtml(p.keyName)}"
+             value="${escapeHtml(keys[p.keyName] || '')}"
+             placeholder="${injected ? 'set via config.local.js' : 'paste key…'}"
+             ${injected ? 'disabled' : ''}>
+    `;
+    wrap.appendChild(div);
+  }
+}
+function openSettings() {
+  renderKeyInputs();
+  document.getElementById('reasoning').value = SETTINGS.reasoning;
+  document.getElementById('max-tokens').value = SETTINGS.maxTokens;
+  document.getElementById('show-reasoning').checked = SETTINGS.showReasoning;
+  document.getElementById('modal-bg').classList.add('show');
+}
+function closeSettings() { document.getElementById('modal-bg').classList.remove('show'); }
+function saveSettingsFromModal() {
+  const keys = loadKeys();
+  document.querySelectorAll('#key-inputs input[data-key]').forEach(inp => {
+    if (inp.disabled) return; // injected via config.local.js
+    const name = inp.getAttribute('data-key');
+    if (inp.value.trim()) keys[name] = inp.value.trim();
+    else delete keys[name];
+  });
+  saveKeys(keys);
+  SETTINGS = {
+    reasoning: document.getElementById('reasoning').value,
+    maxTokens: parseInt(document.getElementById('max-tokens').value, 10) || 1024,
+    showReasoning: document.getElementById('show-reasoning').checked,
+  };
+  saveSettings(SETTINGS);
+  closeSettings();
+}
+
+function init() {
+  buildColumns();
+  document.getElementById('race').addEventListener('click', race);
+  document.getElementById('clear').addEventListener('click', () => {
+    resetColumns();
+    document.getElementById('prompt').value = '';
+  });
+  document.getElementById('prompt').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) race();
+  });
+  document.getElementById('settings-btn').addEventListener('click', openSettings);
+  document.getElementById('settings-cancel').addEventListener('click', closeSettings);
+  document.getElementById('settings-save').addEventListener('click', saveSettingsFromModal);
+  document.getElementById('modal-bg').addEventListener('click', e => {
+    if (e.target.id === 'modal-bg') closeSettings();
+  });
+
+  const presets = document.getElementById('presets');
+  for (const p of PRESETS) {
+    const b = document.createElement('button');
+    b.textContent = p.length > 40 ? p.slice(0, 40) + '…' : p;
+    b.title = p;
+    b.addEventListener('click', () => { document.getElementById('prompt').value = p; });
+    presets.appendChild(b);
+  }
+
+  document.getElementById('note').textContent =
+    'No backend — your browser calls each provider directly. Keys live in this browser only. ' +
+    'Each Race click sends 3 paid requests. tok/s excludes prefill (AA Output Speed). Cmd/Ctrl+Enter to Race.';
+
+  const keys = loadKeys();
+  if (PROVIDERS.every(p => !keys[p.keyName])) openSettings();
+}
+
+// optional gitignored key injection
+const s = document.createElement('script');
+s.src = 'config.local.js';
+s.onload = init;
+s.onerror = init; // file is optional
+document.head.appendChild(s);
+</script>
+</body>
+</html>

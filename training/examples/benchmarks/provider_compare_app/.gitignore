@@ -1,0 +1,2 @@
+# Local key injection for standalone.html — never commit real keys.
+config.local.js
