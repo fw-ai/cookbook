@@ -15,8 +15,7 @@ This Cursor workspace spans four repos. Each has a distinct role — do not conf
 
 | Path | Repo | Role | When to touch it |
 | --- | --- | --- | --- |
-| `/Users/sinan/cookbook-casestudies` | `fw-ai/cookbook` (worktree) | **WIP sandbox** — experiments, scratch notebooks, large local data | Always start here for case-study work |
-| `/Users/sinan/cookbook` | `fw-ai/cookbook` (main worktree) | Stable checkout on `main` | Avoid for messy WIP |
+| `/Users/sinan/cookbook` | `fw-ai/cookbook` | **WIP sandbox** — experiments, scratch notebooks, large local data, on a `case-studies/*` branch | Always start here for case-study work |
 | `/Users/sinan/fireworks/public-repos/cookbook` | Private staging snapshot | **Promotion target** for reviewed cookbook changes | When a case study is ready to ship |
 | `/Users/sinan/fireworks/public-repos/python-sdk` | Private staging snapshot | SDK / Training API protocol changes | When recipes need SDK seam changes |
 | `/Users/sinan/docs` | Public docs (Mintlify) | User-facing documentation | When shipping needs docs updates |
@@ -26,13 +25,13 @@ This Cursor workspace spans four repos. Each has a distinct role — do not conf
 ### Promotion pipeline (canonical)
 
 ```
-cookbook-casestudies          WIP: develop freely, keep heavy artifacts local
+cookbook (case-studies/* branch)   WIP: develop freely, keep heavy artifacts local
         │
         ▼  curate & copy reviewed files
 fireworks/public-repos/cookbook    staging PR in fw-ai/fireworks
         │
         ▼  merge + automation (public_repo_promote.yml)
-fw-ai/cookbook (public)       published cookbook
+fw-ai/cookbook (public)            published cookbook
 ```
 
 **Hard rule:** Do not open PRs directly to `fw-ai/cookbook` or
@@ -41,24 +40,19 @@ after merge. See `fireworks/public-repos/CLAUDE.md`.
 
 ---
 
-## Git worktree layout
+## Repo layout
 
-`cookbook-casestudies` is a **git worktree** of the public cookbook repo:
-
-```
-/Users/sinan/cookbook              → main worktree, branch main
-/Users/sinan/cookbook-casestudies  → feature worktree, branch case-studies/*
-```
-
-Remote for both: `git@github.com:fw-ai/cookbook.git`
+All cookbook work happens in a single checkout at `/Users/sinan/cookbook`
+(remote `git@github.com:fw-ai/cookbook.git`). Case-study WIP lives on
+`case-studies/*` branches; `main` tracks published cookbook state.
 
 **Branch naming:** `case-studies/<short-name>` (e.g. `case-studies/embedding-support-search`,
 `case-studies/agentic-rl-text2sql`).
 
-**Create a new case-study branch (if needed):**
+**Create a new case-study branch:**
 
 ```bash
-cd /Users/sinan/cookbook-casestudies
+cd /Users/sinan/cookbook
 git checkout -b case-studies/<name>
 ```
 
@@ -77,7 +71,7 @@ When the user asks about cookbook training, case studies, or fine-tuning recipes
 ### Primary directories (WIP repo)
 
 ```
-cookbook-casestudies/
+cookbook/
 ├── WORKFLOW.md              ← this file (process)
 ├── CLAUDE.md                ← agent rules for this repo
 ├── training/
@@ -109,7 +103,7 @@ when case studies are promoted.
 
 ## Development workflow
 
-### Phase 1 — Explore in WIP (`cookbook-casestudies`)
+### Phase 1 — Explore in WIP (`cookbook`)
 
 Do all messy work here:
 
@@ -125,7 +119,7 @@ Do all messy work here:
 **Install (from `training/README.md`):**
 
 ```bash
-cd /Users/sinan/cookbook-casestudies/training
+cd /Users/sinan/cookbook/training
 uv venv --python 3.12 && source .venv/bin/activate
 uv pip install --pre -e .
 ```
@@ -160,7 +154,7 @@ Copy curated files into the matching path under staging:
 ```bash
 # Example: promote agentic_rl_text2sql
 STAGING=/Users/sinan/fireworks/public-repos/cookbook/training/case-studies/agentic_rl_text2sql
-WIP=/Users/sinan/cookbook-casestudies/training/case-studies/agentic_rl_text2sql
+WIP=/Users/sinan/cookbook/training/case-studies/agentic_rl_text2sql
 
 mkdir -p "$STAGING"
 rsync -av --exclude='*.log' --exclude='dev_databases/' --exclude='chromadb_text2sql/' \
@@ -176,7 +170,7 @@ If the change touches shared recipes or utils, copy those paths too:
 
 ```bash
 # Shared code example
-rsync -av /Users/sinan/cookbook-casestudies/training/utils/<file>.py \
+rsync -av /Users/sinan/cookbook/training/utils/<file>.py \
   /Users/sinan/fireworks/public-repos/cookbook/training/utils/
 ```
 
@@ -234,7 +228,7 @@ fireworks PR and update `skills/fireworks-training/` docs.
 
 ### Do
 
-- Start in `cookbook-casestudies` for all case-study WIP.
+- Start in `cookbook` (on a `case-studies/*` branch) for all case-study WIP.
 - Read the case-study README and notebook before editing.
 - Keep heavy artifacts local; provide regeneration scripts instead.
 - Promote through `fireworks/public-repos/cookbook/`.
@@ -251,7 +245,7 @@ fireworks PR and update `skills/fireworks-training/` docs.
 - Don't put infra provisioning logic in case-study notebooks — use SDK seams.
 - Don't hard-code regions, deployment regions, or infer region from accelerator type.
 - Don't edit `archived/` unless explicitly asked.
-- Don't assume `cookbook-casestudies` and staging are in sync — WIP is ahead by design.
+- Don't assume the `case-studies/*` branch and staging are in sync — WIP is ahead by design.
 
 ---
 
@@ -274,7 +268,7 @@ Use this before copying a case study to staging:
 
 ## Current WIP inventory
 
-Case studies in `cookbook-casestudies/training/case-studies/` (WIP):
+Case studies in `cookbook/training/case-studies/` (WIP):
 
 | Folder | Status hint |
 | --- | --- |
@@ -282,7 +276,7 @@ Case studies in `cookbook-casestudies/training/case-studies/` (WIP):
 | `sft_judge_alignment` | WIP — has README, ready for promotion review |
 | `agentic_rl_text2sql` | Active WIP — inference + RL loop notebooks |
 | `countdown_rl`, `agentic_rl_tau2`, `coding_agent_rl_simple` | WIP case studies |
-| `coding_eval_braintrust`, `embedding_retrieval_repro`, `judge_calibration` | WIP / repro |
+| `coding_eval_braintrust`, `judge_calibration` | WIP / repro |
 | `multilora_fleet`, `humansound_rl`, `sft_prompt_router_serverless` | WIP / specialized |
 
 Staging (`fireworks/public-repos/cookbook/training/case-studies/`) currently has 6
@@ -294,13 +288,13 @@ case studies plus `partners/voyage-ai/` under `public-repos/cookbook/partners/`.
 
 | Doc | Path |
 | --- | --- |
-| Cookbook agent rules | `cookbook-casestudies/CLAUDE.md` |
-| Training skill (routing) | `cookbook-casestudies/skills/fireworks-training/SKILL.md` |
+| Cookbook agent rules | `cookbook/CLAUDE.md` |
+| Training skill (routing) | `cookbook/skills/fireworks-training/SKILL.md` |
 | Staging authoring rules | `fireworks/public-repos/CLAUDE.md` |
 | E2E test guide | `fireworks/public-repos/TRAINING_E2E_TEST_GUIDE.md` |
 | Public repo promotion | `fireworks/public-repos/README.md` |
-| Recipe catalog + install | `cookbook-casestudies/training/README.md` |
-| Case-study gitignore patterns | `cookbook-casestudies/training/case-studies/.gitignore` |
+| Recipe catalog + install | `cookbook/training/README.md` |
+| Case-study gitignore patterns | `cookbook/training/case-studies/.gitignore` |
 
 ---
 
@@ -309,7 +303,7 @@ case studies plus `partners/voyage-ai/` under `public-repos/cookbook/partners/`.
 ```
 User asks about a training case study?
   ├─ Yes → Read WORKFLOW.md (this file) + case-study README
-  │         Work in cookbook-casestudies/training/case-studies/<name>/
+  │         Work in cookbook/training/case-studies/<name>/
   │         Need to ship? → Copy to fireworks/public-repos/cookbook/ → staging PR
   │
   ├─ SDK / protocol / provisioning bug?
