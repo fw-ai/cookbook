@@ -48,8 +48,9 @@ AI-agent safety guard is active.
 ## Repository Structure
 
 `training/` is the primary development surface. `eval/` contains reproducible
-evaluation packages. Legacy integrations, standalone customer scripts,
-multimedia examples, and earlier cookbook content live under `archived/`.
+evaluation packages, and `partners/` holds recipes for partner models served on
+Fireworks. Legacy integrations, standalone customer scripts, multimedia
+examples, and earlier cookbook content live under `archived/`.
 
 ```
 training/           Training API recipes, utilities, and examples
@@ -59,6 +60,7 @@ training/           Training API recipes, utilities, and examples
   renderer/         Local renderers and correctness verifier
   tests/            Unit and end-to-end tests
 eval/               Reproducible evaluation packages and benchmark adapters
+partners/           Recipes for partner models served on Fireworks
 skills/             One Fireworks training skill and progressive references
 archived/           Legacy integrations, multimedia, and cookbook content
   tools/            Archived standalone customer scripts
@@ -70,6 +72,12 @@ archived/           Legacy integrations, multimedia, and cookbook content
   OpenAI's HealthBench Professional through Harbor, preserve exact Fireworks
   input/output token IDs and behavior-policy logprobs, and export validated
   trajectories for RL workflows.
+
+## Partners
+
+- [`partners/voyage-ai/`](./partners/voyage-ai/) — two-stage retrieval with
+  Voyage AI embeddings and reranking on Fireworks dedicated deployments, backed
+  by MongoDB vector search.
 
 ## Contributing
 
