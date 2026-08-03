@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+  <rect x="0" y="0" width="720" height="720" rx="16" fill="#ffffff"/>
+
+  <text x="32" y="44" font-size="19" font-weight="600" fill="#2b2440">The loop, one optimizer step</text>
+  <text x="32" y="68" font-size="13" fill="#8a7fb0">rollout &#8594; reward &#8594; weight update, then back to the top</text>
+
+  <!-- ROLLOUT rail -->
+  <rect x="32" y="96" width="32" height="212" rx="8" fill="#fff2e8"/>
+  <text x="52" y="202" font-size="11" font-weight="600" letter-spacing="1.1" fill="#c2410c" text-anchor="middle" transform="rotate(-90 52 202)">ROLLOUT</text>
+
+  <!-- REWARD rail -->
+  <rect x="32" y="320" width="32" height="212" rx="8" fill="#f3ecfe"/>
+  <text x="52" y="426" font-size="11" font-weight="600" letter-spacing="1.1" fill="#7c3aed" text-anchor="middle" transform="rotate(-90 52 426)">REWARD</text>
+
+  <!-- UPDATE rail -->
+  <rect x="32" y="544" width="32" height="68" rx="8" fill="#fff2e8"/>
+  <text x="52" y="578" font-size="11" font-weight="600" letter-spacing="1.1" fill="#c2410c" text-anchor="middle" transform="rotate(-90 52 578)">UPDATE</text>
+
+  <!-- ===== ROLLOUT boxes ===== -->
+  <!-- box 1 -->
+  <rect x="84" y="96" width="604" height="60" rx="10" fill="#fff7f0" stroke="#fbd9bd" stroke-width="1"/>
+  <rect x="84" y="96" width="4" height="60" rx="2" fill="#ea7317"/>
+  <text x="104" y="124" font-size="14" font-weight="600" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#b3480a">save_weights_for_sampler</text>
+  <text x="104" y="143" font-size="12" fill="#9a8f6f">snapshot the current adapter</text>
+
+  <!-- box 2 -->
+  <rect x="84" y="172" width="604" height="60" rx="10" fill="#fff7f0" stroke="#fbd9bd" stroke-width="1"/>
+  <rect x="84" y="172" width="4" height="60" rx="2" fill="#ea7317"/>
+  <text x="104" y="200" font-size="14" font-weight="600" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#b3480a">create_sampling_client</text>
+  <text x="104" y="219" font-size="12" fill="#9a8f6f">sampler bound to that snapshot</text>
+
+  <!-- box 3 -->
+  <rect x="84" y="248" width="604" height="60" rx="10" fill="#fff7f0" stroke="#fbd9bd" stroke-width="1"/>
+  <rect x="84" y="248" width="4" height="60" rx="2" fill="#ea7317"/>
+  <text x="104" y="276" font-size="14" font-weight="600" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#b3480a">run_episode</text>
+  <text x="104" y="295" font-size="12" fill="#9a8f6f">sample &#8594; tools &#8594; repeat  &#183;  multi-turn rollout</text>
+
+  <!-- ===== REWARD boxes ===== -->
+  <!-- box 4 -->
+  <rect x="84" y="320" width="604" height="60" rx="10" fill="#f9f5ff" stroke="#e2d3fb" stroke-width="1"/>
+  <rect x="84" y="320" width="4" height="60" rx="2" fill="#8b47e6"/>
+  <text x="104" y="348" font-size="14" font-weight="600" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#6d28d9">compute_sql_reward</text>
+  <text x="104" y="367" font-size="12" fill="#8a7fb0">score each trajectory</text>
+
+  <!-- box 5 -->
+  <rect x="84" y="396" width="604" height="60" rx="10" fill="#f9f5ff" stroke="#e2d3fb" stroke-width="1"/>
+  <rect x="84" y="396" width="4" height="60" rx="2" fill="#8b47e6"/>
+  <text x="104" y="424" font-size="14" font-weight="600" fill="#6d28d9">group-relative advantages</text>
+  <text x="104" y="443" font-size="12" fill="#8a7fb0">GRPO &#8212; rank trajectories within each group</text>
+
+  <!-- box 6 -->
+  <rect x="84" y="472" width="604" height="60" rx="10" fill="#f9f5ff" stroke="#e2d3fb" stroke-width="1"/>
+  <rect x="84" y="472" width="4" height="60" rx="2" fill="#8b47e6"/>
+  <text x="104" y="507" font-size="14" font-weight="600" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#6d28d9">build importance-sampling datums</text>
+
+  <!-- ===== UPDATE box ===== -->
+  <!-- box 7 -->
+  <rect x="84" y="544" width="604" height="60" rx="10" fill="#fff7f0" stroke="#fbd9bd" stroke-width="1"/>
+  <rect x="84" y="544" width="4" height="60" rx="2" fill="#ea7317"/>
+  <text x="104" y="572" font-size="14" font-weight="600" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" fill="#b3480a">forward_backward &#8594; optim_step</text>
+  <text x="104" y="591" font-size="12" fill="#9a8f6f">update the adapter</text>
+
+  <!-- loop-back pill -->
+  <defs>
+    <linearGradient id="loopgrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#fff2e8"/>
+      <stop offset="100%" stop-color="#f3ecfe"/>
+    </linearGradient>
+  </defs>
+  <rect x="84" y="624" width="604" height="44" rx="10" fill="url(#loopgrad)"/>
+  <text x="104" y="651" font-size="15" fill="#ea7317">&#8635;</text>
+  <text x="124" y="651" font-size="12" font-weight="600" fill="#6d28d9">loop back to the top &#8212; next optimizer step</text>
+</svg>

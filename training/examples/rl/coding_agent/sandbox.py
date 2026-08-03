@@ -226,11 +226,12 @@ async def install_claude_code(sb: Sandbox) -> None:
         "  ln -sf /opt/node/bin/node /usr/local/bin/node; "
         "  ln -sf /opt/node/bin/npm /usr/local/bin/npm || true; "
         "  ln -sf /opt/node/bin/npx /usr/local/bin/npx || true; "
-        "  ln -sf /opt/node/bin/claude /usr/local/bin/claude || true; "
+        "  if [ -x /opt/node/bin/claude ]; then ln -sf /opt/node/bin/claude /usr/local/bin/claude || true; fi; "
         "fi; "
         "if command -v claude >/dev/null 2>&1; then claude --version; exit 0; fi; "
+        "rm -f /usr/local/bin/claude; "
         "node --version && npm --version && "
-        f"npm install -g --prefix=/usr/local --no-audit --no-fund {shlex.quote(package)} && "
+        f"npm install -g --prefix=/usr/local --no-audit --no-fund --force {shlex.quote(package)} && "
         "claude --version",
         user="root",
         timeout=600,

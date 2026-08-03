@@ -2,6 +2,9 @@
 
 Ready-to-run Training API recipes built on the [Fireworks Python SDK](https://github.com/fw-ai-external/python-sdk) (`fireworks.training.sdk`). Only `training/` is relevant -- ignore other top-level directories.
 
+**Workflow (read first):**
+- [`WORKFLOW.md`](WORKFLOW.md) — WIP sandbox → staging → public promotion process, workspace map, agent do/don't checklist, and promotion readiness criteria. Read this at the start of any case-study or cookbook task.
+
 **Skills:**
 - [`skills/fireworks-training/`](skills/fireworks-training/SKILL.md) — the single training skill for managed SFT/DPO/ORPO/RFT and Training API serverless or dedicated workflows. The root skill owns routing, confirmation, and lifecycle; progressive references cover cookbook recipes, SDK internals, resume, deployment, and debugging.
 

@@ -5,11 +5,31 @@
 
 # Runtime artifacts
 *.log
+*.sqlite
+*.sqlite3
+data/
+data_smoke/
 __pycache__/
 .ipynb_checkpoints/
 wandb/
 ep_summaries_*/
 ep_trajectory_*/
 ep_remote_*/
+ep_eval/
 tau2_remote_evaluator/
 coding_agent_rl_logs/
+
+# Large local-only data: external downloads or exported/generated artifacts.
+# Regenerate with each case-study's prepare_data.py / notebook data cell.
+*.safetensors
+dev.json
+dev_databases/
+chromadb_*/
+cache/
+export/
+
+# Editor/OS cruft and scratch notebooks (never publish working copies).
+*.code-workspace
+.DS_Store
+* copy*.ipynb
+*copy*.ipynb
