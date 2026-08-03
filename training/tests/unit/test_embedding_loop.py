@@ -6,6 +6,10 @@ import torch
 import training.recipes.embedding_loop as module
 
 
+class _StopAfterProvisioning(RuntimeError):
+    pass
+
+
 def _make_trailing_special_tokenizer():
     """A tiny self-contained fast tokenizer that appends one trailing special.
 
@@ -141,6 +145,30 @@ def test_main_rejects_small_batch_size(monkeypatch, tmp_path):
     )
     with pytest.raises(ValueError, match="batch_size must be >= 2"):
         module.main(cfg)
+
+
+def test_main_requests_cleanup_for_sdk_created_trainer(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
+
+    def fake_build_service_client(**kwargs):
+        calls.append(kwargs)
+        raise _StopAfterProvisioning
+
+    monkeypatch.setattr(module, "build_service_client", fake_build_service_client)
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="/tmp/pairs.jsonl",
+        tokenizer_model="Qwen/Qwen3-Embedding-8B",
+    )
+
+    with pytest.raises(_StopAfterProvisioning):
+        module.main(cfg)
+
+    assert len(calls) == 1
+    assert calls[0]["cleanup_trainer_on_close"] is True
 
 
 def test_infonce_recall_is_perfect_for_aligned_pairs():

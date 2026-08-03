@@ -338,6 +338,7 @@ def main(config: Config):
             max_context_length=max_context_length,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
+            cleanup_trainer_on_close=True,
         )
         stack.callback(service.close)
         training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)

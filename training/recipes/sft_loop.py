@@ -835,6 +835,7 @@ def main(
                 max_context_length=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 trainer=cfg.trainer,
+                cleanup_trainer_on_close=True,
             )
             stack.callback(service.close)
             training_client = service.create_training_client(
