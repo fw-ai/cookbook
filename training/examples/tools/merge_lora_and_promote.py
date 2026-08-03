@@ -6,7 +6,8 @@ This is the standalone, cookbook-style version of the "merged base" flow. It
 turns an existing HF PEFT adapter into a deployable full ``HF_BASE_MODEL`` by:
 
   1. provisioning a short-lived service-mode LoRA trainer from the adapter's
-     *base* model (``--base-model``) at the adapter's rank (``--lora-rank``),
+     *base* model at the adapter's rank (given as ``--base-model`` /
+     ``--lora-rank``, or read from ``--adapter-model``),
   2. explicitly loading the adapter weights into the LoRA session with
      ``load_adapter(<adapter gcs uri>)`` — there is no shared base LoRA, every
      adapter is loaded explicitly,
@@ -24,23 +25,32 @@ base-identical checkpoint. The supported path is ``base_model`` + explicit
 ``load_adapter`` (this script). The gateway rejects service-mode
 ``warmStartFrom`` of a LoRA addon for the same reason.
 
-Getting the adapter GCS URI: it is the ``gs://`` directory that contains
-``adapter_config.json`` and ``adapter_model*.safetensors``. You can resolve it
-from a Fireworks LoRA model resource via the model ``getDownloadEndpoint`` API:
+Usage — from a promoted Fireworks LoRA model (recommended). ``--adapter-model``
+resolves the base model, adapter rank, and adapter ``gs://`` directory from the
+model resource, so none of them have to be looked up by hand:
 
-    curl -s -H "Authorization: Bearer $FIREWORKS_API_KEY" \
-        "$FIREWORKS_BASE_URL/v1/accounts/<acct>/models/<lora-id>:getDownloadEndpoint" \
-        | python -c "import sys,json;print(json.load(sys.stdin))"
-
-Usage:
     export FIREWORKS_API_KEY=...
+
+    python merge_lora_and_promote.py \
+        --adapter-model accounts/<acct>/models/<lora-id> \
+        --output-model-id my-merged-qwen3-8b
+
+Usage — from a raw adapter directory. ``--adapter-gcs`` is the ``gs://``
+directory holding ``adapter_config.json`` and ``adapter_model*.safetensors``,
+and ``--base-model`` is the adapter's own base (not the adapter):
 
     python merge_lora_and_promote.py \
         --base-model accounts/fireworks/models/qwen3-8b \
         --adapter-gcs gs://my-bucket/adapters/my-lora \
         --lora-rank 8 \
-        --training-shape accounts/<acct>/trainingShapes/<shape>:<version> \
         --output-model-id my-merged-qwen3-8b
+
+Placement: leave ``--region`` and ``--training-shape`` unset unless you have a
+reason to pin them. The backend then selects a validated shape and a region that
+actually provisions that shape's accelerator. Pinning a region whose clusters do
+not carry the shape's accelerator fails during trainer provisioning, and that
+placement rejection can surface as a bare "Internal error" — see
+``--training-shape``/``--region`` help and the skill's ``error-reference.md``.
 """
 
 from __future__ import annotations
@@ -52,6 +62,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -78,10 +89,20 @@ load_dotenv()
 
 
 @dataclass(frozen=True)
-class MergeConfig:
+class AdapterSource:
+    """Concrete merge inputs, either given explicitly or resolved from a model."""
+
     base_model: str
     adapter_gcs: str
     lora_rank: int
+
+
+@dataclass(frozen=True)
+class MergeConfig:
+    base_model: str | None
+    adapter_gcs: str | None
+    lora_rank: int | None
+    adapter_model: str | None
     training_shape: str
     output_model_id: str
     region: str | None
@@ -98,23 +119,34 @@ def parse_args() -> MergeConfig:
         description="Merge a LoRA adapter into its base and promote a merged HF base model.",
     )
     parser.add_argument(
+        "--adapter-model",
+        default=None,
+        help="Promoted Fireworks LoRA model resource "
+             "(accounts/<acct>/models/<lora-id>) to merge. Its base model, rank, "
+             "and adapter gs:// directory are read from the model resource, so "
+             "--base-model/--lora-rank/--adapter-gcs are not needed. Any of "
+             "those passed explicitly wins over the resolved value.",
+    )
+    parser.add_argument(
         "--base-model",
-        required=True,
+        default=None,
         help="The adapter's immediate base model resource "
-             "(e.g. accounts/fireworks/models/qwen3-8b). NOT the LoRA itself.",
+             "(e.g. accounts/fireworks/models/qwen3-8b). NOT the LoRA itself. "
+             "Required without --adapter-model.",
     )
     parser.add_argument(
         "--adapter-gcs",
-        required=True,
+        default=None,
         help="gs:// directory holding the HF PEFT adapter "
              "(adapter_config.json + adapter_model*.safetensors). Passed to "
-             "load_adapter(). See the module docstring for how to resolve it.",
+             "load_adapter(). Required without --adapter-model.",
     )
     parser.add_argument(
         "--lora-rank",
         type=int,
-        required=True,
-        help="Adapter rank (peftDetails.r of the source LoRA).",
+        default=None,
+        help="Adapter rank (peftDetails.r of the source LoRA). Required without "
+             "--adapter-model.",
     )
     parser.add_argument(
         "--output-model-id",
@@ -125,13 +157,17 @@ def parse_args() -> MergeConfig:
         "--training-shape",
         default="",
         help="Validated LORA_TRAINER training shape id. Empty = let the backend "
-             "auto-select (may fail if no default shape exists for the model).",
+             "auto-select a validated shape for the base model, which is the "
+             "recommended default. Pin one only to override that choice; list "
+             "candidates with GET /v1/accounts/fireworks/trainingShapes and use "
+             "a shape whose base model family matches --base-model.",
     )
     parser.add_argument(
         "--region",
         default=None,
         help="Optional explicit trainer region. Leave unset so the backend "
-             "selects placement.",
+             "selects a region that provisions the shape's accelerator; a "
+             "pinned region without that accelerator fails provisioning.",
     )
     parser.add_argument(
         "--snapshot-name",
@@ -154,10 +190,27 @@ def parse_args() -> MergeConfig:
              "while it keeps running server-side, so we poll the model resource.",
     )
     args = parser.parse_args()
+    if not args.adapter_model:
+        missing = [
+            flag
+            for flag, value in (
+                ("--base-model", args.base_model),
+                ("--adapter-gcs", args.adapter_gcs),
+                ("--lora-rank", args.lora_rank),
+            )
+            if value is None
+        ]
+        if missing:
+            parser.error(
+                f"{', '.join(missing)} required without --adapter-model "
+                "(pass --adapter-model <lora model resource> to resolve them "
+                "from the model resource instead)"
+            )
     return MergeConfig(
         base_model=args.base_model,
         adapter_gcs=args.adapter_gcs,
         lora_rank=args.lora_rank,
+        adapter_model=args.adapter_model,
         training_shape=args.training_shape,
         output_model_id=args.output_model_id,
         region=args.region,
@@ -225,6 +278,101 @@ def _get_model(base_url: str, api_key: str, model_name: str) -> dict | None:
         return None
 
 
+def _get_json(base_url: str, api_key: str, path: str) -> dict:
+    """GET a control-plane resource, raising on failure."""
+    req = urllib.request.Request(
+        f"{base_url}/v1/{path}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _gcs_dir_from_signed_url(signed_url: str) -> str:
+    """Recover the ``gs://`` directory of a file from its signed download URL."""
+    parsed = urllib.parse.urlsplit(signed_url)
+    host, object_path = parsed.netloc, parsed.path.lstrip("/")
+    if host.endswith(".storage.googleapis.com"):
+        bucket = host.removesuffix(".storage.googleapis.com")
+    elif "/" in object_path:
+        bucket, object_path = object_path.split("/", 1)
+    else:
+        raise ValueError(f"Cannot parse a GCS bucket out of signed URL host {host!r}")
+    directory = urllib.parse.unquote(object_path).rsplit("/", 1)[0]
+    if not bucket or not directory:
+        raise ValueError(f"Signed URL {signed_url.split('?')[0]!r} has no object directory")
+    return f"gs://{bucket}/{directory}"
+
+
+def _resolve_adapter_source(base_url: str, api_key: str, cfg: MergeConfig) -> AdapterSource:
+    """Fill in base model, rank, and adapter directory for the merge.
+
+    Without ``--adapter-model`` the explicit flags are already complete (enforced
+    in ``parse_args``). With it, each unset value is read from the LoRA model
+    resource: ``peftDetails`` carries the base model and rank, and the adapter's
+    ``gs://`` directory is recovered from the ``getDownloadEndpoint`` signed URL
+    for ``adapter_config.json`` — neither the API nor firectl exposes that
+    directory directly.
+    """
+    if not cfg.adapter_model:
+        if not (cfg.base_model and cfg.adapter_gcs and cfg.lora_rank):
+            raise ValueError(
+                "base_model, adapter_gcs, and lora_rank are all required without "
+                "adapter_model"
+            )
+        return AdapterSource(cfg.base_model, cfg.adapter_gcs, cfg.lora_rank)
+
+    model = _get_json(base_url, api_key, cfg.adapter_model)
+    peft = model.get("peftDetails") or {}
+    if not peft:
+        raise ValueError(
+            f"{cfg.adapter_model} is not a LoRA/PEFT model (no peftDetails); "
+            f"kind={model.get('kind')!r}. Pass --base-model/--adapter-gcs/"
+            "--lora-rank explicitly for a raw adapter directory."
+        )
+
+    adapter_gcs = cfg.adapter_gcs
+    if adapter_gcs is None:
+        urls = _get_json(
+            base_url, api_key, f"{cfg.adapter_model}:getDownloadEndpoint"
+        ).get("filenameToSignedUrls") or {}
+        config_urls = [url for name, url in urls.items() if name.endswith("adapter_config.json")]
+        if not config_urls:
+            raise ValueError(
+                f"{cfg.adapter_model} download endpoint lists no adapter_config.json "
+                f"(files: {sorted(urls)}). Pass --adapter-gcs explicitly."
+            )
+        adapter_gcs = _gcs_dir_from_signed_url(config_urls[0])
+
+    source = AdapterSource(
+        base_model=cfg.base_model or peft["baseModel"],
+        adapter_gcs=adapter_gcs,
+        lora_rank=cfg.lora_rank or int(peft["r"]),
+    )
+    logger.info(
+        "Resolved %s: base=%s rank=%d adapter=%s",
+        cfg.adapter_model, source.base_model, source.lora_rank, source.adapter_gcs,
+    )
+    return source
+
+
+def _provisioning_failure_hint(cfg: MergeConfig, source: AdapterSource, job_id: str | None) -> str:
+    """Guidance for a trainer that dies during provisioning, often as 'Internal error'."""
+    return (
+        "Trainer provisioning failed before the adapter was loaded"
+        + (f" (trainer job {job_id})" if job_id else "")
+        + ". A bare \"Internal error\" here is usually an unsupported "
+        "(accelerator, region) pair: placement rejects the request because the "
+        "selected training shape's accelerator is not provisioned in the "
+        "requested region, and that rejection is reported as an internal error. "
+        f"Retry with --region unset (currently {cfg.region or 'unset'}) and "
+        f"--training-shape unset (currently {cfg.training_shape or 'unset'}) so "
+        f"the backend picks a validated shape for {source.base_model} and a "
+        "region that carries its accelerator. If it still fails, escalate with "
+        "the trainer job id, base model, shape, and region."
+    )
+
+
 def _poll_model_until_ready(
     base_url: str,
     api_key: str,
@@ -261,9 +409,10 @@ def main() -> None:
     fw_client = FireworksClient(api_key=api_key, base_url=base_url)
     trainer_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
 
+    source = _resolve_adapter_source(base_url, api_key, cfg)
     logger.info(
         "Merge+promote: base=%s adapter=%s rank=%d -> %s",
-        cfg.base_model, cfg.adapter_gcs, cfg.lora_rank, cfg.output_model_id,
+        source.base_model, source.adapter_gcs, source.lora_rank, cfg.output_model_id,
     )
 
     # Provision a short-lived service-mode LoRA trainer from the base model.
@@ -271,9 +420,9 @@ def main() -> None:
         api_key=api_key,
         base_url=base_url,
         additional_headers=None,
-        base_model=cfg.base_model,
+        base_model=source.base_model,
         tokenizer_model=None,
-        lora_rank=cfg.lora_rank,
+        lora_rank=source.lora_rank,
         max_context_length=None,
         learning_rate=1e-5,  # unused: we never take an optimizer step
         trainer=TrainerConfig(
@@ -285,13 +434,23 @@ def main() -> None:
     )
 
     try:
+        # The service client provisions the trainer lazily on the first
+        # create_*_client call, so the job id only resolves after this line.
+        try:
+            policy = service.create_lora_training_client(
+                source.base_model, rank=source.lora_rank
+            )
+        except Exception as e:
+            raise RuntimeError(
+                _provisioning_failure_hint(
+                    cfg, source, service.managed_trainer_job_id
+                )
+            ) from e
         job_id = service.trainer_job_id
         logger.info("Trainer ready: %s", job_id)
 
-        policy = service.create_lora_training_client(cfg.base_model, rank=cfg.lora_rank)
-
-        logger.info("Loading adapter into LoRA session: %s", cfg.adapter_gcs)
-        load_resp = policy.load_adapter(cfg.adapter_gcs).result(timeout=cfg.op_timeout_s)
+        logger.info("Loading adapter into LoRA session: %s", source.adapter_gcs)
+        load_resp = policy.load_adapter(source.adapter_gcs).result(timeout=cfg.op_timeout_s)
         logger.info("load_adapter result: %s", load_resp)
 
         logger.info("Saving merged-base checkpoint %r", cfg.snapshot_name)
@@ -309,7 +468,7 @@ def main() -> None:
             trainer_mgr.promote_checkpoint(
                 name=checkpoint["name"],
                 output_model_id=cfg.output_model_id,
-                base_model=cfg.base_model,
+                base_model=source.base_model,
             )
         except Exception as e:
             logger.warning(
