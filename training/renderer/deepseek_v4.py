@@ -87,6 +87,8 @@ from tinker_cookbook.renderers.base import (
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+
 # ── Special tokens (must match encoding_dsv4.py exactly) ────────────────────
 # NOTE: ``｜`` is U+FF5C FULLWIDTH VERTICAL LINE (not ASCII ``|``).
 #       ``▁`` is U+2581 LOWER ONE EIGHTH BLOCK (not ASCII ``_``).
@@ -424,8 +426,15 @@ def _drop_thinking_from_history(messages: list[Message]) -> list[Message]:
 ThinkingMode = Literal["chat", "thinking"]
 
 
-class DeepseekV4Renderer(Renderer):
-    """Renderer for ``deepseek-ai/DeepSeek-V4-Flash`` instruct models."""
+class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
+    """Renderer for ``deepseek-ai/DeepSeek-V4-Flash`` instruct models.
+
+    The default thinking mode strips reasoning from historical assistant
+    turns and therefore does not satisfy the sequence extension property.
+    ``DisaggregateMultiTurnMixin`` renders each user-turn prefix as an
+    independent supervised example so multi-turn ``ALL_ASSISTANT_MESSAGES``
+    training stays aligned with inference-time history rendering.
+    """
 
     def __init__(
         self,
