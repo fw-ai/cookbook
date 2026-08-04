@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from training.examples.serverless_dpo.support_tone_dpo import (
+from training.examples.serverless_dpo.prepare_data import row_to_preference
+from training.examples.serverless_dpo.ultrafeedback_dpo import (
     MAX_CHECKPOINT_NAME_LEN,
     Config,
     _account_from_session,
     _align_reference_logprobs,
+    _comparison_prompt_messages,
     _control_plane_base_url,
     _find_promotable,
     _full_sequence_for_ref,
@@ -235,10 +237,52 @@ def test_find_promotable_skips_non_promotable():
 
 def test_unique_model_id_appends_short_run_suffix():
     run_id = "run-" + "a" * 32
-    model_id = _unique_model_id("serverless-dpo-support-tone", run_id)
-    assert model_id == "serverless-dpo-support-tone-aaaaaaaa"
+    model_id = _unique_model_id("serverless-dpo-ultrafeedback", run_id)
+    assert model_id == "serverless-dpo-ultrafeedback-aaaaaaaa"
     assert len(model_id) <= 63
 
 
 def test_unique_model_id_falls_back_without_run_id():
-    assert _unique_model_id("serverless-dpo-support-tone", None) == "serverless-dpo-support-tone"
+    assert _unique_model_id("serverless-dpo-ultrafeedback", None) == "serverless-dpo-ultrafeedback"
+
+
+def test_row_to_preference_builds_shared_prompt_pair():
+    pref = row_to_preference({
+        "instruction": "Explain caching in one sentence.",
+        "chosen_response": "Caching stores results so later requests are faster.",
+        "rejected_response": "Caching is a thing computers do.",
+    })
+    assert pref is not None
+    assert pref["chosen"]["messages"][:1] == pref["rejected"]["messages"][:1]
+    assert pref["chosen"]["messages"][-1]["role"] == "assistant"
+    assert pref["chosen"]["messages"][-1]["content"] != pref["rejected"]["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        {"instruction": "", "chosen_response": "a", "rejected_response": "b"},
+        {"instruction": "q", "chosen_response": "", "rejected_response": "b"},
+        {"instruction": "q", "chosen_response": "same", "rejected_response": "same"},
+    ],
+)
+def test_row_to_preference_drops_invalid_rows(example):
+    assert row_to_preference(example) is None
+
+
+def test_comparison_prompt_messages_strips_final_assistant_turn():
+    row = {
+        "chosen": {"messages": [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "good"},
+        ]},
+        "rejected": {"messages": [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "bad"},
+        ]},
+    }
+    assert _comparison_prompt_messages(row) == [{"role": "user", "content": "q"}]
+
+
+def test_comparison_prompt_messages_rejects_non_preference_row():
+    assert _comparison_prompt_messages({"foo": "bar"}) is None

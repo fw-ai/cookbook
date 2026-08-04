@@ -1,4 +1,4 @@
-# Serverless DPO — support-tone preference training
+# Serverless DPO — preference training on UltraFeedback
 
 Direct Preference Optimization on Fireworks **serverless training**: teach a
 model to prefer chosen responses over rejected ones, with **no reward model
@@ -29,18 +29,31 @@ Tinker's `save_weights_and_get_sampling_client()` becomes
 `save_weights_for_sampler` + `create_sampling_client` here; everything else
 maps 1:1, and the loss is shared with the managed `recipes/dpo_loop.py`.
 
-## The task
+## The data
 
-Given a customer support message, prefer the empathetic, actionable reply over
-the dismissive or robotic one. Watch `dpo_loss` fall from ~0.693 while
-`margin` and `accuracy` climb.
+`prepare_data.py` downloads
+[`argilla/ultrafeedback-binarized-preferences`](https://huggingface.co/datasets/argilla/ultrafeedback-binarized-preferences)
+(the same source as Tinker's ultrafeedback DPO builder) and writes
+`preference_train.jsonl` in the chosen/rejected messages schema:
 
-Two built-in checks answer "did it learn?":
+```bash
+python -m examples.serverless_dpo.prepare_data                  # 512 pairs
+python -m examples.serverless_dpo.prepare_data --max-rows 5000  # bigger run
+```
+
+Each row is `{"chosen": {"messages": [...]}, "rejected": {"messages": [...]}}`
+sharing one prompt; point `--dataset` at any JSONL in that schema (or
+`samples`-style / OpenAI-style rows) for your own data.
+
+## Did it learn?
+
+Watch `dpo_loss` fall from ~0.693 while `margin` and `accuracy` climb. Two
+built-in checks go further:
 
 - **Held-out margin** (`--eval-pairs`, default 4): preference margin on
   reserved rows, reported before vs after training.
 - **Generation comparison** (`--no-compare` to skip): reference vs final
-  checkpoint sampled side by side on two fresh prompts at the end of the run.
+  checkpoint sampled side by side on held-out prompts at the end of the run.
   The reference is the base model on a fresh run, the resumed weights on a
   resumed run. (Checkpoint sampling is session-scoped; the durable handoff is
   promotion.)
@@ -49,22 +62,21 @@ Two built-in checks answer "did it learn?":
 
 | File | What it is |
 | --- | --- |
-| `support_tone_dpo.py` | The whole example. A `Config` dataclass at the top; every field is also a CLI flag. |
-| `data/support_tone_preference.jsonl` | 32-pair sample; point `--dataset` at your own JSONL for real training. |
-| `run_kimi_k3.sh` | One-command wrapper (K3 tokenizer + `HF_TRUST_REMOTE_CODE` handled). |
-
-Dataset rows are `{"chosen": {"messages": [...]}, "rejected": {"messages": [...]}}`
-sharing one prompt; `samples`-style and OpenAI-style rows work too.
+| `ultrafeedback_dpo.py` | The training example. A `Config` dataclass at the top; every field is also a CLI flag. |
+| `prepare_data.py` | One-time dataset download/conversion (UltraFeedback → JSONL). |
+| `run_kimi_k3.sh` | One-command wrapper (prepares data, K3 tokenizer + `HF_TRUST_REMOTE_CODE` handled). |
 
 ## Run it
 
 ```bash
 export FIREWORKS_API_KEY=fw_...          # or put it in training/.env
-python -m examples.serverless_dpo.support_tone_dpo      # from training/
-./run_kimi_k3.sh                                       # or via the wrapper
+./run_kimi_k3.sh                         # from anywhere: data prep + train + promote
+# or by hand, from training/:
+python -m examples.serverless_dpo.prepare_data
+python -m examples.serverless_dpo.ultrafeedback_dpo
 
 # resume in a fresh process (the run prints the reference when it finishes):
-python -m examples.serverless_dpo.support_tone_dpo \
+python -m examples.serverless_dpo.ultrafeedback_dpo \
     --resume-from <account>/<run-id>/<checkpoint>
 ```
 
@@ -90,6 +102,5 @@ Useful flags: `--steps`, `--batch-size`, `--learning-rate`, `--dpo-beta`,
   reference.
 
 For the dedicated (provisioned trainer) DPO path see
-[`recipes/dpo_loop.py`](../../recipes/dpo_loop.py); for the serverless SFT/RL
-counterparts see [`examples/serverless_sft/`](../serverless_sft/README.md) and
-[`examples/serverless_rl/`](../serverless_rl/README.md).
+[`recipes/dpo_loop.py`](../../recipes/dpo_loop.py); for the serverless RL
+counterpart see [`examples/serverless_rl/`](../serverless_rl/README.md).

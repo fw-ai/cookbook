@@ -29,7 +29,12 @@ export HF_TRUST_REMOTE_CODE="${HF_TRUST_REMOTE_CODE:-1}"
 
 cd "${TRAINING_ROOT}"
 
-python -m examples.serverless_dpo.support_tone_dpo \
+# Generate the UltraFeedback training data on first run.
+if [ ! -f "${HERE}/preference_train.jsonl" ]; then
+    python -m examples.serverless_dpo.prepare_data
+fi
+
+python -m examples.serverless_dpo.ultrafeedback_dpo \
     --base-model "${BASE_MODEL}" \
     --tokenizer-model "${TOKENIZER_MODEL}" \
     --lora-rank 8 \
@@ -39,5 +44,5 @@ python -m examples.serverless_dpo.support_tone_dpo \
     --learning-rate 1e-5 \
     --dpo-beta 0.1 \
     --dcp-save-interval 4 \
-    --output-model-id "serverless-dpo-tone-k3-$(date +%Y%m%d%H%M)" \
+    --output-model-id "serverless-dpo-uf-k3-$(date +%Y%m%d%H%M)" \
     "$@"
