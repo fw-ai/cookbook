@@ -134,8 +134,10 @@ All live on `rl_loop.Config`:
 | `router_replay`, `router_replay_completion_only` | `True`, `True` | Replay MoE routes for generated tokens by default. Set completion-only to `False` only when full-sequence replay is worth the serving cost of `echo=True`. |
 | `grad_accumulation_normalization` | `None` | No server-side normalization by default. Use `NUM_LOSS_TOKENS` for raw-sum losses. See [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md). |
 
-Shape-owned fields (`accelerator_type`, `node_count`, and `custom_image_tag`)
-come from the training profile; never hand-set them.
+Trainer accelerator type and count are not cookbook config fields; select them
+indirectly with `training_shape_id`. Other shape-owned fields such as
+`node_count` and `custom_image_tag` come from the training profile; never
+hand-set them.
 
 ## Do not
 

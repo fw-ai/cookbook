@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+from functools import cache
 from typing import Any
 
 import pytest
@@ -77,6 +78,43 @@ from training.tests.unit.renderer_scenarios import ALL_SCENARIOS, Scenario
 # materialized (offline, gated repo, missing chat_template, or a tokenizer
 # registration issue). These map to a clean skip, not a failure.
 _UNAVAILABLE = (AttributeError, OSError, ValueError, RuntimeError)
+
+
+def _shard_renderer_cases(
+    cases: list[RendererCase], shard_index: int, shard_count: int
+) -> list[RendererCase]:
+    """Partition by tokenizer so variants share one load within a shard."""
+    groups: dict[tuple[str, str | None, bool | None], list[RendererCase]] = {}
+    for case in cases:
+        key = (
+            case.resolved_tokenizer_model(),
+            case.resolved_tokenizer_revision(),
+            case.tokenizer_trust_remote_code,
+        )
+        groups.setdefault(key, []).append(case)
+    return [
+        case
+        for group_index, group in enumerate(groups.values())
+        if group_index % shard_count == shard_index
+        for case in group
+    ]
+
+
+def _selected_renderer_cases() -> list[RendererCase]:
+    """Select an optional CI shard while keeping local runs exhaustive."""
+    shard_index = int(os.environ.get("RENDERER_QA_SHARD_INDEX", "0"))
+    shard_count = int(os.environ.get("RENDERER_QA_SHARD_COUNT", "1"))
+    if shard_count < 1 or not 0 <= shard_index < shard_count:
+        raise ValueError(
+            f"invalid renderer QA shard {shard_index}; expected 0 <= index < {shard_count}"
+        )
+
+    # Assign every future matrix row automatically; adding a renderer still
+    # requires only one matrix row.
+    return _shard_renderer_cases(RENDERER_MATRIX, shard_index, shard_count)
+
+
+_QA_CASES = _selected_renderer_cases()
 
 
 # ---------------------------------------------------------------------------
@@ -445,19 +483,47 @@ def _verify_extension_property(
             )
 
 
-def _load_renderer(case: RendererCase) -> tuple[Tokenizer, Renderer]:
-    """Load the case's tokenizer and renderer, or raise to trigger a skip."""
-    if (
+@cache
+def _load_tokenizer_result(
+    model: str,
+    revision: str | None,
+    trust_remote_code: bool | None,
+    explicit: bool,
+) -> tuple[Tokenizer | None, BaseException | None]:
+    try:
+        tokenizer = (
+            load_tokenizer(model, revision, trust_remote_code)
+            if explicit
+            else get_tokenizer(model)
+        )
+    except _UNAVAILABLE as exc:
+        return None, exc
+    return tokenizer, None
+
+
+def _load_case_tokenizer(case: RendererCase) -> Tokenizer:
+    """Cache both successful loads and unavailability for this QA process."""
+    model = case.resolved_tokenizer_model()
+    revision = case.resolved_tokenizer_revision()
+    explicit = (
         case.tokenizer_revision is not None
         or case.tokenizer_trust_remote_code is not None
-    ):
-        tokenizer = load_tokenizer(
-            case.resolved_tokenizer_model(),
-            case.resolved_tokenizer_revision(),
-            case.tokenizer_trust_remote_code,
-        )
-    else:
-        tokenizer = get_tokenizer(case.resolved_tokenizer_model())
+    )
+    tokenizer, error = _load_tokenizer_result(
+        model,
+        revision,
+        case.tokenizer_trust_remote_code,
+        explicit,
+    )
+    if error is not None:
+        raise error
+    assert tokenizer is not None
+    return tokenizer
+
+
+def _load_renderer(case: RendererCase) -> tuple[Tokenizer, Renderer]:
+    """Load the case's tokenizer and renderer, or raise to trigger a skip."""
+    tokenizer = _load_case_tokenizer(case)
     renderer = get_renderer(case.renderer, tokenizer)
     return tokenizer, renderer
 
@@ -480,14 +546,18 @@ def test_hf_case_loads_pinned_public_repo_by_default(monkeypatch) -> None:
     )
     monkeypatch.setitem(globals(), "get_renderer", lambda _name, _tokenizer: renderer)
 
-    assert _load_renderer(case) == (tokenizer, renderer)
-    assert loaded == [
-        (
-            "moonshotai/Kimi-K3",
-            "301be1b88c89c0d3a763da6301352cb8fe399e90",
-            True,
-        )
-    ]
+    _load_tokenizer_result.cache_clear()
+    try:
+        assert _load_renderer(case) == (tokenizer, renderer)
+        assert loaded == [
+            (
+                "moonshotai/Kimi-K3",
+                "301be1b88c89c0d3a763da6301352cb8fe399e90",
+                True,
+            )
+        ]
+    finally:
+        _load_tokenizer_result.cache_clear()
 
 
 def test_local_fixture_path_resolves_at_load_time(monkeypatch) -> None:
@@ -509,8 +579,12 @@ def test_local_fixture_path_resolves_at_load_time(monkeypatch) -> None:
     )
     monkeypatch.setitem(globals(), "get_renderer", lambda _name, _tokenizer: renderer)
 
-    assert _load_renderer(case) == (tokenizer, renderer)
-    assert loaded == [(fixture_path, None, True)]
+    _load_tokenizer_result.cache_clear()
+    try:
+        assert _load_renderer(case) == (tokenizer, renderer)
+        assert loaded == [(fixture_path, None, True)]
+    finally:
+        _load_tokenizer_result.cache_clear()
 
 
 def _native_tool_call_ids(
@@ -695,7 +769,7 @@ _HF_GEN_PARAMS = [
         scenario,
         xfail_reason=_hf_xfail_reason(case, scenario),
     )
-    for case in RENDERER_MATRIX
+    for case in _QA_CASES
     for scenario in ALL_SCENARIOS
     if case.has_hf_chat_template
     and not scenario.ends_with_assistant
@@ -708,7 +782,7 @@ _HF_SUPERVISED_PARAMS = [
         scenario,
         xfail_reason=_hf_xfail_reason(case, scenario),
     )
-    for case in RENDERER_MATRIX
+    for case in _QA_CASES
     for scenario in ALL_SCENARIOS
     if case.supervised_hf_parity
     and scenario.ends_with_assistant
@@ -723,7 +797,7 @@ _CONSISTENCY_PARAMS = [
             (case.renderer, scenario.id)
         ),
     )
-    for case in RENDERER_MATRIX
+    for case in _QA_CASES
     for scenario in ALL_SCENARIOS
     if scenario.ends_with_assistant and _scenario_supported(case, scenario)
 ]
@@ -734,7 +808,7 @@ _STRUCTURED_FINAL_PARSE_PARAMS = [
         scenario,
         xfail_reason=_parse_xfail_reason(case, scenario),
     )
-    for case in RENDERER_MATRIX
+    for case in _QA_CASES
     for scenario in ALL_SCENARIOS
     if scenario.ends_with_assistant
     and (
@@ -756,7 +830,7 @@ _HISTORICAL_PARSE_PARAMS = [
         if reason
         else (),
     )
-    for case in RENDERER_MATRIX
+    for case in _QA_CASES
     for scenario in ALL_SCENARIOS
     for index, message in enumerate(scenario.messages)
     if message.get("role") == "assistant"
@@ -782,14 +856,14 @@ _EXTENSION_PARAMS = [
         scenario,
         xfail_reason=EXTENSION_EXPECTED_DIVERGENCES.get((case.renderer, scenario.id)),
     )
-    for case in RENDERER_MATRIX
+    for case in _QA_CASES
     for scenario in _EXTENSION_SCENARIOS
     if case.has_extension_property and _scenario_supported(case, scenario)
 ]
 
 _MULTI_ASSISTANT_PARAMS = [
     pytest.param(case, scenario, id=_case_id(case, scenario))
-    for case in RENDERER_MATRIX
+    for case in _QA_CASES
     for scenario in ALL_SCENARIOS
     if scenario.id
     in {
@@ -808,7 +882,7 @@ _OBSERVATION_PARAMS = [
             (case.renderer, scenario.id)
         ),
     )
-    for case in RENDERER_MATRIX
+    for case in _QA_CASES
     for scenario in ALL_SCENARIOS
     if case.observation_equals_generation
     and scenario.ends_with_assistant
@@ -830,6 +904,8 @@ def test_hf_generation_parity(case: RendererCase, scenario: Scenario) -> None:
     result = compare_renderer_to_hf(
         renderer_name=case.renderer,
         tokenizer_model=case.resolved_tokenizer_model(),
+        tokenizer_revision=case.resolved_tokenizer_revision(),
+        tokenizer_trust_remote_code=case.tokenizer_trust_remote_code,
         messages=scenario.messages,
         add_generation_prompt=True,
         apply_chat_template_kwargs=case.hf_kwargs,
@@ -852,6 +928,8 @@ def test_hf_supervised_parity(case: RendererCase, scenario: Scenario) -> None:
     result = compare_renderer_to_hf(
         renderer_name=case.renderer,
         tokenizer_model=case.resolved_tokenizer_model(),
+        tokenizer_revision=case.resolved_tokenizer_revision(),
+        tokenizer_trust_remote_code=case.tokenizer_trust_remote_code,
         messages=scenario.messages,
         add_generation_prompt=False,
         apply_chat_template_kwargs=case.hf_kwargs,
@@ -1156,6 +1234,15 @@ def test_scenario_metadata_is_self_consistent() -> None:
         )
 
 
+def test_renderer_qa_shards_partition_matrix() -> None:
+    partitions = [_shard_renderer_cases(RENDERER_MATRIX, index, 4) for index in range(4)]
+    flattened = [case for partition in partitions for case in partition]
+    assert {case.renderer for case in flattened} == {
+        case.renderer for case in RENDERER_MATRIX
+    }
+    assert len(flattened) == len(RENDERER_MATRIX)
+
+
 def test_expected_divergence_entries_reference_the_matrix() -> None:
     renderer_names = {case.renderer for case in RENDERER_MATRIX}
     scenario_ids = {scenario.id for scenario in ALL_SCENARIOS}
@@ -1193,7 +1280,7 @@ def test_expected_divergence_entries_reference_the_matrix() -> None:
 # (kimi_k27_code and deepseek_v4) are intentionally not REQUIRED and are exempt.
 _STRICT_MODE = os.environ.get("RENDERER_QA_STRICT", "").lower() in ("1", "true", "yes")
 
-_REQUIRED_CASES = [c for c in RENDERER_MATRIX if c.renderer in REQUIRED_RENDERERS]
+_REQUIRED_CASES = [c for c in _QA_CASES if c.renderer in REQUIRED_RENDERERS]
 
 
 @pytest.mark.skipif(
@@ -1223,6 +1310,8 @@ def test_required_renderers_load_in_strict_mode(case: RendererCase) -> None:
     result = compare_renderer_to_hf(
         renderer_name=case.renderer,
         tokenizer_model=case.resolved_tokenizer_model(),
+        tokenizer_revision=case.resolved_tokenizer_revision(),
+        tokenizer_trust_remote_code=case.tokenizer_trust_remote_code,
         messages=canonical.messages,
         add_generation_prompt=True,
         apply_chat_template_kwargs=case.hf_kwargs,

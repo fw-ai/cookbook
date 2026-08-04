@@ -32,7 +32,7 @@ The trainer API rejects an existing non-DCP directory before distributed
 checkpoint loading, so a sampler/DCP type mismatch is returned as a
 request-level user error rather than a trainer-wide failure.
 
-### Managed SFT CMEK outputs
+### Managed SFT and RFT CMEK outputs
 
 For a CMEK-enabled account, the managed dedicated SFT V2 LoRA path associates
 the output model resource with the training client internally. The trainer then
@@ -43,10 +43,21 @@ only those completed artifacts, restricts encrypted DCP resume to the same
 managed job, and promotes PEFT ciphertext without rewriting it. This path does
 not use the serverless trainer pool or regional fast-checkpoint storage.
 
+Managed RFT V2 uses the same contract for dedicated LoRA policies on the async
+RL recipes (`grpo`, `cispo`, `dapo`, and `gspo_token`). In addition to DCP and
+final promotable artifacts, each policy sampler snapshot is encrypted. The SDK
+sends that snapshot's exact trainer-bucket URI and output-model resource to the
+serving hot-load boundary; a CMEK-enabled proxy decrypts into atomic local
+staging before vLLM sees the adapter. The reference client never receives the
+policy output resource.
+
 `cmek_output_model_resource` and the reserved Tinker metadata key
 `fireworks_cmek_resource` are control-plane contracts, not user configuration.
-Do not set or copy them into standalone recipes. CMEK full-parameter SFT output
-is not supported by this path.
+The managed launcher also binds that resource into the dedicated trainer so an
+API restart cannot lose the key owner needed for same-job checkpoint resume.
+Do not set or copy these values into standalone recipes. CMEK full-parameter
+SFT/RFT output, cross-job encrypted resume, and regional storage are not
+supported by this path.
 
 ## `dataloader.json`
 

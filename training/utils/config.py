@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import functools
 import warnings
-from enum import Enum
-from typing import Dict, Callable
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Callable, Dict, Mapping
 
 from fireworks.training.sdk.client import FiretitanTrainingClient
 from fireworks.training.sdk.deployment import DeploymentConfig
 
-DEFAULT_ADAM = dict(beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01, grad_clip_norm=1.0)
+DEFAULT_ADAM = dict(beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01, grad_clip_norm=0.0)
 
 RewardFn = Callable[[str, dict], float]
 """Signature: (completion_text, dataset_row) -> reward_float."""
@@ -20,6 +21,39 @@ EvalFn = Callable[[int, FiretitanTrainingClient], Dict[str, float]]
 
 StepCallback = Callable[[int, Dict[str, float]], None]
 """Called after each optimizer step: (global_step, step_metrics) -> None."""
+
+
+_REMOVED_ACCELERATOR_CONFIG_FIELDS = frozenset(
+    {"accelerator_type", "accelerator_count"}
+)
+
+
+def _reject_removed_accelerator_config(
+    values: Mapping[str, Any],
+    *,
+    config_name: str,
+) -> None:
+    removed = sorted(_REMOVED_ACCELERATOR_CONFIG_FIELDS.intersection(values))
+    if not removed:
+        return
+    names = " and ".join(f"`{name}`" for name in removed)
+    raise TypeError(
+        f"{config_name} no longer supports {names}. Cookbook clients cannot set "
+        "trainer accelerator type or count; select a training shape with "
+        "`training_shape_id` instead."
+    )
+
+
+def _reject_removed_accelerator_kwargs(cls):
+    original_init = cls.__init__
+
+    @functools.wraps(original_init)
+    def checked_init(self, *args, **kwargs):
+        _reject_removed_accelerator_config(kwargs, config_name=cls.__name__)
+        original_init(self, *args, **kwargs)
+
+    cls.__init__ = checked_init
+    return cls
 
 
 @dataclass
@@ -59,6 +93,7 @@ class ConcurrencyConfig:
     Remaining requests adjust at the step boundary; ``0`` adjusts only there."""
 
 
+@_reject_removed_accelerator_kwargs
 @dataclass
 class InfraConfig:
     """GPU and image settings.
@@ -76,8 +111,8 @@ class InfraConfig:
       shape-derived fields (accelerator, image tag, node count).
       Setting shape-owned infra overrides raises ``ValueError``; trainer
       replica count remains a run-level control.
-    * **Manual path** (``training_shape_id`` is ``None``): all fields
-      are sent as-is; the server skips shape validation.
+    * **Manual path** (``training_shape_id`` is ``None``): remaining advanced
+      fields are sent as-is; trainer accelerator type and count are unsupported.
     """
 
     training_shape_id: str | None = None
@@ -96,8 +131,6 @@ class InfraConfig:
     region: str | None = None
     """Optional explicit trainer region. Prefer leaving unset so the backend
     can place the trainer from the validated training shape."""
-    accelerator_type: str | None = None
-    accelerator_count: int | None = None
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
@@ -123,6 +156,7 @@ class InfraConfig:
         )
 
 
+@_reject_removed_accelerator_kwargs
 @dataclass
 class TrainerConfig:
     """Training client launch settings."""
@@ -151,14 +185,6 @@ class TrainerConfig:
     region: str | None = None
     """Optional explicit trainer region. Prefer leaving unset so the backend
     can place the trainer from the validated training shape."""
-    accelerator_type: str | None = None
-    """Deprecated and ignored. Trainer accelerator type is owned by the
-    training shape; setting this emits a ``DeprecationWarning``. Use
-    ``replica_count`` for data-parallel scaling."""
-    accelerator_count: int | None = None
-    """Deprecated and ignored. Trainer accelerator count is owned by the
-    training shape; setting this emits a ``DeprecationWarning``. Use
-    ``replica_count`` for data-parallel scaling."""
     node_count: int | None = None
     timeout_s: float = 3600
     """Post-placement budget for the trainer to become healthy and ready."""
@@ -263,6 +289,8 @@ class DeployConfig:
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
     """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
+    preemptible: bool = False
+    """Request preemptible deployment scheduling. Requires an admin API key."""
 
     def to_deployment_config(
         self,
@@ -272,8 +300,6 @@ class DeployConfig:
         """Produce an SDK-level DeploymentConfig from cookbook settings."""
         skip_validation = False
         accel = None if self.deployment_shape else self.deployment_accelerator_type
-        if not accel and not self.deployment_shape:
-            accel = infra.accelerator_type
         replica_count = 1 if self.replica_count is None else self.replica_count
         return DeploymentConfig(
             deployment_id=self.deployment_id,
@@ -291,6 +317,7 @@ class DeployConfig:
             accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
+            preemptible=self.preemptible or getattr(infra, "preemptible", False),
         )
 
 

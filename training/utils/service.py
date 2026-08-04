@@ -70,8 +70,6 @@ def _firetitan_service_kwargs(
         # server-side knob unset.
         "gradient_accumulation_steps": None,
         "node_count": trainer.node_count,
-        "accelerator_type": trainer.accelerator_type,
-        "accelerator_count": trainer.accelerator_count,
         "custom_image_tag": trainer.custom_image_tag,
         "extra_args": trainer.extra_args,
         "trainer_replica_count": trainer.replica_count,

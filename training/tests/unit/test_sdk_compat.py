@@ -1,7 +1,34 @@
 from __future__ import annotations
 
+import dataclasses
+
+import pytest
+
 import training.utils.config as config_module
 from fireworks.training.sdk.deployment import DeploymentConfig
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("accelerator_type", "NVIDIA_B200"),
+        ("accelerator_count", 8),
+    ],
+)
+def test_legacy_infra_config_rejects_removed_accelerator_fields(field_name, value):
+    with pytest.raises(
+        TypeError, match=rf"InfraConfig no longer supports `{field_name}`"
+    ):
+        config_module.InfraConfig(**{field_name: value})
+
+
+def test_legacy_infra_config_does_not_expose_removed_accelerator_fields():
+    field_names = {
+        field.name for field in dataclasses.fields(config_module.InfraConfig)
+    }
+
+    assert "accelerator_type" not in field_names
+    assert "accelerator_count" not in field_names
 
 
 def test_to_deployment_config_includes_extra_values():

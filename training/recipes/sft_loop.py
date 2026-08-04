@@ -574,7 +574,7 @@ class Config:
     weights from the adapter at training start (weights-only, fresh optimizer).
     Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
 
-    grad_clip_norm: float = 1.0
+    grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 = no clipping."""
 
     adam_beta2: float | None = None
@@ -835,6 +835,7 @@ def main(
                 max_context_length=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
                 trainer=cfg.trainer,
+                cleanup_trainer_on_close=True,
             )
             stack.callback(service.close)
             training_client = service.create_training_client(

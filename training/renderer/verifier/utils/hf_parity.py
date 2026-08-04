@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+from functools import cache
 from typing import Any
 
 from tinker_cookbook.renderers import get_renderer
@@ -40,6 +42,49 @@ from training.utils.supervised import (
     build_tool_prefixed_messages,
     renderer_declares_tools,
 )
+from training.utils.tokenizers import needs_mistral_regex_fix
+
+
+@cache
+def _load_tokenizer(
+    tokenizer_model: str,
+    tokenizer_revision: str | None,
+    tokenizer_trust_remote_code: bool | None,
+) -> Any:
+    """Load each immutable QA oracle once per process.
+
+    Renderer QA compares hundreds of scenarios against the same handful of
+    tokenizers. Reconstructing remote-code tokenizers for every scenario makes
+    the test runtime scale with scenario count instead of renderer count.
+    """
+    if needs_mistral_regex_fix(tokenizer_model):
+        kwargs: dict[str, Any] = {
+            "token": os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
+            "trust_remote_code": (
+                tokenizer_trust_remote_code
+                if tokenizer_trust_remote_code is not None
+                else True
+            ),
+            "fix_mistral_regex": True,
+        }
+        if tokenizer_revision:
+            kwargs["revision"] = tokenizer_revision
+        return AutoTokenizer.from_pretrained(tokenizer_model, **kwargs)
+    if tokenizer_revision:
+        return AutoTokenizer.from_pretrained(
+            tokenizer_model,
+            revision=tokenizer_revision,
+            # Registered thinking-history renderers pass their reviewed
+            # policy explicitly. Keep the historical verifier default for
+            # unrelated pinned cases that predate the capability registry.
+            trust_remote_code=(
+                tokenizer_trust_remote_code
+                if tokenizer_trust_remote_code is not None
+                else True
+            ),
+        )
+    return get_tokenizer(tokenizer_model)
 
 
 @dataclasses.dataclass
@@ -110,20 +155,21 @@ def _hf_messages_with_normalized_tool_args(
     return out
 
 
-def _hf_messages_with_minimax_m3_reasoning_parts(
+def _hf_messages_with_reasoning_parts(
     messages: list[dict], *, renderer_name: str
 ) -> list[dict]:
-    """Map normalized M3 thinking parts to its HF ``reasoning_content`` field."""
-    if renderer_name != "minimax_m3":
+    """Map normalized thinking parts to a tokenizer's native HF input shape."""
+    supports_reasoning_parts = renderer_name in {
+        "minimax_m3",
+        "kimi_k3",
+        "kimi_k3_disable_thinking",
+    }
+    if not supports_reasoning_parts:
         return messages
     out: list[dict] = []
     for message in messages:
         content = message.get("content")
-        if (
-            message.get("role") != "assistant"
-            or "reasoning_content" in message
-            or not isinstance(content, list)
-        ):
+        if message.get("role") != "assistant" or not isinstance(content, list):
             out.append(message)
             continue
         reasoning = "".join(
@@ -131,9 +177,19 @@ def _hf_messages_with_minimax_m3_reasoning_parts(
             for part in content
             if isinstance(part, dict) and part.get("type") == "thinking"
         )
-        out.append(
-            {**message, **({"reasoning_content": reasoning} if reasoning else {})}
-        )
+        normalized = dict(message)
+        if "reasoning_content" not in normalized and reasoning:
+            normalized["reasoning_content"] = reasoning
+        if renderer_name.startswith("kimi_k3"):
+            # K3's Python template consumes reasoning from the top-level field;
+            # leaving a ``thinking`` content part behind makes its generic
+            # content loop look for a nonexistent ``text`` key.
+            normalized["content"] = [
+                part
+                for part in content
+                if not (isinstance(part, dict) and part.get("type") == "thinking")
+            ]
+        out.append(normalized)
     return out
 
 
@@ -160,27 +216,11 @@ def compare_renderer_to_hf(
     The function intentionally has no side effects beyond loading the
     tokenizer — caller decides what to do with a mismatch.
     """
-    tokenizer = (
-        AutoTokenizer.from_pretrained(
-            tokenizer_model,
-            revision=tokenizer_revision,
-            # Registered thinking-history renderers pass their reviewed
-            # policy explicitly.  Keep the historical verifier default for
-            # unrelated pinned cases that predate the capability registry.
-            trust_remote_code=(
-                tokenizer_trust_remote_code
-                if tokenizer_trust_remote_code is not None
-                else True
-            ),
-        )
-        if tokenizer_revision
-        else get_tokenizer(tokenizer_model)
+    tokenizer = _load_tokenizer(
+        tokenizer_model,
+        tokenizer_revision,
+        tokenizer_trust_remote_code,
     )
-    if not getattr(tokenizer, "chat_template", None):
-        raise RuntimeError(
-            f"Tokenizer {tokenizer_model!r} has no chat_template; "
-            "HF parity comparison is not meaningful."
-        )
 
     renderer = get_renderer(renderer_name, tokenizer)
     # Assemble the renderer input through the SAME production path SFT uses
@@ -216,7 +256,7 @@ def compare_renderer_to_hf(
         require_mapping=renderer_name in {"gemma4", "gemma4_thinking", "minimax_m3"},
     )
     hf_result = tokenizer.apply_chat_template(
-        _hf_messages_with_minimax_m3_reasoning_parts(
+        _hf_messages_with_reasoning_parts(
             hf_messages,
             renderer_name=renderer_name,
         ),

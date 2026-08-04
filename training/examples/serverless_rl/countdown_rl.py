@@ -13,19 +13,22 @@ The loop is the standard GRPO/importance-sampling shape:
 
     service = FiretitanServiceClient(base_url=".../training/v1/serverless")
     training_client = service.create_lora_training_client(base_model, rank)
+    ref = service.create_sampling_client(base_model=base_model, tokenizer=...) if kl_penalty_coef > 0 else None
     for step in range(steps):
         snapshot = training_client.save_weights_for_sampler(name).result().path
         sampler  = service.create_sampling_client(model_path=snapshot, tokenizer=...)
-        # sample a group of completions per prompt, score them, and turn
-        # group-relative advantages into importance-sampling training datums
+        # sample completions, score them, build importance-sampling datums
+        if ref is not None:  # inject KL into the advantages, then strip the mask
+            _incorporate_kl_penalty(datums, ref, kl_penalty_coef, kl_discount_factor)
+        _remove_mask(datums)
         training_client.forward_backward(datums, "importance_sampling").result()
         training_client.optim_step(adam).result()
 
 Each step saves the current LoRA weights for the sampler, rolls out a batch of
-Countdown prompts through that snapshot, scores completions with
-``countdown_rewards.composite_reward``, computes group-relative advantages, and
-takes one optimizer step. Reward should climb as the policy learns to emit valid
-Countdown equations.
+Countdown prompts, scores them with ``countdown_rewards.composite_reward``,
+computes group-relative advantages, and takes one optimizer step. When
+``kl_penalty_coef > 0`` a reference-KL penalty is injected into the advantages
+(as in ``tinker_cookbook/rl/metrics.py:incorporate_kl_penalty``).
 
 Distilled from the internal serverless Countdown e2e journey
 (``serverless_countdown_rl_journey_v2.py``); the e2e-only stage assertions,
@@ -50,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 import tinker
+import torch
 from fireworks.training.sdk import FiretitanServiceClient
 from tinker_cookbook.model_info import get_recommended_renderer_name
 from tinker_cookbook.renderers import get_renderer, get_text_content
@@ -95,6 +99,16 @@ class Config:
     max_sample_tokens: int = 1024
     temperature: float = 1.0
     learning_rate: float = 2.5e-5
+
+    # --- KL regularization (reference-model) -------------------------------
+    # KL injected into the advantages (not the loss), composes with
+    # "importance_sampling". 0.0 disables both the reference and the penalty.
+    kl_penalty_coef: float = 0.0
+    """Reference-KL coefficient. 0 = disabled; Tinker's tutorial suggests 0.05."""
+    kl_discount_factor: float = 0.0
+    """Position discount for the KL penalty (0 = no discounting)."""
+    kl_reference_base_model: str = ""
+    """KL reference base model. Empty = use ``base_model``."""
 
     # --- Connection ---------------------------------------------------------
     # Prod gateway by default; override with FIREWORKS_BASE_URL (e.g. a dev
@@ -177,6 +191,67 @@ def _mean_loss(fb_output: Any) -> float | None:
     return None
 
 
+def _discounted_future_sum_vectorized(x: torch.Tensor, gamma: float) -> torch.Tensor:
+    """Discounted sum of future values per position (ported from tinker_cookbook)."""
+    result = torch.empty_like(x)
+    running = torch.zeros(1, dtype=x.dtype, device=x.device)
+    for t in range(len(x) - 1, -1, -1):
+        running = x[t] + gamma * running
+        result[t] = running
+    return result
+
+
+def _as_torch(value: Any) -> torch.Tensor:
+    """Read a loss_fn_inputs value as a 1D tensor (plain list or Tinker TensorData)."""
+    if hasattr(value, "to_torch"):
+        return value.to_torch()
+    return torch.tensor(list(value), dtype=torch.float32)
+
+
+def _incorporate_kl_penalty(
+    datums: list[Any],
+    ref_client: Any,
+    kl_penalty_coef: float,
+    kl_discount_factor: float,
+) -> float:
+    """Add a reference-KL penalty to each datum's advantages in-place.
+
+    Port of ``tinker_cookbook/rl/metrics.py:incorporate_kl_penalty``:
+    ``kl_advantages = coef * mask * (avg_diff - per_token_diff)``. Returns avg_diff.
+    """
+    # Append the last target token to complete the full sequence, then score it.
+    full_sequence_inputs = [
+        datum.model_input.append_int(int(_as_torch(datum.loss_fn_inputs["target_tokens"])[-1].item()))
+        for datum in datums
+    ]
+    base_logprobs_D = [
+        ref_client.compute_logprobs(seq).result() for seq in full_sequence_inputs
+    ]
+    sampled_logprobs_D = [_as_torch(datum.loss_fn_inputs["logprobs"]) for datum in datums]
+    float_masks = [_as_torch(datum.loss_fn_inputs["mask"]).float() for datum in datums]
+    logprob_diffs = [
+        (sampled_logprobs - torch.tensor(base_logprobs[1:])) * mask
+        for base_logprobs, sampled_logprobs, mask in zip(base_logprobs_D, sampled_logprobs_D, float_masks)
+    ]
+    avg_logp_diff = sum(diff.sum() for diff in logprob_diffs) / sum(
+        mask.sum() for mask in float_masks
+    )
+    for i, datum in enumerate(datums):
+        kl_advantages = kl_penalty_coef * float_masks[i] * (avg_logp_diff - logprob_diffs[i])
+        if kl_discount_factor > 0:
+            kl_advantages = _discounted_future_sum_vectorized(kl_advantages, kl_discount_factor)
+        datum.loss_fn_inputs["advantages"] = (
+            _as_torch(datum.loss_fn_inputs["advantages"]) + kl_advantages
+        ).tolist()
+    return float(avg_logp_diff)
+
+
+def _remove_mask(datums: list[Any]) -> None:
+    """Strip the ``mask`` key before forward_backward (the server loss rejects it)."""
+    for datum in datums:
+        datum.loss_fn_inputs.pop("mask", None)
+
+
 class ServerlessCountdownRL:
     """One serverless RL run over the Countdown dataset."""
 
@@ -201,6 +276,16 @@ class ServerlessCountdownRL:
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
         )
+
+        # KL reference: frozen base model, created once for the whole run.
+        if cfg.kl_penalty_coef > 0:
+            ref_base = cfg.kl_reference_base_model or cfg.base_model
+            self.ref_client = self.service.create_sampling_client(
+                base_model=ref_base,
+                tokenizer=self.tokenizer,
+            )
+        else:
+            self.ref_client = None
 
         self.run_dir = (
             Path(cfg.run_dir).resolve()
@@ -311,20 +396,32 @@ class ServerlessCountdownRL:
                 # the response region and left-padded over the prompt.
                 model_input = prompt.append(tinker.EncodedTextChunk(tokens=tokens[:-1]))
                 _validate_datum_length(model_input.length, cfg.max_seq_len)
+                response_len = model_input.length - response_start
                 datums.append(
                     tinker.Datum(
                         model_input=model_input,
                         loss_fn_inputs={
                             "target_tokens": [0] * response_start + tokens,
                             "logprobs": [0.0] * response_start + logprobs,
-                            "advantages": [0.0] * response_start + [advantage] * (model_input.length - response_start),
+                            "advantages": [0.0] * response_start + [advantage] * response_len,
+                            # Action mask over the response region; stripped before forward_backward.
+                            "mask": [0.0] * response_start + [1.0] * response_len,
                         },
                     )
                 )
 
-        # 4. One importance-sampling update + optimizer step.
+        # 4. KL penalty into advantages, strip mask, importance-sampling update.
         loss = None
+        kl_policy_base = None
         if datums:
+            if self.ref_client is not None:
+                kl_policy_base = _incorporate_kl_penalty(
+                    datums,
+                    self.ref_client,
+                    cfg.kl_penalty_coef,
+                    cfg.kl_discount_factor,
+                )
+            _remove_mask(datums)
             fb = self.training_client.forward_backward(datums, "importance_sampling").result()
             loss = _mean_loss(fb)
             adam = tinker.AdamParams(learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.0)
@@ -348,6 +445,7 @@ class ServerlessCountdownRL:
             "rollout/filtered_samples": len(filtered_rewards),
             "rollout/filter_ratio": filter_ratio,
             "train/loss": loss,
+            "train/kl_policy_base": kl_policy_base,
             "train/trained": bool(datums),
             "perf/step_wall_time": time.time() - t0,
         }
@@ -358,28 +456,36 @@ class ServerlessCountdownRL:
             f"samples={len(raw_rewards)}/{len(filtered_rewards)} "
             f"filter={filter_ratio:.1%} "
             f"loss={'n/a' if loss is None else f'{loss:.4f}'} "
+            f"kl={'off' if kl_policy_base is None else f'{kl_policy_base:+.3f}'} "
             f"elapsed={rec['perf/step_wall_time']:.1f}s",
             flush=True,
         )
         return rec
 
     def run(self) -> list[dict[str, Any]]:
-        records = [self._step(step) for step in range(self.cfg.steps)]
+        try:
+            records = [self._step(step) for step in range(self.cfg.steps)]
 
-        final = self.training_client.save_weights_for_sampler(self.cfg.final_checkpoint_name).result()
-        print(f"final sampler checkpoint: {getattr(final, 'path', None)}", flush=True)
+            final = self.training_client.save_weights_for_sampler(self.cfg.final_checkpoint_name).result()
+            print(f"final sampler checkpoint: {getattr(final, 'path', None)}", flush=True)
 
-        if records:
-            rewards = [r["rollout/raw_reward"] for r in records]
-            print(
-                f"\nreward: {rewards[0]:.3f} -> {rewards[-1]:.3f} (peak {max(rewards):.3f}) "
-                f"over {len(records)} steps",
-                flush=True,
-            )
-        if self.cfg.plot_reward_curve:
-            self._plot(records)
-        print(f"metrics: {self.metrics_path}", flush=True)
-        return records
+            if records:
+                rewards = [r["rollout/raw_reward"] for r in records]
+                print(
+                    f"\nreward: {rewards[0]:.3f} -> {rewards[-1]:.3f} (peak {max(rewards):.3f}) "
+                    f"over {len(records)} steps",
+                    flush=True,
+                )
+            if self.cfg.plot_reward_curve:
+                self._plot(records)
+            print(f"metrics: {self.metrics_path}", flush=True)
+            return records
+        finally:
+            if self.ref_client is not None:
+                try:
+                    self.ref_client.close()
+                except Exception:
+                    pass
 
     def _plot(self, records: list[dict[str, Any]]) -> None:
         try:

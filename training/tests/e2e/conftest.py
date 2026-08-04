@@ -28,7 +28,6 @@ DEFAULT_REFERENCE_TRAINING_SHAPE = (
     "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
 )
 DEFAULT_LORA_TRAINING_SHAPE = "accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora"
-DEFAULT_TRAINING_ACCELERATOR = None
 DEFAULT_DEPLOYMENT_ACCELERATOR = "NVIDIA_B200_180GB"
 DEFAULT_DEPLOYMENT_SHAPE = "accounts/fireworks/deploymentShapes/rft-qwen3p5-9b-v2/versions/n864rzzy"
 
@@ -91,12 +90,6 @@ def e2e_model() -> str:
 def e2e_tokenizer_model() -> str:
     """HuggingFace model name for the tokenizer (client-side tokenization)."""
     return _get_env("FIREWORKS_E2E_TOKENIZER_MODEL", DEFAULT_TOKENIZER_MODEL)
-
-
-@pytest.fixture(scope="module")
-def e2e_training_accelerator() -> str | None:
-    """Accelerator for RLOR trainer jobs (None = server auto-configures)."""
-    return _get_env("FIREWORKS_E2E_TRAINING_ACCELERATOR", DEFAULT_TRAINING_ACCELERATOR)
 
 
 @pytest.fixture(scope="module")

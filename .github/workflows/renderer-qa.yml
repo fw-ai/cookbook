@@ -65,4 +65,22 @@ jobs:
           python -m pip install -e '.[dev]'
 
       - name: Run Renderer QA suite
-        run: pytest -q -p no:cacheprovider tests/unit/test_renderer_properties.py
+        run: |
+          pids=()
+          for shard in 0 1 2 3; do
+            RENDERER_QA_SHARD_INDEX="${shard}" RENDERER_QA_SHARD_COUNT=4 \
+              pytest -q -p no:cacheprovider tests/unit/test_renderer_properties.py \
+              > "${RUNNER_TEMP}/renderer-qa-${shard}.log" 2>&1 &
+            pids+=("$!")
+          done
+
+          exit_code=0
+          for shard in 0 1 2 3; do
+            if ! wait "${pids[$shard]}"; then
+              exit_code=1
+            fi
+            echo "::group::Renderer QA shard ${shard}"
+            cat "${RUNNER_TEMP}/renderer-qa-${shard}.log"
+            echo "::endgroup::"
+          done
+          exit "${exit_code}"

@@ -63,7 +63,6 @@ class TestSFTResumeE2E:
         self,
         sdk_managers,
         e2e_model,
-        e2e_training_accelerator,
         custom_image_tag,
     ):
         rlor_mgr, deploy_mgr = sdk_managers

@@ -273,6 +273,15 @@ def resolve_renderer_name(
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
+        # tinker-cookbook 0.4.3 no longer lists every Qwen3 checkpoint size
+        # (notably Qwen3-1.7B). Keep this compatibility fallback exact so
+        # unknown Base/Instruct variants fail closed instead of silently using
+        # the wrong conversation format.
+        if normalized_model_name == "qwen/qwen3-1.7b" or re.fullmatch(
+            r"accounts/[a-z0-9-]+/models/qwen3-1p7b",
+            normalized_model_name,
+        ):
+            return "qwen3"
         raise ValueError(
             f"Could not infer a renderer for tokenizer_model={tokenizer_model!r}. "
             "Set Config.renderer_name explicitly."

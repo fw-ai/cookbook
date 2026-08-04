@@ -1053,6 +1053,18 @@ def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_5():
     assert resolve_renderer_name("moonshotai/Kimi-K2.5") == "kimi_k25"
 
 
+def test_resolve_renderer_name_prefers_mistral_small_24b() -> None:
+    assert (
+        resolve_renderer_name("mistralai/Mistral-Small-24B-Instruct-2501") == "mistral"
+    )
+    assert (
+        resolve_renderer_name(
+            "accounts/fireworks/models/mistral-small-24b-instruct-2501"
+        )
+        == "mistral"
+    )
+
+
 def test_resolve_renderer_name_prefers_kimi_k26_for_kimi_k2_6():
     assert resolve_renderer_name("moonshotai/Kimi-K2.6") == "kimi_k25"
 
@@ -1075,6 +1087,31 @@ def test_resolve_renderer_name_prefers_upstream_nemotron3() -> None:
     """Nemotron models use Tinker's upstream renderer with parse normalization."""
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3-Super-120B") == "nemotron3"
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-H-8B") == "nemotron3"
+
+
+def test_resolve_renderer_name_supports_qwen3_family_fallback() -> None:
+    assert resolve_renderer_name("Qwen/Qwen3-1.7B") == "qwen3"
+    assert resolve_renderer_name("accounts/fireworks/models/qwen3-1p7b") == "qwen3"
+    assert resolve_renderer_name("Qwen/Qwen3-4B-Instruct-2507") == "qwen3_instruct"
+    assert resolve_renderer_name("Qwen/Qwen3-8B-Base") == "role_colon"
+
+
+@pytest.mark.parametrize(
+    "tokenizer_model",
+    [
+        "Qwen/Qwen3-1.7B-Base",
+        "Qwen/Qwen3-1.7B-Instruct-2507",
+        "custom/Qwen3-1.7B-Base",
+        "custom/Qwen3-1.7B-Instruct-2507",
+        "/models/base/fireworks/qwen3-1p7b/hf",
+        "/cache/instruct-2507/qwen3-1p7b/hf",
+    ],
+)
+def test_resolve_renderer_name_qwen3_fallback_fails_closed(
+    tokenizer_model: str,
+) -> None:
+    with pytest.raises(ValueError, match="Set Config.renderer_name explicitly"):
+        resolve_renderer_name(tokenizer_model)
 
 
 def test_resolve_renderer_name_prefers_qwen3_5() -> None:

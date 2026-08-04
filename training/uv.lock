@@ -1054,7 +1054,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.4"
+version = "1.2.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1066,9 +1066,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/86/3d4f2cf0c92ec6465f6d3a714cebe0e061b8eb55d9fe1808dd15353dc347/fireworks_ai-1.2.4.tar.gz", hash = "sha256:e74b175ca92c098fcb5b7ead3136dc0c8456370393d63f3066d12e74daac8bb7", size = 478185 }
+sdist = { url = "https://files.pythonhosted.org/packages/90/ac/ef9342fdada34a8675582960f154fe32b8d794cee59bbf884458f32382c3/fireworks_ai-1.2.5.tar.gz", hash = "sha256:938f8b9ef3b29800b383d8acc657fb640de5326e4f14aee907dbd72bd694a91c", size = 480803 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6d/ba/215ad9dfbf7cb3d5652506157e1722b2d26759fd81f7a64e7eddc9bcc6d9/fireworks_ai-1.2.4-py3-none-any.whl", hash = "sha256:d2c394c02ecc6978cb521c64885e06b475ff64dbdba0e97a8e08b34da49ec406", size = 480913 },
+    { url = "https://files.pythonhosted.org/packages/c1/2b/62807d6c7b6564ad34b86049da810dc7e5cc5da71eb04e26b486531b0a8d/fireworks_ai-1.2.5-py3-none-any.whl", hash = "sha256:d19a8ba1b2fd536a72692cbc6ae3978a9b497c3594cba4f7c772e80f10bc63a9", size = 482189 },
 ]
 
 [package.optional-dependencies]
@@ -1125,7 +1125,7 @@ eval = [
 requires-dist = [
     { name = "datasets" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = ">=0.3.32" },
-    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.4,<2" },
+    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.5,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "hydra-core", specifier = ">=1.3,<2" },
     { name = "math-verify", marker = "extra == 'dev'" },
@@ -1138,10 +1138,10 @@ requires-dist = [
     { name = "python-dotenv" },
     { name = "swebench", marker = "extra == 'coding-agent'", git = "https://github.com/SWE-Gym/SWE-Bench-Fork.git" },
     { name = "tiktoken" },
-    { name = "tinker-cookbook", specifier = "==0.4.1" },
+    { name = "tinker-cookbook", specifier = "==0.4.3" },
     { name = "torch" },
     { name = "tqdm" },
-    { name = "transformers" },
+    { name = "transformers", specifier = "==5.5.4" },
     { name = "wandb" },
 ]
 provides-extras = ["eval", "dev", "coding-agent"]
@@ -3788,7 +3788,7 @@ wheels = [
 
 [[package]]
 name = "tinker-cookbook"
-version = "0.4.1"
+version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -3810,9 +3810,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e5/9c/37af9804cb3f1d88f5e67512aa1aeafeb49ef9012532d056d92c96194320/tinker_cookbook-0.4.1.tar.gz", hash = "sha256:1f9ad977317529bbf796f40ef13de59b2c93a0a257469bd80a7ffcfed5beb8b2", size = 4517724 }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/66/e29025eb28c968b7d72624fa2766470a0b6d81617ef336796b5ead3979af/tinker_cookbook-0.4.3.tar.gz", hash = "sha256:15927af65c0e85f42161c4b4a03038ab5307981be16839b19003e075cb1826f5", size = 4595925 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/41/989cc9b1ba67edcaff46fa2d5c9c63e57f3f85cbd0226472660ed01852ce/tinker_cookbook-0.4.1-py3-none-any.whl", hash = "sha256:1776e82470534e47d8923378ea41d4c7e47a1ffdfcb1982507dfd0289ba9a70b", size = 867915 },
+    { url = "https://files.pythonhosted.org/packages/e5/b7/2c1bfee684aa66c1c486a23ffae782432c9ee472f6e5cdf0f83c0984f81a/tinker_cookbook-0.4.3-py3-none-any.whl", hash = "sha256:4a794a015a41462ff18a8085ea5a282139cca54325cbd38b4736b6916b5a40ce", size = 934603 },
 ]
 
 [[package]]
@@ -3966,7 +3966,7 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.5.3"
+version = "5.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -3979,9 +3979,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/af/35/cd5b0d1288e65d2c12db4ce84c1ec1074f7ee9bced040de6c9d69e70d620/transformers-5.5.3.tar.gz", hash = "sha256:3f60128e840b40d352655903552e1eed4f94ed49369a4d43e1bc067bd32d3f50", size = 8226047 }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/1e/1e244ab2ab50a863e6b52cc55761910567fa532b69a6740f6e99c5fdbd98/transformers-5.5.4.tar.gz", hash = "sha256:2e67cadba81fc7608cc07c4dd54f524820bc3d95b1cabd0ef3db7733c4f8b82e", size = 8227649 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a1/0b/f8524551ab2d896dfaca74ddb70a4453d515bbf4ab5451c100c7788ae155/transformers-5.5.3-py3-none-any.whl", hash = "sha256:e48f3ec31dd96505e96e66b63a1e43e1ad7a65749e108d9227caaf51051cdb02", size = 10236257 },
+    { url = "https://files.pythonhosted.org/packages/29/fb/162a66789c65e5afa3b051309240c26bf37fbc8fea285b4546ae747995a2/transformers-5.5.4-py3-none-any.whl", hash = "sha256:0bd6281b82966fe5a7a16f553ea517a9db1dee6284d7cb224dfd88fc0dd1c167", size = 10236696 },
 ]
 
 [[package]]

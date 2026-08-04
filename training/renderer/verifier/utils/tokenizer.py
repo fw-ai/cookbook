@@ -1,9 +1,8 @@
-"""Tokenizer loading with HF_TOKEN passthrough and friendly errors.
+"""HuggingFace asset loading for live verifier probes.
 
-The verifier needs HuggingFace tokenizers for two surfaces — the live
-probe and the CPU HF parity test. Both go through this helper so they
-share auth handling, caching behaviour, and the same error guidance
-when something goes wrong.
+Live probe surfaces use this helper for token passthrough and friendly
+errors. CPU HF parity owns its loading kwargs because it also preserves
+tokenizer revisions and explicit remote-code policy.
 
 ``transformers`` caches downloads under ``~/.cache/huggingface/`` by
 default, so the *second* call for a given ``model_id`` is fast and
@@ -19,14 +18,21 @@ from typing import Any
 
 def load_tokenizer(model_id: str) -> Any:
     """Load an HF tokenizer, forwarding ``HF_TOKEN`` if set."""
+    # lazy: keep verifier utilities importable without the heavy optional Transformers dependency.
     import transformers  # noqa: PLC0415 — heavy optional dep
+    from training.utils.tokenizers import needs_mistral_regex_fix  # noqa: PLC0415
 
     hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    kwargs: dict[str, Any] = {
+        "trust_remote_code": True,
+        "token": hf_token,
+    }
+    if needs_mistral_regex_fix(model_id):
+        kwargs["fix_mistral_regex"] = True
     try:
         return transformers.AutoTokenizer.from_pretrained(
             model_id,
-            trust_remote_code=True,
-            token=hf_token,
+            **kwargs,
         )
     except (OSError, ValueError) as exc:
         raise RuntimeError(
