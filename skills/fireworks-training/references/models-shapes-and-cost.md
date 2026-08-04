@@ -8,7 +8,7 @@ How to choose a base model + training shape, and reason about cost. **Always con
 
 A **training shape** is a pre-configured GPU + model profile bundled into one reference ID, so you don't hand-author hardware. Picking a shape ID is usually the only shape-specific value you set.
 
-Locked by the shape (not user-overridable): `acceleratorType`, `acceleratorCount`, `nodeCount`, `maxSupportedContextLength`, trainer image, linked deployment shape. You still set: `base_model`, `lora_rank`, `learning_rate`, `display_name`, replica counts.
+Locked by the shape (not user-overridable): `acceleratorType`, `acceleratorCount`, `nodeCount`, `maxSupportedContextLength`, trainer image, linked deployment shape. You still set: `base_model`, `lora_rank`, `lora_alpha`, `learning_rate`, `display_name`, replica counts.
 
 **Pick one:** find your base model in the catalog → pick the shape matching your method (SFT/DPO/RFT) and approach (LoRA vs full-param); the per-model **Training method support** matrix shows combinations + total GPU + surfaces. Pass the full path, e.g. `accounts/fireworks/trainingShapes/qwen3p5-9b-256k`. Catalog (live): https://docs.fireworks.ai/fine-tuning/training-api/training-shapes.md
 
@@ -18,6 +18,7 @@ service = FiretitanServiceClient.from_firetitan_config(
     base_model="accounts/fireworks/models/qwen3p5-9b",
     training_shape_id="accounts/fireworks/trainingShapes/qwen3p5-9b-256k",
     lora_rank=0,   # 0 = full-parameter; positive int (16, 64…) = LoRA
+    lora_alpha=32, # LoRA scaling factor; ignored for full-parameter training
 )
 ```
 
@@ -25,9 +26,13 @@ service = FiretitanServiceClient.from_firetitan_config(
 
 Most major open families — **DeepSeek, Qwen, Kimi, GLM, Gemma, Llama, Nemotron, MiniMax** and more. Eligibility is specific to method, tuning mode, and training shape. Confirm SFT, DPO, ORPO, or RFT support in the live Training Shapes matrix before launch. The set is generated from the live registry — **don't hardcode it**. Live: [tunable text](https://app.fireworks.ai/models?filter=LLM&tunable=true) · [vision](https://app.fireworks.ai/models?filter=vision&tunable=true) · [method-support matrix](https://docs.fireworks.ai/fine-tuning/training-api/training-shapes.md)
 
-## Context length & LoRA rank
+## Context length & LoRA configuration
 
-Each shape exposes `max_supported_context_length`. A catalog-level model maximum may come from a shape that does not support the selected method or tuning mode. For a job, use the maximum context length of a compatible shape. Set `max_context_length` or inherit it from that shape. `lora_rank=0` means full-parameter; a positive integer means LoRA.
+Each shape exposes `max_supported_context_length`. A catalog-level model maximum may come from a shape that does not support the selected method or tuning mode. For a job, use the maximum context length of a compatible shape. Set `max_context_length` or inherit it from that shape. `lora_rank=0` means full-parameter; a positive integer means LoRA. Cookbook recipes default `lora_alpha` to `32`; set another integer to override the scaling factor. `None` delegates alpha selection to the trainer backend.
+
+Cookbook-managed services provision trainer capacity with
+`max_lora_rank=lora_rank`; each `create_training_client` call supplies the
+actual `lora_rank` and `lora_alpha` used by that adapter's `CreateModel`.
 
 ## GPU classes
 

@@ -1,5 +1,4 @@
 version = 1
-revision = 1
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -1054,7 +1053,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.5"
+version = "1.2.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1066,9 +1065,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/90/ac/ef9342fdada34a8675582960f154fe32b8d794cee59bbf884458f32382c3/fireworks_ai-1.2.5.tar.gz", hash = "sha256:938f8b9ef3b29800b383d8acc657fb640de5326e4f14aee907dbd72bd694a91c", size = 480803 }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/61/81b74955c48cdb8c9e7fd58513fc17db0bfdd137a9fec274b9ae60a76fec/fireworks_ai-1.2.6.tar.gz", hash = "sha256:927058933dae4929d059e97a7c9bf37fcd0406a4d3c7a7495e156e5d1f86f677", size = 485826 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/2b/62807d6c7b6564ad34b86049da810dc7e5cc5da71eb04e26b486531b0a8d/fireworks_ai-1.2.5-py3-none-any.whl", hash = "sha256:d19a8ba1b2fd536a72692cbc6ae3978a9b497c3594cba4f7c772e80f10bc63a9", size = 482189 },
+    { url = "https://files.pythonhosted.org/packages/da/0e/bdb36e6e7a44fd89bd86dfa68fb075ef7337a0543b2e3619fc8f271b9ecc/fireworks_ai-1.2.6-py3-none-any.whl", hash = "sha256:0446a7ca1a3cd5588eb64d7e9c76b2686ec5e36533d6e1dccdffe3f91b105960", size = 485106 },
 ]
 
 [package.optional-dependencies]
@@ -1125,7 +1124,7 @@ eval = [
 requires-dist = [
     { name = "datasets" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = ">=0.3.32" },
-    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.5,<2" },
+    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.6,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "hydra-core", specifier = ">=1.3,<2" },
     { name = "math-verify", marker = "extra == 'dev'" },
@@ -1144,7 +1143,6 @@ requires-dist = [
     { name = "transformers", specifier = "==5.5.4" },
     { name = "wandb" },
 ]
-provides-extras = ["eval", "dev", "coding-agent"]
 
 [[package]]
 name = "frozenlist"

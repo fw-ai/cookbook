@@ -20,6 +20,7 @@ def _cfg(*, trainer_job_id: str | None = None, deployment_id: str | None = None)
     return SimpleNamespace(
         base_model="accounts/fireworks/models/qwen3-8b",
         lora_rank=16,
+        lora_alpha=32,
         max_seq_len=4096,
         learning_rate=1e-5,
         kl_beta=0.0,
@@ -55,10 +56,16 @@ class _FakeService:
     def __init__(self) -> None:
         self.closed = False
 
-    def create_training_client(self, _base_model: str, *, lora_rank: int) -> object:
+    def create_training_client(
+        self,
+        _base_model: str,
+        *,
+        lora_rank: int,
+        lora_alpha: int,
+    ) -> object:
         return object()
 
-    def create_reference_client(self, _base_model: str, *, lora_rank: int) -> object:
+    def create_reference_client(self, *, policy_client: object) -> object:
         return object()
 
     def create_deployment_sampler(
@@ -843,8 +850,8 @@ def test_rft_alias_resolves_to_rl() -> None:
 def test_dpo_mode_provisions_policy_and_reference_without_deployment(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict] = []
     service = _stub_runtime(monkeypatch, calls)
-    reference_calls: list[int] = []
-    service.create_reference_client = lambda _base_model, *, lora_rank: reference_calls.append(lora_rank) or object()  # type: ignore[assignment]
+    reference_calls: list[object] = []
+    service.create_reference_client = lambda *, policy_client: reference_calls.append(policy_client) or object()  # type: ignore[assignment]
 
     cfg = _cfg()
     cfg.tokenizer_model = "Qwen/Qwen3-8B"

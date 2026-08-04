@@ -102,6 +102,11 @@ class Config:
     max_rows: int = 100
     max_seq_len: int | None = None
     lora_rank: int = 0
+    lora_alpha: int | None = 32
+    """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
+
+    Defaults to ``32`` to match Tinker and the Training API SDK client
+    ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
     prompt_groups_per_step: int = 1
     router_replay: bool = False
     router_replay_completion_only: bool = True
@@ -295,7 +300,7 @@ def main(
             additional_headers=additional_headers,
             base_model=cfg.base_model,
             tokenizer_model=cfg.deployment.tokenizer_model,
-            lora_rank=cfg.lora_rank,
+            max_lora_rank=cfg.lora_rank,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
@@ -308,7 +313,11 @@ def main(
             reference_required=cfg.kl_beta > 0,
         )
         stack.callback(service.close)
-        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        training_client = service.create_training_client(
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
+        )
         runner.set_accelerator_info(
             service.accelerator_type,
             service.accelerator_count,
@@ -337,7 +346,7 @@ def main(
         reference_job_id = None
         if cfg.kl_beta > 0:
             reference = ReconnectableClient.from_training_client(
-                service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+                service.create_reference_client(policy_client=training_client),
                 base_model=cfg.base_model,
                 lora_rank=0,
                 job_id=service.reference_client_job_id,

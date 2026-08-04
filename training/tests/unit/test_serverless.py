@@ -14,9 +14,10 @@ class _FakeService:
         self.default_headers = default_headers
         self.training_session_id = "ts-1234"
 
-    def create_lora_training_client(self, base_model, rank):
+    def create_lora_training_client(self, base_model, rank, alpha):
         assert base_model == "accounts/fireworks/models/qwen3-4b"
         assert rank == 8
+        assert alpha == 32
         return SimpleNamespace(
             model_id="run-abcdef:train:0",
             run_id="run-abcdef",

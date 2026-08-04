@@ -161,6 +161,11 @@ class Config:
     """Max sequence length for sampling and training."""
 
     lora_rank: int = 0
+    lora_alpha: int | None = 32
+    """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
+
+    Defaults to ``32`` to match Tinker and the Training API SDK client
+    ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
 
     prompt_groups_per_step: int = 1
     """Number of prompt groups per optimizer step."""
@@ -510,7 +515,7 @@ def main(
             additional_headers=additional_headers,
             base_model=cfg.base_model,
             tokenizer_model=cfg.deployment.tokenizer_model,
-            lora_rank=cfg.lora_rank,
+            max_lora_rank=cfg.lora_rank,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
@@ -523,7 +528,11 @@ def main(
             reference_required=False,
         )
         stack.callback(service.close)
-        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        training_client = service.create_training_client(
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
+        )
 
         runner.set_accelerator_info(
             service.accelerator_type,

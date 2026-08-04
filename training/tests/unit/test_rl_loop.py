@@ -4,6 +4,7 @@ import importlib
 import inspect
 import pkgutil
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import tinker
@@ -29,6 +30,7 @@ def test_config_has_no_runner_state() -> None:
     assert not hasattr(module, "RunnerIO")
     assert "write_running_progress" not in inspect.getsource(module.main)
     assert cfg.kl_beta == 0.001
+    assert cfg.lora_alpha == 32
 
 
 def test_config_excludes_async_and_advanced_sync_scheduling_knobs() -> None:
@@ -39,7 +41,6 @@ def test_config_excludes_async_and_advanced_sync_scheduling_knobs() -> None:
     for field_name in (
         "concurrency",
         "emit_grad_norm_metrics",
-        "lora_alpha",
         "pipeline_chunks_per_step",
         "ppo_n_minibatches",
         "step_timeout",
@@ -201,9 +202,7 @@ async def _external_sample_prompt_fn(_row, *, cursor_index: int):
     return None
 
 
-def _build_service_kwargs(monkeypatch, cfg, *, sample_prompt_fn=None):
-    calls = []
-
+def _stub_provisioning_dependencies(monkeypatch: Any) -> None:
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
@@ -213,6 +212,11 @@ def _build_service_kwargs(monkeypatch, cfg, *, sample_prompt_fn=None):
     monkeypatch.setattr(
         module, "load_deployment_tokenizer", lambda *args, **kwargs: object()
     )
+
+
+def _build_service_kwargs(monkeypatch, cfg, *, sample_prompt_fn=None):
+    calls = []
+    _stub_provisioning_dependencies(monkeypatch)
 
     def fake_build_service_client(**kwargs):
         calls.append(kwargs)
@@ -225,6 +229,40 @@ def _build_service_kwargs(monkeypatch, cfg, *, sample_prompt_fn=None):
 
     assert len(calls) == 1
     return calls[0]
+
+
+def _lora_creation_kwargs(
+    monkeypatch: Any,
+    cfg: module.Config,
+) -> tuple[dict[str, Any], tuple[tuple[Any, ...], dict[str, Any]]]:
+    service_calls = []
+    training_calls = []
+    _stub_provisioning_dependencies(monkeypatch)
+
+    class FakeService:
+        def close(self) -> None:
+            pass
+
+        def create_training_client(
+            self,
+            *args: Any,
+            **kwargs: Any,
+        ) -> None:
+            training_calls.append((args, kwargs))
+            raise _StopAfterProvisioning
+
+    def fake_build_service_client(**kwargs: Any) -> FakeService:
+        service_calls.append(kwargs)
+        return FakeService()
+
+    monkeypatch.setattr(module, "build_service_client", fake_build_service_client)
+
+    with pytest.raises(_StopAfterProvisioning):
+        module.main(cfg)
+
+    assert len(service_calls) == 1
+    assert len(training_calls) == 1
+    return service_calls[0], training_calls[0]
 
 
 def test_main_requests_cleanup_for_sdk_created_resources(monkeypatch):
@@ -257,18 +295,22 @@ def test_main_can_disable_cleanup_on_exit(monkeypatch):
     assert kwargs["cleanup_deployment_on_close"] is None
 
 
-def test_main_uses_sdk_default_lora_alpha(monkeypatch):
+@pytest.mark.parametrize("lora_alpha", [32, 128, None])
+def test_main_forwards_lora_alpha(monkeypatch, lora_alpha):
     cfg = module.Config(
         log_path="/tmp/rl_test_logs",
         dataset="/tmp/prompts.jsonl",
         lora_rank=64,
+        lora_alpha=lora_alpha,
         deployment=module.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
     )
 
-    kwargs = _build_service_kwargs(monkeypatch, cfg)
+    service_kwargs, (_, training_kwargs) = _lora_creation_kwargs(monkeypatch, cfg)
 
-    assert kwargs["lora_rank"] == 64
-    assert "lora_alpha" not in kwargs
+    assert service_kwargs["max_lora_rank"] == 64
+    assert "lora_alpha" not in service_kwargs
+    assert training_kwargs["lora_rank"] == 64
+    assert training_kwargs["lora_alpha"] == lora_alpha
 
 
 def test_main_delegates_trainer_cleanup_for_existing_id_to_sdk(monkeypatch):

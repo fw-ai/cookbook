@@ -85,6 +85,7 @@ class Config:
     renderer_name: str = ""
     dataset: str = str(DEFAULT_DATASET)
     lora_rank: int = 8
+    lora_alpha: int = 32
     # Serverless has no training shape from which to infer this bound.
     max_seq_len: int = 65536
 
@@ -275,6 +276,7 @@ class ServerlessCountdownRL:
         self.training_client = self.service.create_lora_training_client(
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
+            alpha=cfg.lora_alpha,
         )
 
         # KL reference: frozen base model, created once for the whole run.
@@ -304,7 +306,7 @@ class ServerlessCountdownRL:
             f"connected serverless session={session} run={run_id}\n"
             f"base_model={cfg.base_model} tokenizer={cfg.tokenizer_model} renderer={renderer_name}\n"
             f"steps={cfg.steps} prompt_groups_per_step={cfg.prompt_groups_per_step} "
-            f"group_size={cfg.group_size} lora_rank={cfg.lora_rank} "
+            f"group_size={cfg.group_size} lora_rank={cfg.lora_rank} lora_alpha={cfg.lora_alpha} "
             f"max_seq_len={cfg.max_seq_len} lr={cfg.learning_rate}\n"
             f"run_dir={self.run_dir}",
             flush=True,

@@ -117,6 +117,11 @@ class Config:
     max_rows: int = 100
     max_seq_len: int | None = None
     lora_rank: int = 0
+    lora_alpha: int | None = 32
+    """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
+
+    Defaults to ``32`` to match Tinker and the Training API SDK client
+    ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
     cmek_output_model_resource: str | None = None
     """Internal managed-RFT contract. When set, the dedicated LoRA policy
     trainer encrypts checkpoints and sampler snapshots for this output model."""
@@ -373,7 +378,7 @@ def main(
             additional_headers=additional_headers,
             base_model=cfg.base_model,
             tokenizer_model=cfg.deployment.tokenizer_model,
-            lora_rank=cfg.lora_rank,
+            max_lora_rank=cfg.lora_rank,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
@@ -391,6 +396,7 @@ def main(
         training_client = service.create_training_client(
             cfg.base_model,
             lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
             user_metadata=cmek_user_metadata,
         )
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
@@ -407,8 +413,7 @@ def main(
         reference = None
         if cfg.kl_beta > 0:
             reference_training_client = service.create_reference_client(
-                cfg.base_model,
-                lora_rank=cfg.lora_rank,
+                policy_client=training_client,
             )
             reference = ReconnectableClient.from_training_client(
                 reference_training_client,

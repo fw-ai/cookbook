@@ -12,8 +12,6 @@ from fireworks.training.sdk import (
 
 from training.utils.config import DeployConfig, TrainerConfig
 
-_MISSING = object()
-
 
 def resolve_router_replay_enabled(
     *,
@@ -38,8 +36,7 @@ def _firetitan_service_kwargs(
     *,
     base_model: str,
     tokenizer_model: str | None,
-    lora_rank: int | None,
-    lora_alpha: int | None | object = _MISSING,
+    max_lora_rank: int | None,
     max_context_length: int | None,
     learning_rate: float,
     trainer: TrainerConfig,
@@ -53,7 +50,6 @@ def _firetitan_service_kwargs(
     service_kwargs: dict[str, Any] = {
         "base_model": base_model,
         "tokenizer_model": tokenizer_model,
-        "lora_rank": lora_rank or 0,
         "training_shape_id": trainer.training_shape_id,
         "reference_training_shape_id": trainer.reference_training_shape_id,
         "trainer_job_id": trainer.job_id,
@@ -86,8 +82,12 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
-    if lora_alpha is not _MISSING:
-        service_kwargs["lora_alpha"] = lora_alpha
+    if max_lora_rank is not None and max_lora_rank < 0:
+        raise ValueError("max_lora_rank must be non-negative")
+    if max_lora_rank and max_lora_rank > 0:
+        service_kwargs["max_lora_rank"] = max_lora_rank
+    else:
+        service_kwargs["lora_rank"] = 0
     if deployment is None:
         service_kwargs["replica_count"] = 1
         return service_kwargs
@@ -115,8 +115,7 @@ def build_service_client(
     additional_headers: dict[str, str] | None,
     base_model: str,
     tokenizer_model: str | None,
-    lora_rank: int | None,
-    lora_alpha: int | None | object = _MISSING,
+    max_lora_rank: int | None,
     max_context_length: int | None,
     learning_rate: float,
     trainer: TrainerConfig,
@@ -130,8 +129,7 @@ def build_service_client(
     service_kwargs = _firetitan_service_kwargs(
         base_model=base_model,
         tokenizer_model=tokenizer_model,
-        lora_rank=lora_rank,
-        lora_alpha=lora_alpha,
+        max_lora_rank=max_lora_rank,
         max_context_length=max_context_length,
         learning_rate=learning_rate,
         trainer=trainer,

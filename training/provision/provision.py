@@ -325,10 +325,7 @@ def _init_rl_infra(
         reference_job_id = None
         if cfg.kl_beta > 0:
             reference = ReconnectableClient.from_training_client(
-                service.create_reference_client(
-                    cfg.base_model,
-                    lora_rank=cfg.lora_rank,
-                ),
+                service.create_reference_client(policy_client=training_client),
                 base_model=cfg.base_model,
                 lora_rank=0,
                 job_id=service.reference_client_job_id,
@@ -383,7 +380,7 @@ def _init_dpo_infra(
     try:
         training_client, policy = _make_policy(service, cfg)
         reference = ReconnectableClient.from_training_client(
-            service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+            service.create_reference_client(policy_client=training_client),
             base_model=cfg.base_model,
             lora_rank=0,
             job_id=service.reference_client_job_id,
@@ -478,7 +475,7 @@ def _build_managed_service(
         additional_headers=additional_headers,
         base_model=cfg.base_model,
         tokenizer_model=tokenizer_model,
-        lora_rank=cfg.lora_rank,
+        max_lora_rank=cfg.lora_rank,
         max_context_length=cfg.max_seq_len,
         learning_rate=cfg.learning_rate,
         trainer=cfg.trainer,
@@ -494,7 +491,11 @@ def _make_policy(
     service: FiretitanServiceClient,
     cfg: Any,
 ) -> tuple[FiretitanTrainingClient, ReconnectableClient]:
-    training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+    training_client = service.create_training_client(
+        cfg.base_model,
+        lora_rank=cfg.lora_rank,
+        lora_alpha=getattr(cfg, "lora_alpha", 32),
+    )
     policy = ReconnectableClient.from_training_client(
         training_client,
         base_model=cfg.base_model,

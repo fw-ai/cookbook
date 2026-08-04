@@ -273,7 +273,7 @@ def main() -> None:
         additional_headers=None,
         base_model=cfg.base_model,
         tokenizer_model=None,
-        lora_rank=cfg.lora_rank,
+        max_lora_rank=cfg.lora_rank,
         max_context_length=None,
         learning_rate=1e-5,  # unused: we never take an optimizer step
         trainer=TrainerConfig(

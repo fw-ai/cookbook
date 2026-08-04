@@ -210,7 +210,7 @@ def main():
         additional_headers=read_api_extra_headers_env(),
         base_model=args.base_model,
         tokenizer_model=args.tokenizer,
-        lora_rank=0,
+        max_lora_rank=0,
         max_context_length=max_seq_len,
         learning_rate=1e-5,
         trainer=TrainerConfig(
@@ -231,8 +231,9 @@ def main():
             "\n[1/4] Provisioning deployment + trainers (%s)...",
             "policy + reference" if use_reference else "policy only",
         )
+        training_client = service.create_training_client(args.base_model, lora_rank=0)
         policy = ReconnectableClient.from_training_client(
-            service.create_training_client(args.base_model, lora_rank=0),
+            training_client,
             base_model=args.base_model,
             lora_rank=0,
             job_id=service.trainer_job_id,
@@ -243,7 +244,7 @@ def main():
         reference = None
         if use_reference:
             reference = ReconnectableClient.from_training_client(
-                service.create_reference_client(args.base_model, lora_rank=0),
+                service.create_reference_client(policy_client=training_client),
                 base_model=args.base_model,
                 lora_rank=0,
                 job_id=service.reference_client_job_id,

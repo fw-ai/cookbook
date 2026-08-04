@@ -357,7 +357,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
         additional_headers=read_api_extra_headers_env(),
         base_model=cfg.base_model,
         tokenizer_model=cfg.tokenizer_model,
-        lora_rank=cfg.lora_rank,
+        max_lora_rank=cfg.lora_rank,
         max_context_length=cfg.max_seq_len,
         learning_rate=cfg.learning_rate,
         trainer=TrainerConfig(
@@ -372,8 +372,12 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
     )
 
     with closing(service):
+        training_client = service.create_training_client(
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+        )
         policy = ReconnectableClient.from_training_client(
-            service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank),
+            training_client,
             base_model=cfg.base_model,
             lora_rank=cfg.lora_rank,
             job_id=service.trainer_job_id,
@@ -384,7 +388,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
         reference = None
         if use_reference:
             reference = ReconnectableClient.from_training_client(
-                service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+                service.create_reference_client(policy_client=training_client),
                 base_model=cfg.base_model,
                 lora_rank=0,
                 job_id=service.reference_client_job_id,
