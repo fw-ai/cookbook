@@ -11,6 +11,10 @@ from training.utils import supervised as supervised_utils
 from training.utils.checkpoints import TrainingCheckpoints
 
 
+class _StopAfterProvisioning(RuntimeError):
+    pass
+
+
 def _patch_resume(monkeypatch, resume_info):
     """Replace TrainingCheckpoints.resume on the class for unit tests.
 
@@ -376,6 +380,41 @@ def test_main_requires_tokenizer_model(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="tokenizer_model"):
         module.main(cfg)
+
+
+def test_main_requests_cleanup_for_sdk_created_trainer(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "validate_warm_start_config",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        module,
+        "_resolved_renderer_name",
+        lambda **kwargs: "qwen3",
+    )
+
+    def fake_build_service_client(**kwargs):
+        calls.append(kwargs)
+        raise _StopAfterProvisioning
+
+    monkeypatch.setattr(module, "build_service_client", fake_build_service_client)
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="/tmp/sft.jsonl",
+        tokenizer_model="Qwen/Qwen3-8B",
+        max_seq_len=32,
+    )
+
+    with pytest.raises(_StopAfterProvisioning):
+        module.main(cfg)
+
+    assert len(calls) == 1
+    assert calls[0]["cleanup_trainer_on_close"] is True
 
 
 # ---------------------------------------------------------------------------
