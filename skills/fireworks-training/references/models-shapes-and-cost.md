@@ -42,7 +42,7 @@ The platform maps GPU class + count to the model — **let it**. Larger/MoE → 
 
 **Per training token** — managed SFT and DPO where listed. **Read current rates from the live [pricing page](https://fireworks.ai/pricing)** rather than trusting a hardcoded table.
 
-**Runtime-priced resources** — managed RFT may be free for eligible small models (confirm on the live pricing page; do not assume a fixed size threshold). Other managed RFT and dedicated Training API resources follow current pricing. Dedicated trainers and deployments use GPU-hour rates and are metered by runtime.
+**Runtime-priced resources** — managed RFT may be free for eligible small models (confirm on the live pricing page; do not assume a fixed size threshold). Other managed RFT and dedicated Training API resources follow current pricing. Dedicated trainers and deployments use GPU-hour rates, including priced classes such as B300 and GB300, and are metered by runtime.
 
 **Inference:** serverless per-token; dedicated per GPU-hour.
 
