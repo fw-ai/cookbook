@@ -87,6 +87,8 @@ from tinker_cookbook.renderers.base import (
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+
 # ── Special tokens (must match encoding_dsv4.py exactly) ────────────────────
 # NOTE: ``｜`` is U+FF5C FULLWIDTH VERTICAL LINE (not ASCII ``|``).
 #       ``▁`` is U+2581 LOWER ONE EIGHTH BLOCK (not ASCII ``_``).
@@ -424,8 +426,14 @@ def _drop_thinking_from_history(messages: list[Message]) -> list[Message]:
 ThinkingMode = Literal["chat", "thinking"]
 
 
-class DeepseekV4Renderer(Renderer):
-    """Renderer for ``deepseek-ai/DeepSeek-V4-Flash`` instruct models."""
+class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
+    """Renderer for ``deepseek-ai/DeepSeek-V4-Flash`` instruct models.
+
+    The default AUTO behavior strips reasoning from historical assistant turns
+    and disaggregates per user turn when no tools are declared. Tool declarations
+    make the upstream encoder preserve all history reasoning, so those rows use
+    one full supervised sequence instead.
+    """
 
     def __init__(
         self,
@@ -475,8 +483,85 @@ class DeepseekV4Renderer(Renderer):
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
     ) -> tuple[tinker.ModelInput, torch.Tensor]:
-        return super().build_supervised_example(
-            self._preprocess(messages),
+        merged = self._preprocess(messages)
+        if train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN and _has_any_tools(merged):
+            return self._build_tool_turn_example(merged)
+        return super().build_supervised_example(merged, train_on_what=train_on_what)
+
+    def _build_tool_turn_example(
+        self,
+        merged: list[Message],
+    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+        """LAST_ASSISTANT_TURN weights for a tool-calling trajectory.
+
+        Tool results become synthetic user messages during preprocessing, so
+        the base rule would mistake the latest tool result for a turn boundary
+        and mask the assistant that issued the tool call. A real user request
+        always contributes a text content block; use the last such block as
+        the boundary and train every assistant in that user turn, including
+        intermediate tool calls.
+        """
+        last_user_idx = max(
+            (idx for idx, m in enumerate(merged) if m.get("role") == "user"),
+            default=-1,
+        )
+        last_real_user_idx = max(
+            (
+                idx
+                for idx, m in enumerate(merged)
+                if m.get("role") == "user"
+                and any(
+                    block.get("type") == "text"
+                    for block in m.get("content_blocks", [])
+                )
+            ),
+            default=-1,
+        )
+
+        chunks_weights: list[tuple[tinker.types.ModelInputChunk, int]] = []
+        if self._bos_tokens:
+            chunks_weights.append(
+                (tinker.types.EncodedTextChunk(tokens=self._bos_tokens), 0)
+            )
+        for idx, message in enumerate(merged):
+            ctx = RenderContext(
+                idx=idx,
+                is_last=(idx == len(merged) - 1),
+                prev_message=merged[idx - 1] if idx > 0 else None,
+                last_user_index=last_user_idx,
+            )
+            rendered = self.render_message(message, ctx)
+            if rendered.header:
+                chunks_weights.append((rendered.header, 0))
+            weight = int(message["role"] == "assistant" and idx > last_real_user_idx)
+            chunks_weights += [
+                (output, weight) for output in rendered.output if output
+            ]
+
+        weights = torch.tensor(
+            [w for chunk, w in chunks_weights for _ in range(chunk.length)]
+        )
+        model_input = tinker.ModelInput(chunks=[chunk for chunk, _ in chunks_weights])
+        return model_input, weights
+
+    def build_supervised_examples(
+        self,
+        messages: list[Message],
+        train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_TURN,
+    ):
+        # The upstream encoder makes history mode data-dependent: declaring
+        # tools disables drop_thinking for the entire conversation. In that
+        # case every assistant prefix is stable, so masking one full sequence
+        # is correct and avoids quadratic per-user-turn duplication.
+        if _has_any_tools(messages):
+            return [
+                self.build_supervised_example(
+                    messages,
+                    train_on_what=train_on_what,
+                )
+            ]
+        return super().build_supervised_examples(
+            messages,
             train_on_what=train_on_what,
         )
 

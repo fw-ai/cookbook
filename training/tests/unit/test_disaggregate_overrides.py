@@ -74,6 +74,11 @@ _PARITY_CASES = [
         "DeepSeekV3ThinkingSplitRenderer",
     ),
     (
+        "deepseek_v4",
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "DeepseekV4Renderer",
+    ),
+    (
         "nemotron3",
         "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
         "Nemotron3SplitRenderer",
@@ -136,7 +141,15 @@ def _load_tokenizer(model_id: str):
     except _TokenizerLoadTimeout:
         return None
     except Exception:  # noqa: BLE001 — network / gated repo / config drift
-        return None
+        if model_id != "deepseek-ai/DeepSeek-V4-Flash":
+            return None
+        try:
+            with _tokenizer_load_timeout():
+                return transformers.PreTrainedTokenizerFast.from_pretrained(model_id)
+        except _TokenizerLoadTimeout:
+            return None
+        except Exception:  # noqa: BLE001 — network / tokenizer file drift
+            return None
 
 
 def _decoded(tok, token_ids: list[int]) -> str:

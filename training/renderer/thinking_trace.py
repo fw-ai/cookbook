@@ -11,8 +11,10 @@ Vendor-specific switches such as ``clear_thinking`` and
 caller therefore selects a semantic mode here and never forwards a shared
 boolean to arbitrary renderers.
 
-Only explicitly onboarded aliases are classified.  Unknown/legacy models keep
-their existing renderer path for ``UNSPECIFIED`` and reject explicit modes.
+Only explicitly onboarded aliases are classified. An onboarded model may expose
+only ``UNSPECIFIED`` when its model-native behavior is automatic rather than a
+stable user-selectable history mode. Unknown/legacy models also keep their
+existing renderer path for ``UNSPECIFIED`` and reject explicit modes.
 """
 
 from __future__ import annotations
@@ -81,6 +83,36 @@ def _plan(
 
 
 _CAPABILITIES: tuple[ThinkingTraceModelCapability, ...] = (
+    ThinkingTraceModelCapability(
+        canonical_family="deepseek-v4",
+        aliases=frozenset(
+            {
+                "deepseek-ai/deepseek-v4-flash",
+                "deepseek-ai/deepseek-v4-flash-0731",
+                "deepseek-ai/deepseek-v4-pro",
+                "sgl-project/deepseek-v4-flash-fp8",
+                "sgl-project/deepseek-v4-pro-fp8",
+                "accounts/fireworks/models/deepseek-v4-flash",
+                "accounts/fireworks/models/deepseek-v4-flash-0731",
+                "accounts/fireworks/models/deepseek-v4-pro",
+                "accounts/fireworks/models/deepseek-v4-flash-fp8",
+                "accounts/fireworks/models/deepseek-v4-pro-fp8",
+            }
+        ),
+        plans=(
+            # DeepSeek V4's encoder chooses per conversation: no tools strips
+            # thinking across user turns; declaring tools preserves all
+            # thinking. Neither explicit semantic mode describes both cases.
+            _plan(
+                ThinkingTraceHistoryMode.UNSPECIFIED,
+                "deepseek_v4",
+                is_default=True,
+                # Conservatively advertise that AUTO may unroll. At runtime
+                # tool-bearing rows take the one-sequence fast path.
+                unrolls_multi_turn=True,
+            ),
+        ),
+    ),
     ThinkingTraceModelCapability(
         canonical_family="glm5.1",
         aliases=frozenset(
@@ -268,11 +300,15 @@ def _build_alias_index() -> dict[str, ThinkingTraceModelCapability]:
                 f"{capability.canonical_family} must have exactly one default plan"
             )
         modes = [plan.mode for plan in capability.plans]
-        if ThinkingTraceHistoryMode.UNSPECIFIED in modes or len(modes) != len(
-            set(modes)
-        ):
+        if len(modes) != len(set(modes)):
             raise ValueError(
                 f"{capability.canonical_family} has invalid or duplicate modes"
+            )
+        if ThinkingTraceHistoryMode.UNSPECIFIED in modes and modes != [
+            ThinkingTraceHistoryMode.UNSPECIFIED
+        ]:
+            raise ValueError(
+                f"{capability.canonical_family} must expose UNSPECIFIED alone"
             )
         for plan in capability.plans:
             renderer_name = plan.renderer_name.strip()

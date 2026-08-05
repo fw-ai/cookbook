@@ -37,8 +37,9 @@ from training.renderer.deepseek_v4 import (
     _DSML,
 )
 from training.tests import _encoding_dsv4_oracle as oracle
+from training.utils.supervised import render_messages_to_datums
 from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
+from tinker_cookbook.renderers.base import Renderer, ToolCall, TrainOnWhat
 
 # Public HF tokenizer. Local mirror probed first so internal CI works without
 # the Hub; falls through to public if absent.
@@ -47,21 +48,27 @@ _PUBLIC_TOKENIZER = "deepseek-ai/DeepSeek-V4-Flash"
 
 
 def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
+    candidates: list[str] = []
     if Path(_LOCAL_TOKENIZER).exists():
+        candidates.append(_LOCAL_TOKENIZER)
+    candidates.append(_PUBLIC_TOKENIZER)
+
+    for model_id in candidates:
         try:
             return transformers.AutoTokenizer.from_pretrained(
-                _LOCAL_TOKENIZER,
+                model_id,
                 trust_remote_code=True,
             )
         except Exception:  # noqa: BLE001
-            pass
-    try:
-        return transformers.AutoTokenizer.from_pretrained(
-            _PUBLIC_TOKENIZER,
-            trust_remote_code=True,
-        )
-    except Exception:  # noqa: BLE001
-        return None
+            # DeepSeek V4's tokenizer is a standard tokenizer.json, but
+            # AutoTokenizer first loads the unregistered deepseek_v4 model
+            # config on some Transformers versions. Bypass model config so
+            # this suite cannot silently skip otherwise valid coverage.
+            try:
+                return transformers.PreTrainedTokenizerFast.from_pretrained(model_id)
+            except Exception:  # noqa: BLE001
+                continue
+    return None
 
 
 @pytest.fixture(scope="module")
@@ -184,6 +191,7 @@ def test_registered_factory_returns_thinking_strip(tokenizer):
     assert r.thinking_mode == "thinking"
     assert r.strip_thinking_from_history is True
     assert r.has_extension_property is False
+    assert type(r).build_supervised_examples is not Renderer.build_supervised_examples
 
 
 def test_keep_thinking_renderer_has_extension_property(renderer_thinking_keep):
@@ -619,6 +627,60 @@ def test_drop_thinking_auto_disable_when_tools_present(
     )
     assert with_tools_ours == with_tools_text
     assert "HISTORY_REASONING" in with_tools_ours
+
+
+def test_tools_auto_mode_keeps_one_multi_user_training_sequence(
+    tokenizer,
+    renderer_thinking_strip,
+):
+    """Tool declarations select preserved history and avoid AUTO unrolling."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "noop",
+                "description": "x",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    messages = [
+        {"role": "user", "content": "q1"},
+        {
+            "role": "assistant",
+            "reasoning_content": "R1",
+            "content": "A1",
+        },
+        {"role": "user", "content": "q2"},
+        {
+            "role": "assistant",
+            "reasoning_content": "R2",
+            "content": "A2",
+        },
+    ]
+
+    datums = render_messages_to_datums(
+        messages,
+        renderer=renderer_thinking_strip,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+        tools=tools,
+    )
+
+    assert len(datums) == 1
+    assert datums[0].token_ids == _oracle_ids(
+        tokenizer,
+        [{"role": "system", "content": "", "tools": tools}, *messages],
+        thinking_mode="thinking",
+    )
+    trained = _trained_text(
+        tokenizer,
+        datums[0].token_ids,
+        [int(weight) for weight in datums[0].token_weights],
+    )
+    assert "R1" in trained
+    assert "A1" in trained
+    assert "R2" in trained
+    assert "A2" in trained
 
 
 # ── Tool-call argument formatting (mixed types) ─────────────────────────────
@@ -1069,11 +1131,13 @@ def test_multi_turn_keeps_history_reasoning_in_keep_mode(
         {"role": "user", "content": "q2"},
         {"role": "assistant", "reasoning_content": "R2", "content": "A2"},
     ]
-    sup, weights = _renderer_supervised(
-        renderer_thinking_keep,
+    examples = renderer_thinking_keep.build_supervised_examples(
         _renderer_messages_from(msgs),
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
+    assert len(examples) == 1
+    sup = list(examples[0][0].to_ints())
+    weights = [int(weight) for weight in examples[0][1].tolist()]
     trained = _trained_text(tokenizer, sup, weights)
     # Both turns' reasoning + content trained; user content not trained.
     assert "R1" in trained
@@ -1082,6 +1146,319 @@ def test_multi_turn_keeps_history_reasoning_in_keep_mode(
     assert "A2" in trained
     assert "q1" not in trained
     assert "q2" not in trained
+
+
+def test_default_renderer_disaggregates_multi_turn_all_assistant_messages(
+    tokenizer,
+    renderer_thinking_strip,
+):
+    """The production default must split and preserve each turn's target."""
+    messages = _renderer_messages_from(
+        [
+            {"role": "user", "content": "QUESTION_TURN_1"},
+            {
+                "role": "assistant",
+                "reasoning_content": "REASON_TURN_1",
+                "content": "ANSWER_TURN_1",
+            },
+            {"role": "user", "content": "QUESTION_TURN_2"},
+            {
+                "role": "assistant",
+                "reasoning_content": "REASON_TURN_2",
+                "content": "ANSWER_TURN_2",
+            },
+        ]
+    )
+    examples = renderer_thinking_strip.build_supervised_examples(
+        messages,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    assert len(examples) == 2
+
+    trained = [
+        _trained_text(
+            tokenizer,
+            list(model_input.to_ints()),
+            [int(weight) for weight in weights.tolist()],
+        )
+        for model_input, weights in examples
+    ]
+    assert "REASON_TURN_1" in trained[0]
+    assert "ANSWER_TURN_1" in trained[0]
+    assert "REASON_TURN_2" in trained[1]
+    assert "ANSWER_TURN_2" in trained[1]
+    assert "ANSWER_TURN_1" not in trained[1]
+
+
+_AGENTIC_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Look up weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+
+
+def _datum_trained_text(tokenizer, datum) -> str:
+    return tokenizer.decode(
+        [t for t, w in zip(datum.token_ids, datum.token_weights) if w > 0]
+    )
+
+
+def test_agentic_tool_turn_trains_tool_call_assistant(
+    tokenizer,
+    renderer_thinking_strip,
+):
+    """Regression: a tool-calling assistant turn must receive SFT loss.
+
+    Declaring tools disables history thinking-strip, so both the tool-call
+    assistant and the final assistant are valid targets. The tool result is
+    folded into a synthetic user message and must stay masked, but the
+    tool-call turn must train (it was silently dropped before the fix).
+    """
+    messages = [
+        {"role": "system", "content": "be helpful", "tools": _AGENTIC_TOOLS},
+        {"role": "user", "content": "weather in SF?"},
+        {
+            "role": "assistant",
+            "reasoning_content": "NEED_LOOKUP",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "call_1",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": json.dumps({"city": "SF_PARAM"}),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "TOOL_RESULT_PAYLOAD"},
+        {"role": "assistant", "reasoning_content": "GOT_IT", "content": "FINAL_ANSWER"},
+    ]
+    datums = render_messages_to_datums(
+        messages,
+        renderer=renderer_thinking_strip,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    assert len(datums) == 1
+    trained = _datum_trained_text(tokenizer, datums[0])
+    # Tool-call assistant (reasoning + the DSML tool call) must train.
+    assert "NEED_LOOKUP" in trained
+    assert "get_weather" in trained
+    assert "SF_PARAM" in trained
+    # Final assistant must also train.
+    assert "GOT_IT" in trained
+    assert "FINAL_ANSWER" in trained
+    # Environment-supplied tool result stays masked.
+    assert "TOOL_RESULT_PAYLOAD" not in trained
+
+
+def test_last_assistant_turn_uses_real_user_after_tool_result(
+    tokenizer,
+    renderer_thinking_strip,
+):
+    """A real user folded into a tool-result message remains the turn boundary."""
+    messages = [
+        {"role": "system", "content": "be helpful", "tools": _AGENTIC_TOOLS},
+        {"role": "user", "content": "FIRST_USER"},
+        {
+            "role": "assistant",
+            "reasoning_content": "FIRST_REASONING",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "call_1",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": json.dumps({"city": "SF"}),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "TOOL_RESULT"},
+        {"role": "user", "content": "SECOND_USER"},
+        {
+            "role": "assistant",
+            "reasoning_content": "SECOND_REASONING",
+            "content": "SECOND_ANSWER",
+        },
+    ]
+
+    model_input, weights = renderer_thinking_strip.build_supervised_example(
+        _renderer_messages_from(messages),
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
+    )
+    trained = _trained_text(
+        tokenizer,
+        list(model_input.to_ints()),
+        [int(weight) for weight in weights.tolist()],
+    )
+
+    assert "FIRST_REASONING" not in trained
+    assert "SECOND_REASONING" in trained
+    assert "SECOND_ANSWER" in trained
+
+
+def test_agentic_multi_turn_trains_one_preserved_sequence(
+    tokenizer,
+    renderer_thinking_strip,
+):
+    """Tool declarations preserve one sequence and train every assistant."""
+
+    def _tool_call_assistant(reason: str, city: str) -> dict[str, Any]:
+        return {
+            "role": "assistant",
+            "reasoning_content": reason,
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "call_1",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": json.dumps({"city": city}),
+                    },
+                }
+            ],
+        }
+
+    messages = [
+        {"role": "system", "content": "be helpful", "tools": _AGENTIC_TOOLS},
+        {"role": "user", "content": "weather in SF?"},
+        _tool_call_assistant("NEED_LOOKUP_1", "CITY_SF"),
+        {"role": "tool", "tool_call_id": "call_1", "content": "RESULT_1"},
+        {"role": "assistant", "reasoning_content": "GOT_1", "content": "FINAL_1"},
+        {"role": "user", "content": "and NYC?"},
+        _tool_call_assistant("NEED_LOOKUP_2", "CITY_NYC"),
+        {"role": "tool", "tool_call_id": "call_1", "content": "RESULT_2"},
+        {"role": "assistant", "reasoning_content": "GOT_2", "content": "FINAL_2"},
+    ]
+    datums = render_messages_to_datums(
+        messages,
+        renderer=renderer_thinking_strip,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    assert len(datums) == 1
+    trained = _datum_trained_text(tokenizer, datums[0])
+
+    # Both tool-call and final assistant turns train in the preserved sequence.
+    for expected in (
+        "NEED_LOOKUP_1",
+        "CITY_SF",
+        "FINAL_1",
+        "NEED_LOOKUP_2",
+        "CITY_NYC",
+        "FINAL_2",
+    ):
+        assert expected in trained
+
+    # Environment-supplied tool results stay masked.
+    assert "RESULT_1" not in trained
+    assert "RESULT_2" not in trained
+
+
+@pytest.mark.parametrize(
+    ("renderer_fixture", "thinking_mode", "oracle_kwargs", "prefix_lengths"),
+    [
+        ("renderer_thinking_strip", "thinking", {}, [2, 4]),
+        (
+            "renderer_thinking_keep",
+            "thinking",
+            {"drop_thinking": False},
+            [4],
+        ),
+        ("renderer_chat", "chat", {}, [4]),
+    ],
+    ids=["thinking-interleaved", "thinking-preserved", "non-thinking"],
+)
+def test_production_sft_path_matches_upstream_tokens_for_each_mode(
+    request,
+    tokenizer,
+    renderer_fixture,
+    thinking_mode,
+    oracle_kwargs,
+    prefix_lengths,
+):
+    """Production dispatch is token-identical to every upstream SFT prefix.
+
+    The default interleaved renderer emits one datum per user turn, so compare
+    each split independently with ``encoding_dsv4.encode_messages``. Preserved
+    thinking and non-thinking chat mode satisfy the extension property and
+    therefore render the full conversation as one datum.
+    """
+    messages = [
+        {"role": "user", "content": "QUESTION_TURN_1"},
+        {
+            "role": "assistant",
+            "reasoning_content": "REASON_TURN_1",
+            "content": "ANSWER_TURN_1",
+        },
+        {"role": "user", "content": "QUESTION_TURN_2"},
+        {
+            "role": "assistant",
+            "reasoning_content": "REASON_TURN_2",
+            "content": "ANSWER_TURN_2",
+        },
+    ]
+    renderer = request.getfixturevalue(renderer_fixture)
+
+    datums = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+
+    assert len(datums) == len(prefix_lengths)
+    for datum, prefix_length in zip(datums, prefix_lengths, strict=True):
+        prefix = messages[:prefix_length]
+        expected_ids = _oracle_ids(
+            tokenizer,
+            prefix,
+            thinking_mode=thinking_mode,
+            **oracle_kwargs,
+        )
+        assert datum.token_ids == expected_ids
+
+        expected_weights = [0.0] * len(expected_ids)
+        assistant_indexes = [
+            index
+            for index, message in enumerate(prefix)
+            if message["role"] == "assistant"
+        ]
+        if renderer_fixture == "renderer_thinking_strip":
+            assistant_indexes = assistant_indexes[-1:]
+
+        for assistant_index in assistant_indexes:
+            generation_prompt_ids = _oracle_ids(
+                tokenizer,
+                prefix[:assistant_index],
+                thinking_mode=thinking_mode,
+                **oracle_kwargs,
+            )
+            through_assistant_ids = _oracle_ids(
+                tokenizer,
+                prefix[: assistant_index + 1],
+                thinking_mode=thinking_mode,
+                **oracle_kwargs,
+            )
+            assert expected_ids[: len(through_assistant_ids)] == through_assistant_ids
+            expected_weights[
+                len(generation_prompt_ids) : len(through_assistant_ids)
+            ] = [1.0] * (
+                len(through_assistant_ids) - len(generation_prompt_ids)
+            )
+
+        assert datum.token_weights == expected_weights
 
 
 def test_strip_history_drops_first_turn_reasoning(
