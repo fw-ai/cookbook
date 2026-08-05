@@ -214,6 +214,13 @@ def resolve_renderer_name(
         return "minimax_m3"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
+    if normalized_model_name == "qwen/qwen3-235b-a22b-instruct-2507-fp8":
+        # The FP8 weights repository reuses the canonical Instruct-2507
+        # tokenizer and chat template, but tinker-cookbook only registers the
+        # canonical non-suffixed HF identity. This alias is renderer-only:
+        # checkpoint precision and training-shape eligibility remain separate
+        # control-plane contracts and must not be canonicalized here.
+        return "qwen3_instruct"
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
     # adds an opt-in `preserve_thinking` flag (renders historical thinking
     # for ALL assistant turns when true). Default invocation produces output
