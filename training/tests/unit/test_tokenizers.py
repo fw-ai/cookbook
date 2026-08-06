@@ -202,6 +202,57 @@ def test_load_tokenizer_treats_empty_revision_as_unset(monkeypatch):
     assert captured["kwargs"]["revision"] is None
 
 
+def test_load_unknown_model_tokenizer_when_generic_config_rope_validation_fails(
+    tmp_path,
+):
+    model_dir = tmp_path / "future-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "future_model_type",
+                "rope_theta": 10_000.0,
+                "rope_scaling": {
+                    "factor": 16.0,
+                    "original_max_position_embeddings": 65536,
+                    "type": "yarn",
+                },
+            }
+        )
+    )
+    backend = tokenizers_lib.Tokenizer(
+        tokenizers_lib.models.WordLevel({"[UNK]": 0}, unk_token="[UNK]")
+    )
+    backend.save(str(model_dir / "tokenizer.json"))
+
+    loaded = tokenizers.load_tokenizer(
+        str(model_dir),
+        trust_remote_code=False,
+        local_files_only=True,
+    )
+
+    assert loaded.get_vocab() == {"[UNK]": 0}
+
+
+def test_load_tokenizer_does_not_hide_unrelated_attribute_errors(monkeypatch):
+    def from_pretrained(model, **kwargs):
+        config = tokenizers.transformers.PreTrainedConfig()
+        raise AttributeError(
+            "'PreTrainedConfig' object has no attribute 'unrelated_attribute'",
+            name="unrelated_attribute",
+            obj=config,
+        )
+
+    monkeypatch.setattr(
+        tokenizers.transformers.AutoTokenizer,
+        "from_pretrained",
+        from_pretrained,
+    )
+
+    with pytest.raises(AttributeError, match="unrelated_attribute"):
+        tokenizers.load_tokenizer("org/model")
+
+
 def test_load_deployment_tokenizer_uses_generic_deploy_config_fields(monkeypatch):
     captured: dict = {}
 
