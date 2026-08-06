@@ -1,0 +1,21 @@
+# Local-only data: download or regenerate with prepare_data.py. Never commit.
+dev.json
+dev_databases/
+chromadb_text2sql/
+
+# Generated eval-protocol rows (keep only the sample slice).
+*.jsonl
+!*.sample.jsonl
+
+# Runtime artifacts and scratch.
+*.log
+*.sqlite
+ep_eval/
+ep_remote_*/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+
+# Scratch notebook copies — never publish working copies.
+* copy*.ipynb
+*copy*.ipynb
