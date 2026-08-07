@@ -37,7 +37,7 @@ python training/examples/tools/promote_checkpoint.py \
     --hot-load-deployment-id <deployment-id>
 ```
 
-Source: `training/examples/tools/promote_checkpoint.py`. Hands the row's 4-segment `name` (`accounts/<a>/rlorTrainerJobs/<j>/checkpoints/<c>`) verbatim to `TrainerJobManager.promote_checkpoint(name=...)` — the modern promote API. See the public docs at [`/fine-tuning/training-api/saving-and-loading`](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading) for the full contract. The `--hot-load-deployment-id` flag is only needed for deployments that predate the stored-bucket-URL migration; passing it emits a `DeprecationWarning`.
+Source: `training/examples/tools/promote_checkpoint.py`. Hands the row's 4-segment `name` (`accounts/<a>/rlorTrainerJobs/<j>/checkpoints/<c>`) verbatim to `TrainerJobManager.promote_checkpoint(name=...)`, the modern promote API. See [Dedicated Training](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) and `sdk-checkpoints.md` for the full contract. The `--hot-load-deployment-id` flag is only needed for deployments that predate the stored-bucket-URL migration; passing it emits a `DeprecationWarning`.
 
 `output_model_id` is validated server-side at 63 chars — validate client-side too:
 
