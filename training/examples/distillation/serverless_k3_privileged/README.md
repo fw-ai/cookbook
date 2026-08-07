@@ -49,7 +49,6 @@ while the student sampler is re-created each step on the freshly saved snapshot.
 # account-scoped key that can READ kimi-k3 (kimi-k3 is not public; a
 # fireworks-scoped key works on dev). Multi-account keys 404 on create_session.
 export FIREWORKS_API_KEY=fw_...
-export FIREWORKS_BASE_URL=https://dev.api.fireworks.ai   # dev gateway (optional)
 
 python -m training.examples.distillation.serverless_k3_privileged.train_serverless_k3_privileged \
   --steps 4 --prompt-groups-per-step 4 --completions-per-prompt 4 --lora-rank 8

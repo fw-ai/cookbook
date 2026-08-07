@@ -37,8 +37,7 @@ The reverse-KL datum math is reused from the dedicated recipe
 layer differs (serverless session instead of dedicated deployments).
 
 Usage:
-    export FIREWORKS_API_KEY=fw_...           # account-scoped key that can read kimi-k3
-    export FIREWORKS_BASE_URL=https://dev.api.fireworks.ai   # dev gateway (optional)
+    export FIREWORKS_API_KEY=fw_...           # key with access to the selected base model
     python -m training.examples.distillation.serverless_k3_privileged.train_serverless_k3_privileged
 """
 
@@ -111,8 +110,8 @@ class Config:
     loss_scale: float = 1.0
 
     # --- Connection ----------------------------------------------------------
-    # Prod gateway by default; override with FIREWORKS_BASE_URL for a dev
-    # gateway. The "/training/v1/serverless" suffix is added automatically.
+    # Use the public API endpoint by default; an optional override is accepted.
+    # The "/training/v1/serverless" suffix is added automatically.
     api_base_url: str = field(
         default_factory=lambda: os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     )

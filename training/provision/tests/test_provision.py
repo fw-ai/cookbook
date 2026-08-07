@@ -404,28 +404,28 @@ recipe:
         recipe=None,
         path=config_path,
         overrides=[
-            "common.base_model=accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged",
+            "common.base_model=accounts/test-account-id/models/tinker-open-thoughts-qwen3p5-9b-merged",
             "common.tokenizer_model=Qwen/Qwen3.5-9B",
             "common.lora_rank=128",
             "deployments.rollout.replica_count=3",
             "deployments.rollout.sample_timeout=600",
             (
                 "trainers.policy.training_shape_id="
-                "accounts/research/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
+                "accounts/test-account-id/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
             ),
-            "trainers.policy.base_model=accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged",
+            "trainers.policy.base_model=accounts/test-account-id/models/tinker-open-thoughts-qwen3p5-9b-merged",
             "trainers.policy.weight_sync_deployment=rollout",
             "trainers.policy.replica_count=2",
         ],
     )
 
     assert mode == "rl"
-    assert cfg.base_model == "accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged"
+    assert cfg.base_model == "accounts/test-account-id/models/tinker-open-thoughts-qwen3p5-9b-merged"
     assert cfg.lora_rank == 128
     assert cfg.deployment.replica_count == 3
     assert cfg.deployment.sample_timeout == 600
     assert cfg.trainer.training_shape_id == (
-        "accounts/research/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
+        "accounts/test-account-id/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
     )
     assert cfg.trainer.replica_count == 2
 

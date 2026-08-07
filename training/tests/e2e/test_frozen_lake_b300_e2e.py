@@ -12,8 +12,8 @@ Required env vars:
   FROZEN_LAKE_DEPLOYMENT_ID    (pre-created deployment with weight sync)
 
 Optional env vars (CI script sets these):
-  FIREWORKS_BASE_URL           (default: https://dev.api.fireworks.ai)
-  FROZEN_LAKE_POLICY_JOB_ID    (pre-created policy trainer job)
+  FIREWORKS_BASE_URL           (default: https://api.fireworks.ai)
+  FROZEN_LAKE_POLICY_JOB_ID    (optional existing policy trainer job)
   FROZEN_LAKE_REFERENCE_JOB_ID (pre-created reference trainer job)
   FROZEN_LAKE_TRAINING_SHAPE   (default: qwen3-4b-b300)
   FROZEN_LAKE_LORA_RANK        (default: 8, must match training shape)
@@ -98,7 +98,7 @@ class TestFrozenLakeB300:
         # TODO(bennychen): LoRA weight sync has a loading perf bug that needs
         # fixing before re-enabling. Use full-parameter (rank=0) for now.
         lora_rank = int(_env("FROZEN_LAKE_LORA_RANK", "0"))
-        base_url = _env("FIREWORKS_BASE_URL", "https://dev.api.fireworks.ai")
+        base_url = _env("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
         os.environ.setdefault("FIREWORKS_BASE_URL", base_url)
         os.environ.setdefault("WANDB_MODE", "disabled")

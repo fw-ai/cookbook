@@ -69,11 +69,11 @@ export FIREWORKS_API_KEY=fw_...          # or put it in training/.env
 python -m examples.serverless_rl.countdown_rl
 ```
 
-Point at a non-prod gateway with `FIREWORKS_BASE_URL` (the
+Optionally override the API endpoint with `FIREWORKS_BASE_URL` (the
 `/training/v1/serverless` suffix is added for you):
 
 ```bash
-export FIREWORKS_BASE_URL=https://dev.api.fireworks.ai
+export FIREWORKS_BASE_URL=<your-endpoint>
 ```
 
 Metrics are written to `metrics.jsonl` and a `reward_curve.png` under a fresh

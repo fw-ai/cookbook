@@ -8,7 +8,7 @@ Two runs on the same deployment:
 Each run: 8 steps × 32 prompts × 8 completions = 2048 requests, 128 max tokens.
 
 Usage:
-    FIREWORKS_API_KEY=... FIREWORKS_E2E_DEPLOYMENT_ID=... \
+    FIREWORKS_API_KEY=... FIREWORKS_ACCOUNT_ID=... FIREWORKS_E2E_DEPLOYMENT_ID=... \
     python training/tests/e2e/test_pressure_adaptive.py
 """
 
@@ -35,7 +35,7 @@ API_KEY = os.environ["FIREWORKS_API_KEY"]
 BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 DEPLOYMENT_ID = os.environ["FIREWORKS_E2E_DEPLOYMENT_ID"]
 TOKENIZER_MODEL = os.environ.get("FIREWORKS_E2E_TOKENIZER_MODEL", "Qwen/Qwen3-30B-A3B")
-ACCOUNT_ID = os.environ.get("FIREWORKS_ACCOUNT_ID", "pyroworks")
+ACCOUNT_ID = os.environ["FIREWORKS_ACCOUNT_ID"]
 
 PROMPTS_PER_STEP = 32
 COMPLETIONS_PER_PROMPT = 8

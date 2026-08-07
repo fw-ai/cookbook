@@ -31,7 +31,7 @@ except ImportError:
                 "Use either a short model name (letters / numbers / '-') or "
                 "a full resource name like accounts/ACCOUNT/models/MODEL_NAME.\n"
                 "  Example: promoted-orpo-model\n"
-                "  Example: accounts/pyroworks/models/my-model",
+                "  Example: accounts/your-account-id/models/your-model-id",
             )
         ]
 from training.utils.config import DeployConfig, WeightSyncConfig

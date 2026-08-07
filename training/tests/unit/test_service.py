@@ -322,8 +322,8 @@ def test_build_service_client_forwards_inference_url(monkeypatch):
 
     result = build_service_client(
         api_key="k",
-        base_url="https://api",
-        inference_url="https://gateway",
+        base_url="https://api.example.com",
+        inference_url="https://gateway.example.com",
         additional_headers=None,
         base_model="accounts/acct/models/base",
         tokenizer_model=None,
@@ -335,7 +335,7 @@ def test_build_service_client_forwards_inference_url(monkeypatch):
     )
 
     assert result == "service-sentinel"
-    assert calls[0]["inference_url"] == "https://gateway"
+    assert calls[0]["inference_url"] == "https://gateway.example.com"
 
 
 def test_trainer_region_becomes_sdk_region():

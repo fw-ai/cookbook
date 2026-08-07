@@ -30,10 +30,9 @@ computes group-relative advantages, and takes one optimizer step. When
 ``kl_penalty_coef > 0`` a reference-KL penalty is injected into the advantages
 (as in ``tinker_cookbook/rl/metrics.py:incorporate_kl_penalty``).
 
-Distilled from the internal serverless Countdown e2e journey
-(``serverless_countdown_rl_journey_v2.py``); the e2e-only stage assertions,
-checkpoint list/promote gates, and multi-model isolation checks are dropped so
-the training loop itself stays front and center.
+The example focuses on the training loop itself, omitting optional lifecycle
+checks so the core sampling, scoring, and optimization flow stays front and
+center.
 
 Usage:
     export FIREWORKS_API_KEY=fw_...
@@ -112,8 +111,8 @@ class Config:
     """KL reference base model. Empty = use ``base_model``."""
 
     # --- Connection ---------------------------------------------------------
-    # Prod gateway by default; override with FIREWORKS_BASE_URL (e.g. a dev
-    # gateway). The "/training/v1/serverless" suffix is added automatically.
+    # Use the public API endpoint by default; an optional override is accepted.
+    # The "/training/v1/serverless" suffix is added automatically.
     api_base_url: str = field(default_factory=lambda: os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai"))
     api_key: str = field(default_factory=lambda: os.environ.get("FIREWORKS_API_KEY", ""))
 

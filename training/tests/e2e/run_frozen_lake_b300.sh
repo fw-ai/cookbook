@@ -10,11 +10,11 @@
 #   6. Cleans up trainer jobs on exit
 #
 # Prerequisites:
-#   FIREWORKS_API_KEY          API key for dev.api.fireworks.ai
-#   FIRECTL_ACCOUNT           Account for firectl -a (default: pyroworks-dev)
-#   FIRECTL_BIN               Path to firectl-admin binary
-#   FIRECTL_PROFILE            firectl profile for B300 gateway (default: dev-bennychen)
-#   DEPLOYMENT_ID              Pre-created deployment with weight sync
+#   FIREWORKS_API_KEY          API key for the configured endpoint
+#   FIRECTL_ACCOUNT           Account passed to the administrative CLI
+#   FIRECTL_BIN               Administrative CLI executable
+#   FIRECTL_PROFILE           Administrative CLI profile
+#   DEPLOYMENT_ID             Existing deployment with weight sync
 #
 # Usage:
 #   export FIREWORKS_API_KEY=fw_...
@@ -26,13 +26,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # ── Configuration ────────────────────────────────────────────────────────────
-FIRECTL_ACCOUNT="${FIRECTL_ACCOUNT:-pyroworks-dev}"
-export FIREWORKS_BASE_URL="${FIREWORKS_BASE_URL:-https://dev.api.fireworks.ai}"
+: "${FIRECTL_ACCOUNT:?Set FIRECTL_ACCOUNT for the administrative CLI}"
+: "${FIRECTL_BIN:?Set FIRECTL_BIN to the administrative CLI executable}"
+: "${FIRECTL_PROFILE:?Set FIRECTL_PROFILE for the administrative CLI}"
+: "${DEPLOYMENT_ID:?Set DEPLOYMENT_ID to the existing deployment}"
+export FIREWORKS_BASE_URL="${FIREWORKS_BASE_URL:-https://api.fireworks.ai}"
 
-FIRECTL_BIN="${FIRECTL_BIN:-$REPO_ROOT/../fireworks/firectl/bin/firectl-admin}"
-FIRECTL_PROFILE="${FIRECTL_PROFILE:-dev-bennychen}"
 TRAINING_SHAPE="${TRAINING_SHAPE:-qwen3-4b-b300}"
-DEPLOYMENT_ID="${DEPLOYMENT_ID:-rl-qwen3-4b-b300-v10}"
 JOB_WAIT_TIMEOUT="${JOB_WAIT_TIMEOUT:-80}"
 JOB_CREATE_RETRIES="${JOB_CREATE_RETRIES:-3}"
 
@@ -77,7 +77,7 @@ done
 # ── 1. Verify deployment ────────────────────────────────────────────────────
 log "Checking deployment $DEPLOYMENT_ID ..."
 DEP_STATE=$("$FIRECTL_BIN" -a "$FIRECTL_ACCOUNT" deployment get "$DEPLOYMENT_ID" \
-    -p dev 2>&1 | awk '/^State:/{print $2}' || true)
+    -p "$FIRECTL_PROFILE" 2>&1 | awk '/^State:/{print $2}' || true)
 
 if [[ "$DEP_STATE" != "READY" ]]; then
     log "FATAL: deployment $DEPLOYMENT_ID not READY (state=${DEP_STATE:-unknown})"

@@ -20,6 +20,7 @@ Run from cookbook/training with::
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -41,15 +42,15 @@ from training.utils.supervised import render_messages_to_datums
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import Renderer, ToolCall, TrainOnWhat
 
-# Public HF tokenizer. Local mirror probed first so internal CI works without
-# the Hub; falls through to public if absent.
-_LOCAL_TOKENIZER = "/shared/text-models/deepseek-v4-flash"
+# Public HF tokenizer. An optional local mirror can be supplied by the test
+# environment when the Hub is unavailable; otherwise this uses the public repo.
+_LOCAL_TOKENIZER = os.environ.get("DEEPSEEK_V4_LOCAL_TOKENIZER")
 _PUBLIC_TOKENIZER = "deepseek-ai/DeepSeek-V4-Flash"
 
 
 def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
     candidates: list[str] = []
-    if Path(_LOCAL_TOKENIZER).exists():
+    if _LOCAL_TOKENIZER and Path(_LOCAL_TOKENIZER).exists():
         candidates.append(_LOCAL_TOKENIZER)
     candidates.append(_PUBLIC_TOKENIZER)
 

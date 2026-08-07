@@ -78,7 +78,7 @@ def test_train_wires_dabstep_global_batch_controls(monkeypatch):
         [
             "harbor-opencode",
             "--dabstep-manifest",
-            "/shared/manifest.json",
+            "fixtures/manifest.json",
             "--max-rows",
             "400",
             "--completions-per-prompt",
@@ -138,9 +138,9 @@ def test_serverless_cli_exposes_long_run_optimizer_controls(monkeypatch):
         [
             "harbor-opencode-serverless",
             "--manifest",
-            "/shared/manifest.json",
+            "fixtures/manifest.json",
             "--harbor-dataset",
-            "/shared/tasks",
+            "fixtures/tasks",
             "--max-rows",
             "1200",
             "--max-seq-len",
