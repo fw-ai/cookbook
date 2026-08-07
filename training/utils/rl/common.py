@@ -200,8 +200,8 @@ class SampleContext:
     """Policy logprobs for response tokens (has grad)."""
     pi_detached: torch.Tensor
     """Detached policy logprobs."""
-    resp_ref: torch.Tensor
-    """Reference model logprobs for response tokens."""
+    resp_ref: torch.Tensor | None
+    """Reference model logprobs, or ``None`` when no reference is available."""
     resp_old_policy: torch.Tensor
     """Old-policy forward-pass logprobs for response tokens."""
     resp_inf: torch.Tensor
@@ -287,10 +287,14 @@ def run_loss_loop(
             continue
 
         ref_lp = ref_logprobs[i] if ref_logprobs else []
-        resp_ref = torch.tensor(
-            [ref_lp[response_start + j] if (response_start + j) < len(ref_lp) else 0.0 for j in range(resp_len)],
-            dtype=resp_pi.dtype,
-            device=resp_pi.device,
+        resp_ref = (
+            torch.tensor(
+                [ref_lp[response_start + j] if (response_start + j) < len(ref_lp) else 0.0 for j in range(resp_len)],
+                dtype=resp_pi.dtype,
+                device=resp_pi.device,
+            )
+            if ref_lp
+            else None
         )
         pi_detached = resp_pi.detach()
 
@@ -324,13 +328,13 @@ def run_loss_loop(
         # Filter to loss_mask>0 positions: masked bridge/tool tokens otherwise
         # contaminate sequence-level TIS weight (matches slime/AReaL behavior).
         active_pi = pi_detached[active]
-        active_ref = resp_ref[active]
+        active_ref = resp_ref[active] if resp_ref is not None else None
         active_inf = resp_inf[active]
         active_old_policy = resp_old_policy[active]
 
         ppo_log_diff = active_pi - active_old_policy
         total_ppo_kl += (torch.exp(ppo_log_diff) - ppo_log_diff - 1.0).mean().item()
-        if ref_lp:
+        if active_ref is not None:
             ref_log_diff = active_ref - active_pi
             total_ref_kl += (torch.exp(ref_log_diff) - ref_log_diff - 1.0).mean().item()
             ref_num_samples += 1
@@ -359,18 +363,18 @@ def run_loss_loop(
         per_token_loss, extra = policy_fn(ctx)
 
         total_loss = total_loss + per_token_loss.sum()
-        total_kl += ((pi_detached - resp_ref) * resp_mask).sum().item()
+        if resp_ref is not None:
+            total_kl += ((pi_detached - resp_ref) * resp_mask).sum().item()
         num_tokens += active_count
         for k, v in extra.items():
             extra_sums[k] = extra_sums.get(k, 0.0) + v
 
     n_samples = max(behavior_num_samples, 1)
-    base_metrics: Dict[str, float] = {
-        "mean_kl": total_kl / num_tokens if num_tokens > 0 else 0.0,
-    }
+    base_metrics: Dict[str, float] = {}
     if behavior_num_samples > 0:
         base_metrics["ppo_kl"] = total_ppo_kl / behavior_num_samples
     if ref_num_samples > 0:
+        base_metrics["mean_kl"] = total_kl / num_tokens if num_tokens > 0 else 0.0
         base_metrics["ref_kl"] = total_ref_kl / ref_num_samples
     for k, v in tis_metrics_agg.items():
         base_metrics[k] = v / n_samples
