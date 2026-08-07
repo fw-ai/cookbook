@@ -578,9 +578,9 @@ class Config:
     """Max gradient norm for clipping. 0 = no clipping."""
 
     adam_beta2: float | None = None
-    """Override Adam beta2 (default 0.999 via DEFAULT_ADAM). Lower values
-    (e.g. 0.98) make the variance estimate converge faster — useful for
-    short runs or recipes like slime's GLM5 SFT."""
+    """Override Adam beta2 (default 0.95 via DEFAULT_ADAM). Lower values
+    make the variance estimate track recent gradients more closely —
+    useful for short runs or recipes like slime's GLM5 SFT."""
 
     weight_decay: float | None = None
     """Override Adam weight decay (default 0.01 via DEFAULT_ADAM)."""

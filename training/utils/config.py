@@ -11,7 +11,10 @@ from typing import Any, Callable, Dict, Mapping
 from fireworks.training.sdk.client import FiretitanTrainingClient
 from fireworks.training.sdk.deployment import DeploymentConfig
 
-DEFAULT_ADAM = dict(beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01, grad_clip_norm=0.0)
+# Match FireTitan/Tinker AdamParams for beta2/eps. Smaller eps matters when
+# grad-norm RMS is tiny (common in LoRA RL). Keep weight_decay=0.01 (cookbook
+# default) rather than Tinker's 0.0.
+DEFAULT_ADAM = dict(beta1=0.9, beta2=0.95, eps=1e-12, weight_decay=0.01, grad_clip_norm=0.0)
 
 RewardFn = Callable[[str, dict], float]
 """Signature: (completion_text, dataset_row) -> reward_float."""

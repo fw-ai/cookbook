@@ -426,7 +426,7 @@ class ServerlessCountdownRL:
             _remove_mask(datums)
             fb = self.training_client.forward_backward(datums, "importance_sampling").result()
             loss = _mean_loss(fb)
-            adam = tinker.AdamParams(learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.0)
+            adam = tinker.AdamParams(learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-12, weight_decay=0.0)
             self.training_client.optim_step(adam).result()
 
         raw_reward = sum(raw_rewards) / len(raw_rewards) if raw_rewards else 0.0

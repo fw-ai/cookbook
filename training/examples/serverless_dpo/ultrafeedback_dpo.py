@@ -599,7 +599,7 @@ class ServerlessUltraFeedbackDPO:
             learning_rate=cfg.learning_rate,
             beta1=0.9,
             beta2=0.95,
-            eps=1e-8,
+            eps=1e-12,
             weight_decay=0.0,
         )
         self.training_client.optim_step(adam).result()
