@@ -1096,6 +1096,25 @@ def test_resolve_renderer_name_supports_qwen3_family_fallback() -> None:
     assert resolve_renderer_name("Qwen/Qwen3-8B-Base") == "role_colon"
 
 
+def test_resolve_renderer_name_targets_qwen2_5_32b_v1_contract() -> None:
+    assert resolve_renderer_name("Qwen/Qwen2.5-32B-Instruct") == "qwen2_5"
+    assert (
+        resolve_renderer_name("accounts/fireworks/models/qwen2p5-32b-instruct")
+        == "qwen2_5"
+    )
+
+
+def test_resolve_renderer_name_supports_qwen3_235b_instruct_fp8_alias() -> None:
+    assert (
+        resolve_renderer_name("Qwen/Qwen3-235B-A22B-Instruct-2507-FP8")
+        == "qwen3_instruct"
+    )
+    assert (
+        resolve_renderer_name("Qwen/Qwen3-235B-A22B-Instruct-2507")
+        == "qwen3_instruct"
+    )
+
+
 @pytest.mark.parametrize(
     "tokenizer_model",
     [

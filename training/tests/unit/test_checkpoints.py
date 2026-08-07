@@ -386,7 +386,7 @@ class TestResume:
         # Trainer weights and optimizer resume, while cookbook-owned step and
         # cursor intentionally begin a new recipe run.
         ckpt, client, _ = _make(log_dir, serverless=True)  # session == "job-1"
-        ref = "pyroworks-dev/run-0123456789abcdef0123456789abcdef/step-5"
+        ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
         info = ckpt.resume(init_from_checkpoint=ref)
         assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
         client.resolve_checkpoint_path.assert_called_once_with(ref, source_job_id=None)
@@ -440,7 +440,7 @@ class TestResume:
         ckpt, client, _ = _make(log_dir, serverless=True)
 
         with pytest.raises(ValueError, match="run-<32 lowercase hex>"):
-            ckpt.resume(init_from_checkpoint="pyroworks-dev/run-short/step-5")
+            ckpt.resume(init_from_checkpoint="test-account-id/run-short/step-5")
 
         client.resolve_checkpoint_path.assert_not_called()
         client.load_state_with_optimizer.assert_not_called()

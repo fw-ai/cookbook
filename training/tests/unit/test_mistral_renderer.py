@@ -14,6 +14,7 @@ Run from ``cookbook/training`` with::
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +26,9 @@ from training.utils.tokenizers import load_tokenizer
 from tinker_cookbook.renderers.base import RenderContext, ToolCall, TrainOnWhat
 
 
-_LOCAL_PATH = "/shared/Ministral-3-3B-Instruct-2512"
+_LOCAL_PATH = os.environ.get("MISTRAL_LOCAL_TOKENIZER")
 _HF_REPO = "mistralai/Ministral-3-3B-Instruct-2512"
-TOKENIZER_MODEL = _LOCAL_PATH if Path(_LOCAL_PATH).exists() else _HF_REPO
+TOKENIZER_MODEL = _LOCAL_PATH if _LOCAL_PATH and Path(_LOCAL_PATH).exists() else _HF_REPO
 
 
 @pytest.fixture(scope="module")

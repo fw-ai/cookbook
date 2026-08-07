@@ -1,5 +1,17 @@
 # Training renderers
 
+## Qwen2.5 32B V1 compatibility
+
+`Qwen/Qwen2.5-32B-Instruct` uses the dedicated `qwen2_5` renderer. It is
+intentionally independent of the Qwen3 renderers and has no thinking-history
+mode. The renderer preserves the imported Fireworks V1 contract: it renders
+and tokenizes the whole conversation once because BPE tokens can cross message
+boundaries. Text conversations and tool calls are supported; multipart content
+is rejected because the V1 template rejects it.
+
+Renderer QA loads the public `Qwen/Qwen2.5-32B-Instruct` tokenizer from HF
+main, consistent with the other public-tokenizer matrix entries.
+
 ## Kimi K3
 
 Kimi K3 uses the registered `kimi_k3` renderer (or

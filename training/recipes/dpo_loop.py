@@ -134,6 +134,11 @@ class Config:
     max_pairs: int | None = None
     """Cap on *valid rendered pairs* after schema/length filtering."""
     lora_rank: int = 0
+    lora_alpha: int | None = 32
+    """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
+
+    Defaults to ``32`` to match Tinker and the Training API SDK client
+    ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
     ref_cache_concurrency: int = 16
     """Max concurrent reference forward passes during cache warm-up."""
     ref_cache_batch_size: int = 1
@@ -705,7 +710,7 @@ def main(
             additional_headers=additional_headers,
             base_model=cfg.base_model,
             tokenizer_model=cfg.tokenizer_model,
-            lora_rank=cfg.lora_rank,
+            max_lora_rank=cfg.lora_rank,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
@@ -713,7 +718,11 @@ def main(
             cleanup_trainer_on_close=cfg.cleanup_on_exit,
         )
         stack.callback(service.close)
-        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        training_client = service.create_training_client(
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
+        )
         runner.set_accelerator_info(
             service.accelerator_type,
             service.accelerator_count,
@@ -737,7 +746,7 @@ def main(
         # Backend trainer creation selects a LoRA-capable shape unless
         # cfg.trainer.reference_training_shape_id pins a LoRA-capable shape.
         reference = ReconnectableClient.from_training_client(
-            service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+            service.create_reference_client(policy_client=training_client),
             base_model=cfg.base_model,
             lora_rank=0,
             job_id=service.reference_client_job_id,

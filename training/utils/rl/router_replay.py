@@ -53,9 +53,7 @@ def build_r3_routing_matrices(
             replays inference routing for completion tokens.
     """
     if not routing_matrices:
-        # This helper is only called when the cookbook enabled R3. Preserve
-        # that intent on ModelInput so the SDK can distinguish "R3 requested
-        # but serving returned nothing" from a normal non-R3 datum.
+        # Preserve the caller's R3 intent for the SDK request-boundary check.
         return []
 
     rm = list(routing_matrices)
@@ -80,3 +78,22 @@ def build_r3_routing_matrices(
         rm[:prefix_len] = [""] * prefix_len
 
     return rm
+
+
+def validate_r3_routing_matrices(
+    routing_matrices: Optional[List[str]],
+    prompt_len: int,
+    model_input_len: int,
+) -> None:
+    """Reject missing or misaligned R3 data before async rollout admission."""
+    if not routing_matrices:
+        raise ValueError("R3 routing_matrices are missing or empty")
+
+    expected = max(0, model_input_len - (prompt_len - 1))
+    if len(routing_matrices) not in {model_input_len, expected}:
+        raise ValueError(
+            "R3 routing_matrices length mismatch: "
+            f"got {len(routing_matrices)}, expected {model_input_len} "
+            f"full-sequence or {expected} completion-only values "
+            f"(prompt_len={prompt_len}, model_input_len={model_input_len})"
+        )

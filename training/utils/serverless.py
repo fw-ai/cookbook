@@ -88,7 +88,9 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         default_headers=additional_headers or None,
     )
     training_client = service.create_lora_training_client(
-        cfg.base_model, rank=cfg.lora_rank
+        cfg.base_model,
+        rank=cfg.lora_rank,
+        alpha=getattr(cfg, "lora_alpha", 32),
     )
     # The API gateway now returns run-scoped model ids
     # ("{run_id}:train:{seq}"). The owning CP TrainingSession remains on the

@@ -119,7 +119,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
         additional_headers={"X-Fireworks-Test": "1"},
         base_model="accounts/acct/models/base",
         tokenizer_model="Qwen/Qwen3-1.7B",
-        lora_rank=16,
+        max_lora_rank=16,
         max_context_length=4096,
         learning_rate=1e-5,
         trainer=_trainer_config(),
@@ -137,7 +137,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "additional_headers": {"X-Fireworks-Test": "1"},
             "base_model": "accounts/acct/models/base",
             "tokenizer_model": "Qwen/Qwen3-1.7B",
-            "lora_rank": 16,
+            "max_lora_rank": 16,
             "training_shape_id": "ts-x",
             "reference_training_shape_id": "ref-ts-x",
             "trainer_job_id": "job-1",
@@ -176,7 +176,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
     ]
 
 
-def test_build_service_client_forwards_lora_alpha(monkeypatch):
+def test_build_service_client_forwards_max_lora_rank(monkeypatch):
     calls: list[dict] = []
 
     def fake_from_firetitan_config(**kwargs):
@@ -194,15 +194,14 @@ def test_build_service_client_forwards_lora_alpha(monkeypatch):
         additional_headers=None,
         base_model="accounts/acct/models/base",
         tokenizer_model=None,
-        lora_rank=32,
-        lora_alpha=128,
+        max_lora_rank=32,
         max_context_length=None,
         learning_rate=1e-5,
         trainer=TrainerConfig(training_shape_id="ts-x"),
         deployment=DeployConfig(deployment_id="dep-1"),
     )
 
-    assert calls[0]["lora_alpha"] == 128
+    assert calls[0]["max_lora_rank"] == 32
 
 
 def test_build_service_client_defaults_speculative_decoding_enabled(monkeypatch):
@@ -223,7 +222,7 @@ def test_build_service_client_defaults_speculative_decoding_enabled(monkeypatch)
         additional_headers=None,
         base_model="accounts/acct/models/base",
         tokenizer_model=None,
-        lora_rank=None,
+        max_lora_rank=None,
         max_context_length=None,
         learning_rate=1e-5,
         trainer=TrainerConfig(training_shape_id="ts-x"),
@@ -252,7 +251,7 @@ def test_build_service_client_leaves_hot_load_transition_type_unset(monkeypatch)
         additional_headers=None,
         base_model="accounts/acct/models/base",
         tokenizer_model=None,
-        lora_rank=None,
+        max_lora_rank=None,
         max_context_length=None,
         learning_rate=1e-5,
         trainer=TrainerConfig(training_shape_id="ts-x"),
@@ -280,7 +279,7 @@ def test_train_only_config_disables_deployment(monkeypatch):
         additional_headers=None,
         base_model="accounts/acct/models/base",
         tokenizer_model=None,
-        lora_rank=None,
+        max_lora_rank=None,
         max_context_length=None,
         learning_rate=1e-5,
         trainer=TrainerConfig(training_shape_id="ts-x"),
@@ -292,6 +291,21 @@ def test_train_only_config_disables_deployment(monkeypatch):
     assert calls[0]["create_deployment"] is False
     assert calls[0]["replica_count"] == 1
     assert "deployment_shape" not in calls[0]
+
+
+def test_build_service_client_rejects_negative_max_lora_rank() -> None:
+    with pytest.raises(ValueError, match="max_lora_rank must be non-negative"):
+        build_service_client(
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+            tokenizer_model=None,
+            max_lora_rank=-1,
+            max_context_length=None,
+            learning_rate=1e-5,
+            trainer=TrainerConfig(training_shape_id="ts-x"),
+        )
 
 
 def test_build_service_client_forwards_inference_url(monkeypatch):
@@ -308,12 +322,12 @@ def test_build_service_client_forwards_inference_url(monkeypatch):
 
     result = build_service_client(
         api_key="k",
-        base_url="https://api",
-        inference_url="https://gateway",
+        base_url="https://api.example.com",
+        inference_url="https://gateway.example.com",
         additional_headers=None,
         base_model="accounts/acct/models/base",
         tokenizer_model=None,
-        lora_rank=0,
+        max_lora_rank=0,
         max_context_length=None,
         learning_rate=1e-5,
         trainer=TrainerConfig(training_shape_id="ts-x"),
@@ -321,7 +335,7 @@ def test_build_service_client_forwards_inference_url(monkeypatch):
     )
 
     assert result == "service-sentinel"
-    assert calls[0]["inference_url"] == "https://gateway"
+    assert calls[0]["inference_url"] == "https://gateway.example.com"
 
 
 def test_trainer_region_becomes_sdk_region():
@@ -331,7 +345,7 @@ def test_trainer_region_becomes_sdk_region():
         additional_headers=None,
         base_model="accounts/acct/models/base",
         tokenizer_model=None,
-        lora_rank=0,
+        max_lora_rank=0,
         max_context_length=None,
         learning_rate=1e-5,
         trainer=_trainer_config(region="US_OHIO_1"),

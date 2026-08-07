@@ -108,18 +108,20 @@ not be selected by the history-mode enum.
 ### Tool calls
 - **GLM5** uses XML-ish: `<tool_call>{name}<arg_key>{k}</arg_key><arg_value>{v}</arg_value>...</tool_call>`.
 - Other model families use JSON blobs inside `<tool_call>{...}</tool_call>`.
-- Always check the upstream HF chat template before inventing your
-  own serialization.
+- Always check the upstream HF chat template before inventing your own
+  serialization. If a renderer preserves an intentional compatibility
+  contract, document and track each public-HF difference in
+  `training/tests/unit/renderer_expected_divergences.py`.
 
 ## 4. Implementation flow
 
 1. **Skim a similar existing renderer** to scaffold. Pick the closest
    match by stop-signal convention (EOS vs next-role-tag) and
    thinking-mode handling.
-2. **Match the upstream HF chat template byte-for-byte** for the
-   prompt half. Where the renderer has to deviate (loss-weight
-   decisions on `stop_overlap`, masking of generation-prefix tokens),
-   add a docstring at the top of the file explaining each deviation.
+2. **Match the upstream HF chat template byte-for-byte** for the prompt half,
+   unless preserving an intentional compatibility contract. Document each
+   deviation in the renderer and track public-HF parity differences in
+   `training/tests/unit/renderer_expected_divergences.py`.
 3. **Register the renderer** at module bottom:
    ```python
    from tinker_cookbook.renderers import register_renderer
@@ -172,5 +174,6 @@ not be selected by the history-mode enum.
 - `training/renderer/glm5.py`, `training/renderer/minimax_m2.py`,
   `training/renderer/gemma4.py` — concrete implementations covering
   next-role-tag stop, EOS-stop, and multimodal respectively.
+- `training/renderer/qwen2_5.py` — the Qwen2.5 whole-conversation renderer.
 - `tinker_cookbook.renderers.base` — the abstract `Renderer` class
   and the chunk types the audit table reports against.

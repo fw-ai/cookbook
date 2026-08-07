@@ -28,7 +28,7 @@ What this does NOT cover (out of scope; covered elsewhere):
 
 Requires:
     FIREWORKS_API_KEY            (skipped if not set)
-    FIREWORKS_BASE_URL           (defaults to https://dev.api.fireworks.ai)
+    FIREWORKS_BASE_URL           (defaults to https://api.fireworks.ai)
 
 Usage:
     pytest training/tests/smoke_test/test_checkpoints_smoke.py -v -s
@@ -120,7 +120,7 @@ class TestCheckpointsSmoke:
 
         api_key = os.environ["FIREWORKS_API_KEY"]
         base_url = os.environ.get(
-            "FIREWORKS_BASE_URL", "https://dev.api.fireworks.ai",
+            "FIREWORKS_BASE_URL", "https://api.fireworks.ai",
         )
         fw_client = FireworksClient(api_key=api_key, base_url=base_url)
 

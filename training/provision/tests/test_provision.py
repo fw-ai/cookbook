@@ -20,6 +20,7 @@ def _cfg(*, trainer_job_id: str | None = None, deployment_id: str | None = None)
     return SimpleNamespace(
         base_model="accounts/fireworks/models/qwen3-8b",
         lora_rank=16,
+        lora_alpha=32,
         max_seq_len=4096,
         learning_rate=1e-5,
         kl_beta=0.0,
@@ -55,10 +56,16 @@ class _FakeService:
     def __init__(self) -> None:
         self.closed = False
 
-    def create_training_client(self, _base_model: str, *, lora_rank: int) -> object:
+    def create_training_client(
+        self,
+        _base_model: str,
+        *,
+        lora_rank: int,
+        lora_alpha: int,
+    ) -> object:
         return object()
 
-    def create_reference_client(self, _base_model: str, *, lora_rank: int) -> object:
+    def create_reference_client(self, *, policy_client: object) -> object:
         return object()
 
     def create_deployment_sampler(
@@ -397,28 +404,28 @@ recipe:
         recipe=None,
         path=config_path,
         overrides=[
-            "common.base_model=accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged",
+            "common.base_model=accounts/test-account-id/models/tinker-open-thoughts-qwen3p5-9b-merged",
             "common.tokenizer_model=Qwen/Qwen3.5-9B",
             "common.lora_rank=128",
             "deployments.rollout.replica_count=3",
             "deployments.rollout.sample_timeout=600",
             (
                 "trainers.policy.training_shape_id="
-                "accounts/research/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
+                "accounts/test-account-id/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
             ),
-            "trainers.policy.base_model=accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged",
+            "trainers.policy.base_model=accounts/test-account-id/models/tinker-open-thoughts-qwen3p5-9b-merged",
             "trainers.policy.weight_sync_deployment=rollout",
             "trainers.policy.replica_count=2",
         ],
     )
 
     assert mode == "rl"
-    assert cfg.base_model == "accounts/research/models/tinker-open-thoughts-qwen3p5-9b-merged"
+    assert cfg.base_model == "accounts/test-account-id/models/tinker-open-thoughts-qwen3p5-9b-merged"
     assert cfg.lora_rank == 128
     assert cfg.deployment.replica_count == 3
     assert cfg.deployment.sample_timeout == 600
     assert cfg.trainer.training_shape_id == (
-        "accounts/research/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
+        "accounts/test-account-id/trainingShapes/tinker-open-thoughts-qwen3p5-9b-merged-256k-lora"
     )
     assert cfg.trainer.replica_count == 2
 
@@ -843,8 +850,8 @@ def test_rft_alias_resolves_to_rl() -> None:
 def test_dpo_mode_provisions_policy_and_reference_without_deployment(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict] = []
     service = _stub_runtime(monkeypatch, calls)
-    reference_calls: list[int] = []
-    service.create_reference_client = lambda _base_model, *, lora_rank: reference_calls.append(lora_rank) or object()  # type: ignore[assignment]
+    reference_calls: list[object] = []
+    service.create_reference_client = lambda *, policy_client: reference_calls.append(policy_client) or object()  # type: ignore[assignment]
 
     cfg = _cfg()
     cfg.tokenizer_model = "Qwen/Qwen3-8B"

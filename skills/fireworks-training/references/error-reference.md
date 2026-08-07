@@ -52,12 +52,32 @@ Run the selected resource and `get` commands with `--help` before relying on fla
 3. **Reproduce minimally.** For a config-shaped failure, propose one bounded retry with defaults on a validated shape. Cancel and confirm the old resource is terminal, then get user approval before creating the replacement.
 4. **Escalate with context**, not just "stuck": include UTC timestamps, exact installed CLI command family, job/trainer/deployment/checkpoint IDs, model + shape, elapsed time, last progress, exact status, request/correlation IDs, CLI and SDK versions, cookbook commit, retry history, and what was redacted. Do not paste account or customer identifiers into shared or customer-facing places.
 
+## Structured errors and support routing
+
+Use a registered `google.rpc.ErrorInfo` detail as the only source for an
+`error_reason`. Its canonical `reason` is the stable semantic classification.
+Do not derive a reason from `status.message`, raw exceptions, or other
+human-readable text. If ErrorInfo is absent, omit the reason and keep the
+classification unknown.
+
+Route product usage and configuration questions to the
+[training docs](https://docs.fireworks.ai/fine-tuning/finetuning-intro.md), and
+check the [Fireworks status page](https://status.fireworks.ai/) for a suspected
+active incident. For account, quota, billing, private job, or persistent
+platform investigation, use <https://support.fireworks.ai/>.
+
+Before submitting support fields, follow the capability detection, dry-run,
+confirmation, and privacy requirements in the main skill. The CLI support
+adapter and Python service-client method are rolling out separately. Their
+absence is a compatibility case, not a training failure, and the support portal
+is always the fallback.
+
 ## Escalation checklist
 
 - Job or trainer ID + method. Use the command family shown by installed `firectl --help` consistently (`sftj`, `dpo-job`, or `rftj` aliases are acceptable when supported).
 - Base model + training shape
 - UTC start/failure timestamps, elapsed time, and last observed step, rollout, checkpoint, or W&B metric
-- Exact status message
+- Customer-safe status plus canonical ErrorInfo reason when present; do not copy a raw exception
 - Request/correlation IDs plus deployment and checkpoint IDs when relevant
 - `firectl` version, SDK version, and cookbook commit
 - Retry/cancel history and final state of prior resources

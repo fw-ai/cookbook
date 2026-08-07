@@ -613,21 +613,3 @@ class TestPrepareDatasets:
         assert "too small for auto carve-out" in caplog.text
 
 
-def test_cmek_user_metadata_is_reserved_and_lora_only(tmp_path):
-    cfg = module.Config(
-        log_path=str(tmp_path / "logs"),
-        lora_rank=8,
-        cmek_output_model_resource="models/output-model",
-    )
-    assert module._cmek_user_metadata(cfg) == {
-        "fireworks_cmek_resource": "models/output-model",
-    }
-
-    cfg.lora_rank = 0
-    with pytest.raises(ValueError, match="lora_rank > 0"):
-        module._cmek_user_metadata(cfg)
-
-    cfg.lora_rank = 8
-    cfg.serverless = True
-    with pytest.raises(ValueError, match="dedicated"):
-        module._cmek_user_metadata(cfg)

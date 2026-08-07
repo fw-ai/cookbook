@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +15,9 @@ from tinker_cookbook.supervised.common import datum_from_model_input_weights
 from training.renderer.minimax_m3 import MiniMaxM3Renderer
 from training.utils.supervised import build_tool_prefixed_messages
 
-_LOCAL_PATH = "/shared/MiniMax-M3"
+_LOCAL_PATH = os.environ.get("MINIMAX_M3_LOCAL_TOKENIZER")
 _HF_REPO = "MiniMaxAI/MiniMax-M3"
-TOKENIZER_MODEL = _LOCAL_PATH if Path(_LOCAL_PATH).exists() else _HF_REPO
+TOKENIZER_MODEL = _LOCAL_PATH if _LOCAL_PATH and Path(_LOCAL_PATH).exists() else _HF_REPO
 
 
 @pytest.fixture(scope="module")

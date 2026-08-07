@@ -188,6 +188,29 @@ RENDERER_MATRIX: list[RendererCase] = [
         supervised_hf_parity=False,
         observation_equals_generation=False,
     ),
+    # -- Qwen2.5 ----------------------------------------------------------
+    # Like the other matrix entries, renderer QA follows public HF main. The
+    # renderer's V1-compatible template rejects multipart content.
+    RendererCase(
+        renderer="qwen2_5",
+        tokenizer_model="Qwen/Qwen2.5-32B-Instruct",
+        supports_thinking=False,
+        supports_tools=True,
+        has_extension_property=True,
+        supervised_hf_parity=True,
+        # V1's conservative character-start mask leaves a token untrained
+        # when it spans the assistant-header boundary. For whitespace-only
+        # answers that token includes answer bytes, so observation != the
+        # generation prompt even though ordinary answers satisfy the property.
+        observation_equals_generation=False,
+        unsupported_scenarios=frozenset(
+            {
+                "multipart_user_text",
+                "multipart_assistant_text",
+                "multipart_content_tool_call",
+            }
+        ),
+    ),
     # -- Qwen3 -------------------------------------------------------------
     # Thinking-mode qwen3: the HF template injects an empty
     # `<think>\n\n</think>\n\n` block ahead of assistant content in the
@@ -470,6 +493,7 @@ REQUIRED_RENDERERS: frozenset[str] = frozenset(
     {
         "glm5_interleaved",
         "glm_moe_dsa_interleaved",
+        "qwen2_5",
         "qwen3",
         "qwen3_disable_thinking",
         "qwen3_6_interleaved",

@@ -92,18 +92,21 @@ def make_grpo_loss_fn(
 
         surr1 = -ratio * ctx.adv
         surr2 = -clipped_ratio * ctx.adv
-        ref_log_ratio = ctx.resp_ref - ctx.resp_pi
-        ref_kl = torch.exp(ref_log_ratio) - ref_log_ratio - 1.0
-        kl_penalty = kl_beta * ref_kl
-        per_token_loss = (torch.maximum(surr1, surr2) * ctx.tis_weight + kl_penalty) * ctx.resp_mask
-
-        return per_token_loss, {
+        per_token_loss = torch.maximum(surr1, surr2) * ctx.tis_weight
+        extra = {
             "clip_frac": clip_frac,
             "ratio_mean": ratio_mean,
             "resp_len": float(len(ctx.resp_pi)),
             "adv_term": (-ctx.adv * ctx.resp_pi * ctx.resp_mask).sum().item(),
-            "kl_term": (kl_penalty * ctx.resp_mask).sum().item(),
         }
+        if ctx.resp_ref is not None:
+            ref_log_ratio = ctx.resp_ref - ctx.resp_pi
+            ref_kl = torch.exp(ref_log_ratio) - ref_log_ratio - 1.0
+            kl_penalty = kl_beta * ref_kl
+            per_token_loss = per_token_loss + kl_penalty
+            extra["kl_term"] = (kl_penalty * ctx.resp_mask).sum().item()
+
+        return per_token_loss * ctx.resp_mask, extra
 
     def loss_fn(
         data: List[tinker.Datum],
@@ -124,7 +127,10 @@ def make_grpo_loss_fn(
         metrics["total_resp_tokens"] = total_resp
         metrics["mask_ratio"] = nt / total_resp if total_resp > 0 else 0.0
         metrics["mean_adv_loss"] = result.extra_sums.get("adv_term", 0.0) / nt if nt > 0 else 0.0
-        metrics["mean_kl_penalty"] = result.extra_sums.get("kl_term", 0.0) / nt if nt > 0 else 0.0
+        if "kl_term" in result.extra_sums:
+            metrics["mean_kl_penalty"] = (
+                result.extra_sums["kl_term"] / nt if nt > 0 else 0.0
+            )
         metrics["mean_loss"] = result.total_loss.item() / nt if nt > 0 else 0.0
         if raw_inf_logprobs is not None:
             metrics.update(

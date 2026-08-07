@@ -145,7 +145,9 @@ class FrozenLakeConfig:
     deployment_id: str | None = None
     deployment_replica_count: int | None = None
 
-    wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
+    wandb_entity: str = field(
+        default_factory=lambda: os.environ.get("WANDB_ENTITY", "")
+    )
     wandb_project: str = field(
         default_factory=lambda: os.environ.get("WANDB_PROJECT", "frozen-lake-grpo")
     )
@@ -157,16 +159,22 @@ class FrozenLakeConfig:
 
 
 def parse_args() -> FrozenLakeConfig:
-    parser = argparse.ArgumentParser(description="GRPO training on FrozenLake tool calls")
+    parser = argparse.ArgumentParser(
+        description="GRPO training on FrozenLake tool calls"
+    )
     parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
-    parser.add_argument("--training-shape", default=os.environ.get("TRAINING_SHAPE", ""))
+    parser.add_argument(
+        "--training-shape", default=os.environ.get("TRAINING_SHAPE", "")
+    )
     parser.add_argument("--deployment-shape", default="")
     parser.add_argument("--deployment-id", default=None)
     parser.add_argument("--deployment-replica-count", type=int, default=None)
 
-    parser.add_argument("--seed-jsonl-path",
-                        default=os.path.join(os.path.dirname(__file__), "seeds.jsonl"))
+    parser.add_argument(
+        "--seed-jsonl-path",
+        default=os.path.join(os.path.dirname(__file__), "seeds.jsonl"),
+    )
     parser.add_argument("--max-seeds", type=int, default=20)
     parser.add_argument("--max-steps", type=int, default=12)
     parser.add_argument("--map-name", default="4x4")
@@ -185,19 +193,36 @@ def parse_args() -> FrozenLakeConfig:
     parser.add_argument("--lora-rank", type=int, default=0)
 
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
-    parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "frozen-lake-grpo"))
-    parser.add_argument("--visual-prompt-template", default=DEFAULT_VISUAL_PROMPT_TEMPLATE)
+    parser.add_argument(
+        "--wandb-project", default=os.environ.get("WANDB_PROJECT", "frozen-lake-grpo")
+    )
+    parser.add_argument(
+        "--visual-prompt-template", default=DEFAULT_VISUAL_PROMPT_TEMPLATE
+    )
     parser.add_argument("--observation-mode", choices=("text", "image"), default="text")
     parser.add_argument("--allow-plaintext-action-fallback", action="store_true")
 
-    parser.add_argument("--policy-job-id", default=None,
-                        help="Pre-created policy trainer job ID (skip creation)")
-    parser.add_argument("--reference-job-id", default=None,
-                        help="Pre-created reference trainer job ID (skip creation)")
-    parser.add_argument("--inference-base-url", default=None,
-                        help="Direct base URL for inference deployment (skip gateway)")
-    parser.add_argument("--output-model-id", type=str, required=True,
-                        help="Promote final checkpoint to this model ID")
+    parser.add_argument(
+        "--policy-job-id",
+        default=None,
+        help="Pre-created policy trainer job ID (skip creation)",
+    )
+    parser.add_argument(
+        "--reference-job-id",
+        default=None,
+        help="Pre-created reference trainer job ID (skip creation)",
+    )
+    parser.add_argument(
+        "--inference-base-url",
+        default=None,
+        help="Direct base URL for inference deployment (skip gateway)",
+    )
+    parser.add_argument(
+        "--output-model-id",
+        type=str,
+        required=True,
+        help="Promote final checkpoint to this model ID",
+    )
 
     return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
 
@@ -216,11 +241,13 @@ def load_seed_contexts(path: str, max_seeds: int) -> List[Dict[str, Any]]:
             if not line:
                 continue
             entry = json.loads(line)
-            contexts.append({
-                "map_name": entry.get("map_name", "4x4"),
-                "use_random_map": True,
-                "seed": int(entry["seed"]),
-            })
+            contexts.append(
+                {
+                    "map_name": entry.get("map_name", "4x4"),
+                    "use_random_map": True,
+                    "seed": int(entry["seed"]),
+                }
+            )
             if len(contexts) >= max_seeds:
                 break
     return contexts
@@ -264,7 +291,9 @@ def evaluation_row_to_training_data(
         return [], 0, [], []
 
     # prompt_len = first turn's prompt length (system + user message, before any model output)
-    first_prompt_len = len([int(x) for x in (token_turn_traces[0].get("prompt_ids") or [])])
+    first_prompt_len = len(
+        [int(x) for x in (token_turn_traces[0].get("prompt_ids") or [])]
+    )
 
     model_request_traces = extra.get("model_request_traces") or []
     spans = compute_model_output_spans(token_turn_traces, model_request_traces)
@@ -343,7 +372,9 @@ def frozen_lake_eval_row_factory(row: Dict[str, Any]) -> EvaluationRow:
     base_row = row.get("evaluation_row")
     rollout_idx = int(row.get("rollout_idx", 0))
     if not isinstance(base_row, EvaluationRow):
-        raise TypeError("FrozenLake row must include an 'evaluation_row' EvaluationRow.")
+        raise TypeError(
+            "FrozenLake row must include an 'evaluation_row' EvaluationRow."
+        )
 
     eval_row = base_row.model_copy(deep=True)
     base_row_id = eval_row.input_metadata.row_id or "row"
@@ -437,7 +468,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     seed_contexts = load_seed_contexts(cfg.seed_jsonl_path, cfg.max_seeds)
     logger.info(
         "Loaded %d seed contexts from %s",
-        len(seed_contexts), os.path.abspath(cfg.seed_jsonl_path),
+        len(seed_contexts),
+        os.path.abspath(cfg.seed_jsonl_path),
     )
 
     use_reference = cfg.kl_beta > 0 or cfg.reference_job_id is not None
@@ -469,7 +501,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         additional_headers=read_api_extra_headers_env(),
         base_model=cfg.base_model,
         tokenizer_model=cfg.tokenizer_model,
-        lora_rank=cfg.lora_rank,
+        max_lora_rank=cfg.lora_rank,
         max_context_length=cfg.max_seq_len,
         learning_rate=cfg.learning_rate,
         trainer=TrainerConfig(
@@ -484,8 +516,12 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
     )
 
     with closing(service):
+        training_client = service.create_training_client(
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+        )
         policy = ReconnectableClient.from_training_client(
-            service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank),
+            training_client,
             base_model=cfg.base_model,
             lora_rank=cfg.lora_rank,
             job_id=service.trainer_job_id,
@@ -496,7 +532,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         reference = None
         if use_reference:
             reference = ReconnectableClient.from_training_client(
-                service.create_reference_client(cfg.base_model, lora_rank=cfg.lora_rank),
+                service.create_reference_client(policy_client=training_client),
                 base_model=cfg.base_model,
                 lora_rank=0,
                 job_id=service.reference_client_job_id,
@@ -524,7 +560,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         service.hotload_sampler_snapshot(saved.snapshot_name)
 
         # -- Build rollout processor ----------------------------------------
-        rollout_base_url = sampler.base_url.rstrip("/") + ("" if cfg.inference_base_url else "/inference")
+        rollout_base_url = sampler.base_url.rstrip("/") + (
+            "" if cfg.inference_base_url else "/inference"
+        )
         rollout_processor = FrozenLakeToolRolloutProcessor(
             model_id=inference_model,
             tokenizer_name_or_path=cfg.tokenizer_model,
@@ -558,7 +596,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             completion_params={"model": inference_model},
             steps=cfg.max_steps,
         )
-        eval3_input_rows = load_eval_protocol_input_rows(frozen_lake_evaluator)[prior_rows_consumed:]
+        eval3_input_rows = load_eval_protocol_input_rows(frozen_lake_evaluator)[
+            prior_rows_consumed:
+        ]
 
         adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
         # -- Trajectory logging -----------------------------------------------
@@ -622,7 +662,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 for pg in groups:
                     n = len(pg.ref_data)
                     pg.ref_logprobs = [
-                        ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
+                        ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data
+                        for i in range(n)
                     ]
                     idx += n
 
@@ -631,7 +672,10 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
                 old_policy_fwd = policy.forward(data, "cross_entropy")
-                old_policy_lp = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
+                old_policy_lp = [
+                    old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
+                    for i in range(len(data))
+                ]
                 return policy.forward_backward_custom(
                     data,
                     make_grpo_loss_fn(
@@ -741,14 +785,14 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                 avg_ref_kl = metrics.get("train/ref_kl", 0.0)
                 logger.info(
                     "Step %d | Reward: %.3f | RefKL: %.4f | Loss: %.4f "
-                    "(adv=%.4f kl_pen=%.4f) | InfKLD: %.4f | MaskRatio: %.2f",
+                    "(adv=%.4f kl_pen=%.4f) | K3: %.4f | MaskRatio: %.2f",
                     step,
                     avg_reward,
                     avg_ref_kl,
                     metrics.get("train/mean_loss", 0.0),
                     metrics.get("train/mean_adv_loss", 0.0),
                     metrics.get("train/mean_kl_penalty", 0.0),
-                    metrics.get("train/inference_kld", 0.0),
+                    metrics.get("train/inference_k3", 0.0),
                     metrics.get("train/mask_ratio", 0.0),
                 )
                 reward_history.append(avg_reward)

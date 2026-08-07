@@ -169,7 +169,7 @@ def load_2wiki(split: str, max_rows: int) -> list:
 #      split and a disjoint train split.
 
 WIKI_API = "https://en.wikipedia.org/w/api.php"
-WIKI_UA = "fireworks-rl-e2e/1.0 (training guardrail dataset build; contact: eng@fireworks.ai)"
+WIKI_UA = "fireworks-rl-e2e/1.0"
 
 # Pool shape (mirrors the ~20-paragraph MuSiQue pools).
 FRAMES_POOL_SIZE = 22

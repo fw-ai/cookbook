@@ -168,6 +168,7 @@ class TestValidation:
             ({"prompt_groups_per_step": 0}, "prompt_groups_per_step"),
             ({"training_chunks_per_step": 0}, "training_chunks_per_step"),
             ({"max_head_off_policy_versions": -1}, "max_head_off_policy_versions"),
+            ({"max_incomplete_group_retries": -1}, "max_incomplete_group_retries"),
             ({"global_step": -1}, "global_step"),
             ({"max_concurrent_rollouts": 0}, "max_concurrent_rollouts"),
             (
@@ -191,6 +192,38 @@ class TestValidation:
     def test_row_id_must_be_hashable(self):
         with pytest.raises(TypeError, match="hashable"):
             RolloutRow(row_id=[], run_factory=lambda _index: None)  # type: ignore[arg-type]
+
+
+def test_incomplete_group_is_rebuilt_before_admission() -> None:
+    async def scenario() -> None:
+        calls = {0: 0, 1: 0}
+
+        async def factory(sub_index: int) -> RolloutRun | None:
+            calls[sub_index] += 1
+            if sub_index == 1 and calls[sub_index] == 1:
+                return None
+            return _rollout_run(float(sub_index))
+
+        coordinator = _coordinator(
+            [_row(0, run_factory=factory)],
+            completions_per_prompt=2,
+            prompt_groups_per_step=1,
+            training_chunks_per_step=1,
+            min_group_size=2,
+            max_incomplete_group_retries=1,
+        )
+        async with coordinator:
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+            assert batch is not None
+            assert await _consume(batch) == [1]
+            snapshot = coordinator.snapshot()
+            assert snapshot["incomplete_group_retries"] == 1
+            assert snapshot["rows_accepted"] == 1
+            assert snapshot["rows_rejected"] == 0
+            coordinator.publish(batch)
+        assert calls == {0: 2, 1: 2}
+
+    _run(scenario())
 
 
 def test_completion_refills_during_physical_training() -> None:
@@ -305,10 +338,7 @@ def test_completion_refill_attempt_is_visible_when_staleness_gate_is_full() -> N
             releases[2].set()
             await _wait_until(
                 lambda: (
-                    int(
-                        coordinator.snapshot()["completion_refill_attempts"]
-                        or 0
-                    )
+                    int(coordinator.snapshot()["completion_refill_attempts"] or 0)
                     > int(before["completion_refill_attempts"] or 0)
                 )
             )
@@ -455,7 +485,7 @@ def test_metrics_failure_does_not_poison_active_batch() -> None:
     _run(scenario())
 
 
-def test_one_optimizer_and_hotload_per_full_or_partial_batch() -> None:
+def test_final_optimizer_batch_uses_its_realized_size() -> None:
     async def scenario() -> None:
         coordinator = _coordinator((_row(index) for index in range(5)))
         calls = {"train": 0, "optimizer": 0, "hotload": 0}
@@ -604,6 +634,36 @@ def test_recoverable_rollout_error_drops_and_continues() -> None:
             assert await coordinator.next_batch() is None
             final = telemetry.final_stats()
             assert final["recoverable_errors"] == 1
+            assert final["trajectory_drops"] == 1
+            assert final["sample_fails"] == 1
+
+    _run(scenario())
+
+
+def test_misaligned_r3_rollout_drops_before_group_admission() -> None:
+    async def scenario() -> None:
+        malformed = _rollout_run()
+        malformed.segments[0].routing_matrices = ["route-1", "route-2"]
+
+        async def malformed_r3(_sub_index: int) -> RolloutRun:
+            return malformed
+
+        telemetry = _telemetry()
+        coordinator = _coordinator(
+            [_row(0, run_factory=malformed_r3), _row(1)],
+            prompt_groups_per_step=1,
+            training_chunks_per_step=1,
+            max_concurrent_rollouts=1,
+        )
+        async with _observed(coordinator, telemetry):
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
+            assert batch is not None
+            assert await _consume(batch) == [1]
+            coordinator.publish(batch)
+            assert await coordinator.next_batch() is None
+            final = telemetry.final_stats()
+            assert final["recoverable_errors"] == 0
+            assert final["trajectory_drops"] == 1
             assert final["sample_fails"] == 1
 
     _run(scenario())

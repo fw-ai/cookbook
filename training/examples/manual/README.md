@@ -11,14 +11,14 @@ single-shape e2e CI do not hit.
 
 Both scripts reuse the deepmath reward + dataset from
 `training/examples/rl/deepmath/` and pin to the 1×GPU qwen3-4b minimum
-shapes so one run is ~15–20 min on shared dev.
+shapes so one run is roughly 15–20 minutes in a suitable test environment.
 
 ## Usage
 
-Set a pyroworks-dev-scoped key (targets `https://dev.api.fireworks.ai`):
+Set a Fireworks API key with access to the resources used by the test:
 
 ```bash
-export FIREWORKS_API_KEY=<pyroworks key>
+export FIREWORKS_API_KEY=fw_...
 python training/examples/manual/test_reattach_manual.py
 python training/examples/manual/test_per_deployment_manual.py
 ```

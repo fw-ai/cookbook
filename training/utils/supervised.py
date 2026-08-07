@@ -42,6 +42,7 @@ import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — 
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.qwen2_5 as _qwen2_5_renderer  # noqa: F401 — triggers register_renderer
 from training.renderer.thinking_trace import (
     ResolvedThinkingTraceRendererPlan,
     ThinkingTraceHistoryMode,
@@ -172,6 +173,15 @@ def resolve_renderer_name(
     if renderer_name:
         return renderer_name
     normalized_model_name = tokenizer_model.lower()
+    if normalized_model_name in {
+        "qwen/qwen2.5-32b-instruct",
+        "accounts/fireworks/models/qwen2p5-32b-instruct",
+    }:
+        # This targeted model predates Managed Training V2. Its production
+        # tokenizer carries an observable V1 tool-template override, so keep it
+        # on the dedicated renderer rather than inheriting Qwen3 semantics or
+        # falling through to the public-HF recommendation table.
+        return "qwen2_5"
     if re.search(
         r"(?:^|[/_.-])kimi[-_]k3(?:$|[/_.-])",
         normalized_model_name,
@@ -214,6 +224,13 @@ def resolve_renderer_name(
         return "minimax_m3"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
+    if normalized_model_name == "qwen/qwen3-235b-a22b-instruct-2507-fp8":
+        # The FP8 weights repository reuses the canonical Instruct-2507
+        # tokenizer and chat template, but tinker-cookbook only registers the
+        # canonical non-suffixed HF identity. This alias is renderer-only:
+        # checkpoint precision and training-shape eligibility remain separate
+        # control-plane contracts and must not be canonicalized here.
+        return "qwen3_instruct"
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
     # adds an opt-in `preserve_thinking` flag (renders historical thinking
     # for ALL assistant turns when true). Default invocation produces output

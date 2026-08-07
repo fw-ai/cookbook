@@ -54,6 +54,13 @@ class PromptGroup:
     """Raw completion texts (for trajectory logging)."""
     row_meta: dict | None = None
     """Dataset row metadata, e.g. ground_truth (for trajectory logging)."""
+    run_metadata: List[dict] = field(default_factory=list)
+    """One metadata mapping per logical rollout run.
+
+    Multi-turn callers may split one run into several trainer datums. Keeping
+    run metadata beside the group preserves the logical-trajectory boundary for
+    metrics without treating history segments as extra completions.
+    """
     prompt_lens: List[int] | None = None
     """Per-sample prompt boundaries.  Heterogeneous rollouts (multi-turn,
     tool branches) have different prefix lengths per sample, so the scalar
@@ -72,7 +79,7 @@ def combine_prompt_groups(
 
     Returns ``(data, advantages, ref_logprobs, prompt_lens, inf_logprobs)``.
     With ``include_raw=True``, appends observability-only ``raw_inf_logprobs``
-    for ``train/inference_*`` drift metrics.
+    for the ``train/inference_k1`` and ``train/inference_k3`` drift metrics.
     """
     data: List[tinker.Datum] = []
     advantages: List[float] = []

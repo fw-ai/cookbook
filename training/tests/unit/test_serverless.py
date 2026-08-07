@@ -14,13 +14,14 @@ class _FakeService:
         self.default_headers = default_headers
         self.training_session_id = "ts-1234"
 
-    def create_lora_training_client(self, base_model, rank):
+    def create_lora_training_client(self, base_model, rank, alpha):
         assert base_model == "accounts/fireworks/models/qwen3-4b"
         assert rank == 8
+        assert alpha == 32
         return SimpleNamespace(
             model_id="run-abcdef:train:0",
             run_id="run-abcdef",
-            run_name="accounts/e2e-fireoptimizer/trainingRuns/run-abcdef",
+            run_name="accounts/test-account-id/trainingRuns/run-abcdef",
         )
 
 
@@ -29,7 +30,7 @@ class _FakeFireworksClient:
         self.api_key = api_key
         self.base_url = base_url
         self.additional_headers = additional_headers
-        self.account_id = "e2e-fireoptimizer"
+        self.account_id = "test-account-id"
         self.closed = False
 
     def close(self):
@@ -72,7 +73,7 @@ def test_setup_serverless_training_uses_service_training_session_id(
             serverless_utils.setup_serverless_training(
                 cfg,
                 api_key="fw-test-key",
-                base_url="http://personal-api-gateway",
+                base_url="https://api.example.test",
                 additional_headers={"x-test": "1"},
                 stack=stack,
             )
@@ -85,7 +86,7 @@ def test_setup_serverless_training_uses_service_training_session_id(
     assert ckpt._current_run_id == "run-abcdef"
     assert ckpt._fw_client.list_checkpoints("ts-1234") == [
         {
-            "name": "accounts/e2e-fireoptimizer/trainingSessions/ts-1234/checkpoints/step-8",
+            "name": "accounts/test-account-id/trainingSessions/ts-1234/checkpoints/step-8",
             "pageSize": 200,
         }
     ]

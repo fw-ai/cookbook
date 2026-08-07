@@ -41,6 +41,13 @@ class _StringTokenizer:
     ("model", "family", "modes", "default_renderer", "unrolls"),
     [
         (
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "deepseek-v4",
+            ["unspecified"],
+            "deepseek_v4",
+            [True],
+        ),
+        (
             "zai-org/GLM-5.1",
             "glm5.1",
             ["interleaved", "preserved"],
@@ -204,6 +211,16 @@ def test_unregistered_model_is_default_only() -> None:
             "meta-llama/Llama-3.1-8B-Instruct",
             requested_mode="preserved",
             default_renderer_name="llama-3",
+        )
+
+
+@pytest.mark.parametrize("mode", ["interleaved", "preserved"])
+def test_deepseek_v4_rejects_explicit_history_modes(mode: str) -> None:
+    with pytest.raises(ValueError, match="supported modes: default only"):
+        resolve_thinking_trace_renderer_plan(
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            requested_mode=mode,
+            default_renderer_name="wrong-default",
         )
 
 

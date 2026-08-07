@@ -61,6 +61,59 @@ datasets, local paths, environment dumps, or raw errors, and it does not write a
 telemetry file or send a standalone beacon. Qualitative issue collection is not
 implemented.
 
+Before any support submission, show the exact fields and obtain explicit user
+confirmation. Include only a reviewed subject and description, the relevant
+Fireworks resource name, a request ID when available, and a canonical
+`google.rpc.ErrorInfo` reason when present. Never infer an error reason from
+human-readable status text. Do not include conversations, prompts, datasets,
+evaluator code, local paths, environment values, secrets, raw CLI output, signed
+URLs, raw exceptions, or arbitrary metadata.
+
+Support submission capabilities are rolling out separately from this skill.
+Detect them before use, and treat an unavailable adapter as a supported
+compatibility case rather than a training failure:
+
+1. For CLI workflows, run `firectl support create --help`. Only when that
+   succeeds, build the exact command and run it first with `--dry-run` and
+   without `--confirm`. This preview must be side-effect free. Show its output,
+   obtain confirmation, then rerun the same command with `--confirm`.
+2. For Training API workflows with an existing service client, check
+   `hasattr(service_client, "create_support_ticket")`. If true, build and show
+   the exact argument fields locally, obtain confirmation, then call the method
+   with `user_confirmed=True`.
+3. If either capability is absent, continue the training workflow and direct
+   the user to <https://support.fireworks.ai/> with the same reviewed fields.
+   Never treat an unsupported command or missing method as a run failure.
+
+For the CLI capability, the confirmed command has this shape:
+
+```bash
+firectl support create \
+  --question-type job-failure \
+  --subject "<reviewed subject>" \
+  --description "<reviewed description>" \
+  --resource "<full Fireworks resource name>" \
+  --error-reason "<canonical ErrorInfo reason>" \
+  --request-id "<request ID when available>" \
+  --confirm
+```
+
+For the Python capability, call the detected method only after showing the same
+fields and receiving confirmation:
+
+```python
+if hasattr(service_client, "create_support_ticket"):
+    service_client.create_support_ticket(
+        question_type="job_failure",
+        subject="<reviewed subject>",
+        description="<reviewed description>",
+        resource_name="<full Fireworks resource name>",
+        error_reason="<canonical ErrorInfo reason>",
+        request_id="<request ID when available>",
+        user_confirmed=True,
+    )
+```
+
 The UUID is random attribution metadata, not a credential. Record it in the
 private run manifest and include it only in Fireworks API calls or the exact
 one-time manual handoff command; that command may remain in local shell history.
@@ -204,7 +257,8 @@ This handoff is identical across Claude Code, Cursor, and Codex.
 | Training API DPO | Not applicable | [`training/recipes/dpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/dpo_loop.py) | `references/sdk-recipes.md` |
 | Training API ORPO | Not applicable | [`training/recipes/orpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/orpo_loop.py) | `references/sdk-recipes.md` |
 | Training API RL | Not applicable | [`training/recipes/rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/rl_loop.py) | `references/training-api.md`, `references/rl-loss-paths.md` |
-| Async or agentic RL | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/async_rl_loop.py) | `references/rl-async.md` |
+| Async RL scheduling and overlap | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/async_rl_loop.py) | `references/rl-async.md` |
+| Agentic or tool-using RL | Not applicable | Use `async_rl_loop.py` with an agent/environment rollout adapter | `references/rl-agentic.md`, then `references/rl-async.md` for loop behavior |
 | IGPO | Not applicable | [`training/recipes/igpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/igpo_loop.py) | `references/sdk-recipes.md` |
 | Distillation | Not applicable | [`training/recipes/distillation_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/distillation_loop.py) | `references/sdk-distillation.md` |
 | Serverless RL example | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/main/training/examples/serverless_rl) | Live serverless docs |
@@ -368,7 +422,8 @@ Read only what the task requires:
 | Checkpoints and tools | `references/sdk-checkpoints.md`, `references/sdk-tools.md` |
 | Distillation | `references/sdk-distillation.md` |
 | RL built-in/client losses and normalization | `references/rl-loss-paths.md`, `references/rl-custom-loss.md`, `references/rl-gradient-accumulation.md` |
-| Async RL, concurrency, and filtering | `references/rl-async.md`, `references/rl-concurrency.md`, `references/rl-dynamic-filter.md` |
+| Async RL loop, concurrency, and filtering | `references/rl-async.md`, `references/rl-concurrency.md`, `references/rl-dynamic-filter.md` |
+| Agentic RL trajectories, token ancestry, sessions, retries, and tool environments | `references/rl-agentic.md` |
 | Read async RL producer, overlap, gate, and refill metrics | `references/async-rl-metrics.md` |
 | Hotload and sampler failures | `references/rl-hotload.md`, `references/rl-sampling-timeouts.md` |
 | Renderer implementation and training-token invariants | `references/renderer.md` |

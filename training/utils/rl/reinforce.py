@@ -56,6 +56,10 @@ def make_reinforce_loss_fn(
         ratio = torch.exp(log_ratio)
         per_token_loss = -ratio * ctx.adv
         if kl_beta > 0.0:
+            if ctx.resp_ref is None:
+                raise ValueError(
+                    "REINFORCE KL penalty requires reference logprobs."
+                )
             per_token_loss = per_token_loss + kl_beta * (ctx.pi_detached - ctx.resp_ref)
         per_token_loss = per_token_loss * ctx.resp_mask
 

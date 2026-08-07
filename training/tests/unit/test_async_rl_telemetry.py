@@ -28,6 +28,8 @@ def _snapshot(**overrides) -> dict[str, int | float | bool | None]:
         "completion_refill_attempts": 0,
         "completion_refill_rows_submitted": 0,
         "recoverable_errors": 0,
+        "trajectory_drops": 0,
+        "incomplete_group_retries": 0,
         "source_exhausted": False,
     }
     snapshot.update(overrides)
@@ -55,12 +57,16 @@ def test_metric_values_omit_disabled_concurrency_gate() -> None:
             completion_refill_attempts=7,
             completion_refill_rows_submitted=2,
             recoverable_errors=1,
+            trajectory_drops=3,
+            incomplete_group_retries=2,
         )
     )
 
     assert metrics["producer/in_flight_samples"] == 8
     assert metrics["producer/rows_completed_total"] == 4
     assert metrics["producer/completion_refill_attempts_total"] == 7
+    assert metrics["producer/trajectory_drops_total"] == 3
+    assert metrics["producer/incomplete_group_retries_total"] == 2
     assert "producer/refill_attempts_total" not in metrics
     assert "producer/concurrency_capacity_samples" not in metrics
 

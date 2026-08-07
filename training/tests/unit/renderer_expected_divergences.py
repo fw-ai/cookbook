@@ -41,6 +41,12 @@ Deliberately NOT listed here (handled elsewhere):
 
 from __future__ import annotations
 
+_QWEN2_5_TOOL_TEMPLATE_DIVERGENCE = (
+    "the V1-compatible renderer preserves literal double braces in the "
+    "tool-call example, while the moving public HF main template uses single "
+    "braces"
+)
+
 HF_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
     ("glm5_interleaved", "developer_first"): "GLM5 renderer raises ValueError on the 'developer' role (unsupported); there is no rendered output to byte-compare against the template.",
     ("glm5_interleaved", "developer_midconversation"): "GLM5 renderer raises ValueError on the 'developer' role (unsupported); there is no rendered output to byte-compare against the template.",
@@ -70,6 +76,21 @@ HF_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
     ("nemotron3", "leading_newline_user"): "renderer diverges from apply_chat_template for this scenario",
     ("nemotron3", "multipart_user_text"): "renderer diverges from apply_chat_template for this scenario",
     ("nemotron3", "tool_result_pending_answer"): "renderer/template rejects this input: Can only get item pairs from a mapping.",
+    ("qwen2_5", "assistant_content_plus_tool_call"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "dangling_tool_call"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "dict_tool_args"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "empty_args_tool_call"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "json_string_tool_args"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "nested_json_tool_result"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "nested_tool_call_args"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "parallel_tool_calls"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "parallel_tool_results_reversed"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "react_two_round_tool_results"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "single_tool_call"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "tool_call_then_answer"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "tool_only_empty_content"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "tool_result_pending_answer"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
+    ("qwen2_5", "tool_with_response_schema"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
     ("qwen3", "developer_first"): "developer role not remapped: the renderer emits a 'developer' header while the Qwen3-8B template renders it as a 'user' turn.",
     ("qwen3", "developer_midconversation"): "developer role not remapped: the renderer emits a 'developer' header while the Qwen3-8B template renders it as a 'user' turn.",
     ("qwen3", "leading_newline_user"): "leading/whitespace-only content merges with the Qwen3-8B user-header newline into a single '\\n\\n\\n'-style token in the template, while the renderer keeps the header and body newlines as separate tokens.",

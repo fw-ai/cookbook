@@ -27,8 +27,29 @@ class TestGRPOMetrics:
 
         ref_log_diff = torch.tensor(ref_vals) - torch.tensor(pi_vals)
         expected_ref_kl = (torch.exp(ref_log_diff) - ref_log_diff - 1.0).mean().item()
+        assert metrics["mean_kl"] == pytest.approx(
+            (torch.tensor(pi_vals) - torch.tensor(ref_vals)).mean().item()
+        )
         assert metrics["ref_kl"] == pytest.approx(expected_ref_kl)
         assert metrics["ppo_kl"] == pytest.approx(0.0)
+
+    def test_omits_reference_kl_metrics_without_reference(self):
+        pi_vals = [-1.0, -1.2]
+        pi = torch.tensor(pi_vals, requires_grad=True)
+        fn = make_grpo_loss_fn(
+            advantages=[1.0],
+            ref_logprobs=[],
+            prompt_len=1,
+            inf_logprobs=[pi_vals],
+            old_policy_logprobs=[pi_vals],
+            kl_beta=0.0,
+        )
+
+        _, metrics = fn([], [pi])
+
+        assert "mean_kl" not in metrics
+        assert "ref_kl" not in metrics
+        assert "mean_kl_penalty" not in metrics
 
     def test_reference_kl_contributes_k3_gradient(self):
         pi_vals = [-1.0, -1.0]
@@ -75,10 +96,16 @@ class TestGRPOMetrics:
         _, metrics = fn([], [pi])
 
         diff = torch.tensor(pi_vals) - torch.tensor(raw_inf_vals)
-        expected_kld = (torch.exp(diff) - diff - 1.0).mean().item()
+        expected_k3 = (torch.exp(diff) - diff - 1.0).mean().item()
         assert metrics["raw_inference_logprob_coverage"] == 1.0
-        assert metrics["inference_diff"] == pytest.approx(diff.abs().mean().item())
-        assert metrics["inference_kld"] == pytest.approx(expected_kld)
+        assert metrics["inference_k1"] == pytest.approx(diff.mean().item())
+        assert metrics["inference_k3"] == pytest.approx(expected_k3)
+        assert not {
+            "inference_diff",
+            "inference_kld",
+            "k1",
+            "k3",
+        }.intersection(metrics)
 
     def test_omits_raw_inference_metrics_when_sampler_does_not_provide_them(self):
         pi_vals = [-1.0, -1.2]
@@ -96,8 +123,8 @@ class TestGRPOMetrics:
         _, metrics = fn([], [pi])
 
         assert "raw_inference_logprob_coverage" not in metrics
-        assert "inference_diff" not in metrics
-        assert "inference_kld" not in metrics
+        assert "inference_k1" not in metrics
+        assert "inference_k3" not in metrics
 
     def test_raw_inference_logprobs_do_not_change_loss_or_gradient(self):
         pi_vals = [-1.0, -1.2]
@@ -122,4 +149,4 @@ class TestGRPOMetrics:
 
         assert torch.equal(loss_a, loss_b)
         assert torch.equal(grad_a, grad_b)
-        assert metrics_a["inference_diff"] != metrics_b["inference_diff"]
+        assert metrics_a["inference_k3"] != metrics_b["inference_k3"]

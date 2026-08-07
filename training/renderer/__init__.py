@@ -25,6 +25,7 @@ from training.renderer import kimi_k27_code as _kimi_k27_code  # noqa: F401  (re
 from training.renderer import kimi_k3 as _kimi_k3  # noqa: F401  (registers "kimi_k3")
 from training.renderer import minimax_m2 as _minimax_m2  # noqa: F401  (registers "minimax_m2")
 from training.renderer import minimax_m3 as _minimax_m3  # noqa: F401  (registers "minimax_m3")
+from training.renderer import qwen2_5 as _qwen2_5  # noqa: F401  (registers "qwen2_5")
 
 # Local overrides for upstream renderers that need disaggregate-per-user-turn
 # multi-turn SFT support (no upstream ``build_supervised_examples`` override).

@@ -7,6 +7,7 @@ Run from ``cookbook/training`` with:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,14 +18,14 @@ from training.renderer.minimax_m2 import MiniMaxM2Renderer
 from tinker_cookbook.renderers import get_text_content
 from tinker_cookbook.renderers.base import RenderContext, ToolCall, TrainOnWhat
 
-_LOCAL_PATH = "/shared/MiniMax-M2"
+_LOCAL_PATH = os.environ.get("MINIMAX_M2_LOCAL_TOKENIZER")
 _HF_REPO = "MiniMaxAI/MiniMax-M2"
-TOKENIZER_MODEL = _LOCAL_PATH if Path(_LOCAL_PATH).exists() else _HF_REPO
+TOKENIZER_MODEL = _LOCAL_PATH if _LOCAL_PATH and Path(_LOCAL_PATH).exists() else _HF_REPO
 
 
 @pytest.fixture(scope="module")
 def tokenizer() -> transformers.PreTrainedTokenizerBase:
-    """Load the MiniMax tokenizer from a local snapshot when available."""
+    """Load the configured local snapshot when available, else the public repo."""
     return transformers.AutoTokenizer.from_pretrained(
         TOKENIZER_MODEL,
         trust_remote_code=True,

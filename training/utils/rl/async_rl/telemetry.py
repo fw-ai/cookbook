@@ -50,6 +50,10 @@ def producer_metric_values(snapshot: ProducerSnapshot) -> dict[str, int | float]
             snapshot["completion_refill_rows_submitted"] or 0
         ),
         "producer/recoverable_errors_total": int(snapshot["recoverable_errors"] or 0),
+        "producer/trajectory_drops_total": int(snapshot["trajectory_drops"] or 0),
+        "producer/incomplete_group_retries_total": int(
+            snapshot["incomplete_group_retries"] or 0
+        ),
         "producer/source_exhausted": int(bool(snapshot["source_exhausted"])),
     }
     concurrency_capacity = snapshot["concurrency_capacity"]

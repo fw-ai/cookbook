@@ -119,6 +119,11 @@ class Config:
     max_seq_len: int | None = None
     max_pairs: int | None = None
     lora_rank: int = 0
+    lora_alpha: int | None = 32
+    """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
+
+    Defaults to ``32`` to match Tinker and the Training API SDK client
+    ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
     output_model_id: str | None = None
 
     warmup_ratio: float = 0.0
@@ -308,14 +313,18 @@ def main(
             additional_headers=additional_headers,
             base_model=cfg.base_model,
             tokenizer_model=cfg.tokenizer_model,
-            lora_rank=cfg.lora_rank,
+            max_lora_rank=cfg.lora_rank,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
             cleanup_trainer_on_close=True,
         )
         stack.callback(service.close)
-        training_client = service.create_training_client(cfg.base_model, lora_rank=cfg.lora_rank)
+        training_client = service.create_training_client(
+            cfg.base_model,
+            lora_rank=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
+        )
         runner.set_accelerator_info(
             service.accelerator_type,
             service.accelerator_count,

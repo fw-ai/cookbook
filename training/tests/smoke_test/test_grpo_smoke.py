@@ -7,7 +7,7 @@ Runs 2 optimizer steps with weight syncing on a single GPU:
 
 Requires env vars (skipped if not set):
     FIREWORKS_API_KEY
-    FIREWORKS_BASE_URL      (optional, defaults to https://dev.api.fireworks.ai)
+    FIREWORKS_BASE_URL      (optional, defaults to https://api.fireworks.ai)
 
 Usage:
     pytest training/tests/smoke_test/test_grpo_smoke.py -v -s

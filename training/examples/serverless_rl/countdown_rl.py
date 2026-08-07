@@ -30,10 +30,9 @@ computes group-relative advantages, and takes one optimizer step. When
 ``kl_penalty_coef > 0`` a reference-KL penalty is injected into the advantages
 (as in ``tinker_cookbook/rl/metrics.py:incorporate_kl_penalty``).
 
-Distilled from the internal serverless Countdown e2e journey
-(``serverless_countdown_rl_journey_v2.py``); the e2e-only stage assertions,
-checkpoint list/promote gates, and multi-model isolation checks are dropped so
-the training loop itself stays front and center.
+The example focuses on the training loop itself, omitting optional lifecycle
+checks so the core sampling, scoring, and optimization flow stays front and
+center.
 
 Usage:
     export FIREWORKS_API_KEY=fw_...
@@ -85,6 +84,7 @@ class Config:
     renderer_name: str = ""
     dataset: str = str(DEFAULT_DATASET)
     lora_rank: int = 8
+    lora_alpha: int = 32
     # Serverless has no training shape from which to infer this bound.
     max_seq_len: int = 65536
 
@@ -111,8 +111,8 @@ class Config:
     """KL reference base model. Empty = use ``base_model``."""
 
     # --- Connection ---------------------------------------------------------
-    # Prod gateway by default; override with FIREWORKS_BASE_URL (e.g. a dev
-    # gateway). The "/training/v1/serverless" suffix is added automatically.
+    # Use the public API endpoint by default; an optional override is accepted.
+    # The "/training/v1/serverless" suffix is added automatically.
     api_base_url: str = field(default_factory=lambda: os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai"))
     api_key: str = field(default_factory=lambda: os.environ.get("FIREWORKS_API_KEY", ""))
 
@@ -275,6 +275,7 @@ class ServerlessCountdownRL:
         self.training_client = self.service.create_lora_training_client(
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
+            alpha=cfg.lora_alpha,
         )
 
         # KL reference: frozen base model, created once for the whole run.
@@ -304,7 +305,7 @@ class ServerlessCountdownRL:
             f"connected serverless session={session} run={run_id}\n"
             f"base_model={cfg.base_model} tokenizer={cfg.tokenizer_model} renderer={renderer_name}\n"
             f"steps={cfg.steps} prompt_groups_per_step={cfg.prompt_groups_per_step} "
-            f"group_size={cfg.group_size} lora_rank={cfg.lora_rank} "
+            f"group_size={cfg.group_size} lora_rank={cfg.lora_rank} lora_alpha={cfg.lora_alpha} "
             f"max_seq_len={cfg.max_seq_len} lr={cfg.learning_rate}\n"
             f"run_dir={self.run_dir}",
             flush=True,
@@ -424,7 +425,7 @@ class ServerlessCountdownRL:
             _remove_mask(datums)
             fb = self.training_client.forward_backward(datums, "importance_sampling").result()
             loss = _mean_loss(fb)
-            adam = tinker.AdamParams(learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.0)
+            adam = tinker.AdamParams(learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-12, weight_decay=0.0)
             self.training_client.optim_step(adam).result()
 
         raw_reward = sum(raw_rewards) / len(raw_rewards) if raw_rewards else 0.0

@@ -39,6 +39,7 @@ ASYNC_RL_WANDB_METRIC_STEPS: _MetricSteps = {
     "ctx/*": "rollout/step",
     "batch/*": "rollout/step",
     "async/*": "rollout/step",
+    "eval/*": "rollout/step",
     "producer/event": None,
     "producer/*": "producer/event",
 }
@@ -115,7 +116,9 @@ def setup_wandb(
         os.environ["WANDB_MODE"] = "offline"
 
     try:
-        wandb.init(entity=wb.entity, project=wb.project, name=wb.run_name, config=config)
+        wandb.init(
+            entity=wb.entity, project=wb.project, name=wb.run_name, config=config
+        )
     except Exception as exc:
         if _is_wandb_auth_error(exc):
             raise WandbConfigError(
@@ -184,7 +187,9 @@ def _normalize_metrics(
 ) -> dict[str, Any]:
     """Build the plain metric dictionary consumed by every sink."""
     normalized_step = _normalize_metric_value(step)
-    if isinstance(normalized_step, bool) or not isinstance(normalized_step, (int, float)):
+    if isinstance(normalized_step, bool) or not isinstance(
+        normalized_step, (int, float)
+    ):
         raise ValueError("metric step must be a finite number")
 
     record = _normalize_metric_value(metrics)
@@ -217,7 +222,11 @@ def log_metrics(
     JSONL line order and W&B's implicit transport step preserve distinct log
     calls that share the same business step.
     """
-    path = metrics_file if metrics_file is not None else os.environ.get("COOKBOOK_METRICS_FILE")
+    path = (
+        metrics_file
+        if metrics_file is not None
+        else os.environ.get("COOKBOOK_METRICS_FILE")
+    )
 
     # Sync and async recipes can emit from different threads. Serialize record
     # creation and delivery so line/call order is identical in every sink.

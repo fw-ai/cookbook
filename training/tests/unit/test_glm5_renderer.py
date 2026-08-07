@@ -4,8 +4,8 @@ Loads the public ``zai-org/GLM-5.1`` tokenizer (which ships the canonical
 chat template for GLM-5.1) and checks that every supported renderer
 output matches what ``tokenizer.apply_chat_template`` produces
 byte-for-byte, modulo the terminal role stop token appended to supervised
-examples that end on an assistant message. Falls back to a local tokenizer
-path when the HuggingFace Hub isn't reachable (e.g. internal CI).
+examples that end on an assistant message. Falls back to an explicitly
+configured local tokenizer path when the HuggingFace Hub isn't reachable.
 
 The ``zai-org/GLM-5.1-FP8`` repo ships an identical tokenizer + chat
 template (verified: byte-for-byte equal). We use the bf16 repo here
@@ -18,6 +18,7 @@ Run from cookbook/training with:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -45,13 +46,10 @@ def _make_tool_call(name: str, arguments: dict[str, Any]) -> ToolCall:
 # Public HF tokenizer (ships the canonical GLM-5.1 chat template).
 _PUBLIC_TOKENIZER = "zai-org/GLM-5.1"
 _PUBLIC_TOKENIZER_REVISION = "26e1bd6e011feb778d25ae34b09b07074139d92d"
-# Optional local fallback path used when the HF Hub isn't reachable. The
-# tokenizer loaded here must also ship a chat_template attribute equivalent
-# to the one on ``zai-org/GLM-5.1``; otherwise the parity tests will flag
-# any drift, which is the intended behaviour.
-_LOCAL_TOKENIZER = (
-    "/home/yinghanma/ws2/fireworks/py/fireworks/test/serving/text/tokenizers/glm5"
-)
+# Optional local fallback supplied by the test environment when the HF Hub is
+# unavailable. The tokenizer must ship a chat_template equivalent to the one
+# on ``zai-org/GLM-5.1``; otherwise the parity tests will flag any drift.
+_LOCAL_TOKENIZER = os.environ.get("GLM5_LOCAL_TOKENIZER")
 
 
 def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
@@ -64,7 +62,7 @@ def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
         )
     except Exception:  # noqa: BLE001 — network / auth / missing chat_template
         pass
-    if Path(_LOCAL_TOKENIZER).exists():
+    if _LOCAL_TOKENIZER and Path(_LOCAL_TOKENIZER).exists():
         return transformers.AutoTokenizer.from_pretrained(
             _LOCAL_TOKENIZER,
             trust_remote_code=True,
