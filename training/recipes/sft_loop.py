@@ -385,7 +385,6 @@ def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
 
 DEFAULT_EVAL_CARVE_RATIO = 0.1
 DEFAULT_MAX_EVAL_SEQS = 100
-FIREWORKS_CMEK_RESOURCE_METADATA_KEY = "fireworks_cmek_resource"
 
 
 def compute_eval_carveout(
@@ -551,10 +550,6 @@ class Config:
     ``DEFAULT_LORA_ALPHA``. Override when you need a different scaling factor."""
     output_model_id: str | None = None
 
-    cmek_output_model_resource: str | None = None
-    """Internal managed-SFT contract. When set, the dedicated trainer encrypts
-    resumable and promotable artifacts with the output model's CMEK resource."""
-
     serverless: bool = False
     """When True, train against an already-provisioned shared/pooled serverless
     trainer reached via the tinker gateway intercept
@@ -663,16 +658,6 @@ class Config:
     All paths are optional; unset paths are silently skipped.
     See training/utils/runner.py for file format details.
     """
-
-
-def _cmek_user_metadata(cfg: Config) -> dict[str, str] | None:
-    if not cfg.cmek_output_model_resource:
-        return None
-    if cfg.serverless:
-        raise ValueError("CMEK output encryption requires a dedicated SFT trainer")
-    if cfg.lora_rank <= 0:
-        raise ValueError("CMEK output encryption requires lora_rank > 0")
-    return {FIREWORKS_CMEK_RESOURCE_METADATA_KEY: cfg.cmek_output_model_resource}
 
 
 # ---------------------------------------------------------------------------
@@ -786,7 +771,6 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
-    cmek_user_metadata = _cmek_user_metadata(cfg)
     lr_scheduler = normalize_lr_scheduler_spec(
         cfg.lr_scheduler,
         legacy_warmup_steps=cfg.warmup_steps,
@@ -847,7 +831,6 @@ def main(
                 cfg.base_model,
                 lora_rank=cfg.lora_rank,
                 lora_alpha=cfg.lora_alpha,
-                user_metadata=cmek_user_metadata,
             )
             runner.set_accelerator_info(
                 service.accelerator_type,

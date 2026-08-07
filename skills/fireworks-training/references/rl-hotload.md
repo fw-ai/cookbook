@@ -30,14 +30,6 @@ DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
 
 Bucket path: `gs://.../rl-checkpoints/{account}/trainer-{trainer_id}/`. Good when one trainer feeds multiple deployments, or for clean per-run isolation. Contract test: `training/tests/smoke_test/test_grpo_deepmath_per_trainer_smoke.py`.
 
-For managed RFT V2 CMEK LoRA, the SDK also records the deployment's resolved
-`hot_load_bucket_url`. Each sampler sync sends the exact
-`{hot_load_bucket_url}/{snapshot_identity}/` source and the policy output-model
-resource in trusted internal headers. The serving proxy decrypts and validates
-`config.json` plus payload files in a sibling staging directory, then atomically
-renames the completed adapter into the addons volume. These headers are absent
-for plaintext runs, which retain the existing mounted/out-of-band behavior.
-
 ### PER_DEPLOYMENT
 
 ```python
