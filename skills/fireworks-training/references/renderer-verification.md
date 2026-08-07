@@ -40,6 +40,7 @@ serverless ids drift over time):
 | Renderer | HF tokenizer | Fireworks serverless model (typical) |
 |---|---|---|
 | `glm5` | `zai-org/GLM-5.1` | `accounts/fireworks/models/glm-5p1` |
+| `qwen2_5` | `Qwen/Qwen2.5-32B-Instruct` | `accounts/fireworks/models/qwen2p5-32b-instruct` |
 | `qwen3` | `Qwen/Qwen3-8B` | `accounts/fireworks/models/qwen3-8b` |
 | `qwen3_disable_thinking` | `Qwen/Qwen3-8B` | `accounts/fireworks/models/qwen3-8b` |
 | `kimi_k25` | `moonshotai/Kimi-K2.5` | `accounts/fireworks/models/kimi-k2p5` |

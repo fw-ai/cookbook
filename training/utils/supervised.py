@@ -42,6 +42,7 @@ import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — 
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.qwen2_5 as _qwen2_5_renderer  # noqa: F401 — triggers register_renderer
 from training.renderer.thinking_trace import (
     ResolvedThinkingTraceRendererPlan,
     ThinkingTraceHistoryMode,
@@ -172,6 +173,15 @@ def resolve_renderer_name(
     if renderer_name:
         return renderer_name
     normalized_model_name = tokenizer_model.lower()
+    if normalized_model_name in {
+        "qwen/qwen2.5-32b-instruct",
+        "accounts/fireworks/models/qwen2p5-32b-instruct",
+    }:
+        # This targeted model predates Managed Training V2. Its production
+        # tokenizer carries an observable V1 tool-template override, so keep it
+        # on the dedicated renderer rather than inheriting Qwen3 semantics or
+        # falling through to the public-HF recommendation table.
+        return "qwen2_5"
     if re.search(
         r"(?:^|[/_.-])kimi[-_]k3(?:$|[/_.-])",
         normalized_model_name,
