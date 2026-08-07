@@ -218,6 +218,10 @@ class TrainerConfig:
     skip_validations: bool = False
     """Skip server-side shape validation. Requires superuser API key."""
 
+    use_reservation: bool = False
+    """Try the account's reservation capacity before shared trainer capacity."""
+
+
 class WeightSyncScope(Enum):
     """How trainer weights are synced to the inference deployment.
 

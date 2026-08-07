@@ -199,6 +199,8 @@ or job creation, checkpoint promotion, deployment, or other mutation:
    - stable resource IDs;
    - every parameter the user set, marked **set**;
    - any preemptible trainer scheduling request, marked **admin-only**;
+   - whether managed SFT/DPO or a dedicated Training API trainer should use
+     reservation-first placement, marked **set** or **default**;
    - every default the agent or platform will apply, marked **default**;
    - resolved model, training shape, deployment shape, and context when relevant;
    - cost model, estimate or ceiling, and unknown cost lines;
@@ -342,6 +344,11 @@ firectl rftj create --job-id <run-id> \
   --dataset <dataset-id> --evaluator accounts/<acct>/evaluators/<id> \
   --output-model <output-model-id>
 ```
+
+For managed SFT/DPO, add `--use-reservation` only when the approved plan opts in.
+It tries the account's reservation capacity before falling back to shared trainer
+capacity. Full-parameter DPO policy and dedicated reference trainers try
+independently. A retry or resume that finds the stable trainer ID reuses it.
 
 Before launch, read the selected command's `--help`; the installed CLI is the
 command contract.

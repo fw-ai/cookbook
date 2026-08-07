@@ -26,6 +26,10 @@ Always required on `Config` (with `trainer=TrainerConfig(...)`):
 - `tokenizer_model` — HF model name
 - `log_path` — directory for `dataloader.json` and logs
 - `trainer.training_shape_id` — optional override; leave unset for auto-selection. `accelerator_type` and `accelerator_count` are unsupported; do not set manual `node_count` (see [`sdk-shapes.md`](sdk-shapes.md))
+- `trainer.use_reservation` — optional. When `True`, try the account's
+  reservation capacity before falling back to shared trainer capacity. A
+  full-parameter DPO reference trainer inherits the option and tries
+  independently; an existing `trainer.job_id` is reused as-is.
 
 RL-specific: for the primary `async_rl_loop.py`, you write a `rollout_fn` (typically a `rollout.py`) and a `train.py` that sets the `Config` (policy loss, reward wiring, deployment) and calls `main(cfg, rollout_fn_factory=..., rows=...)`; the recipe owns the loop. The simpler synchronous `rl_loop.py` takes a reward function, rollout batch sizes, and a deployment config directly. See [`rl-async.md`](rl-async.md).
 

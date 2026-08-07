@@ -82,6 +82,11 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
+    # Preserve compatibility with older SDKs for the default path. The
+    # reservation option is additive and only needs to cross the SDK boundary
+    # when it is explicitly enabled.
+    if trainer.use_reservation:
+        service_kwargs["use_reservation"] = True
     if max_lora_rank is not None and max_lora_rank < 0:
         raise ValueError("max_lora_rank must be non-negative")
     if max_lora_rank and max_lora_rank > 0:
