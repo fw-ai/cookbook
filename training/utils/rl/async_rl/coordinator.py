@@ -54,6 +54,7 @@ class AsyncRLCoordinator:
         with_reference: bool = False,
         router_replay_completion_only: bool = False,
         min_group_size: int = 1,
+        max_incomplete_group_retries: int = 0,
         dynamic_filter_fn: DynamicFilterFn | None = None,
         global_step: int = 0,
         resolved_rows_offset: int = 0,
@@ -81,6 +82,7 @@ class AsyncRLCoordinator:
             with_reference=with_reference,
             router_replay_completion_only=router_replay_completion_only,
             min_group_size=min_group_size,
+            max_incomplete_group_retries=max_incomplete_group_retries,
             dynamic_filter_fn=dynamic_filter_fn,
             initial_version=global_step,
             resolved_rows_offset=resolved_rows_offset,
@@ -156,9 +158,7 @@ class AsyncRLCoordinator:
             if optimizer_batch._train_started_at is None:
                 optimizer_batch._train_started_at = time.monotonic()
                 optimizer_batch._rollout_wait_at_train_start = float(
-                    self._producer.snapshot()[
-                        "rollout_wait_for_trainer_time_total"
-                    ]
+                    self._producer.snapshot()["rollout_wait_for_trainer_time_total"]
                     or 0.0
                 )
         executor = self._executor

@@ -33,7 +33,10 @@ import tinker
 
 from training.utils.data import compute_advantages
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.router_replay import build_r3_routing_matrices
+from training.utils.rl.router_replay import (
+    build_r3_routing_matrices,
+    validate_r3_routing_matrices,
+)
 from training.utils.supervised import build_multimodal_policy_datum
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,8 @@ __all__ = [
     "RolloutSample",
     "RolloutRun",
     "Rollout",
+    "count_trainable_tokens",
+    "validate_rollout_run_routing",
     "rollout_to_prompt_group",
 ]
 
@@ -74,8 +79,8 @@ class RolloutSample:
     ``tokens[:-1]`` via :func:`build_r3_routing_matrices` and threads them
     through ``tinker.ModelInput.from_ints(routing_matrices=...)`` so the
     training step replays the same expert routing decisions made at
-    inference time.  Length should match ``tokens`` (echo mode) or the
-    completion suffix (legacy mode); the alignment helper handles both."""
+    inference time. Length should match ``tokens[:-1]`` (already aligned) or
+    the completion suffix (legacy mode); the alignment helper handles both."""
     finish_reason: str = "stop"
     text: str = ""
     """Decoded assistant output.  For logging only; not consumed by the
@@ -111,6 +116,60 @@ class Rollout:
 
     runs: List[RolloutRun]
     row_meta: dict | None = None
+
+
+def count_trainable_tokens(run: RolloutRun) -> int:
+    """Count loss-bearing tokens across every segment of one trajectory."""
+    return sum(
+        1
+        for segment in run.segments
+        for mask_value in segment.loss_mask
+        if mask_value > 0
+    )
+
+
+def validate_rollout_run_routing(run: RolloutRun) -> None:
+    """Validate R3 shapes on one completed run before group admission.
+
+    Other rollout contract errors remain fatal at packing time. This check is
+    intentionally limited to route-bearing, structurally measurable segments
+    so async production can drop malformed R3 trajectories without changing
+    the behavior of non-R3 or direct adapter callers.
+    """
+    for segment_index, segment in enumerate(run.segments):
+        if segment.routing_matrices is None:
+            continue
+
+        n = len(segment.tokens)
+        if (
+            n < 2
+            or len(segment.logprobs) != n
+            or len(segment.loss_mask) != n
+            or not any(mask_value > 0 for mask_value in segment.loss_mask)
+        ):
+            # The normal rollout contract validator reports these errors with
+            # their existing fatal semantics when the group is packed.
+            continue
+
+        if segment.prompt_model_input is not None:
+            completion_len = len(_completion_tokens_from_sample(segment))
+            prompt_len = segment.prompt_model_input.length
+            model_input_len = prompt_len + completion_len - 1
+        else:
+            prompt_len = next(
+                i for i, mask_value in enumerate(segment.loss_mask) if mask_value > 0
+            )
+            model_input_len = n - 1
+
+        try:
+            validate_r3_routing_matrices(
+                segment.routing_matrices,
+                prompt_len=prompt_len,
+                model_input_len=model_input_len,
+            )
+        except ValueError as error:
+            run_label = f"run {run.run_id!r}" if run.run_id is not None else "run"
+            raise ValueError(f"{run_label} segment {segment_index}: {error}") from error
 
 
 def _completion_tokens_from_sample(sample: RolloutSample) -> List[int]:
@@ -230,8 +289,7 @@ def _validate_segment(
     _validate_optional_logprobs(segment.raw_logprobs, n=n)
     if n < 2:
         raise ValueError(
-            f"Run {run_index} segment {segment_index}: tokens must have "
-            "length >= 2.",
+            f"Run {run_index} segment {segment_index}: tokens must have length >= 2.",
         )
     if not any(mask_value > 0 for mask_value in segment.loss_mask):
         raise ValueError(
@@ -270,8 +328,7 @@ def rollout_to_prompt_group(
     _validate(rollout)
 
     rewards = [
-        _run_reward(run, run_index)
-        for run_index, run in enumerate(rollout.runs)
+        _run_reward(run, run_index) for run_index, run in enumerate(rollout.runs)
     ]
     advantages = list(advantage_fn(list(rewards)))
     if len(advantages) != len(rewards):
@@ -292,7 +349,8 @@ def rollout_to_prompt_group(
             "undefined).  For REINFORCE-style runs with "
             "completions_per_prompt=1, pass a single-run-safe "
             "advantage_fn (e.g. ``lambda r: r``).",
-            len(rollout.runs), advantages,
+            len(rollout.runs),
+            advantages,
         )
         return None
 
@@ -322,12 +380,8 @@ def rollout_to_prompt_group(
                     int(x) for x in datum.loss_fn_inputs["target_tokens"].data
                 ]
                 target_len = len(target_tokens)
-                target_mask = [
-                    float(x) for x in datum.loss_fn_inputs["weights"].data
-                ]
-                if not (
-                    target_len == len(target_mask) == datum.model_input.length
-                ):
+                target_mask = [float(x) for x in datum.loss_fn_inputs["weights"].data]
+                if not (target_len == len(target_mask) == datum.model_input.length):
                     raise ValueError(
                         "multimodal datum must use canonical expanded coordinates "
                         "for model_input, target_tokens, and weights "
@@ -335,7 +389,8 @@ def rollout_to_prompt_group(
                         f"{len(target_mask)})."
                     )
                 target_logprobs = _align_multimodal_inf_logprobs(
-                    _completion_logprobs_from_sample(s), target_mask,
+                    _completion_logprobs_from_sample(s),
+                    target_mask,
                 )
                 completion_raw_logprobs = _completion_raw_logprobs_from_sample(s)
                 target_raw_logprobs = (
@@ -362,33 +417,34 @@ def rollout_to_prompt_group(
                         model_input_len=len(target_mask),
                         completion_only=router_replay_completion_only,
                     )
-                    if rm is not None:
-                        datum = tinker.Datum(
-                            model_input=datum.model_input.model_copy(
-                                update={"routing_matrices": rm}
-                            ),
-                            loss_fn_inputs=datum.loss_fn_inputs,
-                        )
+                    datum = tinker.Datum(
+                        model_input=datum.model_input.model_copy(
+                            update={"routing_matrices": rm}
+                        ),
+                        loss_fn_inputs=datum.loss_fn_inputs,
+                    )
 
                 policy_data.append(datum)
 
                 if with_reference:
                     mask_len = len(target_mask)
-                    reference_data.append(tinker.Datum(
-                        model_input=reference_model_input,
-                        loss_fn_inputs={
-                            "target_tokens": tinker.TensorData(
-                                data=target_tokens,
-                                dtype="int64",
-                                shape=[target_len],
-                            ),
-                            "loss_mask": tinker.TensorData(
-                                data=target_mask,
-                                dtype="float32",
-                                shape=[mask_len],
-                            ),
-                        },
-                    ))
+                    reference_data.append(
+                        tinker.Datum(
+                            model_input=reference_model_input,
+                            loss_fn_inputs={
+                                "target_tokens": tinker.TensorData(
+                                    data=target_tokens,
+                                    dtype="int64",
+                                    shape=[target_len],
+                                ),
+                                "loss_mask": tinker.TensorData(
+                                    data=target_mask,
+                                    dtype="float32",
+                                    shape=[mask_len],
+                                ),
+                            },
+                        )
+                    )
 
                 inf_logprobs_aligned.append(target_logprobs)
                 raw_inf_logprobs_aligned.append(target_raw_logprobs)
@@ -402,7 +458,9 @@ def rollout_to_prompt_group(
             target_tokens = s.tokens[1:]
             target_mask = s.loss_mask[1:]
             target_logprobs = s.logprobs[1:]
-            target_raw_logprobs = s.raw_logprobs[1:] if s.raw_logprobs is not None else []
+            target_raw_logprobs = (
+                s.raw_logprobs[1:] if s.raw_logprobs is not None else []
+            )
 
             # Per-segment prompt boundary: index of the first assistant
             # (loss_mask=1) token.  Heterogeneous rollouts (multi-turn,
@@ -423,32 +481,45 @@ def rollout_to_prompt_group(
                     completion_only=router_replay_completion_only,
                 )
 
-            policy_data.append(tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(
-                    s.tokens[:-1], routing_matrices=rm,
-                ),
-                loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(
-                        data=target_tokens, dtype="int64", shape=[target_len],
+            policy_data.append(
+                tinker.Datum(
+                    model_input=tinker.ModelInput.from_ints(
+                        s.tokens[:-1],
+                        routing_matrices=rm,
                     ),
-                    "weights": tinker.TensorData(
-                        data=target_mask, dtype="int64", shape=[target_len],
-                    ),
-                },
-            ))
-
-            if with_reference:
-                reference_data.append(tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(s.tokens[:-1]),
                     loss_fn_inputs={
                         "target_tokens": tinker.TensorData(
-                            data=target_tokens, dtype="int64", shape=[target_len],
+                            data=target_tokens,
+                            dtype="int64",
+                            shape=[target_len],
                         ),
-                        "loss_mask": tinker.TensorData(
-                            data=target_mask, dtype="int64", shape=[target_len],
+                        "weights": tinker.TensorData(
+                            data=target_mask,
+                            dtype="int64",
+                            shape=[target_len],
                         ),
                     },
-                ))
+                )
+            )
+
+            if with_reference:
+                reference_data.append(
+                    tinker.Datum(
+                        model_input=tinker.ModelInput.from_ints(s.tokens[:-1]),
+                        loss_fn_inputs={
+                            "target_tokens": tinker.TensorData(
+                                data=target_tokens,
+                                dtype="int64",
+                                shape=[target_len],
+                            ),
+                            "loss_mask": tinker.TensorData(
+                                data=target_mask,
+                                dtype="int64",
+                                shape=[target_len],
+                            ),
+                        },
+                    )
+                )
 
             inf_logprobs_aligned.append(target_logprobs)
             raw_inf_logprobs_aligned.append(target_raw_logprobs)
@@ -471,5 +542,12 @@ def rollout_to_prompt_group(
         prompt=None,
         completions=None,
         row_meta=dict(rollout.row_meta) if rollout.row_meta else None,
+        run_metadata=[
+            {
+                **dict(run.metadata or {}),
+                "trainable_tokens": count_trainable_tokens(run),
+            }
+            for run in rollout.runs
+        ],
         prompt_lens=per_sample_prompt_lens,
     )

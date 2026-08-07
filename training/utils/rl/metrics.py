@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Sequence
 
 import tinker
@@ -39,11 +40,9 @@ def datum_target_len(datum: tinker.Datum) -> int:
 
 
 def total_target_tokens(prompt_groups: Sequence[PromptGroup]) -> int:
-    return sum(
-        datum_target_len(datum)
-        for pg in prompt_groups
-        for datum in pg.data
-    )
+    return sum(datum_target_len(datum) for pg in prompt_groups for datum in pg.data)
+
+
 def add_optimizer_metrics(metrics: dict[str, Any], optim_result: Any) -> None:
     """Keep one customer-facing value for each useful optimizer diagnostic."""
 
@@ -97,7 +96,9 @@ def build_accumulated_async_loop_stats(
     loop_stats["trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
     loop_stats["sampler_wait_for_trainer_time"] = sampler_wait_for_trainer_time
     loop_stats["train_wall_time"] = train_wall_time
-    loop_stats["scheduler_step_wall_time"] = trainer_wait_for_sampler_time + train_wall_time
+    loop_stats["scheduler_step_wall_time"] = (
+        trainer_wait_for_sampler_time + train_wall_time
+    )
     return loop_stats
 
 
@@ -165,10 +166,36 @@ def compute_step_metrics(
         all_rewards.extend(pg.rewards)
     filtered_samples = len(all_rewards)
     completion_tokens = sum(
-        completion_len
-        for pg in prompt_groups
-        for completion_len in pg.completion_lens
+        completion_len for pg in prompt_groups for completion_len in pg.completion_lens
     )
+    trainable_tokens = [
+        float(metadata["trainable_tokens"])
+        for pg in prompt_groups
+        for metadata in pg.run_metadata
+        if isinstance(metadata.get("trainable_tokens"), (int, float))
+        and math.isfinite(float(metadata["trainable_tokens"]))
+    ]
+    if trainable_tokens:
+        metrics.update(
+            {
+                "rollout/trainable_tokens_mean": sum(trainable_tokens)
+                / len(trainable_tokens),
+                "rollout/trainable_tokens_max": max(trainable_tokens),
+                "rollout/trainable_tokens_min": min(trainable_tokens),
+            }
+        )
+
+    for key in (
+        "history_wipes",
+        "append_token_mismatches",
+    ):
+        values = [
+            int(metadata.get(key) or 0)
+            for pg in prompt_groups
+            for metadata in pg.run_metadata
+        ]
+        if values:
+            metrics[f"rollout/{key}"] = sum(values)
 
     if loop_stats:
         raw_rewards = loop_stats["all_raw_rewards"]
@@ -193,39 +220,58 @@ def compute_step_metrics(
         if train_wall_time > 0:
             metrics["perf/train_step_wall_time"] = train_wall_time
 
-        trainer_wait_for_sampler_time = float(loop_stats.get("trainer_wait_for_sampler_time", 0.0))
+        trainer_wait_for_sampler_time = float(
+            loop_stats.get("trainer_wait_for_sampler_time", 0.0)
+        )
         if trainer_wait_for_sampler_time > 0:
-            metrics["perf/trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
+            metrics["perf/trainer_wait_for_sampler_time"] = (
+                trainer_wait_for_sampler_time
+            )
         sampler_wait_for_trainer_time = float(
             loop_stats.get("sampler_wait_for_trainer_time", 0.0)
         )
         if sampler_wait_for_trainer_time > 0:
-            metrics["perf/sampler_wait_for_trainer_time"] = sampler_wait_for_trainer_time
+            metrics["perf/sampler_wait_for_trainer_time"] = (
+                sampler_wait_for_trainer_time
+            )
 
-        scheduler_step_wall_time = float(loop_stats.get("scheduler_step_wall_time", 0.0))
+        scheduler_step_wall_time = float(
+            loop_stats.get("scheduler_step_wall_time", 0.0)
+        )
         if scheduler_step_wall_time <= 0:
             scheduler_step_wall_time = (
                 rollout_wall_time + trainer_wait_for_sampler_time + train_wall_time
             )
         if scheduler_step_wall_time > 0:
             metrics["perf/scheduler_step_wall_time"] = scheduler_step_wall_time
-            metrics["perf/step_samples_per_s"] = filtered_samples / scheduler_step_wall_time
-            metrics["perf/step_tokens_per_s"] = completion_tokens / scheduler_step_wall_time
+            metrics["perf/step_samples_per_s"] = (
+                filtered_samples / scheduler_step_wall_time
+            )
+            metrics["perf/step_tokens_per_s"] = (
+                completion_tokens / scheduler_step_wall_time
+            )
             if rollout_wall_time > 0:
-                metrics["perf/rollout_batch_wall_ratio"] = rollout_wall_time / scheduler_step_wall_time
+                metrics["perf/rollout_batch_wall_ratio"] = (
+                    rollout_wall_time / scheduler_step_wall_time
+                )
             trainer_wait_for_chunk_time = float(
                 loop_stats.get("perf/trainer_wait_for_chunk_time", 0.0)
             )
             trainer_idle_time = (
                 trainer_wait_for_sampler_time + trainer_wait_for_chunk_time
             )
-            metrics["perf/trainer_idle_ratio"] = min(
+            trainer_idle_ratio = min(
                 1.0,
                 trainer_idle_time / scheduler_step_wall_time,
             )
+            metrics["perf/trainer_idle_ratio"] = trainer_idle_ratio
 
         if rollout_wall_time > 0:
-            metrics["perf/rollout_batch_samples_per_s"] = filtered_samples / rollout_wall_time
-            metrics["perf/rollout_batch_tokens_per_s"] = completion_tokens / rollout_wall_time
+            metrics["perf/rollout_batch_samples_per_s"] = (
+                filtered_samples / rollout_wall_time
+            )
+            metrics["perf/rollout_batch_tokens_per_s"] = (
+                completion_tokens / rollout_wall_time
+            )
 
     return metrics

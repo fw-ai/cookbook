@@ -6,6 +6,11 @@
 Use this reference for implementation details, tuning, and debugging. The
 customer-facing overview stays in the Fireworks docs.
 
+This reference owns the async loop: admission, overlap, grouping, optimizer
+chunks, publication, and durability. For multi-turn agents, tools, token
+ancestry, history mismatch, or session/cache architecture, read
+[`rl-agentic.md`](rl-agentic.md).
+
 ## Responsibility boundary
 
 Users provide:
@@ -14,7 +19,7 @@ Users provide:
 - `rollout_fn_factory(setup) -> rollout_fn`;
 - environment interaction, scoring, and trainer-ready rollout segments;
 - algorithm and scheduling config;
-- an optional `dynamic_filter_fn`.
+- optional `dynamic_filter_fn` and `evaluation_fn` callbacks.
 
 The recipe owns trainer/deployment lifecycle, rollout fan-out and admission,
 group assembly, advantages, reference and old-policy forwards, GRPO/TIS/KL,
@@ -65,11 +70,26 @@ For every segment:
 base URL, API key, deployment model, group size, and caller-provided `extras`.
 The rollout may optionally declare any of these keyword parameters when it
 needs dataset position context: `cursor_index`, `row_index`, `epoch`,
-`rollout_idx`, `sample_index`, and `end_of_epoch`.
+`rollout_idx`, `sample_index`, `end_of_epoch`, and `evaluation`. Training calls
+set `evaluation=False`. The recipe passes `evaluation_fn` a compatible wrapper
+that sets `evaluation=True` when the rollout declares it; rollouts that do not
+need mode-specific behavior can omit the keyword.
 
 The scheduler's `RolloutRow` is not part of this user contract. It is the
 recipe-owned envelope that binds a dataset row to `completions_per_prompt`
 rollout calls and an ordered durability callback.
+
+## Evaluation
+
+Pass `evaluation_fn(step, rollout_fn)` and `evaluation_interval=N` to `main()`.
+The recipe evaluates once at the initial or resumed step, every `N` published
+optimizer steps, and once at the actual final step after the input source is
+exhausted. A periodic evaluation at that same final step is not repeated.
+
+The callback owns evaluation rows, fan-out, environment execution, and metric
+aggregation. The recipe owns scheduling and supplies the evaluation-scoped
+rollout wrapper. Evaluation does not enter the producer, assemble prompt
+groups, compute advantages, or mutate optimizer state.
 
 ## Architecture and ownership
 
@@ -189,6 +209,8 @@ batch rather than silently dropping accepted prompt groups.
 One flaky rollout does not immediately abort a long run:
 
 - `None` is an explicit dropped draw;
+- explicit drops increment `producer/trajectory_drops_total` but are neutral to
+  the infrastructure circuit breaker;
 - timeouts, connection failures, HTTP 408/429/5xx, explicitly marked
   `RecoverableRolloutError`s, and known client transport errors are recoverable;
 - recoverable errors drop that draw and continue if the row still satisfies
@@ -199,9 +221,19 @@ One flaky rollout does not immediately abort a long run:
 - invalid return values, data-contract errors, non-retryable HTTP errors,
   unexpected cancellation, and unknown exceptions are fatal.
 
-The classifier is intentionally narrow. Do not catch arbitrary exceptions in a
-rollout and return `None`; mark known infrastructure failures explicitly or let
-programming errors remain fatal.
+For generic rollout implementations, the classifier is intentionally narrow.
+Do not catch arbitrary exceptions and return `None`; mark known infrastructure
+failures explicitly or let programming errors remain fatal.
+
+Agentic adapters may own a broader trajectory boundary than generic rollouts.
+Keep that policy in the adapter and follow [`rl-agentic.md`](rl-agentic.md);
+malformed R3 data is still discarded at async admission before group assembly.
+
+Incomplete-group retries are bounded. After that budget is exhausted, the row
+is rejected and the producer advances. If every row is rejected, the loop can
+finish with zero optimizer steps; use the returned step count together with
+`producer/trajectory_drops_total` and `producer/rows_rejected_total` as the
+experiment-level success criterion.
 
 If a producer failure affects the active optimizer batch, training stops before
 its optimizer mutation. If it affects only a future batch, the recipe finishes
@@ -250,7 +282,6 @@ replace behavior logprobs in PPO or TIS.
 - `training/examples/rl/single_turn_token_in/` — minimal token-in/token-out
   rollout
 - `training/examples/rl/multi_turn_message_in/` — multi-turn message rollout
-- `training/examples/rl/coding_agent/` — black-box coding-agent trajectory
 - [`rl-hotload.md`](rl-hotload.md) — sampler weight transfer
 - [`rl-sampling-timeouts.md`](rl-sampling-timeouts.md) — sampler timeout diagnosis
 - [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md) — optimizer gradient

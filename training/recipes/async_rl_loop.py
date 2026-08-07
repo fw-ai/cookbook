@@ -64,7 +64,7 @@ from training.utils import (
     validate_config,
     wandb_finish,
 )
-from training.utils.checkpoints import TrainingCheckpoints
+from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
@@ -87,8 +87,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Config",
     "RolloutFn",
+    "RolloutEvaluationFn",
     "RolloutFnFactory",
     "RolloutSetup",
+    "make_evaluation_rollout_fn",
     "main",
 ]
 
@@ -129,6 +131,8 @@ class Config:
     must be ``>= completions_per_prompt`` or the gate stalls."""
     min_group_size: int = 1
     """Minimum surviving rollout runs per row to emit a PromptGroup."""
+    max_incomplete_group_retries: int = 0
+    """Rebuild a row this many times when fewer than ``min_group_size`` runs land."""
 
     router_replay: bool = True
     router_replay_completion_only: bool = True
@@ -176,6 +180,12 @@ class Config:
     init_from_checkpoint: str | None = None
     """Resume from prior checkpoint; bare name = this job, ``"job:name"``
     = cross-job."""
+    warm_start_from_adapter: str | None = None
+    """Initialize LoRA weights from a PEFT adapter with fresh optimizer state.
+
+    Mutually exclusive with ``init_from_checkpoint`` and requires
+    ``lora_rank > 0``.
+    """
     save_final_checkpoint: bool = True
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
@@ -199,10 +209,18 @@ class RolloutSetup:
     model: str
     completions_per_prompt: int
     extras: dict[str, Any] = field(default_factory=dict)
+    sampler: Any | None = None
+    """Optional prebuilt sampler.
+
+    Serverless recipes use this hook because their sampling route is bound to
+    a training-session snapshot rather than a dedicated deployment URL.
+    Rollout factories should prefer it when present.
+    """
 
 
 RolloutFn = Callable[..., Awaitable[RolloutRun | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
+RolloutEvaluationFn = Callable[[int, RolloutFn], Awaitable[dict[str, Any] | None]]
 
 
 _ROLLOUT_CONTEXT_KWARGS = frozenset(
@@ -213,6 +231,7 @@ _ROLLOUT_CONTEXT_KWARGS = frozenset(
         "rollout_idx",
         "sample_index",
         "end_of_epoch",
+        "evaluation",
     }
 )
 
@@ -228,6 +247,23 @@ def _rollout_fn_context_param_names(rollout_fn: RolloutFn) -> frozenset[str]:
     if _rollout_fn_accepts_any_context_kwargs(rollout_fn):
         return _ROLLOUT_CONTEXT_KWARGS
     return _ROLLOUT_CONTEXT_KWARGS & inspect.signature(rollout_fn).parameters.keys()
+
+
+def make_evaluation_rollout_fn(rollout_fn: RolloutFn) -> RolloutFn:
+    """Wrap a rollout callable with the general evaluation context."""
+
+    context_names = _rollout_fn_context_param_names(rollout_fn)
+
+    async def evaluation_rollout_fn(sample_prompt: dict, **context: Any):
+        context["evaluation"] = True
+        if context_names:
+            return await rollout_fn(
+                sample_prompt,
+                **{name: context[name] for name in context_names if name in context},
+            )
+        return await rollout_fn(sample_prompt)
+
+    return evaluation_rollout_fn
 
 
 def _save_checkpoint(
@@ -254,6 +290,8 @@ def main(
     *,
     rollout_fn_factory: RolloutFnFactory,
     dynamic_filter_fn: DynamicFilterFn | None = None,
+    evaluation_fn: RolloutEvaluationFn | None = None,
+    evaluation_interval: int = 1,
     rows: list[dict] | None = None,
     rollout_extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -268,6 +306,8 @@ def main(
     Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
     """
     cfg = config
+    if evaluation_interval < 1:
+        raise ValueError("evaluation_interval must be >= 1")
     validate_grpo_config(
         kl_beta=cfg.kl_beta,
         eps_clip=cfg.eps_clip,
@@ -291,8 +331,6 @@ def main(
 
     if rows is None and not cfg.dataset:
         raise ValueError("Provide either cfg.dataset or rows= to main().")
-    if not cfg.deployment.tokenizer_model:
-        raise ValueError("deployment.tokenizer_model is required.")
     validate_config(
         cfg.base_model,
         cfg.dataset or None,
@@ -300,6 +338,13 @@ def main(
         output_model_id=cfg.output_model_id,
         require_dataset=(rows is None),
     )
+    validate_warm_start_config(
+        warm_start_from_adapter=cfg.warm_start_from_adapter,
+        init_from_checkpoint=cfg.init_from_checkpoint,
+        lora_rank=cfg.lora_rank,
+    )
+    if not cfg.deployment.tokenizer_model:
+        raise ValueError("deployment.tokenizer_model is required.")
     if cfg.completions_per_prompt < 2:
         raise ValueError(
             "async_rl_loop requires cfg.completions_per_prompt >= 2: the "
@@ -416,6 +461,7 @@ def main(
 
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
         step_offset = resume_info.step if resume_info else 0
         if step_offset:
@@ -486,6 +532,24 @@ def main(
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
         rollout_context_param_names = _rollout_fn_context_param_names(rollout_fn)
+        evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
+        last_evaluation_step: int | None = None
+
+        async def evaluate(step: int, *, force: bool = False) -> None:
+            nonlocal last_evaluation_step
+            if evaluation_fn is None:
+                return
+            if step == last_evaluation_step:
+                return
+            if not force and step % evaluation_interval:
+                return
+            metrics = await evaluation_fn(step, evaluation_rollout_fn)
+            last_evaluation_step = step
+            if metrics:
+                log_metrics(
+                    {"rollout/step": step, **metrics},
+                    step=step,
+                )
 
         def make_row_requests():
             rows_per_epoch = len(rows)
@@ -514,6 +578,7 @@ def main(
                         "rollout_idx": sub_index,
                         "sample_index": sub_index,
                         "end_of_epoch": end_of_epoch,
+                        "evaluation": False,
                     }
                     if rollout_context_param_names:
                         return rollout_fn(
@@ -669,11 +734,13 @@ def main(
                 with_reference=(reference is not None),
                 router_replay_completion_only=cfg.router_replay_completion_only,
                 min_group_size=cfg.min_group_size,
+                max_incomplete_group_retries=cfg.max_incomplete_group_retries,
                 dynamic_filter_fn=dynamic_filter_fn,
                 global_step=step_offset,
                 resolved_rows_offset=prior_rows_consumed,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
             )
+            await evaluate(step_offset, force=True)
             async with coordinator:
                 telemetry.start(coordinator.snapshot)
                 try:
@@ -726,6 +793,7 @@ def main(
                             weight_sync_time=sync_wall_time,
                             learning_rate=optimizer["learning_rate"],
                         )
+                        await evaluate(batch.batch_id)
 
                         rollouts_completed = batch.batch_id - step_offset
                         interval = cfg.dcp_save_interval
@@ -748,6 +816,7 @@ def main(
                                     batch.batch_id,
                                     error,
                                 )
+                    await evaluate(coordinator.global_step, force=True)
                 finally:
                     await telemetry.aclose()
 

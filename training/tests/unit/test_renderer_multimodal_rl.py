@@ -25,7 +25,11 @@ from training.utils.rl.rollout.renderer import (
 from fireworks.training.sdk.sampling import SampledCompletion
 from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.losses import build_grpo_datums
-from training.utils.rl.rollout.types import rollout_to_prompt_group, Rollout
+from training.utils.rl.rollout.types import (
+    Rollout,
+    rollout_to_prompt_group,
+    validate_rollout_run_routing,
+)
 from training.utils.supervised import build_multimodal_policy_datum, has_non_text_chunks
 
 _BASE64_PNG = "data:image/png;base64,iVBORw0KGgo="
@@ -132,9 +136,7 @@ def test_collect_base64_images_uses_materialized_image_chunk_bytes():
 
 
 def test_collect_base64_images_preserves_duplicate_message_images():
-    model_input = tinker.ModelInput(
-        chunks=[tinker.types.EncodedTextChunk(tokens=[10])]
-    )
+    model_input = tinker.ModelInput(chunks=[tinker.types.EncodedTextChunk(tokens=[10])])
     messages = [
         {
             "role": "user",
@@ -196,7 +198,9 @@ def test_build_multimodal_completions_prompt_token_ids_requires_image_token_id()
     tokenizer = MagicMock()
     tokenizer.special_ids = MagicMock(image=None)
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-    with pytest.raises(MultimodalRenderingNotSupported, match="image placeholder token ID"):
+    with pytest.raises(
+        MultimodalRenderingNotSupported, match="image placeholder token ID"
+    ):
         build_multimodal_completions_prompt_token_ids(
             messages,
             _multimodal_prompt(),
@@ -531,6 +535,7 @@ def test_multimodal_router_replay_uses_expanded_datum_boundary():
         finish_reason="stop",
         text="hi",
     )
+    validate_rollout_run_routing(run)
 
     pg = rollout_to_prompt_group(
         Rollout(runs=[run, run]),

@@ -94,6 +94,7 @@ class TestComputeStepMetrics:
         assert metrics["perf/train_step_wall_time"] == 1.0
         assert metrics["perf/scheduler_step_wall_time"] == 6.0
         assert metrics["perf/trainer_idle_ratio"] == 3.25 / 6
+        assert "perf/trainer_wait_ratio" not in metrics
         assert metrics["perf/rollout_batch_wall_ratio"] == 1 / 3
         assert metrics["perf/step_samples_per_s"] == 1 / 6
         assert metrics["perf/step_tokens_per_s"] == 1 / 3
@@ -121,6 +122,39 @@ class TestComputeStepMetrics:
         assert "rollout/fwd_bwd_count" not in metrics
         assert "perf/train_step_wall_ratio" not in metrics
         assert "batch/mean_groups_per_fwd_bwd" not in metrics
+
+    def test_rollout_sample_counts_are_trajectories_not_segments(self):
+        group = _make_prompt_group()
+        group.data.append(group.data[0])
+        group.advantages.append(group.advantages[0])
+        group.inf_logprobs.append(group.inf_logprobs[0])
+        group.completion_lens.append(group.completion_lens[0])
+        group.truncated.append(group.truncated[0])
+        group.run_metadata = [
+            {
+                "segment_count": 2,
+                "trainable_tokens": 3,
+                "history_wipes": 1,
+                "append_token_mismatches": 2,
+            }
+        ]
+
+        metrics = compute_step_metrics(
+            prompt_groups=[group],
+            fwd_bwd_results=[],
+            optim_result=None,
+            n_accum=1,
+            timing_metrics={},
+            loop_stats={"all_raw_rewards": [1.0]},
+        )
+
+        assert len(group.data) == 2
+        assert len(group.rewards) == 1
+        assert metrics["rollout/raw_samples"] == 1
+        assert metrics["rollout/filtered_samples"] == 1
+        assert metrics["rollout/trainable_tokens_mean"] == 3
+        assert metrics["rollout/history_wipes"] == 1
+        assert metrics["rollout/append_token_mismatches"] == 2
 
     def test_optimizer_metrics_drop_remote_aliases(self):
         metrics = compute_step_metrics(
@@ -224,7 +258,7 @@ class TestFwdBwdMinibatchAveraging:
             prompt_groups=[],
             fwd_bwd_results=[
                 self._fake_fwd_bwd(loss=1.0),
-                self._fake_fwd_bwd(loss=3.0, inference_kld=0.25),
+                self._fake_fwd_bwd(loss=3.0, inference_k3=0.25),
             ],
             optim_result=None,
             n_accum=2,
@@ -232,7 +266,7 @@ class TestFwdBwdMinibatchAveraging:
         )
 
         assert metrics["train/loss"] == 2.0
-        assert metrics["train/inference_kld"] == 0.25
+        assert metrics["train/inference_k3"] == 0.25
         assert not any(key.startswith("kld/") for key in metrics)
 
     def test_k1_matches_single_fwd_bwd_behavior(self):

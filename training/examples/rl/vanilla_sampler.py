@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fireworks.training.sdk.deployment import DeploymentSampler
 
 from training.recipes.async_rl_loop import RolloutSetup
 
 
-def build_deployment_sampler(setup: RolloutSetup) -> DeploymentSampler:
-    """Construct a :class:`DeploymentSampler` from a :class:`RolloutSetup`.
+def build_deployment_sampler(setup: RolloutSetup) -> Any:
+    """Return the setup sampler or construct a deployment-backed sampler.
 
     The training recipe assembles the setup once at startup and hands it
     to the rollout factory; the factory uses this helper to materialize
@@ -17,6 +19,8 @@ def build_deployment_sampler(setup: RolloutSetup) -> DeploymentSampler:
     ``cfg.max_concurrency_rollout_sample`` -- the same unit the
     deployment's ``max_batch_size`` gates on.  No HTTP-layer gate.
     """
+    if setup.sampler is not None:
+        return setup.sampler
     return DeploymentSampler(
         inference_url=setup.inference_base_url,
         model=setup.model,

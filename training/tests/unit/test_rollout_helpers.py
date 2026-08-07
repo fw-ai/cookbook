@@ -14,19 +14,21 @@ from __future__ import annotations
 
 import pytest
 
-from training.utils.rl.rollout import extract_completion
+from training.utils.rl.rollout import (
+    Rollout,
+    RolloutRun,
+    extract_completion,
+    rollout_to_prompt_group,
+)
+from training.utils.rl.agent.sampling import token_segment_to_sample
+from training.utils.rl.agent.trajectory import TokenSegment
 
 
 def _choice(token_ids, sampling_logprobs=None, finish_reason="stop"):
     return {
         "token_ids": token_ids,
         "logprobs": (
-            {
-                "content": [
-                    {"sampling_logprob": lp}
-                    for lp in sampling_logprobs
-                ]
-            }
+            {"content": [{"sampling_logprob": lp} for lp in sampling_logprobs]}
             if sampling_logprobs is not None
             else None
         ),
@@ -123,3 +125,34 @@ def test_logprob_list_too_short_raises():
             ),
             input_tokens=[1],
         )
+
+
+def test_agent_routes_use_full_model_input_after_leading_response_is_masked(
+    caplog,
+):
+    segment = TokenSegment(
+        prompt_ids=[1, 2],
+        response_ids=[10, 20, 30],
+        loss_mask=[0, 0, 1],
+        rollout_log_probs=[0.0, 0.0, -0.3],
+        rollout_raw_log_probs=[0.0, 0.0, -0.4],
+        routing_matrices=["", "", "route-30"],
+    )
+    sample = token_segment_to_sample(segment, reward=1.0)
+
+    assert sample.routing_matrices == ["", "", "", "route-30"]
+
+    group = rollout_to_prompt_group(
+        Rollout(runs=[RolloutRun(segments=[sample])]),
+        advantage_fn=lambda _rewards: [1.0],
+        router_replay_completion_only=True,
+    )
+
+    assert group is not None
+    assert group.data[0].model_input.routing_matrices == [
+        "",
+        "",
+        "",
+        "route-30",
+    ]
+    assert "R3: routing_matrices length" not in caplog.text

@@ -204,7 +204,8 @@ This handoff is identical across Claude Code, Cursor, and Codex.
 | Training API DPO | Not applicable | [`training/recipes/dpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/dpo_loop.py) | `references/sdk-recipes.md` |
 | Training API ORPO | Not applicable | [`training/recipes/orpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/orpo_loop.py) | `references/sdk-recipes.md` |
 | Training API RL | Not applicable | [`training/recipes/rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/rl_loop.py) | `references/training-api.md`, `references/rl-loss-paths.md` |
-| Async or agentic RL | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/async_rl_loop.py) | `references/rl-async.md` |
+| Async RL scheduling and overlap | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/async_rl_loop.py) | `references/rl-async.md` |
+| Agentic or tool-using RL | Not applicable | Use `async_rl_loop.py` with an agent/environment rollout adapter | `references/rl-agentic.md`, then `references/rl-async.md` for loop behavior |
 | IGPO | Not applicable | [`training/recipes/igpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/igpo_loop.py) | `references/sdk-recipes.md` |
 | Distillation | Not applicable | [`training/recipes/distillation_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/distillation_loop.py) | `references/sdk-distillation.md` |
 | Serverless RL example | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/main/training/examples/serverless_rl) | Live serverless docs |
@@ -368,7 +369,8 @@ Read only what the task requires:
 | Checkpoints and tools | `references/sdk-checkpoints.md`, `references/sdk-tools.md` |
 | Distillation | `references/sdk-distillation.md` |
 | RL built-in/client losses and normalization | `references/rl-loss-paths.md`, `references/rl-custom-loss.md`, `references/rl-gradient-accumulation.md` |
-| Async RL, concurrency, and filtering | `references/rl-async.md`, `references/rl-concurrency.md`, `references/rl-dynamic-filter.md` |
+| Async RL loop, concurrency, and filtering | `references/rl-async.md`, `references/rl-concurrency.md`, `references/rl-dynamic-filter.md` |
+| Agentic RL trajectories, token ancestry, sessions, retries, and tool environments | `references/rl-agentic.md` |
 | Read async RL producer, overlap, gate, and refill metrics | `references/async-rl-metrics.md` |
 | Hotload and sampler failures | `references/rl-hotload.md`, `references/rl-sampling-timeouts.md` |
 | Renderer implementation and training-token invariants | `references/renderer.md` |

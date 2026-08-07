@@ -6,6 +6,7 @@ SDK, or a deployment.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 
 import pytest
@@ -15,6 +16,32 @@ from training.recipes import async_rl_loop
 
 class _StopAfterProvisioning(RuntimeError):
     pass
+
+
+def test_evaluation_rollout_context_is_explicit_and_compatible() -> None:
+    seen: list[tuple[int, bool]] = []
+
+    async def rollout(_row, *, sample_index: int, evaluation: bool = False):
+        seen.append((sample_index, evaluation))
+        return None
+
+    evaluation_rollout = async_rl_loop.make_evaluation_rollout_fn(rollout)
+    asyncio.run(evaluation_rollout({}, sample_index=2, cursor_index=7))
+
+    assert seen == [(2, True)]
+
+
+def test_evaluation_rollout_omits_unsupported_context() -> None:
+    seen: list[int] = []
+
+    async def rollout(_row, *, sample_index: int):
+        seen.append(sample_index)
+        return None
+
+    evaluation_rollout = async_rl_loop.make_evaluation_rollout_fn(rollout)
+    asyncio.run(evaluation_rollout({}, sample_index=3, cursor_index=7))
+
+    assert seen == [3]
 
 
 class TestConfigDefaults:
@@ -34,6 +61,13 @@ class TestConfigDefaults:
         cfg = async_rl_loop.Config(log_path="gs://logs")
 
         assert cfg.cleanup_on_exit is True
+
+    def test_config_recovery_defaults_preserve_existing_behavior(self) -> None:
+        cfg = async_rl_loop.Config(log_path="gs://logs")
+
+        assert cfg.warm_start_from_adapter is None
+        assert cfg.dcp_save_interval == 0
+        assert cfg.weight_sync_timeout == 600
 
     def test_config_pipeline_chunks_default_to_one(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")
@@ -103,6 +137,34 @@ def test_main_rejects_unknown_anchor_logp() -> None:
     cfg = async_rl_loop.Config(log_path="gs://logs", anchor_logp="unknown")
 
     with pytest.raises(ValueError, match="anchor_logp must be"):
+        async_rl_loop.main(
+            cfg,
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
+
+
+@pytest.mark.parametrize(
+    "config_overrides, error",
+    [
+        (
+            {
+                "lora_rank": 8,
+                "warm_start_from_adapter": "accounts/a/models/adapter",
+                "init_from_checkpoint": "step-5",
+            },
+            "mutually exclusive",
+        ),
+        (
+            {"lora_rank": 0, "warm_start_from_adapter": "accounts/a/models/adapter"},
+            "requires lora_rank > 0",
+        ),
+    ],
+)
+def test_main_validates_adapter_warm_start(config_overrides, error) -> None:
+    cfg = async_rl_loop.Config(log_path="gs://logs", **config_overrides)
+
+    with pytest.raises(ValueError, match=error):
         async_rl_loop.main(
             cfg,
             rows=[],

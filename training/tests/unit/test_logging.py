@@ -15,7 +15,9 @@ from training.utils.logging import log_metrics, setup_wandb
 from training.utils.runner import WandbConfigError
 
 
-def _install_fake_wandb(monkeypatch, *, init_exc: Exception | None = None) -> types.ModuleType:
+def _install_fake_wandb(
+    monkeypatch, *, init_exc: Exception | None = None
+) -> types.ModuleType:
     """Install a minimal fake ``wandb`` module so setup_wandb runs without the dep."""
     fake = types.ModuleType("wandb")
     errors_mod = types.ModuleType("wandb.errors")
@@ -54,7 +56,9 @@ class TestSetupWandb:
     def test_message_based_auth_error_raises_wandb_config_error(self, monkeypatch):
         monkeypatch.setenv("WANDB_API_KEY", "bad-key")
         _install_fake_wandb(monkeypatch, init_exc=Exception("401 Unauthorized"))
-        with pytest.raises(WandbConfigError, match="authentication/configuration failed"):
+        with pytest.raises(
+            WandbConfigError, match="authentication/configuration failed"
+        ):
             setup_wandb(WandBConfig(entity="acme", project="proj"), {})
 
     def test_typed_auth_error_raises_wandb_config_error(self, monkeypatch):
@@ -101,7 +105,7 @@ def test_log_metrics_sends_the_same_plain_record_to_both_sinks(
     metrics = {
         "train/step": 3,
         "rollout/reward": 0.75,
-        "train/inference_kld": float("nan"),
+        "train/inference_k3": float("nan"),
         "nested": {"values": (1.0, float("inf"))},
     }
 
@@ -115,7 +119,7 @@ def test_log_metrics_sends_the_same_plain_record_to_both_sinks(
         "step": 3,
         "train/step": 3,
         "rollout/reward": 0.75,
-        "train/inference_kld": None,
+        "train/inference_k3": None,
         "nested": {"values": [1.0, None]},
     }
     assert jsonl_calls[0][0] == str(metrics_path)
@@ -172,7 +176,9 @@ def test_configured_jsonl_write_failure_propagates_before_wandb(monkeypatch):
         "append_jsonl",
         fail_jsonl_write,
     )
-    monkeypatch.setattr(logging_utils, "wandb_log", lambda record: wandb_calls.append(record))
+    monkeypatch.setattr(
+        logging_utils, "wandb_log", lambda record: wandb_calls.append(record)
+    )
 
     with pytest.raises(OSError, match="disk full"):
         log_metrics(
@@ -247,3 +253,7 @@ def test_async_producer_metrics_use_their_own_event_axis():
     assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["async/*"] == "rollout/step"
     assert "pipeline/*" not in logging_utils.ASYNC_RL_WANDB_METRIC_STEPS
     assert "version/*" not in logging_utils.ASYNC_RL_WANDB_METRIC_STEPS
+
+
+def test_async_eval_metrics_use_the_rollout_step_axis():
+    assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["eval/*"] == "rollout/step"

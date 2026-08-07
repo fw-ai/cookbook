@@ -27,7 +27,10 @@ from training.utils.rl.rollout.group_assembler import (
     GroupAssembler,
     RowResolution,
 )
-from training.utils.rl.rollout.types import RolloutRun
+from training.utils.rl.rollout.types import (
+    RolloutRun,
+    validate_rollout_run_routing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +81,7 @@ class _CursorEntry:
     request: RolloutRow
     durable_reason: str | None = None
     batch_id: int | None = None
+    incomplete_retries: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +101,8 @@ class _ProducerStats:
     sample_fails: int = 0
     filter_drops: int = 0
     recoverable_errors: int = 0
+    trajectory_drops: int = 0
+    incomplete_group_retries: int = 0
 
 
 class RolloutProducer:
@@ -116,6 +122,7 @@ class RolloutProducer:
         with_reference: bool,
         router_replay_completion_only: bool,
         min_group_size: int,
+        max_incomplete_group_retries: int,
         dynamic_filter_fn: DynamicFilterFn | None,
         initial_version: int,
         resolved_rows_offset: int,
@@ -130,6 +137,7 @@ class RolloutProducer:
             max_head_off_policy_versions=max_head_off_policy_versions,
             max_concurrent_rollouts=max_concurrent_rollouts,
             min_group_size=min_group_size,
+            max_incomplete_group_retries=max_incomplete_group_retries,
             initial_version=initial_version,
         )
         self._rows = iter(rows)
@@ -144,6 +152,7 @@ class RolloutProducer:
         self._max_staleness = max_head_off_policy_versions
         self._max_concurrent = max_concurrent_rollouts
         self._dynamic_filter_fn = dynamic_filter_fn
+        self._max_incomplete_group_retries = max_incomplete_group_retries
         self._published_version = initial_version
         self._accepted_samples_offset = initial_version * self._samples_per_batch
         self._resolved_rows_offset = resolved_rows_offset
@@ -264,15 +273,15 @@ class RolloutProducer:
             "rows_submitted": self._stats.rows_submitted,
             "rows_accepted": self._stats.rows_accepted,
             "rows_rejected": self._stats.rows_rejected,
-            "completion_refill_attempts": (
-                self._stats.completion_refill_attempts
-            ),
+            "completion_refill_attempts": (self._stats.completion_refill_attempts),
             "completion_refill_rows_submitted": (
                 self._stats.completion_refill_rows_submitted
             ),
             "sample_fails": self._stats.sample_fails,
             "filter_drops": self._stats.filter_drops,
             "recoverable_errors": self._stats.recoverable_errors,
+            "trajectory_drops": self._stats.trajectory_drops,
+            "incomplete_group_retries": self._stats.incomplete_group_retries,
         }
         breaker = self._breaker.snapshot
         snapshot.update(
@@ -347,7 +356,14 @@ class RolloutProducer:
             self._mark_rollout_wait_for_trainer_end()
 
     async def _invoke(self, request: RolloutRow, sub_index: int) -> RolloutRun | None:
-        return await request.run_factory(sub_index)
+        run = await request.run_factory(sub_index)
+        if isinstance(run, RolloutRun):
+            try:
+                validate_rollout_run_routing(run)
+            except ValueError as error:
+                logger.warning("Dropping rollout with invalid R3 data: %s", error)
+                return None
+        return run
 
     def _refill(self) -> int | None:
         if self._closing or self._failure is not None or self._source_exhausted:
@@ -405,8 +421,11 @@ class RolloutProducer:
         sequence = self._next_sequence
         self._next_sequence += 1
         self._cursor[sequence] = _CursorEntry(request=request)
-        self._reserved_samples += self._cpp
         self._stats.rows_submitted += 1
+        self._submit_attempt(sequence, request)
+
+    def _submit_attempt(self, sequence: int, request: RolloutRow) -> None:
+        self._reserved_samples += self._cpp
         for sub_index in range(self._cpp):
             self._assembler.note_started(
                 sequence,
@@ -450,13 +469,13 @@ class RolloutProducer:
                     self._stats.recoverable_errors,
                     classification.reason,
                 )
-            resolution = self._assembler.note_dropped(draw.sequence)
+            resolution = self._note_trajectory_dropped(draw.sequence)
         else:
             run = task.result()
-            self._breaker.record_success()
             if run is None:
-                resolution = self._assembler.note_dropped(draw.sequence)
+                resolution = self._note_trajectory_dropped(draw.sequence)
             elif isinstance(run, RolloutRun):
+                self._breaker.record_success()
                 resolution = self._assembler.add_run(draw.sequence, run)
             else:
                 error = TypeError(
@@ -468,12 +487,22 @@ class RolloutProducer:
         if resolution is not None:
             self._resolve_row(draw.sequence, resolution)
 
+    def _note_trajectory_dropped(self, sequence: int) -> RowResolution | None:
+        """Record an explicit per-trajectory discard without touching the breaker."""
+        self._stats.trajectory_drops += 1
+        return self._assembler.note_dropped(sequence)
+
     def _resolve_row(self, sequence: int, resolution: RowResolution) -> None:
         entry = self._cursor.get(sequence)
         if entry is None:
             raise RuntimeError(f"row sequence {sequence} is missing")
         self._reserved_samples -= self._cpp
         if resolution.pg is None:
+            if entry.incomplete_retries < self._max_incomplete_group_retries:
+                entry.incomplete_retries += 1
+                self._stats.incomplete_group_retries += 1
+                self._submit_attempt(sequence, entry.request)
+                return
             self._reject_row(entry, reason="none")
             return
         if self._dynamic_filter_fn is not None and not self._dynamic_filter_fn(
@@ -657,6 +686,7 @@ def _validate_producer_args(
     max_head_off_policy_versions: int,
     max_concurrent_rollouts: int | None,
     min_group_size: int,
+    max_incomplete_group_retries: int,
     initial_version: int,
 ) -> None:
     _require_positive_int("completions_per_prompt", completions_per_prompt)
@@ -680,6 +710,10 @@ def _validate_producer_args(
             f"{max_concurrent_rollouts} < {completions_per_prompt}"
         )
     _require_positive_int("min_group_size", min_group_size)
+    _require_nonnegative_int(
+        "max_incomplete_group_retries",
+        max_incomplete_group_retries,
+    )
     if min_group_size > completions_per_prompt:
         raise ValueError("min_group_size must be <= completions_per_prompt")
 

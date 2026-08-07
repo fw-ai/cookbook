@@ -21,12 +21,11 @@ def compute_inference_observability_metrics(
     prompt_lens: List[int],
     policy_loss: str,
 ) -> Dict[str, float]:
-    """Compare trainer policy logprobs with optional raw inference logprobs."""
+    """Report inference k1 and k3 drift from inference to the trainer policy."""
     raw_inf_logprobs = raw_inf_logprobs or []
 
-    total_inf_diff = 0.0
-    total_inf_kld = 0.0
-    total_inf_k1 = 0.0
+    total_k1 = 0.0
+    total_k3 = 0.0
     raw_inf_num_samples = 0
     expected_active_tokens = 0
     compared_active_tokens = 0
@@ -81,11 +80,8 @@ def compute_inference_observability_metrics(
             device=resp_pi.device,
         )
         inf_log_diff = resp_pi.detach()[active] - resp_raw_inf[active]
-        total_inf_diff += inf_log_diff.abs().mean().item()
-        total_inf_k1 += inf_log_diff.mean().item()
-        total_inf_kld += (
-            torch.exp(inf_log_diff) - inf_log_diff - 1.0
-        ).mean().item()
+        total_k1 += inf_log_diff.mean().item()
+        total_k3 += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
         raw_inf_num_samples += 1
         compared_active_tokens += active_tokens
 
@@ -99,9 +95,8 @@ def compute_inference_observability_metrics(
     if raw_inf_num_samples > 0:
         metrics.update(
             {
-                "inference_diff": total_inf_diff / raw_inf_num_samples,
-                "inference_k1": total_inf_k1 / raw_inf_num_samples,
-                "inference_kld": total_inf_kld / raw_inf_num_samples,
+                "inference_k1": total_k1 / raw_inf_num_samples,
+                "inference_k3": total_k3 / raw_inf_num_samples,
             }
         )
     return metrics
