@@ -9,7 +9,7 @@ import tinker
 import torch
 
 from training.examples.rl import vanilla_sampler
-from training.examples.serverless_rl.experiment import async_rl_loop_serverless as loop
+from training.recipes.experiment import async_rl_loop_serverless as loop
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 

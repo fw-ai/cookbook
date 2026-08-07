@@ -25,7 +25,7 @@ from training.examples.rl.harbor_rl_opencode.harbor import (
     load_harbor_rows,
 )
 from training.examples.rl.harbor_rl_opencode.rollout import make_rollout_fn
-from training.examples.serverless_rl.experiment.async_rl_loop_serverless import (
+from training.recipes.experiment.async_rl_loop_serverless import (
     Config,
     main,
     run_sampling_preflight,
