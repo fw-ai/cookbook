@@ -1090,8 +1090,14 @@ def test_resolve_renderer_name_prefers_upstream_nemotron3() -> None:
 
 
 def test_resolve_renderer_name_supports_qwen3_family_fallback() -> None:
+    assert resolve_renderer_name("Qwen/Qwen3-0.6B") == "qwen3"
+    assert resolve_renderer_name("accounts/fireworks/models/qwen3-0p6b") == "qwen3"
     assert resolve_renderer_name("Qwen/Qwen3-1.7B") == "qwen3"
     assert resolve_renderer_name("accounts/fireworks/models/qwen3-1p7b") == "qwen3"
+    assert resolve_renderer_name("Qwen/Qwen3-4B") == "qwen3"
+    assert resolve_renderer_name("accounts/fireworks/models/qwen3-4b") == "qwen3"
+    assert resolve_renderer_name("Qwen/Qwen3-14B") == "qwen3"
+    assert resolve_renderer_name("accounts/fireworks/models/qwen3-14b") == "qwen3"
     assert resolve_renderer_name("Qwen/Qwen3-4B-Instruct-2507") == "qwen3_instruct"
     assert resolve_renderer_name("Qwen/Qwen3-8B-Base") == "role_colon"
 
@@ -1118,12 +1124,21 @@ def test_resolve_renderer_name_supports_qwen3_235b_instruct_fp8_alias() -> None:
 @pytest.mark.parametrize(
     "tokenizer_model",
     [
+        "Qwen/Qwen3-0.6B-Base",
+        "custom/Qwen3-0.6B-Base",
+        "/models/base/fireworks/qwen3-0p6b/hf",
         "Qwen/Qwen3-1.7B-Base",
         "Qwen/Qwen3-1.7B-Instruct-2507",
         "custom/Qwen3-1.7B-Base",
         "custom/Qwen3-1.7B-Instruct-2507",
         "/models/base/fireworks/qwen3-1p7b/hf",
         "/cache/instruct-2507/qwen3-1p7b/hf",
+        "Qwen/Qwen3-4B-Base",
+        "custom/Qwen3-4B-Base",
+        "/models/base/fireworks/qwen3-4b/hf",
+        "Qwen/Qwen3-14B-Base",
+        "custom/Qwen3-14B-Base",
+        "/models/base/fireworks/qwen3-14b/hf",
     ],
 )
 def test_resolve_renderer_name_qwen3_fallback_fails_closed(

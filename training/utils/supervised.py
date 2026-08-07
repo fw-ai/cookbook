@@ -290,12 +290,28 @@ def resolve_renderer_name(
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
-        # tinker-cookbook 0.4.3 no longer lists every Qwen3 checkpoint size
-        # (notably Qwen3-1.7B). Keep this compatibility fallback exact so
-        # unknown Base/Instruct variants fail closed instead of silently using
-        # the wrong conversation format.
+        # tinker-cookbook 0.4.3 curated its Qwen3 registry to a smaller set of
+        # validated checkpoints (notably dropping dense sizes like 0.6B/1.7B/
+        # 4B/14B). Keep these compatibility fallbacks exact so unknown
+        # Base/Instruct variants fail closed instead of silently using the
+        # wrong format.
+        if normalized_model_name == "qwen/qwen3-0.6b" or re.fullmatch(
+            r"accounts/[a-z0-9-]+/models/qwen3-0p6b",
+            normalized_model_name,
+        ):
+            return "qwen3"
         if normalized_model_name == "qwen/qwen3-1.7b" or re.fullmatch(
             r"accounts/[a-z0-9-]+/models/qwen3-1p7b",
+            normalized_model_name,
+        ):
+            return "qwen3"
+        if normalized_model_name == "qwen/qwen3-4b" or re.fullmatch(
+            r"accounts/[a-z0-9-]+/models/qwen3-4b",
+            normalized_model_name,
+        ):
+            return "qwen3"
+        if normalized_model_name == "qwen/qwen3-14b" or re.fullmatch(
+            r"accounts/[a-z0-9-]+/models/qwen3-14b",
             normalized_model_name,
         ):
             return "qwen3"
